@@ -12,7 +12,10 @@ use serde_json::Value;
 use crate::formats::unknown_fields::{
     validate_unknown_fields, StorylineUnknownFields, UnknownFieldLimits, UnknownKeyCounts,
 };
-use crate::model::StorylineOrigin;
+use crate::model::{
+    StorylineEnv, StorylineOrigin, StorylinePrompt, StorylineTask, StorylineTimestamp,
+    StorylineToolResponse,
+};
 use crate::{Result, StoryLink, StorylineDocument, StorylineToolCall, StorylineTurn};
 
 #[cfg(feature = "lance-store")]
@@ -44,9 +47,14 @@ pub struct StoryRunRow {
     pub parent: Option<StoryLink>,
     pub child_session_ids: Option<Vec<String>>,
     pub notes: Option<String>,
+    pub task: Option<StorylineTask>,
+    pub prompt: Option<StorylinePrompt>,
+    pub started_at: Option<StorylineTimestamp>,
+    pub finished_at: Option<StorylineTimestamp>,
     pub final_metrics: Option<Value>,
     pub continued_trajectory_ref: Option<String>,
     pub extra: Option<Value>,
+    pub meta: Option<Value>,
     pub unknown_fields: StorylineUnknownFields,
     pub unknown_key_counts: UnknownKeyCounts,
 }
@@ -78,6 +86,9 @@ pub struct StoryStepRow {
     /// Complete authoritative observation. `StoryToolCallRow::results` is derived.
     pub observation: Option<Value>,
     pub extra: Option<Value>,
+    pub env: Option<StorylineEnv>,
+    pub prompt: Option<StorylinePrompt>,
+    pub finished_at: Option<StorylineTimestamp>,
 }
 
 /// One row per tool call. `results` keeps zero or more ATIF observation result
@@ -96,6 +107,8 @@ pub struct StoryToolCallRow {
     pub results: Vec<Value>,
     pub duration_ms: Option<i64>,
     pub extra: Option<Value>,
+    pub kind: Option<String>,
+    pub response: Option<StorylineToolResponse>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,9 +167,14 @@ pub(crate) fn split_storyline_with_unknown_limits(
         parent: story.parent.clone(),
         child_session_ids: story.child_session_ids.clone(),
         notes: story.notes.clone(),
+        task: story.task.clone(),
+        prompt: story.prompt.clone(),
+        started_at: story.started_at.clone(),
+        finished_at: story.finished_at.clone(),
         final_metrics: story.final_metrics.clone(),
         continued_trajectory_ref: story.continued_trajectory_ref.clone(),
         extra: story.extra.clone(),
+        meta: story.meta.clone(),
         unknown_fields: story.unknown_fields.clone(),
         unknown_key_counts: story.unknown_key_counts.clone(),
     };
@@ -189,6 +207,9 @@ pub(crate) fn split_storyline_with_unknown_limits(
             had_observation: turn.observation.is_some(),
             observation: turn.observation.clone(),
             extra: turn.extra.clone(),
+            env: turn.env.clone(),
+            prompt: turn.prompt.clone(),
+            finished_at: turn.finished_at.clone(),
         });
 
         let mut call_positions = HashMap::new();
@@ -222,6 +243,8 @@ pub(crate) fn split_storyline_with_unknown_limits(
                 results: Vec::new(),
                 duration_ms: call.duration_ms,
                 extra: call.extra.clone(),
+                kind: call.kind.clone(),
+                response: call.response.clone(),
             });
         }
         for result in observation_results(turn.observation.as_ref()).unwrap_or_default() {
@@ -378,6 +401,8 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
                     result: call.result,
                     duration_ms: call.duration_ms,
                     extra: call.extra,
+                    kind: call.kind,
+                    response: call.response,
                 })
                 .collect::<Vec<_>>();
             StorylineTurn {
@@ -397,6 +422,9 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
                 latency_ms: step.latency_ms,
                 ttft_ms: step.ttft_ms,
                 extra: step.extra,
+                env: step.env,
+                prompt: step.prompt,
+                finished_at: step.finished_at,
             }
         })
         .collect();
@@ -418,9 +446,14 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
         parent: run.parent,
         child_session_ids: run.child_session_ids,
         notes: run.notes,
+        task: run.task,
+        prompt: run.prompt,
+        started_at: run.started_at,
+        finished_at: run.finished_at,
         final_metrics: run.final_metrics,
         continued_trajectory_ref: run.continued_trajectory_ref,
         extra: run.extra,
+        meta: run.meta,
         unknown_fields: run.unknown_fields,
         unknown_key_counts: run.unknown_key_counts,
         turns,
@@ -453,6 +486,9 @@ mod tests {
             latency_ms: None,
             ttft_ms: None,
             extra: None,
+            env: None,
+            prompt: None,
+            finished_at: None,
         }
     }
 
@@ -465,6 +501,8 @@ mod tests {
             result: None,
             duration_ms: Some(7),
             extra: Some(json!({"provider": "test"})),
+            kind: None,
+            response: None,
         }]);
         tool_turn.observation = Some(json!({
             "results": [{"source_call_id": "call-1", "content": "42"}]
@@ -487,9 +525,14 @@ mod tests {
             parent: None,
             child_session_ids: None,
             notes: Some("notes".into()),
+            task: None,
+            prompt: None,
+            started_at: None,
+            finished_at: None,
             final_metrics: Some(json!({"score": 1})),
             continued_trajectory_ref: None,
             extra: Some(json!({"case": "roundtrip"})),
+            meta: Some(json!({"suite": "roundtrip"})),
             unknown_fields: Default::default(),
             unknown_key_counts: Default::default(),
             turns: vec![turn(1, "user"), tool_turn],
@@ -547,6 +590,8 @@ mod tests {
                 result: None,
                 duration_ms: None,
                 extra: None,
+                kind: None,
+                response: None,
             },
             StorylineToolCall {
                 tool_call_id: "call-a".into(),
@@ -555,6 +600,8 @@ mod tests {
                 result: None,
                 duration_ms: None,
                 extra: None,
+                kind: None,
+                response: None,
             },
         ]);
         second.observation = Some(json!({

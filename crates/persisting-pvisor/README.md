@@ -75,8 +75,12 @@ By default, replay's internal state, WAL, manifest, comparisons, and native
 working files stay below `/tmp/pvisor-sandbox-replay` and disappear with the
 sandbox. Replay does not enable pVisor Gateway, pChronicle, model-traffic
 capture, or a Claude Resume Transport audit. Callers that explicitly select
-`--state-dir` or `--output-dir` own the resulting files. Use `--replay-only`
-when only prefix reconstruction and tool replay are required.
+`--state-dir` or `--output-dir` own the resulting files. The three execution
+modes are: `--prepare-only` to parse and construct the prefix without a runtime,
+`--replay-only` to execute that prefix without a model request, and the default
+replay-and-continue mode. `--max-steps` is a total action budget including the
+prefix. Results use `sandbox-playback.result/v3` and report `phase`, `quality`,
+`agent_status`, artifact paths, and structured failure details.
 
 ## Start with one Agent
 

@@ -305,6 +305,8 @@ mod tests {
                 result: None,
                 duration_ms: Some(12),
                 extra: Some(json!({"provider":"test"})),
+                kind: None,
+                response: None,
             }]),
             observation: Some(json!({
                 "results":[{"source_call_id":"call-1","content":"ok"}]
@@ -316,6 +318,9 @@ mod tests {
             latency_ms: Some(50),
             ttft_ms: Some(5),
             extra: Some(json!({"trace_id":"trace-1"})),
+            env: None,
+            prompt: None,
+            finished_at: None,
         });
 
         let markdown = encode_agenticmd(&story).unwrap();
@@ -410,6 +415,9 @@ hi
             latency_ms: None,
             ttft_ms: None,
             extra: None,
+            env: None,
+            prompt: None,
+            finished_at: None,
         });
         story
             .unknown_fields

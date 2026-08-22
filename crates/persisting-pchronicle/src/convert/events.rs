@@ -226,6 +226,9 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
                     latency_ms: None,
                     ttft_ms: None,
                     extra: Some(user_extra),
+                    env: None,
+                    prompt: None,
+                    finished_at: None,
                 });
                 next_id += 1;
             }
@@ -274,6 +277,9 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
             latency_ms: if source == "agent" { latency_ms } else { None },
             ttft_ms: if source == "agent" { ttft_ms } else { None },
             extra: Some(agent_extra),
+            env: None,
+            prompt: None,
+            finished_at: None,
         });
         next_id += 1;
     }
@@ -297,6 +303,9 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
                 latency_ms: None,
                 ttft_ms: None,
                 extra: Some(json!({"seq": ev.seq, "event_seq": ev.seq})),
+                env: None,
+                prompt: None,
+                finished_at: None,
             });
             next_id += 1;
         }
@@ -329,6 +338,11 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
         final_metrics: None,
         continued_trajectory_ref: None,
         extra: None,
+        meta: None,
+        task: None,
+        prompt: None,
+        started_at: None,
+        finished_at: None,
         unknown_fields: Default::default(),
         unknown_key_counts: Default::default(),
         turns,
@@ -391,6 +405,8 @@ fn collect_tool_calls(
                         result,
                         duration_ms: None,
                         extra,
+                        kind: None,
+                        response: None,
                     };
                 } else {
                     positions.insert(id.clone(), calls.len());
@@ -401,6 +417,8 @@ fn collect_tool_calls(
                         result,
                         duration_ms: None,
                         extra,
+                        kind: None,
+                        response: None,
                     });
                 }
             }

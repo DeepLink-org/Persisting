@@ -180,9 +180,10 @@ cat input.json | pchronicle import --from - --stream \
 ```
 
 Regular files can be auto-detected. A directory input recursively scans
-`.json`, `.jsonl`, and `.ndjson` regular files, skips symbolic links encountered
-during traversal, and keeps each Source's relative path in the default
-`--output-format preserve` output. An explicitly named symbolic link is
+`.json`, `.jsonl`, and `.ndjson` regular files, detects each file independently
+when `--format` is omitted, skips JSON that is not a known trajectory format,
+skips symbolic links encountered during traversal, and keeps each Source's
+relative path in the default `--output-format preserve` output. An explicitly named symbolic link is
 accepted only when its target is a regular file. ATIF `.jsonl`/`.ndjson`
 Sources decode every non-empty record.
 

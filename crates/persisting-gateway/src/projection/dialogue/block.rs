@@ -75,6 +75,9 @@ pub fn capture_record_to_storyline_turn(rec: &EventRecord) -> Result<StorylineTu
         latency_ms,
         ttft_ms,
         extra: (!extra.is_empty()).then_some(Value::Object(extra)),
+        env: None,
+        prompt: None,
+        finished_at: None,
     })
 }
 

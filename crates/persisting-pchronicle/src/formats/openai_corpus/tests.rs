@@ -153,24 +153,30 @@ fn openai_only_reports_unmapped_source_fields() {
     let input = mapped_fields_fixture();
 
     let stories = parse_openai_msg_corpus_value(&input, "source.json").unwrap();
+    let story = &stories[0];
+    let env = story.task.as_ref().unwrap().env.as_ref().unwrap();
+    assert_eq!(
+        env.state.as_ref().unwrap().get("dataset_type"),
+        Some(&json!("TEST"))
+    );
+    assert_eq!(
+        env.state.as_ref().unwrap().get("group_id"),
+        Some(&json!("group-1"))
+    );
+    let response_env = story
+        .turns
+        .iter()
+        .rev()
+        .find(|turn| turn.source == "agent")
+        .and_then(|turn| turn.env.as_ref())
+        .unwrap();
+    assert_eq!(response_env.id.as_deref(), Some("event-1"));
+    assert_eq!(response_env.request_id.as_deref(), Some("request-1"));
     let fields = &stories[0].unknown_fields.sources["openai-msg"].fields;
 
     assert_eq!(
-        fields.get("/session_steps/0/dataset_type"),
-        Some(&json!("TEST"))
-    );
-    assert_eq!(fields.get("/session_steps/0/id"), Some(&json!("event-1")));
-    assert_eq!(
         fields.get("/session_steps/0/vendor_row"),
         Some(&json!({"kept": true}))
-    );
-    assert_eq!(
-        fields.get("/session_steps/0/meta_json/group_id"),
-        Some(&json!("group-1"))
-    );
-    assert_eq!(
-        fields.get("/session_steps/0/meta_json/env_state/request_id"),
-        Some(&json!("request-1"))
     );
 
     for mapped in [
@@ -194,6 +200,10 @@ fn openai_only_reports_unmapped_source_fields() {
         "/session_steps/0/response/tool_calls",
         "/session_steps/0/blob_manifest",
         "/session_steps/0/chosen_response",
+        "/session_steps/0/dataset_type",
+        "/session_steps/0/id",
+        "/session_steps/0/meta_json/group_id",
+        "/session_steps/0/meta_json/env_state/request_id",
     ] {
         assert!(
             !fields.contains_key(mapped),

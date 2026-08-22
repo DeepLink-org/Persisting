@@ -11,8 +11,9 @@ use crate::formats::actf::{
     ACTF_SCHEMA_VERSION,
 };
 use crate::formats::storyline::{
-    StorylineAgent, StorylineDocument, StorylineOrigin, StorylineToolCall, StorylineTurn,
-    STORYLINE_SCHEMA_VERSION,
+    StorylineAgent, StorylineDocument, StorylineEnv, StorylineOrigin, StorylinePrompt,
+    StorylineTask, StorylineTaskLlm, StorylineTaskResult, StorylineToolCall, StorylineToolResponse,
+    StorylineTurn, STORYLINE_SCHEMA_VERSION,
 };
 use crate::formats::timestamp::StorylineTimestamp;
 use crate::formats::unknown_fields::{
@@ -22,14 +23,30 @@ use crate::formats::unknown_fields::{
 };
 use crate::Result;
 
-fn actf_tool_to_storyline(call: &ActfToolCall, duration_ms: Option<i64>) -> StorylineToolCall {
+fn actf_tool_to_storyline(
+    call: &ActfToolCall,
+    duration_ms: Option<i64>,
+    step_id: i64,
+    call_index: usize,
+) -> StorylineToolCall {
+    let status = call
+        .extra
+        .get("status")
+        .and_then(Value::as_str)
+        .filter(|status| !status.is_empty())
+        .map(str::to_string);
+    let exit_code = call.extra.get("exit_code").and_then(Value::as_i64);
+    let response = (status.is_some() || exit_code.is_some())
+        .then_some(StorylineToolResponse { status, exit_code });
     StorylineToolCall {
-        tool_call_id: call.id.clone(),
+        tool_call_id: call.effective_id(step_id, call_index),
         function_name: actf_tool_name(call),
         arguments: actf_tool_arguments(call),
         result: call.extra.get("aggregated_output").cloned(),
         duration_ms,
         extra: None,
+        kind: (!call.kind.is_empty()).then(|| call.kind.clone()),
+        response,
     }
 }
 
@@ -85,20 +102,40 @@ fn attempt_to_storyline(
     attempt: &ActfAttempt,
     multiple_attempts: bool,
 ) -> Result<StorylineDocument> {
+    if !attempt.trajectory.events.is_empty() && attempt.trajectory.steps.is_empty() {
+        return event_log_attempt_to_storyline(document, attempt_id, attempt, multiple_attempts);
+    }
+    let prompt_pairs: Vec<(String, String)> = attempt
+        .trajectory
+        .steps
+        .iter()
+        .map(|step| (step.system_prompt.clone(), step.user_content.clone()))
+        .collect();
+    let baseline = prompt_pairs
+        .iter()
+        .find(|(system, user)| !system.is_empty() || !user.is_empty())
+        .cloned();
+    let document_prompt = baseline
+        .as_ref()
+        .and_then(|(system, user)| StorylinePrompt::from_pair(system, user));
     let mut turns = Vec::with_capacity(attempt.trajectory.steps.len());
-    for step in &attempt.trajectory.steps {
-        let tool_calls = (!step.tools.is_empty())
+    for (step, pair) in attempt.trajectory.steps.iter().zip(prompt_pairs) {
+        let source_tools = step.effective_tools();
+        let tool_calls = (!source_tools.is_empty())
             .then(|| {
-                step.tools
+                source_tools
                     .iter()
-                    .map(|call| {
+                    .enumerate()
+                    .map(|(call_index, call)| {
                         Ok(actf_tool_to_storyline(
                             call,
-                            if step.tools.len() == 1 {
+                            if source_tools.len() == 1 {
                                 step.metric.env_action_ms.as_f64().map(|value| value as i64)
                             } else {
                                 None
                             },
+                            step.step_id,
+                            call_index,
                         ))
                     })
                     .collect::<Result<Vec<_>>>()
@@ -130,6 +167,9 @@ fn attempt_to_storyline(
             latency_ms: step.metric.llm_infer_ms.as_f64().map(|value| value as i64),
             ttft_ms: None,
             extra: None,
+            env: None,
+            prompt: actf_turn_prompt(pair, baseline.as_ref()),
+            finished_at: Some(StorylineTimestamp::from_rfc3339(&step.finished_at)?),
         });
     }
 
@@ -160,19 +200,465 @@ fn attempt_to_storyline(
         parent: None,
         child_session_ids: None,
         notes: None,
-        final_metrics: Some(json!({
-            "correct": attempt.correct,
-            "score": attempt.score,
-            "status": attempt.status,
-            "task_correct": document.correct,
-            "analysis_result": attempt.analysis_result,
-        })),
+        task: actf_task(document, attempt),
+        prompt: document_prompt,
+        started_at: Some(StorylineTimestamp::from_rfc3339(
+            &attempt.trajectory.started_at,
+        )?),
+        finished_at: Some(StorylineTimestamp::from_rfc3339(
+            &attempt.trajectory.finished_at,
+        )?),
+        final_metrics: Some(actf_final_metrics(document, attempt)),
         continued_trajectory_ref: None,
-        extra: None,
+        extra: omit_empty_value(&attempt.extra),
+        meta: omit_empty_value(&attempt.meta),
         unknown_fields: Default::default(),
         unknown_key_counts: Default::default(),
         turns,
     })
+}
+
+fn event_log_attempt_to_storyline(
+    document: &ActfDocument,
+    attempt_id: &str,
+    attempt: &ActfAttempt,
+    multiple_attempts: bool,
+) -> Result<StorylineDocument> {
+    let (turns, session_env, model_name) = openclaw_events_to_turns(&attempt.trajectory.events)?;
+    let session_id = if multiple_attempts {
+        format!("{}#attempt-{attempt_id}", document.task_id)
+    } else {
+        document.task_id.clone()
+    };
+    let mut task = actf_task(document, attempt).unwrap_or_default();
+    if let Some(env) = session_env {
+        task.env = Some(env);
+    }
+    event_log_storyline(
+        document,
+        attempt,
+        attempt_id,
+        session_id,
+        model_name,
+        (!task.is_empty()).then_some(task),
+        turns,
+    )
+}
+
+fn event_log_storyline(
+    document: &ActfDocument,
+    attempt: &ActfAttempt,
+    attempt_id: &str,
+    session_id: String,
+    model_name: Option<String>,
+    task: Option<StorylineTask>,
+    turns: Vec<StorylineTurn>,
+) -> Result<StorylineDocument> {
+    Ok(StorylineDocument {
+        schema_version: STORYLINE_SCHEMA_VERSION.into(),
+        origin: Some(StorylineOrigin {
+            format: DocumentFormat::Actf.as_str().into(),
+            schema_version: Some(ACTF_SCHEMA_VERSION.into()),
+            document_id: None,
+        }),
+        run_id: Some(document.task_id.clone()),
+        trajectory_id: None,
+        attempt_id: Some(attempt_id.to_string()),
+        session_id,
+        agent: StorylineAgent {
+            id: "actf-agent".into(),
+            name: Some("ACTF Agent".into()),
+            version: None,
+            model_name,
+            tool_definitions: None,
+            extra: None,
+        },
+        parent: None,
+        child_session_ids: None,
+        notes: None,
+        task,
+        prompt: None,
+        started_at: Some(StorylineTimestamp::from_rfc3339(
+            &attempt.trajectory.started_at,
+        )?),
+        finished_at: Some(StorylineTimestamp::from_rfc3339(
+            &attempt.trajectory.finished_at,
+        )?),
+        final_metrics: Some(actf_final_metrics(document, attempt)),
+        continued_trajectory_ref: None,
+        extra: omit_empty_value(&attempt.extra),
+        meta: omit_empty_value(&attempt.meta),
+        unknown_fields: Default::default(),
+        unknown_key_counts: Default::default(),
+        turns,
+    })
+}
+
+fn openclaw_events_to_turns(
+    events: &[Value],
+) -> Result<(Vec<StorylineTurn>, Option<StorylineEnv>, Option<String>)> {
+    let mut turns = Vec::new();
+    let mut session_env = None;
+    let mut model_name = None;
+    let mut next_id = 1i64;
+    for event in events {
+        match event.get("type").and_then(Value::as_str) {
+            Some("session") => {
+                let mut env = StorylineEnv {
+                    id: event
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_string),
+                    ..StorylineEnv::default()
+                };
+                if let Some(cwd) = event.get("cwd").and_then(Value::as_str) {
+                    let mut state = serde_json::Map::new();
+                    state.insert("cwd".into(), Value::String(cwd.to_string()));
+                    env.state = Some(state);
+                }
+                if !env.is_empty() {
+                    session_env = Some(env);
+                }
+            }
+            Some("model_change") => {
+                model_name = event
+                    .get("modelId")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string);
+            }
+            Some("message") => {
+                if let Some(turn) = openclaw_message_to_turn(event, next_id)? {
+                    next_id = next_id
+                        .checked_add(1)
+                        .context("ACTF event-log turn id overflow")?;
+                    turns.push(turn);
+                }
+            }
+            _ => {}
+        }
+    }
+    attach_openclaw_tool_results(&mut turns);
+    Ok((turns, session_env, model_name))
+}
+
+fn openclaw_message_to_turn(event: &Value, id: i64) -> Result<Option<StorylineTurn>> {
+    let message = event.get("message").and_then(Value::as_object);
+    let Some(message) = message else {
+        return Ok(None);
+    };
+    let role = message.get("role").and_then(Value::as_str).unwrap_or("");
+    let timestamp = event
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .map(StorylineTimestamp::from_rfc3339)
+        .transpose()?;
+    let content = message.get("content").cloned().unwrap_or(Value::Null);
+    match role {
+        "user" => Ok(Some(StorylineTurn {
+            id,
+            kind: None,
+            timestamp,
+            source: "user".into(),
+            message: Value::String(openclaw_text_parts(&content, "text")),
+            reasoning_content: None,
+            reasoning_effort: None,
+            tool_calls: None,
+            observation: None,
+            metrics: None,
+            model_name: message
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            llm_call_count: None,
+            is_copied_context: None,
+            latency_ms: None,
+            ttft_ms: None,
+            extra: None,
+            env: None,
+            prompt: None,
+            finished_at: None,
+        })),
+        "assistant" => {
+            let tool_calls = openclaw_tool_calls(&content);
+            Ok(Some(StorylineTurn {
+                id,
+                kind: (!tool_calls.is_empty()).then(|| "autonomous".into()),
+                timestamp,
+                source: "agent".into(),
+                message: Value::String(openclaw_text_parts(&content, "text")),
+                reasoning_content: omit_empty_string(&openclaw_text_parts(&content, "thinking")),
+                reasoning_effort: None,
+                tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
+                observation: None,
+                metrics: message.get("usage").cloned(),
+                model_name: message
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                llm_call_count: Some(1),
+                is_copied_context: None,
+                latency_ms: None,
+                ttft_ms: None,
+                extra: None,
+                env: None,
+                prompt: None,
+                finished_at: None,
+            }))
+        }
+        "toolResult" => Ok(Some(StorylineTurn {
+            id,
+            kind: None,
+            timestamp,
+            source: "agent".into(),
+            message: Value::String(openclaw_text_parts(&content, "text")),
+            reasoning_content: None,
+            reasoning_effort: None,
+            tool_calls: None,
+            observation: Some(json!({
+                "results": [openclaw_tool_result(message, &content)]
+            })),
+            metrics: None,
+            model_name: None,
+            llm_call_count: None,
+            is_copied_context: None,
+            latency_ms: None,
+            ttft_ms: None,
+            extra: Some(json!({
+                "openclaw_role": "toolResult",
+                "toolCallId": message.get("toolCallId"),
+                "toolName": message.get("toolName"),
+            })),
+            env: None,
+            prompt: None,
+            finished_at: None,
+        })),
+        _ => Ok(None),
+    }
+}
+
+fn openclaw_text_parts(content: &Value, part_type: &str) -> String {
+    match content {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter(|part| part.get("type").and_then(Value::as_str) == Some(part_type))
+            .filter_map(|part| {
+                part.get(part_type)
+                    .or_else(|| part.get("text"))
+                    .and_then(Value::as_str)
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn openclaw_tool_calls(content: &Value) -> Vec<StorylineToolCall> {
+    let Some(parts) = content.as_array() else {
+        return Vec::new();
+    };
+    parts
+        .iter()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("toolCall"))
+        .map(|part| StorylineToolCall {
+            tool_call_id: part
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            function_name: part
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            arguments: part.get("arguments").cloned().unwrap_or(json!({})),
+            result: None,
+            duration_ms: None,
+            extra: None,
+            kind: Some("function".into()),
+            response: None,
+        })
+        .filter(|call| !call.tool_call_id.is_empty() && !call.function_name.is_empty())
+        .collect()
+}
+
+fn openclaw_tool_result(message: &Map<String, Value>, content: &Value) -> Value {
+    let mut result = Map::new();
+    result.insert(
+        "content".into(),
+        Value::String(openclaw_text_parts(content, "text")),
+    );
+    if let Some(id) = message.get("toolCallId").cloned() {
+        result.insert("tool_use_id".into(), id.clone());
+        result.insert("source_call_id".into(), id);
+    }
+    if let Some(name) = message.get("toolName").cloned() {
+        result.insert("name".into(), name);
+    }
+    if let Some(details) = message.get("details").and_then(Value::as_object) {
+        if let Some(status) = details.get("status").cloned() {
+            result.insert("status".into(), status);
+        }
+        if let Some(exit_code) = details.get("exitCode").cloned() {
+            result.insert("exit_code".into(), exit_code);
+        }
+        if let Some(duration_ms) = details.get("durationMs").cloned() {
+            result.insert("duration_ms".into(), duration_ms);
+        }
+        if let Some(aggregated) = details.get("aggregated").cloned() {
+            result.insert("aggregated_output".into(), aggregated);
+        }
+    }
+    Value::Object(result)
+}
+
+struct OpenclawToolResult {
+    id: String,
+    text: String,
+    duration_ms: Option<i64>,
+    status: Option<String>,
+    exit_code: Option<i64>,
+    result: Value,
+}
+
+fn openclaw_pending_result(turn: &StorylineTurn) -> Option<OpenclawToolResult> {
+    let extra = turn.extra.as_ref()?;
+    if extra.get("openclaw_role").and_then(Value::as_str) != Some("toolResult") {
+        return None;
+    }
+    let result = turn
+        .observation
+        .as_ref()?
+        .get("results")?
+        .as_array()?
+        .first()?
+        .clone();
+    Some(OpenclawToolResult {
+        id: extra.get("toolCallId").and_then(Value::as_str)?.to_string(),
+        text: turn.message.as_str().unwrap_or("").to_string(),
+        duration_ms: result.get("duration_ms").and_then(Value::as_i64),
+        status: result
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        exit_code: result.get("exit_code").and_then(Value::as_i64),
+        result,
+    })
+}
+
+fn attach_openclaw_tool_results(turns: &mut Vec<StorylineTurn>) {
+    let pending = turns
+        .iter()
+        .filter_map(openclaw_pending_result)
+        .collect::<Vec<_>>();
+    for item in pending {
+        let Some(turn) = turns.iter_mut().rev().find(|turn| {
+            turn.tool_calls
+                .as_ref()
+                .is_some_and(|calls| calls.iter().any(|call| call.tool_call_id == item.id))
+        }) else {
+            continue;
+        };
+        if let Some(call) = turn
+            .tool_calls
+            .as_mut()
+            .and_then(|calls| calls.iter_mut().find(|call| call.tool_call_id == item.id))
+        {
+            call.result = Some(Value::String(item.text));
+            call.duration_ms = item.duration_ms;
+            if item.status.is_some() || item.exit_code.is_some() {
+                call.response = Some(StorylineToolResponse {
+                    status: item.status,
+                    exit_code: item.exit_code,
+                });
+            }
+        }
+        let results = turn
+            .observation
+            .get_or_insert_with(|| json!({"results": []}));
+        if let Some(results) = results.get_mut("results").and_then(Value::as_array_mut) {
+            results.push(item.result);
+        }
+    }
+    turns.retain(|turn| openclaw_pending_result(turn).is_none());
+}
+
+fn actf_turn_prompt(
+    pair: (String, String),
+    baseline: Option<&(String, String)>,
+) -> Option<StorylinePrompt> {
+    match baseline {
+        Some(baseline) if pair == *baseline => None,
+        Some(_) if pair.0.is_empty() && pair.1.is_empty() => {
+            Some(StorylinePrompt::explicit_clear())
+        }
+        Some(_) | None => StorylinePrompt::from_pair(&pair.0, &pair.1),
+    }
+}
+
+fn omit_empty_string(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn omit_empty_value(value: &Value) -> Option<Value> {
+    match value {
+        Value::Null => None,
+        Value::String(text) if text.is_empty() => None,
+        Value::Object(object) if object.is_empty() => None,
+        Value::Array(items) if items.is_empty() => None,
+        other => Some(other.clone()),
+    }
+}
+
+fn actf_task(document: &ActfDocument, attempt: &ActfAttempt) -> Option<StorylineTask> {
+    let result = StorylineTaskResult {
+        task_correct: Some(document.correct),
+        correct: Some(attempt.correct),
+        final_answer: omit_empty_value(&attempt.final_answer),
+        ground_truth: omit_empty_value(&attempt.ground_truth),
+        status: omit_empty_string(&attempt.status),
+        score: omit_empty_value(&attempt.score),
+        error: omit_empty_string(&attempt.error),
+        artifacts: omit_empty_value(&attempt.artifacts),
+        category: omit_empty_string(&document.category),
+        attempts_tried: i64::try_from(document.attempts_tried).ok(),
+        solved_at: attempt_solved_at(&document.solved_at),
+        retry_count: document.extra.get("retry_count").cloned(),
+        retry_counts: document.extra.get("retry_counts").cloned(),
+        max_score: omit_empty_value(&attempt.max_score),
+    };
+    let llm = StorylineTaskLlm {
+        k: i64::try_from(document.k).ok().filter(|k| *k > 0),
+    };
+    let task = StorylineTask {
+        env: None,
+        llm: (!llm.is_empty()).then_some(llm),
+        result: (!result.is_empty()).then_some(result),
+    };
+    (!task.is_empty()).then_some(task)
+}
+
+fn attempt_solved_at(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn actf_final_metrics(document: &ActfDocument, attempt: &ActfAttempt) -> Value {
+    let mut metrics = Map::from_iter([
+        ("correct".into(), json!(attempt.correct)),
+        ("score".into(), attempt.score.clone()),
+        ("status".into(), json!(attempt.status)),
+        ("task_correct".into(), json!(document.correct)),
+        ("analysis_result".into(), attempt.analysis_result.clone()),
+    ]);
+    if let Some(max_score) = omit_empty_value(&attempt.max_score) {
+        metrics.insert("max_score".into(), max_score);
+    }
+    Value::Object(metrics)
 }
 
 fn capture_actf_unknowns(
@@ -190,6 +676,16 @@ fn capture_actf_unknowns(
     for key in ["task_id", "correct", "attempts"] {
         root.remove(key);
     }
+    for key in [
+        "category",
+        "k",
+        "attempts_tried",
+        "solved_at",
+        "retry_count",
+        "retry_counts",
+    ] {
+        root.remove(key);
+    }
     insert_actf_map(story, source_id, "", root)?;
 
     let attempt_prefix = pointer_join("/attempts", attempt_id);
@@ -204,6 +700,13 @@ fn capture_actf_unknowns(
         "status",
         "score",
         "analysis_result",
+        "final_answer",
+        "ground_truth",
+        "error",
+        "artifacts",
+        "extra",
+        "meta",
+        "max_score",
     ] {
         attempt_map.remove(key);
     }
@@ -215,7 +718,13 @@ fn capture_actf_unknowns(
     let trajectory_map = trajectory_value.as_object_mut().ok_or_else(|| {
         crate::InputIssue::invalid("serialized ACTF trajectory must be an object")
     })?;
-    for key in ["schema_version", "steps"] {
+    for key in [
+        "schema_version",
+        "steps",
+        "started_at",
+        "finished_at",
+        "events",
+    ] {
         trajectory_map.remove(key);
     }
     insert_actf_map(story, source_id, &trajectory_prefix, trajectory_map)?;
@@ -238,6 +747,9 @@ fn capture_actf_unknowns(
             "tools",
             "observation",
             "started_at",
+            "finished_at",
+            "system_prompt",
+            "user_content",
         ] {
             step_map.remove(key);
         }
@@ -291,14 +803,17 @@ fn capture_actf_tool(
     prefix: &str,
     call: &ActfToolCall,
 ) -> crate::InputResult<()> {
-    story.unknown_fields.insert(
-        "actf",
-        source_id,
-        pointer_join(prefix, "type"),
-        Value::String(call.kind.clone()),
-    )?;
     let mut unknown = call.extra.clone();
-    for key in ["name", "input", "command", "aggregated_output"] {
+    for key in [
+        "name",
+        "input",
+        "arguments",
+        "command",
+        "aggregated_output",
+        "status",
+        "exit_code",
+        "function",
+    ] {
         unknown.remove(key);
     }
     insert_actf_map(story, source_id, prefix, &unknown)
@@ -349,20 +864,74 @@ fn storylines_to_actf_pointer(stories: &[StorylineDocument]) -> Result<ActfDocum
         });
     }
     let task_correct = stories[0]
-        .final_metrics
+        .task
         .as_ref()
-        .and_then(|metrics| metrics.get("task_correct"))
-        .cloned()
+        .and_then(|task| task.result.as_ref())
+        .and_then(|result| result.task_correct)
+        .map(Value::Bool)
+        .or_else(|| {
+            stories[0]
+                .final_metrics
+                .as_ref()
+                .and_then(|metrics| metrics.get("task_correct"))
+                .cloned()
+        })
         .unwrap_or(Value::Bool(false));
-    let mut value = json!({
-        "task_id": task_id,
-        "category": "unknown",
-        "k": stories.len(),
-        "correct": task_correct,
-        "attempts_tried": stories.len(),
-        "solved_at": Value::Null,
-        "attempts": attempts,
-    });
+    let category = stories[0]
+        .task
+        .as_ref()
+        .and_then(|task| task.result.as_ref())
+        .and_then(|result| result.category.clone())
+        .unwrap_or_else(|| "unknown".into());
+    let k = stories[0]
+        .task
+        .as_ref()
+        .and_then(|task| task.llm.as_ref())
+        .and_then(|llm| llm.k)
+        .filter(|k| *k > 0)
+        .unwrap_or(stories.len() as i64);
+    let attempts_tried = stories[0]
+        .task
+        .as_ref()
+        .and_then(|task| task.result.as_ref())
+        .and_then(|result| result.attempts_tried)
+        .unwrap_or(stories.len() as i64);
+    let solved_at = stories[0]
+        .task
+        .as_ref()
+        .and_then(|task| task.result.as_ref())
+        .and_then(|result| result.solved_at.clone())
+        .map(Value::String)
+        .unwrap_or(Value::Null);
+    let mut root = Map::from_iter([
+        ("task_id".into(), Value::String(task_id)),
+        ("category".into(), Value::String(category)),
+        ("k".into(), Value::Number(k.into())),
+        ("correct".into(), task_correct),
+        (
+            "attempts_tried".into(),
+            Value::Number(attempts_tried.into()),
+        ),
+        ("solved_at".into(), solved_at),
+        ("attempts".into(), Value::Object(attempts)),
+    ]);
+    if let Some(retry_count) = stories[0]
+        .task
+        .as_ref()
+        .and_then(|task| task.result.as_ref())
+        .and_then(|result| result.retry_count.clone())
+    {
+        root.insert("retry_count".into(), retry_count);
+    }
+    if let Some(retry_counts) = stories[0]
+        .task
+        .as_ref()
+        .and_then(|task| task.result.as_ref())
+        .and_then(|result| result.retry_counts.clone())
+    {
+        root.insert("retry_counts".into(), retry_counts);
+    }
+    let mut value = Value::Object(root);
     let mut source_id = None::<String>;
     let mut unknown_fields = BTreeMap::<String, Value>::new();
     let actf_sources = stories
@@ -429,6 +998,7 @@ fn is_actf_source_owned(pointer: &str) -> bool {
             | "extra"
             | "analysis_result"
             | "meta"
+            | "max_score"
             | "schema_version"
             | "started_at"
             | "finished_at"
@@ -444,70 +1014,109 @@ fn synthesize_actf(story: &StorylineDocument) -> Result<ActfDocument> {
     }
     let epoch = "1970-01-01 00:00:00+00:00".to_string();
     let started_at = story
-        .turns
-        .first()
-        .and_then(|turn| turn.timestamp.as_ref())
+        .started_at
+        .as_ref()
         .map(format_actf_timestamp)
         .transpose()?
+        .or_else(|| {
+            story
+                .turns
+                .first()
+                .and_then(|turn| turn.timestamp.as_ref())
+                .map(format_actf_timestamp)
+                .transpose()
+                .ok()
+                .flatten()
+        })
         .unwrap_or_else(|| epoch.clone());
     let finished_at = story
-        .turns
-        .last()
-        .and_then(|turn| turn.timestamp.as_ref())
+        .finished_at
+        .as_ref()
         .map(format_actf_timestamp)
         .transpose()?
+        .or_else(|| {
+            story
+                .turns
+                .last()
+                .and_then(|turn| turn.finished_at.as_ref().or(turn.timestamp.as_ref()))
+                .map(format_actf_timestamp)
+                .transpose()
+                .ok()
+                .flatten()
+        })
         .unwrap_or_else(|| started_at.clone());
     let steps = story
         .turns
         .iter()
-        .map(synthesize_step)
+        .map(|turn| synthesize_step(story, turn))
         .collect::<Result<Vec<_>>>()?;
-    let correct = story
-        .final_metrics
-        .as_ref()
-        .and_then(|metrics| metrics.get("correct"))
-        .and_then(Value::as_bool)
+    let result = story.task.as_ref().and_then(|task| task.result.as_ref());
+    let correct = result
+        .and_then(|result| result.correct)
+        .or_else(|| {
+            story
+                .final_metrics
+                .as_ref()
+                .and_then(|metrics| metrics.get("correct"))
+                .and_then(Value::as_bool)
+        })
         .unwrap_or(false);
-    let score = story
-        .final_metrics
-        .as_ref()
-        .and_then(|metrics| metrics.get("score"))
-        .cloned()
+    let score = result
+        .and_then(|result| result.score.clone())
+        .or_else(|| {
+            story
+                .final_metrics
+                .as_ref()
+                .and_then(|metrics| metrics.get("score"))
+                .cloned()
+        })
         .unwrap_or(Value::Null);
-    let status = story
-        .final_metrics
-        .as_ref()
-        .and_then(|metrics| metrics.get("status"))
-        .and_then(Value::as_str)
-        .unwrap_or("completed")
-        .to_string();
+    let status = result
+        .and_then(|result| result.status.clone())
+        .or_else(|| {
+            story
+                .final_metrics
+                .as_ref()
+                .and_then(|metrics| metrics.get("status"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "completed".into());
     let attempt = ActfAttempt {
         correct,
-        final_answer: story
-            .turns
-            .last()
-            .map(|turn| turn.message.clone())
+        final_answer: result
+            .and_then(|result| result.final_answer.clone())
             .unwrap_or(Value::Null),
-        ground_truth: String::new(),
+        ground_truth: result
+            .and_then(|result| result.ground_truth.clone())
+            .unwrap_or_else(|| Value::String(String::new())),
         trajectory: ActfTrajectory {
             schema_version: ACTF_SCHEMA_VERSION.into(),
             steps,
             started_at,
             finished_at: finished_at.clone(),
+            events: Vec::new(),
             extra: Map::new(),
         },
         status,
         score,
-        error: String::new(),
-        artifacts: json!({}),
-        extra: json!({}),
+        error: result
+            .and_then(|result| result.error.clone())
+            .unwrap_or_default(),
+        artifacts: result
+            .and_then(|result| result.artifacts.clone())
+            .unwrap_or_else(|| json!({})),
+        extra: story.extra.clone().unwrap_or_else(|| json!({})),
         analysis_result: story
             .final_metrics
             .as_ref()
             .and_then(|metrics| metrics.get("analysis_result"))
             .cloned()
             .unwrap_or_else(|| json!({})),
-        meta: json!({}),
+        meta: story.meta.clone().unwrap_or_else(|| json!({})),
+        max_score: result
+            .and_then(|result| result.max_score.clone())
+            .unwrap_or(Value::Null),
         extensions: Map::new(),
     };
     let mut attempts = BTreeMap::new();
@@ -533,16 +1142,23 @@ fn synthesize_actf(story: &StorylineDocument) -> Result<ActfDocument> {
     Ok(document)
 }
 
-fn synthesize_step(turn: &StorylineTurn) -> Result<ActfStep> {
-    let step = serde_json::from_value(storyline_step_value(turn)?)?;
+fn synthesize_step(story: &StorylineDocument, turn: &StorylineTurn) -> Result<ActfStep> {
+    let step = serde_json::from_value(storyline_step_value(story, turn)?)?;
     Ok(step)
 }
 
 fn storyline_tool_to_actf(call: &StorylineToolCall) -> Value {
     let mut tool = Map::new();
     tool.insert("id".into(), Value::String(call.tool_call_id.clone()));
-    if call.function_name == "command_execution" {
-        tool.insert("type".into(), Value::String("command_execution".into()));
+    let kind = call.kind.clone().unwrap_or_else(|| {
+        if call.function_name == "command_execution" {
+            "command_execution".into()
+        } else {
+            "tool_use".into()
+        }
+    });
+    tool.insert("type".into(), Value::String(kind.clone()));
+    if kind == "command_execution" {
         if let Some(command) = call.arguments.get("command") {
             tool.insert("command".into(), command.clone());
         }
@@ -550,9 +1166,16 @@ fn storyline_tool_to_actf(call: &StorylineToolCall) -> Value {
             tool.insert("aggregated_output".into(), result.clone());
         }
     } else {
-        tool.insert("type".into(), Value::String("tool_use".into()));
         tool.insert("name".into(), Value::String(call.function_name.clone()));
         tool.insert("input".into(), call.arguments.clone());
+    }
+    if let Some(response) = &call.response {
+        if let Some(status) = &response.status {
+            tool.insert("status".into(), Value::String(status.clone()));
+        }
+        if let Some(exit_code) = response.exit_code {
+            tool.insert("exit_code".into(), json!(exit_code));
+        }
     }
     Value::Object(tool)
 }
@@ -565,9 +1188,6 @@ fn storyline_observation_to_actf(result: &Value) -> Value {
             extra.insert("aggregated_output".into(), content);
         }
     }
-    extra
-        .entry("type")
-        .or_insert_with(|| Value::String("tool_result".into()));
     if let Some(source_call_id) = source_call_id {
         if extra.contains_key("tool_use_id") {
             extra.insert("tool_use_id".into(), source_call_id);
@@ -577,10 +1197,15 @@ fn storyline_observation_to_actf(result: &Value) -> Value {
             extra.insert("tool_use_id".into(), source_call_id);
         }
     }
+    if extra.get("type").is_none()
+        && (extra.contains_key("tool_use_id") || extra.contains_key("id"))
+    {
+        extra.insert("type".into(), Value::String("tool_result".into()));
+    }
     Value::Object(extra)
 }
 
-fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
+fn storyline_step_value(story: &StorylineDocument, turn: &StorylineTurn) -> Result<Value> {
     let tools = turn
         .tool_calls
         .as_deref()
@@ -624,6 +1249,12 @@ fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
         .map(format_actf_timestamp)
         .transpose()?
         .unwrap_or_else(|| "1970-01-01 00:00:00+00:00".into());
+    let finished_at = turn
+        .finished_at
+        .as_ref()
+        .map(format_actf_timestamp)
+        .transpose()?
+        .unwrap_or_else(|| timestamp.clone());
     let mut assistant = Map::new();
     assistant.insert(
         "content".into(),
@@ -641,10 +1272,14 @@ fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
     step.insert("metric".into(), Value::Object(metric));
     step.insert("tools".into(), Value::Array(tools));
     step.insert("observation".into(), Value::Array(observations));
-    step.insert("started_at".into(), Value::String(timestamp.clone()));
-    step.insert("system_prompt".into(), Value::String(String::new()));
-    step.insert("user_content".into(), Value::String(String::new()));
-    step.insert("finished_at".into(), Value::String(timestamp.clone()));
+    step.insert("started_at".into(), Value::String(timestamp));
+    let (system_prompt, user_content) = story
+        .effective_prompt(turn)
+        .map(StorylinePrompt::pair)
+        .unwrap_or_default();
+    step.insert("system_prompt".into(), Value::String(system_prompt));
+    step.insert("user_content".into(), Value::String(user_content));
+    step.insert("finished_at".into(), Value::String(finished_at));
     Ok(Value::Object(step))
 }
 
@@ -653,6 +1288,14 @@ fn actf_tool_name(call: &ActfToolCall) -> String {
         .get("name")
         .and_then(Value::as_str)
         .filter(|name| !name.is_empty())
+        .or_else(|| {
+            call.extra
+                .get("function")
+                .and_then(Value::as_object)
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+        })
         .unwrap_or(&call.kind)
         .to_string()
 }
@@ -661,8 +1304,19 @@ fn actf_tool_arguments(call: &ActfToolCall) -> Value {
     if let Some(input) = call.extra.get("input") {
         return input.clone();
     }
+    if let Some(arguments) = call.extra.get("arguments") {
+        return arguments.clone();
+    }
     if let Some(command) = call.extra.get("command") {
         return json!({ "command": command });
+    }
+    if let Some(arguments) = call
+        .extra
+        .get("function")
+        .and_then(Value::as_object)
+        .and_then(|function| function.get("arguments"))
+    {
+        return arguments.clone();
     }
     Value::Object(call.extra.clone())
 }
@@ -723,6 +1377,63 @@ mod tests {
     }"#;
 
     #[test]
+    fn actf_event_log_trajectory_maps_openclaw_messages() {
+        let document = parse_actf_document(
+            r#"{
+              "task_id":"gravitational-wave-detection","category":"astronomy","k":1,
+              "correct":false,"attempts_tried":1,"solved_at":null,
+              "attempts":{"1":{
+                "correct":false,"status":"run_error",
+                "error":"RunError: timeout",
+                "trajectory":[
+                  {"type":"session","id":"sess-1","timestamp":"2026-06-17T07:26:27.170Z","cwd":"/root"},
+                  {"type":"model_change","timestamp":"2026-06-17T07:26:27.225Z","provider":"vllm","modelId":"qwen"},
+                  {"type":"message","timestamp":"2026-06-17T07:26:28Z",
+                   "message":{"role":"user","content":[{"type":"text","text":"detect waves"}]}},
+                  {"type":"message","timestamp":"2026-06-17T07:26:29Z",
+                   "message":{"role":"assistant","model":"qwen","content":[
+                     {"type":"thinking","thinking":"plan"},
+                     {"type":"text","text":"listing"},
+                     {"type":"toolCall","id":"c1","name":"exec","arguments":{"command":"ls"}}
+                   ]}},
+                  {"type":"message","timestamp":"2026-06-17T07:26:30Z",
+                   "message":{"role":"toolResult","toolCallId":"c1","toolName":"exec",
+                    "content":[{"type":"text","text":"ok"}],
+                    "details":{"status":"completed","exitCode":0,"durationMs":12}}}
+                ]
+              }}
+            }"#,
+        )
+        .unwrap();
+        let story = actf_to_storyline(&document).unwrap();
+        assert_eq!(story.session_id, "gravitational-wave-detection");
+        assert_eq!(story.agent.model_name.as_deref(), Some("qwen"));
+        assert_eq!(
+            story
+                .task
+                .as_ref()
+                .unwrap()
+                .env
+                .as_ref()
+                .unwrap()
+                .id
+                .as_deref(),
+            Some("sess-1")
+        );
+        assert_eq!(story.turns.len(), 2);
+        assert_eq!(story.turns[0].source, "user");
+        assert_eq!(story.turns[0].message, Value::String("detect waves".into()));
+        assert_eq!(story.turns[1].source, "agent");
+        assert_eq!(story.turns[1].reasoning_content.as_deref(), Some("plan"));
+        let call = &story.turns[1].tool_calls.as_ref().unwrap()[0];
+        assert_eq!(call.tool_call_id, "c1");
+        assert_eq!(call.function_name, "exec");
+        assert_eq!(call.result.as_ref().unwrap(), "ok");
+        assert_eq!(call.duration_ms, Some(12));
+        assert_eq!(call.response.as_ref().unwrap().exit_code, Some(0));
+    }
+
+    #[test]
     fn actf_storyline_roundtrip_is_lossless() {
         let document = parse_actf_document(FIXTURE).unwrap();
         let story = actf_to_storyline(&document).unwrap();
@@ -759,6 +1470,7 @@ mod tests {
                 "extra": {"harness_metrics": {"passed": 0}},
                 "analysis_result": {"quality": 7},
                 "meta": {"suite": "fixture"},
+                "max_score": 10,
                 "trajectory": {
                     "schema_version": "ACTF_v1.0",
                     "started_at": "2026-01-01 00:00:00+00:00",
@@ -814,6 +1526,25 @@ mod tests {
         let story = actf_to_storyline(&document).unwrap();
         let fields = &story.unknown_fields.sources["actf"].fields;
         assert_eq!(fields["/vendor_root"], json!({"kept": true}));
+        assert_eq!(story.extra, Some(json!({"harness_metrics": {"passed": 0}})));
+        assert_eq!(story.meta, Some(json!({"suite": "fixture"})));
+        assert_eq!(
+            story
+                .task
+                .as_ref()
+                .unwrap()
+                .result
+                .as_ref()
+                .unwrap()
+                .max_score,
+            Some(json!(10))
+        );
+        assert_eq!(
+            story.prompt.as_ref().map(StorylinePrompt::pair),
+            Some(("system".into(), "task".into()))
+        );
+        assert_eq!(story.turns[0].prompt, None);
+        assert_eq!(story.turns[0].message, json!("done"));
         for pointer in [
             "/category",
             "/k",
@@ -825,32 +1556,26 @@ mod tests {
             "/attempts/1/ground_truth",
             "/attempts/1/error",
             "/attempts/1/artifacts",
-            "/attempts/1/extra",
-            "/attempts/1/meta",
             "/attempts/1/trajectory/started_at",
             "/attempts/1/trajectory/finished_at",
-            "/attempts/1/trajectory/steps/0/system_prompt",
-            "/attempts/1/trajectory/steps/0/user_content",
             "/attempts/1/trajectory/steps/0/finished_at",
             "/attempts/1/trajectory/steps/0/tools/0/type",
             "/attempts/1/trajectory/steps/0/tools/0/exit_code",
             "/attempts/1/trajectory/steps/0/tools/0/status",
-        ] {
-            assert!(
-                fields.contains_key(pointer),
-                "missing unknown pointer {pointer}"
-            );
-        }
-        for pointer in [
             "/task_id",
             "/correct",
             "/attempts/1/correct",
             "/attempts/1/status",
             "/attempts/1/score",
+            "/attempts/1/extra",
+            "/attempts/1/meta",
+            "/attempts/1/max_score",
             "/attempts/1/analysis_result",
             "/attempts/1/trajectory/schema_version",
             "/attempts/1/trajectory/steps/0/step_id",
             "/attempts/1/trajectory/steps/0/started_at",
+            "/attempts/1/trajectory/steps/0/system_prompt",
+            "/attempts/1/trajectory/steps/0/user_content",
             "/attempts/1/trajectory/steps/0/assistant_content/content",
             "/attempts/1/trajectory/steps/0/assistant_content/reasoning_content",
             "/attempts/1/trajectory/steps/0/tools/0/id",
@@ -862,7 +1587,6 @@ mod tests {
                 "canonical pointer leaked into unknowns: {pointer}"
             );
         }
-        assert!(story.extra.is_none());
         assert!(story.turns[0].extra.is_none());
         assert_eq!(
             story.final_metrics.as_ref().unwrap()["analysis_result"]["quality"],
@@ -870,13 +1594,140 @@ mod tests {
         );
         let call = &story.turns[0].tool_calls.as_ref().unwrap()[0];
         assert_eq!(call.result.as_ref().unwrap(), "/app\n");
+        assert_eq!(call.kind.as_deref(), Some("command_execution"));
+        assert_eq!(call.response.as_ref().unwrap().exit_code, Some(0));
+        assert_eq!(
+            call.response.as_ref().unwrap().status.as_deref(),
+            Some("completed")
+        );
         assert!(call.extra.is_none());
+        let task = story.task.as_ref().unwrap();
+        assert_eq!(task.llm.as_ref().unwrap().k, Some(1));
+        assert_eq!(
+            task.result.as_ref().unwrap().category.as_deref(),
+            Some("software-engineering")
+        );
+        assert_eq!(task.result.as_ref().unwrap().retry_count, Some(json!(2)));
         assert_eq!(
             story.turns[0].observation.as_ref().unwrap()["results"][0]["content"],
             "/app\n"
         );
 
         assert_eq!(storyline_to_actf(&story).unwrap(), document);
+    }
+
+    #[test]
+    fn actf_name_arguments_tool_maps_without_type_or_id() {
+        let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+        let tool = json!({"name": "Glob", "arguments": {"path": "/tmp", "pattern": "**/*"}});
+        value["attempts"]["1"]["trajectory"]["steps"][0]["tools"] = json!([tool]);
+        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]["tool_calls"] =
+            json!([tool]);
+        value["attempts"]["1"]["trajectory"]["steps"][0]["observation"] =
+            json!([{"role": "tool", "text": "listed"}]);
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        let story = actf_to_storyline(&document).unwrap();
+        let call = &story.turns[0].tool_calls.as_ref().unwrap()[0];
+        assert_eq!(call.function_name, "Glob");
+        assert_eq!(call.arguments["pattern"], "**/*");
+        assert_eq!(call.tool_call_id, "step-1-tool-0");
+        assert!(call.kind.is_none());
+    }
+
+    #[test]
+    fn actf_object_ground_truth_roundtrips() {
+        let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+        value["attempts"]["1"]["ground_truth"] = json!({"checklist_path": "/tmp/check.json"});
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        let story = actf_to_storyline(&document).unwrap();
+        assert_eq!(
+            story
+                .task
+                .as_ref()
+                .unwrap()
+                .result
+                .as_ref()
+                .unwrap()
+                .ground_truth,
+            Some(json!({"checklist_path": "/tmp/check.json"}))
+        );
+        assert_eq!(
+            storyline_to_actf(&story).unwrap().attempts["1"].ground_truth,
+            json!({"checklist_path": "/tmp/check.json"})
+        );
+    }
+
+    #[test]
+    fn actf_empty_tools_falls_back_to_assistant_function_calls() {
+        let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+        value["attempts"]["1"]["trajectory"]["steps"][0]["tools"] = json!([]);
+        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]["tool_calls"] = json!([{
+            "id": "c1",
+            "type": "function",
+            "function": {
+                "name": "bash_command",
+                "arguments": {"keystrokes": "pwd\n", "duration": 0.1}
+            }
+        }]);
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        let story = actf_to_storyline(&document).unwrap();
+        let call = &story.turns[0].tool_calls.as_ref().unwrap()[0];
+        assert_eq!(call.tool_call_id, "c1");
+        assert_eq!(call.function_name, "bash_command");
+        assert_eq!(call.kind.as_deref(), Some("function"));
+        assert_eq!(call.arguments["keystrokes"], "pwd\n");
+        assert_eq!(call.arguments["duration"], 0.1);
+        assert!(
+            !story
+                .unknown_fields
+                .sources
+                .get("actf")
+                .map(|source| source
+                    .fields
+                    .keys()
+                    .any(|pointer| pointer.contains("/function")))
+                .unwrap_or(false),
+            "OpenAI function wrapper should be consumed"
+        );
+    }
+
+    #[test]
+    fn actf_content_only_observation_keeps_missing_type() {
+        let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+        value["attempts"]["1"]["trajectory"]["steps"][0]["observation"] =
+            json!([{"content": "env output"}]);
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        let story = actf_to_storyline(&document).unwrap();
+        let result = &story.turns[0].observation.as_ref().unwrap()["results"][0];
+        assert_eq!(result["content"], "env output");
+        assert!(result.get("type").is_none());
+        let recovered = storyline_to_actf(&story).unwrap();
+        assert_eq!(
+            recovered.attempts["1"].trajectory.steps[0].observation[0].kind,
+            ""
+        );
+        assert_eq!(
+            recovered.attempts["1"].trajectory.steps[0].observation[0].extra["content"],
+            "env output"
+        );
+    }
+
+    #[test]
+    fn actf_null_reasoning_content_omits_reason() {
+        let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]
+            ["reasoning_content"] = Value::Null;
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        let story = actf_to_storyline(&document).unwrap();
+        assert!(story.turns[0].reasoning_content.is_none());
+        assert_eq!(
+            storyline_to_actf(&story).unwrap().attempts["1"]
+                .trajectory
+                .steps[0]
+                .assistant_content
+                .reasoning_content,
+            ""
+        );
     }
 
     #[test]
@@ -959,6 +1810,69 @@ mod tests {
     }
 
     #[test]
+    fn actf_prompt_uses_document_baseline_and_turn_overlay() {
+        let mut document = parse_actf_document(FIXTURE).unwrap();
+        let steps = &mut document.attempts.get_mut("1").unwrap().trajectory.steps;
+        steps[0].system_prompt.clear();
+        steps[0].user_content.clear();
+        let mut changed = steps[0].clone();
+        changed.step_id = 2;
+        changed.system_prompt = "system".into();
+        changed.user_content = "task".into();
+        changed.assistant_content.content = "second".into();
+        changed.assistant_content.tool_calls.clear();
+        changed.tools.clear();
+        changed.observation.clear();
+        let mut again = changed.clone();
+        again.step_id = 3;
+        again.assistant_content.content = "third".into();
+        let mut overlay = changed.clone();
+        overlay.step_id = 4;
+        overlay.user_content = "later".into();
+        overlay.assistant_content.content = "fourth".into();
+        steps.push(changed);
+        steps.push(again);
+        steps.push(overlay);
+
+        let story = actf_to_storyline(&document).unwrap();
+        assert_eq!(
+            story.prompt.as_ref().map(StorylinePrompt::pair),
+            Some(("system".into(), "task".into()))
+        );
+        assert_eq!(
+            story.turns[0].prompt,
+            Some(StorylinePrompt::explicit_clear())
+        );
+        assert_eq!(story.turns[1].prompt, None);
+        assert_eq!(story.turns[2].prompt, None);
+        assert_eq!(
+            story.turns[3].prompt.as_ref().map(StorylinePrompt::pair),
+            Some(("system".into(), "later".into()))
+        );
+        assert_eq!(story.turns[3].message, json!("fourth"));
+        assert!(!story
+            .unknown_fields
+            .sources
+            .get("actf")
+            .map(|source| source
+                .fields
+                .keys()
+                .any(|key| { key.ends_with("/system_prompt") || key.ends_with("/user_content") }))
+            .unwrap_or(false));
+
+        let restored = storyline_to_actf(&story).unwrap();
+        let restored_steps = &restored.attempts["1"].trajectory.steps;
+        assert_eq!(restored_steps[0].system_prompt, "");
+        assert_eq!(restored_steps[0].user_content, "");
+        assert_eq!(restored_steps[1].system_prompt, "system");
+        assert_eq!(restored_steps[1].user_content, "task");
+        assert_eq!(restored_steps[2].system_prompt, "system");
+        assert_eq!(restored_steps[2].user_content, "task");
+        assert_eq!(restored_steps[3].system_prompt, "system");
+        assert_eq!(restored_steps[3].user_content, "later");
+    }
+
+    #[test]
     fn synthesis_completes_partial_metrics_and_normalizes_observations() {
         let mut story = StorylineDocument::new("session", "agent");
         story.turns.push(StorylineTurn {
@@ -976,6 +1890,8 @@ mod tests {
                 result: None,
                 duration_ms: None,
                 extra: None,
+                kind: None,
+                response: None,
             }]),
             observation: Some(json!({
                 "results": [{"source_call_id": "call-1", "content": "ok"}]
@@ -987,6 +1903,9 @@ mod tests {
             latency_ms: None,
             ttft_ms: None,
             extra: None,
+            env: None,
+            prompt: None,
+            finished_at: None,
         });
 
         let document = storyline_to_actf(&story).unwrap();

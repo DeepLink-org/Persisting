@@ -11,7 +11,7 @@ mod json_stream;
 mod projected_steps;
 
 use actf_reader::parse_actf_storylines_from_reader_with_stats;
-use actf_stream::stream_projected_actf_steps;
+use actf_stream::{stream_projected_actf_steps, ACTF_TRAJECTORY_NOT_PROJECTABLE};
 use atif_reader::parse_atif_storylines_from_reader_with_stats;
 pub(crate) use atif_reader::AtifReader;
 use atif_stream::stream_projected_atif_steps;
@@ -578,8 +578,11 @@ fn stream_file(
         && kind == StorylineTableKind::Steps
         && scan.can_project_steps(&source_schema)
     {
-        stream_projected_actf_steps(file, runtime, &schema, batch_size, scan, tx)?;
-        return Ok(());
+        match stream_projected_actf_steps(file, runtime, &schema, batch_size, scan, tx) {
+            Ok(()) => return Ok(()),
+            Err(error) if is_actf_event_log_fallback(&error) => {}
+            Err(error) => return Err(error),
+        }
     }
     let parsed = load_file(file, runtime, format)?;
     for batch in parsed.batches(kind) {
@@ -594,6 +597,12 @@ fn stream_file(
         }
     }
     Ok(())
+}
+
+fn is_actf_event_log_fallback(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().contains(ACTF_TRAJECTORY_NOT_PROJECTABLE))
 }
 
 #[derive(Debug)]

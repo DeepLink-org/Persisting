@@ -52,14 +52,15 @@ pub(super) async fn run_import(
         .prefix(".pchronicle-import-")
         .tempdir_in(parent)
         .with_context(|| format!("create import staging directory in {}", parent.display()))?;
-    let (imported_sources, unknown_field_warnings) = match output_format {
+    let (imported_sources, unknown_field_warnings, skipped_warnings) = match output_format {
         ImportOutputFormat::Preserve => {
             let mut unknown_field_warnings =
                 persisting_pchronicle::model::UnknownFieldImportWarnings::default();
             let mut imported_sources = Vec::new();
+            let mut skipped_warnings = Vec::new();
             if args.stream {
                 let input = read_bounded(stdin, max_input_bytes, "stdin")?;
-                imported_sources.push(stage_preserved_import_source(
+                if let Some(source) = stage_preserved_import_source(
                     args.format,
                     None,
                     None,
@@ -67,14 +68,17 @@ pub(super) async fn run_import(
                     &input,
                     staging.path(),
                     &mut unknown_field_warnings,
-                )?);
+                    &mut skipped_warnings,
+                )? {
+                    imported_sources.push(source);
+                }
             } else {
                 for candidate in &candidates {
                     let label = format!("import source {}", candidate.relative_path.display());
                     let file = std::fs::File::open(&candidate.path)
                         .with_context(|| format!("open {label}"))?;
                     let input = read_bounded(file, max_input_bytes, &label)?;
-                    imported_sources.push(stage_preserved_import_source(
+                    if let Some(source) = stage_preserved_import_source(
                         args.format,
                         Some(&candidate.path),
                         Some(&candidate.relative_path),
@@ -82,10 +86,13 @@ pub(super) async fn run_import(
                         &input,
                         staging.path(),
                         &mut unknown_field_warnings,
-                    )?);
+                        &mut skipped_warnings,
+                    )? {
+                        imported_sources.push(source);
+                    }
                 }
             }
-            (imported_sources, unknown_field_warnings)
+            (imported_sources, unknown_field_warnings, skipped_warnings)
         }
         ImportOutputFormat::Storyline => {
             let store = StorylineLanceStore::open(staging.path())
@@ -97,11 +104,15 @@ pub(super) async fn run_import(
                 StorylineImportIterator::files(args.format, max_input_bytes, &candidates)
             };
             let report = store.replace_storyline_stream(&mut import).await?;
+            let (imported_sources, unknown_field_warnings, skipped_warnings) =
+                import.into_result_parts();
+            if imported_sources.is_empty() {
+                return Err(empty_auto_directory_import_error(directory_input));
+            }
             anyhow::ensure!(
                 store.current_table_paths().await?.is_some(),
                 "squashed Storyline Lance Dataset has no committed snapshot"
             );
-            let (imported_sources, unknown_field_warnings) = import.into_result_parts();
             let imported_trajectories =
                 imported_sources.iter().try_fold(0usize, |total, source| {
                     total
@@ -112,9 +123,12 @@ pub(super) async fn run_import(
                 report.storylines == imported_trajectories,
                 "squashed Storyline import report does not match decoded trajectory count"
             );
-            (imported_sources, unknown_field_warnings)
+            (imported_sources, unknown_field_warnings, skipped_warnings)
         }
     };
+    if imported_sources.is_empty() {
+        return Err(empty_auto_directory_import_error(directory_input));
+    }
     let trajectories = imported_sources.iter().try_fold(0usize, |total, source| {
         total
             .checked_add(source.trajectories)
@@ -184,6 +198,9 @@ pub(super) async fn run_import(
                 .expect("JSON imports always report input bytes"),
         )
         .context("write pChronicle import metadata")?;
+    }
+    for line in skipped_warnings {
+        writeln!(stderr, "{line}").context("write pChronicle skipped-source warning")?;
     }
     for line in unknown_field_warnings.warning_lines() {
         writeln!(stderr, "{line}").context("write pChronicle unknown-field warning")?;
@@ -817,6 +834,16 @@ struct DecodedImportSource {
     storylines: Vec<StorylineDocument>,
 }
 
+enum DecodeImportOutcome {
+    Imported(DecodedImportSource),
+    Skipped { path: PathBuf, reason: String },
+}
+
+enum ImportFormatResolution {
+    Format(ExchangeFormat),
+    Skip(String),
+}
+
 enum StorylineImportInputs<'a> {
     Stdin(Option<&'a mut dyn Read>),
     Files {
@@ -830,11 +857,10 @@ struct StorylineImportIterator<'a> {
     max_input_bytes: usize,
     inputs: StorylineImportInputs<'a>,
     current: std::vec::IntoIter<StorylineDocument>,
-    current_diagnostic_path: Arc<Path>,
     imported_sources: Vec<ImportedSource>,
     unknown_field_warnings: persisting_pchronicle::model::UnknownFieldImportWarnings,
-    seen_document_ids: HashMap<String, Arc<Path>>,
-    seen_session_ids: HashMap<String, Arc<Path>>,
+    skipped_warnings: Vec<String>,
+    seen_document_ids: HashSet<String>,
     failed: bool,
 }
 
@@ -849,12 +875,11 @@ impl<'a> StorylineImportIterator<'a> {
             max_input_bytes,
             inputs: StorylineImportInputs::Stdin(Some(stdin)),
             current: Vec::new().into_iter(),
-            current_diagnostic_path: Arc::from(PathBuf::new()),
             imported_sources: Vec::new(),
             unknown_field_warnings:
                 persisting_pchronicle::model::UnknownFieldImportWarnings::default(),
-            seen_document_ids: HashMap::new(),
-            seen_session_ids: HashMap::new(),
+            skipped_warnings: Vec::new(),
+            seen_document_ids: HashSet::new(),
             failed: false,
         }
     }
@@ -872,55 +897,61 @@ impl<'a> StorylineImportIterator<'a> {
                 next: 0,
             },
             current: Vec::new().into_iter(),
-            current_diagnostic_path: Arc::from(PathBuf::new()),
             imported_sources: Vec::new(),
             unknown_field_warnings:
                 persisting_pchronicle::model::UnknownFieldImportWarnings::default(),
-            seen_document_ids: HashMap::new(),
-            seen_session_ids: HashMap::new(),
+            skipped_warnings: Vec::new(),
+            seen_document_ids: HashSet::new(),
             failed: false,
         }
     }
 
     fn decode_next_source(&mut self) -> Result<Option<DecodedImportSource>> {
-        match &mut self.inputs {
-            StorylineImportInputs::Stdin(stdin) => {
-                let Some(stdin) = stdin.take() else {
-                    return Ok(None);
-                };
-                let input = read_bounded(stdin, self.max_input_bytes, "stdin")?;
-                decode_import_source(
-                    self.requested_format,
-                    ImportOutputFormat::Storyline,
-                    None,
-                    None,
-                    None,
-                    &input,
-                    &mut self.unknown_field_warnings,
-                )
-                .map(Some)
-            }
-            StorylineImportInputs::Files { candidates, next } => {
-                let Some(candidate) = candidates.get(*next) else {
-                    return Ok(None);
-                };
-                *next = next
-                    .checked_add(1)
-                    .context("import Source index overflow")?;
-                let label = format!("import source {}", candidate.relative_path.display());
-                let file = std::fs::File::open(&candidate.path)
-                    .with_context(|| format!("open {label}"))?;
-                let input = read_bounded(file, self.max_input_bytes, &label)?;
-                decode_import_source(
-                    self.requested_format,
-                    ImportOutputFormat::Storyline,
-                    Some(&candidate.path),
-                    Some(&candidate.relative_path),
-                    candidate.output_relative_path.as_deref(),
-                    &input,
-                    &mut self.unknown_field_warnings,
-                )
-                .map(Some)
+        loop {
+            let outcome = match &mut self.inputs {
+                StorylineImportInputs::Stdin(stdin) => {
+                    let Some(stdin) = stdin.take() else {
+                        return Ok(None);
+                    };
+                    let input = read_bounded(stdin, self.max_input_bytes, "stdin")?;
+                    decode_import_source(
+                        self.requested_format,
+                        ImportOutputFormat::Storyline,
+                        None,
+                        None,
+                        None,
+                        &input,
+                        &mut self.unknown_field_warnings,
+                    )?
+                }
+                StorylineImportInputs::Files { candidates, next } => {
+                    let Some(candidate) = candidates.get(*next) else {
+                        return Ok(None);
+                    };
+                    *next = next
+                        .checked_add(1)
+                        .context("import Source index overflow")?;
+                    let label = format!("import source {}", candidate.relative_path.display());
+                    let file = std::fs::File::open(&candidate.path)
+                        .with_context(|| format!("open {label}"))?;
+                    let input = read_bounded(file, self.max_input_bytes, &label)?;
+                    decode_import_source(
+                        self.requested_format,
+                        ImportOutputFormat::Storyline,
+                        Some(&candidate.path),
+                        Some(&candidate.relative_path),
+                        candidate.output_relative_path.as_deref(),
+                        &input,
+                        &mut self.unknown_field_warnings,
+                    )?
+                }
+            };
+            match outcome {
+                DecodeImportOutcome::Imported(decoded) => return Ok(Some(decoded)),
+                DecodeImportOutcome::Skipped { path, reason } => {
+                    self.skipped_warnings
+                        .push(skipped_import_warning(&path, &reason));
+                }
             }
         }
     }
@@ -930,8 +961,13 @@ impl<'a> StorylineImportIterator<'a> {
     ) -> (
         Vec<ImportedSource>,
         persisting_pchronicle::model::UnknownFieldImportWarnings,
+        Vec<String>,
     ) {
-        (self.imported_sources, self.unknown_field_warnings)
+        (
+            self.imported_sources,
+            self.unknown_field_warnings,
+            self.skipped_warnings,
+        )
     }
 }
 
@@ -940,23 +976,13 @@ impl Iterator for StorylineImportIterator<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(storyline) = self.current.next() {
-                if let Err(error) = record_import_identity(
-                    &mut self.seen_document_ids,
-                    "document_id",
-                    storyline.document_id(),
-                    &self.current_diagnostic_path,
-                )
-                .and_then(|()| {
-                    record_import_identity(
-                        &mut self.seen_session_ids,
-                        "session_id",
-                        &storyline.session_id,
-                        &self.current_diagnostic_path,
-                    )
-                }) {
-                    self.failed = true;
-                    return Some(Err(error));
+            if let Some(mut storyline) = self.current.next() {
+                if let Some((original, renamed)) =
+                    uniquify_storyline_document_id(&mut storyline, &mut self.seen_document_ids)
+                {
+                    self.skipped_warnings.push(format!(
+                        "warning: duplicate document_id '{original}' renamed to '{renamed}'"
+                    ));
                 }
                 return Some(Ok(storyline));
             }
@@ -965,7 +991,6 @@ impl Iterator for StorylineImportIterator<'_> {
             }
             match self.decode_next_source() {
                 Ok(Some(decoded)) => {
-                    self.current_diagnostic_path = Arc::from(decoded.diagnostic_path);
                     self.imported_sources.push(decoded.metadata);
                     self.current = decoded.storylines.into_iter();
                 }
@@ -979,24 +1004,34 @@ impl Iterator for StorylineImportIterator<'_> {
     }
 }
 
-fn record_import_identity(
-    seen: &mut HashMap<String, Arc<Path>>,
-    field: &str,
-    value: &str,
-    diagnostic_path: &Arc<Path>,
-) -> Result<()> {
-    if let Some(first_path) = seen.get(value) {
-        return Err(cli_boundary_error(
-            BoundaryCode::InvalidRequest,
-            format!(
-                "import contains duplicate {field} '{value}' in Sources '{}' and '{}'",
-                first_path.display(),
-                diagnostic_path.display()
-            ),
-        ));
+fn uniquify_storyline_document_id(
+    story: &mut StorylineDocument,
+    seen: &mut HashSet<String>,
+) -> Option<(String, String)> {
+    let preferred = story.document_id().to_string();
+    if seen.insert(preferred.clone()) {
+        return None;
     }
-    seen.insert(value.to_owned(), Arc::clone(diagnostic_path));
-    Ok(())
+    let mut suffix = 1u64;
+    let renamed = loop {
+        let candidate = format!("{preferred}#{suffix}");
+        if seen.insert(candidate.clone()) {
+            break candidate;
+        }
+        suffix = suffix
+            .checked_add(1)
+            .expect("document_id disambiguation suffix overflow");
+    };
+    if story
+        .trajectory_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty())
+    {
+        story.trajectory_id = Some(renamed.clone());
+    } else {
+        story.session_id = renamed.clone();
+    }
+    Some((preferred, renamed))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1008,7 +1043,7 @@ fn decode_import_source(
     logical_source_path: Option<&Path>,
     input: &[u8],
     unknown_field_warnings: &mut persisting_pchronicle::model::UnknownFieldImportWarnings,
-) -> Result<DecodedImportSource> {
+) -> Result<DecodeImportOutcome> {
     let diagnostic_path = decode_relative_path
         .unwrap_or_else(|| Path::new("stdin"))
         .to_path_buf();
@@ -1018,13 +1053,23 @@ fn decode_import_source(
             format!("{} is not UTF-8: {error}", diagnostic_path.display()),
         )
     })?;
-    let format = resolve_import_format(requested_format, input_path, text).map_err(|error| {
-        if logical_source_path.is_some() {
-            scope_import_source_error(error, &diagnostic_path)
-        } else {
-            error
+    let allow_skip = requested_format == ExchangeFormat::Auto && logical_source_path.is_some();
+    let format = match resolve_import_format(requested_format, input_path, text, allow_skip)
+        .map_err(|error| {
+            if logical_source_path.is_some() {
+                scope_import_source_error(error, &diagnostic_path)
+            } else {
+                error
+            }
+        })? {
+        ImportFormatResolution::Format(format) => format,
+        ImportFormatResolution::Skip(reason) => {
+            return Ok(DecodeImportOutcome::Skipped {
+                path: diagnostic_path,
+                reason,
+            });
         }
-    })?;
+    };
     let document_format = exchange_document_format(format)
         .context("supported import format must map to a physical document format")?;
     let source_path = logical_source_path
@@ -1060,11 +1105,11 @@ fn decode_import_source(
         trajectories: storylines.len(),
         input_bytes: input.len(),
     };
-    Ok(DecodedImportSource {
+    Ok(DecodeImportOutcome::Imported(DecodedImportSource {
         diagnostic_path,
         metadata,
         storylines,
-    })
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1076,8 +1121,9 @@ fn stage_preserved_import_source(
     input: &[u8],
     staging_root: &Path,
     unknown_field_warnings: &mut persisting_pchronicle::model::UnknownFieldImportWarnings,
-) -> Result<ImportedSource> {
-    let decoded = decode_import_source(
+    skipped_warnings: &mut Vec<String>,
+) -> Result<Option<ImportedSource>> {
+    let decoded = match decode_import_source(
         requested_format,
         ImportOutputFormat::Preserve,
         input_path,
@@ -1085,7 +1131,13 @@ fn stage_preserved_import_source(
         logical_source_path,
         input,
         unknown_field_warnings,
-    )?;
+    )? {
+        DecodeImportOutcome::Imported(decoded) => decoded,
+        DecodeImportOutcome::Skipped { path, reason } => {
+            skipped_warnings.push(skipped_import_warning(&path, &reason));
+            return Ok(None);
+        }
+    };
     validate_import_storylines(&decoded.storylines).map_err(|error| {
         if logical_source_path.is_some() {
             scope_import_source_error(error, &decoded.diagnostic_path)
@@ -1109,7 +1161,7 @@ fn stage_preserved_import_source(
         .with_context(|| format!("write staged Source {}", decoded.metadata.source_path))?;
     file.sync_all()
         .with_context(|| format!("sync staged Source {}", decoded.metadata.source_path))?;
-    Ok(decoded.metadata)
+    Ok(Some(decoded.metadata))
 }
 
 fn read_bounded(mut reader: impl Read, max_bytes: usize, label: &str) -> Result<Vec<u8>> {
@@ -1153,22 +1205,34 @@ fn resolve_import_format(
     requested: ExchangeFormat,
     input_path: Option<&Path>,
     input: &str,
-) -> Result<ExchangeFormat> {
+    allow_skip: bool,
+) -> Result<ImportFormatResolution> {
     let format = match requested {
-        ExchangeFormat::Auto => match detect_format(input_path, Some(input))?.ok_or_else(|| {
-            cli_boundary_error(
-                BoundaryCode::InvalidRequest,
-                "cannot detect import format; pass --format explicitly",
-            )
-        })? {
-            DocumentFormat::Atif => ExchangeFormat::Atif,
-            DocumentFormat::Actf => ExchangeFormat::Actf,
-            DocumentFormat::OpenaiMsg => ExchangeFormat::OpenaiMessages,
-            DocumentFormat::Storyline => ExchangeFormat::Storyline,
-            format => {
+        ExchangeFormat::Auto => match detect_format(input_path, Some(input))? {
+            Some(DocumentFormat::Atif) => ExchangeFormat::Atif,
+            Some(DocumentFormat::Actf) => ExchangeFormat::Actf,
+            Some(DocumentFormat::OpenaiMsg) => ExchangeFormat::OpenaiMessages,
+            Some(DocumentFormat::Storyline) => ExchangeFormat::Storyline,
+            Some(format) if allow_skip => {
+                return Ok(ImportFormatResolution::Skip(format!(
+                    "detected import format '{format}' is not a queryable JSON format"
+                )));
+            }
+            Some(format) => {
                 return Err(cli_boundary_error(
                     BoundaryCode::Unsupported,
                     format!("detected import format '{format}' is not a queryable JSON format"),
+                ));
+            }
+            None if allow_skip && looks_like_json_document(input) => {
+                return Ok(ImportFormatResolution::Skip(
+                    "cannot detect import format".into(),
+                ));
+            }
+            None => {
+                return Err(cli_boundary_error(
+                    BoundaryCode::InvalidRequest,
+                    "cannot detect import format; pass --format explicitly",
                 ));
             }
         },
@@ -1191,7 +1255,39 @@ fn resolve_import_format(
             ),
         ));
     }
-    Ok(format)
+    Ok(ImportFormatResolution::Format(format))
+}
+
+fn looks_like_json_document(input: &str) -> bool {
+    let trimmed = input.trim_start();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return false;
+    }
+    if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        return true;
+    }
+    trimmed
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| serde_json::from_str::<serde_json::Value>(line).is_ok())
+}
+
+fn skipped_import_warning(path: &Path, reason: &str) -> String {
+    format!(
+        "warning: skipped import source {}: {reason}",
+        path.display()
+    )
+}
+
+fn empty_auto_directory_import_error(directory_input: bool) -> anyhow::Error {
+    cli_boundary_error(
+        BoundaryCode::InvalidRequest,
+        if directory_input {
+            "import directory contains no detectable trajectory files"
+        } else {
+            "cannot detect import format; pass --format explicitly"
+        },
+    )
 }
 
 fn import_source_name(format: ExchangeFormat) -> &'static str {
@@ -1230,15 +1326,6 @@ fn import_input_issue_message(issue: &InputIssue, source_path: &Path) -> String 
 }
 
 fn validate_import_storylines(storylines: &[StorylineDocument]) -> Result<usize> {
-    let mut seen = HashSet::new();
-    for storyline in storylines {
-        if !seen.insert(storyline.document_id()) {
-            return Err(cli_boundary_error(
-                BoundaryCode::InvalidRequest,
-                "import contains duplicate document_id",
-            ));
-        }
-    }
     Ok(storylines.len())
 }
 

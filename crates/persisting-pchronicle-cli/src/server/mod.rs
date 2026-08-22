@@ -178,25 +178,31 @@ impl PreparedWarehouse {
     }
 }
 
+fn api_routes() -> Router<AppState> {
+    Router::new()
+        .route("/health", get(warehouse_health))
+        .route("/runs", get(runs))
+        .route("/explorer/runs", get(explorer_runs))
+        .route("/explorer/run", get(explorer_run))
+        .route("/explorer/turns", get(explorer_turns))
+        .route("/explorer/turn", get(explorer_turn))
+        .route("/events", get(events))
+        .route("/storyline", get(storyline))
+        .route("/trajectory-view", get(trajectory_view))
+        .route("/export/har", get(export_har))
+        .route("/export/otlp", get(export_otlp))
+        .route("/revisions", get(revisions))
+        .route("/catalog", get(catalog).post(refresh_catalog))
+        .route("/query/tables", get(query_tables))
+        .route("/query/evidence", post(query_evidence))
+}
+
 fn read_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
-        .route("/api/health", get(warehouse_health))
-        .route("/api/runs", get(runs))
-        .route("/api/explorer/runs", get(explorer_runs))
-        .route("/api/explorer/run", get(explorer_run))
-        .route("/api/explorer/turns", get(explorer_turns))
-        .route("/api/explorer/turn", get(explorer_turn))
-        .route("/api/events", get(events))
-        .route("/api/storyline", get(storyline))
-        .route("/api/trajectory-view", get(trajectory_view))
-        .route("/api/export/har", get(export_har))
-        .route("/api/export/otlp", get(export_otlp))
-        .route("/api/revisions", get(revisions))
-        .route("/api/catalog", get(catalog).post(refresh_catalog))
-        .route("/api/query/tables", get(query_tables))
-        .route("/api/query/evidence", post(query_evidence))
+        .nest("/api", api_routes())
+        .nest("/api/v1", api_routes())
         .fallback(asset_fallback)
 }
 

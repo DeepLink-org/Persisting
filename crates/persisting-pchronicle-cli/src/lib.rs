@@ -13,7 +13,7 @@ use exchange::{run_export, run_import};
 use output::*;
 use settings::*;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ffi::CString;
 use std::fmt::Write as _;
 use std::io::{Error as IoError, Read, Write};
@@ -388,6 +388,7 @@ struct ImportArgs {
     output: Option<String>,
 
     /// Input exchange format. Auto detects each regular file from name and content.
+    /// Directory imports skip JSON that is not a known trajectory format.
     #[arg(long, value_enum, default_value_t = ExchangeFormat::Auto)]
     format: ExchangeFormat,
 

@@ -29,6 +29,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tokio::sync::{Mutex, OnceCell};
 
+use super::explorer;
 use super::RunSummary;
 
 const MAX_INJECTED_SOURCES: usize = 512;
@@ -906,23 +907,14 @@ async fn build_run_summaries(
             let root_session_id = parent_session_id
                 .clone()
                 .or_else(|| run_id.as_ref().filter(|id| *id != &session_id).cloned());
-            let path = if file == "." {
-                match root_session_id.as_deref() {
-                    Some(root) if root != session_id => {
-                        format!("{name}/{root}/subagents/{session_id}")
-                    }
-                    Some(root) => format!("{name}/{root}"),
-                    None => format!("{name}/{session_id}"),
-                }
-            } else {
-                match root_session_id.as_deref() {
-                    Some(root) if root != session_id => {
-                        format!("{name}/{file}/{root}/{session_id}")
-                    }
-                    Some(root) => format!("{name}/{file}/{root}"),
-                    None => format!("{name}/{file}/{session_id}"),
-                }
-            };
+            let path = explorer::explorer_run_path(
+                name,
+                &file,
+                &document_id,
+                &session_id,
+                run_id.as_deref(),
+                parent_session_id.as_deref(),
+            );
             let status = event_stats
                 .get(&(file.clone(), session_id.clone()))
                 .map_or_else(

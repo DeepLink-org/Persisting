@@ -233,6 +233,9 @@ struct ProjectedActfTrajectorySeed<'a> {
     scan: &'a FileScanSpec,
 }
 
+pub(super) const ACTF_TRAJECTORY_NOT_PROJECTABLE: &str =
+    "ACTF trajectory is an event log; use full decode";
+
 impl<'de> DeserializeSeed<'de> for ProjectedActfTrajectorySeed<'_> {
     type Value = ProjectedActfAttempt;
 
@@ -240,7 +243,7 @@ impl<'de> DeserializeSeed<'de> for ProjectedActfTrajectorySeed<'_> {
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_map(ProjectedActfTrajectoryVisitor { scan: self.scan })
+        deserializer.deserialize_any(ProjectedActfTrajectoryVisitor { scan: self.scan })
     }
 }
 
@@ -252,7 +255,15 @@ impl<'de> Visitor<'de> for ProjectedActfTrajectoryVisitor<'_> {
     type Value = ProjectedActfAttempt;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("an ACTF trajectory object")
+        formatter.write_str("an ACTF trajectory object or event-log array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while sequence.next_element::<IgnoredAny>()?.is_some() {}
+        Err(de::Error::custom(ACTF_TRAJECTORY_NOT_PROJECTABLE))
     }
 
     fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
@@ -454,15 +465,17 @@ impl<'de> Visitor<'de> for ProjectedActfAssistantContentVisitor<'_> {
             match key {
                 ProjectedActfAssistantContentField::Content => {
                     if self.scan.wants("message_json") {
-                        content = map.next_value::<String>()?;
+                        content = map.next_value::<Option<String>>()?.unwrap_or_default();
                     } else {
                         map.next_value::<IgnoredAny>()?;
                     }
                 }
                 ProjectedActfAssistantContentField::ReasoningContent => {
                     if self.scan.wants("reasoning_content") {
-                        let value = map.next_value::<String>()?;
-                        if !value.is_empty() {
+                        if let Some(value) = map
+                            .next_value::<Option<String>>()?
+                            .filter(|value| !value.is_empty())
+                        {
                             reasoning_content = Some(value);
                         }
                     } else {

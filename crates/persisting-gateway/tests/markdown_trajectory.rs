@@ -32,6 +32,9 @@ fn turn(id: i64, source: &str, body: &str, draft: bool) -> StorylineTurn {
         latency_ms: None,
         ttft_ms: None,
         extra: None,
+        env: None,
+        prompt: None,
+        finished_at: None,
     }
 }
 

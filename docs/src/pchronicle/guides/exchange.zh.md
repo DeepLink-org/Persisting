@@ -12,7 +12,7 @@ pchronicle import --from input.json \
 
 目标是 create-only。已有目标会被拒绝，而不是静默 append 或 replace。普通文件可以自动
 识别。目录输入会递归扫描 `.json`、`.jsonl` 与 `.ndjson` Source；默认输出会保留其相对
-路径：
+路径。未指定 `--format` 时按文件分别探测类型；无法识别为轨迹格式的 JSON 会跳过并警告：
 
 ```bash
 pchronicle import --from ./corpus --output ./imported

@@ -87,11 +87,20 @@ impl CatalogTableProvider {
                 .scan(state, Some(&source_projection), filters, limit)
                 .await?
         } else {
-            let base_projection = base_projection(projection);
+            let physical_projection = physical_projection(
+                projection,
+                self.schema.as_ref(),
+                table.provider.schema().as_ref(),
+            )?;
             let business_filters = business_filters(filters);
             let input = table
                 .provider
-                .scan(state, base_projection.as_ref(), &business_filters, limit)
+                .scan(
+                    state,
+                    physical_projection.as_ref(),
+                    &business_filters,
+                    limit,
+                )
                 .await?;
             project_catalog_source(input, source.file(), projection, &self.schema)?
         };
@@ -302,13 +311,37 @@ fn collect_business_conjuncts(expr: &Expr, output: &mut Vec<Expr>) {
     }
 }
 
-fn base_projection(projection: Option<&Vec<usize>>) -> Option<Vec<usize>> {
-    projection.map(|projection| {
-        projection
-            .iter()
-            .filter_map(|index| index.checked_sub(1))
-            .collect()
-    })
+fn physical_projection(
+    projection: Option<&Vec<usize>>,
+    catalog_schema: &Schema,
+    physical_schema: &Schema,
+) -> datafusion::common::Result<Option<Vec<usize>>> {
+    let Some(projection) = projection else {
+        return Ok(None);
+    };
+    let mut physical = Vec::with_capacity(projection.len());
+    for &index in projection {
+        if index == 0 {
+            continue;
+        }
+        let name = catalog_schema.field(index).name();
+        if let Ok(physical_index) = physical_schema.index_of(name) {
+            physical.push(physical_index);
+        }
+    }
+    Ok(Some(physical))
+}
+
+fn null_literal(
+    data_type: &DataType,
+) -> datafusion::common::Result<Arc<dyn datafusion::physical_expr::PhysicalExpr>> {
+    Ok(Arc::new(Literal::new(
+        ScalarValue::try_from(data_type).map_err(|error| {
+            DataFusionError::Internal(format!(
+                "catalog cannot synthesize a null for {data_type}: {error}"
+            ))
+        })?,
+    )))
 }
 
 fn file_source_projection(projection: Option<&Vec<usize>>, catalog_width: usize) -> Vec<usize> {
@@ -346,8 +379,10 @@ fn project_catalog_source(
             let field = schema.field(index);
             let expr: Arc<dyn datafusion::physical_expr::PhysicalExpr> = if index == 0 {
                 Arc::new(Literal::new(ScalarValue::Utf8(Some(file.to_string()))))
-            } else {
+            } else if input.schema().index_of(field.name()).is_ok() {
                 physical_col(field.name(), input.schema().as_ref())?
+            } else {
+                null_literal(field.data_type())?
             };
             Ok(ProjectionExpr {
                 expr,
@@ -538,4 +573,53 @@ fn catalog_schema(base: &SchemaRef) -> SchemaRef {
     )));
     fields.extend(base.fields().iter().cloned());
     Arc::new(Schema::new(fields))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runs_schema_without_meta() -> SchemaRef {
+        let fields = story_runs_arrow_schema()
+            .fields()
+            .iter()
+            .filter(|field| field.name() != "meta_json")
+            .cloned()
+            .collect::<Vec<_>>();
+        Arc::new(Schema::new(fields))
+    }
+
+    #[test]
+    fn storyline_projection_follows_column_names_when_meta_json_is_absent() {
+        let catalog = catalog_schema(&story_runs_arrow_schema());
+        let physical = runs_schema_without_meta();
+        let catalog_index = catalog
+            .index_of("unknown_fields_json")
+            .expect("catalog schema exposes unknown_fields_json");
+        let physical_index = physical
+            .index_of("unknown_fields_json")
+            .expect("older Storyline runs still have unknown_fields_json");
+        assert_ne!(
+            catalog_index.checked_sub(1),
+            Some(physical_index),
+            "inserting meta_json must shift later catalog indexes"
+        );
+
+        let mapped =
+            physical_projection(Some(&vec![0, catalog_index]), &catalog, physical.as_ref())
+                .expect("older physical schema remains queryable");
+        assert_eq!(mapped, Some(vec![physical_index]));
+    }
+
+    #[test]
+    fn storyline_projection_skips_columns_missing_from_older_runs() {
+        let catalog = catalog_schema(&story_runs_arrow_schema());
+        let physical = runs_schema_without_meta();
+        let meta = catalog
+            .index_of("meta_json")
+            .expect("current catalog schema exposes meta_json");
+        let mapped =
+            physical_projection(Some(&vec![meta]), &catalog, physical.as_ref()).expect("missing");
+        assert_eq!(mapped, Some(Vec::new()));
+    }
 }

@@ -787,6 +787,9 @@ mod tests {
             latency_ms: None,
             ttft_ms: Some(12),
             extra: Some(serde_json::json!({"domain": "kept"})),
+            env: None,
+            prompt: None,
+            finished_at: None,
         };
 
         assert!(!upsert_agenticmd_turn(&path, &story, &turn, "call-7").unwrap());

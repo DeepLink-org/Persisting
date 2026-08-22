@@ -358,6 +358,9 @@ mod tests {
             latency_ms: None,
             ttft_ms: None,
             extra: None,
+            env: None,
+            prompt: None,
+            finished_at: None,
         });
 
         let encoded =

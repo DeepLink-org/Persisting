@@ -40,6 +40,11 @@ fn storyline(session_id: &str, run_id: &str) -> StorylineDocument {
         final_metrics: None,
         continued_trajectory_ref: None,
         extra: None,
+        meta: None,
+        task: None,
+        prompt: None,
+        started_at: None,
+        finished_at: None,
         unknown_fields: Default::default(),
         unknown_key_counts: Default::default(),
         turns: vec![StorylineTurn {
@@ -59,6 +64,9 @@ fn storyline(session_id: &str, run_id: &str) -> StorylineDocument {
             latency_ms: None,
             ttft_ms: None,
             extra: None,
+            env: None,
+            prompt: None,
+            finished_at: None,
         }],
     }
 }
@@ -208,6 +216,39 @@ async fn ignores_derived_lance_sidecars_during_discovery() -> Result<()> {
     .await?;
     assert_eq!(snapshot.datasets()[0].sources.len(), 1);
     assert_eq!(snapshot.datasets()[0].sources[0].file, "trajectory.json");
+    Ok(())
+}
+
+#[tokio::test]
+async fn report_mode_skips_oversized_files_when_querying_all_runs() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    write_openai_source(&temp.path().join("good.json"), "event-good")?;
+    fs::write(temp.path().join("huge.json"), vec![b'x'; 4096])?;
+    let snapshot = Arc::new(
+        DatasetCatalogSnapshot::discover(
+            vec![DatasetMount::default(temp.path().to_string_lossy())?],
+            Some(DEFAULT_DATASET_NAME.into()),
+            CatalogSnapshotOptions {
+                error_policy: CatalogErrorPolicy::Report,
+                files: crate::store::FileTrajectoryDataSourceOptions {
+                    max_file_bytes: 1024,
+                    ..Default::default()
+                },
+                ..CatalogSnapshotOptions::default()
+            },
+        )
+        .await?,
+    );
+    assert_eq!(snapshot.datasets()[0].ready_source_count(), 1);
+    assert_eq!(snapshot.datasets()[0].error_source_count(), 1);
+    assert_eq!(snapshot.datasets()[0].sources[0].file, "good.json");
+    assert_eq!(snapshot.datasets()[0].sources[1].file, "huge.json");
+
+    let engine = snapshot.query_engine(Default::default()).await?;
+    let rows = engine
+        .query_jsonl("SELECT COUNT(*) AS runs FROM dataset.runs")
+        .await?;
+    assert_eq!(rows.trim(), r#"{"runs":1}"#);
     Ok(())
 }
 
@@ -464,6 +505,17 @@ async fn catalog_prunes_storyline_sources_before_opening_lance() -> Result<()> {
         )
         .await?;
     assert_eq!(rows.trim(), r#"{"run_id":"run-a"}"#);
+    let explorer = engine
+        .query_jsonl(
+            "SELECT r._file_, r.document_id, r.run_id, r.session_id, r.agent_id, \
+                    r.agent_model_name, r.parent_json, r.final_metrics_json, \
+                    r.extra_json, r.unknown_fields_json \
+             FROM dataset.runs r WHERE r._file_ = 'a'",
+        )
+        .await?;
+    let explorer: serde_json::Value = serde_json::from_str(explorer.lines().next().unwrap())?;
+    assert_eq!(explorer["run_id"], "run-a");
+    assert_eq!(explorer["session_id"], "session-a");
     assert_eq!(
         snapshot.prepared[0]
             .sources

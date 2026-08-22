@@ -2,7 +2,9 @@
 
 mod agent;
 mod api;
+mod chat_view;
 mod components;
+mod json_value;
 mod model;
 mod tools;
 mod workspace;

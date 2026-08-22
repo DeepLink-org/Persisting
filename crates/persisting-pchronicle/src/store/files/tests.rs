@@ -244,6 +244,59 @@ async fn full_atif_array_reports_bounded_input_buffer_peak() {
 }
 
 #[tokio::test]
+async fn queries_actf_event_log_trajectory_as_steps() {
+    let input = tempfile::NamedTempFile::with_suffix(".json").unwrap();
+    std::fs::write(
+        input.path(),
+        r#"{
+          "task_id":"gravitational-wave-detection",
+          "category":"astronomy",
+          "k":1,
+          "correct":false,
+          "solved_at":null,
+          "attempts_tried":1,
+          "attempts":{"1":{
+            "correct":false,
+            "status":"run_error",
+            "trajectory":[
+              {"type":"session","id":"s1","timestamp":"2026-06-17T07:26:27.170Z","cwd":"/root"},
+              {"type":"message","id":"m1","timestamp":"2026-06-17T07:26:28Z",
+               "message":{"role":"user","content":[{"type":"text","text":"hello"}]}},
+              {"type":"message","id":"m2","timestamp":"2026-06-17T07:26:29Z",
+               "message":{"role":"assistant","content":[{"type":"text","text":"world"}]}}
+            ]
+          }}
+        }"#,
+    )
+    .unwrap();
+    let manifest = LocalQueryManifest::for_format(input.path(), DocumentFormat::Actf).unwrap();
+    let source = FileTrajectoryDataSource::from_manifest(manifest).unwrap();
+    let context = SessionContext::new();
+    source.register(&context).unwrap();
+
+    let runs = context
+        .sql("SELECT document_id, session_id FROM runs")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert_eq!(runs.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+
+    let steps = context
+        .sql("SELECT session_id, source FROM steps ORDER BY step_id")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert!(
+        steps.iter().map(RecordBatch::num_rows).sum::<usize>() >= 1,
+        "event-log ACTF must project at least one step"
+    );
+}
+
+#[tokio::test]
 async fn projected_actf_pushdown_matches_session_id_and_step_id() {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/import_roundtrip/protein-assembly_trimmed.actf.json");
