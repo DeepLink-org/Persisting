@@ -216,7 +216,7 @@ fn probe_version(agent: AgentKind, entrypoint: &Path) -> Result<String, ReplayEr
     Ok(expected.to_owned())
 }
 
-pub(super) fn parse_version(agent: AgentKind, rendered: &str) -> Option<&'static str> {
+fn parse_version(agent: AgentKind, rendered: &str) -> Option<&'static str> {
     let expected = agent.supported_version();
     match agent {
         AgentKind::ClaudeCode => {

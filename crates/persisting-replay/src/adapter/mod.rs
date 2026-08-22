@@ -56,7 +56,7 @@ pub fn run(
     }
 }
 
-pub(super) fn check_boundary(after_step: usize, complete: usize) -> Result<(), ReplayError> {
+fn check_boundary(after_step: usize, complete: usize) -> Result<(), ReplayError> {
     if after_step == 0 || after_step > complete {
         return Err(ReplayError::trajectory(format!(
             "requested after-step {after_step}, trajectory has {complete} complete batches"
@@ -65,7 +65,7 @@ pub(super) fn check_boundary(after_step: usize, complete: usize) -> Result<(), R
     Ok(())
 }
 
-pub(super) fn prepared_outcome(path: PathBuf) -> ReplayOutcome {
+fn prepared_outcome(path: PathBuf) -> ReplayOutcome {
     ReplayOutcome {
         status: "prepared".into(),
         reconstructed_path: Some(path),
@@ -76,7 +76,7 @@ pub(super) fn prepared_outcome(path: PathBuf) -> ReplayOutcome {
     }
 }
 
-pub(super) fn run_sdk_bridge(
+fn run_sdk_bridge(
     plan: &ReplayPlan,
     context: &RunContext<'_>,
     journal: &mut Journal,

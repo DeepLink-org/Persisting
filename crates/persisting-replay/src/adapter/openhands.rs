@@ -29,6 +29,7 @@ pub(super) fn execute(
 ) -> Result<ReplayOutcome, ReplayError> {
     run_openhands(plan, context, journal)
 }
+
 fn build_openhands_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
     let raw = read_regular_file(&request.trajectory)?;
     let events: Vec<Value> = serde_json::from_slice(&raw).replay_context(
