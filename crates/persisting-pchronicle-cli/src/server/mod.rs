@@ -66,8 +66,7 @@ impl ChronicleServerConfig {
         Ok(Self {
             datasets,
             default_dataset,
-            catalog_options: CatalogSnapshotOptions::default()
-                .with_error_policy(CatalogErrorPolicy::Report),
+            catalog_options: CatalogSnapshotOptions::default(),
         })
     }
 }

@@ -1999,7 +1999,7 @@ async fn directory_storyline_import_renames_duplicate_document_ids() -> Result<(
     let rows = stdout
         .split(|&byte| byte == b'\n')
         .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_slice::<Value>(line))
+        .map(serde_json::from_slice::<Value>)
         .collect::<serde_json::Result<Vec<_>>>()?;
     let ids = rows
         .iter()
