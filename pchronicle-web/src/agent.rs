@@ -661,8 +661,16 @@ fn extract_json(value: &str) -> &str {
 
 fn parse_arguments(value: &Value) -> Result<Value, ()> {
     match value {
-        Value::String(raw) => serde_json::from_str(raw).map_err(|_| ()),
-        other => Ok(other.clone()),
+        Value::String(raw) => {
+            let parsed: Value = serde_json::from_str(raw).map_err(|_| ())?;
+            if parsed.is_object() {
+                Ok(parsed)
+            } else {
+                Err(())
+            }
+        }
+        Value::Object(_) => Ok(value.clone()),
+        _ => Err(()),
     }
 }
 
@@ -720,7 +728,11 @@ pub fn parse_json_fallback(content: &str) -> AssistantTurn {
     if !matches!(name, "get_analysis" | "get_turn" | "query_sql") {
         return AssistantTurn::Invalid;
     }
-    let arguments = value.get("arguments").cloned().unwrap_or(json!({}));
+    let arguments = match value.get("arguments") {
+        None => json!({}),
+        Some(args) if args.is_object() => args.clone(),
+        Some(_) => return AssistantTurn::Invalid,
+    };
     AssistantTurn::ToolCalls(vec![ParsedToolCall {
         id: "json-0".into(),
         name: name.into(),
@@ -933,5 +945,101 @@ mod tests {
             AssistantTurn::Final("done".into())
         );
         assert_eq!(parse_json_fallback("not json"), AssistantTurn::Invalid);
+    }
+
+    #[test]
+    fn native_tool_calls_reject_malformed_entries() {
+        let missing_name = serde_json::json!({
+            "tool_calls": [{
+                "id": "c1",
+                "function": {"arguments": "{}"}
+            }]
+        });
+        assert_eq!(parse_native_message(&missing_name), AssistantTurn::Invalid);
+
+        let bad_arguments = serde_json::json!({
+            "tool_calls": [{
+                "id": "c1",
+                "function": {"name": "get_turn", "arguments": "not-json"}
+            }]
+        });
+        assert_eq!(parse_native_message(&bad_arguments), AssistantTurn::Invalid);
+    }
+
+    #[test]
+    fn native_tool_calls_accept_object_arguments() {
+        let message = serde_json::json!({
+            "tool_calls": [{
+                "id": "c1",
+                "function": {"name": "get_turn", "arguments": {"turn_id": 12}}
+            }]
+        });
+        match parse_native_message(&message) {
+            AssistantTurn::ToolCalls(calls) => {
+                assert_eq!(calls[0].name, "get_turn");
+                assert_eq!(calls[0].arguments["turn_id"], 12);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn native_empty_content_without_tool_calls_is_invalid() {
+        let message = serde_json::json!({"content": ""});
+        assert_eq!(parse_native_message(&message), AssistantTurn::Invalid);
+    }
+
+    #[test]
+    fn native_empty_tool_calls_falls_through_to_content() {
+        let message = serde_json::json!({
+            "tool_calls": [],
+            "content": "done"
+        });
+        assert_eq!(
+            parse_native_message(&message),
+            AssistantTurn::Final("done".into())
+        );
+    }
+
+    #[test]
+    fn native_tool_calls_reject_non_object_arguments() {
+        let array_args = serde_json::json!({
+            "tool_calls": [{
+                "id": "c1",
+                "function": {"name": "get_turn", "arguments": [1, 2]}
+            }]
+        });
+        assert_eq!(parse_native_message(&array_args), AssistantTurn::Invalid);
+
+        let number_args = serde_json::json!({
+            "tool_calls": [{
+                "id": "c1",
+                "function": {"name": "get_turn", "arguments": 42}
+            }]
+        });
+        assert_eq!(parse_native_message(&number_args), AssistantTurn::Invalid);
+
+        let string_array_args = serde_json::json!({
+            "tool_calls": [{
+                "id": "c1",
+                "function": {"name": "get_turn", "arguments": "[1,2]"}
+            }]
+        });
+        assert_eq!(
+            parse_native_message(&string_array_args),
+            AssistantTurn::Invalid
+        );
+    }
+
+    #[test]
+    fn json_fallback_rejects_non_object_arguments() {
+        assert_eq!(
+            parse_json_fallback(r#"{"tool":"get_analysis","arguments":[]}"#),
+            AssistantTurn::Invalid
+        );
+        assert_eq!(
+            parse_json_fallback(r#"{"tool":"get_turn","arguments":42}"#),
+            AssistantTurn::Invalid
+        );
     }
 }
