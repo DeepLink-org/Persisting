@@ -265,6 +265,23 @@ fn published_storyline_report(
     }
 }
 
+fn attach_stream_cleanup_failures(
+    result: Result<StorylineProjectionPublicationOutcome>,
+    cleanup_failures: Vec<String>,
+) -> Result<StorylineProjectionPublicationOutcome> {
+    if cleanup_failures.is_empty() {
+        return result;
+    }
+    let cleanup = format!(
+        "Storyline cleanup also failed: {}",
+        cleanup_failures.join("; ")
+    );
+    match result {
+        Ok(_) => Err(anyhow::anyhow!(cleanup)),
+        Err(error) => Err(error.context(cleanup)),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StorylineStreamWriteMode {
     Replace,
@@ -298,6 +315,18 @@ static REPLACEMENT_AFTER_CURRENT_READ_BARRIER: std::sync::Mutex<
 > = std::sync::Mutex::new(None);
 
 #[cfg(test)]
+#[derive(Clone)]
+struct MaintenanceAfterPublishPauseHook {
+    root_uri: String,
+    reached: Arc<tokio::sync::Notify>,
+    resume: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+static MAINTENANCE_AFTER_PUBLISH_PAUSE: std::sync::Mutex<Option<MaintenanceAfterPublishPauseHook>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
 async fn wait_after_empty_current_read(root_uri: &str) {
     let barrier = CREATE_AFTER_EMPTY_READ_BARRIER
         .lock()
@@ -320,6 +349,20 @@ async fn wait_after_replacement_current_read(root_uri: &str) {
         .map(|hook| hook.barrier.clone());
     if let Some(barrier) = barrier {
         barrier.wait().await;
+    }
+}
+
+#[cfg(test)]
+async fn wait_after_maintenance_publish(root_uri: &str) {
+    let hook = MAINTENANCE_AFTER_PUBLISH_PAUSE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|hook| hook.root_uri == root_uri)
+        .cloned();
+    if let Some(hook) = hook {
+        hook.reached.notify_one();
+        hook.resume.notified().await;
     }
 }
 
@@ -710,7 +753,7 @@ impl StorylineLanceStore {
         };
         let mut report = StorylineStreamImportReport::default();
 
-        let mut result = async {
+        let result = async {
             if let Some(generation) = takeover_generation.as_deref() {
                 let source = original
                     .as_ref()
@@ -980,15 +1023,7 @@ impl StorylineLanceStore {
                 }
             }
         }
-        if result.is_err() && !cleanup_failures.is_empty() {
-            result = result.map_err(|error| {
-                error.context(format!(
-                    "Storyline cleanup also failed: {}",
-                    cleanup_failures.join("; ")
-                ))
-            });
-        }
-        result
+        attach_stream_cleanup_failures(result, cleanup_failures)
     }
 
     /// Compact fragments, extend scalar indices to appended fragments, and
@@ -999,88 +1034,170 @@ impl StorylineLanceStore {
         options: &LanceMaintenanceOptions,
     ) -> Result<StorylineMaintenanceReport> {
         let _guard = self.acquire_write_guard().await?;
-        let Some(paths) = self.resolve_current_table_paths().await? else {
+        let Some(original) = self.resolve_current_table_paths().await? else {
             return Ok(StorylineMaintenanceReport::default());
         };
-        let (runs, steps, tool_calls) = tokio::try_join!(
-            maintain_table_layout(&paths.runs, paths.runs_version, &RUN_INDEXES, options,),
-            maintain_table_layout(&paths.steps, paths.steps_version, &STEP_INDEXES, options,),
-            maintain_table_layout(
-                &paths.tool_calls,
-                paths.tool_calls_version,
-                &TOOL_CALL_INDEXES,
-                options,
-            ),
-        )?;
-        let runs_version = runs
-            .final_version
-            .context("missing maintained runs version")?;
-        let steps_version = steps
-            .final_version
-            .context("missing maintained steps version")?;
-        let tool_calls_version = tool_calls
-            .final_version
-            .context("missing maintained tool_calls version")?;
-        let run_content_columns = content_column_projection(StorylineTableKind::Runs);
-        let step_content_columns = content_column_projection(StorylineTableKind::Steps);
-        let tool_call_content_columns = content_column_projection(StorylineTableKind::ToolCalls);
-        let (run_batches, step_batches, tool_call_batches) = tokio::try_join!(
-            read_projected_batches(&paths.runs, runs_version, &run_content_columns, None),
-            read_projected_batches(&paths.steps, steps_version, &step_content_columns, None),
-            read_projected_batches(
-                &paths.tool_calls,
-                tool_calls_version,
-                &tool_call_content_columns,
-                None,
-            ),
-        )?;
-        let mut live_objects = collect_content_ids(&run_batches, StorylineTableKind::Runs)?;
-        live_objects.extend(collect_content_ids(
-            &step_batches,
-            StorylineTableKind::Steps,
-        )?);
-        live_objects.extend(collect_content_ids(
-            &tool_call_batches,
-            StorylineTableKind::ToolCalls,
-        )?);
-        let (objects_version, objects_removed) =
-            prune_unreferenced_objects(&paths.objects, paths.objects_version, &live_objects)
-                .await?;
-        let generation = next_generation();
-        self.commit_snapshot(
-            &StorylineSnapshotPointer {
+        // Freeze deletion candidates before acquiring the lease. If this
+        // worker later loses ownership, a successor generation created after
+        // this point can never enter the stale worker's deletion set.
+        let expired_generations = self
+            .expired_generation_candidates(&original.table_generation, options.vacuum_older_than)
+            .await?;
+        let writer_owner = next_generation();
+        let writer_lease = self
+            .acquire_writer_lease_for_generation(&writer_owner, Some(&original.generation))
+            .await?;
+        let mut writer_renewal =
+            Some(self.start_writer_lease_renewal(writer_owner.clone(), writer_lease.lease.epoch));
+        let takeover_generation = writer_lease.takeover.then(next_generation);
+        let mut published = false;
+
+        let mut result: Result<StorylineMaintenanceReport> = async {
+            let paths = if let Some(generation) = takeover_generation.as_deref() {
+                self.clone_table_generation(&original, generation).await?
+            } else {
+                original.clone()
+            };
+            let (runs, steps, tool_calls) = tokio::try_join!(
+                maintain_table_layout(&paths.runs, paths.runs_version, &RUN_INDEXES, options,),
+                maintain_table_layout(&paths.steps, paths.steps_version, &STEP_INDEXES, options,),
+                maintain_table_layout(
+                    &paths.tool_calls,
+                    paths.tool_calls_version,
+                    &TOOL_CALL_INDEXES,
+                    options,
+                ),
+            )?;
+            let runs_version = runs
+                .final_version
+                .context("missing maintained runs version")?;
+            let steps_version = steps
+                .final_version
+                .context("missing maintained steps version")?;
+            let tool_calls_version = tool_calls
+                .final_version
+                .context("missing maintained tool_calls version")?;
+            let run_content_columns = content_column_projection(StorylineTableKind::Runs);
+            let step_content_columns = content_column_projection(StorylineTableKind::Steps);
+            let tool_call_content_columns =
+                content_column_projection(StorylineTableKind::ToolCalls);
+            let (run_batches, step_batches, tool_call_batches) = tokio::try_join!(
+                read_projected_batches(&paths.runs, runs_version, &run_content_columns, None),
+                read_projected_batches(&paths.steps, steps_version, &step_content_columns, None),
+                read_projected_batches(
+                    &paths.tool_calls,
+                    tool_calls_version,
+                    &tool_call_content_columns,
+                    None,
+                ),
+            )?;
+            let mut live_objects = collect_content_ids(&run_batches, StorylineTableKind::Runs)?;
+            live_objects.extend(collect_content_ids(
+                &step_batches,
+                StorylineTableKind::Steps,
+            )?);
+            live_objects.extend(collect_content_ids(
+                &tool_call_batches,
+                StorylineTableKind::ToolCalls,
+            )?);
+            let (objects_version, objects_removed) =
+                prune_unreferenced_objects(&paths.objects, paths.objects_version, &live_objects)
+                    .await?;
+            let generation = next_generation();
+            let snapshot = StorylineSnapshotPointer {
                 schema_version: STORYLINE_LANCE_SCHEMA_VERSION,
                 generation: generation.clone(),
-                parent_generation: Some(paths.generation.clone()),
+                parent_generation: Some(original.generation.clone()),
                 table_generation: paths.table_generation.clone(),
                 runs_version,
                 steps_version,
                 tool_calls_version,
                 objects_version,
                 projection: paths.projection.clone(),
-            },
-            Some(&paths.generation),
-        )
-        .await?;
+            };
+            let published_snapshot = self
+                .publish_writer_snapshot_retaining_lease(
+                    &writer_owner,
+                    writer_lease.lease.epoch,
+                    &snapshot,
+                )
+                .await?;
+            anyhow::ensure!(
+                published_snapshot,
+                "Storyline writer lease lost while publishing generation {}",
+                snapshot.generation
+            );
+            published = true;
+            #[cfg(test)]
+            wait_after_maintenance_publish(&self.root_uri).await;
 
-        let (runs_vacuum, steps_vacuum, tool_calls_vacuum, objects_vacuum) = tokio::try_join!(
-            vacuum_table(&paths.runs, options.vacuum_older_than),
-            vacuum_table(&paths.steps, options.vacuum_older_than),
-            vacuum_table(&paths.tool_calls, options.vacuum_older_than),
-            vacuum_table(&paths.objects, options.vacuum_older_than),
-        )?;
-        let generations_removed = self
-            .prune_expired_generations(&paths.table_generation, options.vacuum_older_than)
-            .await?;
-        Ok(StorylineMaintenanceReport {
-            generation: Some(generation),
-            runs: merge_maintenance_reports(runs, runs_vacuum),
-            steps: merge_maintenance_reports(steps, steps_vacuum),
-            tool_calls: merge_maintenance_reports(tool_calls, tool_calls_vacuum),
-            objects: objects_vacuum,
-            objects_removed,
-            generations_removed,
-        })
+            let (runs_vacuum, steps_vacuum, tool_calls_vacuum) = tokio::try_join!(
+                vacuum_table(&paths.runs, options.vacuum_older_than),
+                vacuum_table(&paths.steps, options.vacuum_older_than),
+                vacuum_table(&paths.tool_calls, options.vacuum_older_than),
+            )?;
+            // Local stores remain protected by the cross-process file lock.
+            // Remote stores share objects.lance across physical generations,
+            // so vacuuming it could remove a version pinned by a successor
+            // after this lease expires.
+            let objects_vacuum = if matches!(self.storage_scheme(), "file" | "file+uring") {
+                vacuum_table(&paths.objects, options.vacuum_older_than).await?
+            } else {
+                LanceMaintenanceReport::default()
+            };
+            let generations_removed = self
+                .prune_generation_candidates(expired_generations)
+                .await?;
+            Ok(StorylineMaintenanceReport {
+                generation: Some(generation),
+                runs: merge_maintenance_reports(runs, runs_vacuum),
+                steps: merge_maintenance_reports(steps, steps_vacuum),
+                tool_calls: merge_maintenance_reports(tool_calls, tool_calls_vacuum),
+                objects: objects_vacuum,
+                objects_removed,
+                generations_removed,
+            })
+        }
+        .await;
+
+        let mut cleanup_failures = Vec::new();
+        if let Some(renewal) = writer_renewal.take() {
+            if !renewal.stop().await {
+                cleanup_failures.push("writer lease renewal reported ownership loss".to_string());
+            }
+        }
+        match self
+            .release_writer_lease(&writer_owner, writer_lease.lease.epoch)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => cleanup_failures.push("writer lease was lost before release".to_string()),
+            Err(error) => cleanup_failures.push(format!("release writer lease: {error:#}")),
+        }
+        if result.is_err() && !published {
+            if let Some(generation) = takeover_generation {
+                if let Err(error) = self
+                    .object_store
+                    .remove_dir_all(self.generation_object_path(&generation))
+                    .await
+                {
+                    cleanup_failures.push(format!(
+                        "remove uncommitted Storyline generation {generation}: {error:#}"
+                    ));
+                }
+            }
+        }
+        if !cleanup_failures.is_empty() {
+            let cleanup = format!(
+                "Storyline maintenance cleanup failed: {}",
+                cleanup_failures.join("; ")
+            );
+            result = match result {
+                Ok(_) => Err(anyhow::anyhow!(cleanup)),
+                Err(error) => Err(error.context(cleanup)),
+            };
+        }
+        result
     }
 
     /// Atomically replace multiple Storylines in one snapshot.
@@ -1281,13 +1398,13 @@ impl StorylineLanceStore {
             .join(generation)
     }
 
-    async fn prune_expired_generations(
+    async fn expired_generation_candidates(
         &self,
         current: &str,
         retention: Option<std::time::Duration>,
-    ) -> Result<usize> {
+    ) -> Result<std::collections::BTreeSet<String>> {
         let Some(retention) = retention else {
-            return Ok(0);
+            return Ok(std::collections::BTreeSet::new());
         };
         let cutoff_nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1322,6 +1439,13 @@ impl StorylineLanceStore {
             }
         }
 
+        Ok(candidates)
+    }
+
+    async fn prune_generation_candidates(
+        &self,
+        candidates: std::collections::BTreeSet<String>,
+    ) -> Result<usize> {
         let mut removed = 0;
         for generation in candidates {
             self.object_store

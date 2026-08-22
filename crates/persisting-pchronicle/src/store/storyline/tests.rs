@@ -36,6 +36,22 @@ fn non_create_publication_mismatch_is_an_operational_error() {
         .contains("non-create Storyline publication reported nonempty output"));
 }
 
+#[test]
+fn create_projection_cleanup_failure_is_not_silently_discarded() {
+    let error = attach_stream_cleanup_failures(
+        Ok(StorylineProjectionPublicationOutcome::OutputNotEmpty),
+        vec!["remove staged generation: denied".into()],
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("remove staged generation: denied"),
+        "{error:#}"
+    );
+}
+
 async fn put_remote_object(uri: &str, relative: &str, contents: &[u8]) {
     let (store, root) = ObjectStore::from_uri(uri).await.unwrap();
     store.put(&root.join(relative), contents).await.unwrap();
@@ -84,6 +100,46 @@ impl Drop for ReplacementAfterCurrentReadBarrier {
 impl Drop for CreateAfterEmptyReadBarrier {
     fn drop(&mut self) {
         *CREATE_AFTER_EMPTY_READ_BARRIER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
+struct MaintenanceAfterPublishPause {
+    reached: Arc<tokio::sync::Notify>,
+    resume: Arc<tokio::sync::Notify>,
+}
+
+impl MaintenanceAfterPublishPause {
+    fn install(root_uri: &str) -> Self {
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        *MAINTENANCE_AFTER_PUBLISH_PAUSE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(MaintenanceAfterPublishPauseHook {
+                root_uri: root_uri.to_string(),
+                reached: reached.clone(),
+                resume: resume.clone(),
+            });
+        Self { reached, resume }
+    }
+
+    async fn wait_until_reached(&self) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), self.reached.notified())
+            .await
+            .expect("maintenance did not reach the post-publication pause");
+    }
+
+    fn resume(&self) {
+        self.resume.notify_one();
+    }
+}
+
+impl Drop for MaintenanceAfterPublishPause {
+    fn drop(&mut self) {
+        self.resume.notify_waiters();
+        *MAINTENANCE_AFTER_PUBLISH_PAUSE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
@@ -661,6 +717,42 @@ async fn maintenance_vacuums_unreferenced_objects() {
     assert!(report.objects.bytes_removed > 0, "{report:?}");
     assert_eq!(
         store.get_storyline_full("vacuum-objects").await.unwrap(),
+        Some(document)
+    );
+}
+
+#[tokio::test]
+async fn remote_maintenance_preserves_shared_object_versions() {
+    let uri = remote_uri("remote-maintenance-object-versions");
+    let options = StorylineContentOptions {
+        offload_threshold: 32,
+        ..Default::default()
+    };
+    let store = StorylineLanceStore::open_uri_with_content_options(&uri, options)
+        .await
+        .unwrap();
+    let mut document = story("remote-vacuum-objects");
+    document.notes = Some("old unreachable object ".repeat(64));
+    store.replace_storyline(&document).await.unwrap();
+    document.notes = Some("new live object ".repeat(64));
+    store.replace_storyline(&document).await.unwrap();
+
+    let report = store
+        .maintain(&LanceMaintenanceOptions {
+            vacuum_older_than: Some(std::time::Duration::ZERO),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(report.objects_removed, 1);
+    assert_eq!(report.objects.old_versions_removed, 0);
+    assert_eq!(report.objects.bytes_removed, 0);
+    assert_eq!(
+        store
+            .get_storyline_full("remote-vacuum-objects")
+            .await
+            .unwrap(),
         Some(document)
     );
 }
@@ -1497,6 +1589,52 @@ async fn live_writer_lease_rejects_replacement_before_table_mutation() {
 }
 
 #[tokio::test]
+async fn live_writer_lease_rejects_maintenance_before_table_mutation() {
+    let uri = remote_uri("live-lease-before-maintenance-mutation");
+    let store = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    for revision in 0..4 {
+        let mut document = story("baseline");
+        document.notes = Some(format!("revision {revision}"));
+        store.replace_storyline(&document).await.unwrap();
+    }
+    let paths = store.current_table_paths().await.unwrap().unwrap();
+    let before = tokio::join!(
+        latest_table_version(&paths.runs),
+        latest_table_version(&paths.steps),
+        latest_table_version(&paths.tool_calls),
+    );
+    store
+        .try_acquire_writer_lease(
+            "holder",
+            writer_control::unix_now_ms(),
+            writer_control::WRITER_LEASE_TTL_MS,
+        )
+        .await
+        .unwrap();
+
+    let error = store
+        .maintain(&LanceMaintenanceOptions {
+            compact: true,
+            optimize_indices: true,
+            vacuum_older_than: None,
+            target_rows_per_fragment: 1024,
+        })
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("commit conflict"), "{error:#}");
+    let after = tokio::join!(
+        latest_table_version(&paths.runs),
+        latest_table_version(&paths.steps),
+        latest_table_version(&paths.tool_calls),
+    );
+    assert_eq!(
+        (before.0.unwrap(), before.1.unwrap(), before.2.unwrap()),
+        (after.0.unwrap(), after.1.unwrap(), after.2.unwrap())
+    );
+}
+
+#[tokio::test]
 async fn expired_lease_takeover_clones_the_committed_generation() {
     let uri = remote_uri("expired-lease-isolation");
     let store = StorylineLanceStore::open_uri(&uri).await.unwrap();
@@ -1524,6 +1662,162 @@ async fn expired_lease_takeover_clones_the_committed_generation() {
     assert_eq!(
         store.get_storyline_full("updated").await.unwrap(),
         Some(updated)
+    );
+}
+
+#[tokio::test]
+async fn expired_lease_maintenance_clones_the_committed_generation() {
+    let uri = remote_uri("expired-maintenance-lease-isolation");
+    let store = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    let documents = [story("preserved"), story("maintained")];
+    store.replace_storylines(&documents).await.unwrap();
+    let before = store.current_table_paths().await.unwrap().unwrap();
+    store
+        .try_acquire_writer_lease("expired", 0, 1)
+        .await
+        .unwrap();
+
+    store
+        .maintain(&LanceMaintenanceOptions {
+            vacuum_older_than: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let after = store.current_table_paths().await.unwrap().unwrap();
+    assert_ne!(after.table_generation, before.table_generation);
+    for document in documents {
+        assert_eq!(
+            store
+                .get_storyline_full(&document.session_id)
+                .await
+                .unwrap(),
+            Some(document)
+        );
+    }
+}
+
+#[tokio::test]
+async fn stale_maintenance_cannot_prune_a_successor_generation() {
+    let uri = remote_uri("stale-maintenance-pruning");
+    let store = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    let document = story("survives-stale-maintenance");
+    store.replace_storyline(&document).await.unwrap();
+    let pause = MaintenanceAfterPublishPause::install(&uri);
+    let maintenance_store = store.clone();
+    let maintenance = tokio::spawn(async move {
+        maintenance_store
+            .maintain(&LanceMaintenanceOptions {
+                vacuum_older_than: Some(std::time::Duration::ZERO),
+                ..Default::default()
+            })
+            .await
+    });
+    pause.wait_until_reached().await;
+
+    let current = store.current_table_paths().await.unwrap().unwrap();
+    let mut expired_control = store.read_current_control().await.unwrap().control;
+    expired_control.revision += 1;
+    let expired_lease = expired_control
+        .lease
+        .as_mut()
+        .expect("maintenance must retain its lease after publication");
+    expired_lease.issued_at_unix_ms = 0;
+    expired_lease.expires_at_unix_ms = 1;
+    put_remote_object(
+        &uri,
+        CURRENT_FILE,
+        &serde_json::to_vec(&expired_control).unwrap(),
+    )
+    .await;
+
+    let successor_owner = "successor";
+    let successor_lease = match store
+        .try_acquire_writer_lease(
+            successor_owner,
+            writer_control::unix_now_ms(),
+            writer_control::WRITER_LEASE_TTL_MS,
+        )
+        .await
+        .unwrap()
+    {
+        writer_control::LeaseAcquireOutcome::Acquired(lease) => lease,
+        writer_control::LeaseAcquireOutcome::Held(lease) => {
+            panic!(
+                "expired maintenance lease remained held by {}",
+                lease.owner_id
+            )
+        }
+    };
+    assert!(successor_lease.takeover);
+    let successor_table_generation = next_generation();
+    let cloned = store
+        .clone_table_generation(&current, &successor_table_generation)
+        .await
+        .unwrap();
+    let successor_generation = next_generation();
+    let successor = StorylineSnapshotPointer {
+        schema_version: STORYLINE_LANCE_SCHEMA_VERSION,
+        generation: successor_generation.clone(),
+        parent_generation: Some(current.generation),
+        table_generation: successor_table_generation.clone(),
+        runs_version: cloned.runs_version,
+        steps_version: cloned.steps_version,
+        tool_calls_version: cloned.tool_calls_version,
+        objects_version: cloned.objects_version,
+        projection: cloned.projection,
+    };
+    assert!(store
+        .publish_writer_snapshot(successor_owner, successor_lease.lease.epoch, &successor,)
+        .await
+        .unwrap());
+
+    pause.resume();
+    let error = maintenance.await.unwrap().unwrap_err();
+    assert!(
+        error.to_string().contains("lease was lost"),
+        "unexpected stale maintenance result: {error:#}"
+    );
+    let after = store.current_table_paths().await.unwrap().unwrap();
+    assert_eq!(after.generation, successor_generation);
+    assert_eq!(after.table_generation, successor_table_generation);
+    assert_eq!(
+        store
+            .get_storyline_full("survives-stale-maintenance")
+            .await
+            .unwrap(),
+        Some(document)
+    );
+}
+
+#[tokio::test]
+async fn legacy_current_pointer_upgrades_on_first_replacement() {
+    let uri = remote_uri("legacy-current-upgrade");
+    let store = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    store.replace_storyline(&story("baseline")).await.unwrap();
+    let legacy = store
+        .read_current_control()
+        .await
+        .unwrap()
+        .control
+        .committed
+        .unwrap();
+    put_remote_object(&uri, CURRENT_FILE, &serde_json::to_vec(&legacy).unwrap()).await;
+
+    let replacement = story("after-upgrade");
+    store.replace_storyline(&replacement).await.unwrap();
+
+    let control = store.read_current_control().await.unwrap().control;
+    assert_eq!(
+        control.control_version,
+        writer_control::CURRENT_CONTROL_VERSION
+    );
+    assert!(control.revision > 0);
+    assert!(control.lease.is_none());
+    assert_eq!(
+        store.get_storyline_full("after-upgrade").await.unwrap(),
+        Some(replacement)
     );
 }
 
