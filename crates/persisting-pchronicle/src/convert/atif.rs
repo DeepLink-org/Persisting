@@ -196,6 +196,8 @@ fn atif_to_storyline_node(
                         result: c.result.clone(),
                         duration_ms,
                         extra: c.extra.clone(),
+                        kind: None,
+                        response: None,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -227,6 +229,9 @@ fn atif_to_storyline_node(
             latency_ms,
             ttft_ms,
             extra: step.extra.clone(),
+            env: None,
+            prompt: None,
+            finished_at: None,
         };
         let derived = turn.effective_kind().to_string();
         if !matches!(
@@ -265,9 +270,14 @@ fn atif_to_storyline_node(
         }),
         child_session_ids: child_ids,
         notes: traj.notes.clone(),
+        task: None,
+        prompt: None,
+        started_at: None,
+        finished_at: None,
         final_metrics: traj.final_metrics.clone(),
         continued_trajectory_ref: traj.continued_trajectory_ref.clone(),
         extra: traj.extra.clone(),
+        meta: None,
         unknown_fields: Default::default(),
         unknown_key_counts: Default::default(),
         turns,

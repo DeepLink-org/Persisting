@@ -117,6 +117,8 @@ pub(crate) struct TurnSummary {
     pub(crate) timestamp: Option<String>,
     pub(crate) call_id: Option<String>,
     pub(crate) preview: String,
+    pub(crate) char_count: u64,
+    pub(crate) modalities: Vec<String>,
     pub(crate) model_name: Option<String>,
     pub(crate) latency_ms: Option<f64>,
     pub(crate) ttft_ms: Option<f64>,
@@ -134,6 +136,32 @@ pub(crate) struct TurnDetail {
     pub(crate) turn: persisting_pchronicle::model::StorylineTurn,
     pub(crate) wire_tool_calls: Vec<WireToolCall>,
     pub(crate) events: Vec<EventRecord>,
+}
+
+pub(crate) fn explorer_run_path(
+    dataset: &str,
+    file: &str,
+    document_id: &str,
+    session_id: &str,
+    run_id: Option<&str>,
+    parent_session_id: Option<&str>,
+) -> String {
+    if file == "." {
+        return match parent_session_id {
+            Some(parent) if parent != session_id => {
+                format!("{dataset}/{parent}/subagents/{document_id}")
+            }
+            _ => format!("{dataset}/{document_id}"),
+        };
+    }
+    let root_session_id = parent_session_id.or_else(|| run_id.filter(|id| *id != session_id));
+    match root_session_id {
+        Some(root) if root != session_id => {
+            format!("{dataset}/{file}/{root}/{session_id}")
+        }
+        Some(root) => format!("{dataset}/{file}/{root}"),
+        None => format!("{dataset}/{file}/{session_id}"),
+    }
 }
 
 pub(crate) fn run_page(summaries: Vec<RunSummary>, query: &ExplorerRunsQuery) -> RunExplorerPage {
@@ -432,11 +460,11 @@ fn turn_summary(item: &TrajectoryTurnView, events: &[EventRecord]) -> TurnSummar
     }
     values.extend(linked.iter().map(|event| &event.payload));
     let (prompt_tokens, completion_tokens, total_tokens) = token_counts(&values);
-    let text = match &item.turn.message {
-        Value::String(value) => value.clone(),
-        value => serde_json::to_string(value).unwrap_or_default(),
-    };
-    let preview = compact(&text, 220);
+    let tool_names = display_tool_calls(item)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect::<Vec<_>>();
+    let extracted = extract_message_content(&item.turn.message, !tool_names.is_empty());
     TurnSummary {
         id: item.turn.id,
         source: item.turn.source.clone(),
@@ -447,7 +475,9 @@ fn turn_summary(item: &TrajectoryTurnView, events: &[EventRecord]) -> TurnSummar
             .as_ref()
             .map(|timestamp| timestamp.canonical_rfc3339()),
         call_id: item.call_id.clone(),
-        preview,
+        preview: compact(&extracted.text, 180),
+        char_count: extracted.char_count,
+        modalities: extracted.modalities,
         model_name: item
             .turn
             .model_name
@@ -472,10 +502,7 @@ fn turn_summary(item: &TrajectoryTurnView, events: &[EventRecord]) -> TurnSummar
         prompt_tokens,
         completion_tokens,
         total_tokens,
-        tool_names: display_tool_calls(item)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect(),
+        tool_names,
         event_seqs: item.event_seqs.clone(),
         has_error: turn_has_error(item, &linked),
     }
@@ -680,6 +707,106 @@ fn searchable_turn(item: &TrajectoryTurnView) -> String {
     .to_ascii_lowercase()
 }
 
+#[derive(Debug, PartialEq)]
+struct ExtractedMessage {
+    text: String,
+    char_count: u64,
+    modalities: Vec<String>,
+}
+
+fn extract_message_content(message: &Value, has_tools: bool) -> ExtractedMessage {
+    let mut texts = Vec::new();
+    let mut flags = BTreeSet::new();
+    match message {
+        Value::String(value) => {
+            if !value.is_empty() {
+                texts.push(value.clone());
+            }
+        }
+        other => collect_message_parts(other, &mut texts, &mut flags),
+    }
+    let text = texts.join(" ");
+    if !text.is_empty() {
+        flags.insert("text");
+    }
+    if has_tools || text.contains("<tool_call>") {
+        flags.insert("tool_call");
+    }
+    let modalities = ["text", "image", "audio", "tool_call"]
+        .into_iter()
+        .filter(|name| flags.contains(name))
+        .map(str::to_string)
+        .collect();
+    ExtractedMessage {
+        char_count: text.chars().count() as u64,
+        text,
+        modalities,
+    }
+}
+
+fn collect_message_parts(
+    value: &Value,
+    texts: &mut Vec<String>,
+    flags: &mut BTreeSet<&'static str>,
+) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_message_parts(item, texts, flags);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(Value::String(text)) = map.get("text") {
+                if !text.is_empty() {
+                    texts.push(text.clone());
+                }
+            }
+            if let Some(Value::String(content)) = map.get("content") {
+                if !content.is_empty() {
+                    texts.push(content.clone());
+                }
+            }
+            if value_present(map.get("image"))
+                || value_present(map.get("image_url"))
+                || value_present(map.get("image_bytes"))
+            {
+                flags.insert("image");
+            }
+            if value_present(map.get("audio")) || value_present(map.get("input_audio")) {
+                flags.insert("audio");
+            }
+            if let Some(kind) = map.get("type").and_then(Value::as_str) {
+                match kind {
+                    "image" | "image_url" => {
+                        flags.insert("image");
+                    }
+                    "audio" | "input_audio" => {
+                        flags.insert("audio");
+                    }
+                    _ => {}
+                }
+            }
+            for (key, child) in map {
+                if key == "text" || (key == "content" && child.is_string()) {
+                    continue;
+                }
+                collect_message_parts(child, texts, flags);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn value_present(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::String(value)) => !value.is_empty(),
+        Some(Value::Array(items)) => !items.is_empty(),
+        Some(Value::Object(map)) => !map.is_empty(),
+        Some(Value::Bool(_) | Value::Number(_)) => true,
+    }
+}
+
 fn compact(value: &str, limit: usize) -> String {
     let single = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if single.chars().count() <= limit {
@@ -773,6 +900,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn squashed_store_does_not_use_run_id_as_a_folder() {
+        assert_eq!(
+            explorer_run_path(
+                "default",
+                ".",
+                "13f9aec9-0e2a-4bdf-baf6-48b58f5715fc",
+                "13f9aec9-0e2a-4bdf-baf6-48b58f5715fc",
+                Some("cybergym_0729001"),
+                None,
+            ),
+            "default/13f9aec9-0e2a-4bdf-baf6-48b58f5715fc"
+        );
+    }
+
+    #[test]
+    fn squashed_store_nests_only_real_parent_sessions() {
+        assert_eq!(
+            explorer_run_path(
+                "default",
+                ".",
+                "Energy_001#1",
+                "Energy_001#1",
+                Some("Energy_001"),
+                Some("Energy_001"),
+            ),
+            "default/Energy_001/subagents/Energy_001#1"
+        );
+    }
+
+    #[test]
+    fn preserved_file_sources_keep_the_source_path() {
+        assert_eq!(
+            explorer_run_path(
+                "dataset",
+                "gateway.json",
+                "json-session",
+                "json-session",
+                Some("json-job"),
+                None,
+            ),
+            "dataset/gateway.json/json-job/json-session"
+        );
+    }
+
+    #[test]
     fn percentiles_report_coverage_without_inventing_missing_samples() {
         let stats = metric_stats(vec![10.0, 20.0, 30.0, 40.0], 8);
         assert_eq!(stats.sample_count, 4);
@@ -810,5 +982,53 @@ mod tests {
         assert_eq!(token_counts(&[&value]), (Some(12), Some(5), Some(17)));
         let empty = serde_json::json!({"usage":{}});
         assert_eq!(token_counts(&[&empty]), (None, None, None));
+    }
+
+    #[test]
+    fn multimodal_null_media_fields_do_not_hide_text() {
+        let message = serde_json::json!([{
+            "image_bytes": null,
+            "image_url": null,
+            "input_audio": null,
+            "text": "Please continue on whatever approach you think is suitable"
+        }]);
+        let extracted = extract_message_content(&message, false);
+        assert_eq!(
+            extracted.text,
+            "Please continue on whatever approach you think is suitable"
+        );
+        assert_eq!(extracted.char_count, extracted.text.chars().count() as u64);
+        assert_eq!(extracted.modalities, vec!["text"]);
+    }
+
+    #[test]
+    fn string_message_is_plain_text() {
+        let extracted = extract_message_content(&serde_json::json!("hello world"), false);
+        assert_eq!(extracted.text, "hello world");
+        assert_eq!(extracted.char_count, 11);
+        assert_eq!(extracted.modalities, vec!["text"]);
+    }
+
+    #[test]
+    fn nonempty_image_without_text_is_image_only() {
+        let extracted = extract_message_content(
+            &serde_json::json!([{"type":"image_url","image_url":"https://ex/a.png"}]),
+            false,
+        );
+        assert_eq!(extracted.text, "");
+        assert_eq!(extracted.char_count, 0);
+        assert_eq!(extracted.modalities, vec!["image"]);
+    }
+
+    #[test]
+    fn tool_calls_and_markup_mark_tool_modality() {
+        let from_names = extract_message_content(&serde_json::json!("ok"), true);
+        assert_eq!(from_names.modalities, vec!["text", "tool_call"]);
+        let from_markup = extract_message_content(
+            &serde_json::json!("<tool_call>execute_bash\n<parameter=command>ls</parameter>"),
+            false,
+        );
+        assert!(from_markup.modalities.contains(&"tool_call".to_string()));
+        assert!(from_markup.modalities.contains(&"text".to_string()));
     }
 }

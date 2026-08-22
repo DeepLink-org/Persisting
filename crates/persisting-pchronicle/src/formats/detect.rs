@@ -65,6 +65,19 @@ pub fn detect_format_from_content(input: &str) -> Result<Option<DocumentFormat>>
     Ok(None)
 }
 
+fn looks_like_actf_attempt(attempt: &serde_json::Value) -> bool {
+    match attempt.get("trajectory") {
+        Some(trajectory) if trajectory.is_array() => trajectory
+            .as_array()
+            .is_some_and(|events| events.iter().all(serde_json::Value::is_object)),
+        Some(trajectory) => trajectory
+            .get("schema_version")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|version| version.starts_with("ACTF_")),
+        None => false,
+    }
+}
+
 fn detect_json_format(v: &serde_json::Value) -> Option<DocumentFormat> {
     let candidate = v.as_array().and_then(|values| values.first()).unwrap_or(v);
     if candidate
@@ -74,19 +87,12 @@ fn detect_json_format(v: &serde_json::Value) -> Option<DocumentFormat> {
     {
         return Some(DocumentFormat::Storyline);
     }
-    let is_actf_document = v
-        .get("attempts")
-        .and_then(serde_json::Value::as_object)
-        .is_some_and(|attempts| {
-            !attempts.is_empty()
-                && attempts.values().all(|attempt| {
-                    attempt
-                        .get("trajectory")
-                        .and_then(|trajectory| trajectory.get("schema_version"))
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|version| version.starts_with("ACTF_"))
-                })
-        });
+    let is_actf_document = v.get("task_id").is_some()
+        && v.get("attempts")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|attempts| {
+                !attempts.is_empty() && attempts.values().all(looks_like_actf_attempt)
+            });
     if is_actf_document {
         return Some(DocumentFormat::Actf);
     }
@@ -153,6 +159,30 @@ mod tests {
         assert_eq!(
             detect_format_from_path("trajectory.storyline.json"),
             Some(DocumentFormat::Storyline)
+        );
+    }
+
+    #[test]
+    fn detects_actf_error_dump_with_event_log_trajectory() {
+        let input = r#"{
+            "task_id":"gravitational-wave-detection",
+            "category":"astronomy",
+            "k":1,
+            "correct":false,
+            "attempts_tried":1,
+            "attempts":{"1":{
+                "correct":false,
+                "status":"run_error",
+                "trajectory":[
+                    {"type":"session","id":"s1","timestamp":"2026-06-17T07:26:27.170Z","cwd":"/root"},
+                    {"type":"message","id":"m1","timestamp":"2026-06-17T07:26:28Z",
+                     "message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+                ]
+            }}
+        }"#;
+        assert_eq!(
+            detect_format_from_content(input).unwrap(),
+            Some(DocumentFormat::Actf)
         );
     }
 }

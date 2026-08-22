@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
 use crate::{InputIssue, InputResult};
@@ -29,28 +29,107 @@ pub struct ActfDocument {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActfAttempt {
     pub correct: bool,
+    #[serde(default)]
     pub final_answer: Value,
-    pub ground_truth: String,
+    #[serde(default)]
+    pub ground_truth: Value,
     pub trajectory: ActfTrajectory,
+    #[serde(default, deserialize_with = "null_as_empty_string")]
     pub status: String,
+    #[serde(default)]
     pub score: Value,
+    #[serde(default, deserialize_with = "null_as_empty_string")]
     pub error: String,
+    #[serde(default)]
     pub artifacts: Value,
+    #[serde(default)]
     pub extra: Value,
+    #[serde(default)]
     pub analysis_result: Value,
+    #[serde(default)]
     pub meta: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub max_score: Value,
     #[serde(flatten)]
     pub extensions: Map<String, Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ActfTrajectory {
     pub schema_version: String,
     pub steps: Vec<ActfStep>,
     pub started_at: String,
     pub finished_at: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<Value>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl ActfTrajectory {
+    pub fn from_event_log(events: Vec<Value>) -> Self {
+        let started_at = events
+            .iter()
+            .find_map(|event| event.get("timestamp").and_then(Value::as_str))
+            .unwrap_or("1970-01-01T00:00:00Z")
+            .to_string();
+        let finished_at = events
+            .iter()
+            .rev()
+            .find_map(|event| event.get("timestamp").and_then(Value::as_str))
+            .unwrap_or(started_at.as_str())
+            .to_string();
+        Self {
+            schema_version: ACTF_SCHEMA_VERSION.into(),
+            steps: Vec::new(),
+            started_at,
+            finished_at,
+            events,
+            extra: Map::new(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ActfTrajectoryWire {
+    Events(Vec<Value>),
+    Canonical {
+        schema_version: String,
+        steps: Vec<ActfStep>,
+        started_at: String,
+        finished_at: String,
+        #[serde(default)]
+        events: Vec<Value>,
+        #[serde(flatten)]
+        extra: Map<String, Value>,
+    },
+}
+
+impl<'de> Deserialize<'de> for ActfTrajectory {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match ActfTrajectoryWire::deserialize(deserializer)? {
+            ActfTrajectoryWire::Events(events) => Ok(Self::from_event_log(events)),
+            ActfTrajectoryWire::Canonical {
+                schema_version,
+                steps,
+                started_at,
+                finished_at,
+                events,
+                extra,
+            } => Ok(Self {
+                schema_version,
+                steps,
+                started_at,
+                finished_at,
+                events,
+                extra,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -58,9 +137,13 @@ pub struct ActfStep {
     pub step_id: i64,
     pub assistant_content: ActfAssistantContent,
     pub metric: ActfMetric,
+    #[serde(default, deserialize_with = "null_as_empty_string")]
     pub system_prompt: String,
+    #[serde(default, deserialize_with = "null_as_empty_string")]
     pub user_content: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub tools: Vec<ActfToolCall>,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub observation: Vec<ActfObservation>,
     pub started_at: String,
     pub finished_at: String,
@@ -68,10 +151,23 @@ pub struct ActfStep {
     pub extra: Map<String, Value>,
 }
 
+impl ActfStep {
+    pub fn effective_tools(&self) -> &[ActfToolCall] {
+        if self.tools.is_empty() {
+            &self.assistant_content.tool_calls
+        } else {
+            &self.tools
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActfAssistantContent {
+    #[serde(default, deserialize_with = "null_as_empty_string")]
     pub content: String,
+    #[serde(default, deserialize_with = "null_as_empty_string")]
     pub reasoning_content: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub tool_calls: Vec<ActfToolCall>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -79,10 +175,15 @@ pub struct ActfAssistantContent {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActfMetric {
+    #[serde(default)]
     pub prompt_tokens_len: Value,
+    #[serde(default)]
     pub completion_tokens_len: Value,
+    #[serde(default)]
     pub llm_infer_ms: Value,
+    #[serde(default)]
     pub env_action_ms: Value,
+    #[serde(default)]
     pub stop_reason: Value,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -90,19 +191,59 @@ pub struct ActfMetric {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActfToolCall {
-    #[serde(rename = "type")]
+    #[serde(
+        rename = "type",
+        default,
+        deserialize_with = "null_as_empty_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub kind: String,
+    #[serde(
+        default,
+        deserialize_with = "null_as_empty_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub id: String,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
+impl ActfToolCall {
+    pub fn effective_id(&self, step_id: i64, index: usize) -> String {
+        if self.id.trim().is_empty() {
+            format!("step-{step_id}-tool-{index}")
+        } else {
+            self.id.clone()
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActfObservation {
-    #[serde(rename = "type")]
+    #[serde(
+        rename = "type",
+        default,
+        deserialize_with = "null_as_empty_string",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub kind: String,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+fn null_as_empty_string<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn null_as_default<'de, T, D>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    T: Default + Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 impl ActfDocument {
@@ -155,11 +296,6 @@ impl ActfDocument {
             if attempt_id.trim().is_empty() {
                 return Err(InputIssue::invalid("ACTF attempt id must not be empty"));
             }
-            if attempt.status.trim().is_empty() {
-                return Err(InputIssue::invalid(format!(
-                    "ACTF attempt '{attempt_id}' status is required"
-                )));
-            }
             attempt
                 .trajectory
                 .validate()
@@ -182,7 +318,7 @@ impl ActfTrajectory {
                 "ACTF trajectory started_at and finished_at are required",
             ));
         }
-        if self.steps.is_empty() {
+        if self.steps.is_empty() && self.events.is_empty() {
             return Err(InputIssue::invalid(
                 "ACTF trajectory steps must not be empty",
             ));
@@ -209,7 +345,10 @@ impl ActfTrajectory {
                     step.step_id
                 )));
             }
-            if step.assistant_content.tool_calls != step.tools {
+            if !step.tools.is_empty()
+                && !step.assistant_content.tool_calls.is_empty()
+                && step.assistant_content.tool_calls != step.tools
+            {
                 return Err(InputIssue::invalid(format!(
                     "ACTF step {} assistant_content.tool_calls must equal tools",
                     step.step_id
@@ -229,27 +368,16 @@ impl ActfTrajectory {
             }
 
             let mut step_call_ids = HashSet::new();
-            for call in &step.tools {
-                if call.kind.trim().is_empty() || call.id.trim().is_empty() {
-                    return Err(InputIssue::invalid(format!(
-                        "ACTF step {} tool calls require type and id",
-                        step.step_id
-                    )));
-                }
-                if !step_call_ids.insert(call.id.as_str()) {
+            for (call_index, call) in step.effective_tools().iter().enumerate() {
+                let call_id = call.effective_id(step.step_id, call_index);
+                if !step_call_ids.insert(call_id) {
                     return Err(InputIssue::invalid(format!(
                         "duplicate ACTF tool call id '{}'",
-                        call.id
+                        call.effective_id(step.step_id, call_index)
                     )));
                 }
             }
             for observation in &step.observation {
-                if observation.kind.trim().is_empty() {
-                    return Err(InputIssue::invalid(format!(
-                        "ACTF step {} observation type is required",
-                        step.step_id
-                    )));
-                }
                 let referenced_id = observation
                     .extra
                     .get("tool_use_id")
@@ -332,11 +460,114 @@ mod tests {
     }
 
     #[test]
+    fn accepts_name_arguments_tool_without_type_or_id() {
+        let mut value = serde_json::to_value(fixture()).unwrap();
+        let tool = json!({"name": "Glob", "arguments": {"pattern": "**/*"}});
+        value["attempts"]["1"]["trajectory"]["steps"][0]["tools"] = json!([tool]);
+        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]["tool_calls"] =
+            json!([tool]);
+        value["attempts"]["1"]["trajectory"]["steps"][0]["observation"] =
+            json!([{"role":"tool","text":"ok"}]);
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        document.validate().unwrap();
+        let call = &document.attempts["1"].trajectory.steps[0].tools[0];
+        assert_eq!(call.kind, "");
+        assert_eq!(call.id, "");
+        assert_eq!(call.extra["name"], "Glob");
+        assert_eq!(call.effective_id(1, 0), "step-1-tool-0");
+    }
+
+    #[test]
+    fn accepts_object_ground_truth() {
+        let mut value = serde_json::to_value(fixture()).unwrap();
+        value["attempts"]["1"]["ground_truth"] = json!({"checklist_path": "/tmp/check.json"});
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            document.attempts["1"].ground_truth,
+            json!({"checklist_path": "/tmp/check.json"})
+        );
+        document.validate().unwrap();
+    }
+
+    #[test]
     fn parses_and_validates_actf_v1() {
         let document = fixture();
         document.validate().unwrap();
         let json = document.to_json_string_pretty().unwrap();
         assert_eq!(ActfDocument::from_json_str(&json).unwrap(), document);
+    }
+
+    #[test]
+    fn accepts_empty_tools_when_assistant_has_tool_calls() {
+        let mut value = serde_json::to_value(fixture()).unwrap();
+        value["attempts"]["1"]["trajectory"]["steps"][0]["tools"] = json!([]);
+        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]["tool_calls"] = json!([{
+            "id": "call-1",
+            "type": "function",
+            "function": {"name": "bash_command", "arguments": {"keystrokes": "pwd\n"}}
+        }]);
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        document.validate().unwrap();
+        assert_eq!(
+            document.attempts["1"].trajectory.steps[0]
+                .effective_tools()
+                .len(),
+            1
+        );
+        assert_eq!(
+            document.attempts["1"].trajectory.steps[0].effective_tools()[0].id,
+            "call-1"
+        );
+    }
+
+    #[test]
+    fn accepts_observation_without_type() {
+        let mut value = serde_json::to_value(fixture()).unwrap();
+        value["attempts"]["1"]["trajectory"]["steps"][0]["observation"] = json!([{"content":"ok"}]);
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            document.attempts["1"].trajectory.steps[0].observation[0].kind,
+            ""
+        );
+        assert_eq!(
+            document.attempts["1"].trajectory.steps[0].observation[0].extra["content"],
+            "ok"
+        );
+        document.validate().unwrap();
+    }
+
+    #[test]
+    fn accepts_openclaw_event_log_as_trajectory() {
+        let mut value = serde_json::to_value(fixture()).unwrap();
+        value["attempts"]["1"]["status"] = json!("run_error");
+        value["attempts"]["1"]["trajectory"] = json!([
+            {"type":"session","id":"s1","timestamp":"2026-06-17T07:26:27.170Z","cwd":"/root"},
+            {"type":"message","timestamp":"2026-06-17T07:26:28Z",
+             "message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+        ]);
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        document.validate().unwrap();
+        assert!(document.attempts["1"].trajectory.steps.is_empty());
+        assert_eq!(document.attempts["1"].trajectory.events.len(), 2);
+        assert_eq!(
+            document.attempts["1"].trajectory.started_at,
+            "2026-06-17T07:26:27.170Z"
+        );
+    }
+
+    #[test]
+    fn treats_null_reasoning_content_as_empty_string() {
+        let mut value = serde_json::to_value(fixture()).unwrap();
+        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]
+            ["reasoning_content"] = Value::Null;
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            document.attempts["1"].trajectory.steps[0]
+                .assistant_content
+                .reasoning_content,
+            ""
+        );
+        document.validate().unwrap();
     }
 
     #[test]

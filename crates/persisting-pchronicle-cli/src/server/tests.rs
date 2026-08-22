@@ -205,6 +205,9 @@ fn projected_turn_sequence_wins_over_call_wide_event_group() {
         latency_ms: None,
         ttft_ms: None,
         extra: Some(json!({"call_id": "model-call", "seq": 11})),
+        env: None,
+        prompt: None,
+        finished_at: None,
     };
     let by_call = BTreeMap::from([("model-call".into(), vec![10, 11])]);
 
@@ -235,6 +238,9 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
         latency_ms: None,
         ttft_ms: None,
         extra: Some(json!({"call_id": "model-call", "seq": 0})),
+        env: None,
+        prompt: None,
+        finished_at: None,
     };
     let agent = StorylineTurn {
         id: 2,
@@ -254,6 +260,8 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
             result: None,
             duration_ms: None,
             extra: None,
+            kind: None,
+            response: None,
         }]),
         observation: None,
         metrics: Some(json!({
@@ -267,6 +275,9 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
         latency_ms: Some(1000),
         ttft_ms: Some(100),
         extra: Some(json!({"call_id": "model-call", "seq": 1})),
+        env: None,
+        prompt: None,
+        finished_at: None,
     };
     let event = |seq, kind: &str, payload| EventRecord {
         identity: Default::default(),
@@ -750,6 +761,33 @@ async fn prepared_catalog_installs_refreshes_and_retains_the_last_good_runtime(
 }
 
 #[tokio::test]
+async fn warehouse_keeps_api_v1_aliases_for_embedded_web_ui() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let root = json_dataset_root();
+    let app = router(root.to_string_lossy().to_string());
+    for uri in ["/api/v1/explorer/runs?limit=10", "/api/v1/query/tables"] {
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "{uri} failed: {}",
+            String::from_utf8_lossy(&response.into_body().collect().await.unwrap().to_bytes())
+        );
+    }
+}
+
+#[tokio::test]
 async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -863,6 +901,63 @@ async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
     let detail: Value = serde_json::from_slice(&detail_body).unwrap();
     assert_eq!(detail["summary"]["id"], 1);
     assert_eq!(detail["turn"]["src"], "user");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn explorer_lists_nested_actf_event_log_json_files() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let root = json_dataset_root();
+    let nested = root.join("owner/details");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(
+        nested.join("_error_lean4-proof_formal method.json"),
+        serde_json::to_vec(&json!({
+            "task_id": "lean4-proof",
+            "category": "formal method",
+            "k": 1,
+            "correct": false,
+            "solved_at": null,
+            "attempts_tried": 1,
+            "attempts": {
+                "1": {
+                    "correct": false,
+                    "status": "run_error",
+                    "trajectory": [
+                        {"type":"session","id":"s1","timestamp":"2026-06-17T07:26:27.170Z","cwd":"/root"},
+                        {"type":"message","id":"m1","timestamp":"2026-06-17T07:26:28Z",
+                         "message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+                    ]
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let response = router(root.to_string_lossy().to_string())
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/runs?limit=20")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "explorer failed: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let page: Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        page["snapshot"]["total"].as_u64().unwrap() >= 2,
+        "expected gateway.json plus nested ACTF, got {page}"
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 

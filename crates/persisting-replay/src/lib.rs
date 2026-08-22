@@ -15,10 +15,14 @@ mod error;
 mod io;
 mod journal;
 mod model;
+mod process;
 
 pub use config::{
     request_from_json, OverlayFsConfig, OverlayNetConfig, ReplayConfig, ReplayToml, RunConfig,
 };
 pub use engine::execute;
 pub use error::{ReplayError, ReplayErrorKind};
-pub use model::{AgentKind, PlaybackRequest, ReplayResult, RESULT_SCHEMA_VERSION};
+pub use model::{
+    AgentKind, AgentStatus, ExecutionReport, PlaybackRequest, ReplayFailure, ReplayMode,
+    ReplayPhase, ReplayQuality, ReplayResult, RESULT_SCHEMA_VERSION,
+};

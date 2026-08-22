@@ -150,8 +150,17 @@ pub(super) async fn freeze_candidate(
             ))
         }
         Candidate::LocalFile {
-            file, root, path, ..
+            file,
+            root,
+            path,
+            size_bytes,
+            ..
         } => {
+            anyhow::ensure!(
+                size_bytes <= options.files.max_file_bytes,
+                "trajectory query file {file} is {size_bytes} bytes, exceeding max_file_bytes {}",
+                options.files.max_file_bytes
+            );
             // Keep format detection behind LazySource::resolve so an exact
             // `_file_` predicate can prune unrelated malformed files before
             // any of their contents are opened.

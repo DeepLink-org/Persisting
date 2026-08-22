@@ -79,6 +79,21 @@ replay_only = false
 disable_thinking = true
 ~~~
 
+### 4.1 执行模式与结果
+
+- 默认模式会执行选中的前缀，然后启动 Agent 继续运行；
+- `--replay-only` 会执行前缀，但在下一次模型请求前停止；
+- `--prepare-only` 只校验并构造前缀，不执行工具、不启动 Agent，也不要求 Agent runtime。
+
+`--max-steps` 是包含回放前缀在内的 Agent 动作总预算。例如
+`--after-step 30 --max-steps 50` 最多留下 20 个续跑动作。仅回放模式的预算必须覆盖前缀；续跑模式还必须至少留下一个实时动作。
+
+结果协议为 `sandbox-playback.result/v3`：`phase` 为 `prepared`、`replayed`
+或 `continued`；`quality` 为 `verified` 或 `degraded`；`agent_status` 区分
+`not_started`、`completed`、`max_steps` 与 `failed`。失败结果会保留已经生成的日志和原生轨迹。即使 OpenHands 进程返回 0，只要控制器报告 fatal 状态，结果仍为失败。
+
+迁移说明：旧版非 Claude 配置有时使用 `replay_only = true` 表示只构造前缀、不执行。现在应改为 `prepare_only = true`；v3 的 replay-only 一定会执行选中的前缀，因此需要精确版本的 runtime。无法重新生成的 Claude observation 默认失败，只有显式指定 `--allow-stale-observations` 才会复用并把质量标记为 `degraded`。
+
 `disable_thinking` 也可以通过 `--disable-thinking` 指定。只有显式提供 `--safe`、`--executor`、`--overlayfs-base` 等运行参数，或在 TOML 中增加 `[run]`、`[overlayfs]`、`[overlaynet]`，才会在回放外层创建受管的 `pvisor run`。
 
 完整参数见 [`pvisor replay` 命令参考](../reference/cli.md#replay-an-agent-trajectory)。

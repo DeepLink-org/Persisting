@@ -10,7 +10,8 @@ pub use crate::formats::llm::{
     LlmToolDefinition, LlmUsage,
 };
 pub use crate::formats::storyline::{
-    StoryLink, StorylineAgent, StorylineDocument, StorylineOrigin, StorylineToolCall,
+    StoryLink, StorylineAgent, StorylineDocument, StorylineEnv, StorylineOrigin, StorylinePrompt,
+    StorylineTask, StorylineTaskLlm, StorylineTaskResult, StorylineToolCall, StorylineToolResponse,
     StorylineTurn, STORYLINE_SCHEMA_VERSION,
 };
 pub use crate::formats::timestamp::StorylineTimestamp;

@@ -313,6 +313,11 @@ pub(crate) fn content_columns(kind: StorylineTableKind) -> &'static [(&'static s
             ("final_metrics_json", true),
             ("continued_trajectory_ref", false),
             ("extra_json", true),
+            ("meta_json", true),
+            ("task_json", true),
+            ("started_at_json", true),
+            ("finished_at_json", true),
+            ("prompt_json", true),
         ],
         StorylineTableKind::Steps => &[
             ("message_json", true),
@@ -320,11 +325,15 @@ pub(crate) fn content_columns(kind: StorylineTableKind) -> &'static [(&'static s
             ("reasoning_effort_json", true),
             ("metrics_json", true),
             ("extra_json", true),
+            ("env_json", true),
+            ("finished_at_json", true),
+            ("prompt_json", true),
         ],
         StorylineTableKind::ToolCalls => &[
             ("arguments_json", true),
             ("results_json", true),
             ("extra_json", true),
+            ("response_json", true),
         ],
     }
 }
@@ -349,7 +358,9 @@ fn externalize_batch(
 ) -> Result<RecordBatch> {
     let mut columns = batch.columns().to_vec();
     for (name, is_json) in content_columns(kind) {
-        let index = batch.schema().index_of(name)?;
+        let Ok(index) = batch.schema().index_of(name) else {
+            continue;
+        };
         let values = columns[index]
             .as_any()
             .downcast_ref::<StringArray>()

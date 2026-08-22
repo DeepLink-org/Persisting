@@ -13,8 +13,8 @@ use serde_json::{json, Map, Value};
 
 use crate::format::DocumentFormat;
 use crate::formats::storyline::{
-    StorylineAgent, StorylineDocument, StorylineOrigin, StorylineToolCall, StorylineTurn,
-    STORYLINE_SCHEMA_VERSION,
+    StorylineAgent, StorylineDocument, StorylineEnv, StorylineOrigin, StorylineTask,
+    StorylineToolCall, StorylineTurn, STORYLINE_SCHEMA_VERSION,
 };
 use crate::formats::timestamp::StorylineTimestamp;
 use crate::formats::unknown_fields::{
@@ -380,6 +380,7 @@ fn consume_openai_meta(
     {
         meta.remove("source");
     }
+    meta.remove("group_id");
 
     if let Some(original_env_state) = meta.remove("env_state") {
         if is_known_optional_empty(&original_env_state) {
@@ -396,6 +397,16 @@ fn consume_openai_meta(
                     }
                     for field in OPENAI_ENV_METRIC_FIELDS {
                         env_state.remove(*field);
+                    }
+                    for field in [
+                        "endpoint",
+                        "event_type",
+                        "redaction_policy",
+                        "request_id",
+                        "upstream_base_url",
+                        "weight_version",
+                    ] {
+                        env_state.remove(field);
                     }
                     if !env_state.is_empty() {
                         meta.insert("env_state".into(), Value::Object(env_state));
@@ -546,6 +557,15 @@ fn consume_openai_row(
     row.remove("session_id");
     row.remove("step_id");
     row.remove("created_at");
+    for key in ["env_name", "dataset_type", "dt", "id"] {
+        if row
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        {
+            row.remove(key);
+        }
+    }
     for field in OPENAI_ROW_METRIC_FIELDS {
         row.remove(*field);
     }
@@ -755,38 +775,104 @@ fn populate_openai_row_fields(
         row.insert("created_at".into(), timestamp.source_value().clone());
     }
 
-    let Some(metrics) = agent.metrics.as_ref().and_then(Value::as_object) else {
+    if let Some(metrics) = agent.metrics.as_ref().and_then(Value::as_object) {
+        for field in OPENAI_ROW_METRIC_FIELDS {
+            if let Some(value) = metrics.get(*field) {
+                row.insert((*field).to_string(), value.clone());
+            }
+        }
+        let mut env_state = Map::new();
+        for field in OPENAI_ENV_METRIC_FIELDS {
+            if OPENAI_ROW_METRIC_FIELDS.contains(field) && row.contains_key(*field) {
+                continue;
+            }
+            if let Some(value) = metrics.get(*field) {
+                env_state.insert((*field).to_string(), value.clone());
+            }
+        }
+        if !metrics.contains_key("total_latency_ms") {
+            if let Some(latency_ms) = agent.latency_ms {
+                env_state.insert("total_latency_ms".into(), json!(latency_ms));
+            }
+        }
+        if !metrics.contains_key("ttft_ms") {
+            if let Some(ttft_ms) = agent.ttft_ms {
+                env_state.insert("ttft_ms".into(), json!(ttft_ms));
+            }
+        }
+        if !env_state.is_empty() {
+            row.insert(
+                "meta_json".into(),
+                json!({"env_state": Value::Object(env_state)}),
+            );
+        }
+    }
+    write_openai_env_fields(row, story, agent);
+}
+
+fn write_openai_env_fields(
+    row: &mut Map<String, Value>,
+    story: &StorylineDocument,
+    agent: &StorylineTurn,
+) {
+    let merged = match (
+        story.task.as_ref().and_then(|task| task.env.as_ref()),
+        agent.env.as_ref(),
+    ) {
+        (Some(base), Some(overlay)) => Some(base.merge_overlay(overlay)),
+        (Some(base), None) => Some(base.clone()),
+        (None, Some(overlay)) => Some(overlay.clone()),
+        (None, None) => None,
+    };
+    let Some(env) = merged else {
         return;
     };
-    for field in OPENAI_ROW_METRIC_FIELDS {
-        if let Some(value) = metrics.get(*field) {
-            row.insert((*field).to_string(), value.clone());
+    if let Some(name) = &env.name {
+        row.insert("env_name".into(), Value::String(name.clone()));
+    }
+    if let Some(id) = &env.id {
+        row.insert("id".into(), Value::String(id.clone()));
+    }
+    if let Some(state) = &env.state {
+        if let Some(dataset_type) = state.get("dataset_type") {
+            row.insert("dataset_type".into(), dataset_type.clone());
+        }
+        if let Some(dt) = state.get("dt") {
+            row.insert("dt".into(), dt.clone());
         }
     }
-    let mut env_state = Map::new();
-    for field in OPENAI_ENV_METRIC_FIELDS {
-        if OPENAI_ROW_METRIC_FIELDS.contains(field) && row.contains_key(*field) {
-            continue;
-        }
-        if let Some(value) = metrics.get(*field) {
-            env_state.insert((*field).to_string(), value.clone());
-        }
+    let mut meta = row
+        .remove("meta_json")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    if let Some(group_id) = env.state.as_ref().and_then(|state| state.get("group_id")) {
+        meta.insert("group_id".into(), group_id.clone());
     }
-    if !metrics.contains_key("total_latency_ms") {
-        if let Some(latency_ms) = agent.latency_ms {
-            env_state.insert("total_latency_ms".into(), json!(latency_ms));
-        }
+    let mut env_state = meta
+        .remove("env_state")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    if let Some(endpoint) = &env.endpoint {
+        env_state.insert("endpoint".into(), Value::String(endpoint.clone()));
     }
-    if !metrics.contains_key("ttft_ms") {
-        if let Some(ttft_ms) = agent.ttft_ms {
-            env_state.insert("ttft_ms".into(), json!(ttft_ms));
+    if let Some(event_type) = &env.event_type {
+        env_state.insert("event_type".into(), Value::String(event_type.clone()));
+    }
+    if let Some(request_id) = &env.request_id {
+        env_state.insert("request_id".into(), Value::String(request_id.clone()));
+    }
+    if let Some(state) = &env.state {
+        for key in ["redaction_policy", "upstream_base_url", "weight_version"] {
+            if let Some(value) = state.get(key) {
+                env_state.insert(key.to_string(), value.clone());
+            }
         }
     }
     if !env_state.is_empty() {
-        row.insert(
-            "meta_json".into(),
-            json!({"env_state": Value::Object(env_state)}),
-        );
+        meta.insert("env_state".into(), Value::Object(env_state));
+    }
+    if !meta.is_empty() {
+        row.insert("meta_json".into(), Value::Object(meta));
     }
 }
 
@@ -1015,6 +1101,9 @@ fn openai_context_turn(id: i64, message: &Map<String, Value>) -> Option<Storylin
         latency_ms: None,
         ttft_ms: None,
         extra: None,
+        env: None,
+        prompt: None,
+        finished_at: None,
     })
 }
 
@@ -1034,6 +1123,97 @@ fn openai_turn_ids(context_count: i64, step_id: i64) -> InputResult<(i64, i64)> 
     Ok((user_id, agent_id))
 }
 
+fn openai_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn assign_stable_string(
+    slot: &mut Option<String>,
+    incoming: Option<String>,
+    overlay: &mut Option<String>,
+) {
+    let Some(incoming) = incoming else {
+        return;
+    };
+    match slot {
+        None => *slot = Some(incoming),
+        Some(existing) if existing == &incoming => {}
+        Some(_) => *overlay = Some(incoming),
+    }
+}
+
+fn assign_stable_state(
+    task_state: &mut serde_json::Map<String, Value>,
+    key: &str,
+    incoming: Option<Value>,
+    overlay: &mut serde_json::Map<String, Value>,
+) {
+    let Some(incoming) = incoming else {
+        return;
+    };
+    if incoming.is_null() {
+        return;
+    }
+    match task_state.get(key) {
+        None => {
+            task_state.insert(key.to_string(), incoming);
+        }
+        Some(existing) if existing == &incoming => {}
+        Some(_) => {
+            overlay.insert(key.to_string(), incoming);
+        }
+    }
+}
+
+fn openai_turn_env(
+    row: &Map<String, Value>,
+    env_state: Option<&Value>,
+    task_env: &mut StorylineEnv,
+    task_state: &mut serde_json::Map<String, Value>,
+) -> Option<StorylineEnv> {
+    let env_state = env_state.and_then(Value::as_object);
+    let mut overlay = StorylineEnv::default();
+    let mut overlay_state = serde_json::Map::new();
+    assign_stable_string(
+        &mut task_env.name,
+        openai_string(row.get("env_name")),
+        &mut overlay.name,
+    );
+    assign_stable_string(
+        &mut task_env.endpoint,
+        openai_string(env_state.and_then(|state| state.get("endpoint"))),
+        &mut overlay.endpoint,
+    );
+    assign_stable_state(
+        task_state,
+        "dataset_type",
+        row.get("dataset_type").cloned(),
+        &mut overlay_state,
+    );
+    assign_stable_state(task_state, "dt", row.get("dt").cloned(), &mut overlay_state);
+    let group_id = parsed_meta(row)
+        .as_ref()
+        .and_then(|meta| meta.get("group_id"))
+        .cloned();
+    assign_stable_state(task_state, "group_id", group_id, &mut overlay_state);
+    for key in ["redaction_policy", "upstream_base_url", "weight_version"] {
+        assign_stable_state(
+            task_state,
+            key,
+            env_state.and_then(|state| state.get(key)).cloned(),
+            &mut overlay_state,
+        );
+    }
+    overlay.id = openai_string(row.get("id"));
+    overlay.event_type = openai_string(env_state.and_then(|state| state.get("event_type")));
+    overlay.request_id = openai_string(env_state.and_then(|state| state.get("request_id")));
+    overlay.state = (!overlay_state.is_empty()).then_some(overlay_state);
+    (!overlay.is_empty()).then_some(overlay)
+}
+
 fn rows_to_storyline(
     session_id: &str,
     records: &mut [(usize, Value)],
@@ -1047,6 +1227,8 @@ fn rows_to_storyline(
     let mut first_model: Option<String> = None;
     let mut run_id: Option<String> = None;
     let mut context_count = 0_i64;
+    let mut task_env = StorylineEnv::default();
+    let mut task_state = serde_json::Map::new();
 
     for (record_index, (ordinal, raw)) in records.iter_mut().enumerate() {
         let row = raw.as_object_mut().ok_or_else(|| {
@@ -1193,6 +1375,9 @@ fn rows_to_storyline(
                 latency_ms: None,
                 ttft_ms: None,
                 extra: None,
+                env: None,
+                prompt: None,
+                finished_at: None,
             });
         }
 
@@ -1217,7 +1402,15 @@ fn rows_to_storyline(
             latency_ms,
             ttft_ms,
             extra: None,
+            env: None,
+            prompt: None,
+            finished_at: None,
         });
+
+        let turn_env = openai_turn_env(row, env_state.as_ref(), &mut task_env, &mut task_state);
+        if let Some(turn) = turns.last_mut() {
+            turn.env = turn_env;
+        }
 
         let mapped_agent_id = first_agent_id
             .as_deref()
@@ -1232,6 +1425,13 @@ fn rows_to_storyline(
             mapped_agent_id,
         );
     }
+
+    task_env.state = (!task_state.is_empty()).then_some(task_state);
+    let task = StorylineTask {
+        env: (!task_env.is_empty()).then_some(task_env),
+        llm: None,
+        result: None,
+    };
 
     let final_metrics = turns.last().and_then(|turn| turn.metrics.clone());
     let agent_id = first_agent_id
@@ -1263,6 +1463,11 @@ fn rows_to_storyline(
         final_metrics,
         continued_trajectory_ref: None,
         extra: None,
+        meta: None,
+        task: (!task.is_empty()).then_some(task),
+        prompt: None,
+        started_at: None,
+        finished_at: None,
         unknown_fields: Default::default(),
         unknown_key_counts: Default::default(),
         turns,
@@ -1464,6 +1669,8 @@ fn parse_tool_calls(value: Option<&Value>) -> Option<Vec<StorylineToolCall>> {
                 result: Default::default(),
                 duration_ms: None,
                 extra: None,
+                kind: None,
+                response: None,
             })
         })
         .collect::<Vec<_>>();
@@ -1526,6 +1733,8 @@ fn parse_embedded_tool_call(
         result: Default::default(),
         duration_ms: None,
         extra: None,
+        kind: None,
+        response: None,
     }])
 }
 

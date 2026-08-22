@@ -198,6 +198,9 @@ mod tests {
                 latency_ms: None,
                 ttft_ms: None,
                 extra: None,
+                env: None,
+                prompt: None,
+                finished_at: None,
             };
             upsert_agenticmd_turn(path, &story, &turn, call_id).unwrap();
         }

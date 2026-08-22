@@ -43,6 +43,9 @@ backend-path = ["scripts/packaging"]
 
 [tool.cibuildwheel]
 build = "cp312-*"
+# Nightly/PyPI only publish manylinux + macOS wheels; musllinux is unused
+# and its before-all still assumes yum.
+skip = "*-musllinux_*"
 build-frontend = "build"
 
 [tool.cibuildwheel.linux]

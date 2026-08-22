@@ -7,7 +7,7 @@ use serde_json::Value;
 
 pub const PLAN_SCHEMA_VERSION: &str = "sandbox-replay.plan/v1";
 pub const REQUEST_SCHEMA_VERSION: &str = "sandbox-playback.request/v1";
-pub const RESULT_SCHEMA_VERSION: &str = "sandbox-playback.result/v2";
+pub const RESULT_SCHEMA_VERSION: &str = "sandbox-playback.result/v3";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -63,6 +63,14 @@ impl FromStr for AgentKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayMode {
+    PrepareOnly,
+    ReplayOnly,
+    ReplayAndContinue,
+}
+
 #[derive(Debug, Clone)]
 pub struct PlaybackRequest {
     pub agent: AgentKind,
@@ -77,7 +85,8 @@ pub struct PlaybackRequest {
     pub trajectory_assets: Option<PathBuf>,
     pub session_id: Option<String>,
     pub max_steps: Option<usize>,
-    pub replay_only: bool,
+    pub mode: ReplayMode,
+    pub allow_stale_observations: bool,
     pub run_id: Option<String>,
     pub disable_thinking: bool,
 }
@@ -108,15 +117,15 @@ pub struct ToolBatch {
 }
 
 #[derive(Debug, Clone)]
-pub struct ReplayPlan {
-    pub agent: AgentKind,
-    pub source_path: PathBuf,
-    pub source_sha256: String,
-    pub after_step: usize,
-    pub batches: Vec<ToolBatch>,
-    pub prefix_model_turns: usize,
-    pub native: Value,
-    pub original_next_action: Option<Value>,
+pub(crate) struct ReplayPlan {
+    pub(crate) agent: AgentKind,
+    pub(crate) source_path: PathBuf,
+    pub(crate) source_sha256: String,
+    pub(crate) after_step: usize,
+    pub(crate) batches: Vec<ToolBatch>,
+    pub(crate) prefix_model_turns: usize,
+    pub(crate) native: Value,
+    pub(crate) original_next_action: Option<Value>,
 }
 
 impl ReplayPlan {
@@ -146,6 +155,53 @@ impl ReplayPlan {
             },
             "batches": self.batches,
         })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum AdapterPlan {
+    ClaudeCode(ReplayPlan),
+    MiniSweAgent(ReplayPlan),
+    Openhands(ReplayPlan),
+    SweAgent(ReplayPlan),
+}
+
+impl AdapterPlan {
+    pub(crate) fn agent(&self) -> AgentKind {
+        self.plan().agent
+    }
+
+    pub(crate) fn after_step(&self) -> usize {
+        self.plan().after_step
+    }
+
+    pub(crate) fn prefix_model_turns(&self) -> usize {
+        self.plan().prefix_model_turns
+    }
+
+    pub(crate) fn source_sha256(&self) -> &str {
+        &self.plan().source_sha256
+    }
+
+    pub(crate) fn calls(&self) -> impl Iterator<Item = &ToolCall> {
+        self.plan().calls()
+    }
+
+    pub(crate) fn public_value(&self) -> Value {
+        self.plan().public_value()
+    }
+
+    pub(crate) fn original_next_action(&self) -> Option<&Value> {
+        self.plan().original_next_action.as_ref()
+    }
+
+    fn plan(&self) -> &ReplayPlan {
+        match self {
+            Self::ClaudeCode(plan)
+            | Self::MiniSweAgent(plan)
+            | Self::Openhands(plan)
+            | Self::SweAgent(plan) => plan,
+        }
     }
 }
 
@@ -188,18 +244,135 @@ pub struct AgentResult {
     pub disallowed_tools: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayPhase {
+    Prepared,
+    Replayed,
+    Continued,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayQuality {
+    Verified,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStatus {
+    Completed,
+    MaxSteps,
+    Failed,
+    NotStarted,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReplayFailure {
+    pub category: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ReplayResult {
     pub schema_version: &'static str,
-    pub status: String,
+    pub phase: ReplayPhase,
+    pub quality: ReplayQuality,
+    pub agent_status: AgentStatus,
     pub run_id: String,
     pub agent: AgentResult,
     pub after_step: usize,
     pub replayed_tool_calls: usize,
     pub prefix_model_turns: usize,
     pub continued_steps: usize,
+    pub state_dir: PathBuf,
     pub output_dir: PathBuf,
     pub artifacts: Vec<Artifact>,
+    pub failure: Option<ReplayFailure>,
     pub retryable: bool,
     pub metadata: Value,
+}
+
+#[derive(Debug)]
+pub struct ExecutionReport {
+    pub result: ReplayResult,
+    pub exit_code: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn replay_plan(agent: AgentKind, marker: &str) -> ReplayPlan {
+        ReplayPlan {
+            agent,
+            source_path: PathBuf::from(format!("/{marker}")),
+            source_sha256: marker.into(),
+            after_step: 1,
+            batches: vec![ToolBatch {
+                ordinal: 1,
+                native_locator: marker.into(),
+                tool_calls: Vec::new(),
+                assistant_text: String::new(),
+                native: serde_json::json!({"private": marker}),
+            }],
+            prefix_model_turns: 1,
+            native: serde_json::json!({"private": marker}),
+            original_next_action: None,
+        }
+    }
+
+    #[test]
+    fn adapter_plan_exposes_only_common_dispatch_fields() {
+        let plans = [
+            AdapterPlan::ClaudeCode(replay_plan(AgentKind::ClaudeCode, "claude")),
+            AdapterPlan::MiniSweAgent(replay_plan(AgentKind::MiniSweAgent, "mini")),
+            AdapterPlan::Openhands(replay_plan(AgentKind::Openhands, "openhands")),
+            AdapterPlan::SweAgent(replay_plan(AgentKind::SweAgent, "swe")),
+        ];
+
+        for plan in plans {
+            assert_eq!(plan.after_step(), 1);
+            assert_eq!(plan.prefix_model_turns(), 1);
+            assert_eq!(plan.calls().count(), 0);
+            assert_eq!(plan.public_value()["agent"]["name"], plan.agent().as_str());
+            assert!(!plan.source_sha256().is_empty());
+        }
+    }
+
+    #[test]
+    fn v3_result_serializes_typed_execution_state() {
+        let result = ReplayResult {
+            schema_version: RESULT_SCHEMA_VERSION,
+            phase: ReplayPhase::Replayed,
+            quality: ReplayQuality::Degraded,
+            agent_status: AgentStatus::NotStarted,
+            run_id: "replay-1".into(),
+            agent: AgentResult {
+                kind: "claude-code".into(),
+                version: "2.1.220".into(),
+                entrypoint: None,
+                launch_source: "runtime_manifest".into(),
+                disallowed_tools: Vec::new(),
+            },
+            after_step: 1,
+            replayed_tool_calls: 1,
+            prefix_model_turns: 1,
+            continued_steps: 0,
+            state_dir: PathBuf::from("/state/replay-1"),
+            output_dir: PathBuf::from("/output/replay-1"),
+            artifacts: Vec::new(),
+            failure: None,
+            retryable: false,
+            metadata: Value::Null,
+        };
+
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["schema_version"], "sandbox-playback.result/v3");
+        assert_eq!(value["phase"], "replayed");
+        assert_eq!(value["quality"], "degraded");
+        assert_eq!(value["agent_status"], "not_started");
+        assert_eq!(value["failure"], Value::Null);
+    }
 }

@@ -108,11 +108,20 @@ def run(request: dict[str, Any]) -> None:
     from minisweagent.models import get_model
 
     source = _load(Path(request["source"]))
+    mode = str(request["mode"])
+    if mode not in {"replay_only", "replay_and_continue"}:
+        raise ValueError(f"unsupported replay mode: {mode}")
+    after_step = int(request["after_step"])
+    max_steps = request.get("max_steps")
+    if max_steps is not None:
+        max_steps = int(max_steps)
+        if max_steps < after_step or (mode == "replay_and_continue" and max_steps == after_step):
+            raise ValueError("max_steps does not leave the steps required by replay mode")
     info = source["info"]
     config = copy.deepcopy(info["config"])
     messages = source["messages"]
-    selected = _action_messages(messages)[: int(request["after_step"])]
-    if len(selected) != int(request["after_step"]):
+    selected = _action_messages(messages)[:after_step]
+    if len(selected) != after_step:
         raise ValueError("native trajectory does not contain the requested replay prefix")
 
     model_config = config["model"]
@@ -146,8 +155,8 @@ def run(request: dict[str, Any]) -> None:
         agent_config["mode"] = "yolo"
     if "confirm_exit" in agent_config:
         agent_config["confirm_exit"] = False
-    if request.get("max_steps") is not None:
-        agent_config["step_limit"] = int(request["max_steps"])
+    if max_steps is not None:
+        agent_config["step_limit"] = max_steps
     agent_config["cost_limit"] = 0
 
     model = get_model(config=model_config)
@@ -184,11 +193,48 @@ def run(request: dict[str, Any]) -> None:
 
     source_prefix = messages[: selected[-1][0] + 1]
     agent.n_calls = sum(_has_model_response(message) for message in source_prefix)
+    prefix_calls = agent.n_calls
     agent.cost = sum(float((message.get("extra") or {}).get("cost") or 0) for message in source_prefix)
     Path(request["observations"]).write_text(
         json.dumps(fresh, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    _continue(agent, Path(request["continued"]))
+    reconstructed_path = Path(request["reconstructed"])
+    continued_path = Path(request["continued"])
+    agent.save(reconstructed_path)
+    if mode == "replay_only":
+        phase = "replayed"
+        agent_status = "not_started"
+        continued_steps = 0
+        trajectory_path = reconstructed_path
+    else:
+        _continue(agent, continued_path)
+        phase = "continued"
+        continued_steps = max(0, int(agent.n_calls) - int(prefix_calls))
+        exit_status = ""
+        if agent.messages:
+            exit_status = str((agent.messages[-1].get("extra") or {}).get("exit_status") or "")
+        agent_status = (
+            "max_steps"
+            if exit_status in {"LimitsExceeded", "StepLimitExceeded"}
+            else "completed"
+        )
+        trajectory_path = continued_path
+    Path(request["result"]).write_text(
+        json.dumps(
+            {
+                "phase": phase,
+                "agent_status": agent_status,
+                "replayed_steps": len(selected),
+                "continued_steps": continued_steps,
+                "trajectory": str(trajectory_path),
+                "reconstructed": str(reconstructed_path),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":

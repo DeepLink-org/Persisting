@@ -40,8 +40,13 @@ pub fn story_runs_arrow_schema() -> Arc<ArrowSchema> {
         field("final_metrics_json", DataType::Utf8, true),
         field("continued_trajectory_ref", DataType::Utf8, true),
         field("extra_json", DataType::Utf8, true),
+        field("meta_json", DataType::Utf8, true),
         field("unknown_fields_json", DataType::Utf8, true),
         field("unknown_key_counts_json", DataType::Utf8, true),
+        field("task_json", DataType::Utf8, true),
+        field("started_at_json", DataType::Utf8, true),
+        field("finished_at_json", DataType::Utf8, true),
+        field("prompt_json", DataType::Utf8, true),
     ]))
 }
 
@@ -75,6 +80,9 @@ pub fn story_steps_arrow_schema() -> Arc<ArrowSchema> {
         field("had_observation", DataType::Boolean, false),
         field("observation_json", DataType::Utf8, true),
         field("extra_json", DataType::Utf8, true),
+        field("env_json", DataType::Utf8, true),
+        field("finished_at_json", DataType::Utf8, true),
+        field("prompt_json", DataType::Utf8, true),
     ]))
 }
 
@@ -92,6 +100,8 @@ pub fn story_tool_calls_arrow_schema() -> Arc<ArrowSchema> {
         field("results_json", DataType::Utf8, false),
         field("duration_ms", DataType::Int64, true),
         field("extra_json", DataType::Utf8, true),
+        field("kind", DataType::Utf8, true),
+        field("response_json", DataType::Utf8, true),
     ]))
 }
 
@@ -193,6 +203,11 @@ pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
             )),
             Arc::new(opt_utf8_owned(
                 rows.iter()
+                    .map(|r| opt_json(&r.meta))
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
                     .map(|r| {
                         (!r.unknown_fields.is_empty())
                             .then(|| json(&r.unknown_fields))
@@ -207,6 +222,26 @@ pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
                             .then(|| json(&r.unknown_key_counts))
                             .transpose()
                     })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| opt_json(&r.task))
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| opt_json(&r.started_at))
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| opt_json(&r.finished_at))
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| opt_json(&r.prompt))
                     .collect::<Result<Vec<_>>>()?,
             )),
         ],
@@ -288,6 +323,21 @@ pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
                     .map(|r| opt_json(&r.extra))
                     .collect::<Result<_>>()?,
             )),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| opt_json(&r.env))
+                    .collect::<Result<_>>()?,
+            )),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| opt_json(&r.finished_at))
+                    .collect::<Result<_>>()?,
+            )),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| opt_json(&r.prompt))
+                    .collect::<Result<_>>()?,
+            )),
         ],
     )
     .context("build steps Lance batch")
@@ -329,6 +379,12 @@ pub fn story_tool_calls_to_batch(rows: &[StoryToolCallRow]) -> Result<RecordBatc
             Arc::new(opt_utf8_owned(
                 rows.iter()
                     .map(|r| opt_json(&r.extra))
+                    .collect::<Result<_>>()?,
+            )),
+            Arc::new(opt_utf8(rows.iter().map(|r| r.kind.as_deref()))),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| opt_json(&r.response))
                     .collect::<Result<_>>()?,
             )),
         ],
@@ -502,6 +558,7 @@ pub fn story_runs_from_batch(batch: &RecordBatch) -> Result<Vec<StoryRunRow>> {
                 final_metrics: optional_json_at(batch, "final_metrics_json", row)?,
                 continued_trajectory_ref: string_at(batch, "continued_trajectory_ref", row)?,
                 extra: optional_json_at(batch, "extra_json", row)?,
+                meta: optional_json_if_present(batch, "meta_json", row)?,
                 unknown_fields: optional_json_if_present(batch, "unknown_fields_json", row)?
                     .unwrap_or_default(),
                 unknown_key_counts: optional_json_if_present(
@@ -510,6 +567,10 @@ pub fn story_runs_from_batch(batch: &RecordBatch) -> Result<Vec<StoryRunRow>> {
                     row,
                 )?
                 .unwrap_or_default(),
+                task: optional_json_if_present(batch, "task_json", row)?,
+                started_at: optional_json_if_present(batch, "started_at_json", row)?,
+                finished_at: optional_json_if_present(batch, "finished_at_json", row)?,
+                prompt: optional_json_if_present(batch, "prompt_json", row)?,
             })
         })
         .collect()
@@ -544,6 +605,9 @@ pub fn story_steps_from_batch(batch: &RecordBatch) -> Result<Vec<StoryStepRow>> 
                 had_observation: required_bool_at(batch, "had_observation", row)?,
                 observation: optional_json_at(batch, "observation_json", row)?,
                 extra: optional_json_at(batch, "extra_json", row)?,
+                env: optional_json_if_present(batch, "env_json", row)?,
+                finished_at: optional_json_if_present(batch, "finished_at_json", row)?,
+                prompt: optional_json_if_present(batch, "prompt_json", row)?,
             })
         })
         .collect()
@@ -573,6 +637,8 @@ pub fn story_tool_calls_from_batch(batch: &RecordBatch) -> Result<Vec<StoryToolC
                 )?,
                 duration_ms: i64_at(batch, "duration_ms", row)?,
                 extra: optional_json_at(batch, "extra_json", row)?,
+                kind: string_at_if_present(batch, "kind", row)?,
+                response: optional_json_if_present(batch, "response_json", row)?,
             })
         })
         .collect()
@@ -584,9 +650,9 @@ mod tests {
 
     #[test]
     fn empty_batches_keep_all_three_schemas() {
-        assert_eq!(story_runs_to_batch(&[]).unwrap().num_columns(), 22);
-        assert_eq!(story_steps_to_batch(&[]).unwrap().num_columns(), 23);
-        assert_eq!(story_tool_calls_to_batch(&[]).unwrap().num_columns(), 12);
+        assert_eq!(story_runs_to_batch(&[]).unwrap().num_columns(), 27);
+        assert_eq!(story_steps_to_batch(&[]).unwrap().num_columns(), 26);
+        assert_eq!(story_tool_calls_to_batch(&[]).unwrap().num_columns(), 14);
     }
 
     #[test]
@@ -632,6 +698,9 @@ mod tests {
                 had_observation: false,
                 observation: None,
                 extra: None,
+                env: None,
+                prompt: None,
+                finished_at: None,
             });
         }
 
@@ -681,6 +750,9 @@ mod tests {
             had_observation: false,
             observation: None,
             extra: None,
+            env: None,
+            prompt: None,
+            finished_at: None,
         }];
         let batch = story_steps_to_batch(&rows).unwrap();
         let source_index = batch.schema().index_of("timestamp_source_json").unwrap();
@@ -717,6 +789,9 @@ mod tests {
             had_observation: false,
             observation: None,
             extra: None,
+            env: None,
+            prompt: None,
+            finished_at: None,
         }];
         let current = story_steps_to_batch(&rows).unwrap();
         let timestamp_index = current.schema().index_of("timestamp").unwrap();
@@ -764,6 +839,8 @@ mod tests {
             results: vec![serde_json::json!({"source_call_id": "c", "content": "y"})],
             duration_ms: Some(8),
             extra: None,
+            kind: None,
+            response: None,
         }];
         let batch = story_tool_calls_to_batch(&rows).unwrap();
         assert_eq!(story_tool_calls_from_batch(&batch).unwrap(), rows);

@@ -1,3 +1,137 @@
+.pc2-view-toggle {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid #d0d5dd;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.pc2-view-toggle button {
+  height: 30px;
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
+  color: #667085;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.pc2-view-toggle button + button {
+  border-left: 1px solid #e4e7ec;
+}
+
+.pc2-view-toggle button.active {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.pc2-view-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #98a2b3;
+  font-size: 9px;
+}
+
+.pc2-view-summary strong {
+  color: #344054;
+  font-size: 11px;
+}
+
+.pc2-chat-list,
+.pc2-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pc2-chat-card {
+  overflow: hidden;
+  border: 1px solid #e4e7ec;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.pc2-chat-card.selected {
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 2px #2563eb12;
+}
+
+.pc2-chat-card-summary {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 10px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.pc2-chat-card-summary::-webkit-details-marker {
+  display: none;
+}
+
+.pc2-chat-card-summary:hover {
+  background: #f8fafc;
+}
+
+.pc2-chat-kind {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #f2f4f7;
+  color: #475467;
+  font-size: 8px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.pc2-chat-kind.chat {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.pc2-chat-kind.orphan {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.pc2-chat-kind.system {
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.pc2-chat-card-summary strong {
+  color: #1d2939;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.pc2-chat-preview {
+  min-width: 0;
+  overflow: hidden;
+  color: #667085;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc2-chat-card-stats {
+  display: flex;
+  gap: 6px;
+  color: #98a2b3;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.pc2-chat-card-body {
+  padding: 8px 10px 10px;
+  border-top: 1px solid #eceef1;
+  background: #fbfcfd;
+}
+
 .pc2-inline-trace {
   min-height: 0;
   flex: 1;
@@ -49,6 +183,12 @@
 
 .pc2-inline-detail .pc2-evidence-block pre {
   max-height: 420px;
+}
+
+.pc2-inline-detail .pc2-evidence-block .pc2-json-scroll,
+.pc2-inline-detail .pc2-evidence-block .pc2-json-tree {
+  max-height: 420px;
+  overflow: auto;
 }
 
 @media (max-width: 1050px) {

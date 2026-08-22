@@ -111,6 +111,11 @@ fn story(session_id: &str) -> StorylineDocument {
         final_metrics: None,
         continued_trajectory_ref: None,
         extra: None,
+        meta: None,
+        task: None,
+        prompt: None,
+        started_at: None,
+        finished_at: None,
         unknown_fields: Default::default(),
         unknown_key_counts: Default::default(),
         turns: vec![
@@ -133,6 +138,9 @@ fn story(session_id: &str) -> StorylineDocument {
                 latency_ms: None,
                 ttft_ms: None,
                 extra: None,
+                env: None,
+                prompt: None,
+                finished_at: None,
             },
             StorylineTurn {
                 id: 2,
@@ -149,6 +157,8 @@ fn story(session_id: &str) -> StorylineDocument {
                     result: Default::default(),
                     duration_ms: Some(12),
                     extra: None,
+                    kind: None,
+                    response: None,
                 }]),
                 observation: Some(serde_json::json!({
                     "results": [{"source_call_id": "call-1", "content": "42"}]
@@ -160,6 +170,9 @@ fn story(session_id: &str) -> StorylineDocument {
                 latency_ms: Some(20),
                 ttft_ms: Some(5),
                 extra: None,
+                env: None,
+                prompt: None,
+                finished_at: None,
             },
         ],
     }

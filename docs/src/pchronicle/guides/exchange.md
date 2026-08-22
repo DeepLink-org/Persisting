@@ -14,7 +14,9 @@ pchronicle import --from input.json \
 The target is create-only. pChronicle refuses an existing target instead of
 silently appending or replacing it. Regular files can be auto-detected. A
 directory recursively imports `.json`, `.jsonl`, and `.ndjson` Sources while
-preserving their relative paths in the default output:
+preserving their relative paths in the default output. When `--format` is
+omitted, each file is detected independently; JSON that is not a known
+trajectory format is skipped with a warning:
 
 ```bash
 pchronicle import --from ./corpus --output ./imported

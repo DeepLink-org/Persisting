@@ -48,6 +48,10 @@ atif ─────┘
 | Required `schema_version` | 当前只接受 `storyline/v1`；未知版本 fail closed |
 | 可选 `origin` | 记录来源格式、来源 schema 与文档身份，不冒充 Storyline 自身版本 |
 | `unknown_fields` | 仅保存 Storyline 不认识的源格式 key/value，按来源和 JSON Pointer 隔离 |
+| 可选 `/task`、`/started_at`、`/finished_at` | 评测/预算、文档级时间；不升 `schema_version` |
+| 可选 `turns[].env`、`turns[].finished_at` | 相对 `/task/env` 的运行时 delta 与 turn 结束时间 |
+| 可选 `/prompt`、`turns[].prompt` | ACTF `system_prompt` / `user_content`；文档基线 + turn 整段覆盖 |
+| 可选 `tool_calls[].kind`、`tool_calls[].response` | 工具事件类型与执行状态；`result` 仍是输出体 |
 
 ---
 
@@ -100,7 +104,7 @@ JSON 序列化和解码都使用短名；长名仅用于说明字段概念，不
 | `fn` | `function_name` | tool_calls[] |
 | `args` | `arguments` | tool_calls[] |
 
-保持全名：`agent` / `final_metrics` / `continued_trajectory_ref` / `tool_calls` / `observation` / `metrics` / `extra` / `latency_ms` / `ttft_ms` / `duration_ms`，以及 `id` / `name` / `notes` / `kind` / `turns` / `parent`。
+保持全名：`agent` / `task` / `env` / `llm` / `result` / `response` / `prompt` / `started_at` / `finished_at` / `final_metrics` / `continued_trajectory_ref` / `tool_calls` / `observation` / `metrics` / `extra` / `meta` / `latency_ms` / `ttft_ms` / `duration_ms`，以及 `id` / `name` / `notes` / `kind` / `turns` / `parent`。`tool_calls[].kind` 与 `turns[].kind` 同名不同槽。
 
 ### 根对象
 
@@ -115,9 +119,14 @@ JSON 序列化和解码都使用短名；长名仅用于说明字段概念，不
 | `trajectory` | string | Optional；非空 |
 | `attempt_id` | string | Optional；源格式 attempt identity |
 | `notes` | string | Optional |
+| `task` | object | Optional；`env` / `llm` / `result`，至少一项非空 |
+| `prompt` | object | Optional；`{system, user}` 文档基线；至少一个非空字符串 |
+| `started_at` | string \| number | Optional；与 turn `ts` 同一时间编码 |
+| `finished_at` | string \| number | Optional；与 turn `ts` 同一时间编码 |
 | `final_metrics` | any | Optional |
 | `continued_trajectory_ref` | string | Optional |
 | `extra` | any | Optional；Storyline 业务扩展 |
+| `meta` | any | Optional；文档级元数据 |
 | `unknown_fields` | object | Optional；源格式 residual，见下 |
 | `unknown_key_counts` | object | Optional；必须与 `unknown_fields` 一致 |
 | `children` | string[] | Optional；子 Storyline identity 外链 |
@@ -172,9 +181,18 @@ JSON 序列化和解码都使用短名；长名仅用于说明字段概念，不
 | `nllm` | integer | Optional |
 | `copied` | boolean | Optional |
 | `extra` | any | Optional |
-| `kind` | string | Optional；省略时由 `src` 与 `tool_calls` 推导 |
+| `kind` | string | Optional；省略时由 `src` 与 `tool_calls` 推导；不读取 tool `kind` |
 | `latency_ms` | integer | Optional |
 | `ttft_ms` | integer | Optional |
+| `env` | object | Optional；相对 `/task/env` 的浅合并 delta，不相对前一 turn |
+| `prompt` | object | Optional；相对文档 `/prompt` 的整段覆盖，不相对前一 turn |
+| `finished_at` | string \| number | Optional；turn 结束时间 |
+
+`task.env` 与 `turns[].env` 形状相同：`name` / `endpoint` / `id` / `event_type` / `request_id` 为可选字符串；`state` 为开放 JSON object。重建某 turn 的有效 env 时，先取 `/task/env` 再浅合并该 turn 的 `env`（`state` 也浅合并）。落盘保持未合并形态。
+
+`task.llm` 目前只有可选正整数 `k`。`task.result` 承载评测与预算：`task_correct` / `correct` / `final_answer` / `ground_truth` / `status` / `score` / `max_score` / `error` / `artifacts` / `category` / `attempts_tried` / `solved_at` / `retry_count` / `retry_counts`。空字符串、空 object、`null` 视为缺省。
+
+`prompt` 与 `turns[].prompt` 形状相同：可选字符串 `system` / `user`。有效 prompt 取该 turn 的 `/prompt`，缺省则用文档 `/prompt`；turn 一旦出现 `/prompt` 就整段替换，缺省键视为空字符串，不从文档继承。`copied == true` 的 turn 不得写 `prompt`。文档 `/prompt` 不能是空对象。turn 上唯一允许的双空对象是显式 `{"system":"","user":""}`，用来清空文档基线。
 
 ### `tool_calls[]`
 
@@ -186,6 +204,8 @@ JSON 序列化和解码都使用短名；长名仅用于说明字段概念，不
 | `result` | any | Optional |
 | `duration_ms` | integer | Optional |
 | `extra` | any | Optional |
+| `kind` | string | Optional；工具事件类型（≠ turn `kind`）；空字符串视为缺省 |
+| `response` | object | Optional；`status` 字符串与/或 `exit_code` 整数 |
 
 ### `unknown_fields` 与 `unknown_key_counts`
 
@@ -198,8 +218,8 @@ JSON 序列化和解码都使用短名；长名仅用于说明字段概念，不
 
 `P` 是源文档中的完整 RFC 6901 JSON Pointer；`E(P)` 是把整个 `P` 作为 `fields`
 对象 key 后执行一次 RFC 6901 token 转义。`unknown_key_counts` 按 source 和规范化 pointer
-记录出现次数，必须能由 `unknown_fields` 确定性重算。已知业务扩展写入 `extra`，不得混入
-`unknown_fields`。
+记录出现次数，必须能由 `unknown_fields` 确定性重算。已知业务扩展写入 `extra`，文档级元数据写入
+`meta`，不得混入 `unknown_fields`。
 
 ---
 
@@ -246,3 +266,5 @@ convert(from, to, input)       ≡ from_storyline(to, into_storyline(from, input
 | 2026-07-30 | 收敛为 ATIF-first：去掉 Capture Call/Normal 过度叙事；`continued_trajectory_ref` 对齐 ATIF；`parent.scid` 可选 |
 | 2026-08-20 | 固定 `storyline/v1`，增加 `origin` 与统一 unknown fields；Lance v2 保留数组顺序、出现语义和原始 observation |
 | 2026-08-21 | Storyline schema 与外围格式映射分离；映射由各格式 RFC 独立负责 |
+| 2026-08-22 | 增加可选 `/task`、文档/turn 时间、turn `env`、tool `kind`/`response`；`schema_version` 仍为 `storyline/v1` |
+| 2026-08-22 | 增加可选文档 `/prompt` 与 turn `/prompt`（`{system, user}`）；`msg` 仍是助手正文 |
