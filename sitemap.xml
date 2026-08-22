@@ -1,0 +1,1347 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/installation/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/installation/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/installation/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/overview/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/overview/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/overview/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/quickstart/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/quickstart/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/quickstart/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/api/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/api/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/api/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/api/queue/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/api/queue/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/api/queue/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/agent-infrastructure/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/agent-infrastructure/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/agent-infrastructure/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/agentvisor/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/agentvisor/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/agentvisor/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/architecture/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/architecture/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/architecture/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/cli-pchronicle/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/cli-pchronicle/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/cli-pchronicle/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/cli-ppilot/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/cli-ppilot/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/cli-ppilot/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/cli-pvisor/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/cli-pvisor/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/cli-pvisor/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/dataset-catalog/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/dataset-catalog/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/dataset-catalog/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/gateway/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/gateway/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/gateway/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/overlaynet/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/overlaynet/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/overlaynet/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/pchronicle-product/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/pchronicle-product/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/pchronicle-product/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/ppilot/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/ppilot/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/ppilot/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/pvisor-isolation/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/pvisor-isolation/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/pvisor-isolation/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/storyline-lance/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/storyline-lance/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/storyline-lance/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/trajectory-format/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/trajectory-format/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/trajectory-format/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/trajectory/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/trajectory/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/trajectory/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/references/lmcache/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/references/lmcache/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/references/lmcache/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/references/transfer-queue-comparison/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/references/transfer-queue-comparison/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/references/transfer-queue-comparison/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/design/references/transfer-queue-interface/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/references/transfer-queue-interface/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/references/transfer-queue-interface/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/dev/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/dev/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/dev/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/dev/releasing/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/dev/releasing/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/dev/releasing/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/guide/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/guide/capture/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/capture/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/capture/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/guide/custom-backends/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/custom-backends/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/custom-backends/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/guide/examples/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/examples/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/examples/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/guide/history/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/history/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/history/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/guide/orchestrate/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/orchestrate/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/orchestrate/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/guide/overlaynet/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/overlaynet/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/overlaynet/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/guide/pvisor-execution/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/pvisor-execution/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/pvisor-execution/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/guide/queue/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/queue/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/queue/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/guide/review-apply/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/review-apply/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/review-apply/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/get-started/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/get-started/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/get-started/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/concepts/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/concepts/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/concepts/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/concepts/dataset-and-source/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/concepts/dataset-and-source/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/concepts/dataset-and-source/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/concepts/facts-and-projections/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/concepts/facts-and-projections/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/concepts/facts-and-projections/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/design/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/design/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/design/architecture/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/design/architecture/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/architecture/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/design/catalog/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/design/catalog/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/catalog/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/design/storyline-lance/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/design/storyline-lance/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/storyline-lance/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/design/trajectory-storage/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/design/trajectory-storage/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/trajectory-storage/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/guides/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/guides/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/guides/discover-and-query/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/guides/discover-and-query/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/discover-and-query/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/guides/exchange/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/guides/exchange/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/exchange/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/guides/serve-gateway/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/guides/serve-gateway/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/serve-gateway/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/guides/serve/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/guides/serve/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/serve/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/reference/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/reference/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/reference/agenticmd/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/reference/agenticmd/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/agenticmd/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/reference/cli/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/reference/cli/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/cli/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/reference/query-model/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/reference/query-model/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/query-model/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pchronicle/reference/formats/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/reference/formats/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/formats/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/project/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/project/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/project/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/project/engineering/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/project/engineering/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/project/engineering/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/project/examples/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/project/examples/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/project/examples/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/project/releasing/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/project/releasing/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/project/releasing/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/get-started/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/get-started/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/get-started/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/concepts/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/concepts/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/concepts/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/concepts/agentvisor/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/concepts/agentvisor/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/concepts/agentvisor/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/concepts/capabilities-and-evidence/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/concepts/capabilities-and-evidence/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/concepts/capabilities-and-evidence/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/concepts/run-model/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/concepts/run-model/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/concepts/run-model/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/design/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/design/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/design/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/design/gateway/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/design/gateway/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/design/gateway/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/design/isolation/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/design/isolation/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/design/isolation/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/design/orchestration/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/design/orchestration/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/design/orchestration/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/design/overlaynet/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/design/overlaynet/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/design/overlaynet/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/guides/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/guides/capture/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/capture/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/capture/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/guides/execution/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/execution/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/execution/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/guides/network/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/network/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/network/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/guides/orchestrate/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/orchestrate/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/orchestrate/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/guides/review-apply/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/review-apply/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/review-apply/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/guides/sandbox-replay/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/sandbox-replay/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/sandbox-replay/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/reference/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/reference/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/reference/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/reference/cli/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/reference/cli/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/reference/cli/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/pvisor/reference/ppilot-cli/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/reference/ppilot-cli/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/reference/ppilot-cli/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/rfcs/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/rfcs/0001-storyline-format/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0001-storyline-format/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0001-storyline-format/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/rfcs/0002-events-format/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0002-events-format/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0002-events-format/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/rfcs/0003-pchronicle-ownership/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0003-pchronicle-ownership/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0003-pchronicle-ownership/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/rfcs/0004-actf-format/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0004-actf-format/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0004-actf-format/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/rfcs/0005-pchronicle-revision-lineage/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0005-pchronicle-revision-lineage/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0005-pchronicle-revision-lineage/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/rfcs/0006-pchronicle-vortex-backend/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0006-pchronicle-vortex-backend/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0006-pchronicle-vortex-backend/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/rfcs/0007-events-contract-pchronicle-sidecar/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0007-events-contract-pchronicle-sidecar/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0007-events-contract-pchronicle-sidecar/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/rfcs/0008-atif-format/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0008-atif-format/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0008-atif-format/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/rfcs/0009-openai-messages-format/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0009-openai-messages-format/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0009-openai-messages-format/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/system-design/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/system-design/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/system-design/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/system-design/architecture/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/system-design/architecture/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/system-design/architecture/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/system-design/local-to-fleet/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/system-design/local-to-fleet/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/system-design/local-to-fleet/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/system-design/security-evidence/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/system-design/security-evidence/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/system-design/security-evidence/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/installation/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/installation/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/installation/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/overview/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/overview/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/overview/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/quickstart/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/quickstart/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/quickstart/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/api/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/api/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/api/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/api/queue/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/api/queue/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/api/queue/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/agent-infrastructure/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/agent-infrastructure/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/agent-infrastructure/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/agentvisor/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/agentvisor/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/agentvisor/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/architecture/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/architecture/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/architecture/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/cli-pchronicle/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/cli-pchronicle/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/cli-pchronicle/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/cli-ppilot/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/cli-ppilot/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/cli-ppilot/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/cli-pvisor/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/cli-pvisor/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/cli-pvisor/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/dataset-catalog/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/dataset-catalog/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/dataset-catalog/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/gateway/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/gateway/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/gateway/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/overlaynet/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/overlaynet/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/overlaynet/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/pchronicle-product/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/pchronicle-product/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/pchronicle-product/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/ppilot/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/ppilot/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/ppilot/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/pvisor-isolation/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/pvisor-isolation/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/pvisor-isolation/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/storyline-lance/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/storyline-lance/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/storyline-lance/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/trajectory-format/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/trajectory-format/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/trajectory-format/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/trajectory/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/trajectory/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/trajectory/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/references/lmcache/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/references/lmcache/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/references/lmcache/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/references/transfer-queue-comparison/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/references/transfer-queue-comparison/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/references/transfer-queue-comparison/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/design/references/transfer-queue-interface/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/design/references/transfer-queue-interface/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/design/references/transfer-queue-interface/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/dev/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/dev/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/dev/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/dev/releasing/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/dev/releasing/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/dev/releasing/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/guide/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/guide/capture/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/capture/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/capture/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/guide/custom-backends/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/custom-backends/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/custom-backends/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/guide/examples/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/examples/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/examples/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/guide/history/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/history/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/history/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/guide/orchestrate/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/orchestrate/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/orchestrate/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/guide/overlaynet/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/overlaynet/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/overlaynet/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/guide/pvisor-execution/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/pvisor-execution/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/pvisor-execution/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/guide/queue/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/queue/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/queue/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/guide/review-apply/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/guide/review-apply/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/guide/review-apply/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/get-started/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/get-started/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/get-started/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/concepts/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/concepts/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/concepts/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/concepts/dataset-and-source/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/concepts/dataset-and-source/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/concepts/dataset-and-source/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/concepts/facts-and-projections/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/concepts/facts-and-projections/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/concepts/facts-and-projections/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/design/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/architecture/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/architecture/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/design/architecture/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/catalog/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/catalog/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/design/catalog/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/storyline-lance/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/storyline-lance/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/design/storyline-lance/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/trajectory-storage/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/design/trajectory-storage/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/design/trajectory-storage/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/guides/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/discover-and-query/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/discover-and-query/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/guides/discover-and-query/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/exchange/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/exchange/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/guides/exchange/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/serve-gateway/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/serve-gateway/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/guides/serve-gateway/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/serve/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/guides/serve/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/guides/serve/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/reference/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/agenticmd/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/agenticmd/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/reference/agenticmd/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/cli/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/cli/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/reference/cli/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/query-model/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/query-model/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/reference/query-model/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/formats/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pchronicle/reference/formats/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pchronicle/reference/formats/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/project/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/project/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/project/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/project/engineering/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/project/engineering/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/project/engineering/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/project/examples/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/project/examples/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/project/examples/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/project/releasing/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/project/releasing/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/project/releasing/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/get-started/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/get-started/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/get-started/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/concepts/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/concepts/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/concepts/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/concepts/agentvisor/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/concepts/agentvisor/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/concepts/agentvisor/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/concepts/capabilities-and-evidence/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/concepts/capabilities-and-evidence/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/concepts/capabilities-and-evidence/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/concepts/run-model/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/concepts/run-model/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/concepts/run-model/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/design/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/design/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/design/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/design/gateway/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/design/gateway/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/design/gateway/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/design/isolation/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/design/isolation/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/design/isolation/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/design/orchestration/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/design/orchestration/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/design/orchestration/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/design/overlaynet/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/design/overlaynet/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/design/overlaynet/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/capture/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/capture/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/capture/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/execution/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/execution/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/execution/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/network/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/network/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/network/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/orchestrate/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/orchestrate/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/orchestrate/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/review-apply/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/review-apply/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/review-apply/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/sandbox-replay/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/guides/sandbox-replay/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/guides/sandbox-replay/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/reference/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/reference/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/reference/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/reference/cli/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/reference/cli/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/reference/cli/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/pvisor/reference/ppilot-cli/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/pvisor/reference/ppilot-cli/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/pvisor/reference/ppilot-cli/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/rfcs/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/rfcs/0001-storyline-format/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0001-storyline-format/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0001-storyline-format/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/rfcs/0002-events-format/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0002-events-format/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0002-events-format/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/rfcs/0003-pchronicle-ownership/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0003-pchronicle-ownership/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0003-pchronicle-ownership/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/rfcs/0004-actf-format/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0004-actf-format/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0004-actf-format/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/rfcs/0005-pchronicle-revision-lineage/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0005-pchronicle-revision-lineage/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0005-pchronicle-revision-lineage/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/rfcs/0006-pchronicle-vortex-backend/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0006-pchronicle-vortex-backend/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0006-pchronicle-vortex-backend/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/rfcs/0007-events-contract-pchronicle-sidecar/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0007-events-contract-pchronicle-sidecar/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0007-events-contract-pchronicle-sidecar/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/rfcs/0008-atif-format/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0008-atif-format/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0008-atif-format/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/rfcs/0009-openai-messages-format/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/rfcs/0009-openai-messages-format/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/rfcs/0009-openai-messages-format/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/system-design/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/system-design/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/system-design/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/system-design/architecture/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/system-design/architecture/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/system-design/architecture/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/system-design/local-to-fleet/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/system-design/local-to-fleet/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/system-design/local-to-fleet/"/>
+    </url>
+    <url>
+        <loc>https://github.com/DeepLink-org/Persisting/zh/system-design/security-evidence/</loc>
+        <lastmod>2026-08-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://github.com/DeepLink-org/Persisting/zh/system-design/security-evidence/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://github.com/DeepLink-org/Persisting/system-design/security-evidence/"/>
+    </url>
+</urlset>

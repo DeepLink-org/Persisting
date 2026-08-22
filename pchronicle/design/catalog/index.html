@@ -1,0 +1,5064 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Agent execution virtualization, effect governance, orchestration, and durable history">
+      
+      
+      
+        <link rel="canonical" href="https://github.com/DeepLink-org/Persisting/pchronicle/design/catalog/">
+      
+      
+        <link rel="prev" href="../architecture/">
+      
+      
+        <link rel="next" href="../trajectory-storage/">
+      
+      
+        
+          <link rel="alternate" href="./" hreflang="en">
+        
+          <link rel="alternate" href="../../../zh/pchronicle/design/catalog/" hreflang="zh">
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>Dataset Catalog - Persisting Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/home.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#pchronicle-dataset-catalog" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Persisting Documentation" class="md-header__button md-logo" aria-label="Persisting Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Persisting Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Dataset Catalog
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="Select language">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="./" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="../../../zh/pchronicle/design/catalog/" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/DeepLink-org/Persisting" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../.." class="md-tabs__link">
+          
+  
+  
+    
+  
+  Home
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../pvisor/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  pVisor
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  pChronicle
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../project/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Persisting Documentation" class="md-nav__button md-logo" aria-label="Persisting Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Persisting Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/DeepLink-org/Persisting" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../.." class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_1" id="__nav_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Home
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pVisor
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    pVisor
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/get-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_3" id="__nav_2_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/concepts/agentvisor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AgentVisor category
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/concepts/run-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run, Attempt, and Effect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/concepts/capabilities-and-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capabilities and evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/guides/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_4" id="__nav_2_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/execution/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution environments
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/review-apply/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Review and apply effects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/network/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Network control
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/capture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capture trajectories
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/sandbox-replay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Replay Agent trajectories
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/orchestrate/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scale with pPilot
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/design/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_5" id="__nav_2_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/design/isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Isolation architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/design/overlaynet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    OverlayNet architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/design/gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/design/orchestration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pPilot orchestration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_6" id="__nav_2_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pVisor CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/reference/ppilot-cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pPilot CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pChronicle
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    pChronicle
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../get-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_3" id="__nav_3_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/dataset-and-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataset, Source, and Snapshot
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/facts-and-projections/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Facts, projections, and revisions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../guides/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_4" id="__nav_3_4_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/discover-and-query/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discover and query
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/exchange/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Import and export
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/serve/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local read-only Warehouse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/serve-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway forwarding, rewriting, and capture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_5" id="__nav_3_5_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataset Catalog
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataset Catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. 定位
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 目标与非目标
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. 目标与非目标">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 目标
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 非目标
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 核心模型
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. 核心模型">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-namespacedataset-sql-alias" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Namespace、Dataset 与 SQL alias
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-source-_file_" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Source 与 _file_
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-storyline-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Storyline 与 Run 身份
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-source-revision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Source revision
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-dataset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. 挂载与默认 Dataset
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. 挂载与默认 Dataset">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 CLI 形式
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 默认选择规则
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. 层级发现
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. 层级发现">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 示例
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 本地发现
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 对象存储发现
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 格式检测
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-sql-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. SQL Provider
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. SQL Provider">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61-catalog-aware-source-pruning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 Catalog-aware source pruning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 联查规则
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. 快照与一致性
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. 快照与一致性">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#71" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.1 构建过程
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#72" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.2 不同源的固定方式
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#73" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.3 一致性边界
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#74" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.4 解析生命周期
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. 错误策略与资源边界
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-server-web" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Server、刷新与 Web
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Server、刷新与 Web">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#91-server-source-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.1 Server source-routing 加速
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#92" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.2 写入边界
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-rust-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Rust API 边界
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. 关键不变量
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. 取舍与备选方案
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="12. 取舍与备选方案">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#121" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.1 持久化元数据服务
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#122-public" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.2 把所有挂载平铺到 public
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#123-basename" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.3 用目录 basename 作为默认名称
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#124-lance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.4 发现时统一导入 Lance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#125-run_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.5 只使用 run_id
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#13" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        13. 测试与演进
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#14" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14. 相关实现
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../trajectory-storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trajectory storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storyline-lance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storyline Lance projection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_6" id="__nav_3_6_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pChronicle CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/query-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/agenticmd/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AgenticMD format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/formats/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trajectory formats
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../project/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../system-design/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    End-to-end architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/local-to-fleet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local to fleet
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/security-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security and evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Engineering
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/engineering/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/releasing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing persisting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reproducible examples
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../rfcs/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decisions and RFCs
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Decisions and RFCs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0001-storyline-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0001 Storyline format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0002-events-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0002 Events format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0003-pchronicle-ownership/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0003 pChronicle ownership
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0004-actf-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0004 ACTF format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0005-pchronicle-revision-lineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0005 pChronicle revision lineage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0006-pchronicle-vortex-backend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0006 pChronicle Vortex backend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0007-events-contract-pchronicle-sidecar/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0007 Events contract and pChronicle sidecar
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0008-atif-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0008 ATIF format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0009-openai-messages-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0009 OpenAI Messages format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_5" id="__nav_4_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Research
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Research
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../design/references/transfer-queue-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TransferQueue comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../design/references/transfer-queue-interface/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TransferQueue interface mapping
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../design/references/lmcache/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LMCache analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../api/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Standalone systems
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_6" id="__nav_4_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Standalone systems
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../guide/queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../guide/custom-backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom queue backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../design/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue persistence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. 定位
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 目标与非目标
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. 目标与非目标">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 目标
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 非目标
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 核心模型
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. 核心模型">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-namespacedataset-sql-alias" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Namespace、Dataset 与 SQL alias
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-source-_file_" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Source 与 _file_
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-storyline-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Storyline 与 Run 身份
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-source-revision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Source revision
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-dataset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. 挂载与默认 Dataset
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. 挂载与默认 Dataset">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 CLI 形式
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 默认选择规则
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. 层级发现
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. 层级发现">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 示例
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 本地发现
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 对象存储发现
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 格式检测
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-sql-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. SQL Provider
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. SQL Provider">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61-catalog-aware-source-pruning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 Catalog-aware source pruning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 联查规则
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. 快照与一致性
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. 快照与一致性">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#71" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.1 构建过程
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#72" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.2 不同源的固定方式
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#73" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.3 一致性边界
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#74" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.4 解析生命周期
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. 错误策略与资源边界
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-server-web" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Server、刷新与 Web
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Server、刷新与 Web">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#91-server-source-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.1 Server source-routing 加速
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#92" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.2 写入边界
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-rust-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Rust API 边界
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. 关键不变量
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. 取舍与备选方案
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="12. 取舍与备选方案">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#121" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.1 持久化元数据服务
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#122-public" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.2 把所有挂载平铺到 public
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#123-basename" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.3 用目录 basename 作为默认名称
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#124-lance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.4 发现时统一导入 Lance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#125-run_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.5 只使用 run_id
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#13" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        13. 测试与演进
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#14" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14. 相关实现
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="pchronicle-dataset-catalog">pChronicle Dataset Catalog 设计<a class="headerlink" href="#pchronicle-dataset-catalog" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p>当前实现说明。Dataset 命令参数见 <a href="../../reference/cli/"><code>pchronicle</code> 命令参考</a>；轨迹物理格式见
+<a href="../trajectory-storage/">pChronicle 轨迹存储</a> 与
+<a href="../storyline-lance/">Storyline 三表 Lance</a>。</p>
+</blockquote>
+<p>格式 wire contract 与逐字段转换以 <a href="../../../rfcs/0001-storyline-format/#wire-schema">RFC-0001 § Wire schema</a>、
+<a href="../../../rfcs/0004-actf-format/#actf-storyline-json-pointer-mapping">RFC-0004 § ACTF 映射</a>、
+<a href="../../../rfcs/0008-atif-format/#atif-storyline-json-pointer-mapping">RFC-0008 § ATIF 映射</a>和
+<a href="../../../rfcs/0009-openai-messages-format/#openai-storyline-json-pointer-mapping">RFC-0009 § OpenAI Messages 映射</a>为准。</p>
+<h2 id="1">1. 定位<a class="headerlink" href="#1" title="Permanent link">&para;</a></h2>
+<p>pChronicle Dataset Catalog 面向由多个存储位置和多种轨迹格式共同组成的查询空间，主要
+覆盖以下场景：</p>
+<ul>
+<li>同时查询在线数据、历史归档和评测数据；</li>
+<li>一个逻辑数据集下包含多层目录、多个 Run 级 <code>events.lance</code>，以及若干外围 JSON 文件；</li>
+<li>不同数据集存在相同的 <code>run_id</code>、<code>session_id</code> 或文件名；</li>
+<li>Web 服务需要在多次请求之间复用同一份发现结果，并且只在显式刷新后切换视图。</li>
+</ul>
+<p>它位于存储 URI 与 DataFusion SQL 之间，提供轻量的命名和发现边界。用户把若干 URI
+挂载为 Dataset；pChronicle 对每个挂载递归发现轨迹源，将不同物理格式统一投影到稳定表，
+并在一次查询或一代 Web 快照内固定其成员与版本。</p>
+<p>Catalog <strong>不是</strong>一份需要长期维护的元数据数据库。它不复制源数据、不接管对象存储目录、
+不声明外围 JSON 已成为 canonical 数据，也不要求后台同步任务。</p>
+<h2 id="2">2. 目标与非目标<a class="headerlink" href="#2" title="Permanent link">&para;</a></h2>
+<h3 id="21">2.1 目标<a class="headerlink" href="#21" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>多 Dataset 联查</strong>：一次 SQL 可以访问多个具名本地目录或对象存储前缀。</li>
+<li><strong>层级发现</strong>：一个 Dataset 的 URI 可以指向存储根、Run 根、复合 store 或单个文件。</li>
+<li><strong>统一表模型</strong>：Storyline、canonical events、ATIF、OpenAI messages 和 ACTF 使用相同
+   的查询表名。</li>
+<li><strong>稳定身份</strong>：任何 Storyline 都能用 <code>(dataset, _file_, session_id)</code> 唯一定位到快照内的物理源。</li>
+<li><strong>快照一致性</strong>：一条查询不会在执行中混入新发现的文件或新的 Lance generation。</li>
+<li><strong>稳定默认入口</strong>：位置参数固定挂载为名为 <code>dataset</code> 的默认 Dataset。</li>
+<li><strong>有界失败</strong>：发现、格式检测、单文件大小、解析并发和查询内存都有显式限制与错误策略。</li>
+<li><strong>安全写入</strong>：命名挂载默认只读；服务端写操作只能落到显式选定的 canonical events
+   Dataset。</li>
+<li><strong>Catalog-aware 裁剪</strong>：先用 Dataset 和 <code>_file_</code> 条件选出 source，再构造物理扫描计划。</li>
+<li><strong>惰性解析</strong>：Catalog 快照只固定成员和版本描述；Lance dataset、远程对象和文件
+    datasource 在查询确实需要时才打开，并在快照内 single-flight 复用。</li>
+</ol>
+<h3 id="22">2.2 非目标<a class="headerlink" href="#22" title="Permanent link">&para;</a></h3>
+<ul>
+<li>不提供 Hive Metastore、Glue Catalog 一类持久化 catalog service。</li>
+<li>不在 Catalog 中建立跨文件索引、统计信息仓库或 materialized view。</li>
+<li>不把不同源中的同名 <code>run_id</code> 或 <code>session_id</code> 自动合并。</li>
+<li>不为多个独立物理源提供分布式事务或全局时间点读。</li>
+<li>不通过 Catalog 修改、搬运或转换外围 JSON；需要长期列式分析时仍应显式导入 Lance。</li>
+<li>不在 URI 参数中管理密钥；对象存储认证继续使用对应 SDK 的标准凭证链。</li>
+</ul>
+<h2 id="3">3. 核心模型<a class="headerlink" href="#3" title="Permanent link">&para;</a></h2>
+<p><img alt="Dataset Catalog 查询路径" src="../../../assets/diagrams/persisting/dataset-catalog.svg" /></p>
+<p>核心对象分为七层：</p>
+<table>
+<thead>
+<tr>
+<th>对象</th>
+<th>作用</th>
+<th>生命周期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DatasetMount</code></td>
+<td>保存层级 namespace、SQL alias、根 URI 和可选格式提示</td>
+<td>配置期</td>
+</tr>
+<tr>
+<td><code>CatalogDataset</code></td>
+<td>一个 Dataset 及其 <code>DiscoveredSource</code> 列表</td>
+<td>快照期</td>
+</tr>
+<tr>
+<td><code>DiscoveredSource</code></td>
+<td>描述一个复合 store 或外围文件的逻辑路径、格式、版本和状态</td>
+<td>快照期</td>
+</tr>
+<tr>
+<td><code>DatasetCatalogSnapshot</code></td>
+<td>固定全部挂载的成员、源版本和临时对象文件</td>
+<td>一条 CLI 查询或一代 Server Catalog</td>
+</tr>
+<tr>
+<td><code>LazySource</code></td>
+<td>保存固定 source 描述，并并发安全地缓存首次解析结果或错误</td>
+<td>与快照相同</td>
+</tr>
+<tr>
+<td><code>CatalogTableProvider</code></td>
+<td>在 DataFusion <code>scan</code> 边界执行 source 裁剪并组合命中的物理计划</td>
+<td>每个 Dataset 稳定表</td>
+</tr>
+<tr>
+<td><code>ChronicleQueryEngine</code></td>
+<td>把快照注册为 DataFusion schema，并执行只读 SQL</td>
+<td>与快照相同</td>
+</tr>
+</tbody>
+</table>
+<h3 id="31-namespacedataset-sql-alias">3.1 Namespace、Dataset 与 SQL alias<a class="headerlink" href="#31-namespacedataset-sql-alias" title="Permanent link">&para;</a></h3>
+<p>Dataset 是用户命名的逻辑查询空间，不等于物理 Lance dataset。一个 Dataset 可以包含多个
+Storyline store、多个 <code>events.lance</code> 和多个外围文件；每个 Dataset 对应一个 DataFusion
+schema。Catalog 用 <code>NamespacePath</code> 表达层级身份，用独立的 SQL alias 注册 DataFusion
+schema；因此 <code>prod/agents</code> 与 <code>staging/agents</code> 可以同时存在，而无需把目录身份编码进表名。</p>
+<p>SQL alias 会去除首尾空白并转成小写，必须匹配 <code>[A-Za-z_][A-Za-z0-9_]*</code>。<code>public</code> 和
+<code>information_schema</code> 是保留名称。namespace component 允许字母、数字、<code>_</code>、<code>-</code>、<code>.</code>。
+完整 namespace 或 SQL alias 重名都会在发现前失败。</p>
+<h3 id="32-source-_file_">3.2 Source 与 <code>_file_</code><a class="headerlink" href="#32-source-_file_" title="Permanent link">&para;</a></h3>
+<p>Source 是 Catalog 的最小发现单元：</p>
+<ul>
+<li>Storyline <code>CURRENT</code> 根是一个 <code>store</code> source；</li>
+<li>canonical <code>events.lance</code> 根是一个 <code>store</code> source；</li>
+<li>每个 JSON、JSONL 或 NDJSON 文件是一个 <code>file</code> source。</li>
+</ul>
+<p><code>_file_</code> 是 source 相对 Dataset 根的 UTF-8 逻辑路径，统一使用 <code>/</code> 分隔。挂载根自身作为
+source 时使用 <code>.</code>。它不是源表的持久字段，也不会写回 Lance。</p>
+<h3 id="33-storyline-run">3.3 Storyline 与 Run 身份<a class="headerlink" href="#33-storyline-run" title="Permanent link">&para;</a></h3>
+<p><code>session_id</code> 是 Storyline 的逻辑主键，但只在一个 source 内保证唯一；外围文件或不同归档
+中可以出现相同值。因此 Catalog 和 Server 使用以下复合键：</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>(dataset, _file_, session_id)
+</span></code></pre></div>
+<p><code>run_id</code> 是 Run 分组键，一个物理 Run 可以包含主 Storyline 与多个 subagent Storyline，
+所以同一 source 内多行可以共享一个 <code>run_id</code>。canonical events 规范化时按事件的
+Storyline/session 身份分组，并保留实际 <code>events.lance</code> URI，避免后续读写根据挂载根猜测
+物理位置。</p>
+<h3 id="34-source-revision">3.4 Source revision<a class="headerlink" href="#34-source-revision" title="Permanent link">&para;</a></h3>
+<p>内部用 <code>CatalogSourceRevision</code> 保存类型化 revision，而不是让一个字符串同时表示 Storyline
+generation、event fact/layout 水位、本地文件指纹与对象版本。<code>sources.snapshot_ref</code> 仍是便于
+SQL 展示和筛选的字符串投影；一致性判断、快照摘要和 API 描述使用类型化 revision。</p>
+<p>一个 canonical events source 可以关联多个派生 Storyline 投影。Catalog 不因此隐藏或拒绝
+canonical source，而按 <code>fresh → last_modified → generation → path</code> 的稳定顺序选出一个读取
+加速投影；<code>projection_candidates</code> 暴露候选数。所有候选都不新鲜时，查询回退到固定的
+canonical events 快照。</p>
+<h2 id="4-dataset">4. 挂载与默认 Dataset<a class="headerlink" href="#4-dataset" title="Permanent link">&para;</a></h2>
+<h3 id="41-cli">4.1 CLI 形式<a class="headerlink" href="#41-cli" title="Permanent link">&para;</a></h3>
+<p><code>--dataset</code> 可以重复：</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pchronicle<span class="w"> </span>query<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--dataset<span class="w"> </span><span class="nv">current</span><span class="o">=</span>local:///srv/pchronicle/current<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>--dataset<span class="w"> </span><span class="nv">archive</span><span class="o">=</span>s3://trajectory-bucket/archive<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="s2">&quot;SELECT * FROM current.runs&quot;</span>
+</span></code></pre></div>
+<p>也可以从 TOML 读取：</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[datasets]</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">current</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;local:///srv/pchronicle/current&quot;</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">archive</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;s3://trajectory-bucket/archive&quot;</span>
+</span></code></pre></div>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>pchronicle<span class="w"> </span>query<span class="w"> </span>--dataset<span class="w"> </span><span class="nv">current</span><span class="o">=</span>local:///srv/pchronicle/current<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--dataset<span class="w"> </span><span class="nv">archive</span><span class="o">=</span>s3://trajectory-bucket/archive<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="s2">&quot;SELECT table_schema, table_name FROM information_schema.tables&quot;</span>
+</span></code></pre></div>
+<p>位置参数、配置文件与重复 <code>--dataset</code> 可以同时使用。三者中出现规范化重名时整体失败，
+不会按参数顺序覆盖。</p>
+<h3 id="42">4.2 默认选择规则<a class="headerlink" href="#42" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>输入</th>
+<th>默认 Dataset</th>
+<th>不带 schema 的 <code>runs</code> 等表名</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>有位置参数 <code>INPUT</code></td>
+<td>固定为 <code>dataset</code></td>
+<td>指向 <code>dataset.runs</code> 等默认 view</td>
+</tr>
+<tr>
+<td>无位置参数且只有一个命名挂载</td>
+<td>唯一挂载</td>
+<td>指向该 Dataset 的默认 view</td>
+</tr>
+<tr>
+<td>无位置参数且有多个命名挂载</td>
+<td>无</td>
+<td>必须写 <code>current.runs</code> 等限定名</td>
+</tr>
+</tbody>
+</table>
+<p>位置参数形式如下：</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>pchronicle<span class="w"> </span>query<span class="w"> </span>./capture<span class="w"> </span><span class="s2">&quot;SELECT * FROM dataset.runs&quot;</span>
+</span></code></pre></div>
+<p>等价于把 <code>./capture</code> 挂载为 <code>dataset</code>，并查询 <code>dataset.runs</code>。它还可以追加其他挂载：</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>pchronicle<span class="w"> </span>query<span class="w"> </span>./capture<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--dataset<span class="w"> </span><span class="nv">archive</span><span class="o">=</span>s3://trajectory-bucket/archive<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span><span class="s2">&quot;SELECT * FROM dataset.runs UNION ALL SELECT * FROM archive.runs&quot;</span>
+</span></code></pre></div>
+<h2 id="5">5. 层级发现<a class="headerlink" href="#5" title="Permanent link">&para;</a></h2>
+<h3 id="51">5.1 示例<a class="headerlink" href="#51" title="Permanent link">&para;</a></h3>
+<p>假设挂载目录如下：</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>capture-root/
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>├── live/
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>│   └── CURRENT
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>├── agents/
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>│   └── codex/
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>│       └── run-001/
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>│           └── events.lance/
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>│               └── _manifest.json
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>└── imports/
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>    ├── batch-a.atif.jsonl
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>    └── nested/
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>        └── session.json
+</span></code></pre></div>
+<p>Catalog 产生四个 source：</p>
+<table>
+<thead>
+<tr>
+<th><code>_file_</code></th>
+<th><code>kind</code></th>
+<th>可能的 <code>format</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>live</code></td>
+<td><code>store</code></td>
+<td><code>storyline</code></td>
+</tr>
+<tr>
+<td><code>agents/codex/run-001/events.lance</code></td>
+<td><code>store</code></td>
+<td><code>events</code></td>
+</tr>
+<tr>
+<td><code>imports/batch-a.atif.jsonl</code></td>
+<td><code>file</code></td>
+<td><code>atif</code></td>
+</tr>
+<tr>
+<td><code>imports/nested/session.json</code></td>
+<td><code>file</code></td>
+<td>按文件检测</td>
+</tr>
+</tbody>
+</table>
+<p><code>live</code> 和 <code>events.lance</code> 的内部文件不会再次成为 source。这一“识别复合根后停止下探”的规则
+避免把 manifest、generation、segment 或 <code>objects.lance</code> 错当成用户输入。</p>
+<h3 id="52">5.2 本地发现<a class="headerlink" href="#52" title="Permanent link">&para;</a></h3>
+<p>本地 URI 支持普通路径、<code>local://</code> 和 <code>file://</code>：</p>
+<ol>
+<li>如果根是 <code>.json</code>、<code>.jsonl</code> 或 <code>.ndjson</code> 文件，直接建立单个 source。</li>
+<li>如果根目录包含 <code>CURRENT</code>，整个根是一个 Storyline source。</li>
+<li>如果根名为 <code>events.lance</code> 且包含 <code>_manifest.json</code>，整个根是一个 events source。</li>
+<li>否则按稳定路径顺序递归目录：识别复合根，或收集支持的外围文件。</li>
+<li>符号链接不会跟随，避免循环、越界读取和同一物理文件的重复身份。</li>
+</ol>
+<h3 id="53">5.3 对象存储发现<a class="headerlink" href="#53" title="Permanent link">&para;</a></h3>
+<p>对象 URI 通过 Lance/object-store 适配层解析。Catalog 流式消费前缀 listing，并在读取
+<code>max_entries + 1</code> 个对象前失败；不会先把无界 listing 收进内存再检查。随后：</p>
+<ol>
+<li>用 <code>CURRENT</code> 对象识别 Storyline 根；</li>
+<li>用 <code>events.lance/_manifest.json</code> 识别 canonical events 根；</li>
+<li>排除所有复合根内部对象；</li>
+<li>把剩余 <code>.json</code>、<code>.jsonl</code> 和 <code>.ndjson</code> 对象作为独立 source；</li>
+<li>按 Dataset 相对 object key 排序。</li>
+</ol>
+<p>当前对象后端沿用 pChronicle/Lance 支持的 URI scheme，例如 <code>s3://</code>、<code>az://</code> 和 <code>gs://</code>。
+挂载或 listing 本身失败意味着无法建立可信成员集，即使使用 <code>report</code> 模式也会失败。</p>
+<h3 id="54">5.4 格式检测<a class="headerlink" href="#54" title="Permanent link">&para;</a></h3>
+<p>每个外围文件独立检测格式，因此同一个 Dataset 可以混合 ATIF、OpenAI messages 与 ACTF。
+位置参数配合显式 <code>--source</code> 时，该值作为默认 Dataset 的格式约束：复合 store 类型或文件
+检测结果不匹配会报错。命名 Dataset 当前使用自动检测。</p>
+<p>本地和远程外围文件都不会为了自动检测而在 Catalog 构建期读取内容；如果没有显式格式
+提示，<code>sources.format</code> 可以是 <code>NULL</code>。Catalog 会先冻结本地文件指纹或远程对象版本，等
+<code>_file_</code> 裁剪选中该 source 后才做有界格式检测。检测结果与 datasource 解析结果一起缓存
+在快照的 <code>LazySource</code> 中。</p>
+<h2 id="6-sql-provider">6. SQL Provider<a class="headerlink" href="#6-sql-provider" title="Permanent link">&para;</a></h2>
+<p>Dataset 的稳定公共关系、精确 <code>sources</code> column、Source-local identity 与 join 规则属于
+<a href="../../reference/query-model/">Query Model Reference</a>。本节只解释 Catalog 如何为这些关系
+构造执行计划。</p>
+<p>外围文件不会生成伪造的原始 event 行；它们只能通过 Storyline 规范化关系查询。Catalog
+为实体关系增加常量 <code>_file_</code>，把公开 Source identity 连接到惰性物理 Source。</p>
+<h3 id="61-catalog-aware-source-pruning">6.1 Catalog-aware source pruning<a class="headerlink" href="#61-catalog-aware-source-pruning" title="Permanent link">&para;</a></h3>
+<p><code>runs</code>、<code>steps</code>、<code>tool_calls</code> 和 <code>events</code> 各自由一个 Dataset 级
+<code>CatalogTableProvider</code> 提供。DataFusion 把投影、过滤条件和 limit 交给 provider 后，
+provider 按以下顺序构造物理计划：</p>
+<ol>
+<li>先排除不能提供目标表的 source，例如 <code>events</code> 自动排除 Storyline 和外围文件；</li>
+<li>在每个 source 的常量 <code>_file_</code> 上求值可识别的过滤表达式；</li>
+<li>完全不可能匹配的 source 直接跳过，不调用 <code>LazySource::resolve</code>；</li>
+<li>以 <code>max_concurrent_sources</code> 为上限、按稳定 source 顺序解析候选，并把业务列投影、业务
+   谓词和 limit 继续交给其原生 provider；</li>
+<li>零个命中 source 生成 <code>EmptyExec</code>，一个命中 source 直接使用其计划，多个命中 source
+   才生成 <code>UnionExec</code>，最后在需要时应用全局 limit。</li>
+</ol>
+<p>可精确用于 source 裁剪的 <code>_file_</code> 谓词包括 <code>=</code>、<code>!=</code>、<code>IN</code>、<code>NOT IN</code>、大小写敏感的
+<code>LIKE</code>/<code>NOT LIKE</code>，以及由 <code>AND</code>、<code>OR</code>、<code>NOT</code> 组成且能安全求值的组合。对同时包含 source
+条件和业务条件的表达式采取保守三值判断：只有能证明该 source 不可能匹配时才跳过。
+例如：</p>
+<div class="language-sql highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">SELECT</span><span class="w"> </span><span class="n">run_id</span><span class="p">,</span><span class="w"> </span><span class="n">session_id</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="k">FROM</span><span class="w"> </span><span class="n">archive</span><span class="p">.</span><span class="n">runs</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="k">WHERE</span><span class="w"> </span><span class="n">_file_</span><span class="w"> </span><span class="k">LIKE</span><span class="w"> </span><span class="s1">&#39;2026/08/%&#39;</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">session_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;session-42&#39;</span><span class="p">;</span>
+</span></code></pre></div>
+<p>这里 <code>LIKE</code> 在 Catalog 层裁剪 source，<code>session_id</code> 则下推到命中 source 的 Lance 或文件
+provider。没有 <code>_file_</code> 条件时，Catalog 没有跨 source 的 <code>run_id</code>/时间统计信息，必须把
+目标表的全部兼容 source 视为候选；业务谓词仍可在每个原生 provider 内下推。</p>
+<p><code>LazySource</code> 使用异步 <code>OnceCell</code> 缓存解析结果，多个并发查询命中同一个 source 时只执行
+一次打开、远程物化或格式解析。source 解析阶段的失败也会缓存，以保证同一快照内行为
+稳定。canonical events 的原始 <code>events</code> 表可以直接扫描固定 segment。没有 fresh 投影时，
+带可证明 <code>session_id = ...</code> 或 <code>session_id IN (...)</code> 的查询只读取目标 Storyline 的完整历史；
+宽查询读取固定 snapshot。两种 fallback 都受 <code>max_event_fallback_rows</code> 和
+<code>max_event_fallback_bytes</code> 约束，且只物化当前查询请求的关系表；超限时要求 build/sync
+Storyline 投影。
+<code>load_events</code> 点查直接读取目标 session，不构造 DataFusion MemTable，但使用相同的行数和
+字节预算。</p>
+<p>可以用 <code>EXPLAIN</code> 检查裁剪后的物理计划：精确命中一个 source 时，计划中不应出现
+<code>UnionExec</code>。</p>
+<h3 id="62">6.2 联查规则<a class="headerlink" href="#62" title="Permanent link">&para;</a></h3>
+<p>同一 Dataset 可以包含多个物理 source，而 <code>run_id</code>/<code>session_id</code> 只保证在单个 source 中
+有效。两个内建轨迹表跨多个同 Dataset source 联接时，必须显式加入 <code>_file_</code> 等值：</p>
+<div class="language-sql highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">run_id</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">step_id</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">message_json</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="k">FROM</span><span class="w"> </span><span class="n">archive</span><span class="p">.</span><span class="n">runs</span><span class="w"> </span><span class="n">r</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="k">JOIN</span><span class="w"> </span><span class="n">archive</span><span class="p">.</span><span class="n">steps</span><span class="w"> </span><span class="n">s</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span><span class="k">ON</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">_file_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">_file_</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">session_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">session_id</span><span class="p">;</span>
+</span></code></pre></div>
+<p>遗漏 <code>_file_</code> 会在执行前被拒绝。跨 Dataset 联接不要求 <code>_file_</code> 相同，因为左右命名空间
+已经不同，通常也不会拥有相同的目录布局：</p>
+<div class="language-sql highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">SELECT</span><span class="w"> </span><span class="k">c</span><span class="p">.</span><span class="n">run_id</span><span class="p">,</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">run_id</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">archived_run</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="k">FROM</span><span class="w"> </span><span class="k">current</span><span class="p">.</span><span class="n">runs</span><span class="w"> </span><span class="k">c</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="k">JOIN</span><span class="w"> </span><span class="n">archive</span><span class="p">.</span><span class="n">runs</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="k">c</span><span class="p">.</span><span class="n">session_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">session_id</span><span class="p">;</span>
+</span></code></pre></div>
+<p>校验作用于 <code>runs</code>、<code>steps</code> 和 <code>tool_calls</code> 的内建联接；与用户通过 <code>--table</code> 注册的维表
+联接不受该规则影响。查询引擎只接受单条只读 <code>SELECT</code>、<code>VALUES</code>、<code>DESCRIBE</code> 或
+<code>EXPLAIN</code>，拒绝 DDL、DML、<code>COPY</code> 和多语句。</p>
+<h2 id="7">7. 快照与一致性<a class="headerlink" href="#7" title="Permanent link">&para;</a></h2>
+<h3 id="71">7.1 构建过程<a class="headerlink" href="#71" title="Permanent link">&para;</a></h3>
+<p>一次 Catalog 构建按以下顺序完成：</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>解析并校验挂载
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>  → 冻结每个根的候选成员
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>  → 固定每个候选的 identity / CURRENT / manifest / object metadata
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>  → 构造 sources 元数据
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>  → 计算 snapshot_id
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>  → 注册 Dataset schema、CatalogTableProvider 与默认 view
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>  → 发布给查询或 Server
+</span></code></pre></div>
+<p>只有完整构建成功的 <code>DatasetCatalogSnapshot</code> 才会交给查询引擎。构建过程不打开 Lance
+dataset、不把远程 JSON 复制到本地，也不把 canonical events 规范化为 Storyline 三表。</p>
+<h3 id="72">7.2 不同源的固定方式<a class="headerlink" href="#72" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>源</th>
+<th>成员固定</th>
+<th>内容/版本固定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>本地外围文件</td>
+<td>发现时冻结路径列表</td>
+<td>记录路径、size、mtime，以及 Unix 上的 device/inode；命中后读取前后再次校验</td>
+</tr>
+<tr>
+<td>远程外围对象</td>
+<td>冻结 listing 的 <code>ObjectMeta</code></td>
+<td>命中后按固定 version/ETag 条件读取，流式复制到快照临时目录，并校验最终大小</td>
+</tr>
+<tr>
+<td>Storyline store</td>
+<td>发现并读取 <code>CURRENT</code> 描述</td>
+<td>冻结 generation 与三张表的精确版本；命中后才打开 Lance dataset</td>
+</tr>
+<tr>
+<td>canonical events</td>
+<td>发现并读取 <code>_manifest.json</code></td>
+<td>冻结 manifest revision 和可见 segment version；命中后才打开 segment</td>
+</tr>
+</tbody>
+</table>
+<p>只有被查询选中的远程对象才会复制。复制按 chunk 写入受快照持有的临时文件，不把整个
+对象一次性读入内存；快照释放后临时目录随之清理。本地 fingerprint 是变化检测，不是
+内容哈希：如果攻击者保留相同文件身份、大小和修改时间进行原地改写，不在保证范围内。</p>
+<h3 id="73">7.3 一致性边界<a class="headerlink" href="#73" title="Permanent link">&para;</a></h3>
+<p>快照保证：</p>
+<ul>
+<li>查询计划和执行看到相同的 source 成员集；</li>
+<li>Storyline/events 即使延迟打开，也只能打开快照已经固定的 generation、manifest 和
+  segment version，不会重新读取最新指针；</li>
+<li>后端提供 version/ETag 时，远程外围对象固定到 listing 时对应的版本；</li>
+<li>新文件、新 generation 或新 manifest 只有下一条 CLI 查询或显式刷新后可见。</li>
+</ul>
+<p>快照不保证多个彼此独立的 URI 来自同一个全局事务时刻，也不阻止源系统删除已经固定但
+尚未读取的数据。本地文件在发现与首次读取之间发生可检测变化时，查询会失败而不是混读。
+若对象后端既不提供 version 也不提供 ETag，Catalog 只能以 key、size 和修改时间描述
+<code>snapshot_ref</code> 并校验传输大小，不能提供相同强度的对象版本固定保证。</p>
+<p><code>snapshot_id</code> 是 Dataset 名称、URI、格式提示、source 相对路径、固定引用与候选错误的
+BLAKE3 摘要截断值，用于标识成员/版本视图；它不是内容校验和，也不代表业务提交 ID。</p>
+<h3 id="74">7.4 解析生命周期<a class="headerlink" href="#74" title="Permanent link">&para;</a></h3>
+<p>快照中的每个 ready source 都持有一个固定描述和一个解析 cell。首次命中时：</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>CatalogTableProvider source pruning
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>  → LazySource::resolve
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>  → 打开固定 Lance 版本，或校验/物化固定文件
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>  → 创建原生 TableProvider
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>  → 缓存 Result&lt;ResolvedSource&gt;
+</span></code></pre></div>
+<p>因此“惰性”不改变快照边界：解析发生得晚，但解析目标在 Catalog 发布前已经固定。未被任何
+查询命中的 source 在整个快照生命周期中可以始终保持未打开状态。</p>
+<h2 id="8">8. 错误策略与资源边界<a class="headerlink" href="#8" title="Permanent link">&para;</a></h2>
+<p><code>--dataset-errors</code> 提供两种策略：</p>
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>单个候选无法固定描述或通过初始校验</th>
+<th>Dataset 根不存在、listing/遍历失败或超过全局限制</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>strict</code></td>
+<td>Catalog 构建失败</td>
+<td>Catalog 构建失败</td>
+</tr>
+<tr>
+<td><code>report</code></td>
+<td>写入 <code>&lt;dataset&gt;.sources</code>，状态为 <code>error</code>，跳过数据表注册</td>
+<td>Catalog 构建失败</td>
+</tr>
+</tbody>
+</table>
+<p><code>report</code> 的目标是容忍一个可信成员集中的坏文件，不是把不完整 listing 伪装成成功。候选
+错误写入公开 Catalog 前会去掉错误文本中 URI query 部分，避免反射可能存在的临时签名；
+生产配置仍不应把凭证直接放进 URI。延迟到 SQL 扫描期才出现的 Lance 打开、远程条件
+读取、格式检测或记录解析错误在 <code>strict</code> 和 <code>report</code> 下都会让该查询失败，既不会静默
+漏掉 ready source，也不会追溯修改不可变快照中的 <code>sources.status</code>。</p>
+<p>Catalog 复用直接文件查询的资源参数：</p>
+<ul>
+<li><code>max_files</code>：候选 source 数上限；</li>
+<li><code>max_entries</code>：目录项或 object listing 数上限；</li>
+<li><code>max_detection_bytes</code>：格式检测输入上限；</li>
+<li><code>max_file_bytes</code>：外围文件/对象大小上限；</li>
+<li>可选的 <code>max_record_bytes</code>、<code>max_concurrent_files</code>、cache 参数：解析期边界；默认不设置
+  单记录大小上限，由 <code>max_file_bytes</code> 限制 source；</li>
+<li><code>max_concurrent_sources</code>：单次物理 scan 同时解析的 source 上限；</li>
+<li><code>max_event_fallback_rows</code>、<code>max_event_fallback_bytes</code>：无 fresh 投影时单次定向
+  canonical→Storyline fallback 的内存边界；</li>
+<li>DataFusion memory pool、spill path、spill bytes、timeout 与输出行数：查询期边界。</li>
+</ul>
+<p><code>--query-metrics</code> 只聚合已经解析的外围文件 source 的读取、裁剪、缓存和 buffer 指标；
+未命中 source 不会为了生成指标而解析。<code>sources</code> 表用于解释“发现了什么”，metrics 用于
+解释“实际扫描了什么”。</p>
+<h2 id="9-server-web">9. Server、刷新与 Web<a class="headerlink" href="#9-server-web" title="Permanent link">&para;</a></h2>
+<p><code>pchronicle serve</code> 从静态 Warehouse 配置挂载命名 Dataset。使用 <code>--config</code> 时 Catalog 在
+第一个需要数据的请求到达时惰性构建；使用 <code>--storage</code> 与 <code>--listen</code> 时，启动流程先收敛
+canonical Storyline 投影，再构建初始 Catalog。随后由所有 REST 和 SQL 请求共享。</p>
+<table>
+<thead>
+<tr>
+<th>API</th>
+<th>语义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /api/catalog</code></td>
+<td>返回当前 <code>snapshot_id</code>、创建时间、默认 Dataset、错误策略和 source 列表</td>
+</tr>
+<tr>
+<td><code>POST /api/catalog</code></td>
+<td>在锁外完整构建新快照，成功后原子替换，并清空轨迹缓存</td>
+</tr>
+</tbody>
+</table>
+<p>投影 supervisor 在运行期发现 canonical Store 新增或发布后，会标记 Catalog dirty，随后在
+锁外完整重建并原子切换。刷新失败不会清空或部分更新旧 Catalog，而会保留 dirty 状态并有界
+重试；正在处理的请求持有旧快照的 <code>Arc</code>，可以继续完成。
+Web Explorer 从 Catalog 获取 Dataset 列表，服务端过滤、URL 状态和 Storyline 列表
+均携带完整 <code>(dataset, _file_, session_id)</code>；<code>run_id</code> 作为物理 Run 分组信息
+单独返回。Catalog 是不可变快照；<code>POST /api/catalog</code> 仍可显式刷新，但 <code>serve --storage</code>
+维护的 canonical 更新会自动产生新快照。</p>
+<h3 id="91-server-source-routing">9.1 Server source-routing 加速<a class="headerlink" href="#91-server-source-routing" title="Permanent link">&para;</a></h3>
+<p>Server 在每一代 <code>CatalogRuntime</code> 内持有可重建的内存加速结构，但不改变
+<code>DatasetCatalogSnapshot</code>、<code>CatalogDataset</code> 或 <code>DiscoveredSource</code> 的定义。索引按需从当前
+快照的稳定表派生：</p>
+<ul>
+<li><code>runs</code> 索引保存 <code>run_id</code>、<code>session_id</code>、<code>agent_id</code>、<code>agent_model_name</code> 到 source id 的
+  多值映射；</li>
+<li><code>events</code> 使用两级 lazy index：identity 层保存 <code>event_id</code>、<code>trace_id</code>，partition 层保存
+  <code>session_id</code>、<code>agent_id</code>；项目列表不会为高基数 event identity 付出内存成本；</li>
+<li>source 路径只在每个 Dataset 内保存一次，值键使用每代随机 keyed 64-bit fingerprint，单 source 命中
+  内联保存整数 source id；hash collision 只会扩大候选集，原 SQL 谓词仍负责最终过滤；</li>
+<li>Run 列表另行惰性缓存，不让 SQL point query 为 Explorer 的 <code>row_count</code> 聚合付费。</li>
+</ul>
+<p>索引只在首个包含可路由条件的单表查询到达时构建，并由 async single-flight 防止并发重复
+扫描。构建使用 Arrow batch stream，不收集完整结果；单层索引最多接受 100 万行和 100 万
+distinct value，超过边界即丢弃未发布的临时索引并回退原查询。Server 只从顶层 <code>AND</code> 中
+提取必然成立的字符串等值或 <code>IN</code> 条件；联接、CTE、析取、
+复杂表达式、已有 <code>_file_</code> 条件、过多候选 source 或索引构建失败都保留原 SQL。命中时只向
+SQL 增加 <code>_file_ = ...</code> 或 <code>_file_ IN (...)</code>，原业务谓词仍由 DataFusion 执行。因此索引
+只能缩小物理 source 候选，不能改变结果语义。</p>
+<p><code>GET /api/catalog</code> 的 <code>acceleration</code> 字段报告索引是否已经构建及其行、source、distinct
+value 数，并通过 <code>failed</code> 列出本 generation 已缓存的构建失败，避免每个请求重复全表扫描；
+<code>POST /api/query/evidence</code> 用 <code>source_routing</code> 响应字段报告 <code>applied</code>、
+<code>already_pruned</code>、<code>not_applicable</code>、<code>not_selective</code> 或 <code>index_unavailable</code>。Catalog 刷新会把
+新快照、查询引擎和空加速结构作为同一个 runtime 原子发布；旧请求继续持有旧 runtime，
+索引不会跨 <code>snapshot_id</code> 复用。</p>
+<p>首次索引构建仍需扫描对应稳定表，主要收益来自同一 Server 生命周期内的后续 point/project
+查询。CLI 的一次性 SQL 不使用这层状态，也不会让 Catalog 变成持久化元数据服务。</p>
+<h3 id="92">9.2 写入边界<a class="headerlink" href="#92" title="Permanent link">&para;</a></h3>
+<p><code>pchronicle serve</code> 只提供读取、Catalog 刷新和有界 evidence query，不暴露 maintenance、
+导入或任意 SQL 写接口。服务强制限制为 loopback；Gateway 和原生 writer
+直接写 Dataset，不经过 Warehouse API。</p>
+<h2 id="10-rust-api">10. Rust API 边界<a class="headerlink" href="#10-rust-api" title="Permanent link">&para;</a></h2>
+<p>核心 API 由 <code>persisting-pchronicle</code> 提供：</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">sync</span><span class="p">::</span><span class="n">Arc</span><span class="p">;</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="k">use</span><span class="w"> </span><span class="n">persisting_pchronicle</span><span class="p">::{</span>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">    </span><span class="n">CatalogSnapshotOptions</span><span class="p">,</span><span class="w"> </span><span class="n">ChronicleQueryEngine</span><span class="p">,</span><span class="w"> </span><span class="n">DatasetCatalogSnapshot</span><span class="p">,</span><span class="w"> </span><span class="n">DatasetMount</span><span class="p">,</span>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="p">};</span>
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="kd">let</span><span class="w"> </span><span class="n">mounts</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span>
+</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="w">    </span><span class="n">DatasetMount</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;current&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;local:///srv/pchronicle/current&quot;</span><span class="p">)</span><span class="o">?</span><span class="p">,</span>
+</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="w">    </span><span class="n">DatasetMount</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;archive&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;s3://trajectory-bucket/archive&quot;</span><span class="p">)</span><span class="o">?</span><span class="p">,</span>
+</span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="p">];</span>
+</span><span id="__span-12-10"><a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a><span class="kd">let</span><span class="w"> </span><span class="n">snapshot</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
+</span><span id="__span-12-11"><a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a><span class="w">    </span><span class="n">DatasetCatalogSnapshot</span><span class="p">::</span><span class="n">discover</span><span class="p">(</span><span class="n">mounts</span><span class="p">,</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span><span class="w"> </span><span class="n">CatalogSnapshotOptions</span><span class="p">::</span><span class="n">default</span><span class="p">()).</span><span class="k">await</span><span class="o">?</span><span class="p">,</span>
+</span><span id="__span-12-12"><a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a><span class="p">);</span>
+</span><span id="__span-12-13"><a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a><span class="kd">let</span><span class="w"> </span><span class="n">engine</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ChronicleQueryEngine</span><span class="p">::</span><span class="n">from_catalog_snapshot</span><span class="p">(</span><span class="n">snapshot</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-12-14"><a id="__codelineno-12-14" name="__codelineno-12-14" href="#__codelineno-12-14"></a><span class="kd">let</span><span class="w"> </span><span class="n">rows</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">engine</span>
+</span><span id="__span-12-15"><a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a><span class="w">    </span><span class="p">.</span><span class="n">query_jsonl</span><span class="p">(</span><span class="s">&quot;SELECT COUNT(*) AS runs FROM archive.runs&quot;</span><span class="p">)</span>
+</span><span id="__span-12-16"><a id="__codelineno-12-16" name="__codelineno-12-16" href="#__codelineno-12-16"></a><span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span></code></pre></div>
+<p>需要按 Storyline 读取完整轨迹时使用 <code>CatalogStorylineKey</code> 调用快照的 <code>load_storyline</code>、<code>load_events</code>
+或 <code>canonical_event_uri</code>。控制面可用 <code>list_namespaces</code>、<code>list_sources</code> 和 <code>describe_source</code>
+分页浏览同一快照；page token 与 <code>snapshot_id</code> 绑定，刷新后不能复用。调用方不应绕过快照
+重新发现 source，否则可能把不同成员或版本拼进同一个响应。</p>
+<h2 id="11">11. 关键不变量<a class="headerlink" href="#11" title="Permanent link">&para;</a></h2>
+<p>实现和后续扩展必须保持以下不变量：</p>
+<ol>
+<li>Namespace 是层级逻辑身份；SQL alias 是独立且唯一的小写 schema 名，二者不得混作一个字段。</li>
+<li><code>_file_</code> 在一个快照内稳定、相对 Dataset 根，根 source 固定表示为 <code>.</code>。</li>
+<li>Catalog Storyline 的完整身份始终是 <code>(dataset, _file_, session_id)</code>；<code>run_id</code> 只用于 Run 分组。</li>
+<li>识别复合 store 后不得继续把其内部文件注册为独立 source。</li>
+<li>六张表即使为空也必须存在，并保持固定 schema。</li>
+<li><code>events</code> 只能包含 canonical events，不能由有损 Storyline 反向伪造。</li>
+<li>同 Dataset 多 source 的轨迹表联接必须携带 <code>_file_</code> 等值。</li>
+<li>查询期 source 不能脱离持有它的快照生命周期。</li>
+<li>Server 只原子发布完整新快照；失败时继续提供旧快照。</li>
+<li>Warehouse Server 不得把任何 Dataset 或 source 作为写目标。</li>
+<li><code>_file_</code> source pruning 必须发生在 <code>LazySource::resolve</code> 之前；不能为了判断是否命中而
+    打开 source。</li>
+<li>延迟解析只能使用快照固定的版本描述，并在同一快照内 single-flight；不得在解析时
+    重新跟随 <code>CURRENT</code> 或最新 manifest。</li>
+<li>多个投影关联同一 canonical events source 时必须保留 canonical source，并稳定选择最多
+    一个 fresh 投影；冲突只能形成诊断信息，不能阻断事实读取。</li>
+<li>Server routing index 必须与 snapshot 同代发布；构建或分析不确定时只能回退原查询，
+    不得用不完整索引排除 source。</li>
+</ol>
+<h2 id="12">12. 取舍与备选方案<a class="headerlink" href="#12" title="Permanent link">&para;</a></h2>
+<h3 id="121">12.1 持久化元数据服务<a class="headerlink" href="#121" title="Permanent link">&para;</a></h3>
+<p>持久化 Catalog 能缓存 listing 和统计信息，但会引入一致性协议、迁移、后台同步、权限与
+灾难恢复问题。当前工作负载更需要“对这一条查询看到什么”的确定边界，因此选择查询期
+快照。若未来 listing 成本成为主瓶颈，可以在不改变 SQL 模型的前提下增加可验证缓存。</p>
+<h3 id="122-public">12.2 把所有挂载平铺到 <code>public</code><a class="headerlink" href="#122-public" title="Permanent link">&para;</a></h3>
+<p>平铺表无法区分在线与归档边界，也会让 <code>_file_</code> 必须编码 URI 或 Dataset 名称。使用
+DataFusion schema 保留用户给出的 Dataset 语义，并让跨 Dataset SQL 显式可审查。</p>
+<h3 id="123-basename">12.3 用目录 basename 作为默认名称<a class="headerlink" href="#123-basename" title="Permanent link">&para;</a></h3>
+<p>basename 会受路径拼写、对象前缀和部署目录影响，不带 schema 的 SQL 也无法获得稳定解析结果。位置参数入口
+因此始终使用固定名称 <code>dataset</code>，而不是从 URI 猜名字。</p>
+<h3 id="124-lance">12.4 发现时统一导入 Lance<a class="headerlink" href="#124-lance" title="Permanent link">&para;</a></h3>
+<p>外围 JSON 的自动导入会改变查询的延迟、容量和失败语义，还会制造新的持久状态，因此
+Catalog 对它只做虚拟规范化。canonical <code>events.lance</code> 是例外：<code>serve --storage</code> 在 Catalog
+之外维护确定的同级 Storyline 投影；查询仍按 lineage 和 freshness 选择投影或固定快照 fallback。</p>
+<h3 id="125-run_id">12.5 只使用 <code>run_id</code><a class="headerlink" href="#125-run_id" title="Permanent link">&para;</a></h3>
+<p><code>run_id</code> 是分组键，不是 Storyline 主键；同一物理 Run 内的主 Agent 与 subagent 可以共享
+该值。用 <code>(dataset, _file_, session_id)</code> 定位既能保留物理来源，也能支持无歧义的读写路由。</p>
+<h2 id="13">13. 测试与演进<a class="headerlink" href="#13" title="Permanent link">&para;</a></h2>
+<p>当前测试覆盖：</p>
+<ul>
+<li>Dataset 名称规范化、保留名与重名拒绝；</li>
+<li>本地混合格式递归发现、默认 view 和空 Dataset schema；</li>
+<li><code>strict</code>/<code>report</code> 候选错误行为；</li>
+<li>Catalog 和查询引擎构建后 source 解析计数仍为零；</li>
+<li><code>_file_</code> 与业务谓词组合只解析命中的本地、远程和 Storyline source；</li>
+<li>单 source 物理计划没有 <code>UnionExec</code>，未命中的远程对象不会下载；</li>
+<li>延迟错误不会在 <code>report</code> 下被静默跳过；</li>
+<li>canonical <code>events</code> 原始扫描和 session 点查不会触发全量 Storyline 规范化；</li>
+<li>多 fresh 投影稳定选出一个且 canonical events 始终可见；</li>
+<li>层级 namespace 分页、source describe 和跨快照 page-token 拒绝；</li>
+<li>同 Dataset 危险联接拒绝与跨 Dataset 联接；</li>
+<li>一个 canonical events source 中多个 Storyline 的独立读取；</li>
+<li>CLI 位置参数、单/多命名挂载、TOML 与帮助文本；</li>
+<li>Server 惰性 Catalog、Dataset 过滤、失败刷新保留旧快照和物理写入坐标；</li>
+<li>Server routing index 的多条件交集、单 source SQL 注入、结果等价、显式 <code>_file_</code> 保留与
+  refresh 后清空；</li>
+<li>Web Dataset 选择与完整 Run 坐标编码。</li>
+</ul>
+<p>后续扩展新格式或新后端时，应先定义它如何产生稳定 <code>_file_</code>、如何固定版本、能投影哪些
+表、是否允许写入，再接入发现器。不能固定成员或版本的后端必须显式降低一致性承诺，不能
+复用现有 <code>snapshot_ref</code> 暗示更强保证。</p>
+<h2 id="14">14. 相关实现<a class="headerlink" href="#14" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>crates/persisting-pchronicle/src/store/catalog/</code>：发现、固定、惰性 source、Catalog
+  provider、source pruning 和 Run 路由；</li>
+<li><code>crates/persisting-pchronicle/src/store/query_engine.rs</code>：Catalog DataFusion backend 与联接校验；</li>
+<li><code>crates/persisting-pchronicle/src/store/storyline/datafusion.rs</code>：Storyline 描述固定与按固定
+  generation 延迟打开；</li>
+<li><code>crates/persisting-pchronicle/src/store/events/datafusion.rs</code>：canonical event manifest
+  固定与按固定 segment 延迟打开；</li>
+<li><code>crates/persisting-pchronicle-cli/src/lib.rs</code>：查询 CLI 挂载与默认 Dataset 解析；</li>
+<li><code>crates/persisting-pchronicle-cli/src/server/mod.rs</code>：惰性构建、原子刷新、读写路由；</li>
+<li><code>crates/persisting-pchronicle-cli/src/server/acceleration.rs</code>：同代内存 source-routing index、
+  保守 SQL 分析与 <code>_file_</code> 注入；</li>
+<li><code>pchronicle-web/src/</code>：Dataset 选择和完整 Run identity。</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2025–2026 Persisting. All rights reserved.
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/DeepLink-org/Persisting" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.indexes", "navigation.tracking", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
