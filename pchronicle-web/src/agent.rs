@@ -1,4 +1,6 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
@@ -6,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::api;
 use crate::components::trajectory_fence;
-use crate::model::{QueryEvidence, RunAnalysis, RunSummary, TurnDetail, TurnSummary};
+use crate::model::{QueryCatalog, QueryEvidence, RunAnalysis, RunSummary, TurnDetail};
 
 const STORAGE_KEY: &str = "pchronicle_llm_config";
 
@@ -14,6 +16,7 @@ pub const THREAD_BYTE_LIMIT: usize = 200 * 1024;
 pub const LLM_MESSAGE_BYTE_LIMIT: usize = 32 * 1024;
 pub const TURN_BODY_LIMIT: usize = 8 * 1024;
 pub const TOOL_NAMES: [&str; 3] = ["get_analysis", "get_turn", "query_sql"];
+static JSON_TOOL_ID: AtomicUsize = AtomicUsize::new(1);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -275,10 +278,19 @@ pub fn save_thread(run: &RunSummary, thread: &CopilotThread) {
         return;
     };
     let mut thread = thread.clone();
+    thread.updated_at = now_millis();
     trim_thread(&mut thread);
     if let Ok(raw) = serde_json::to_string(&thread) {
         let _ = storage.set_item(&thread_storage_key(run), &raw);
     }
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(1)
+        .max(1)
 }
 
 pub fn thread_storage_key(run: &RunSummary) -> String {
@@ -362,7 +374,16 @@ pub async fn answer(request: AnswerRequest<'_>) -> Result<AgentAnswer, String> {
         truncated: false,
     });
 
-    let base_system = system_prompt(request.run, request.analysis, request.focused_turn_id);
+    let catalog_context = match api::query_catalog().await {
+        Ok(catalog) => format_catalog_schema(&catalog),
+        Err(_) => "SQL catalog unavailable; do not guess table or column names.".into(),
+    };
+    let base_system = system_prompt(
+        request.run,
+        request.analysis,
+        request.focused_turn_id,
+        &catalog_context,
+    );
     let mut last_sql = None;
     let mut evidence_truncated = false;
 
@@ -459,9 +480,14 @@ pub async fn answer(request: AnswerRequest<'_>) -> Result<AgentAnswer, String> {
     }
 }
 
-fn system_prompt(run: &RunSummary, analysis: &RunAnalysis, focused_turn_id: Option<i64>) -> String {
+fn system_prompt(
+    run: &RunSummary,
+    analysis: &RunAnalysis,
+    focused_turn_id: Option<i64>,
+    catalog_context: &str,
+) -> String {
     let mut prompt = format!(
-        "You are pChronicle Copilot for local agent trajectory debugging. Gather evidence only for the current run. Call tools when details are needed; do not invent evidence. Missing measurements are not zero. Do not infer an error from arbitrary message text. Answer in the user's language, preferably in 3–7 concise bullets. Separate captured facts from inference. Cite every inspected turn as [turn:ID]. Mention coverage or truncation when tool results report it.\n\nCurrent run analysis:\nsession={}\nstatus={}\nturn_count={}\nevent_count={}\nerror_count={}\ntotal_tokens={}\nlatency_p95={}\nlatency_samples={}/{}",
+        "You are pChronicle Copilot for local agent trajectory debugging. Gather evidence only for the current run. Call tools when details are needed; do not invent evidence. Missing measurements are not zero. Do not infer an error from arbitrary message text. Answer in the user's language, preferably in 3–7 concise bullets. Separate captured facts from inference. Cite every inspected turn as [turn:ID]. Mention coverage or truncation when tool results report it.\n\nCurrent run analysis:\nsession={}\nstatus={}\nturn_count={}\nevent_count={}\nerror_count={}\ntotal_tokens={}\nlatency_p95={}\nlatency_samples={}/{}\n\nquery_sql schema:\n{}",
         run.session_id,
         run.status,
         analysis.turn_count,
@@ -478,6 +504,7 @@ fn system_prompt(run: &RunSummary, analysis: &RunAnalysis, focused_turn_id: Opti
             .unwrap_or_else(|| "unavailable".into()),
         analysis.latency_ms.sample_count,
         analysis.latency_ms.total_count,
+        catalog_context,
     );
     if let Some(turn_id) = focused_turn_id {
         prompt.push_str(&format!(
@@ -485,6 +512,26 @@ fn system_prompt(run: &RunSummary, analysis: &RunAnalysis, focused_turn_id: Opti
         ));
     }
     prompt
+}
+
+fn format_catalog_schema(catalog: &QueryCatalog) -> String {
+    if catalog.tables.is_empty() {
+        return "SQL catalog is available but contains no tables.".into();
+    }
+    catalog
+        .tables
+        .iter()
+        .map(|table| {
+            let fields = table
+                .fields
+                .iter()
+                .map(|field| format!("{} {}", field.name, field.data_type))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{} ({fields})", table.name)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn mode_system_prompt(base: &str, json_mode: bool, force_final: bool) -> String {
@@ -513,7 +560,20 @@ fn openai_messages(messages: &[ThreadMessage], json_mode: bool) -> Vec<Value> {
                     .as_ref()
                     .filter(|calls| !calls.is_empty())
                 {
-                    if !json_mode {
+                    if json_mode {
+                        let replay = calls
+                            .iter()
+                            .map(|call| {
+                                serde_json::to_string(&json!({
+                                    "tool": call.name,
+                                    "arguments": call.arguments,
+                                }))
+                                .unwrap_or_else(|_| "{}".into())
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        mapped.push(json!({"role": "assistant", "content": replay}));
+                    } else {
                         let tool_calls = calls
                             .iter()
                             .map(|call| {
@@ -603,9 +663,17 @@ struct ChatError {
 impl ChatError {
     fn suggests_tools_unsupported(&self) -> bool {
         matches!(self.status, Some(400 | 422))
-            || ["tools", "tool_choice", "response_format"]
+            && ["tools", "tool_choice", "function", "response_format"]
                 .iter()
                 .any(|needle| self.message.to_ascii_lowercase().contains(needle))
+    }
+
+    fn suggests_response_format_unsupported(&self) -> bool {
+        matches!(self.status, Some(400 | 422))
+            && self
+                .message
+                .to_ascii_lowercase()
+                .contains("response_format")
     }
 }
 
@@ -615,6 +683,31 @@ async fn chat_with_tools(
     messages: Vec<Value>,
     tools_enabled: bool,
     json_mode: bool,
+) -> Result<Value, ChatError> {
+    let first = chat_request(
+        config,
+        system,
+        messages.clone(),
+        tools_enabled,
+        json_mode,
+        json_mode,
+    )
+    .await;
+    match first {
+        Err(error) if json_mode && error.suggests_response_format_unsupported() => {
+            chat_request(config, system, messages, tools_enabled, json_mode, false).await
+        }
+        result => result,
+    }
+}
+
+async fn chat_request(
+    config: &LlmConfig,
+    system: &str,
+    messages: Vec<Value>,
+    tools_enabled: bool,
+    json_mode: bool,
+    response_format: bool,
 ) -> Result<Value, ChatError> {
     let url = format!(
         "{}/chat/completions",
@@ -631,7 +724,7 @@ async fn chat_with_tools(
         body["tools"] = tools_payload();
         body["tool_choice"] = json!("auto");
     }
-    if json_mode {
+    if response_format {
         body["response_format"] = json!({"type":"json_object"});
     }
     let response = Request::post(&url)
@@ -790,6 +883,7 @@ fn finish_answer(
         sql: sql.clone(),
         truncated: evidence_truncated,
     });
+    thread.updated_at = now_millis();
     trim_thread(&mut thread);
     AgentAnswer {
         truncated: evidence_truncated || thread.truncated,
@@ -896,7 +990,11 @@ pub fn parse_json_fallback(content: &str) -> AssistantTurn {
         Some(_) => return AssistantTurn::Invalid,
     };
     AssistantTurn::ToolCalls(vec![ParsedToolCall {
-        id: "json-0".into(),
+        id: format!(
+            "json-{}-{}",
+            now_millis(),
+            JSON_TOOL_ID.fetch_add(1, Ordering::Relaxed)
+        ),
         name: name.into(),
         arguments,
     }])
@@ -997,6 +1095,7 @@ pub fn format_sql_result(sql: &str, evidence: &QueryEvidence) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::TurnSummary;
 
     fn empty_state() -> LoopState {
         LoopState {
@@ -1415,6 +1514,19 @@ mod tests {
     }
 
     #[test]
+    fn json_fallback_tool_call_ids_are_unique() {
+        let first = parse_json_fallback(r#"{"tool":"get_analysis","arguments":{}}"#);
+        let second = parse_json_fallback(r#"{"tool":"get_analysis","arguments":{}}"#);
+        let AssistantTurn::ToolCalls(first) = first else {
+            panic!("expected first tool call");
+        };
+        let AssistantTurn::ToolCalls(second) = second else {
+            panic!("expected second tool call");
+        };
+        assert_ne!(first[0].id, second[0].id);
+    }
+
+    #[test]
     fn json_fallback_rejects_empty_final() {
         assert_eq!(
             parse_json_fallback(r#"{"final":""}"#),
@@ -1553,25 +1665,64 @@ mod tests {
     #[test]
     fn openai_messages_map_json_mode_tools_as_text() {
         let mapped = openai_messages(
-            &[ThreadMessage {
-                role: ThreadRole::Tool,
-                text: "three rows".into(),
-                tool_calls: None,
-                tool_call_id: Some("sql-1".into()),
-                tool_name: Some("query_sql".into()),
-                sql: Some("SELECT 1".into()),
-                truncated: false,
-            }],
+            &[
+                ThreadMessage {
+                    role: ThreadRole::Assistant,
+                    text: String::new(),
+                    tool_calls: Some(vec![ParsedToolCall {
+                        id: "sql-1".into(),
+                        name: "query_sql".into(),
+                        arguments: json!({"sql": "SELECT 1"}),
+                    }]),
+                    tool_call_id: None,
+                    tool_name: None,
+                    sql: None,
+                    truncated: false,
+                },
+                ThreadMessage {
+                    role: ThreadRole::Tool,
+                    text: "three rows".into(),
+                    tool_calls: None,
+                    tool_call_id: Some("sql-1".into()),
+                    tool_name: Some("query_sql".into()),
+                    sql: Some("SELECT 1".into()),
+                    truncated: false,
+                },
+            ],
             true,
         );
 
         assert_eq!(
             mapped,
-            vec![json!({
-                "role": "user",
-                "content": "Tool query_sql result:\nthree rows"
-            })]
+            vec![
+                json!({
+                    "role": "assistant",
+                    "content": r#"{"arguments":{"sql":"SELECT 1"},"tool":"query_sql"}"#
+                }),
+                json!({
+                    "role": "user",
+                    "content": "Tool query_sql result:\nthree rows"
+                })
+            ]
         );
+        assert!(mapped
+            .iter()
+            .all(|message| message.get("tool_calls").is_none()));
+        assert!(mapped.iter().all(|message| message["role"] != "tool"));
+    }
+
+    #[test]
+    fn tools_unsupported_requires_protocol_keyword_in_client_error() {
+        let unknown_model = ChatError {
+            status: Some(400),
+            message: "LLM HTTP 400: unknown model".into(),
+        };
+        let tool_choice = ChatError {
+            status: Some(400),
+            message: "LLM HTTP 400: unsupported tool_choice".into(),
+        };
+        assert!(!unknown_model.suggests_tools_unsupported());
+        assert!(tool_choice.suggests_tools_unsupported());
     }
 
     #[test]

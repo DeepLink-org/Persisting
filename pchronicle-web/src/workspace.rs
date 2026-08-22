@@ -1050,7 +1050,7 @@ fn CopilotPanel(
     let mut busy = use_signal(|| false);
     let mut settings = use_signal(|| false);
     let mut config = use_signal(agent::load_config);
-    let mut step = use_signal(|| "Selecting one read-only analysis action…".to_string());
+    let mut step = use_signal(|| "Working…".to_string());
     let submit_run = run.clone();
     let submit_analysis = analysis.clone();
     let focused_turn_id = selected.as_ref().map(|detail| detail.summary.id);
@@ -1062,20 +1062,26 @@ fn CopilotPanel(
         }
         let config_value = config();
         if !config_value.is_configured() {
+            const CONFIGURE_MESSAGE: &str =
+                "Configure an OpenAI-compatible model in Settings before asking Copilot.";
             settings.set(true);
             let mut next_thread = thread();
-            next_thread.messages.push(ThreadMessage {
-                role: ThreadRole::Assistant,
-                text: "Configure an OpenAI-compatible model in Settings before asking Copilot."
-                    .into(),
-                tool_calls: None,
-                tool_call_id: None,
-                tool_name: None,
-                sql: None,
-                truncated: false,
+            let already_shown = next_thread.messages.last().is_some_and(|message| {
+                message.role == ThreadRole::Assistant && message.text == CONFIGURE_MESSAGE
             });
-            agent::save_thread(&submit_run, &next_thread);
-            thread.set(next_thread);
+            if !already_shown {
+                next_thread.messages.push(ThreadMessage {
+                    role: ThreadRole::Assistant,
+                    text: CONFIGURE_MESSAGE.into(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    tool_name: None,
+                    sql: None,
+                    truncated: false,
+                });
+                agent::save_thread(&submit_run, &next_thread);
+                thread.set(next_thread);
+            }
             return;
         }
 
@@ -1092,7 +1098,7 @@ fn CopilotPanel(
         });
         thread.set(pending_thread.clone());
         input.set(String::new());
-        step.set("Selecting one read-only analysis action…".into());
+        step.set("Working…".into());
         busy.set(true);
         let run_value = submit_run.clone();
         let analysis_value = submit_analysis.clone();
