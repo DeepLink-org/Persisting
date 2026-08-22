@@ -129,7 +129,9 @@ pub fn thread_storage_key(run: &RunSummary) -> String {
 }
 
 pub fn thread_byte_size(thread: &CopilotThread) -> usize {
-    serde_json::to_string(thread).map(|raw| raw.len()).unwrap_or(0)
+    serde_json::to_string(thread)
+        .map(|raw| raw.len())
+        .unwrap_or(0)
 }
 
 fn shrink_tool_text(text: &str) -> String {
@@ -166,10 +168,11 @@ pub fn compress_messages_for_llm(messages: &[ThreadMessage]) -> Vec<ThreadMessag
         if encoded.len() <= LLM_MESSAGE_BYTE_LIMIT {
             return out;
         }
-        let Some(index) = out
-            .iter()
-            .position(|message| message.role == ThreadRole::Tool && message.text.len() > 64)
-        else {
+        let Some(index) = out.iter().position(|message| {
+            message.role == ThreadRole::Tool
+                && message.text.len() > 64
+                && shrink_tool_text(&message.text) != message.text
+        }) else {
             return out;
         };
         out[index].text = shrink_tool_text(&out[index].text);
@@ -719,7 +722,10 @@ mod tests {
         let a = sample_run("s-a", Some("r1"));
         let b = sample_run("s-b", Some("r1"));
         let no_run = sample_run("s-a", None);
-        assert_eq!(thread_storage_key(&a), format!("pchronicle_copilot:{}", a.query()));
+        assert_eq!(
+            thread_storage_key(&a),
+            format!("pchronicle_copilot:{}", a.query())
+        );
         assert_ne!(thread_storage_key(&a), thread_storage_key(&b));
         assert_eq!(
             thread_storage_key(&no_run),
@@ -780,5 +786,26 @@ mod tests {
         let encoded = serde_json::to_string(&compressed).unwrap();
         assert!(encoded.len() <= LLM_MESSAGE_BYTE_LIMIT);
         assert_eq!(compressed.last().unwrap().text, "q");
+    }
+
+    #[test]
+    fn compress_messages_for_llm_stops_when_tool_payload_cannot_shrink() {
+        let unshrinkable_tool = tool_msg(&"t".repeat(200));
+        let bulk = ThreadMessage {
+            role: ThreadRole::User,
+            text: "u".repeat(35 * 1024),
+            tool_call_id: None,
+            tool_name: None,
+            sql: None,
+            truncated: false,
+        };
+        let messages = vec![unshrinkable_tool, bulk];
+        let before = serde_json::to_string(&messages).unwrap();
+        assert!(before.len() > LLM_MESSAGE_BYTE_LIMIT);
+
+        let compressed = compress_messages_for_llm(&messages);
+        let after = serde_json::to_string(&compressed).unwrap();
+        assert!(after.len() <= before.len());
+        assert_eq!(compressed[0].text, "t".repeat(200));
     }
 }
