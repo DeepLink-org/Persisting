@@ -172,7 +172,7 @@ fn infer_kind(name: &str, values: &[&Value], unique_count: usize) -> ColumnKind 
             return ColumnKind::DateTime;
         }
         let non_null_count = values.len();
-        if unique_count <= 20 && (unique_count * 2 <= non_null_count || unique_count <= 2) {
+        if unique_count <= 20 && unique_count * 2 <= non_null_count {
             return ColumnKind::Categorical;
         }
         return ColumnKind::Text;
@@ -353,6 +353,7 @@ mod tests {
             json!({"latency_ms": 10, "status": "ok", "message": "short"}),
             json!({"latency_ms": 20, "status": "failed", "message": "a longer message"}),
             json!({"latency_ms": null, "status": "ok", "message": "free text three"}),
+            json!({"latency_ms": 30, "status": "ok", "message": "free text four"}),
         ];
         let profiles = profile_rows(&rows);
         assert_eq!(profile(&profiles, "latency_ms").kind, ColumnKind::Number);
@@ -372,13 +373,31 @@ mod tests {
 
     #[test]
     fn top_values_use_label_as_stable_tie_breaker() {
-        let rows = vec![json!({"kind":"b"}), json!({"kind":"a"})];
+        let rows = vec![
+            json!({"kind":"b"}),
+            json!({"kind":"a"}),
+            json!({"kind":"b"}),
+            json!({"kind":"a"}),
+        ];
         let profiles = profile_rows(&rows);
         let values = &profile(&profiles, "kind").top_values;
         assert_eq!(
             values.iter().map(|v| v.label.as_str()).collect::<Vec<_>>(),
             vec!["a", "b"]
         );
+    }
+
+    #[test]
+    fn two_distinct_strings_in_small_samples_are_text() {
+        let two_rows = profile_rows(&[json!({"kind":"a"}), json!({"kind":"b"})]);
+        let three_rows = profile_rows(&[
+            json!({"kind":"a"}),
+            json!({"kind":"b"}),
+            json!({"kind":"a"}),
+        ]);
+
+        assert_eq!(profile(&two_rows, "kind").kind, ColumnKind::Text);
+        assert_eq!(profile(&three_rows, "kind").kind, ColumnKind::Text);
     }
 
     #[test]
