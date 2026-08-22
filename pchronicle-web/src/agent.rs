@@ -82,6 +82,20 @@ pub fn apply_model_turn(
     turn: AssistantTurn,
     mut execute: impl FnMut(&ParsedToolCall) -> String,
 ) -> DriveResult {
+    if state.force_final {
+        return match turn {
+            AssistantTurn::Final(text) if !text.trim().is_empty() => {
+                state.illegal_json_streak = 0;
+                DriveResult::Done { text }
+            }
+            _ => DriveResult::Failed {
+                message:
+                    "The model did not produce a final answer because the available evidence was insufficient."
+                        .into(),
+            },
+        };
+    }
+
     match turn {
         AssistantTurn::ToolCalls(calls) => {
             for call in calls {
@@ -300,7 +314,8 @@ pub async fn answer(request: AnswerRequest<'_>) -> Result<AgentAnswer, String> {
     loop {
         let tools_enabled = !state.json_mode && !state.force_final;
         let system = mode_system_prompt(&base_system, state.json_mode, state.force_final);
-        let messages = openai_messages(&compress_messages_for_llm(&state.messages));
+        let messages =
+            openai_messages(&compress_messages_for_llm(&state.messages), state.json_mode);
         let message = match chat_with_tools(
             request.config,
             &system,
@@ -430,19 +445,69 @@ fn mode_system_prompt(base: &str, json_mode: bool, force_final: bool) -> String 
     prompt
 }
 
-fn openai_messages(messages: &[ThreadMessage]) -> Vec<Value> {
-    messages
-        .iter()
-        .map(|message| match message.role {
-            ThreadRole::User => json!({"role": "user", "content": message.text}),
-            ThreadRole::Assistant => json!({"role": "assistant", "content": message.text}),
-            ThreadRole::Tool => json!({
-                "role": "tool",
-                "tool_call_id": message.tool_call_id,
-                "content": message.text,
-            }),
-        })
-        .collect()
+fn openai_messages(messages: &[ThreadMessage], json_mode: bool) -> Vec<Value> {
+    let mut mapped = Vec::new();
+    let mut index = 0;
+    let mut fallback_index = 0;
+
+    while index < messages.len() {
+        let message = &messages[index];
+        match message.role {
+            ThreadRole::User => {
+                mapped.push(json!({"role": "user", "content": message.text}));
+                index += 1;
+            }
+            ThreadRole::Assistant => {
+                mapped.push(json!({"role": "assistant", "content": message.text}));
+                index += 1;
+            }
+            ThreadRole::Tool if json_mode => {
+                let name = message.tool_name.as_deref().unwrap_or("unknown");
+                mapped.push(json!({
+                    "role": "user",
+                    "content": format!("Tool {name} result:\n{}", message.text),
+                }));
+                index += 1;
+            }
+            ThreadRole::Tool => {
+                let run_start = index;
+                let mut tool_calls = Vec::new();
+                let mut call_ids = Vec::new();
+                while index < messages.len() && messages[index].role == ThreadRole::Tool {
+                    let tool = &messages[index];
+                    let call_id = tool
+                        .tool_call_id
+                        .clone()
+                        .unwrap_or_else(|| format!("call-{fallback_index}"));
+                    fallback_index += 1;
+                    tool_calls.push(json!({
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool.tool_name.as_deref().unwrap_or("unknown"),
+                            "arguments": "{}",
+                        },
+                    }));
+                    call_ids.push(call_id);
+                    index += 1;
+                }
+                mapped.push(json!({
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": tool_calls,
+                }));
+                for (tool, call_id) in messages[run_start..index].iter().zip(call_ids) {
+                    mapped.push(json!({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": tool.text,
+                    }));
+                }
+            }
+        }
+    }
+
+    mapped
 }
 
 fn tools_payload() -> Value {
@@ -763,7 +828,11 @@ pub fn parse_json_fallback(content: &str) -> AssistantTurn {
     let Ok(value) = serde_json::from_str::<Value>(raw) else {
         return AssistantTurn::Invalid;
     };
-    if let Some(final_text) = value.get("final").and_then(Value::as_str) {
+    if let Some(final_text) = value
+        .get("final")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+    {
         return AssistantTurn::Final(final_text.to_string());
     }
     let Some(name) = value.get("tool").and_then(Value::as_str) else {
@@ -979,6 +1048,31 @@ mod tests {
         });
         assert_eq!(state.tool_rounds, 8);
         assert!(state.force_final);
+    }
+
+    #[test]
+    fn apply_model_turn_force_final_tool_calls_fail_instead_of_continuing() {
+        let mut state = empty_state();
+        state.force_final = true;
+        let call = ParsedToolCall {
+            id: "late".into(),
+            name: "get_analysis".into(),
+            arguments: json!({}),
+        };
+        let mut executed = false;
+        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(vec![call]), |_| {
+            executed = true;
+            "should not execute".into()
+        });
+        match result {
+            DriveResult::Failed { message } => {
+                assert!(message.contains("final answer"));
+                assert!(message.contains("evidence"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(!executed);
+        assert!(state.messages.is_empty());
     }
 
     #[test]
@@ -1251,6 +1345,97 @@ mod tests {
             AssistantTurn::Final("done".into())
         );
         assert_eq!(parse_json_fallback("not json"), AssistantTurn::Invalid);
+    }
+
+    #[test]
+    fn json_fallback_rejects_empty_final() {
+        assert_eq!(
+            parse_json_fallback(r#"{"final":""}"#),
+            AssistantTurn::Invalid
+        );
+        assert_eq!(
+            parse_json_fallback(r#"{"final":"  \n\t"}"#),
+            AssistantTurn::Invalid
+        );
+    }
+
+    #[test]
+    fn openai_messages_precede_native_tool_runs_with_assistant_calls() {
+        let messages = vec![
+            ThreadMessage {
+                role: ThreadRole::User,
+                text: "inspect".into(),
+                tool_call_id: None,
+                tool_name: None,
+                sql: None,
+                truncated: false,
+            },
+            ThreadMessage {
+                role: ThreadRole::Tool,
+                text: "analysis result".into(),
+                tool_call_id: Some("analysis-1".into()),
+                tool_name: Some("get_analysis".into()),
+                sql: None,
+                truncated: false,
+            },
+            ThreadMessage {
+                role: ThreadRole::Tool,
+                text: "turn result".into(),
+                tool_call_id: None,
+                tool_name: None,
+                sql: None,
+                truncated: false,
+            },
+            ThreadMessage {
+                role: ThreadRole::Assistant,
+                text: "done".into(),
+                tool_call_id: None,
+                tool_name: None,
+                sql: None,
+                truncated: false,
+            },
+        ];
+
+        let mapped = openai_messages(&messages, false);
+        assert_eq!(mapped.len(), 5);
+        assert_eq!(mapped[1]["role"], "assistant");
+        assert!(mapped[1]["content"].is_null());
+        assert_eq!(mapped[1]["tool_calls"][0]["id"], "analysis-1");
+        assert_eq!(
+            mapped[1]["tool_calls"][0]["function"]["name"],
+            "get_analysis"
+        );
+        assert_eq!(mapped[1]["tool_calls"][0]["function"]["arguments"], "{}");
+        assert_eq!(mapped[1]["tool_calls"][1]["id"], "call-1");
+        assert_eq!(mapped[1]["tool_calls"][1]["function"]["name"], "unknown");
+        assert_eq!(mapped[2]["role"], "tool");
+        assert_eq!(mapped[2]["tool_call_id"], "analysis-1");
+        assert_eq!(mapped[3]["role"], "tool");
+        assert_eq!(mapped[3]["tool_call_id"], "call-1");
+        assert_eq!(mapped[4]["role"], "assistant");
+    }
+
+    #[test]
+    fn openai_messages_map_json_mode_tools_as_text() {
+        let mapped = openai_messages(
+            &[ThreadMessage {
+                role: ThreadRole::Tool,
+                text: "three rows".into(),
+                tool_call_id: Some("sql-1".into()),
+                tool_name: Some("query_sql".into()),
+                sql: Some("SELECT 1".into()),
+                truncated: false,
+            }],
+            true,
+        );
+
+        assert_eq!(
+            mapped,
+            vec![json!({
+                "role": "user",
+                "content": "Tool query_sql result:\nthree rows"
+            })]
+        );
     }
 
     #[test]
