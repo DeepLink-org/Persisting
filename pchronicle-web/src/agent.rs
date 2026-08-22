@@ -1,16 +1,14 @@
-use std::cmp::Ordering;
+use std::collections::{HashMap, VecDeque};
 
 use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::api;
-use crate::components::{table_fence, trajectory_fence};
+use crate::components::trajectory_fence;
 use crate::model::{QueryEvidence, RunAnalysis, RunSummary, TurnDetail, TurnSummary};
 
 const STORAGE_KEY: &str = "pchronicle_llm_config";
-const DEFAULT_CONTEXT_LIMIT: usize = 32 * 1024;
-const FULL_CONTEXT_LIMIT: usize = 64 * 1024;
 
 pub const THREAD_BYTE_LIMIT: usize = 200 * 1024;
 pub const LLM_MESSAGE_BYTE_LIMIT: usize = 32 * 1024;
@@ -171,10 +169,11 @@ impl LlmConfig {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentAnswer {
+    pub thread: CopilotThread,
     pub text: String,
-    pub action: String,
     pub sql: Option<String>,
     pub truncated: bool,
+    pub fetched_turn_ids: Vec<i64>,
 }
 
 pub struct AnswerRequest<'a> {
@@ -182,18 +181,9 @@ pub struct AnswerRequest<'a> {
     pub user_message: &'a str,
     pub run: &'a RunSummary,
     pub analysis: &'a RunAnalysis,
-    pub turns: &'a [TurnSummary],
-    pub selected: Option<&'a TurnDetail>,
-    pub include_full_turn: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct Selection {
-    action: String,
-    skill_id: Option<String>,
-    sql: Option<String>,
-    #[serde(default)]
-    reply: String,
+    pub focused_turn_id: Option<i64>,
+    pub thread: CopilotThread,
+    pub on_step: Option<&'a dyn Fn(&str)>,
 }
 
 pub fn load_config() -> LlmConfig {
@@ -279,405 +269,255 @@ pub fn compress_messages_for_llm(messages: &[ThreadMessage]) -> Vec<ThreadMessag
     }
 }
 
-pub fn skill_ids() -> &'static [&'static str] {
-    &[
-        "trajectory_summary",
-        "failure_locator",
-        "latency_hotspots",
-        "tool_usage",
-        "cohort_compare",
-    ]
-}
-
 pub async fn answer(request: AnswerRequest<'_>) -> Result<AgentAnswer, String> {
-    let AnswerRequest {
-        config,
-        user_message,
-        run,
-        analysis,
-        turns,
-        selected,
-        include_full_turn,
-    } = request;
-    let (base_context, context_truncated) =
-        evidence_context(run, analysis, turns, selected, include_full_turn);
-    let explicit_skill = resolve_skill(user_message);
-    if !config.is_configured() {
-        let skill = explicit_skill.unwrap_or("trajectory_summary");
-        let (evidence, sql) = run_skill(skill, run, analysis, turns).await?;
-        let evidence = decorate_skill_evidence(skill, evidence, turns);
-        return Ok(AgentAnswer {
-            text: format!(
-                "**{}**\n\n{}\n\nConfigure an OpenAI-compatible model in Settings for a natural-language interpretation.",
-                skill_title(skill),
-                evidence
-            ),
-            action: skill.into(),
-            sql,
-            truncated: context_truncated,
-        });
+    if !request.config.is_configured() {
+        return Err(
+            "Configure an OpenAI-compatible model in Settings before asking Copilot.".into(),
+        );
     }
 
-    let selection = if let Some(skill) = explicit_skill {
-        Selection {
-            action: "skill".into(),
-            skill_id: Some(skill.into()),
-            sql: None,
-            reply: String::new(),
-        }
-    } else {
-        select_action(config, user_message, &base_context).await?
+    let mut state = LoopState {
+        messages: request.thread.messages.clone(),
+        tool_rounds: 0,
+        json_mode: false,
+        illegal_json_streak: 0,
+        fetched_turn_ids: Vec::new(),
+        force_final: false,
     };
+    state.messages.push(ThreadMessage {
+        role: ThreadRole::User,
+        text: request.user_message.to_string(),
+        tool_call_id: None,
+        tool_name: None,
+        sql: None,
+        truncated: false,
+    });
 
-    match selection.action.as_str() {
-        "sql" => {
-            let sql = selection
-                .sql
-                .filter(|sql| !sql.trim().is_empty())
-                .ok_or_else(|| "The model selected SQL without returning a query.".to_string())?;
-            let result = api::query_evidence(&sql).await?;
-            let evidence = format!(
-                "SQL:\n{sql}\n\nreturned_rows={} truncated={}\n{}",
-                result.returned_rows,
-                result.truncated,
-                serde_json::to_string_pretty(&result.rows).unwrap_or_default()
-            );
-            let summary = summarize(config, user_message, &base_context, &evidence).await?;
-            let component = table_fence("SQL query result", result.clone());
-            Ok(AgentAnswer {
-                text: format!("{summary}\n\n{component}"),
-                action: "read-only SQL".into(),
-                sql: Some(sql),
-                truncated: context_truncated || result.truncated,
-            })
-        }
-        "answer" => Ok(AgentAnswer {
-            text: if selection.reply.trim().is_empty() {
-                "I could not map that request to available trajectory evidence.".into()
-            } else {
-                selection.reply
-            },
-            action: "context answer".into(),
-            sql: None,
-            truncated: context_truncated,
-        }),
-        _ => {
-            let skill = selection
-                .skill_id
-                .as_deref()
-                .filter(|skill| skill_ids().contains(skill))
-                .unwrap_or("trajectory_summary");
-            let (evidence, sql) = run_skill(skill, run, analysis, turns).await?;
-            let evidence = decorate_skill_evidence(skill, evidence, turns);
-            let components = component_fences(&evidence);
-            let summary = summarize(config, user_message, &base_context, &evidence).await?;
-            Ok(AgentAnswer {
-                text: if components.is_empty() {
-                    summary
-                } else {
-                    format!("{summary}\n\n{components}")
-                },
-                action: skill.into(),
-                sql,
-                truncated: context_truncated,
-            })
-        }
-    }
-}
+    let base_system = system_prompt(request.run, request.analysis, request.focused_turn_id);
+    let mut last_sql = None;
+    let mut evidence_truncated = false;
 
-async fn run_skill(
-    skill: &str,
-    run: &RunSummary,
-    analysis: &RunAnalysis,
-    turns: &[TurnSummary],
-) -> Result<(String, Option<String>), String> {
-    match skill {
-        "failure_locator" => {
-            let evidence = turns
-                .iter()
-                .filter(|turn| turn.has_error)
-                .take(20)
-                .map(|turn| {
-                    format!(
-                        "- [turn:{}] {} {} — {}",
-                        turn.id,
-                        turn.source,
-                        turn.kind.as_deref().unwrap_or("unknown"),
-                        turn.preview
-                    )
-                })
-                .collect::<Vec<_>>();
-            Ok((
-                if evidence.is_empty() {
-                    "No turns contain an explicit error kind, failing status, non-null error_type, or HTTP status >= 400. This does not prove the run succeeded.".into()
-                } else {
-                    format!("Explicit error evidence:\n{}", evidence.join("\n"))
-                },
-                None,
-            ))
-        }
-        "latency_hotspots" => {
-            let mut ranked = turns
-                .iter()
-                .filter_map(|turn| turn.latency_ms.map(|latency| (turn, latency)))
-                .collect::<Vec<_>>();
-            ranked.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
-            let lines = ranked
-                .into_iter()
-                .take(20)
-                .map(|(turn, latency)| {
-                    format!("- [turn:{}] {:.1} ms — {}", turn.id, latency, turn.preview)
-                })
-                .collect::<Vec<_>>();
-            Ok((
-                format!(
-                    "Latency coverage: {}/{} turns; P50={}; P95={}; max={}\n{}",
-                    analysis.latency_ms.sample_count,
-                    analysis.latency_ms.total_count,
-                    optional_number(analysis.latency_ms.p50),
-                    optional_number(analysis.latency_ms.p95),
-                    optional_number(analysis.latency_ms.max),
-                    if lines.is_empty() {
-                        "No captured latency samples.".into()
-                    } else {
-                        lines.join("\n")
-                    }
-                ),
-                None,
-            ))
-        }
-        "tool_usage" => Ok((
-            if analysis.tools.is_empty() {
-                "No structured tool calls were captured.".into()
-            } else {
-                analysis
-                    .tools
-                    .iter()
-                    .map(|tool| {
-                        format!(
-                            "- {}: {} calls, duration coverage {}/{}, total {}, average {}, max {}, error-associated {}",
-                            tool.name,
-                            tool.count,
-                            tool.duration_sample_count,
-                            tool.count,
-                            optional_number(tool.total_duration_ms),
-                            optional_number(tool.average_duration_ms),
-                            optional_number(tool.max_duration_ms),
-                            tool.error_associated_count,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            },
-            None,
-        )),
-        "cohort_compare" => {
-            let catalog = api::query_catalog().await?;
-            let database = catalog.database;
-            let session = sql_literal(&run.session_id);
-            let sql = format!(
-                "SELECT session_id, COUNT(*) AS step_count, AVG(latency_ms) AS avg_latency_ms, MAX(latency_ms) AS max_latency_ms FROM {database}.steps GROUP BY session_id ORDER BY avg_latency_ms DESC NULLS LAST LIMIT 50"
-            );
-            let result = api::query_evidence(&sql).await?;
-            let component = table_fence("Cohort comparison", result.clone());
-            Ok((
-                format!(
-                    "Selected session: {session}\nCohort rows={} truncated={}\n\n{}",
-                    result.returned_rows, result.truncated, component
-                ),
-                Some(sql),
-            ))
-        }
-        _ => Ok((overview_evidence(run, analysis, turns), None)),
-    }
-}
-
-fn decorate_skill_evidence(skill: &str, evidence: String, turns: &[TurnSummary]) -> String {
-    let mut selected = match skill {
-        "failure_locator" => turns
-            .iter()
-            .filter(|turn| turn.has_error)
-            .map(|turn| turn.id)
-            .take(20)
-            .collect::<Vec<_>>(),
-        "latency_hotspots" => {
-            let mut ranked = turns
-                .iter()
-                .filter_map(|turn| turn.latency_ms.map(|latency| (turn.id, latency)))
-                .collect::<Vec<_>>();
-            ranked.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
-            ranked.into_iter().map(|(id, _)| id).take(20).collect()
-        }
-        "tool_usage" => turns
-            .iter()
-            .filter(|turn| !turn.tool_names.is_empty())
-            .map(|turn| turn.id)
-            .take(20)
-            .collect(),
-        "trajectory_summary" => turns.iter().map(|turn| turn.id).take(20).collect(),
-        _ => Vec::new(),
-    };
-    selected.dedup();
-    if selected.is_empty() {
-        evidence
-    } else {
-        format!(
-            "{evidence}\n\n{}",
-            trajectory_fence(skill_title(skill), selected)
+    loop {
+        let tools_enabled = !state.json_mode && !state.force_final;
+        let system = mode_system_prompt(&base_system, state.json_mode, state.force_final);
+        let messages = openai_messages(&compress_messages_for_llm(&state.messages));
+        let message = match chat_with_tools(
+            request.config,
+            &system,
+            messages,
+            tools_enabled,
+            state.json_mode,
         )
-    }
-}
-
-fn component_fences(value: &str) -> String {
-    let lines = value.lines().collect::<Vec<_>>();
-    let mut fences = Vec::new();
-    let mut index = 0;
-    while index < lines.len() {
-        if lines[index].starts_with("```pchronicle:") {
-            let start = index;
-            index += 1;
-            while index < lines.len() && lines[index] != "```" {
-                index += 1;
+        .await
+        {
+            Ok(message) => message,
+            Err(error) if !state.json_mode && error.suggests_tools_unsupported() => {
+                state.json_mode = true;
+                continue;
             }
-            if index < lines.len() {
-                fences.push(lines[start..=index].join("\n"));
+            Err(error) => return Err(error.message),
+        };
+
+        let turn = if state.json_mode {
+            message
+                .get("content")
+                .and_then(Value::as_str)
+                .map(parse_json_fallback)
+                .unwrap_or(AssistantTurn::Invalid)
+        } else {
+            parse_native_message(&message)
+        };
+
+        let mut results = VecDeque::new();
+        let mut sql_by_call = HashMap::new();
+        if let AssistantTurn::ToolCalls(calls) = &turn {
+            let remaining = MAX_TOOL_ROUNDS.saturating_sub(state.tool_rounds);
+            for call in calls.iter().take(remaining) {
+                if let Some(on_step) = request.on_step {
+                    on_step(&tool_step(call));
+                }
+                let execution = execute_tool(call, request.run, request.analysis).await;
+                if execution.truncated {
+                    evidence_truncated = true;
+                }
+                if let Some(sql) = execution.sql {
+                    last_sql = Some(sql.clone());
+                    sql_by_call.insert(call.id.clone(), sql);
+                }
+                results.push_back(execution.text);
             }
         }
-        index += 1;
+
+        let result = apply_model_turn(&mut state, turn, |_| {
+            results
+                .pop_front()
+                .unwrap_or_else(|| "Tool call budget exhausted.".into())
+        });
+        for message in state.messages.iter_mut().rev() {
+            let Some(call_id) = message.tool_call_id.as_ref() else {
+                continue;
+            };
+            if let Some(sql) = sql_by_call.remove(call_id) {
+                message.sql = Some(sql);
+            }
+            if sql_by_call.is_empty() {
+                break;
+            }
+        }
+
+        match result {
+            DriveResult::Continue => {}
+            DriveResult::Done { text } => {
+                return Ok(finish_answer(
+                    request.thread,
+                    state,
+                    text,
+                    last_sql,
+                    evidence_truncated,
+                ));
+            }
+            DriveResult::Failed { message } => {
+                return Ok(finish_answer(
+                    request.thread,
+                    state,
+                    message,
+                    last_sql,
+                    evidence_truncated,
+                ));
+            }
+        }
     }
-    fences.join("\n\n")
 }
 
-fn overview_evidence(run: &RunSummary, analysis: &RunAnalysis, turns: &[TurnSummary]) -> String {
-    let top = turns
-        .iter()
-        .take(12)
-        .map(|turn| format!("- [turn:{}] {} — {}", turn.id, turn.source, turn.preview))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "Run: agent={} session={} status={}\nEvents={} turns={} tools={} explicit_errors={}\nTokens: prompt={} completion={} total={}\nLatency: samples={}/{} p50={} p95={} max={}\nTurn evidence:\n{}",
-        run.agent_id,
+fn system_prompt(run: &RunSummary, analysis: &RunAnalysis, focused_turn_id: Option<i64>) -> String {
+    let mut prompt = format!(
+        "You are pChronicle Copilot for local agent trajectory debugging. Gather evidence only for the current run. Call tools when details are needed; do not invent evidence. Missing measurements are not zero. Do not infer an error from arbitrary message text. Answer in the user's language, preferably in 3–7 concise bullets. Separate captured facts from inference. Cite every inspected turn as [turn:ID]. Mention coverage or truncation when tool results report it.\n\nCurrent run analysis:\nsession={}\nstatus={}\nturn_count={}\nevent_count={}\nerror_count={}\ntotal_tokens={}\nlatency_p95={}\nlatency_samples={}/{}",
         run.session_id,
         run.status,
-        analysis.event_count,
         analysis.turn_count,
-        analysis.tool_call_count,
+        analysis.event_count,
         analysis.error_count,
-        optional_u64(analysis.prompt_tokens),
-        optional_u64(analysis.completion_tokens),
-        optional_u64(analysis.total_tokens),
+        analysis
+            .total_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unavailable".into()),
+        analysis
+            .latency_ms
+            .p95
+            .map(|value| format!("{value:.1}"))
+            .unwrap_or_else(|| "unavailable".into()),
         analysis.latency_ms.sample_count,
         analysis.latency_ms.total_count,
-        optional_number(analysis.latency_ms.p50),
-        optional_number(analysis.latency_ms.p95),
-        optional_number(analysis.latency_ms.max),
-        top
-    )
-}
-
-fn evidence_context(
-    run: &RunSummary,
-    analysis: &RunAnalysis,
-    turns: &[TurnSummary],
-    selected: Option<&TurnDetail>,
-    include_full_turn: bool,
-) -> (String, bool) {
-    let mut context = overview_evidence(run, analysis, turns);
-    if let Some(detail) = selected {
-        context.push_str(&format!(
-            "\nSelected [turn:{}]: source={} kind={} model={} latency={} tools={}\n",
-            detail.summary.id,
-            detail.summary.source,
-            detail.summary.kind.as_deref().unwrap_or("unknown"),
-            detail
-                .summary
-                .model_name
-                .as_deref()
-                .unwrap_or("unavailable"),
-            optional_number(detail.summary.latency_ms),
-            detail.summary.tool_names.join(", ")
+    );
+    if let Some(turn_id) = focused_turn_id {
+        prompt.push_str(&format!(
+            "\nThe user is currently viewing turn #{turn_id}. Do not assume its body; call get_turn if needed."
         ));
-        if detail.summary.source != "system" {
-            let text = detail.turn.text();
-            let excerpt_limit = if include_full_turn {
-                FULL_CONTEXT_LIMIT
-            } else {
-                4 * 1024
-            };
-            context.push_str("Selected content:\n");
-            context.push_str(&truncate(&text, excerpt_limit).0);
-        } else {
-            context.push_str("System content omitted by the minimal-evidence policy.");
-        }
-        if include_full_turn {
-            context.push_str("\nTool calls:\n");
-            context.push_str(
-                &truncate(
-                    &serde_json::to_string_pretty(&detail.wire_tool_calls).unwrap_or_default(),
-                    12 * 1024,
-                )
-                .0,
-            );
-        }
     }
-    let limit = if include_full_turn {
-        FULL_CONTEXT_LIMIT
-    } else {
-        DEFAULT_CONTEXT_LIMIT
-    };
-    truncate(&context, limit)
+    prompt
 }
 
-async fn select_action(
-    config: &LlmConfig,
-    user_message: &str,
-    context: &str,
-) -> Result<Selection, String> {
-    let catalog = api::query_catalog().await.ok();
-    let database = catalog
-        .as_ref()
-        .map(|catalog| catalog.database.as_str())
-        .unwrap_or("data");
-    let system = format!(
-        "You are pChronicle Copilot for local agent trajectory debugging. Select exactly one action. Return JSON only: {{\"action\":\"skill|sql|answer\",\"skill_id\":\"trajectory_summary|failure_locator|latency_hotspots|tool_usage|cohort_compare|null\",\"sql\":null,\"reply\":\"\"}}. For SQL, emit exactly one read-only SELECT/WITH/EXPLAIN over {database}.runs, {database}.steps, {database}.tool_calls, or {database}.trajectories. Prefer a built-in skill. Never claim missing data is zero and never infer an error from arbitrary message text.\n\nWorkspace evidence:\n{context}"
-    );
-    let text = chat(config, &system, user_message, true).await?;
-    serde_json::from_str(extract_json(&text))
-        .map_err(|error| format!("The model returned invalid routing JSON: {error}"))
+fn mode_system_prompt(base: &str, json_mode: bool, force_final: bool) -> String {
+    let mut prompt = base.to_string();
+    if json_mode {
+        prompt.push_str(
+            "\nReturn JSON only: either {\"tool\":\"get_analysis|get_turn|query_sql\",\"arguments\":{}} or {\"final\":\"...\"}.",
+        );
+    }
+    if force_final {
+        prompt.push_str("\nAnswer now from evidence already gathered. Do not call tools.");
+    }
+    prompt
 }
 
-async fn summarize(
-    config: &LlmConfig,
-    question: &str,
-    context: &str,
-    evidence: &str,
-) -> Result<String, String> {
-    let system = "You are pChronicle Copilot. Answer in the user's language in 3-7 concise bullets. Separate captured facts from inference. Cite relevant turns using the exact form [turn:ID]. Mention coverage and truncation when present. Do not invent costs, errors, or missing measurements.";
-    let user = format!(
-        "Question: {question}\n\nMinimal workspace context:\n{context}\n\nExecuted evidence:\n{evidence}"
-    );
-    chat(config, system, &user, false).await
+fn openai_messages(messages: &[ThreadMessage]) -> Vec<Value> {
+    messages
+        .iter()
+        .map(|message| match message.role {
+            ThreadRole::User => json!({"role": "user", "content": message.text}),
+            ThreadRole::Assistant => json!({"role": "assistant", "content": message.text}),
+            ThreadRole::Tool => json!({
+                "role": "tool",
+                "tool_call_id": message.tool_call_id,
+                "content": message.text,
+            }),
+        })
+        .collect()
 }
 
-async fn chat(
+fn tools_payload() -> Value {
+    json!([
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_NAMES[0],
+                "description": "Get aggregate analysis for the current run.",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_NAMES[1],
+                "description": "Fetch one turn in the current run.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"turn_id": {"type": "integer"}},
+                    "required": ["turn_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_NAMES[2],
+                "description": "Run one server-enforced read-only SQL query.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"sql": {"type": "string"}},
+                    "required": ["sql"]
+                }
+            }
+        }
+    ])
+}
+
+struct ChatError {
+    status: Option<u16>,
+    message: String,
+}
+
+impl ChatError {
+    fn suggests_tools_unsupported(&self) -> bool {
+        matches!(self.status, Some(400 | 422))
+            || ["tools", "tool_choice", "response_format"]
+                .iter()
+                .any(|needle| self.message.to_ascii_lowercase().contains(needle))
+    }
+}
+
+async fn chat_with_tools(
     config: &LlmConfig,
     system: &str,
-    user: &str,
+    messages: Vec<Value>,
+    tools_enabled: bool,
     json_mode: bool,
-) -> Result<String, String> {
+) -> Result<Value, ChatError> {
     let url = format!(
         "{}/chat/completions",
         config.api_base.trim().trim_end_matches('/')
     );
+    let mut all_messages = vec![json!({"role": "system", "content": system})];
+    all_messages.extend(messages);
     let mut body = json!({
         "model": config.model.trim(),
         "temperature": if json_mode { 0.1 } else { 0.3 },
-        "messages": [
-            {"role":"system","content":system},
-            {"role":"user","content":user}
-        ]
+        "messages": all_messages
     });
+    if tools_enabled {
+        body["tools"] = tools_payload();
+        body["tool_choice"] = json!("auto");
+    }
     if json_mode {
         body["response_format"] = json!({"type":"json_object"});
     }
@@ -688,44 +528,161 @@ async fn chat(
         )
         .header("Content-Type", "application/json")
         .json(&body)
-        .map_err(|error| error.to_string())?
+        .map_err(|error| ChatError {
+            status: None,
+            message: error.to_string(),
+        })?
         .send()
         .await
-        .map_err(|error| format!("LLM request failed (check API base, key, and CORS): {error}"))?;
+        .map_err(|error| ChatError {
+            status: None,
+            message: format!("LLM request failed (check API base, key, and CORS): {error}"),
+        })?;
     let status = response.status();
-    let value: Value = response.json().await.map_err(|error| error.to_string())?;
+    let raw = response.text().await.map_err(|error| ChatError {
+        status: Some(status),
+        message: error.to_string(),
+    })?;
     if !(200..300).contains(&status) {
-        return Err(format!("LLM HTTP {status}: {value}"));
+        return Err(ChatError {
+            status: Some(status),
+            message: format!("LLM HTTP {status}: {raw}"),
+        });
     }
-    value["choices"][0]["message"]["content"]
-        .as_str()
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| "LLM returned an empty response".into())
+    let value: Value = serde_json::from_str(&raw).map_err(|error| ChatError {
+        status: Some(status),
+        message: format!("LLM returned invalid JSON: {error}"),
+    })?;
+    let message = value
+        .pointer("/choices/0/message")
+        .cloned()
+        .ok_or_else(|| ChatError {
+            status: Some(status),
+            message: "LLM returned an empty response".into(),
+        })?;
+    let has_content = message
+        .get("content")
+        .and_then(Value::as_str)
+        .is_some_and(|content| !content.trim().is_empty());
+    let has_tool_calls = message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|calls| !calls.is_empty());
+    if !has_content && !has_tool_calls {
+        return Err(ChatError {
+            status: Some(status),
+            message: "LLM returned an empty response".into(),
+        });
+    }
+    Ok(message)
 }
 
-fn resolve_skill(message: &str) -> Option<&'static str> {
-    let normalized = message.trim().trim_start_matches('/').to_ascii_lowercase();
-    skill_ids().iter().copied().find(|skill| {
-        normalized == *skill
-            || normalized.starts_with(&format!("{skill} "))
-            || match *skill {
-                "failure_locator" => normalized.contains("fail") || normalized.contains("error"),
-                "latency_hotspots" => normalized.contains("slow") || normalized.contains("latency"),
-                "tool_usage" => normalized.contains("tool"),
-                "cohort_compare" => normalized.contains("compare") || normalized.contains("cohort"),
-                _ => false,
+struct ToolExecution {
+    text: String,
+    sql: Option<String>,
+    truncated: bool,
+}
+
+async fn execute_tool(
+    call: &ParsedToolCall,
+    run: &RunSummary,
+    analysis: &RunAnalysis,
+) -> ToolExecution {
+    match call.name.as_str() {
+        "get_analysis" => ToolExecution {
+            text: format_analysis_result(analysis),
+            sql: None,
+            truncated: false,
+        },
+        "get_turn" => {
+            let turn_id = call.arguments.get("turn_id").and_then(|value| {
+                value
+                    .as_i64()
+                    .or_else(|| value.as_str().and_then(|raw| raw.parse().ok()))
+            });
+            let text = match turn_id {
+                Some(turn_id) => api::turn_detail(run, turn_id)
+                    .await
+                    .map(|detail| format_turn_result(&detail))
+                    .unwrap_or_else(|error| format!("get_turn failed: {error}")),
+                None => "get_turn failed: `turn_id` must be an integer.".into(),
+            };
+            ToolExecution {
+                truncated: text.contains("truncated=true"),
+                text,
+                sql: None,
             }
-    })
+        }
+        "query_sql" => {
+            let Some(sql) = call.arguments.get("sql").and_then(Value::as_str) else {
+                return ToolExecution {
+                    text: "query_sql failed: `sql` must be a string.".into(),
+                    sql: None,
+                    truncated: false,
+                };
+            };
+            match api::query_evidence(sql).await {
+                Ok(evidence) => ToolExecution {
+                    text: format_sql_result(sql, &evidence),
+                    sql: Some(sql.to_string()),
+                    truncated: evidence.truncated,
+                },
+                Err(error) => ToolExecution {
+                    text: format!("query_sql failed: {error}"),
+                    sql: None,
+                    truncated: false,
+                },
+            }
+        }
+        name => ToolExecution {
+            text: unknown_tool_result(name),
+            sql: None,
+            truncated: false,
+        },
+    }
 }
 
-fn skill_title(skill: &str) -> &'static str {
-    match skill {
-        "failure_locator" => "Failure locator",
-        "latency_hotspots" => "Latency hotspots",
-        "tool_usage" => "Tool usage",
-        "cohort_compare" => "Cohort compare",
-        _ => "Trajectory summary",
+fn tool_step(call: &ParsedToolCall) -> String {
+    if call.name == "get_turn" {
+        if let Some(turn_id) = call.arguments.get("turn_id").and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_str().and_then(|raw| raw.parse().ok()))
+        }) {
+            return format!("get_turn #{turn_id}");
+        }
+    }
+    call.name.clone()
+}
+
+fn finish_answer(
+    mut thread: CopilotThread,
+    state: LoopState,
+    mut text: String,
+    sql: Option<String>,
+    evidence_truncated: bool,
+) -> AgentAnswer {
+    let fetched_turn_ids = state.fetched_turn_ids;
+    if !fetched_turn_ids.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(&trajectory_fence("Cited turns", fetched_turn_ids.clone()));
+    }
+    thread.messages = state.messages;
+    thread.messages.push(ThreadMessage {
+        role: ThreadRole::Assistant,
+        text: text.clone(),
+        tool_call_id: None,
+        tool_name: None,
+        sql: sql.clone(),
+        truncated: evidence_truncated,
+    });
+    trim_thread(&mut thread);
+    AgentAnswer {
+        truncated: evidence_truncated || thread.truncated,
+        thread,
+        text,
+        sql,
+        fetched_turn_ids,
     }
 }
 
@@ -919,22 +876,6 @@ pub fn format_sql_result(sql: &str, evidence: &QueryEvidence) -> String {
     )
 }
 
-fn optional_number(value: Option<f64>) -> String {
-    value
-        .map(|value| format!("{value:.1}"))
-        .unwrap_or_else(|| "unavailable".into())
-}
-
-fn optional_u64(value: Option<u64>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "unavailable".into())
-}
-
-fn sql_literal(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -948,6 +889,12 @@ mod tests {
             fetched_turn_ids: Vec::new(),
             force_final: false,
         }
+    }
+
+    #[test]
+    fn unconfigured_config_is_detected() {
+        let config = LlmConfig::default();
+        assert!(!config.is_configured());
     }
 
     #[test]
@@ -1144,12 +1091,6 @@ mod tests {
         assert!(value.starts_with("轨轨"));
     }
 
-    #[test]
-    fn explicit_commands_resolve_to_known_skills() {
-        assert_eq!(resolve_skill("/latency_hotspots"), Some("latency_hotspots"));
-        assert_eq!(resolve_skill("compare this cohort"), Some("cohort_compare"));
-    }
-
     fn sample_run(session: &str, run_id: Option<&str>) -> RunSummary {
         RunSummary {
             dataset: "captures".into(),
@@ -1163,7 +1104,6 @@ mod tests {
             row_count: 1,
             duplicate_event_ids: 0,
             status: "completed".into(),
-            error_count: 0,
         }
     }
 

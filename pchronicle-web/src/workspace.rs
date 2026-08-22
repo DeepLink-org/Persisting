@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use dioxus::prelude::*;
 use wasm_bindgen::JsValue;
 
-use crate::agent::{self, AgentAnswer, LlmConfig};
+use crate::agent::{self, AgentAnswer, CopilotThread, LlmConfig};
 use crate::api;
 use crate::chat_view::normalize_trace_view;
 use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView};
@@ -1056,13 +1056,11 @@ fn CopilotPanel(
     let mut messages = use_signal(Vec::<ChatMessage>::new);
     let mut input = use_signal(String::new);
     let mut busy = use_signal(|| false);
-    let mut include_full = use_signal(|| false);
     let mut settings = use_signal(|| false);
     let mut config = use_signal(agent::load_config);
     rsx! { aside { class: "pc2-copilot",
         div { class: "pc2-copilot-head", div { strong { "Trajectory Copilot" } span { "Read-only · minimal evidence" } } div { button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" } button { aria_label: "Close Copilot", onclick: on_close, "×" } } }
-        div { class: "pc2-context-card", div { span { "Grounded in" } strong { "{short(&run.session_id, 30)}" } } div { span { "Evidence" } strong { "{analysis.turn_count} turns · {analysis.error_count} explicit errors" } } label { input { r#type: "checkbox", checked: include_full(), disabled: selected.is_none(), onchange: move |event| include_full.set(event.checked()) } "Include selected turn content once (max 64 KiB)" } }
-        div { class: "pc2-skill-chips", for skill in agent::skill_ids() { button { disabled: busy(), onclick: move |_| input.set(format!("/{skill}")), "{skill_label(skill)}" } } }
+        div { class: "pc2-context-card", div { span { "Grounded in" } strong { "{short(&run.session_id, 30)}" } } div { span { "Evidence" } strong { "{analysis.turn_count} turns · {analysis.error_count} explicit errors" } } }
         div { class: "pc2-chat",
             if messages().is_empty() { div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" } p { "Copilot can summarize this run, locate explicit failures, rank latency, inspect tool usage, or compare cohorts." } } }
             for (index, message) in messages().iter().enumerate() { ChatBubble { key: "message-{index}", message: message.clone(), turns: turns.clone(), on_turn } }
@@ -1078,25 +1076,22 @@ fn CopilotPanel(
             let config_value = config();
             let run_value = run.clone();
             let analysis_value = analysis.clone();
-            let turns_value = turns.clone();
-            let selected_value = selected.clone();
-            let include_value = include_full();
+            let focused_turn_id = selected.as_ref().map(|detail| detail.summary.id);
             spawn(async move {
                 let result = agent::answer(agent::AnswerRequest {
                     config: &config_value,
                     user_message: &question,
                     run: &run_value,
                     analysis: &analysis_value,
-                    turns: &turns_value,
-                    selected: selected_value.as_ref(),
-                    include_full_turn: include_value,
+                    focused_turn_id,
+                    thread: CopilotThread { messages: Vec::new(), updated_at: 0, truncated: false },
+                    on_step: None,
                 }).await;
                 let message = match result {
-                    Ok(AgentAnswer { text, action, sql, truncated }) => ChatMessage { user: false, text, action: Some(action), sql, truncated },
+                    Ok(AgentAnswer { text, sql, truncated, .. }) => ChatMessage { user: false, text, action: None, sql, truncated },
                     Err(message) => ChatMessage { user: false, text: format!("Unable to complete analysis: {message}"), action: Some("error".into()), sql: None, truncated: false },
                 };
                 messages.write().push(message);
-                include_full.set(false);
                 busy.set(false);
             });
         }, textarea { value: "{input}", rows: "3", placeholder: "Ask Copilot about this trajectory…", oninput: move |event| input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); }, disabled: busy() } button { class: "button primary", disabled: busy() || input().trim().is_empty(), "Ask Copilot" } }
@@ -1214,10 +1209,6 @@ fn metric_value(turn: &TurnSummary, metric: &str) -> String {
 fn clean_markdown(value: &str) -> String {
     value.replace("**", "").replace('`', "")
 }
-fn skill_label(value: &str) -> String {
-    value.replace('_', " ")
-}
-
 fn turn_references(value: &str) -> Vec<i64> {
     let mut ids = Vec::new();
     let mut rest = value;
