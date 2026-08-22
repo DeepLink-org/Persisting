@@ -29,13 +29,15 @@ enum PrimaryAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AnalysisViewModel {
     primary_action: PrimaryAction,
+    run_enabled: bool,
+    question_out_of_date: bool,
     query_in_flight: bool,
     manually_edited: bool,
     sql_disclosure_label: &'static str,
 }
 
 impl AnalysisViewModel {
-    fn from_revision(revision: &AnalysisRevision) -> Self {
+    fn from_revision(revision: &AnalysisRevision, draft_question: &str) -> Self {
         let primary_action = match revision.state {
             RevisionState::Draft | RevisionState::PlanError | RevisionState::Stale => {
                 PrimaryAction::GeneratePlan
@@ -44,8 +46,15 @@ impl AnalysisViewModel {
             RevisionState::QueryError => PrimaryAction::RetryAnalysis,
             _ => PrimaryAction::None,
         };
+        let review_is_runnable = matches!(
+            primary_action,
+            PrimaryAction::RunAnalysis | PrimaryAction::RetryAnalysis
+        );
+        let question_matches = draft_question.trim() == revision.question.trim();
         Self {
             primary_action,
+            run_enabled: review_is_runnable && question_matches,
+            question_out_of_date: review_is_runnable && !question_matches,
             query_in_flight: revision.state == RevisionState::Executing,
             manually_edited: revision.manually_edited,
             sql_disclosure_label: "Advanced · view or edit SQL",
@@ -127,9 +136,10 @@ pub fn AnalysisWorkspace(
             .into_iter()
             .find(|revision| revision.id == value.active_revision_id)
     });
+    let draft_question = question();
     let view_model = active_revision
         .as_ref()
-        .map(AnalysisViewModel::from_revision);
+        .map(|revision| AnalysisViewModel::from_revision(revision, &draft_question));
     let generating = active_revision
         .as_ref()
         .is_some_and(|revision| revision.state == RevisionState::GeneratingPlan);
@@ -225,6 +235,9 @@ pub fn AnalysisWorkspace(
         let Some(revision) = current.active_revision_mut() else {
             return;
         };
+        if !AnalysisViewModel::from_revision(revision, &question()).run_enabled {
+            return;
+        }
         if revision.confirm_execution().is_err() {
             return;
         }
@@ -390,10 +403,18 @@ pub fn AnalysisWorkspace(
                                 if let Some(error) = revision.error.as_ref() {
                                     div { class: "analyze-error", role: "alert", strong { "Analysis could not run" } p { "{error}" } p { "The reviewed plan and SQL are unchanged. Retry when ready." } }
                                 }
+                                if view_model.as_ref().is_some_and(|model| model.question_out_of_date) {
+                                    div { class: "analyze-config-callout", role: "status",
+                                        div {
+                                            strong { "This plan is for the previous question" }
+                                            p { "Regenerate to review a plan for the current question, or restore the reviewed question to run this SQL." }
+                                        }
+                                    }
+                                }
                                 div { class: "analyze-plan-actions",
                                     button { class: "button", r#type: "button", disabled: revision.state == RevisionState::Executing, onclick: regenerate_plan, "Regenerate" }
                                     button { class: "button primary", r#type: "button",
-                                        disabled: !matches!(revision.state, RevisionState::PlanReady | RevisionState::QueryError),
+                                        disabled: !view_model.as_ref().is_some_and(|model| model.run_enabled),
                                         onclick: run_analysis,
                                         if revision.state == RevisionState::Executing { span { class: "analyze-spinner", aria_hidden: "true" } "Running analysis…" }
                                         else if view_model.as_ref().is_some_and(|model| model.primary_action == PrimaryAction::RetryAnalysis) { "Retry analysis" }
@@ -559,7 +580,7 @@ mod tests {
     #[test]
     fn plan_ready_exposes_run_but_never_auto_runs() {
         let revision = plan_ready_revision();
-        let model = AnalysisViewModel::from_revision(&revision);
+        let model = AnalysisViewModel::from_revision(&revision, &revision.question);
 
         assert_eq!(model.primary_action, PrimaryAction::RunAnalysis);
         assert!(!model.query_in_flight);
@@ -573,9 +594,25 @@ mod tests {
 
         apply_manual_sql(&mut revision, "SELECT 1".into()).unwrap();
 
-        let model = AnalysisViewModel::from_revision(&revision);
+        let model = AnalysisViewModel::from_revision(&revision, &revision.question);
         assert!(model.manually_edited);
         assert_eq!(revision.state, RevisionState::PlanReady);
         assert!(revision.pending_effect.is_none());
+    }
+
+    #[test]
+    fn run_requires_draft_question_to_match_reviewed_question() {
+        for state in [RevisionState::PlanReady, RevisionState::QueryError] {
+            let mut revision = plan_ready_revision();
+            revision.state = state;
+
+            let changed = AnalysisViewModel::from_revision(&revision, "Compare model latency");
+            assert!(!changed.run_enabled);
+            assert!(changed.question_out_of_date);
+
+            let reviewed = AnalysisViewModel::from_revision(&revision, "  Compare run outcomes  ");
+            assert!(reviewed.run_enabled);
+            assert!(!reviewed.question_out_of_date);
+        }
     }
 }
