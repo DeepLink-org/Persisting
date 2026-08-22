@@ -61,6 +61,89 @@ pub enum AssistantTurn {
     Invalid,
 }
 
+pub const MAX_TOOL_ROUNDS: usize = 8;
+
+pub struct LoopState {
+    pub messages: Vec<ThreadMessage>,
+    pub tool_rounds: usize,
+    pub json_mode: bool,
+    pub illegal_json_streak: usize,
+    pub fetched_turn_ids: Vec<i64>,
+    pub force_final: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum DriveResult {
+    Continue,
+    Done { text: String },
+    Failed { message: String },
+}
+
+pub fn apply_model_turn(
+    state: &mut LoopState,
+    turn: AssistantTurn,
+    mut execute: impl FnMut(&ParsedToolCall) -> String,
+) -> DriveResult {
+    match turn {
+        AssistantTurn::ToolCalls(calls) => {
+            for call in calls {
+                if state.tool_rounds >= MAX_TOOL_ROUNDS {
+                    break;
+                }
+
+                let result = execute(&call);
+                state.tool_rounds += 1;
+
+                if call.name == "get_turn" {
+                    let turn_id = call.arguments.get("turn_id").and_then(|value| {
+                        value
+                            .as_i64()
+                            .or_else(|| value.as_str().and_then(|raw| raw.parse().ok()))
+                    });
+                    if let Some(turn_id) = turn_id {
+                        let marker = format!("[turn:{turn_id}]");
+                        if result.contains(&marker) && !state.fetched_turn_ids.contains(&turn_id) {
+                            state.fetched_turn_ids.push(turn_id);
+                        }
+                    }
+                }
+
+                state.messages.push(ThreadMessage {
+                    role: ThreadRole::Tool,
+                    text: result,
+                    tool_call_id: Some(call.id),
+                    tool_name: Some(call.name),
+                    sql: None,
+                    truncated: false,
+                });
+            }
+
+            if state.tool_rounds >= MAX_TOOL_ROUNDS {
+                state.force_final = true;
+            }
+            DriveResult::Continue
+        }
+        AssistantTurn::Final(text) => {
+            state.illegal_json_streak = 0;
+            DriveResult::Done { text }
+        }
+        AssistantTurn::Invalid if !state.json_mode => {
+            state.json_mode = true;
+            DriveResult::Continue
+        }
+        AssistantTurn::Invalid => {
+            state.illegal_json_streak += 1;
+            if state.illegal_json_streak >= 2 {
+                DriveResult::Failed {
+                    message: "The model could not use tool-calling. Try a different OpenAI-compatible model in Settings.".into(),
+                }
+            } else {
+                DriveResult::Continue
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LlmConfig {
     pub api_base: String,
@@ -855,6 +938,204 @@ fn sql_literal(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_state() -> LoopState {
+        LoopState {
+            messages: Vec::new(),
+            tool_rounds: 0,
+            json_mode: false,
+            illegal_json_streak: 0,
+            fetched_turn_ids: Vec::new(),
+            force_final: false,
+        }
+    }
+
+    #[test]
+    fn loop_runs_three_tools_then_final() {
+        let mut state = empty_state();
+        let calls = vec![
+            ParsedToolCall {
+                id: "1".into(),
+                name: "get_analysis".into(),
+                arguments: json!({}),
+            },
+            ParsedToolCall {
+                id: "2".into(),
+                name: "get_turn".into(),
+                arguments: json!({"turn_id": 4}),
+            },
+            ParsedToolCall {
+                id: "3".into(),
+                name: "query_sql".into(),
+                arguments: json!({"sql": "SELECT 1"}),
+            },
+        ];
+        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(calls), |call| {
+            format!("ok {}", call.name)
+        });
+        assert!(matches!(result, DriveResult::Continue));
+        assert_eq!(state.tool_rounds, 3);
+        assert_eq!(state.messages.len(), 3);
+        let done = apply_model_turn(
+            &mut state,
+            AssistantTurn::Final("see [turn:4]".into()),
+            |_| String::new(),
+        );
+        assert_eq!(
+            done,
+            DriveResult::Done {
+                text: "see [turn:4]".into()
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_tool_does_not_stop_the_loop() {
+        let mut state = empty_state();
+        let call = ParsedToolCall {
+            id: "1".into(),
+            name: "drop".into(),
+            arguments: json!({}),
+        };
+        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(vec![call]), |call| {
+            unknown_tool_result(&call.name)
+        });
+        assert!(matches!(result, DriveResult::Continue));
+        assert!(state.messages[0].text.contains("Unknown tool"));
+    }
+
+    #[test]
+    fn two_invalid_json_rounds_stop() {
+        let mut state = empty_state();
+        state.json_mode = true;
+        assert!(matches!(
+            apply_model_turn(&mut state, AssistantTurn::Invalid, |_| String::new()),
+            DriveResult::Continue
+        ));
+        match apply_model_turn(&mut state, AssistantTurn::Invalid, |_| String::new()) {
+            DriveResult::Failed { message } => assert!(message.contains("tool-calling")),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn eighth_tool_sets_force_final() {
+        let mut state = empty_state();
+        state.tool_rounds = 7;
+        let call = ParsedToolCall {
+            id: "1".into(),
+            name: "get_analysis".into(),
+            arguments: json!({}),
+        };
+        apply_model_turn(&mut state, AssistantTurn::ToolCalls(vec![call]), |_| {
+            "ok".into()
+        });
+        assert_eq!(state.tool_rounds, 8);
+        assert!(state.force_final);
+    }
+
+    #[test]
+    fn tool_batch_executes_only_remaining_budget() {
+        let mut state = empty_state();
+        state.tool_rounds = 7;
+        let calls = vec![
+            ParsedToolCall {
+                id: "first".into(),
+                name: "get_analysis".into(),
+                arguments: json!({}),
+            },
+            ParsedToolCall {
+                id: "leftover".into(),
+                name: "query_sql".into(),
+                arguments: json!({"sql": "SELECT 1"}),
+            },
+        ];
+        let mut executed = Vec::new();
+        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(calls), |call| {
+            executed.push(call.id.clone());
+            "ok".into()
+        });
+        assert_eq!(result, DriveResult::Continue);
+        assert_eq!(executed, vec!["first"]);
+        assert_eq!(state.messages.len(), 1);
+        assert!(state.force_final);
+    }
+
+    #[test]
+    fn records_only_successfully_fetched_turn_ids() {
+        let mut state = empty_state();
+        let calls = vec![
+            ParsedToolCall {
+                id: "number".into(),
+                name: "get_turn".into(),
+                arguments: json!({"turn_id": 4}),
+            },
+            ParsedToolCall {
+                id: "string".into(),
+                name: "get_turn".into(),
+                arguments: json!({"turn_id": "5"}),
+            },
+            ParsedToolCall {
+                id: "duplicate".into(),
+                name: "get_turn".into(),
+                arguments: json!({"turn_id": 4}),
+            },
+            ParsedToolCall {
+                id: "missing-marker".into(),
+                name: "get_turn".into(),
+                arguments: json!({"turn_id": 6}),
+            },
+        ];
+        apply_model_turn(
+            &mut state,
+            AssistantTurn::ToolCalls(calls),
+            |call| match call.id.as_str() {
+                "number" | "duplicate" => "[turn:4] evidence".into(),
+                "string" => "[turn:5] evidence".into(),
+                _ => "Turn evidence could not be loaded".into(),
+            },
+        );
+        assert_eq!(state.fetched_turn_ids, vec![4, 5]);
+    }
+
+    #[test]
+    fn native_invalid_switches_mode_without_incrementing_streak() {
+        let mut state = empty_state();
+        assert_eq!(
+            apply_model_turn(&mut state, AssistantTurn::Invalid, |_| String::new()),
+            DriveResult::Continue
+        );
+        assert!(state.json_mode);
+        assert_eq!(state.illegal_json_streak, 0);
+    }
+
+    #[test]
+    fn final_resets_invalid_streak_and_tool_messages_keep_call_metadata() {
+        let mut state = empty_state();
+        state.illegal_json_streak = 1;
+        let call = ParsedToolCall {
+            id: "call-7".into(),
+            name: "query_sql".into(),
+            arguments: json!({"sql": "SELECT 7"}),
+        };
+        apply_model_turn(&mut state, AssistantTurn::ToolCalls(vec![call]), |_| {
+            "seven".into()
+        });
+        assert_eq!(state.messages[0].role, ThreadRole::Tool);
+        assert_eq!(state.messages[0].tool_call_id.as_deref(), Some("call-7"));
+        assert_eq!(state.messages[0].tool_name.as_deref(), Some("query_sql"));
+        assert_eq!(state.messages[0].sql, None);
+
+        assert_eq!(
+            apply_model_turn(&mut state, AssistantTurn::Final("done".into()), |_| {
+                String::new()
+            }),
+            DriveResult::Done {
+                text: "done".into()
+            }
+        );
+        assert_eq!(state.illegal_json_streak, 0);
+    }
 
     #[test]
     fn context_truncation_stays_on_utf8_boundaries() {
