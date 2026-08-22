@@ -1,4 +1,22 @@
-use super::*;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
+
+use serde_json::{json, Value};
+
+use super::{
+    agent_command, check_boundary, prepared_outcome, LaunchSpec, RunContext, MAX_TOOL_OUTPUT_BYTES,
+};
+use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
+use crate::io::{atomic_write_json, canonicalize, read_regular_file, sha256};
+use crate::journal::Journal;
+use crate::model::{
+    AdapterPlan, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan,
+    ToolBatch, ToolCall,
+};
+use crate::process::{run_process, ProcessSpec};
 
 pub(super) fn build(request: &PlaybackRequest) -> Result<AdapterPlan, ReplayError> {
     build_openhands_plan(request).map(AdapterPlan::Openhands)
@@ -633,7 +651,16 @@ fn prepend_openhands_runtime_tools(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::fs;
+    use std::process::Command;
+
+    use serde_json::{json, Value};
+
+    use super::{
+        openhands_action_signature, openhands_complete_batches,
+        openhands_fatal_controller_marker, openhands_observation_content,
+        openhands_reconstructed_tool_metadata, prepend_openhands_runtime_tools, LaunchSpec,
+    };
 
     #[test]
     fn openhands_reconstructs_legacy_native_tool_metadata() {
