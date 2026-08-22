@@ -487,6 +487,23 @@
   font-weight: 700;
 }
 
+.result-refinement-stale {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 14px;
+  border-bottom: 1px solid #ecd2ae;
+  background: #fff9f1;
+  color: #76552c;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.result-refinement-stale strong {
+  flex: none;
+  color: #68471f;
+}
+
 .result-explorer-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 210px;

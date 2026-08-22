@@ -295,7 +295,13 @@ pub fn AnalysisWorkspace(
         else {
             return;
         };
-        if refinement_source_revision_id(&refinement) != source.id {
+        let draft_question = question();
+        if !refinement_plan_allowed(
+            source.id,
+            refinement_source_revision_id(&refinement),
+            &draft_question,
+            &source.question,
+        ) {
             return;
         }
         let prompt = source.question.clone();
@@ -306,7 +312,6 @@ pub fn AnalysisWorkspace(
         let Ok(operation_id) = revision.begin_plan_generation() else {
             return;
         };
-        question.set(prompt.clone());
         let session_id = current.id.clone();
         on_session_change.call(session_id);
         session.set(Some(current));
@@ -507,6 +512,12 @@ pub fn AnalysisWorkspace(
                                         evidence: evidence.clone(),
                                         profiles: revision.execution.as_ref().map(|execution| execution.profiles.clone()).unwrap_or_default(),
                                         revision_id: revision.id,
+                                        refinement_enabled: refinement_plan_allowed(
+                                            revision.id,
+                                            revision.id,
+                                            &draft_question,
+                                            &revision.question,
+                                        ),
                                         on_stage_filter: move |_| {},
                                         on_prepare_refinement: prepare_refinement,
                                     }
@@ -586,6 +597,16 @@ fn refinement_source_revision_id(refinement: &AnalysisRefinement) -> u64 {
             source_revision_id, ..
         } => *source_revision_id,
     }
+}
+
+fn refinement_plan_allowed(
+    source_revision_id: u64,
+    refinement_source_revision_id: u64,
+    draft_question: &str,
+    source_question: &str,
+) -> bool {
+    refinement_source_revision_id == source_revision_id
+        && draft_question.trim() == source_question.trim()
 }
 
 fn scope_item_label(item: &AnalysisScopeItem) -> String {
@@ -697,5 +718,27 @@ mod tests {
             assert!(reviewed.run_enabled);
             assert!(!reviewed.question_out_of_date);
         }
+    }
+
+    #[test]
+    fn refinement_plan_requires_source_revision_and_current_reviewed_question() {
+        assert!(refinement_plan_allowed(
+            7,
+            7,
+            "  Compare run outcomes  ",
+            "Compare run outcomes",
+        ));
+        assert!(!refinement_plan_allowed(
+            7,
+            7,
+            "Compare model latency",
+            "Compare run outcomes",
+        ));
+        assert!(!refinement_plan_allowed(
+            8,
+            7,
+            "Compare run outcomes",
+            "Compare run outcomes",
+        ));
     }
 }

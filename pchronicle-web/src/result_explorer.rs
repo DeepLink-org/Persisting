@@ -73,6 +73,7 @@ pub fn ResultExplorer(
     evidence: QueryEvidence,
     profiles: Vec<ColumnProfile>,
     revision_id: u64,
+    refinement_enabled: bool,
     on_stage_filter: EventHandler<RefinementIntent>,
     on_prepare_refinement: EventHandler<AnalysisRefinement>,
 ) -> Element {
@@ -103,6 +104,12 @@ pub fn ResultExplorer(
                     span { "{scope_label}" }
                 }
                 span { class: "result-explorer-count", "{evidence.returned_rows} rows · {columns.len()} columns" }
+            }
+            if !refinement_enabled {
+                div { class: "result-refinement-stale", role: "status",
+                    strong { "Refinement planning is paused" }
+                    span { "Regenerate for the edited question, or restore the reviewed question to prepare a refinement." }
+                }
             }
             div { class: "result-explorer-layout",
                 div { class: "result-explorer-table-region",
@@ -159,7 +166,7 @@ pub fn ResultExplorer(
                                 strong { "{intent.column} · {intent.label}" }
                                 small { "No query has run and the current SQL is unchanged." }
                             }
-                            button { class: "button primary", r#type: "button", onclick: move |_| on_prepare_refinement.call(AnalysisRefinement::Filter { intent: intent.clone() }), "Apply through Copilot" }
+                            button { class: "button primary", r#type: "button", disabled: !refinement_enabled, onclick: move |_| on_prepare_refinement.call(AnalysisRefinement::Filter { intent: intent.clone() }), "Apply through Copilot" }
                         }
                     }
                 }
@@ -168,6 +175,7 @@ pub fn ResultExplorer(
                         profile,
                         scope_label: scope_label.clone(),
                         revision_id,
+                        refinement_enabled,
                         on_stage: {
                             let on_stage_filter = on_stage_filter;
                             move |intent: RefinementIntent| {
@@ -240,6 +248,7 @@ fn ProfilePanel(
     profile: ColumnProfile,
     scope_label: String,
     revision_id: u64,
+    refinement_enabled: bool,
     on_stage: EventHandler<RefinementIntent>,
     on_prepare_refinement: EventHandler<AnalysisRefinement>,
 ) -> Element {
@@ -284,8 +293,12 @@ fn ProfilePanel(
             if profile.missing_count > 0 {
                 button { class: "result-profile-missing", r#type: "button", onclick: { let intent = missing_intent(revision_id, &profile); move |_| on_stage.call(intent.clone()) }, "Stage missing values · {profile.missing_count}" }
             }
-            button { class: "button result-full-profile", r#type: "button", onclick: move |_| on_prepare_refinement.call(full_profile.clone()), "Create full-distribution query" }
-            small { "Copilot will draft an aggregate plan for review. It will not run automatically." }
+            button { class: "button result-full-profile", r#type: "button", disabled: !refinement_enabled, onclick: move |_| on_prepare_refinement.call(full_profile.clone()), "Create full-distribution query" }
+            if refinement_enabled {
+                small { "Copilot will draft an aggregate plan for review. It will not run automatically." }
+            } else {
+                small { "Regenerate or restore the reviewed question before preparing this query." }
+            }
         }
     }
 }
