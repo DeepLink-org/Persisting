@@ -28,6 +28,8 @@ pub struct ThreadMessage {
     pub role: ThreadRole,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ParsedToolCall>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
@@ -45,7 +47,7 @@ pub struct CopilotThread {
     pub truncated: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ParsedToolCall {
     pub id: String,
     pub name: String,
@@ -98,11 +100,21 @@ pub fn apply_model_turn(
 
     match turn {
         AssistantTurn::ToolCalls(calls) => {
-            for call in calls {
-                if state.tool_rounds >= MAX_TOOL_ROUNDS {
-                    break;
-                }
+            let remaining = MAX_TOOL_ROUNDS.saturating_sub(state.tool_rounds);
+            let calls = calls.into_iter().take(remaining).collect::<Vec<_>>();
+            if !calls.is_empty() {
+                state.messages.push(ThreadMessage {
+                    role: ThreadRole::Assistant,
+                    text: String::new(),
+                    tool_calls: Some(calls.clone()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    sql: None,
+                    truncated: false,
+                });
+            }
 
+            for call in calls {
                 let result = execute(&call);
                 state.tool_rounds += 1;
 
@@ -123,6 +135,7 @@ pub fn apply_model_turn(
                 state.messages.push(ThreadMessage {
                     role: ThreadRole::Tool,
                     text: result,
+                    tool_calls: None,
                     tool_call_id: Some(call.id),
                     tool_name: Some(call.name),
                     sql: None,
@@ -301,6 +314,7 @@ pub async fn answer(request: AnswerRequest<'_>) -> Result<AgentAnswer, String> {
     state.messages.push(ThreadMessage {
         role: ThreadRole::User,
         text: request.user_message.to_string(),
+        tool_calls: None,
         tool_call_id: None,
         tool_name: None,
         sql: None,
@@ -447,19 +461,41 @@ fn mode_system_prompt(base: &str, json_mode: bool, force_final: bool) -> String 
 
 fn openai_messages(messages: &[ThreadMessage], json_mode: bool) -> Vec<Value> {
     let mut mapped = Vec::new();
-    let mut index = 0;
-    let mut fallback_index = 0;
-
-    while index < messages.len() {
-        let message = &messages[index];
+    for message in messages {
         match message.role {
             ThreadRole::User => {
                 mapped.push(json!({"role": "user", "content": message.text}));
-                index += 1;
             }
             ThreadRole::Assistant => {
-                mapped.push(json!({"role": "assistant", "content": message.text}));
-                index += 1;
+                if let Some(calls) = message
+                    .tool_calls
+                    .as_ref()
+                    .filter(|calls| !calls.is_empty())
+                {
+                    if !json_mode {
+                        let tool_calls = calls
+                            .iter()
+                            .map(|call| {
+                                json!({
+                                    "id": call.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": call.name,
+                                        "arguments": serde_json::to_string(&call.arguments)
+                                            .unwrap_or_else(|_| "{}".into()),
+                                    },
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        mapped.push(json!({
+                            "role": "assistant",
+                            "content": null,
+                            "tool_calls": tool_calls,
+                        }));
+                    }
+                } else {
+                    mapped.push(json!({"role": "assistant", "content": message.text}));
+                }
             }
             ThreadRole::Tool if json_mode => {
                 let name = message.tool_name.as_deref().unwrap_or("unknown");
@@ -467,42 +503,13 @@ fn openai_messages(messages: &[ThreadMessage], json_mode: bool) -> Vec<Value> {
                     "role": "user",
                     "content": format!("Tool {name} result:\n{}", message.text),
                 }));
-                index += 1;
             }
             ThreadRole::Tool => {
-                let run_start = index;
-                let mut tool_calls = Vec::new();
-                let mut call_ids = Vec::new();
-                while index < messages.len() && messages[index].role == ThreadRole::Tool {
-                    let tool = &messages[index];
-                    let call_id = tool
-                        .tool_call_id
-                        .clone()
-                        .unwrap_or_else(|| format!("call-{fallback_index}"));
-                    fallback_index += 1;
-                    tool_calls.push(json!({
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": tool.tool_name.as_deref().unwrap_or("unknown"),
-                            "arguments": "{}",
-                        },
-                    }));
-                    call_ids.push(call_id);
-                    index += 1;
-                }
                 mapped.push(json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": tool_calls,
+                    "role": "tool",
+                    "tool_call_id": message.tool_call_id,
+                    "content": message.text,
                 }));
-                for (tool, call_id) in messages[run_start..index].iter().zip(call_ids) {
-                    mapped.push(json!({
-                        "role": "tool",
-                        "tool_call_id": call_id,
-                        "content": tool.text,
-                    }));
-                }
             }
         }
     }
@@ -736,6 +743,7 @@ fn finish_answer(
     thread.messages.push(ThreadMessage {
         role: ThreadRole::Assistant,
         text: text.clone(),
+        tool_calls: None,
         tool_call_id: None,
         tool_name: None,
         sql: sql.clone(),
@@ -991,7 +999,9 @@ mod tests {
         });
         assert!(matches!(result, DriveResult::Continue));
         assert_eq!(state.tool_rounds, 3);
-        assert_eq!(state.messages.len(), 3);
+        assert_eq!(state.messages.len(), 4);
+        assert_eq!(state.messages[0].role, ThreadRole::Assistant);
+        assert_eq!(state.messages[0].tool_calls.as_ref().unwrap().len(), 3);
         let done = apply_model_turn(
             &mut state,
             AssistantTurn::Final("see [turn:4]".into()),
@@ -1017,7 +1027,7 @@ mod tests {
             unknown_tool_result(&call.name)
         });
         assert!(matches!(result, DriveResult::Continue));
-        assert!(state.messages[0].text.contains("Unknown tool"));
+        assert!(state.messages[1].text.contains("Unknown tool"));
     }
 
     #[test]
@@ -1098,7 +1108,17 @@ mod tests {
         });
         assert_eq!(result, DriveResult::Continue);
         assert_eq!(executed, vec!["first"]);
-        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages.len(), 2);
+        assert_eq!(
+            state.messages[0]
+                .tool_calls
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|call| call.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first"]
+        );
         assert!(state.force_final);
     }
 
@@ -1162,10 +1182,11 @@ mod tests {
         apply_model_turn(&mut state, AssistantTurn::ToolCalls(vec![call]), |_| {
             "seven".into()
         });
-        assert_eq!(state.messages[0].role, ThreadRole::Tool);
-        assert_eq!(state.messages[0].tool_call_id.as_deref(), Some("call-7"));
-        assert_eq!(state.messages[0].tool_name.as_deref(), Some("query_sql"));
-        assert_eq!(state.messages[0].sql, None);
+        assert_eq!(state.messages[0].role, ThreadRole::Assistant);
+        assert_eq!(state.messages[1].role, ThreadRole::Tool);
+        assert_eq!(state.messages[1].tool_call_id.as_deref(), Some("call-7"));
+        assert_eq!(state.messages[1].tool_name.as_deref(), Some("query_sql"));
+        assert_eq!(state.messages[1].sql, None);
 
         assert_eq!(
             apply_model_turn(&mut state, AssistantTurn::Final("done".into()), |_| {
@@ -1205,6 +1226,7 @@ mod tests {
         ThreadMessage {
             role: ThreadRole::Tool,
             text: text.into(),
+            tool_calls: None,
             tool_call_id: Some("call-1".into()),
             tool_name: Some("query_sql".into()),
             sql: None,
@@ -1236,6 +1258,7 @@ mod tests {
                 ThreadMessage {
                     role: ThreadRole::User,
                     text: "keep me".into(),
+                    tool_calls: None,
                     tool_call_id: None,
                     tool_name: None,
                     sql: None,
@@ -1246,6 +1269,7 @@ mod tests {
                 ThreadMessage {
                     role: ThreadRole::Assistant,
                     text: "final".into(),
+                    tool_calls: None,
                     tool_call_id: None,
                     tool_name: None,
                     sql: None,
@@ -1271,6 +1295,7 @@ mod tests {
             ThreadMessage {
                 role: ThreadRole::User,
                 text: "q".into(),
+                tool_calls: None,
                 tool_call_id: None,
                 tool_name: None,
                 sql: None,
@@ -1289,6 +1314,7 @@ mod tests {
         let bulk = ThreadMessage {
             role: ThreadRole::User,
             text: "u".repeat(35 * 1024),
+            tool_calls: None,
             tool_call_id: None,
             tool_name: None,
             sql: None,
@@ -1365,6 +1391,27 @@ mod tests {
             ThreadMessage {
                 role: ThreadRole::User,
                 text: "inspect".into(),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_name: None,
+                sql: None,
+                truncated: false,
+            },
+            ThreadMessage {
+                role: ThreadRole::Assistant,
+                text: String::new(),
+                tool_calls: Some(vec![
+                    ParsedToolCall {
+                        id: "analysis-1".into(),
+                        name: "get_analysis".into(),
+                        arguments: json!({}),
+                    },
+                    ParsedToolCall {
+                        id: "turn-1".into(),
+                        name: "get_turn".into(),
+                        arguments: json!({"turn_id": 4}),
+                    },
+                ]),
                 tool_call_id: None,
                 tool_name: None,
                 sql: None,
@@ -1373,6 +1420,7 @@ mod tests {
             ThreadMessage {
                 role: ThreadRole::Tool,
                 text: "analysis result".into(),
+                tool_calls: None,
                 tool_call_id: Some("analysis-1".into()),
                 tool_name: Some("get_analysis".into()),
                 sql: None,
@@ -1381,14 +1429,16 @@ mod tests {
             ThreadMessage {
                 role: ThreadRole::Tool,
                 text: "turn result".into(),
-                tool_call_id: None,
-                tool_name: None,
+                tool_calls: None,
+                tool_call_id: Some("turn-1".into()),
+                tool_name: Some("get_turn".into()),
                 sql: None,
                 truncated: false,
             },
             ThreadMessage {
                 role: ThreadRole::Assistant,
                 text: "done".into(),
+                tool_calls: None,
                 tool_call_id: None,
                 tool_name: None,
                 sql: None,
@@ -1406,13 +1456,57 @@ mod tests {
             "get_analysis"
         );
         assert_eq!(mapped[1]["tool_calls"][0]["function"]["arguments"], "{}");
-        assert_eq!(mapped[1]["tool_calls"][1]["id"], "call-1");
-        assert_eq!(mapped[1]["tool_calls"][1]["function"]["name"], "unknown");
+        assert_eq!(mapped[1]["tool_calls"][1]["id"], "turn-1");
+        assert_eq!(mapped[1]["tool_calls"][1]["function"]["name"], "get_turn");
+        assert_eq!(
+            mapped[1]["tool_calls"][1]["function"]["arguments"],
+            r#"{"turn_id":4}"#
+        );
         assert_eq!(mapped[2]["role"], "tool");
         assert_eq!(mapped[2]["tool_call_id"], "analysis-1");
         assert_eq!(mapped[3]["role"], "tool");
-        assert_eq!(mapped[3]["tool_call_id"], "call-1");
+        assert_eq!(mapped[3]["tool_call_id"], "turn-1");
         assert_eq!(mapped[4]["role"], "assistant");
+    }
+
+    #[test]
+    fn openai_messages_preserve_sequential_tool_call_rounds_and_arguments() {
+        let mut state = empty_state();
+        apply_model_turn(
+            &mut state,
+            AssistantTurn::ToolCalls(vec![ParsedToolCall {
+                id: "round-1".into(),
+                name: "get_analysis".into(),
+                arguments: json!({}),
+            }]),
+            |_| "analysis".into(),
+        );
+        apply_model_turn(
+            &mut state,
+            AssistantTurn::ToolCalls(vec![ParsedToolCall {
+                id: "round-2".into(),
+                name: "get_turn".into(),
+                arguments: json!({"turn_id": 4}),
+            }]),
+            |_| "[turn:4] evidence".into(),
+        );
+
+        let mapped = openai_messages(&state.messages, false);
+        let assistant_tool_calls = mapped
+            .iter()
+            .filter(|message| {
+                message["role"] == "assistant"
+                    && message.get("tool_calls").is_some_and(Value::is_array)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(assistant_tool_calls.len(), 2);
+        assert_eq!(assistant_tool_calls[0]["tool_calls"][0]["id"], "round-1");
+        assert_eq!(assistant_tool_calls[1]["tool_calls"][0]["id"], "round-2");
+        assert_eq!(
+            assistant_tool_calls[1]["tool_calls"][0]["function"]["arguments"],
+            r#"{"turn_id":4}"#
+        );
     }
 
     #[test]
@@ -1421,6 +1515,7 @@ mod tests {
             &[ThreadMessage {
                 role: ThreadRole::Tool,
                 text: "three rows".into(),
+                tool_calls: None,
                 tool_call_id: Some("sql-1".into()),
                 tool_name: Some("query_sql".into()),
                 sql: Some("SELECT 1".into()),

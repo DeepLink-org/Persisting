@@ -1062,7 +1062,7 @@ fn CopilotPanel(
         div { class: "pc2-copilot-head", div { strong { "Trajectory Copilot" } span { "Read-only · minimal evidence" } } div { button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" } button { aria_label: "Close Copilot", onclick: on_close, "×" } } }
         div { class: "pc2-context-card", div { span { "Grounded in" } strong { "{short(&run.session_id, 30)}" } } div { span { "Evidence" } strong { "{analysis.turn_count} turns · {analysis.error_count} explicit errors" } } }
         div { class: "pc2-chat",
-            if messages().is_empty() { div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" } p { "Copilot can summarize this run, locate explicit failures, rank latency, inspect tool usage, or compare cohorts." } } }
+            if messages().is_empty() { div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" } p { "Copilot can inspect this analysis, examine a turn, or run read-only SQL." } } }
             for (index, message) in messages().iter().enumerate() { ChatBubble { key: "message-{index}", message: message.clone(), turns: turns.clone(), on_turn } }
             if busy() { div { class: "pc2-chat-working", span { class: "spinner" } "Selecting one read-only analysis action…" } }
         }
