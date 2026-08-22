@@ -20,6 +20,7 @@ mod content;
 pub(super) mod datafusion;
 mod mutation;
 pub(super) mod rows;
+mod writer_control;
 
 use mutation::{
     externalize_rows, next_storyline_stream_chunk, replace_table_batches, write_batches,
@@ -67,7 +68,6 @@ use lance_index::optimize::OptimizeOptions;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::IndexType;
 use object_store::path::Path as ObjectPath;
-use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
 use super::storyline_model::{
@@ -212,6 +212,7 @@ pub struct StorylineLanceStore {
     object_store: std::sync::Arc<ObjectStore>,
     object_root: ObjectPath,
     write_lock: Arc<tokio::sync::Mutex<()>>,
+    control_lock: Arc<tokio::sync::Mutex<()>>,
     content_options: StorylineContentOptions,
 }
 
@@ -226,11 +227,6 @@ impl Drop for StoreWriteGuard {
             let _ = FileExt::unlock(file);
         }
     }
-}
-
-struct CurrentPointerState {
-    pointer: Option<StorylineSnapshotPointer>,
-    version: Option<UpdateVersion>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -441,6 +437,7 @@ impl StorylineLanceStore {
         Ok(Self {
             root: PathBuf::from(&root_uri),
             write_lock: root_write_lock::for_root(&root_uri),
+            control_lock: Arc::new(tokio::sync::Mutex::new(())),
             root_uri,
             object_store,
             object_root,
@@ -517,7 +514,8 @@ impl StorylineLanceStore {
     }
 
     pub(crate) async fn resolve_current_table_paths(&self) -> Result<Option<StorylineTablePaths>> {
-        let Some(pointer) = self.read_current_pointer().await?.pointer else {
+        let current = self.read_current_control().await?;
+        let Some(pointer) = current.control.committed else {
             return Ok(None);
         };
         let mut paths = self.paths_for_generation(&pointer.table_generation);
@@ -528,61 +526,6 @@ impl StorylineLanceStore {
         paths.objects_version = pointer.objects_version;
         paths.projection = pointer.projection;
         Ok(Some(paths))
-    }
-
-    async fn read_current_pointer(&self) -> Result<CurrentPointerState> {
-        let pointer = self.object_root.clone().join(CURRENT_FILE);
-        let result = match self.object_store.inner.get(&pointer).await {
-            Ok(result) => result,
-            Err(ObjectStoreError::NotFound { .. }) => {
-                return Ok(CurrentPointerState {
-                    pointer: None,
-                    version: None,
-                });
-            }
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("read Storyline commit pointer {}/CURRENT", self.root_uri)
-                });
-            }
-        };
-        let version = UpdateVersion {
-            e_tag: result.meta.e_tag.clone(),
-            version: result.meta.version.clone(),
-        };
-        let contents = result
-            .bytes()
-            .await
-            .with_context(|| format!("read Storyline commit pointer {}/CURRENT", self.root_uri))?;
-        let contents = std::str::from_utf8(&contents)
-            .context("Storyline commit pointer is not valid UTF-8")?
-            .trim();
-        if !contents.starts_with('{') {
-            validate_generation_name(contents)?;
-            anyhow::bail!(
-                "Storyline generation '{contents}' is incomplete: CURRENT must pin all table and object versions"
-            );
-        }
-        let pointer = serde_json::from_str::<StorylineSnapshotPointer>(contents)
-            .context("decode Storyline snapshot pointer")?;
-        anyhow::ensure!(
-            pointer.schema_version == STORYLINE_LANCE_SCHEMA_VERSION,
-            "unsupported Storyline Lance schema_version {}; expected {}",
-            pointer.schema_version,
-            STORYLINE_LANCE_SCHEMA_VERSION
-        );
-        if let Some(projection) = &pointer.projection {
-            projection.validate()?;
-        }
-        validate_generation_name(&pointer.generation)?;
-        if let Some(parent) = &pointer.parent_generation {
-            validate_generation_name(parent)?;
-        }
-        validate_generation_name(&pointer.table_generation)?;
-        Ok(CurrentPointerState {
-            pointer: Some(pointer),
-            version: Some(version),
-        })
     }
 
     pub async fn replace_storyline(&self, story: &StorylineDocument) -> Result<()> {
@@ -1295,39 +1238,57 @@ impl StorylineLanceStore {
         snapshot: &StorylineSnapshotPointer,
         expected_generation: Option<&str>,
     ) -> Result<bool> {
-        let pointer = self.object_root.clone().join(CURRENT_FILE);
-        let contents = serde_json::to_vec(snapshot).context("encode Storyline snapshot pointer")?;
-        let current = self.read_current_pointer().await?;
-        let actual_generation = current
-            .pointer
-            .as_ref()
-            .map(|pointer| pointer.generation.as_str());
-        if actual_generation != expected_generation {
-            return Ok(false);
-        }
-
-        if matches!(self.storage_scheme(), "file" | "file+uring") {
-            write_local_current(self.root.join(CURRENT_FILE), contents).await?;
-            return Ok(true);
-        }
-
-        let mode = match current.version {
-            None => PutMode::Create,
-            Some(version) => PutMode::Update(version),
-        };
-        match self
-            .object_store
-            .inner
-            .put_opts(&pointer, contents.into(), mode.into())
+        self.try_publish_unleased_snapshot(snapshot, expected_generation)
             .await
-        {
-            Ok(_) => Ok(true),
-            Err(ObjectStoreError::AlreadyExists { .. })
-            | Err(ObjectStoreError::Precondition { .. }) => Ok(false),
-            Err(error) => Err(error)
-                .with_context(|| format!("commit Storyline generation {}", snapshot.generation)),
-        }
     }
+}
+
+fn validate_snapshot_pointer(pointer: &StorylineSnapshotPointer) -> Result<()> {
+    anyhow::ensure!(
+        pointer.schema_version == STORYLINE_LANCE_SCHEMA_VERSION,
+        "unsupported Storyline Lance schema_version {}; expected {}",
+        pointer.schema_version,
+        STORYLINE_LANCE_SCHEMA_VERSION
+    );
+    if let Some(projection) = &pointer.projection {
+        projection.validate()?;
+    }
+    validate_generation_name(&pointer.generation)?;
+    if let Some(parent) = &pointer.parent_generation {
+        validate_generation_name(parent)?;
+    }
+    validate_generation_name(&pointer.table_generation)
+}
+
+fn validate_current_control(control: &writer_control::StorylineCurrentControl) -> Result<()> {
+    anyhow::ensure!(
+        control.control_version == writer_control::CURRENT_CONTROL_VERSION,
+        "unsupported Storyline CURRENT control_version {}; expected {}",
+        control.control_version,
+        writer_control::CURRENT_CONTROL_VERSION
+    );
+    if let Some(pointer) = &control.committed {
+        validate_snapshot_pointer(pointer)?;
+    }
+    if let Some(lease) = &control.lease {
+        anyhow::ensure!(
+            !lease.owner_id.trim().is_empty(),
+            "Storyline writer lease owner must not be empty"
+        );
+        anyhow::ensure!(
+            lease.expires_at_unix_ms > lease.issued_at_unix_ms,
+            "Storyline writer lease expiry must follow issuance"
+        );
+        anyhow::ensure!(
+            lease.base_generation.as_deref()
+                == control
+                    .committed
+                    .as_ref()
+                    .map(|pointer| pointer.generation.as_str()),
+            "Storyline writer lease base generation does not match committed generation"
+        );
+    }
+    Ok(())
 }
 
 async fn write_local_current(path: PathBuf, contents: Vec<u8>) -> Result<()> {
