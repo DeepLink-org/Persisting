@@ -12,6 +12,39 @@ const STORAGE_KEY: &str = "pchronicle_llm_config";
 const DEFAULT_CONTEXT_LIMIT: usize = 32 * 1024;
 const FULL_CONTEXT_LIMIT: usize = 64 * 1024;
 
+pub const THREAD_BYTE_LIMIT: usize = 200 * 1024;
+pub const LLM_MESSAGE_BYTE_LIMIT: usize = 32 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadRole {
+    User,
+    Assistant,
+    Tool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ThreadMessage {
+    pub role: ThreadRole,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sql: Option<String>,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CopilotThread {
+    pub messages: Vec<ThreadMessage>,
+    pub updated_at: i64,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LlmConfig {
     pub api_base: String,
@@ -88,6 +121,59 @@ pub fn save_config(config: &LlmConfig) {
     };
     if let Ok(raw) = serde_json::to_string(config) {
         let _ = storage.set_item(STORAGE_KEY, &raw);
+    }
+}
+
+pub fn thread_storage_key(run: &RunSummary) -> String {
+    format!("pchronicle_copilot:{}", run.query())
+}
+
+pub fn thread_byte_size(thread: &CopilotThread) -> usize {
+    serde_json::to_string(thread).map(|raw| raw.len()).unwrap_or(0)
+}
+
+fn shrink_tool_text(text: &str) -> String {
+    const KEEP: usize = 512;
+    if text.len() <= KEEP {
+        return text.to_string();
+    }
+    let mut end = KEEP.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n[… truncated …]", &text[..end])
+}
+
+pub fn trim_thread(thread: &mut CopilotThread) {
+    while thread_byte_size(thread) > THREAD_BYTE_LIMIT {
+        let Some(index) = thread
+            .messages
+            .iter()
+            .position(|message| message.role == ThreadRole::Tool && !message.truncated)
+        else {
+            break;
+        };
+        thread.messages[index].text = shrink_tool_text(&thread.messages[index].text);
+        thread.messages[index].truncated = true;
+        thread.truncated = true;
+    }
+}
+
+pub fn compress_messages_for_llm(messages: &[ThreadMessage]) -> Vec<ThreadMessage> {
+    let mut out = messages.to_vec();
+    loop {
+        let encoded = serde_json::to_string(&out).unwrap_or_default();
+        if encoded.len() <= LLM_MESSAGE_BYTE_LIMIT {
+            return out;
+        }
+        let Some(index) = out
+            .iter()
+            .position(|message| message.role == ThreadRole::Tool && message.text.len() > 64)
+        else {
+            return out;
+        };
+        out[index].text = shrink_tool_text(&out[index].text);
+        out[index].truncated = true;
     }
 }
 
@@ -598,5 +684,101 @@ mod tests {
     fn explicit_commands_resolve_to_known_skills() {
         assert_eq!(resolve_skill("/latency_hotspots"), Some("latency_hotspots"));
         assert_eq!(resolve_skill("compare this cohort"), Some("cohort_compare"));
+    }
+
+    fn sample_run(session: &str, run_id: Option<&str>) -> RunSummary {
+        RunSummary {
+            dataset: "captures".into(),
+            file: "events.lance".into(),
+            run_id: run_id.map(str::to_string),
+            agent_id: "agent".into(),
+            model_name: None,
+            session_id: session.into(),
+            root_session_id: None,
+            path: String::new(),
+            row_count: 1,
+            duplicate_event_ids: 0,
+            status: "completed".into(),
+            error_count: 0,
+        }
+    }
+
+    fn tool_msg(text: &str) -> ThreadMessage {
+        ThreadMessage {
+            role: ThreadRole::Tool,
+            text: text.into(),
+            tool_call_id: Some("call-1".into()),
+            tool_name: Some("query_sql".into()),
+            sql: None,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn thread_key_follows_run_query_and_isolates_sessions() {
+        let a = sample_run("s-a", Some("r1"));
+        let b = sample_run("s-b", Some("r1"));
+        let no_run = sample_run("s-a", None);
+        assert_eq!(thread_storage_key(&a), format!("pchronicle_copilot:{}", a.query()));
+        assert_ne!(thread_storage_key(&a), thread_storage_key(&b));
+        assert_eq!(
+            thread_storage_key(&no_run),
+            format!("pchronicle_copilot:{}", no_run.query())
+        );
+        assert!(!thread_storage_key(&no_run).contains("run_id="));
+    }
+
+    #[test]
+    fn trim_thread_shrinks_oldest_tool_results_first() {
+        let mut thread = CopilotThread {
+            messages: vec![
+                ThreadMessage {
+                    role: ThreadRole::User,
+                    text: "keep me".into(),
+                    tool_call_id: None,
+                    tool_name: None,
+                    sql: None,
+                    truncated: false,
+                },
+                tool_msg(&"x".repeat(180 * 1024)),
+                tool_msg(&"y".repeat(180 * 1024)),
+                ThreadMessage {
+                    role: ThreadRole::Assistant,
+                    text: "final".into(),
+                    tool_call_id: None,
+                    tool_name: None,
+                    sql: None,
+                    truncated: false,
+                },
+            ],
+            updated_at: 1,
+            truncated: false,
+        };
+        trim_thread(&mut thread);
+        assert!(thread.truncated);
+        assert!(thread_byte_size(&thread) <= THREAD_BYTE_LIMIT);
+        assert_eq!(thread.messages[0].text, "keep me");
+        assert_eq!(thread.messages[3].text, "final");
+        assert!(thread.messages[1].truncated);
+        assert!(thread.messages[1].text.len() < 180 * 1024);
+    }
+
+    #[test]
+    fn compress_messages_for_llm_caps_tool_payload() {
+        let messages = vec![
+            tool_msg(&"z".repeat(40 * 1024)),
+            ThreadMessage {
+                role: ThreadRole::User,
+                text: "q".into(),
+                tool_call_id: None,
+                tool_name: None,
+                sql: None,
+                truncated: false,
+            },
+        ];
+        let compressed = compress_messages_for_llm(&messages);
+        let encoded = serde_json::to_string(&compressed).unwrap();
+        assert!(encoded.len() <= LLM_MESSAGE_BYTE_LIMIT);
+        assert_eq!(compressed.last().unwrap().text, "q");
     }
 }
