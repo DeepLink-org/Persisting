@@ -675,10 +675,11 @@ fn parse_arguments(value: &Value) -> Result<Value, ()> {
 }
 
 pub fn parse_native_message(message: &Value) -> AssistantTurn {
-    if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
-        if calls.is_empty() {
-            // fall through to content
-        } else {
+    if let Some(tool_calls) = message.get("tool_calls") {
+        let Some(calls) = tool_calls.as_array() else {
+            return AssistantTurn::Invalid;
+        };
+        if !calls.is_empty() {
             let mut parsed = Vec::new();
             for (index, call) in calls.iter().enumerate() {
                 let fallback = format!("call-{index}");
@@ -707,6 +708,7 @@ pub fn parse_native_message(message: &Value) -> AssistantTurn {
             }
             return AssistantTurn::ToolCalls(parsed);
         }
+        // empty array: fall through to content
     }
     match message.get("content").and_then(Value::as_str) {
         Some(text) if !text.trim().is_empty() => AssistantTurn::Final(text.to_string()),
@@ -987,6 +989,27 @@ mod tests {
     fn native_empty_content_without_tool_calls_is_invalid() {
         let message = serde_json::json!({"content": ""});
         assert_eq!(parse_native_message(&message), AssistantTurn::Invalid);
+    }
+
+    #[test]
+    fn native_non_array_tool_calls_with_content_is_invalid() {
+        let string_tool_calls = serde_json::json!({
+            "tool_calls": "not-an-array",
+            "content": "3 turns, no explicit errors."
+        });
+        assert_eq!(
+            parse_native_message(&string_tool_calls),
+            AssistantTurn::Invalid
+        );
+
+        let object_tool_calls = serde_json::json!({
+            "tool_calls": {"id": "c1"},
+            "content": "3 turns, no explicit errors."
+        });
+        assert_eq!(
+            parse_native_message(&object_tool_calls),
+            AssistantTurn::Invalid
+        );
     }
 
     #[test]
