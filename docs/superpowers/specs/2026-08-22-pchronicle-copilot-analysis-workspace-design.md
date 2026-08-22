@@ -2,7 +2,7 @@
 
 **日期：** 2026-08-22
 
-**状态：** Awaiting written review（方向已在对话中确认）
+**状态：** Approved（用户已确认设计与视觉方向）
 
 **范围：** `pchronicle-web` 桌面端 Analyze 页面。复用现有只读查询 API 和浏览器
 BYOK 配置；不引入服务端 Copilot、服务端分析判断或 Search 子系统。
