@@ -2,15 +2,13 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::api;
 use crate::components::trajectory_fence;
+use crate::llm::{self, LlmConfig};
 use crate::model::{QueryCatalog, QueryEvidence, RunAnalysis, RunSummary, TurnDetail};
-
-const STORAGE_KEY: &str = "pchronicle_llm_config";
 
 pub const THREAD_BYTE_LIMIT: usize = 200 * 1024;
 pub const LLM_MESSAGE_BYTE_LIMIT: usize = 32 * 1024;
@@ -172,31 +170,6 @@ pub fn apply_model_turn(
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct LlmConfig {
-    pub api_base: String,
-    pub api_key: String,
-    pub model: String,
-}
-
-impl Default for LlmConfig {
-    fn default() -> Self {
-        Self {
-            api_base: "https://api.deepseek.com/v1".into(),
-            api_key: String::new(),
-            model: "deepseek-chat".into(),
-        }
-    }
-}
-
-impl LlmConfig {
-    pub fn is_configured(&self) -> bool {
-        !self.api_base.trim().is_empty()
-            && !self.api_key.trim().is_empty()
-            && !self.model.trim().is_empty()
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentAnswer {
     pub thread: CopilotThread,
@@ -214,33 +187,6 @@ pub struct AnswerRequest<'a> {
     pub focused_turn_id: Option<i64>,
     pub thread: CopilotThread,
     pub on_step: Option<&'a dyn Fn(&str)>,
-}
-
-pub fn load_config() -> LlmConfig {
-    let Some(window) = web_sys::window() else {
-        return LlmConfig::default();
-    };
-    let Some(storage) = window.local_storage().ok().flatten() else {
-        return LlmConfig::default();
-    };
-    storage
-        .get_item(STORAGE_KEY)
-        .ok()
-        .flatten()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
-}
-
-pub fn save_config(config: &LlmConfig) {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let Some(storage) = window.local_storage().ok().flatten() else {
-        return;
-    };
-    if let Ok(raw) = serde_json::to_string(config) {
-        let _ = storage.set_item(STORAGE_KEY, &raw);
-    }
 }
 
 pub fn load_thread(run: &RunSummary) -> CopilotThread {
@@ -655,132 +601,40 @@ fn tools_payload() -> Value {
     ])
 }
 
-struct ChatError {
-    status: Option<u16>,
-    message: String,
-}
-
-impl ChatError {
-    fn suggests_tools_unsupported(&self) -> bool {
-        matches!(self.status, Some(400 | 422))
-            && ["tools", "tool_choice", "function", "response_format"]
-                .iter()
-                .any(|needle| self.message.to_ascii_lowercase().contains(needle))
-    }
-
-    fn suggests_response_format_unsupported(&self) -> bool {
-        matches!(self.status, Some(400 | 422))
-            && self
-                .message
-                .to_ascii_lowercase()
-                .contains("response_format")
-    }
-}
-
 async fn chat_with_tools(
     config: &LlmConfig,
     system: &str,
     messages: Vec<Value>,
     tools_enabled: bool,
     json_mode: bool,
-) -> Result<Value, ChatError> {
-    let first = chat_request(
+) -> Result<Value, llm::CompletionError> {
+    let first = llm::complete(
         config,
-        system,
-        messages.clone(),
-        tools_enabled,
-        json_mode,
-        json_mode,
+        llm::CompletionRequest {
+            system: system.into(),
+            messages: messages.clone(),
+            tools: tools_enabled.then(tools_payload),
+            response_format: json_mode.then(|| json!({"type":"json_object"})),
+            temperature: if json_mode { 0.1 } else { 0.3 },
+        },
     )
     .await;
     match first {
         Err(error) if json_mode && error.suggests_response_format_unsupported() => {
-            chat_request(config, system, messages, tools_enabled, json_mode, false).await
+            llm::complete(
+                config,
+                llm::CompletionRequest {
+                    system: system.into(),
+                    messages,
+                    tools: tools_enabled.then(tools_payload),
+                    response_format: None,
+                    temperature: if json_mode { 0.1 } else { 0.3 },
+                },
+            )
+            .await
         }
         result => result,
     }
-}
-
-async fn chat_request(
-    config: &LlmConfig,
-    system: &str,
-    messages: Vec<Value>,
-    tools_enabled: bool,
-    json_mode: bool,
-    response_format: bool,
-) -> Result<Value, ChatError> {
-    let url = format!(
-        "{}/chat/completions",
-        config.api_base.trim().trim_end_matches('/')
-    );
-    let mut all_messages = vec![json!({"role": "system", "content": system})];
-    all_messages.extend(messages);
-    let mut body = json!({
-        "model": config.model.trim(),
-        "temperature": if json_mode { 0.1 } else { 0.3 },
-        "messages": all_messages
-    });
-    if tools_enabled {
-        body["tools"] = tools_payload();
-        body["tool_choice"] = json!("auto");
-    }
-    if response_format {
-        body["response_format"] = json!({"type":"json_object"});
-    }
-    let response = Request::post(&url)
-        .header(
-            "Authorization",
-            &format!("Bearer {}", config.api_key.trim()),
-        )
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .map_err(|error| ChatError {
-            status: None,
-            message: error.to_string(),
-        })?
-        .send()
-        .await
-        .map_err(|error| ChatError {
-            status: None,
-            message: format!("LLM request failed (check API base, key, and CORS): {error}"),
-        })?;
-    let status = response.status();
-    let raw = response.text().await.map_err(|error| ChatError {
-        status: Some(status),
-        message: error.to_string(),
-    })?;
-    if !(200..300).contains(&status) {
-        return Err(ChatError {
-            status: Some(status),
-            message: format!("LLM HTTP {status}: {raw}"),
-        });
-    }
-    let value: Value = serde_json::from_str(&raw).map_err(|error| ChatError {
-        status: Some(status),
-        message: format!("LLM returned invalid JSON: {error}"),
-    })?;
-    let message = value
-        .pointer("/choices/0/message")
-        .cloned()
-        .ok_or_else(|| ChatError {
-            status: Some(status),
-            message: "LLM returned an empty response".into(),
-        })?;
-    let has_content = message
-        .get("content")
-        .and_then(Value::as_str)
-        .is_some_and(|content| !content.trim().is_empty());
-    let has_tool_calls = message
-        .get("tool_calls")
-        .and_then(Value::as_array)
-        .is_some_and(|calls| !calls.is_empty());
-    if !has_content && !has_tool_calls {
-        return Err(ChatError {
-            status: Some(status),
-            message: "LLM returned an empty response".into(),
-        });
-    }
-    Ok(message)
 }
 
 struct ToolExecution {
@@ -1713,11 +1567,11 @@ mod tests {
 
     #[test]
     fn tools_unsupported_requires_protocol_keyword_in_client_error() {
-        let unknown_model = ChatError {
+        let unknown_model = llm::CompletionError {
             status: Some(400),
             message: "LLM HTTP 400: unknown model".into(),
         };
-        let tool_choice = ChatError {
+        let tool_choice = llm::CompletionError {
             status: Some(400),
             message: "LLM HTTP 400: unsupported tool_choice".into(),
         };

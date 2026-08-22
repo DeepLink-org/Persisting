@@ -3,10 +3,12 @@ use std::collections::BTreeMap;
 use dioxus::prelude::*;
 use wasm_bindgen::JsValue;
 
-use crate::agent::{self, LlmConfig, ThreadMessage, ThreadRole};
+use crate::agent::{self, ThreadMessage, ThreadRole};
 use crate::api;
 use crate::chat_view::normalize_trace_view;
 use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView};
+use crate::llm;
+use crate::llm_settings::LlmSettings;
 use crate::model::{
     DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary, RunAnalysis,
     RunExplorerItem, RunPage, RunSummary, ToolAggregate, TurnDetail, TurnSummary,
@@ -1049,7 +1051,7 @@ fn CopilotPanel(
     let mut input = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut settings = use_signal(|| false);
-    let mut config = use_signal(agent::load_config);
+    let mut config = use_signal(llm::load_config);
     let mut step = use_signal(|| "Working…".to_string());
     let submit_run = run.clone();
     let submit_analysis = analysis.clone();
@@ -1163,7 +1165,7 @@ fn CopilotPanel(
             textarea { value: "{input}", rows: "3", placeholder: "Ask Copilot about this trajectory…", oninput: move |event| input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); submit_copilot.call(()); }, disabled: busy() }
             button { class: "button primary", disabled: busy() || input().trim().is_empty(), "Ask Copilot" }
         }
-        if settings() { LlmSettings { config: config(), on_close: move |_| settings.set(false), on_save: move |value| { agent::save_config(&value); config.set(value); settings.set(false); } } }
+        if settings() { LlmSettings { config: config(), on_close: move |_| settings.set(false), on_save: move |value| { llm::save_config(&value); config.set(value); settings.set(false); } } }
     } }
 }
 
@@ -1213,18 +1215,6 @@ fn ChatBubble(
 #[component]
 fn MessageText(text: String) -> Element {
     rsx! { div { class: "pc2-message-text", for line in text.lines() { if let Some(item) = line.strip_prefix("- ") { div { class: "pc2-bullet", span { "•" } p { "{clean_markdown(item)}" } } } else if !line.trim().is_empty() { p { "{clean_markdown(line)}" } } } } }
-}
-
-#[component]
-fn LlmSettings(
-    config: LlmConfig,
-    on_close: EventHandler<MouseEvent>,
-    on_save: EventHandler<LlmConfig>,
-) -> Element {
-    let mut api_base = use_signal(|| config.api_base.clone());
-    let mut api_key = use_signal(|| config.api_key.clone());
-    let mut model = use_signal(|| config.model.clone());
-    rsx! { div { class: "pc2-modal-backdrop high", section { class: "pc2-settings", role: "dialog", aria_modal: "true", header { div { p { class: "eyebrow", "Browser BYOK" } h2 { "Copilot model" } } button { onclick: on_close, "×" } } p { class: "pc2-settings-note", "The key stays in this browser's localStorage. Selected evidence is sent directly to this OpenAI-compatible endpoint; pChronicle server never receives the key." } div { class: "pc2-form", label { span { "API base" } input { value: "{api_base}", oninput: move |event| api_base.set(event.value()) } } label { span { "API key" } input { r#type: "password", value: "{api_key}", oninput: move |event| api_key.set(event.value()) } } label { span { "Model" } input { value: "{model}", oninput: move |event| model.set(event.value()) } } } footer { button { class: "button", onclick: on_close, "Cancel" } button { class: "button primary", onclick: move |_| on_save.call(LlmConfig { api_base: api_base(), api_key: api_key(), model: model() }), "Save locally" } } } } }
 }
 
 fn short(value: &str, limit: usize) -> String {
