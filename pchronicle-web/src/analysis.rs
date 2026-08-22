@@ -303,8 +303,11 @@ pub fn AnalysisWorkspace(
         sessions.push(restored_session.clone());
         analysis_session::trim_sessions(&mut sessions);
         recent_sessions.set(sessions);
-        persist_session(&restored_session, &mut recent_sessions, &mut storage_notice);
-        on_session_change.call(session_id);
+        let persisted =
+            persist_session(&restored_session, &mut recent_sessions, &mut storage_notice);
+        if let Some(session_id) = persisted_session_id(&session_id, persisted) {
+            on_session_change.call(session_id);
+        }
         session.set(Some(restored_session));
     });
 
@@ -377,8 +380,10 @@ pub fn AnalysisWorkspace(
             return;
         };
         let expected_session_id = next_session.id.clone();
-        on_session_change.call(expected_session_id.clone());
-        persist_session(&next_session, &mut recent_sessions, &mut storage_notice);
+        let persisted = persist_session(&next_session, &mut recent_sessions, &mut storage_notice);
+        if let Some(session_id) = persisted_session_id(&expected_session_id, persisted) {
+            on_session_change.call(session_id);
+        }
         session.set(Some(next_session));
 
         let request = PlanRequest {
@@ -526,8 +531,10 @@ pub fn AnalysisWorkspace(
             return;
         };
         let expected_session_id = current.id.clone();
-        on_session_change.call(expected_session_id.clone());
-        persist_session(&current, &mut recent_sessions, &mut storage_notice);
+        let persisted = persist_session(&current, &mut recent_sessions, &mut storage_notice);
+        if let Some(session_id) = persisted_session_id(&expected_session_id, persisted) {
+            on_session_change.call(session_id);
+        }
         session.set(Some(current));
 
         let request = PlanRequest {
@@ -626,8 +633,10 @@ pub fn AnalysisWorkspace(
         };
         let expected_session_id = current.id.clone();
         question.set(suggested_question.clone());
-        on_session_change.call(expected_session_id.clone());
-        persist_session(&current, &mut recent_sessions, &mut storage_notice);
+        let persisted = persist_session(&current, &mut recent_sessions, &mut storage_notice);
+        if let Some(session_id) = persisted_session_id(&expected_session_id, persisted) {
+            on_session_change.call(session_id);
+        }
         session.set(Some(current));
 
         let request = PlanRequest {
@@ -718,8 +727,10 @@ pub fn AnalysisWorkspace(
         if let Some(revision) = selected.active_revision() {
             question.set(revision.question.clone());
         }
-        persist_session(&selected, &mut recent_sessions, &mut storage_notice);
-        on_session_change.call(selected.id.clone());
+        let persisted = persist_session(&selected, &mut recent_sessions, &mut storage_notice);
+        if let Some(session_id) = persisted_session_id(&selected.id, persisted) {
+            on_session_change.call(session_id);
+        }
         session.set(Some(selected));
     });
 
@@ -1089,7 +1100,7 @@ fn persist_session(
     session: &AnalysisSession,
     recent_sessions: &mut Signal<Vec<AnalysisSession>>,
     storage_notice: &mut Signal<Option<String>>,
-) {
+) -> bool {
     let mut persisted_session = session.clone();
     persisted_session.mark_updated();
     let mut sessions = match analysis_session::load_sessions(&persisted_session.storage_fingerprint)
@@ -1098,18 +1109,26 @@ fn persist_session(
         Err(message) => {
             recent_sessions.set(vec![persisted_session]);
             storage_notice.set(Some(message));
-            return;
+            return false;
         }
     };
     sessions.retain(|saved| saved.id != persisted_session.id);
     sessions.push(persisted_session.clone());
     analysis_session::trim_sessions(&mut sessions);
-    if let Err(message) =
+    let persisted = if let Err(message) =
         analysis_session::save_sessions(&persisted_session.storage_fingerprint, &sessions)
     {
         storage_notice.set(Some(message));
-    }
+        false
+    } else {
+        true
+    };
     recent_sessions.set(sessions);
+    persisted
+}
+
+fn persisted_session_id(session_id: &str, persisted: bool) -> Option<String> {
+    persisted.then(|| session_id.to_string())
 }
 
 fn scope_for_catalog(scope: &AnalysisScope, catalog: &QueryCatalog) -> AnalysisScope {
@@ -1430,6 +1449,15 @@ mod tests {
         assert_eq!(relative_time_label(1_000, 31_000), "Just now");
         assert_eq!(relative_time_label(1_000, 301_000), "5 min ago");
         assert_eq!(relative_time_label(1_000, 7_201_000), "2 hr ago");
+    }
+
+    #[test]
+    fn failed_persistence_does_not_promote_bootstrap_session() {
+        assert_eq!(persisted_session_id("analysis-123", false), None);
+        assert_eq!(
+            persisted_session_id("analysis-123", true),
+            Some("analysis-123".into())
+        );
     }
 
     #[test]
