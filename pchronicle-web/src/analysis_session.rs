@@ -11,6 +11,8 @@ pub const MAX_ANALYSIS_SESSIONS: usize = 20;
 pub const MAX_SESSION_BYTES: usize = 256 * 1024;
 pub const STORAGE_PREFIX: &str = "pchronicle_analysis:";
 
+pub type AnalysisOperationId = u64;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AnalysisScopeItem {
@@ -99,8 +101,15 @@ pub enum RevisionState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AnalysisEffect {
-    ExecuteSql { revision_id: u64, sql: String },
-    Interpret { revision_id: u64 },
+    ExecuteSql {
+        revision_id: u64,
+        operation_id: AnalysisOperationId,
+        sql: String,
+    },
+    Interpret {
+        revision_id: u64,
+        operation_id: AnalysisOperationId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +185,10 @@ pub struct AnalysisRevision {
     pub evidence: Option<QueryEvidence>,
     #[serde(skip)]
     pub pending_effect: Option<AnalysisEffect>,
+    #[serde(skip)]
+    pub active_operation_id: Option<AnalysisOperationId>,
+    #[serde(skip)]
+    next_operation_id: AnalysisOperationId,
 }
 
 impl AnalysisRevision {
@@ -196,17 +209,19 @@ impl AnalysisRevision {
             needs_rerun: false,
             evidence: None,
             pending_effect: None,
+            active_operation_id: None,
+            next_operation_id: 0,
         }
     }
 
-    pub fn begin_plan_generation(&mut self) -> Result<(), String> {
+    pub fn begin_plan_generation(&mut self) -> Result<AnalysisOperationId, String> {
         match self.state {
             RevisionState::Draft | RevisionState::PlanError | RevisionState::Stale => {
                 self.state = RevisionState::GeneratingPlan;
                 self.error = None;
                 self.pending_effect = None;
                 self.touch();
-                Ok(())
+                Ok(self.begin_operation())
             }
             _ => Err(
                 "A plan can only be generated from a draft, plan error, or stale revision.".into(),
@@ -217,9 +232,10 @@ impl AnalysisRevision {
     pub fn finish_plan(
         &mut self,
         revision_id: u64,
+        operation_id: AnalysisOperationId,
         plan: AnalysisPlan,
     ) -> Result<Option<AnalysisEffect>, String> {
-        if !self.accepts(revision_id) {
+        if !self.accepts(revision_id, operation_id) {
             return Ok(None);
         }
         if self.state != RevisionState::GeneratingPlan {
@@ -229,6 +245,7 @@ impl AnalysisRevision {
         self.state = RevisionState::PlanReady;
         self.error = None;
         self.pending_effect = None;
+        self.active_operation_id = None;
         self.touch();
         Ok(None)
     }
@@ -243,11 +260,14 @@ impl AnalysisRevision {
         let Some(plan) = self.plan.as_ref() else {
             return Err("A plan is required before running this analysis.".into());
         };
+        let sql = plan.sql.clone();
+        let operation_id = self.begin_operation();
         self.state = RevisionState::Executing;
         self.error = None;
         self.pending_effect = Some(AnalysisEffect::ExecuteSql {
             revision_id: self.id,
-            sql: plan.sql.clone(),
+            operation_id,
+            sql,
         });
         self.touch();
         Ok(())
@@ -256,10 +276,11 @@ impl AnalysisRevision {
     pub fn finish_query(
         &mut self,
         revision_id: u64,
+        operation_id: AnalysisOperationId,
         evidence: QueryEvidence,
         profiles: Vec<ColumnProfile>,
     ) -> Result<Option<AnalysisEffect>, String> {
-        if !self.accepts(revision_id) {
+        if !self.accepts(revision_id, operation_id) {
             return Ok(None);
         }
         if self.state != RevisionState::Executing {
@@ -279,11 +300,13 @@ impl AnalysisRevision {
         self.needs_rerun = false;
         let effect = has_rows.then(|| AnalysisEffect::Interpret {
             revision_id: self.id,
+            operation_id: self.begin_operation(),
         });
         self.pending_effect = effect.clone();
         self.state = if effect.is_some() {
             RevisionState::Interpreting
         } else {
+            self.active_operation_id = None;
             RevisionState::Complete
         };
         self.touch();
@@ -293,9 +316,10 @@ impl AnalysisRevision {
     pub fn finish_interpretation(
         &mut self,
         revision_id: u64,
+        operation_id: AnalysisOperationId,
         interpretation: AnalysisInterpretation,
     ) -> Result<Option<AnalysisEffect>, String> {
-        if !self.accepts(revision_id) {
+        if !self.accepts(revision_id, operation_id) {
             return Ok(None);
         }
         if self.state != RevisionState::Interpreting {
@@ -305,6 +329,7 @@ impl AnalysisRevision {
         self.state = RevisionState::Complete;
         self.error = None;
         self.pending_effect = None;
+        self.active_operation_id = None;
         self.touch();
         Ok(None)
     }
@@ -312,10 +337,12 @@ impl AnalysisRevision {
     pub fn fail_plan(
         &mut self,
         revision_id: u64,
+        operation_id: AnalysisOperationId,
         error: impl Into<String>,
     ) -> Result<Option<AnalysisEffect>, String> {
         self.fail(
             revision_id,
+            operation_id,
             RevisionState::GeneratingPlan,
             RevisionState::PlanError,
             error,
@@ -325,10 +352,12 @@ impl AnalysisRevision {
     pub fn fail_query(
         &mut self,
         revision_id: u64,
+        operation_id: AnalysisOperationId,
         error: impl Into<String>,
     ) -> Result<Option<AnalysisEffect>, String> {
         self.fail(
             revision_id,
+            operation_id,
             RevisionState::Executing,
             RevisionState::QueryError,
             error,
@@ -338,10 +367,12 @@ impl AnalysisRevision {
     pub fn fail_interpretation(
         &mut self,
         revision_id: u64,
+        operation_id: AnalysisOperationId,
         error: impl Into<String>,
     ) -> Result<Option<AnalysisEffect>, String> {
         self.fail(
             revision_id,
+            operation_id,
             RevisionState::Interpreting,
             RevisionState::InterpretationError,
             error,
@@ -352,18 +383,35 @@ impl AnalysisRevision {
         self.pending_effect.take()
     }
 
-    fn accepts(&self, revision_id: u64) -> bool {
-        self.id == revision_id
+    pub fn retry_interpretation(&mut self) -> Result<AnalysisEffect, String> {
+        if self.state != RevisionState::InterpretationError || self.evidence.is_none() {
+            return Err("Interpretation can only be retried after an interpretation error.".into());
+        }
+        let operation_id = self.begin_operation();
+        self.state = RevisionState::Interpreting;
+        self.error = None;
+        let effect = AnalysisEffect::Interpret {
+            revision_id: self.id,
+            operation_id,
+        };
+        self.pending_effect = Some(effect.clone());
+        self.touch();
+        Ok(effect)
+    }
+
+    fn accepts(&self, revision_id: u64, operation_id: AnalysisOperationId) -> bool {
+        self.id == revision_id && self.active_operation_id == Some(operation_id)
     }
 
     fn fail(
         &mut self,
         revision_id: u64,
+        operation_id: AnalysisOperationId,
         expected: RevisionState,
         failed: RevisionState,
         error: impl Into<String>,
     ) -> Result<Option<AnalysisEffect>, String> {
-        if !self.accepts(revision_id) {
+        if !self.accepts(revision_id, operation_id) {
             return Ok(None);
         }
         if self.state != expected {
@@ -372,12 +420,19 @@ impl AnalysisRevision {
         self.state = failed;
         self.error = Some(error.into());
         self.pending_effect = None;
+        self.active_operation_id = None;
         self.touch();
         Ok(None)
     }
 
     fn touch(&mut self) {
         self.updated_at_ms = now_millis();
+    }
+
+    fn begin_operation(&mut self) -> AnalysisOperationId {
+        self.next_operation_id = self.next_operation_id.saturating_add(1);
+        self.active_operation_id = Some(self.next_operation_id);
+        self.next_operation_id
     }
 }
 
@@ -509,9 +564,12 @@ pub fn scope_from_query(query: &str) -> Result<AnalysisScope, String> {
     let query = query.strip_prefix('?').unwrap_or(query);
     let encoded = query
         .split('&')
-        .find_map(|parameter| parameter.split_once('='))
-        .filter(|(key, _)| *key == "analysis_scope")
-        .map(|(_, value)| value)
+        .find_map(|parameter| {
+            parameter
+                .split_once('=')
+                .filter(|(key, _)| *key == "analysis_scope")
+                .map(|(_, value)| value)
+        })
         .ok_or_else(|| "The Analyze link has no scope.".to_string())?;
     let decoded = urlencoding::decode(encoded)
         .map_err(|_| "The Analyze link has an invalid scope.".to_string())?;
@@ -530,25 +588,16 @@ fn serialized_sessions(sessions: &[AnalysisSession]) -> Result<String, String> {
         prepare_for_storage(session);
         fit_session_budget(session)?;
     }
-    loop {
-        let raw = serde_json::to_string(&persisted)
-            .map_err(|error| format!("Could not prepare analysis sessions for storage: {error}"))?;
-        if raw.len() <= MAX_SESSION_BYTES {
-            return Ok(raw);
-        }
-        if persisted.len() <= 1 {
-            return Err(
-                "Analysis sessions exceed the local storage budget and could not be saved.".into(),
-            );
-        }
-        persisted.pop();
-    }
+    serde_json::to_string(&persisted)
+        .map_err(|error| format!("Could not prepare analysis sessions for storage: {error}"))
 }
 
 fn prepare_for_storage(session: &mut AnalysisSession) {
     for revision in &mut session.revisions {
         revision.evidence = None;
         revision.pending_effect = None;
+        revision.active_operation_id = None;
+        revision.next_operation_id = 0;
         revision.needs_rerun = revision.execution.is_some();
     }
 }
@@ -560,6 +609,9 @@ fn fit_session_budget(session: &mut AnalysisSession) -> Result<(), String> {
         .len()
         > MAX_SESSION_BYTES
     {
+        if discard_oldest_derived_data(session) {
+            continue;
+        }
         if session.revisions.len() <= 1 {
             return Err(
                 "Analysis session exceeds the local storage budget and could not be compacted."
@@ -574,6 +626,21 @@ fn fit_session_budget(session: &mut AnalysisSession) -> Result<(), String> {
             .unwrap_or_default();
     }
     Ok(())
+}
+
+fn discard_oldest_derived_data(session: &mut AnalysisSession) -> bool {
+    for revision in &mut session.revisions {
+        if let Some(execution) = &mut revision.execution {
+            if !execution.profiles.is_empty() {
+                execution.profiles.clear();
+                return true;
+            }
+        }
+        if revision.interpretation.take().is_some() {
+            return true;
+        }
+    }
+    false
 }
 
 fn compact_session(session: &mut AnalysisSession) {
@@ -604,23 +671,8 @@ fn compact_session(session: &mut AnalysisSession) {
         if let Some(plan) = &mut revision.plan {
             compact_plan(plan);
         }
-        if let Some(interpretation) = &mut revision.interpretation {
-            compact_interpretation(interpretation);
-        }
         if let Some(error) = &mut revision.error {
             truncate_text(error, 4 * 1024);
-        }
-        if let Some(execution) = &mut revision.execution {
-            execution.profiles.truncate(64);
-            for profile in &mut execution.profiles {
-                truncate_text(&mut profile.name, 1024);
-                profile.histogram.truncate(20);
-                profile.top_values.truncate(20);
-                for value in &mut profile.top_values {
-                    truncate_text(&mut value.label, 1024);
-                }
-                profile.type_counts.retain(|key, _| key.len() <= 1024);
-            }
         }
     }
 }
@@ -662,36 +714,6 @@ fn compact_plan(plan: &mut AnalysisPlan) {
         values.truncate(64);
         for value in values {
             truncate_text(value, 1024);
-        }
-    }
-}
-
-fn compact_interpretation(interpretation: &mut AnalysisInterpretation) {
-    for values in [
-        &mut interpretation.observations,
-        &mut interpretation.inferences,
-        &mut interpretation.limitations,
-        &mut interpretation.follow_ups,
-    ] {
-        values.truncate(64);
-        for value in values {
-            truncate_text(value, 4 * 1024);
-        }
-    }
-    interpretation.references.truncate(64);
-    for reference in &mut interpretation.references {
-        truncate_text(&mut reference.label, 1024);
-        for value in [
-            &mut reference.dataset,
-            &mut reference.file,
-            &mut reference.run_id,
-            &mut reference.agent_id,
-            &mut reference.session_id,
-            &mut reference.root_session_id,
-        ] {
-            if let Some(value) = value {
-                truncate_text(value, 1024);
-            }
         }
     }
 }
@@ -740,8 +762,8 @@ mod tests {
     #[test]
     fn generated_plan_waits_for_explicit_execution() {
         let mut revision = AnalysisRevision::draft(1, "compare failures", scope());
-        revision.begin_plan_generation().unwrap();
-        revision.finish_plan(1, plan()).unwrap();
+        let plan_operation = revision.begin_plan_generation().unwrap();
+        revision.finish_plan(1, plan_operation, plan()).unwrap();
         assert_eq!(revision.state, RevisionState::PlanReady);
         assert!(revision.pending_effect.is_none());
 
@@ -750,6 +772,7 @@ mod tests {
             revision.pending_effect,
             Some(AnalysisEffect::ExecuteSql {
                 revision_id: 1,
+                operation_id: 2,
                 sql: "SELECT status, COUNT(*) FROM default.runs GROUP BY status".into(),
             })
         );
@@ -771,9 +794,9 @@ mod tests {
 
     #[test]
     fn empty_query_result_skips_interpretation() {
-        let mut revision = executing_revision();
+        let (mut revision, query_operation) = executing_revision();
         let effect = revision
-            .finish_query(1, empty_evidence(), Vec::new())
+            .finish_query(1, query_operation, empty_evidence(), Vec::new())
             .unwrap();
         assert_eq!(revision.state, RevisionState::Complete);
         assert_eq!(effect, None);
@@ -782,9 +805,9 @@ mod tests {
     #[test]
     fn stale_async_result_is_ignored_without_changing_state() {
         let mut revision = AnalysisRevision::draft(1, "compare failures", scope());
-        revision.begin_plan_generation().unwrap();
+        let plan_operation = revision.begin_plan_generation().unwrap();
 
-        let effect = revision.finish_plan(2, plan()).unwrap();
+        let effect = revision.finish_plan(2, plan_operation, plan()).unwrap();
 
         assert_eq!(effect, None);
         assert_eq!(revision.state, RevisionState::GeneratingPlan);
@@ -793,8 +816,10 @@ mod tests {
 
     #[test]
     fn query_error_requires_explicit_retry() {
-        let mut revision = executing_revision();
-        revision.fail_query(1, "query timed out").unwrap();
+        let (mut revision, query_operation) = executing_revision();
+        revision
+            .fail_query(1, query_operation, "query timed out")
+            .unwrap();
         assert_eq!(revision.state, RevisionState::QueryError);
         assert!(revision.take_pending_effect().is_none());
 
@@ -805,9 +830,123 @@ mod tests {
             revision.take_pending_effect(),
             Some(AnalysisEffect::ExecuteSql {
                 revision_id: 1,
+                operation_id: query_operation + 1,
                 sql: "SELECT status, COUNT(*) FROM default.runs GROUP BY status".into(),
             })
         );
+    }
+
+    #[test]
+    fn analysis_href_round_trips_dataset_root_run_and_multi_run_scopes() {
+        let scopes = vec![
+            scope(),
+            AnalysisScope {
+                database: "default".into(),
+                storage_path: "tmp/test/".into(),
+                snapshot_id: "snapshot-a".into(),
+                items: vec![AnalysisScopeItem::Root {
+                    dataset: "default".into(),
+                    file: "source.json".into(),
+                    root_session_id: "root-a".into(),
+                }],
+            },
+            AnalysisScope {
+                database: "default".into(),
+                storage_path: "tmp/test/".into(),
+                snapshot_id: "snapshot-a".into(),
+                items: vec![AnalysisScopeItem::Run { run: run("one") }],
+            },
+            AnalysisScope {
+                database: "default".into(),
+                storage_path: "tmp/test/".into(),
+                snapshot_id: "snapshot-a".into(),
+                items: vec![
+                    AnalysisScopeItem::Run { run: run("one") },
+                    AnalysisScopeItem::Run { run: run("two") },
+                ],
+            },
+        ];
+
+        for scope in scopes {
+            assert_eq!(scope_from_query(&analysis_href(&scope)).unwrap(), scope);
+        }
+    }
+
+    #[test]
+    fn delayed_plan_result_cannot_complete_a_regenerated_attempt() {
+        let mut revision = AnalysisRevision::draft(1, "compare failures", scope());
+        let first_operation = revision.begin_plan_generation().unwrap();
+        revision
+            .fail_plan(1, first_operation, "provider unavailable")
+            .unwrap();
+        let second_operation = revision.begin_plan_generation().unwrap();
+
+        assert_eq!(
+            revision.finish_plan(1, first_operation, plan()).unwrap(),
+            None
+        );
+        assert_eq!(revision.state, RevisionState::GeneratingPlan);
+        assert!(revision.plan.is_none());
+
+        revision.finish_plan(1, second_operation, plan()).unwrap();
+        assert_eq!(revision.state, RevisionState::PlanReady);
+    }
+
+    #[test]
+    fn delayed_query_result_cannot_complete_a_retried_attempt() {
+        let (mut revision, first_operation) = executing_revision();
+        revision
+            .fail_query(1, first_operation, "query timed out")
+            .unwrap();
+        revision.confirm_execution().unwrap();
+        let second_operation = take_execute_operation(&mut revision);
+
+        assert_eq!(
+            revision
+                .finish_query(1, first_operation, empty_evidence(), Vec::new())
+                .unwrap(),
+            None
+        );
+        assert_eq!(revision.state, RevisionState::Executing);
+        assert!(revision.execution.is_none());
+
+        revision
+            .finish_query(1, second_operation, empty_evidence(), Vec::new())
+            .unwrap();
+        assert_eq!(revision.state, RevisionState::Complete);
+    }
+
+    #[test]
+    fn delayed_interpretation_result_cannot_complete_a_retried_attempt() {
+        let (mut revision, query_operation) = executing_revision();
+        let first_operation = match revision
+            .finish_query(1, query_operation, evidence_with_rows(), Vec::new())
+            .unwrap()
+        {
+            Some(AnalysisEffect::Interpret { operation_id, .. }) => operation_id,
+            effect => panic!("expected an interpretation effect, got {effect:?}"),
+        };
+        revision
+            .fail_interpretation(1, first_operation, "provider unavailable")
+            .unwrap();
+        let second_operation = match revision.retry_interpretation().unwrap() {
+            AnalysisEffect::Interpret { operation_id, .. } => operation_id,
+            effect => panic!("expected an interpretation effect, got {effect:?}"),
+        };
+
+        assert_eq!(
+            revision
+                .finish_interpretation(1, first_operation, AnalysisInterpretation::default())
+                .unwrap(),
+            None
+        );
+        assert_eq!(revision.state, RevisionState::Interpreting);
+        assert!(revision.interpretation.is_none());
+
+        revision
+            .finish_interpretation(1, second_operation, AnalysisInterpretation::default())
+            .unwrap();
+        assert_eq!(revision.state, RevisionState::Complete);
     }
 
     #[test]
@@ -843,6 +982,58 @@ mod tests {
         assert!(session.persisted_bytes().unwrap().len() <= MAX_SESSION_BYTES);
     }
 
+    #[test]
+    fn serialized_bundle_retains_twenty_sessions_when_each_fits_its_own_budget() {
+        let sessions = (0..MAX_ANALYSIS_SESSIONS)
+            .map(|id| {
+                let mut revision = AnalysisRevision::draft(id as u64, "question", scope());
+                revision.plan = Some(large_plan());
+                revision.state = RevisionState::PlanReady;
+                AnalysisSession::with_revision(revision)
+            })
+            .collect::<Vec<_>>();
+
+        let encoded = serialized_sessions(&sessions).unwrap();
+        let restored: Vec<AnalysisSession> = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(restored.len(), MAX_ANALYSIS_SESSIONS);
+        assert!(restored
+            .iter()
+            .all(|session| serde_json::to_vec(session).unwrap().len() <= MAX_SESSION_BYTES));
+    }
+
+    #[test]
+    fn oversized_session_discards_oldest_profiles_and_interpretations_before_revisions() {
+        let mut session =
+            AnalysisSession::with_revision(AnalysisRevision::draft(1, "old", scope()));
+        for id in 1..=5 {
+            let mut revision = AnalysisRevision::draft(id, format!("question {id}"), scope());
+            revision.execution = Some(huge_execution());
+            revision.interpretation = Some(huge_interpretation());
+            session.revisions.push(revision);
+        }
+        session.active_revision_id = 5;
+
+        let restored: AnalysisSession =
+            serde_json::from_slice(&session.persisted_bytes().unwrap()).unwrap();
+
+        assert_eq!(restored.revisions.len(), 6);
+        assert!(restored.revisions[1]
+            .execution
+            .as_ref()
+            .unwrap()
+            .profiles
+            .is_empty());
+        assert!(restored.revisions[1].interpretation.is_none());
+        assert!(!restored.revisions[2]
+            .execution
+            .as_ref()
+            .unwrap()
+            .profiles
+            .is_empty());
+        assert!(restored.revisions[2].interpretation.is_some());
+    }
+
     fn scope() -> AnalysisScope {
         AnalysisScope {
             database: "default".into(),
@@ -870,6 +1061,22 @@ mod tests {
         }
     }
 
+    fn large_plan() -> AnalysisPlan {
+        AnalysisPlan {
+            id: 1,
+            question: "q".repeat(16 * 1024),
+            intent_summary: "i".repeat(16 * 1024),
+            scope_summary: "s".repeat(16 * 1024),
+            filters: Vec::new(),
+            groupings: Vec::new(),
+            measures: Vec::new(),
+            expected_columns: Vec::new(),
+            suggested_view: SuggestedView::Table,
+            sql: "x".repeat(16 * 1024),
+            warnings: Vec::new(),
+        }
+    }
+
     fn empty_evidence() -> QueryEvidence {
         QueryEvidence {
             rows: Vec::new(),
@@ -880,12 +1087,84 @@ mod tests {
         }
     }
 
-    fn executing_revision() -> AnalysisRevision {
+    fn evidence_with_rows() -> QueryEvidence {
+        QueryEvidence {
+            rows: vec![serde_json::json!({"status": "failed"})],
+            returned_rows: 1,
+            truncated: false,
+            max_rows: 100,
+            max_bytes: 4 * 1024 * 1024,
+        }
+    }
+
+    fn run(id: &str) -> RunSummary {
+        RunSummary {
+            dataset: "default".into(),
+            file: "source.json".into(),
+            run_id: Some(id.into()),
+            agent_id: "agent".into(),
+            model_name: None,
+            session_id: format!("session-{id}"),
+            root_session_id: Some("root-a".into()),
+            path: format!("agent/root-a/{id}"),
+            row_count: 1,
+            duplicate_event_ids: 0,
+            status: "ok".into(),
+        }
+    }
+
+    fn huge_execution() -> ExecutionSummary {
+        ExecutionSummary {
+            returned_rows: 1,
+            truncated: false,
+            max_rows: 100,
+            max_bytes: 4 * 1024 * 1024,
+            executed_at_ms: 1,
+            profiles: (0..1)
+                .map(|index| ColumnProfile {
+                    name: format!("column-{index}"),
+                    kind: crate::result_profile::ColumnKind::Text,
+                    row_count: 1,
+                    non_null_count: 1,
+                    missing_count: 0,
+                    unique_count: 1,
+                    min: None,
+                    max: None,
+                    mean: None,
+                    histogram: Vec::new(),
+                    top_values: (0..10)
+                        .map(|value| crate::result_profile::ValueCount {
+                            label: format!("{index}-{value}-{}", "x".repeat(1024)),
+                            count: 1,
+                        })
+                        .collect(),
+                    other_count: 0,
+                    type_counts: Default::default(),
+                })
+                .collect(),
+        }
+    }
+
+    fn huge_interpretation() -> AnalysisInterpretation {
+        AnalysisInterpretation {
+            observations: (0..12).map(|_| "o".repeat(4 * 1024)).collect(),
+            ..AnalysisInterpretation::default()
+        }
+    }
+
+    fn take_execute_operation(revision: &mut AnalysisRevision) -> u64 {
+        match revision.take_pending_effect() {
+            Some(AnalysisEffect::ExecuteSql { operation_id, .. }) => operation_id,
+            effect => panic!("expected an execute effect, got {effect:?}"),
+        }
+    }
+
+    fn executing_revision() -> (AnalysisRevision, u64) {
         let mut revision = AnalysisRevision::draft(1, "compare failures", scope());
-        revision.begin_plan_generation().unwrap();
-        revision.finish_plan(1, plan()).unwrap();
+        let plan_operation = revision.begin_plan_generation().unwrap();
+        revision.finish_plan(1, plan_operation, plan()).unwrap();
         revision.confirm_execution().unwrap();
-        revision.take_pending_effect();
-        revision
+        let query_operation = take_execute_operation(&mut revision);
+        (revision, query_operation)
     }
 }
