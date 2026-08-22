@@ -522,11 +522,7 @@ pub fn load_sessions(storage_fingerprint: &str) -> Result<Vec<AnalysisSession>, 
     })?;
     for session in &mut sessions {
         for revision in &mut session.revisions {
-            revision.evidence = None;
-            revision.pending_effect = None;
-            if revision.execution.is_some() {
-                revision.needs_rerun = true;
-            }
+            normalize_persisted_revision(revision);
         }
     }
     trim_sessions(&mut sessions);
@@ -594,11 +590,28 @@ fn serialized_sessions(sessions: &[AnalysisSession]) -> Result<String, String> {
 
 fn prepare_for_storage(session: &mut AnalysisSession) {
     for revision in &mut session.revisions {
-        revision.evidence = None;
-        revision.pending_effect = None;
-        revision.active_operation_id = None;
-        revision.next_operation_id = 0;
-        revision.needs_rerun = revision.execution.is_some();
+        normalize_persisted_revision(revision);
+    }
+}
+
+fn normalize_persisted_revision(revision: &mut AnalysisRevision) {
+    revision.evidence = None;
+    revision.pending_effect = None;
+    revision.active_operation_id = None;
+    revision.next_operation_id = 0;
+
+    let was_in_flight = matches!(
+        revision.state,
+        RevisionState::GeneratingPlan | RevisionState::Executing | RevisionState::Interpreting
+    );
+    revision.state = match &revision.state {
+        RevisionState::GeneratingPlan => RevisionState::Draft,
+        RevisionState::Executing => RevisionState::PlanReady,
+        RevisionState::Interpreting => RevisionState::QueryError,
+        state => state.clone(),
+    };
+    if was_in_flight || revision.execution.is_some() {
+        revision.needs_rerun = true;
     }
 }
 
@@ -950,6 +963,52 @@ mod tests {
     }
 
     #[test]
+    fn restored_generating_plan_becomes_a_rerunnable_draft_without_an_operation() {
+        let mut revision = AnalysisRevision::draft(1, "compare failures", scope());
+        revision.begin_plan_generation().unwrap();
+
+        let mut restored = restored_revision(revision);
+
+        assert_eq!(restored.state, RevisionState::Draft);
+        assert!(restored.needs_rerun);
+        assert!(restored.active_operation_id.is_none());
+        assert!(restored.pending_effect.is_none());
+        assert!(restored.begin_plan_generation().is_ok());
+    }
+
+    #[test]
+    fn restored_executing_plan_becomes_confirmable_without_an_operation() {
+        let (revision, _) = executing_revision();
+
+        let mut restored = restored_revision(revision);
+
+        assert_eq!(restored.state, RevisionState::PlanReady);
+        assert!(restored.needs_rerun);
+        assert!(restored.plan.is_some());
+        assert!(restored.active_operation_id.is_none());
+        assert!(restored.pending_effect.is_none());
+        assert!(restored.confirm_execution().is_ok());
+    }
+
+    #[test]
+    fn restored_interpretation_becomes_confirmable_without_an_operation() {
+        let (mut revision, query_operation) = executing_revision();
+        revision
+            .finish_query(1, query_operation, evidence_with_rows(), Vec::new())
+            .unwrap();
+
+        let mut restored = restored_revision(revision);
+
+        assert_eq!(restored.state, RevisionState::QueryError);
+        assert!(restored.needs_rerun);
+        assert!(restored.plan.is_some());
+        assert!(restored.execution.is_some());
+        assert!(restored.active_operation_id.is_none());
+        assert!(restored.pending_effect.is_none());
+        assert!(restored.confirm_execution().is_ok());
+    }
+
+    #[test]
     fn trim_sessions_keeps_the_newest_twenty() {
         let mut sessions = (0..21)
             .map(|id| {
@@ -1157,6 +1216,13 @@ mod tests {
             Some(AnalysisEffect::ExecuteSql { operation_id, .. }) => operation_id,
             effect => panic!("expected an execute effect, got {effect:?}"),
         }
+    }
+
+    fn restored_revision(revision: AnalysisRevision) -> AnalysisRevision {
+        let session = AnalysisSession::with_revision(revision);
+        let restored: AnalysisSession =
+            serde_json::from_slice(&session.persisted_bytes().unwrap()).unwrap();
+        restored.revisions.into_iter().next().unwrap()
     }
 
     fn executing_revision() -> (AnalysisRevision, u64) {
