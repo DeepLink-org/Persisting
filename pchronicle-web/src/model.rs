@@ -1,7 +1,28 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+
+fn deserialize_optional_timestamp<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum TimestampValue {
+        Text(String),
+        Integer(i64),
+        Float(f64),
+    }
+
+    Ok(match Option::<TimestampValue>::deserialize(deserializer)? {
+        None => None,
+        Some(TimestampValue::Text(value)) if value.is_empty() => None,
+        Some(TimestampValue::Text(value)) => Some(value),
+        Some(TimestampValue::Integer(value)) => Some(value.to_string()),
+        Some(TimestampValue::Float(value)) => Some(value.to_string()),
+    })
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RunSummary {
@@ -118,7 +139,12 @@ fn default_source_file() -> String {
 pub struct StorylineTurn {
     pub id: i64,
     pub kind: Option<String>,
-    #[serde(rename = "ts", alias = "timestamp")]
+    #[serde(
+        rename = "ts",
+        alias = "timestamp",
+        default,
+        deserialize_with = "deserialize_optional_timestamp"
+    )]
     pub timestamp: Option<String>,
     #[serde(rename = "src", alias = "source")]
     pub source: String,
@@ -168,6 +194,7 @@ pub struct EventRecord {
     pub seq: u64,
     pub source: String,
     pub kind: String,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
     pub timestamp: Option<String>,
     pub event_id: Option<String>,
     pub call_id: Option<String>,
@@ -243,9 +270,14 @@ pub struct TurnSummary {
     pub id: i64,
     pub source: String,
     pub kind: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
     pub timestamp: Option<String>,
     pub call_id: Option<String>,
     pub preview: String,
+    #[serde(default)]
+    pub char_count: u64,
+    #[serde(default)]
+    pub modalities: Vec<String>,
     pub model_name: Option<String>,
     pub latency_ms: Option<f64>,
     pub ttft_ms: Option<f64>,
@@ -339,5 +371,36 @@ mod tests {
             page.records[0].run.query(),
             "dataset=captures&file=capture-comparison%2Fevents.lance&agent_id=capture-comparison&session_id=session-1"
         );
+    }
+
+    #[test]
+    fn turn_detail_accepts_numeric_storyline_timestamps() {
+        let turn: StorylineTurn = serde_json::from_value(serde_json::json!({
+            "id": 85,
+            "src": "user",
+            "msg": "hello",
+            "ts": 1785310111
+        }))
+        .expect("explorer detail preserves numeric Storyline timestamps");
+        assert_eq!(turn.timestamp.as_deref(), Some("1785310111"));
+
+        let event: EventRecord = serde_json::from_value(serde_json::json!({
+            "seq": 1,
+            "source": "gateway",
+            "kind": "llm.request",
+            "timestamp": 1785310111,
+            "payload": {}
+        }))
+        .expect("linked events may carry numeric timestamps");
+        assert_eq!(event.timestamp.as_deref(), Some("1785310111"));
+
+        let rfc3339: StorylineTurn = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "src": "agent",
+            "msg": "ok",
+            "ts": "2026-07-29T00:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(rfc3339.timestamp.as_deref(), Some("2026-07-29T00:00:00Z"));
     }
 }

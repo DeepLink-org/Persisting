@@ -42,11 +42,21 @@ pub struct StorylineDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<StorylineTask>,
+    #[serde(default, skip_serializing_if = "skip_optional_empty_prompt")]
+    pub prompt: Option<StorylinePrompt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<StorylineTimestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<StorylineTimestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_metrics: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continued_trajectory_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
     #[serde(default, skip_serializing_if = "StorylineUnknownFields::is_empty")]
     pub unknown_fields: StorylineUnknownFields,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -142,6 +152,12 @@ pub struct StorylineTurn {
     pub ttft_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<StorylineEnv>,
+    #[serde(default, skip_serializing_if = "skip_turn_prompt")]
+    pub prompt: Option<StorylinePrompt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<StorylineTimestamp>,
 }
 
 impl StorylineTurn {
@@ -182,6 +198,258 @@ pub struct StorylineToolCall {
     pub duration_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<StorylineToolResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorylineEnv {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "skip_empty_map")]
+    pub state: Option<serde_json::Map<String, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorylinePrompt {
+    #[serde(default)]
+    pub system: Option<String>,
+    #[serde(default)]
+    pub user: Option<String>,
+}
+
+impl StorylinePrompt {
+    pub fn from_pair(system: &str, user: &str) -> Option<Self> {
+        if system.is_empty() && user.is_empty() {
+            return None;
+        }
+        Some(Self {
+            system: (!system.is_empty()).then(|| system.to_string()),
+            user: (!user.is_empty()).then(|| user.to_string()),
+        })
+    }
+
+    pub fn explicit_clear() -> Self {
+        Self {
+            system: Some(String::new()),
+            user: Some(String::new()),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.system.as_deref().is_none_or(str::is_empty)
+            && self.user.as_deref().is_none_or(str::is_empty)
+    }
+
+    pub fn is_explicit_clear(&self) -> bool {
+        self.system.as_deref() == Some("") && self.user.as_deref() == Some("")
+    }
+
+    pub fn has_nonempty_field(&self) -> bool {
+        self.system
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+            || self.user.as_deref().is_some_and(|value| !value.is_empty())
+    }
+
+    pub fn pair(&self) -> (String, String) {
+        (
+            self.system.clone().unwrap_or_default(),
+            self.user.clone().unwrap_or_default(),
+        )
+    }
+}
+
+impl Serialize for StorylinePrompt {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        if self.is_explicit_clear() {
+            let mut state = serializer.serialize_struct("StorylinePrompt", 2)?;
+            state.serialize_field("system", "")?;
+            state.serialize_field("user", "")?;
+            return state.end();
+        }
+        let system = self.system.as_deref().filter(|value| !value.is_empty());
+        let user = self.user.as_deref().filter(|value| !value.is_empty());
+        let mut state = serializer.serialize_struct(
+            "StorylinePrompt",
+            usize::from(system.is_some()) + usize::from(user.is_some()),
+        )?;
+        if let Some(system) = system {
+            state.serialize_field("system", system)?;
+        }
+        if let Some(user) = user {
+            state.serialize_field("user", user)?;
+        }
+        state.end()
+    }
+}
+
+fn skip_optional_empty_prompt(prompt: &Option<StorylinePrompt>) -> bool {
+    prompt.as_ref().is_none_or(StorylinePrompt::is_empty)
+}
+
+fn skip_turn_prompt(prompt: &Option<StorylinePrompt>) -> bool {
+    match prompt {
+        None => true,
+        Some(prompt) if prompt.is_explicit_clear() => false,
+        Some(prompt) => prompt.is_empty(),
+    }
+}
+
+impl StorylineEnv {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.endpoint.is_none()
+            && self.id.is_none()
+            && self.event_type.is_none()
+            && self.request_id.is_none()
+            && self.state.as_ref().is_none_or(serde_json::Map::is_empty)
+    }
+
+    pub fn merge_overlay(&self, overlay: &Self) -> Self {
+        let mut state = self.state.clone().unwrap_or_default();
+        if let Some(overlay_state) = &overlay.state {
+            for (key, value) in overlay_state {
+                state.insert(key.clone(), value.clone());
+            }
+        }
+        Self {
+            name: overlay.name.clone().or_else(|| self.name.clone()),
+            endpoint: overlay.endpoint.clone().or_else(|| self.endpoint.clone()),
+            id: overlay.id.clone().or_else(|| self.id.clone()),
+            event_type: overlay
+                .event_type
+                .clone()
+                .or_else(|| self.event_type.clone()),
+            request_id: overlay
+                .request_id
+                .clone()
+                .or_else(|| self.request_id.clone()),
+            state: (!state.is_empty()).then_some(state),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorylineTaskLlm {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub k: Option<i64>,
+}
+
+impl StorylineTaskLlm {
+    pub fn is_empty(&self) -> bool {
+        self.k.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorylineTaskResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_correct: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correct: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_answer: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ground_truth: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempts_tried: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solved_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_count: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_counts: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_score: Option<Value>,
+}
+
+impl StorylineTaskResult {
+    pub fn is_empty(&self) -> bool {
+        self.task_correct.is_none()
+            && self.correct.is_none()
+            && self.final_answer.is_none()
+            && self.ground_truth.is_none()
+            && self.status.is_none()
+            && self.score.is_none()
+            && self.error.is_none()
+            && self.artifacts.is_none()
+            && self.category.is_none()
+            && self.attempts_tried.is_none()
+            && self.solved_at.is_none()
+            && self.retry_count.is_none()
+            && self.retry_counts.is_none()
+            && self.max_score.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorylineTask {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<StorylineEnv>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm: Option<StorylineTaskLlm>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<StorylineTaskResult>,
+}
+
+impl StorylineTask {
+    pub fn is_empty(&self) -> bool {
+        self.env.as_ref().is_none_or(StorylineEnv::is_empty)
+            && self.llm.as_ref().is_none_or(StorylineTaskLlm::is_empty)
+            && self
+                .result
+                .as_ref()
+                .is_none_or(StorylineTaskResult::is_empty)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorylineToolResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i64>,
+}
+
+impl StorylineToolResponse {
+    pub fn is_empty(&self) -> bool {
+        self.status.is_none() && self.exit_code.is_none()
+    }
+}
+
+fn skip_empty_map(map: &Option<serde_json::Map<String, Value>>) -> bool {
+    map.as_ref().is_none_or(serde_json::Map::is_empty)
 }
 
 impl StorylineDocument {
@@ -205,9 +473,14 @@ impl StorylineDocument {
             parent: None,
             child_session_ids: None,
             notes: None,
+            task: None,
+            prompt: None,
+            started_at: None,
+            finished_at: None,
             final_metrics: None,
             continued_trajectory_ref: None,
             extra: None,
+            meta: None,
             unknown_fields: StorylineUnknownFields::default(),
             unknown_key_counts: UnknownKeyCounts::default(),
             turns: Vec::new(),
@@ -256,6 +529,25 @@ impl StorylineDocument {
         if self.agent.id.is_empty() {
             return Err(InputIssue::invalid("storyline.agent.id is required"));
         }
+        if let Some(task) = &self.task {
+            if task.is_empty() {
+                return Err(InputIssue::invalid(
+                    "storyline.task must contain env, llm, or result",
+                ));
+            }
+            if let Some(k) = task.llm.as_ref().and_then(|llm| llm.k) {
+                if k <= 0 {
+                    return Err(InputIssue::invalid("storyline.task.llm.k must be positive"));
+                }
+            }
+        }
+        if let Some(prompt) = &self.prompt {
+            if !prompt.has_nonempty_field() {
+                return Err(InputIssue::invalid(
+                    "storyline.prompt must contain a non-empty system or user",
+                ));
+            }
+        }
         if let Some(origin) = &self.origin {
             if origin.format.is_empty() {
                 return Err(InputIssue::invalid(
@@ -295,6 +587,22 @@ impl StorylineDocument {
                     turn.id
                 )));
             }
+            if let Some(prompt) = &turn.prompt {
+                if turn.is_copied_context == Some(true) {
+                    return Err(InputIssue::invalid(format!(
+                        "turn id={} copied context must not contain prompt",
+                        turn.id
+                    )));
+                }
+                if prompt.is_explicit_clear() {
+                    // Whole-document replace to empty strings.
+                } else if !prompt.has_nonempty_field() {
+                    return Err(InputIssue::invalid(format!(
+                        "turn id={} prompt must contain a non-empty system or user, or explicit empty system and user",
+                        turn.id
+                    )));
+                }
+            }
             if !seen.insert(turn.id) {
                 return Err(InputIssue::invalid(format!(
                     "duplicate turn id {}",
@@ -314,6 +622,16 @@ impl StorylineDocument {
                         turn.id
                     )));
                 }
+                if call
+                    .response
+                    .as_ref()
+                    .is_some_and(StorylineToolResponse::is_empty)
+                {
+                    return Err(InputIssue::invalid(format!(
+                        "turn id={} tool_call response must contain status or exit_code",
+                        turn.id
+                    )));
+                }
                 if !seen_tool_calls.insert(call.tool_call_id.as_str()) {
                     return Err(InputIssue::invalid(format!(
                         "duplicate tool_call_id {}",
@@ -329,6 +647,10 @@ impl StorylineDocument {
         self.unknown_key_counts = compute_unknown_key_counts(&self.unknown_fields)?;
         Ok(())
     }
+
+    pub fn effective_prompt<'a>(&'a self, turn: &'a StorylineTurn) -> Option<&'a StorylinePrompt> {
+        turn.prompt.as_ref().or(self.prompt.as_ref())
+    }
 }
 
 #[cfg(all(test, feature = "lance-store"))]
@@ -339,6 +661,7 @@ pub fn parse_storyline_document(input: &str) -> Result<StorylineDocument> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn story_with_source_normalized_counts() -> StorylineDocument {
         let mut story = StorylineDocument::new("session", "agent");
@@ -597,6 +920,8 @@ mod tests {
             result: None,
             duration_ms: None,
             extra: None,
+            kind: None,
+            response: None,
         };
         for id in [1, 2] {
             story.turns.push(StorylineTurn {
@@ -616,6 +941,9 @@ mod tests {
                 latency_ms: None,
                 ttft_ms: None,
                 extra: None,
+                env: None,
+                prompt: None,
+                finished_at: None,
             });
         }
 
@@ -651,5 +979,170 @@ mod tests {
             serde_json::to_value(value).unwrap()["result"],
             serde_json::json!({"answer": 42})
         );
+    }
+
+    #[test]
+    fn task_env_and_tool_response_roundtrip_on_the_wire() {
+        let mut story = StorylineDocument::new("session", "agent");
+        story.started_at = Some(StorylineTimestamp::from_rfc3339("2026-01-01T00:00:00Z").unwrap());
+        story.finished_at = Some(StorylineTimestamp::from_rfc3339("2026-01-01T00:00:02Z").unwrap());
+        story.task = Some(StorylineTask {
+            env: Some(StorylineEnv {
+                name: Some("prod".into()),
+                endpoint: Some("https://llm".into()),
+                state: Some(serde_json::Map::from_iter([(
+                    "weight_version".into(),
+                    json!("v1"),
+                )])),
+                ..StorylineEnv::default()
+            }),
+            llm: Some(StorylineTaskLlm { k: Some(3) }),
+            result: Some(StorylineTaskResult {
+                correct: Some(true),
+                category: Some("software-engineering".into()),
+                ..StorylineTaskResult::default()
+            }),
+        });
+        story.turns.push(StorylineTurn {
+            id: 1,
+            kind: None,
+            timestamp: story.started_at.clone(),
+            source: "agent".into(),
+            message: json!("done"),
+            reasoning_content: None,
+            reasoning_effort: None,
+            tool_calls: Some(vec![StorylineToolCall {
+                tool_call_id: "c1".into(),
+                function_name: "Bash".into(),
+                arguments: json!({}),
+                result: Some(json!("ok")),
+                duration_ms: None,
+                extra: None,
+                kind: Some("tool_use".into()),
+                response: Some(StorylineToolResponse {
+                    status: Some("completed".into()),
+                    exit_code: Some(0),
+                }),
+            }]),
+            observation: None,
+            metrics: None,
+            model_name: None,
+            llm_call_count: None,
+            is_copied_context: None,
+            latency_ms: None,
+            ttft_ms: None,
+            extra: None,
+            env: Some(StorylineEnv {
+                request_id: Some("req-1".into()),
+                ..StorylineEnv::default()
+            }),
+            prompt: None,
+            finished_at: story.finished_at.clone(),
+        });
+
+        let encoded = serde_json::to_value(&story).unwrap();
+        assert_eq!(encoded["task"]["llm"]["k"], 3);
+        assert_eq!(encoded["task"]["env"]["name"], "prod");
+        assert_eq!(encoded["turns"][0]["env"]["request_id"], "req-1");
+        assert_eq!(encoded["turns"][0]["tool_calls"][0]["kind"], "tool_use");
+        assert_eq!(
+            encoded["turns"][0]["tool_calls"][0]["response"]["exit_code"],
+            0
+        );
+        let decoded: StorylineDocument = serde_json::from_value(encoded).unwrap();
+        decoded.validate().unwrap();
+        assert_eq!(
+            decoded.task.as_ref().unwrap().llm.as_ref().unwrap().k,
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn empty_task_is_rejected() {
+        let mut story = StorylineDocument::new("session", "agent");
+        story.task = Some(StorylineTask::default());
+        let error = story.validate().unwrap_err();
+        assert!(error.to_string().contains("task"), "{error}");
+    }
+
+    fn agent_turn(id: i64) -> StorylineTurn {
+        StorylineTurn {
+            id,
+            kind: None,
+            timestamp: None,
+            source: "agent".into(),
+            message: json!("done"),
+            reasoning_content: None,
+            reasoning_effort: None,
+            tool_calls: None,
+            observation: None,
+            metrics: None,
+            model_name: None,
+            llm_call_count: None,
+            is_copied_context: None,
+            latency_ms: None,
+            ttft_ms: None,
+            extra: None,
+            env: None,
+            prompt: None,
+            finished_at: None,
+        }
+    }
+
+    #[test]
+    fn prompt_wire_roundtrip_and_explicit_clear() {
+        let mut story = StorylineDocument::new("session", "agent");
+        story.prompt = StorylinePrompt::from_pair("sys", "task");
+        let mut changed = agent_turn(1);
+        changed.prompt = StorylinePrompt::from_pair("sys", "later");
+        let mut cleared = agent_turn(2);
+        cleared.prompt = Some(StorylinePrompt::explicit_clear());
+        story.turns.push(changed);
+        story.turns.push(cleared);
+        story.validate().unwrap();
+
+        let encoded = serde_json::to_value(&story).unwrap();
+        assert_eq!(encoded["prompt"]["system"], "sys");
+        assert_eq!(encoded["prompt"]["user"], "task");
+        assert_eq!(encoded["turns"][0]["prompt"]["user"], "later");
+        assert_eq!(encoded["turns"][0]["prompt"]["system"], "sys");
+        assert_eq!(encoded["turns"][1]["prompt"]["system"], "");
+        assert_eq!(encoded["turns"][1]["prompt"]["user"], "");
+        assert!(encoded["turns"][0]["msg"].is_string());
+
+        let decoded: StorylineDocument = serde_json::from_value(encoded).unwrap();
+        decoded.validate().unwrap();
+        assert_eq!(
+            decoded.effective_prompt(&decoded.turns[0]).unwrap().pair(),
+            ("sys".into(), "later".into())
+        );
+        assert_eq!(
+            decoded.effective_prompt(&decoded.turns[1]).unwrap().pair(),
+            (String::new(), String::new())
+        );
+    }
+
+    #[test]
+    fn prompt_validation_rejects_empty_and_copied() {
+        let mut story = StorylineDocument::new("session", "agent");
+        story.prompt = Some(StorylinePrompt::default());
+        let error = story.validate().unwrap_err();
+        assert!(error.to_string().contains("prompt"), "{error}");
+
+        let mut story = StorylineDocument::new("session", "agent");
+        let mut turn = agent_turn(1);
+        turn.prompt = Some(StorylinePrompt::default());
+        story.turns.push(turn);
+        let error = story.validate().unwrap_err();
+        assert!(error.to_string().contains("prompt"), "{error}");
+
+        let mut story = StorylineDocument::new("session", "agent");
+        story.prompt = StorylinePrompt::from_pair("sys", "task");
+        let mut turn = agent_turn(1);
+        turn.is_copied_context = Some(true);
+        turn.prompt = StorylinePrompt::from_pair("sys", "task");
+        story.turns.push(turn);
+        let error = story.validate().unwrap_err();
+        assert!(error.to_string().contains("copied"), "{error}");
     }
 }

@@ -5,6 +5,7 @@ use wasm_bindgen::JsValue;
 
 use crate::agent::{self, AgentAnswer, LlmConfig};
 use crate::api;
+use crate::chat_view::normalize_trace_view;
 use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView};
 use crate::model::{
     DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary, RunAnalysis,
@@ -18,6 +19,49 @@ struct ChatMessage {
     action: Option<String>,
     sql: Option<String>,
     truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct WorkspaceNotice {
+    title: String,
+    summary: String,
+    detail: String,
+    turn_id: Option<i64>,
+}
+
+fn workspace_notice(detail: String) -> WorkspaceNotice {
+    WorkspaceNotice {
+        title: "Workspace request failed".into(),
+        summary: detail.lines().next().unwrap_or("Request failed").to_string(),
+        detail,
+        turn_id: None,
+    }
+}
+
+fn evidence_notice(turn_id: i64, detail: &str) -> WorkspaceNotice {
+    WorkspaceNotice {
+        title: "Turn evidence could not be decoded".into(),
+        summary: format!("Turn #{turn_id} · {}", type_mismatch_summary(detail)),
+        detail: detail.to_string(),
+        turn_id: Some(turn_id),
+    }
+}
+
+fn type_mismatch_summary(detail: &str) -> String {
+    let received = detail
+        .split("invalid type: ")
+        .nth(1)
+        .and_then(|rest| rest.split([',', ' ']).next())
+        .filter(|value| !value.is_empty());
+    let expected = detail
+        .split("expected a ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(|value| value.trim_end_matches(['.', ',']));
+    match (expected, received) {
+        (Some(expected), Some(received)) => format!("Expected {expected}, received {received}"),
+        _ => "The turn payload did not match the explorer schema".into(),
+    }
 }
 
 struct RunFilters {
@@ -73,7 +117,7 @@ pub fn App() -> Element {
     let mut direction = use_signal(|| url_param("direction").unwrap_or_else(|| "asc".into()));
     let mut run_path = use_signal(|| url_param("path").unwrap_or_default());
     let mut offset = use_signal(|| 0usize);
-    let mut error = use_signal(|| None::<String>);
+    let mut error = use_signal(|| None::<WorkspaceNotice>);
 
     let mut selected_run = use_signal(move || initial_run);
     let mut analysis = use_signal(|| None::<RunAnalysis>);
@@ -84,7 +128,9 @@ pub fn App() -> Element {
     let detail_loading = use_signal(|| false);
     let turn_loading = use_signal(|| false);
     let mut detail_mode = use_signal(|| url_param("workspace").unwrap_or_else(|| "trace".into()));
-    let trace_mode = use_signal(|| url_param("view").unwrap_or_else(|| "tree".into()));
+    let mut trace_mode = use_signal(|| {
+        normalize_trace_view(&url_param("view").unwrap_or_else(|| "chats".into())).to_string()
+    });
     let mut source = use_signal(|| url_param("source").unwrap_or_else(|| "all".into()));
     let mut turn_query = use_signal(|| url_param("turn_q").unwrap_or_default());
 
@@ -169,7 +215,7 @@ pub fn App() -> Element {
                         }
                         catalog.set(Some(value));
                     }
-                    Err(message) => error.set(Some(message)),
+                    Err(message) => error.set(Some(workspace_notice(message))),
                 }
             });
         }
@@ -196,8 +242,18 @@ pub fn App() -> Element {
             }
 
             main { id: "pc2-main", class: "pc2-main", tabindex: "-1",
-                if let Some(message) = error() {
-                    div { class: "pc2-global-error", role: "alert", strong { "Evidence unavailable" } span { "{message}" } button { aria_label: "Dismiss", onclick: move |_| error.set(None), "×" } }
+                if let Some(notice) = error() {
+                    div { class: "pc2-workspace-notice", role: "alert",
+                        div { class: "pc2-workspace-notice-copy",
+                            strong { "{notice.title}" }
+                            span { "{notice.summary}" }
+                            details { class: "pc2-workspace-notice-details",
+                                summary { "Show technical details" }
+                                pre { "{notice.detail}" }
+                            }
+                        }
+                        button { aria_label: "Dismiss", onclick: move |_| error.set(None), "×" }
+                    }
                 }
                 match page().as_str() {
                     "tools" => rsx! { crate::tools::ToolsWorkspace { catalog: catalog(), selected_table } },
@@ -219,22 +275,17 @@ pub fn App() -> Element {
                                     loading: detail_loading(),
                                     turn_loading: turn_loading(),
                                     detail_mode: detail_mode(),
+                                    view: trace_mode(),
                                     source: source(),
                                     query: turn_query(),
                                     on_back: move |_| page.set("runs".into()),
                                     on_detail_mode: move |value| detail_mode.set(value),
-                                    on_source: move |value| {
-                                        source.set(value);
-                                        if let Some(run) = selected_run() {
-                                            reload_turns(run, turn_query(), source(), turns, detail_loading, error);
-                                        }
+                                    on_view: move |value: String| {
+                                        trace_mode.set(normalize_trace_view(&value).to_string());
                                     },
+                                    on_source: move |value| source.set(value),
                                     on_query: move |value| turn_query.set(value),
-                                    on_apply_filter: move |_| {
-                                        if let Some(run) = selected_run() {
-                                            reload_turns(run, turn_query(), source(), turns, detail_loading, error);
-                                        }
-                                    },
+                                    on_apply_filter: move |_| {},
                                     on_turn: move |id| {
                                         if expanded_turn_id() == Some(id) {
                                             expanded_turn_id.set(None);
@@ -285,7 +336,7 @@ pub fn App() -> Element {
                                     };
                                 spawn(async move {
                                     if let Err(message) = api::refresh_catalog().await {
-                                        error.set(Some(message));
+                                        error.set(Some(workspace_notice(message)));
                                         return;
                                     }
                                     if let Ok(value) = api::query_catalog().await {
@@ -343,7 +394,7 @@ fn load_runs(
     filters: RunFilters,
     mut page: Signal<Option<RunPage>>,
     mut loading: Signal<bool>,
-    mut error: Signal<Option<String>>,
+    mut error: Signal<Option<WorkspaceNotice>>,
 ) {
     loading.set(true);
     spawn(async move {
@@ -359,7 +410,7 @@ fn load_runs(
         .await
         {
             Ok(value) => page.set(Some(value)),
-            Err(message) => error.set(Some(message)),
+            Err(message) => error.set(Some(workspace_notice(message))),
         }
         loading.set(false);
     });
@@ -370,7 +421,7 @@ fn load_workspace(
     mut analysis: Signal<Option<RunAnalysis>>,
     mut turns: Signal<Vec<TurnSummary>>,
     mut loading: Signal<bool>,
-    mut error: Signal<Option<String>>,
+    mut error: Signal<Option<WorkspaceNotice>>,
 ) {
     loading.set(true);
     spawn(async move {
@@ -382,26 +433,8 @@ fn load_workspace(
                 turns.set(next_turns.records);
             }
             (Err(message), _) | (_, Err(message)) => {
-                error.set(Some(message));
+                error.set(Some(workspace_notice(message)));
             }
-        }
-        loading.set(false);
-    });
-}
-
-fn reload_turns(
-    run: RunSummary,
-    q: String,
-    source: String,
-    mut turns: Signal<Vec<TurnSummary>>,
-    mut loading: Signal<bool>,
-    mut error: Signal<Option<String>>,
-) {
-    loading.set(true);
-    spawn(async move {
-        match api::turns(&run, &q, &source).await {
-            Ok(value) => turns.set(value.records),
-            Err(message) => error.set(Some(message)),
         }
         loading.set(false);
     });
@@ -413,14 +446,14 @@ fn load_turn(
     active: Signal<Option<i64>>,
     mut selected: Signal<Option<TurnDetail>>,
     mut loading: Signal<bool>,
-    mut error: Signal<Option<String>>,
+    mut error: Signal<Option<WorkspaceNotice>>,
 ) {
     loading.set(true);
     spawn(async move {
         match api::turn_detail(&run, id).await {
             Ok(value) if active() == Some(id) => selected.set(Some(value)),
             Ok(_) => {}
-            Err(message) if active() == Some(id) => error.set(Some(message)),
+            Err(message) if active() == Some(id) => error.set(Some(evidence_notice(id, &message))),
             Err(_) => {}
         }
         if active() == Some(id) {
@@ -651,16 +684,23 @@ fn RunDetailWorkspace(
     loading: bool,
     turn_loading: bool,
     detail_mode: String,
+    view: String,
     source: String,
     query: String,
     on_back: EventHandler<MouseEvent>,
     on_detail_mode: EventHandler<String>,
+    on_view: EventHandler<String>,
     on_source: EventHandler<String>,
     on_query: EventHandler<String>,
     on_apply_filter: EventHandler<()>,
     on_turn: EventHandler<i64>,
     on_open_copilot: EventHandler<MouseEvent>,
 ) -> Element {
+    let chats_active = view == "chats";
+    let steps_active = view == "steps";
+    let view_for_list = view.clone();
+    let source_for_list = source.clone();
+    let query_for_list = query.clone();
     rsx! {
         section { class: "pc2-detail",
             header { class: "pc2-detail-head",
@@ -685,8 +725,12 @@ fn RunDetailWorkspace(
             } else {
                 section { class: "pc2-trace-surface pc2-inline-trace",
                     div { class: "pc2-trace-toolbar",
-                        div { strong { "Trace hierarchy" } span { "Collapsed rows preserve overview + timeline · expand for full evidence" } }
+                        div { strong { if steps_active { "Steps" } else { "Chats" } } span { "Bars sit at each turn's place in the session · colored by type · sequence is not wall-clock time · expand a row for evidence" } }
                         div { class: "pc2-toolbar-controls",
+                            div { class: "pc2-view-toggle", role: "group", aria_label: "Trace layout",
+                                button { class: if chats_active { "active" } else { "" }, onclick: move |_| on_view.call("chats".to_string()), "Chats" }
+                                button { class: if steps_active { "active" } else { "" }, onclick: move |_| on_view.call("steps".to_string()), "Steps" }
+                            }
                             select { value: "{source}", aria_label: "Filter turns by source", onchange: move |event| on_source.call(event.value()), option { value: "all", "All sources" } option { value: "user", "User" } option { value: "agent", "Agent" } option { value: "system", "System" } }
                             input { value: "{query}", placeholder: "Filter loaded evidence", aria_label: "Filter turns", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| if event.key() == Key::Enter { on_apply_filter.call(()) } }
                             button { class: "pc2-icon", aria_label: "Apply turn filter", onclick: move |_| on_apply_filter.call(()), "⌕" }
@@ -695,7 +739,7 @@ fn RunDetailWorkspace(
                     div { class: "pc2-turn-list pc2-span-scroll",
                         if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing evidence…" } }
                         if turns.is_empty() { div { class: "pc2-empty", strong { "No visible turns" } span { "No compact turn evidence matches this filter." } } }
-                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, on_turn } }
+                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, view: view_for_list, source: source_for_list, query: query_for_list, on_turn } }
                     }
                 }
             }
@@ -1016,7 +1060,7 @@ fn CopilotPanel(
         div { class: "pc2-context-card", div { span { "Grounded in" } strong { "{short(&run.session_id, 30)}" } } div { span { "Evidence" } strong { "{analysis.turn_count} turns · {analysis.error_count} explicit errors" } } label { input { r#type: "checkbox", checked: include_full(), disabled: selected.is_none(), onchange: move |event| include_full.set(event.checked()) } "Include selected turn content once (max 64 KiB)" } }
         div { class: "pc2-skill-chips", for skill in agent::skill_ids() { button { disabled: busy(), onclick: move |_| input.set(format!("/{skill}")), "{skill_label(skill)}" } } }
         div { class: "pc2-chat",
-            if messages().is_empty() { div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask from captured evidence" } p { "Copilot can summarize this run, locate explicit failures, rank latency, inspect tool usage, or compare cohorts." } } }
+            if messages().is_empty() { div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" } p { "Copilot can summarize this run, locate explicit failures, rank latency, inspect tool usage, or compare cohorts." } } }
             for (index, message) in messages().iter().enumerate() { ChatBubble { key: "message-{index}", message: message.clone(), turns: turns.clone(), on_turn } }
             if busy() { div { class: "pc2-chat-working", span { class: "spinner" } "Selecting one read-only analysis action…" } }
         }
@@ -1051,7 +1095,7 @@ fn CopilotPanel(
                 include_full.set(false);
                 busy.set(false);
             });
-        }, textarea { value: "{input}", rows: "3", placeholder: "Ask about this trajectory…", oninput: move |event| input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); }, disabled: busy() } button { class: "button primary", disabled: busy() || input().trim().is_empty(), "Analyze" } }
+        }, textarea { value: "{input}", rows: "3", placeholder: "Ask Copilot about this trajectory…", oninput: move |event| input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); }, disabled: busy() } button { class: "button primary", disabled: busy() || input().trim().is_empty(), "Ask Copilot" } }
         if settings() { LlmSettings { config: config(), on_close: move |_| settings.set(false), on_save: move |value| { agent::save_config(&value); config.set(value); settings.set(false); } } }
     } }
 }
@@ -1075,7 +1119,7 @@ fn ChatBubble(
                     rsx! { div { key: "trajectory-{index}", class: "pc2-chat-component",
                         if let Some(title) = trajectory.title { strong { class: "pc2-chat-component-title", "{title}" } }
                         if visible.is_empty() { div { class: "pc2-data-empty", "Referenced turns are outside the loaded evidence window." } }
-                        else { TrajectoryView { turns: visible, expanded_turn_id: None, detail: None, loading: false, embedded: true, on_turn } }
+                        else { TrajectoryView { turns: visible, expanded_turn_id: None, detail: None, loading: false, embedded: true, view: "steps".to_string(), on_turn } }
                     } }
                 },
             }
@@ -1305,5 +1349,20 @@ mod tests {
         assert_eq!(percent(25.0, 100.0), 25.0);
         assert_eq!(percent(10.0, 0.0), 0.0);
         assert_eq!(percent(150.0, 100.0), 100.0);
+    }
+
+    #[test]
+    fn evidence_notice_keeps_serde_details_collapsed() {
+        let notice = evidence_notice(
+            85,
+            "invalid type: integer `1785310111`, expected a string at line 1 column 561",
+        );
+        assert_eq!(notice.title, "Turn evidence could not be decoded");
+        assert_eq!(
+            notice.summary,
+            "Turn #85 · Expected string, received integer"
+        );
+        assert!(notice.detail.contains("1785310111"));
+        assert_eq!(notice.turn_id, Some(85));
     }
 }

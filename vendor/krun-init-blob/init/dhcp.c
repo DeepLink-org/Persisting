@@ -7,14 +7,8 @@
 
 #include "dhcp.h"
 
-#include <net/if.h>
-
 #include <arpa/inet.h>
 #include <errno.h>
-#include <linux/sockios.h>
-#include <linux/if_arp.h>
-#include <linux/netlink.h>
-#include <linux/rtnetlink.h>
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -24,6 +18,20 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include <net/if.h>
+#ifdef __linux__
+/*
+ * glibc before ~2.24 (manylinux2014 / CentOS 7) cannot include both
+ * <net/if.h> and <linux/if.h>: they both define IFF_* and struct ifreq.
+ * libc already provides the ioctl types we need; skip the UAPI header.
+ */
+#define _LINUX_IF_H
+#endif
+#include <linux/sockios.h>
+#include <linux/if_arp.h>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
 
 #define DHCP_BUFFER_SIZE 576
 #define DHCP_MSG_OFFER 2

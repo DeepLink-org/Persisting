@@ -1258,10 +1258,14 @@ async fn import_warns_for_unmapped_and_vendor_residual_keys() -> Result<()> {
         ]
     );
     assert!(
-        stderr.contains(
-            "warning: unknown field source=actf key=/attempts/1/trajectory/steps/*/user_content occurrences=3"
-        ),
-        "unmapped ACTF fields must warn: {stderr}"
+        !stderr.contains("key=/attempts/1/trajectory/steps/*/user_content"),
+        "mapped user_content must not warn: {stderr}"
+    );
+    assert!(
+        !stderr.contains("key=/attempts/1/extra")
+            && !stderr.contains("key=/attempts/1/meta")
+            && !stderr.contains("key=/attempts/1/max_score"),
+        "mapped attempt extra/meta/max_score must not warn: {stderr}"
     );
     assert!(!stderr.contains("/assistant_content/content"));
     assert!(
@@ -1620,6 +1624,78 @@ async fn import_recurses_directories_and_preserves_relative_source_paths() -> Re
 }
 
 #[tokio::test]
+async fn directory_import_auto_detects_each_file_and_skips_unknown_json() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("input");
+    fs::create_dir_all(input.join("details"))?;
+    let atif = input.join("root.json");
+    let openai = input.join("nested-training.json");
+    let unknown = input.join("details/_error_gravitational-wave-detection_astronomy.json");
+    fs::copy(example_source("atif"), &atif)?;
+    fs::copy(example_source("openai-messages"), &openai)?;
+    fs::write(&unknown, r#"{"error":"task failed","task_id":"astronomy"}"#)?;
+
+    for output_format in [ImportOutputFormat::Preserve, ImportOutputFormat::Storyline] {
+        let output = temp
+            .path()
+            .join(format!("dataset-{}", output_format.response_name()));
+        let mut argv = vec![
+            "pchronicle".to_owned(),
+            "import".to_owned(),
+            "--from".to_owned(),
+            input.to_string_lossy().into_owned(),
+            "--output".to_owned(),
+            output.to_string_lossy().into_owned(),
+        ];
+        if output_format == ImportOutputFormat::Storyline {
+            argv.extend(["--output-format".to_owned(), "storyline".to_owned()]);
+        }
+        let cli = Cli::try_parse_from(argv)?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        run(cli, false, &mut stdout, &mut stderr).await?;
+
+        let response: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(response["sources"], 2, "{output_format:?}: {response}");
+        assert_eq!(response["trajectories"], 3, "{output_format:?}: {response}");
+        let warnings = String::from_utf8(stderr)?;
+        assert!(
+            warnings.contains("_error_gravitational-wave-detection_astronomy.json"),
+            "{output_format:?}: {warnings}"
+        );
+        assert!(
+            warnings.contains("cannot detect import format"),
+            "{output_format:?}: {warnings}"
+        );
+        if output_format == ImportOutputFormat::Preserve {
+            assert!(!output.join(unknown.file_name().unwrap()).exists());
+            assert!(!output
+                .join("details/_error_gravitational-wave-detection_astronomy.json")
+                .exists());
+        }
+    }
+
+    let single = temp.path().join("single-unknown");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        unknown.to_str().unwrap(),
+        "--output",
+        single.to_str().unwrap(),
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("cannot detect import format"),
+        "{error:#}"
+    );
+    assert!(!single.exists());
+    Ok(())
+}
+
+#[tokio::test]
 async fn import_storyline_output_writes_one_root_lance_store() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let output = temp.path().join("dataset");
@@ -1873,6 +1949,67 @@ async fn directory_storyline_output_squashes_sources_into_one_root_store() -> Re
 }
 
 #[tokio::test]
+async fn directory_storyline_import_renames_duplicate_document_ids() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("input");
+    fs::create_dir_all(input.join("first"))?;
+    fs::create_dir_all(input.join("second"))?;
+    fs::write(
+        input.join("first/Energy_001_Energy.json"),
+        serde_json::to_vec(&atif_identity_document("Energy_001", "Energy_001"))?,
+    )?;
+    fs::write(
+        input.join("second/Energy_001_Energy.json"),
+        serde_json::to_vec(&atif_identity_document("Energy_001", "Energy_001"))?,
+    )?;
+    let output = temp.path().join("dataset");
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+    ])?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    run(cli, false, &mut stdout, &mut stderr).await?;
+
+    let response: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(response["trajectories"], 2);
+    let stderr = String::from_utf8(stderr)?;
+    assert!(
+        stderr.contains("duplicate document_id 'Energy_001' renamed to 'Energy_001#1'"),
+        "{stderr}"
+    );
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "query",
+        output.to_str().unwrap(),
+        "SELECT document_id FROM dataset.runs ORDER BY document_id",
+        "--format",
+        "jsonl",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let rows = stdout
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice::<Value>(line))
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    let ids = rows
+        .iter()
+        .map(|row| row["document_id"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["Energy_001", "Energy_001#1"]);
+    Ok(())
+}
+
+#[tokio::test]
 async fn directory_import_dedupes_unknown_warnings_across_sources() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let input = temp.path().join("input");
@@ -1909,9 +2046,8 @@ async fn directory_import_dedupes_unknown_warnings_across_sources() -> Result<()
             "warning: unknown field source=actf key=/attempts/1/trajectory/steps/*/vendor_step occurrences=3"
         ]
     );
-    assert!(stderr.contains(
-        "warning: unknown field source=actf key=/attempts/1/trajectory/steps/*/user_content occurrences=3"
-    ));
+    assert!(!stderr.contains("key=/attempts/1/trajectory/steps/*/user_content"));
+    assert!(!stderr.contains("key=/attempts/1/extra") && !stderr.contains("key=/attempts/1/meta"));
     assert!(!stderr.contains("alpha") && !stderr.contains("beta") && !stderr.contains("gamma"));
     Ok(())
 }
@@ -1956,58 +2092,61 @@ async fn directory_import_failure_does_not_publish_partial_output() -> Result<()
 }
 
 #[tokio::test]
-async fn storyline_squash_rejects_global_identity_collisions() -> Result<()> {
+async fn storyline_squash_renames_duplicate_document_ids() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    for (field, value, first, second) in [
-        (
-            "document_id",
-            "shared-document",
-            ("shared-document", "session-first"),
-            ("shared-document", "session-second"),
-        ),
-        (
-            "session_id",
-            "shared-session",
-            ("document-first", "shared-session"),
-            ("document-second", "shared-session"),
-        ),
-    ] {
-        let case_root = temp.path().join(field);
-        let input = case_root.join("input");
-        fs::create_dir_all(input.join("nested"))?;
-        fs::write(
-            input.join("first.json"),
-            serde_json::to_vec(&atif_identity_document(first.0, first.1))?,
-        )?;
-        fs::write(
-            input.join("nested/second.json"),
-            serde_json::to_vec(&atif_identity_document(second.0, second.1))?,
-        )?;
-        let output = case_root.join("output");
-        let cli = Cli::try_parse_from([
-            "pchronicle",
-            "import",
-            "--from",
-            input.to_str().unwrap(),
-            "--output",
-            output.to_str().unwrap(),
-            "--output-format",
-            "storyline",
-        ])?;
-        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
-            .await
-            .unwrap_err();
-        let concise = error.to_string();
-        assert!(concise.contains(field), "{concise}");
-        assert!(concise.contains("first.json"), "{concise}");
-        assert!(concise.contains("nested/second.json"), "{concise}");
-        let message = format!("{error:#}");
-        assert!(message.contains(field), "{message}");
-        assert!(message.contains(value), "{message}");
-        assert!(message.contains("first.json"), "{message}");
-        assert!(message.contains("nested/second.json"), "{message}");
-        assert!(!output.exists());
-    }
+    let input = temp.path().join("input");
+    fs::create_dir_all(input.join("nested"))?;
+    fs::write(
+        input.join("first.json"),
+        serde_json::to_vec(&atif_identity_document("shared-document", "session-first"))?,
+    )?;
+    fs::write(
+        input.join("nested/second.json"),
+        serde_json::to_vec(&atif_identity_document("shared-document", "session-second"))?,
+    )?;
+    let output = temp.path().join("output");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+    ])?;
+    let mut stderr = Vec::new();
+    run(cli, false, &mut Vec::new(), &mut stderr).await?;
+    let stderr = String::from_utf8(stderr)?;
+    assert!(
+        stderr.contains("duplicate document_id 'shared-document' renamed to 'shared-document#1'"),
+        "{stderr}"
+    );
+    assert!(output.exists());
+
+    let session_input = temp.path().join("sessions");
+    fs::create_dir_all(&session_input)?;
+    fs::write(
+        session_input.join("first.json"),
+        serde_json::to_vec(&atif_identity_document("document-first", "shared-session"))?,
+    )?;
+    fs::write(
+        session_input.join("second.json"),
+        serde_json::to_vec(&atif_identity_document("document-second", "shared-session"))?,
+    )?;
+    let session_output = temp.path().join("session-output");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        session_input.to_str().unwrap(),
+        "--output",
+        session_output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+    assert!(session_output.exists());
 
     let duplicate_input = temp.path().join("duplicates.json");
     fs::write(
@@ -2030,17 +2169,14 @@ async fn storyline_squash_rejects_global_identity_collisions() -> Result<()> {
         "--output-format",
         "storyline",
     ])?;
-    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
-        .await
-        .unwrap_err();
-    let message = format!("{error:#}");
-    assert!(message.contains("document_id"), "{message}");
-    assert!(message.contains("same-document"), "{message}");
+    let mut stderr = Vec::new();
+    run(cli, false, &mut Vec::new(), &mut stderr).await?;
+    let stderr = String::from_utf8(stderr)?;
     assert!(
-        message.contains("Sources 'duplicates.json' and 'duplicates.json'"),
-        "{message}"
+        stderr.contains("duplicate document_id 'same-document' renamed to 'same-document#1'"),
+        "{stderr}"
     );
-    assert!(!duplicate_output.exists());
+    assert!(duplicate_output.exists());
     Ok(())
 }
 
@@ -2265,7 +2401,7 @@ async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_
 }
 
 #[tokio::test]
-async fn import_is_create_only_and_rejects_duplicate_documents() -> Result<()> {
+async fn import_is_create_only_and_keeps_duplicate_documents() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let output = temp.path().join("existing");
     fs::create_dir(&output)?;
@@ -2300,14 +2436,8 @@ async fn import_is_create_only_and_rejects_duplicate_documents() -> Result<()> {
         "--format",
         "atif",
     ])?;
-    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
-        .await
-        .unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "invalid_request: import contains duplicate document_id"
-    );
-    assert!(!duplicate_output.exists());
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+    assert!(duplicate_output.is_dir());
     assert!(!fs::read_dir(temp.path())?.any(|entry| {
         entry
             .ok()

@@ -87,6 +87,13 @@ projection ownership 见[轨迹存储](trajectory-storage.md)，用户查询流�
 `steps.turn_ordinal` 是 turn 数组顺序的权威列；`step_id` 只作身份，不参与重排。
 `had_tool_calls` 让显式空数组与字段缺失保持可区分。
 
+`runs.task_json`、`runs.started_at_json`、`runs.finished_at_json`、`runs.prompt_json`、
+`runs.extra_json`、`runs.meta_json` 保存文档级 `/task`、文档时间、`/prompt`、`/extra` 与
+`/meta`；`steps.env_json`、`steps.finished_at_json`、
+`steps.prompt_json` 保存 turn env、结束时间与 turn `/prompt`；
+`tool_calls.kind`、`tool_calls.response_json` 保存工具事件类型与 `response`。旧表缺列
+时按字段缺失解码。这些对象不拆成独立 SQL 列。
+
 `steps.timestamp` 是规范化到 UTC 的 `Timestamp(Nanosecond, "UTC")` 查询列；
 `timestamp_source_json` 保存权威 JSON 标量，因此 RFC3339 字符串和 Unix epoch 秒数值
 都能无损恢复。写入端拒绝无效、越界或无法精确表示为纳秒的非空时间。SQL 排序、范围
