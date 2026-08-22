@@ -304,12 +304,14 @@ fn openclaw_events_to_turns(
     for event in events {
         match event.get("type").and_then(Value::as_str) {
             Some("session") => {
-                let mut env = StorylineEnv::default();
-                env.id = event
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty())
-                    .map(str::to_string);
+                let mut env = StorylineEnv {
+                    id: event
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_string),
+                    ..StorylineEnv::default()
+                };
                 if let Some(cwd) = event.get("cwd").and_then(Value::as_str) {
                     let mut state = serde_json::Map::new();
                     state.insert("cwd".into(), Value::String(cwd.to_string()));

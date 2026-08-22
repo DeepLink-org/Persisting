@@ -32,7 +32,11 @@ struct WorkspaceNotice {
 fn workspace_notice(detail: String) -> WorkspaceNotice {
     WorkspaceNotice {
         title: "Workspace request failed".into(),
-        summary: detail.lines().next().unwrap_or("Request failed").to_string(),
+        summary: detail
+            .lines()
+            .next()
+            .unwrap_or("Request failed")
+            .to_string(),
         detail,
         turn_id: None,
     }

@@ -852,7 +852,10 @@ fn OccupancyTrack(
 fn visible_in_span_scroll(data: &VisibleData) -> Option<bool> {
     let row = data.get_bounding_client_rect().ok()?;
     let window = web_sys::window()?;
-    let root = window.document()?.query_selector(".pc2-span-scroll").ok()??;
+    let root = window
+        .document()?
+        .query_selector(".pc2-span-scroll")
+        .ok()??;
     let bounds = root.get_bounding_client_rect();
     let top = row.origin.y;
     let bottom = top + row.size.height;
