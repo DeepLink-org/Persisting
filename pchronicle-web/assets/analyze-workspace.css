@@ -437,6 +437,196 @@
   box-shadow: none;
 }
 
+.analyze-interpretation-status,
+.analyze-interpretation-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid #d8e5e2;
+  border-radius: 8px;
+  background: #f4f9f8;
+}
+
+.analyze-interpretation-status strong,
+.analyze-interpretation-error strong {
+  display: block;
+  margin-bottom: 2px;
+  color: #28534e;
+  font-size: 10px;
+}
+
+.analyze-interpretation-status p,
+.analyze-interpretation-error p {
+  margin: 0;
+  color: #657671;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.analyze-interpretation-error {
+  justify-content: space-between;
+  border-color: #f0b9b6;
+  background: #fff6f5;
+}
+
+.analyze-interpretation-error strong,
+.analyze-interpretation-error p {
+  color: #8c2f2a;
+}
+
+.analyze-saved-interpretation-note {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-left: 3px solid #73958f;
+  background: #f3f7f6;
+}
+
+.analyze-saved-interpretation-note strong {
+  display: block;
+  margin-bottom: 2px;
+  color: #365852;
+  font-size: 9px;
+}
+
+.analyze-saved-interpretation-note p {
+  margin: 0;
+  color: #687873;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.analyze-interpretation {
+  margin-top: 16px;
+  border: 1px solid #dce3e7;
+  border-radius: 10px;
+  background: #fbfcfc;
+}
+
+.analyze-interpretation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.analyze-interpretation-block {
+  min-width: 0;
+  padding: 16px;
+  border-bottom: 1px solid #e2e7ea;
+}
+
+.analyze-interpretation-block:nth-child(odd) {
+  border-right: 1px solid #e2e7ea;
+}
+
+.analyze-interpretation-block:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.analyze-interpretation-block.observed {
+  border-top: 3px solid #268579;
+}
+
+.analyze-interpretation-block.inferred {
+  border-top: 3px solid #8a6a35;
+  background: #fffdf8;
+}
+
+.analyze-interpretation-block.limitations {
+  background: #fafafa;
+}
+
+.analyze-interpretation-block h3 {
+  margin: 0 0 9px;
+  color: #2b3943;
+  font-size: 11px;
+}
+
+.analyze-interpretation-block ul {
+  margin: 0;
+  padding-left: 17px;
+  color: #46535e;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.analyze-interpretation-block li + li {
+  margin-top: 5px;
+}
+
+.analyze-interpretation-references {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.analyze-interpretation-reference {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  border: 1px solid #dfe5e8;
+  border-radius: 5px;
+  background: #f5f7f8;
+  color: #65717c;
+  font-size: 8px;
+}
+
+.analyze-interpretation-reference.linked {
+  border-color: #cde0dc;
+  background: #f0f7f5;
+}
+
+.analyze-interpretation-reference a {
+  color: #126b62;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.analyze-follow-up-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.analyze-follow-up {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid #dfe5e8;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.analyze-follow-up p,
+.analyze-follow-up-stale {
+  margin: 0;
+  color: #46535e;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.analyze-follow-up > div {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.analyze-follow-up .button {
+  min-height: 28px;
+  padding: 5px 9px;
+  font-size: 8px;
+}
+
+.analyze-follow-up-stale {
+  margin-bottom: 9px;
+  color: #8a642b;
+}
+
 .result-explorer {
   overflow: hidden;
   border: 1px solid #dce3e7;
@@ -1069,8 +1259,25 @@ button.result-mini-bar:hover i {
   }
 
   .analyze-starters > div,
-  .analyze-aside {
+  .analyze-aside,
+  .analyze-interpretation-grid {
     grid-template-columns: 1fr;
+  }
+
+  .analyze-interpretation-block,
+  .analyze-interpretation-block:nth-child(odd),
+  .analyze-interpretation-block:nth-last-child(-n + 2) {
+    border-right: 0;
+    border-bottom: 1px solid #e2e7ea;
+  }
+
+  .analyze-interpretation-block:last-child {
+    border-bottom: 0;
+  }
+
+  .analyze-follow-up {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .analyze-question-actions,

@@ -174,6 +174,8 @@ pub struct AnalysisRevision {
     pub scope: AnalysisScope,
     pub state: RevisionState,
     pub plan: Option<AnalysisPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_plan_context: Option<AnalysisPlan>,
     pub manually_edited: bool,
     pub execution: Option<ExecutionSummary>,
     pub interpretation: Option<AnalysisInterpretation>,
@@ -200,6 +202,7 @@ impl AnalysisRevision {
             scope,
             state: RevisionState::Draft,
             plan: None,
+            prior_plan_context: None,
             manually_edited: false,
             execution: None,
             interpretation: None,
@@ -482,6 +485,25 @@ impl AnalysisSession {
             .expect("a revision was just pushed")
     }
 
+    pub fn new_follow_up(
+        &mut self,
+        question: impl Into<String>,
+    ) -> Result<&mut AnalysisRevision, String> {
+        let question = question.into();
+        if question.trim().is_empty() {
+            return Err("A follow-up question is required.".into());
+        }
+        let (scope, prior_plan_context) = self
+            .revisions
+            .iter()
+            .find(|revision| revision.id == self.active_revision_id)
+            .map(|revision| (revision.scope.clone(), revision.plan.clone()))
+            .ok_or_else(|| "The active analysis revision is unavailable.".to_string())?;
+        let revision = self.new_revision(question, scope);
+        revision.prior_plan_context = prior_plan_context;
+        Ok(revision)
+    }
+
     pub fn active_revision_mut(&mut self) -> Option<&mut AnalysisRevision> {
         self.revisions
             .iter_mut()
@@ -607,7 +629,9 @@ fn normalize_persisted_revision(revision: &mut AnalysisRevision) {
     revision.state = match &revision.state {
         RevisionState::GeneratingPlan => RevisionState::Draft,
         RevisionState::Executing => RevisionState::PlanReady,
-        RevisionState::Interpreting => RevisionState::QueryError,
+        RevisionState::Interpreting | RevisionState::InterpretationError => {
+            RevisionState::QueryError
+        }
         state => state.clone(),
     };
     if was_in_flight || revision.execution.is_some() {
@@ -682,6 +706,9 @@ fn compact_session(session: &mut AnalysisSession) {
             }
         }
         if let Some(plan) = &mut revision.plan {
+            compact_plan(plan);
+        }
+        if let Some(plan) = &mut revision.prior_plan_context {
             compact_plan(plan);
         }
         if let Some(error) = &mut revision.error {
@@ -806,6 +833,21 @@ mod tests {
     }
 
     #[test]
+    fn completed_interpretation_summary_persists_without_query_rows() {
+        let session = complete_session();
+
+        let restored: AnalysisSession =
+            serde_json::from_slice(&session.persisted_bytes().unwrap()).unwrap();
+        let revision = restored.revisions.first().unwrap();
+
+        assert!(revision.evidence.is_none());
+        assert_eq!(
+            revision.interpretation.as_ref().unwrap().observations,
+            vec!["One failed row was returned."]
+        );
+    }
+
+    #[test]
     fn empty_query_result_skips_interpretation() {
         let (mut revision, query_operation) = executing_revision();
         let effect = revision
@@ -813,6 +855,53 @@ mod tests {
             .unwrap();
         assert_eq!(revision.state, RevisionState::Complete);
         assert_eq!(effect, None);
+    }
+
+    #[test]
+    fn query_rows_become_visible_before_interpretation_finishes() {
+        let (mut revision, query_operation) = executing_revision();
+        let evidence = evidence_with_rows();
+
+        let effect = revision
+            .finish_query(1, query_operation, evidence.clone(), Vec::new())
+            .unwrap();
+
+        assert_eq!(revision.evidence, Some(evidence));
+        assert_eq!(revision.state, RevisionState::Interpreting);
+        assert!(matches!(
+            effect,
+            Some(AnalysisEffect::Interpret { revision_id: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn interpretation_failure_keeps_query_evidence() {
+        let (mut revision, interpretation_operation) = interpreting_revision();
+        let evidence = revision.evidence.clone();
+
+        revision
+            .fail_interpretation(1, interpretation_operation, "provider unavailable")
+            .unwrap();
+
+        assert_eq!(revision.state, RevisionState::InterpretationError);
+        assert_eq!(revision.evidence, evidence);
+        assert!(revision.execution.is_some());
+    }
+
+    #[test]
+    fn follow_up_creates_a_new_unexecuted_revision() {
+        let mut session = complete_session();
+
+        let next = session.new_follow_up("only failed runs").unwrap();
+
+        assert_eq!(next.question, "only failed runs");
+        assert_eq!(next.state, RevisionState::Draft);
+        assert!(next.evidence.is_none());
+        assert!(next.execution.is_none());
+        assert!(next.plan.is_none());
+        assert!(next.interpretation.is_none());
+        assert_eq!(next.scope, scope());
+        assert_eq!(next.prior_plan_context, Some(plan()));
     }
 
     #[test]
@@ -1005,6 +1094,21 @@ mod tests {
         assert!(restored.execution.is_some());
         assert!(restored.active_operation_id.is_none());
         assert!(restored.pending_effect.is_none());
+        assert!(restored.confirm_execution().is_ok());
+    }
+
+    #[test]
+    fn restored_interpretation_error_requires_a_query_rerun_without_fabricating_evidence() {
+        let (mut revision, interpretation_operation) = interpreting_revision();
+        revision
+            .fail_interpretation(1, interpretation_operation, "provider unavailable")
+            .unwrap();
+
+        let mut restored = restored_revision(revision);
+
+        assert_eq!(restored.state, RevisionState::QueryError);
+        assert!(restored.evidence.is_none());
+        assert!(restored.retry_interpretation().is_err());
         assert!(restored.confirm_execution().is_ok());
     }
 
@@ -1232,5 +1336,35 @@ mod tests {
         revision.confirm_execution().unwrap();
         let query_operation = take_execute_operation(&mut revision);
         (revision, query_operation)
+    }
+
+    fn interpreting_revision() -> (AnalysisRevision, u64) {
+        let (mut revision, query_operation) = executing_revision();
+        let interpretation_operation = match revision
+            .finish_query(1, query_operation, evidence_with_rows(), Vec::new())
+            .unwrap()
+        {
+            Some(AnalysisEffect::Interpret { operation_id, .. }) => operation_id,
+            effect => panic!("expected an interpretation effect, got {effect:?}"),
+        };
+        (revision, interpretation_operation)
+    }
+
+    fn complete_session() -> AnalysisSession {
+        let (mut revision, interpretation_operation) = interpreting_revision();
+        revision
+            .finish_interpretation(
+                1,
+                interpretation_operation,
+                AnalysisInterpretation {
+                    observations: vec!["One failed row was returned.".into()],
+                    inferences: vec!["Failures may warrant investigation.".into()],
+                    limitations: Vec::new(),
+                    follow_ups: vec!["only failed runs".into()],
+                    references: Vec::new(),
+                },
+            )
+            .unwrap();
+        AnalysisSession::with_revision(revision)
     }
 }

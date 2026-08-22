@@ -1,16 +1,16 @@
 use dioxus::prelude::*;
 
-use crate::analysis_agent::{self, PlanRequest};
+use crate::analysis_agent::{self, EvidenceDigest, InterpretationRequest, PlanRequest};
 use crate::analysis_session::{
-    self, AnalysisEffect, AnalysisRevision, AnalysisScope, AnalysisScopeItem, AnalysisSession,
-    RevisionState,
+    self, AnalysisEffect, AnalysisInterpretation, AnalysisOperationId, AnalysisRevision,
+    AnalysisScope, AnalysisScopeItem, AnalysisSession, EvidenceReference, RevisionState,
 };
 use crate::api;
 use crate::llm;
 use crate::llm_settings::LlmSettings;
-use crate::model::QueryCatalog;
-use crate::result_explorer::ResultExplorer;
-use crate::result_profile::{profile_rows, AnalysisRefinement};
+use crate::model::{QueryCatalog, QueryEvidence};
+use crate::result_explorer::{identity_href, ResultExplorer, ResultIdentity};
+use crate::result_profile::{profile_rows, AnalysisRefinement, ColumnProfile};
 
 const QUESTION_STARTERS: [&str; 3] = [
     "Compare successful and failed runs in this scope",
@@ -79,6 +79,151 @@ fn apply_manual_sql(revision: &mut AnalysisRevision, sql: String) -> Result<(), 
     revision.pending_effect = None;
     revision.active_operation_id = None;
     Ok(())
+}
+
+#[derive(Clone)]
+struct PreparedInterpretation {
+    revision_id: u64,
+    operation_id: AnalysisOperationId,
+    digest: EvidenceDigest,
+}
+
+fn finish_query_for_interpretation(
+    revision: &mut AnalysisRevision,
+    revision_id: u64,
+    operation_id: AnalysisOperationId,
+    evidence: QueryEvidence,
+    profiles: Vec<ColumnProfile>,
+) -> Result<Option<PreparedInterpretation>, String> {
+    let effect = revision.finish_query(revision_id, operation_id, evidence, profiles)?;
+    let Some(AnalysisEffect::Interpret {
+        revision_id,
+        operation_id,
+    }) = effect
+    else {
+        return Ok(None);
+    };
+    let plan = revision
+        .plan
+        .as_ref()
+        .ok_or_else(|| "A plan is required before interpreting query evidence.".to_string())?;
+    let evidence = revision
+        .evidence
+        .as_ref()
+        .ok_or_else(|| "Query evidence is required before interpretation.".to_string())?;
+    let profiles = revision
+        .execution
+        .as_ref()
+        .map(|execution| execution.profiles.as_slice())
+        .unwrap_or_default();
+    let digest = analysis_agent::build_evidence_digest(plan, &revision.scope, evidence, profiles);
+    let _ = revision.take_pending_effect();
+    Ok(Some(PreparedInterpretation {
+        revision_id,
+        operation_id,
+        digest,
+    }))
+}
+
+fn retry_interpretation_from_evidence(
+    revision: &mut AnalysisRevision,
+) -> Result<PreparedInterpretation, String> {
+    let effect = revision.retry_interpretation()?;
+    let AnalysisEffect::Interpret {
+        revision_id,
+        operation_id,
+    } = effect
+    else {
+        return Err("Retry did not prepare an interpretation operation.".into());
+    };
+    let plan = revision
+        .plan
+        .as_ref()
+        .ok_or_else(|| "The reviewed plan is unavailable for interpretation.".to_string())?;
+    let evidence = revision.evidence.as_ref().ok_or_else(|| {
+        "The query evidence is unavailable; rerun the analysis first.".to_string()
+    })?;
+    let profiles = revision
+        .execution
+        .as_ref()
+        .map(|execution| execution.profiles.as_slice())
+        .unwrap_or_default();
+    let digest = analysis_agent::build_evidence_digest(plan, &revision.scope, evidence, profiles);
+    let _ = revision.take_pending_effect();
+    Ok(PreparedInterpretation {
+        revision_id,
+        operation_id,
+        digest,
+    })
+}
+
+fn follow_up_plan_allowed(
+    source_revision_id: u64,
+    active_revision_id: u64,
+    draft_question: &str,
+    source_question: &str,
+) -> bool {
+    source_revision_id == active_revision_id && draft_question.trim() == source_question.trim()
+}
+
+fn interpretation_reference_identity(reference: &EvidenceReference) -> Option<ResultIdentity> {
+    identity_href(&serde_json::json!({
+        "dataset": reference.dataset,
+        "_file_": reference.file,
+        "run_id": reference.run_id,
+        "agent_id": reference.agent_id,
+        "session_id": reference.session_id,
+        "root_session_id": reference.root_session_id,
+        "turn_id": reference.turn_id,
+    }))
+}
+
+fn launch_interpretation(
+    config: llm::LlmConfig,
+    expected_session_id: String,
+    prepared: PreparedInterpretation,
+    mut session: Signal<Option<AnalysisSession>>,
+    mut storage_notice: Signal<Option<String>>,
+) {
+    spawn(async move {
+        let result = analysis_agent::interpret(InterpretationRequest {
+            config,
+            revision_id: prepared.revision_id,
+            digest: prepared.digest.clone(),
+        })
+        .await;
+        let Some(mut current) = session() else {
+            return;
+        };
+        if current.id != expected_session_id {
+            return;
+        }
+        let Some(revision) = current.active_revision_mut() else {
+            return;
+        };
+        if revision.id != prepared.revision_id {
+            return;
+        }
+        match result {
+            Ok(mut interpretation) => {
+                analysis_agent::ensure_truncation_limitation(&mut interpretation, &prepared.digest);
+                let _ = revision.finish_interpretation(
+                    prepared.revision_id,
+                    prepared.operation_id,
+                    interpretation,
+                );
+            }
+            Err(error) => {
+                let _ = revision.fail_interpretation(
+                    prepared.revision_id,
+                    prepared.operation_id,
+                    error.message,
+                );
+            }
+        }
+        persist_session(&current, &mut storage_notice);
+        session.set(Some(current));
+    });
 }
 
 #[component]
@@ -170,9 +315,12 @@ pub fn AnalysisWorkspace(
                 scope.clone(),
             ))
         });
-        let previous_plan = next_session
-            .active_revision_mut()
-            .and_then(|revision| revision.plan.clone());
+        let previous_plan = next_session.active_revision_mut().and_then(|revision| {
+            revision
+                .plan
+                .clone()
+                .or_else(|| revision.prior_plan_context.clone())
+        });
         let needs_new_revision = next_session.active_revision_mut().is_some_and(|revision| {
             !matches!(
                 revision.state,
@@ -181,7 +329,8 @@ pub fn AnalysisWorkspace(
                 || revision.scope != scope
         });
         if needs_new_revision {
-            next_session.new_revision(prompt.clone(), scope.clone());
+            let revision = next_session.new_revision(prompt.clone(), scope.clone());
+            revision.prior_plan_context = previous_plan.clone();
         }
         let Some(revision) = next_session.active_revision_mut() else {
             return;
@@ -191,8 +340,8 @@ pub fn AnalysisWorkspace(
         let Ok(operation_id) = revision.begin_plan_generation() else {
             return;
         };
-        let session_id = next_session.id.clone();
-        on_session_change.call(session_id);
+        let expected_session_id = next_session.id.clone();
+        on_session_change.call(expected_session_id.clone());
         session.set(Some(next_session));
 
         let request = PlanRequest {
@@ -209,6 +358,9 @@ pub fn AnalysisWorkspace(
             let Some(mut current) = session() else {
                 return;
             };
+            if current.id != expected_session_id {
+                return;
+            }
             let Some(revision) = current.active_revision_mut() else {
                 return;
             };
@@ -249,31 +401,52 @@ pub fn AnalysisWorkspace(
         else {
             return;
         };
+        let expected_session_id = current.id.clone();
+        let interpretation_config = config();
         session.set(Some(current));
         spawn(async move {
             let result = api::query_evidence_interactive(&sql).await;
             let Some(mut current) = session() else {
                 return;
             };
+            if current.id != expected_session_id {
+                return;
+            }
             let Some(revision) = current.active_revision_mut() else {
                 return;
             };
             if revision.id != revision_id {
                 return;
             }
-            match result {
+            let prepared = match result {
                 Ok(evidence) => {
                     let profiles = profile_rows(&evidence.rows);
-                    // Task 6 consumes the returned Interpret effect. Until then, evidence
-                    // is rendered immediately and no interpretation request is started.
-                    let _ = revision.finish_query(revision_id, operation_id, evidence, profiles);
+                    finish_query_for_interpretation(
+                        revision,
+                        revision_id,
+                        operation_id,
+                        evidence,
+                        profiles,
+                    )
+                    .ok()
+                    .flatten()
                 }
                 Err(message) => {
                     let _ = revision.fail_query(revision_id, operation_id, message);
+                    None
                 }
-            }
+            };
             persist_session(&current, &mut storage_notice);
             session.set(Some(current));
+            if let Some(prepared) = prepared {
+                launch_interpretation(
+                    interpretation_config,
+                    expected_session_id,
+                    prepared,
+                    session,
+                    storage_notice,
+                );
+            }
         });
     };
 
@@ -308,6 +481,7 @@ pub fn AnalysisWorkspace(
         let scope = source.scope.clone();
         let previous_plan = source.plan.clone();
         let revision = current.new_revision(prompt.clone(), scope.clone());
+        revision.prior_plan_context = previous_plan.clone();
         let revision_id = revision.id;
         let Ok(operation_id) = revision.begin_plan_generation() else {
             return;
@@ -347,6 +521,129 @@ pub fn AnalysisWorkspace(
             persist_session(&current, &mut storage_notice);
             session.set(Some(current));
         });
+    };
+
+    let retry_interpretation = move |_| {
+        if !config().is_configured() {
+            return;
+        }
+        let Some(mut current) = session() else {
+            return;
+        };
+        let expected_session_id = current.id.clone();
+        let Some(revision) = current.active_revision_mut() else {
+            return;
+        };
+        let Ok(prepared) = retry_interpretation_from_evidence(revision) else {
+            return;
+        };
+        let interpretation_config = config();
+        persist_session(&current, &mut storage_notice);
+        session.set(Some(current));
+        launch_interpretation(
+            interpretation_config,
+            expected_session_id,
+            prepared,
+            session,
+            storage_notice,
+        );
+    };
+
+    let catalog_for_follow_up = catalog.clone();
+    let generate_follow_up = move |suggested_question: String| {
+        let Some(catalog) = catalog_for_follow_up.clone() else {
+            return;
+        };
+        if !config().is_configured() {
+            return;
+        }
+        let Some(mut current) = session() else {
+            return;
+        };
+        let Some(source) = current
+            .revisions
+            .iter()
+            .find(|revision| revision.id == current.active_revision_id)
+        else {
+            return;
+        };
+        if !follow_up_plan_allowed(
+            source.id,
+            current.active_revision_id,
+            &question(),
+            &source.question,
+        ) {
+            return;
+        }
+        let previous_plan = source.plan.clone();
+        let scope = source.scope.clone();
+        let Ok(revision) = current.new_follow_up(suggested_question.clone()) else {
+            return;
+        };
+        let revision_id = revision.id;
+        let Ok(operation_id) = revision.begin_plan_generation() else {
+            return;
+        };
+        let expected_session_id = current.id.clone();
+        question.set(suggested_question.clone());
+        on_session_change.call(expected_session_id.clone());
+        session.set(Some(current));
+
+        let request = PlanRequest {
+            config: config(),
+            catalog,
+            scope,
+            question: suggested_question,
+            plan_id: revision_id,
+            previous_plan,
+            refinement: None,
+        };
+        spawn(async move {
+            let result = analysis_agent::generate_plan(request).await;
+            let Some(mut current) = session() else {
+                return;
+            };
+            if current.id != expected_session_id {
+                return;
+            }
+            let Some(revision) = current.active_revision_mut() else {
+                return;
+            };
+            if revision.id != revision_id {
+                return;
+            }
+            match result {
+                Ok(plan) => {
+                    let _ = revision.finish_plan(revision_id, operation_id, plan);
+                }
+                Err(error) => {
+                    let _ = revision.fail_plan(revision_id, operation_id, error.message);
+                }
+            }
+            persist_session(&current, &mut storage_notice);
+            session.set(Some(current));
+        });
+    };
+
+    let edit_follow_up = move |suggested_question: String| {
+        let Some(current) = session() else {
+            return;
+        };
+        let Some(source) = current
+            .revisions
+            .iter()
+            .find(|revision| revision.id == current.active_revision_id)
+        else {
+            return;
+        };
+        if follow_up_plan_allowed(
+            source.id,
+            current.active_revision_id,
+            &question(),
+            &source.question,
+        ) {
+            question.set(suggested_question);
+        }
     };
 
     let rewrite_problem = move |_| {
@@ -472,8 +769,10 @@ pub fn AnalysisWorkspace(
                                         },
                                     }
                                 }
-                                if let Some(error) = revision.error.as_ref() {
-                                    div { class: "analyze-error", role: "alert", strong { "Analysis could not run" } p { "{error}" } p { "The reviewed plan and SQL are unchanged. Retry when ready." } }
+                                if revision.state == RevisionState::QueryError {
+                                    if let Some(error) = revision.error.as_ref() {
+                                        div { class: "analyze-error", role: "alert", strong { "Analysis could not run" } p { "{error}" } p { "The reviewed plan and SQL are unchanged. Retry when ready." } }
+                                    }
                                 }
                                 if view_model.as_ref().is_some_and(|model| model.question_out_of_date) {
                                     div { class: "analyze-config-callout", role: "status",
@@ -521,6 +820,54 @@ pub fn AnalysisWorkspace(
                                         on_stage_filter: move |_| {},
                                         on_prepare_refinement: prepare_refinement,
                                     }
+                                    if revision.state == RevisionState::Interpreting {
+                                        div { class: "analyze-interpretation-status", role: "status",
+                                            span { class: "analyze-spinner", aria_hidden: "true" }
+                                            div { strong { "Interpreting the returned evidence…" } p { "The Result Explorer remains available while the model prepares a grounded summary." } }
+                                        }
+                                    }
+                                    if revision.state == RevisionState::InterpretationError {
+                                        div { class: "analyze-interpretation-error", role: "alert",
+                                            div {
+                                                strong { "The evidence could not be interpreted" }
+                                                if let Some(message) = revision.error.as_ref() { p { "{message}" } }
+                                                p { "Returned rows and profiles are preserved. Retrying does not rerun SQL." }
+                                            }
+                                            button { class: "button", r#type: "button", onclick: retry_interpretation, "Retry interpretation" }
+                                        }
+                                    }
+                                    if let Some(interpretation) = revision.interpretation.clone() {
+                                        InterpretationPanel {
+                                            interpretation,
+                                            follow_up_enabled: config().is_configured() && follow_up_plan_allowed(
+                                                revision.id,
+                                                revision.id,
+                                                &draft_question,
+                                                &revision.question,
+                                            ),
+                                            on_follow_up: generate_follow_up,
+                                            on_edit_follow_up: edit_follow_up,
+                                        }
+                                    }
+                                }
+                            }
+                        } else if let Some(interpretation) = revision.interpretation.clone() {
+                            section { class: "analyze-result-card", aria_label: "Saved analysis interpretation",
+                                div { class: "analyze-section-heading", div { span { "03" } div { h2 { "Saved interpretation" } p { "The summary was restored from this analysis session." } } } }
+                                div { class: "analyze-saved-interpretation-note", role: "note",
+                                    strong { "Returned rows are not stored in the browser" }
+                                    p { "This saved interpretation remains available, but inspect or rerun the reviewed SQL to restore Result Explorer evidence." }
+                                }
+                                InterpretationPanel {
+                                    interpretation,
+                                    follow_up_enabled: config().is_configured() && follow_up_plan_allowed(
+                                        revision.id,
+                                        revision.id,
+                                        &draft_question,
+                                        &revision.question,
+                                    ),
+                                    on_follow_up: generate_follow_up,
+                                    on_edit_follow_up: edit_follow_up,
                                 }
                             }
                         }
@@ -637,13 +984,107 @@ fn PlanListRow(label: &'static str, values: Vec<String>) -> Element {
     }
 }
 
+#[component]
+fn InterpretationPanel(
+    interpretation: AnalysisInterpretation,
+    follow_up_enabled: bool,
+    on_follow_up: EventHandler<String>,
+    on_edit_follow_up: EventHandler<String>,
+) -> Element {
+    rsx! {
+        section { class: "analyze-interpretation", aria_label: "Evidence interpretation",
+            div { class: "analyze-interpretation-grid",
+                section { class: "analyze-interpretation-block observed",
+                    h3 { "Observed in this result" }
+                    if interpretation.observations.is_empty() {
+                        p { class: "analyze-none", "No direct observations were returned." }
+                    } else {
+                        ul { for observation in &interpretation.observations { li { "{observation}" } } }
+                    }
+                    if !interpretation.references.is_empty() {
+                        div { class: "analyze-interpretation-references", aria_label: "Grounded evidence references",
+                            for reference in &interpretation.references {
+                                if let Some(identity) = interpretation_reference_identity(reference) {
+                                    span { class: "analyze-interpretation-reference linked",
+                                        span { "{reference.label}" }
+                                        a { href: "{identity.run_href}", "Run" }
+                                        if let Some(turn_href) = identity.turn_href { a { href: "{turn_href}", "Turn" } }
+                                    }
+                                } else {
+                                    span { class: "analyze-interpretation-reference", "{reference.label}" }
+                                }
+                            }
+                        }
+                    }
+                }
+                section { class: "analyze-interpretation-block inferred",
+                    h3 { "Possible explanation" }
+                    if interpretation.inferences.is_empty() {
+                        p { class: "analyze-none", "No inference was offered from this evidence." }
+                    } else {
+                        ul { for inference in &interpretation.inferences { li { "{inference}" } } }
+                    }
+                }
+                section { class: "analyze-interpretation-block limitations",
+                    h3 { "Coverage and limitations" }
+                    if interpretation.limitations.is_empty() {
+                        p { class: "analyze-none", "No additional limitations were reported." }
+                    } else {
+                        ul { for limitation in &interpretation.limitations { li { "{limitation}" } } }
+                    }
+                }
+                section { class: "analyze-interpretation-block follow-ups",
+                    h3 { "Continue investigating" }
+                    if !follow_up_enabled && !interpretation.follow_ups.is_empty() {
+                        p { class: "analyze-follow-up-stale", role: "status", "Follow-up planning is paused because the draft question changed. Restore the reviewed question or generate the edited draft." }
+                    }
+                    if interpretation.follow_ups.is_empty() {
+                        p { class: "analyze-none", "No follow-up questions were suggested." }
+                    } else {
+                        div { class: "analyze-follow-up-list",
+                            for (index, follow_up) in interpretation.follow_ups.iter().enumerate() {
+                                div { class: "analyze-follow-up", key: "follow-up-{index}",
+                                    p { "{follow_up}" }
+                                    div {
+                                        button {
+                                            class: "button primary",
+                                            r#type: "button",
+                                            disabled: !follow_up_enabled,
+                                            onclick: {
+                                                let follow_up = follow_up.clone();
+                                                move |_| on_follow_up.call(follow_up.clone())
+                                            },
+                                            "Generate plan"
+                                        }
+                                        button {
+                                            class: "analyze-link-button",
+                                            r#type: "button",
+                                            disabled: !follow_up_enabled,
+                                            onclick: {
+                                                let follow_up = follow_up.clone();
+                                                move |_| on_edit_follow_up.call(follow_up.clone())
+                                            },
+                                            "Edit question"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::analysis_session::{
-        AnalysisPlan, AnalysisRevision, AnalysisScope, AnalysisScopeItem, RevisionState,
-        SuggestedView,
+        AnalysisEffect, AnalysisPlan, AnalysisRevision, AnalysisScope, AnalysisScopeItem,
+        EvidenceReference, RevisionState, SuggestedView,
     };
+    use crate::model::QueryEvidence;
 
     fn plan_ready_revision() -> AnalysisRevision {
         let scope = AnalysisScope {
@@ -740,5 +1181,89 @@ mod tests {
             "Compare run outcomes",
             "Compare run outcomes",
         ));
+    }
+
+    #[test]
+    fn query_success_prepares_a_digest_after_publishing_evidence() {
+        let mut revision = plan_ready_revision();
+        revision.confirm_execution().unwrap();
+        let (revision_id, operation_id) = match revision.take_pending_effect().unwrap() {
+            AnalysisEffect::ExecuteSql {
+                revision_id,
+                operation_id,
+                ..
+            } => (revision_id, operation_id),
+            effect => panic!("expected execute effect, got {effect:?}"),
+        };
+        let evidence = QueryEvidence {
+            rows: vec![serde_json::json!({"status": "failed"})],
+            returned_rows: 1,
+            truncated: false,
+            max_rows: 100,
+            max_bytes: 4 * 1024 * 1024,
+        };
+
+        let prepared = finish_query_for_interpretation(
+            &mut revision,
+            revision_id,
+            operation_id,
+            evidence.clone(),
+            profile_rows(&evidence.rows),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(revision.evidence, Some(evidence));
+        assert_eq!(revision.state, RevisionState::Interpreting);
+        assert_eq!(prepared.revision_id, revision_id);
+        assert_eq!(prepared.digest.rows.len(), 1);
+    }
+
+    #[test]
+    fn follow_up_planning_requires_the_current_revision_and_unchanged_draft() {
+        assert!(follow_up_plan_allowed(
+            7,
+            7,
+            "  Compare run outcomes  ",
+            "Compare run outcomes",
+        ));
+        assert!(!follow_up_plan_allowed(
+            7,
+            8,
+            "Compare run outcomes",
+            "Compare run outcomes",
+        ));
+        assert!(!follow_up_plan_allowed(
+            7,
+            7,
+            "Compare model latency",
+            "Compare run outcomes",
+        ));
+    }
+
+    #[test]
+    fn interpretation_reference_reuses_result_identity_coordinates() {
+        let reference = EvidenceReference {
+            label: "failed turn".into(),
+            row_index: Some(0),
+            dataset: Some("default".into()),
+            file: Some("source.json".into()),
+            run_id: Some("run-1".into()),
+            agent_id: Some("agent-1".into()),
+            session_id: Some("session-1".into()),
+            root_session_id: Some("root-1".into()),
+            turn_id: Some(4),
+        };
+
+        let identity = interpretation_reference_identity(&reference).unwrap();
+
+        assert_eq!(
+            identity.run_href,
+            "?page=detail&dataset=default&file=source.json&run_id=run-1&agent_id=agent-1&session_id=session-1&root_session_id=root-1"
+        );
+        assert_eq!(
+            identity.turn_href,
+            Some(format!("{}&turn=4", identity.run_href))
+        );
     }
 }

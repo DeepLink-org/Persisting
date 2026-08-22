@@ -116,7 +116,7 @@ pub async fn interpret(
     })];
     let content = request_json_content(&request.config, &system, messages).await?;
     match parse_interpretation_content(&content)
-        .and_then(|interpretation| validate_interpretation(interpretation, &request.digest))
+        .and_then(|interpretation| prepare_interpretation(interpretation, &request.digest))
     {
         Ok(interpretation) => Ok(interpretation),
         Err(first_error) => {
@@ -132,7 +132,7 @@ pub async fn interpret(
             ];
             let repaired = request_json_content(&request.config, &system, repair_messages).await?;
             parse_interpretation_content(&repaired)
-                .and_then(|interpretation| validate_interpretation(interpretation, &request.digest))
+                .and_then(|interpretation| prepare_interpretation(interpretation, &request.digest))
         }
     }
 }
@@ -184,6 +184,32 @@ pub fn build_evidence_digest(
     }
     fit_metadata(&mut digest);
     digest
+}
+
+pub fn ensure_truncation_limitation(
+    interpretation: &mut AnalysisInterpretation,
+    digest: &EvidenceDigest,
+) {
+    if !(digest.query_truncated || digest.digest_truncated)
+        || interpretation
+            .limitations
+            .iter()
+            .any(|limitation| describes_incomplete_coverage(limitation))
+    {
+        return;
+    }
+    interpretation.limitations.insert(
+        0,
+        "This interpretation covers only the bounded evidence sent to the model because the query result or evidence digest was truncated."
+            .into(),
+    );
+}
+
+fn describes_incomplete_coverage(limitation: &str) -> bool {
+    let limitation = limitation.to_ascii_lowercase();
+    limitation.contains("truncat")
+        || limitation.contains("incomplete coverage")
+        || limitation.contains("partial coverage")
 }
 
 pub fn plan_system_prompt(
@@ -397,6 +423,14 @@ fn validate_interpretation(
     Ok(interpretation)
 }
 
+fn prepare_interpretation(
+    mut interpretation: AnalysisInterpretation,
+    digest: &EvidenceDigest,
+) -> Result<AnalysisInterpretation, AnalysisAgentError> {
+    ensure_truncation_limitation(&mut interpretation, digest);
+    validate_interpretation(interpretation, digest)
+}
+
 fn validate_reference(
     reference: &EvidenceReference,
     digest: &EvidenceDigest,
@@ -457,7 +491,12 @@ fn reference_matches_row(reference: &EvidenceReference, row: &Value) -> bool {
 }
 
 fn matches_row_text(row: &Value, name: &str, expected: Option<&str>) -> bool {
-    expected.is_none_or(|expected| row.get(name).and_then(Value::as_str) == Some(expected))
+    expected.is_none_or(|expected| {
+        row.get(name)
+            .or_else(|| (name == "file").then(|| row.get("_file_")).flatten())
+            .and_then(Value::as_str)
+            == Some(expected)
+    })
 }
 
 fn matches_row_turn(row: &Value, expected: Option<i64>) -> bool {
@@ -935,6 +974,25 @@ mod tests {
     }
 
     #[test]
+    fn truncated_digest_gets_a_deterministic_limitation_when_the_model_omits_it() {
+        let mut interpretation = AnalysisInterpretation {
+            limitations: vec!["Latency was not selected by this query.".into()],
+            ..AnalysisInterpretation::default()
+        };
+        let digest = build_evidence_digest(&plan(), &scope(), &evidence(Vec::new(), true), &[]);
+
+        ensure_truncation_limitation(&mut interpretation, &digest);
+
+        assert_eq!(
+            interpretation.limitations,
+            vec![
+                "This interpretation covers only the bounded evidence sent to the model because the query result or evidence digest was truncated.",
+                "Latency was not selected by this query.",
+            ]
+        );
+    }
+
+    #[test]
     fn interpretation_references_reject_out_of_range_and_fabricated_coordinates() {
         let digest = digest_with_rows(vec![json!({
             "dataset":"default",
@@ -1031,6 +1089,31 @@ mod tests {
             turn_id: None,
         });
         assert!(validate_interpretation(label_only, &digest).is_ok());
+    }
+
+    #[test]
+    fn interpretation_reference_accepts_the_result_explorer_file_coordinate() {
+        let digest = digest_with_rows(vec![json!({
+            "dataset":"default",
+            "_file_":"source.json",
+            "run_id":"run-1",
+            "agent_id":"agent-1",
+            "session_id":"session-1",
+            "root_session_id":"root-1"
+        })]);
+        let reference = interpretation_with_reference(EvidenceReference {
+            label: "grounded run".into(),
+            row_index: Some(0),
+            dataset: Some("default".into()),
+            file: Some("source.json".into()),
+            run_id: Some("run-1".into()),
+            agent_id: Some("agent-1".into()),
+            session_id: Some("session-1".into()),
+            root_session_id: Some("root-1".into()),
+            turn_id: None,
+        });
+
+        assert!(validate_interpretation(reference, &digest).is_ok());
     }
 
     #[test]
