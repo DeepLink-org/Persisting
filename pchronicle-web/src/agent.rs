@@ -45,6 +45,20 @@ pub struct CopilotThread {
     pub truncated: bool,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParsedToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AssistantTurn {
+    ToolCalls(Vec<ParsedToolCall>),
+    Final(String),
+    Invalid,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LlmConfig {
     pub api_base: String,
@@ -645,6 +659,75 @@ fn extract_json(value: &str) -> &str {
     value
 }
 
+fn parse_arguments(value: &Value) -> Result<Value, ()> {
+    match value {
+        Value::String(raw) => serde_json::from_str(raw).map_err(|_| ()),
+        other => Ok(other.clone()),
+    }
+}
+
+pub fn parse_native_message(message: &Value) -> AssistantTurn {
+    if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+        if calls.is_empty() {
+            // fall through to content
+        } else {
+            let mut parsed = Vec::new();
+            for (index, call) in calls.iter().enumerate() {
+                let fallback = format!("call-{index}");
+                let id = call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&fallback)
+                    .to_string();
+                let name = call
+                    .pointer("/function/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let arguments = call
+                    .pointer("/function/arguments")
+                    .ok_or(())
+                    .and_then(parse_arguments);
+                match (name.is_empty(), arguments) {
+                    (false, Ok(arguments)) => parsed.push(ParsedToolCall {
+                        id,
+                        name,
+                        arguments,
+                    }),
+                    _ => return AssistantTurn::Invalid,
+                }
+            }
+            return AssistantTurn::ToolCalls(parsed);
+        }
+    }
+    match message.get("content").and_then(Value::as_str) {
+        Some(text) if !text.trim().is_empty() => AssistantTurn::Final(text.to_string()),
+        _ => AssistantTurn::Invalid,
+    }
+}
+
+pub fn parse_json_fallback(content: &str) -> AssistantTurn {
+    let raw = extract_json(content);
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return AssistantTurn::Invalid;
+    };
+    if let Some(final_text) = value.get("final").and_then(Value::as_str) {
+        return AssistantTurn::Final(final_text.to_string());
+    }
+    let Some(name) = value.get("tool").and_then(Value::as_str) else {
+        return AssistantTurn::Invalid;
+    };
+    if !matches!(name, "get_analysis" | "get_turn" | "query_sql") {
+        return AssistantTurn::Invalid;
+    }
+    let arguments = value.get("arguments").cloned().unwrap_or(json!({}));
+    AssistantTurn::ToolCalls(vec![ParsedToolCall {
+        id: "json-0".into(),
+        name: name.into(),
+        arguments,
+    }])
+}
+
 fn truncate(value: &str, limit: usize) -> (String, bool) {
     if value.len() <= limit {
         return (value.to_string(), false);
@@ -807,5 +890,48 @@ mod tests {
         let after = serde_json::to_string(&compressed).unwrap();
         assert!(after.len() <= before.len());
         assert_eq!(compressed[0].text, "t".repeat(200));
+    }
+
+    #[test]
+    fn native_tool_calls_parse_arguments_string() {
+        let message = serde_json::json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "get_turn", "arguments": "{\"turn_id\":12}"}
+            }]
+        });
+        match parse_native_message(&message) {
+            AssistantTurn::ToolCalls(calls) => {
+                assert_eq!(calls[0].id, "c1");
+                assert_eq!(calls[0].name, "get_turn");
+                assert_eq!(calls[0].arguments["turn_id"], 12);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn native_prose_is_final_not_invalid() {
+        let message = serde_json::json!({"content": "3 turns, no explicit errors."});
+        assert_eq!(
+            parse_native_message(&message),
+            AssistantTurn::Final("3 turns, no explicit errors.".into())
+        );
+    }
+
+    #[test]
+    fn json_fallback_accepts_tool_and_final() {
+        assert!(matches!(
+            parse_json_fallback(r#"{"tool":"get_analysis","arguments":{}}"#),
+            AssistantTurn::ToolCalls(_)
+        ));
+        assert_eq!(
+            parse_json_fallback("```json\n{\"final\":\"done\"}\n```"),
+            AssistantTurn::Final("done".into())
+        );
+        assert_eq!(parse_json_fallback("not json"), AssistantTurn::Invalid);
     }
 }
