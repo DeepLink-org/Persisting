@@ -11,6 +11,7 @@ mod json_value;
 mod llm;
 mod llm_settings;
 mod model;
+mod result_explorer;
 mod result_profile;
 mod tools;
 mod workspace;

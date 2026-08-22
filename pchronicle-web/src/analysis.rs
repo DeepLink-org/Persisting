@@ -6,11 +6,11 @@ use crate::analysis_session::{
     RevisionState,
 };
 use crate::api;
-use crate::components::DataTable;
 use crate::llm;
 use crate::llm_settings::LlmSettings;
 use crate::model::QueryCatalog;
-use crate::result_profile::profile_rows;
+use crate::result_explorer::ResultExplorer;
+use crate::result_profile::{profile_rows, AnalysisRefinement};
 
 const QUESTION_STARTERS: [&str; 3] = [
     "Compare successful and failed runs in this scope",
@@ -277,6 +277,73 @@ pub fn AnalysisWorkspace(
         });
     };
 
+    let catalog_for_refinement = catalog.clone();
+    let prepare_refinement = move |refinement: AnalysisRefinement| {
+        let Some(catalog) = catalog_for_refinement.clone() else {
+            return;
+        };
+        if !config().is_configured() {
+            return;
+        }
+        let Some(mut current) = session() else {
+            return;
+        };
+        let Some(source) = current
+            .revisions
+            .iter()
+            .find(|revision| revision.id == current.active_revision_id)
+        else {
+            return;
+        };
+        if refinement_source_revision_id(&refinement) != source.id {
+            return;
+        }
+        let prompt = source.question.clone();
+        let scope = source.scope.clone();
+        let previous_plan = source.plan.clone();
+        let revision = current.new_revision(prompt.clone(), scope.clone());
+        let revision_id = revision.id;
+        let Ok(operation_id) = revision.begin_plan_generation() else {
+            return;
+        };
+        question.set(prompt.clone());
+        let session_id = current.id.clone();
+        on_session_change.call(session_id);
+        session.set(Some(current));
+
+        let request = PlanRequest {
+            config: config(),
+            catalog,
+            scope,
+            question: prompt,
+            plan_id: revision_id,
+            previous_plan,
+            refinement: Some(refinement),
+        };
+        spawn(async move {
+            let result = analysis_agent::generate_plan(request).await;
+            let Some(mut current) = session() else {
+                return;
+            };
+            let Some(revision) = current.active_revision_mut() else {
+                return;
+            };
+            if revision.id != revision_id {
+                return;
+            }
+            match result {
+                Ok(plan) => {
+                    let _ = revision.finish_plan(revision_id, operation_id, plan);
+                }
+                Err(error) => {
+                    let _ = revision.fail_plan(revision_id, operation_id, error.message);
+                }
+            }
+            persist_session(&current, &mut storage_notice);
+            session.set(Some(current));
+        });
+    };
+
     let rewrite_problem = move |_| {
         if let Some(current) = session() {
             if let Some(revision) = current
@@ -427,7 +494,6 @@ pub fn AnalysisWorkspace(
                         if let Some(evidence) = revision.evidence.clone() {
                             section { class: "analyze-result-card", aria_label: "Analysis result",
                                 div { class: "analyze-section-heading", div { span { "03" } div { h2 { "Analysis result" } p { "Bounded evidence returned by the confirmed query." } } } }
-                                DataTable { evidence: evidence.clone(), title: Some("Analysis result".into()) }
                                 if evidence.rows.is_empty() {
                                     div { class: "analyze-empty-result",
                                         div {
@@ -435,6 +501,14 @@ pub fn AnalysisWorkspace(
                                             p { "Rewrite the question or broaden the plan before trying again." }
                                         }
                                         button { class: "button", r#type: "button", onclick: rewrite_problem, "Rewrite question" }
+                                    }
+                                } else {
+                                    ResultExplorer {
+                                        evidence: evidence.clone(),
+                                        profiles: revision.execution.as_ref().map(|execution| execution.profiles.clone()).unwrap_or_default(),
+                                        revision_id: revision.id,
+                                        on_stage_filter: move |_| {},
+                                        on_prepare_refinement: prepare_refinement,
                                     }
                                 }
                             }
@@ -502,6 +576,15 @@ fn persist_session(session: &AnalysisSession, storage_notice: &mut Signal<Option
     sessions.push(session.clone());
     if let Err(message) = analysis_session::save_sessions(&session.storage_fingerprint, &sessions) {
         storage_notice.set(Some(message));
+    }
+}
+
+fn refinement_source_revision_id(refinement: &AnalysisRefinement) -> u64 {
+    match refinement {
+        AnalysisRefinement::Filter { intent } => intent.source_revision_id,
+        AnalysisRefinement::FullProfile {
+            source_revision_id, ..
+        } => *source_revision_id,
     }
 }
 
