@@ -1440,6 +1440,94 @@ async fn object_store_uri_round_trips_across_store_instances() {
 }
 
 #[tokio::test]
+async fn generation_mismatch_releases_the_lease_immediately() {
+    let uri = remote_uri("generation-mismatch-release");
+    let store = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    store.replace_storyline(&story("baseline")).await.unwrap();
+
+    let error = store
+        .acquire_writer_lease_for_generation("mismatched", Some("gen-stale-1-1"))
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("commit conflict"), "{error:#}");
+    assert!(store
+        .read_current_control()
+        .await
+        .unwrap()
+        .control
+        .lease
+        .is_none());
+}
+
+#[tokio::test]
+async fn live_writer_lease_rejects_replacement_before_table_mutation() {
+    let uri = remote_uri("live-lease-before-table-mutation");
+    let store = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    store.replace_storyline(&story("baseline")).await.unwrap();
+    let paths = store.current_table_paths().await.unwrap().unwrap();
+    let before = tokio::join!(
+        latest_table_version(&paths.runs),
+        latest_table_version(&paths.steps),
+        latest_table_version(&paths.tool_calls),
+    );
+    store
+        .try_acquire_writer_lease(
+            "holder",
+            writer_control::unix_now_ms(),
+            writer_control::WRITER_LEASE_TTL_MS,
+        )
+        .await
+        .unwrap();
+
+    let error = store
+        .replace_storyline(&story("must-not-mutate"))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("commit conflict"), "{error:#}");
+    let after = tokio::join!(
+        latest_table_version(&paths.runs),
+        latest_table_version(&paths.steps),
+        latest_table_version(&paths.tool_calls),
+    );
+    assert_eq!(
+        (before.0.unwrap(), before.1.unwrap(), before.2.unwrap()),
+        (after.0.unwrap(), after.1.unwrap(), after.2.unwrap())
+    );
+}
+
+#[tokio::test]
+async fn expired_lease_takeover_clones_the_committed_generation() {
+    let uri = remote_uri("expired-lease-isolation");
+    let store = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    let preserved = story("preserved");
+    store
+        .replace_storylines(&[preserved.clone(), story("updated")])
+        .await
+        .unwrap();
+    let before = store.current_table_paths().await.unwrap().unwrap();
+    store
+        .try_acquire_writer_lease("expired", 0, 1)
+        .await
+        .unwrap();
+    let mut updated = story("updated");
+    updated.notes = Some("after takeover".into());
+
+    store.replace_storyline(&updated).await.unwrap();
+
+    let after = store.current_table_paths().await.unwrap().unwrap();
+    assert_ne!(after.table_generation, before.table_generation);
+    assert_eq!(
+        store.get_storyline_full("preserved").await.unwrap(),
+        Some(preserved)
+    );
+    assert_eq!(
+        store.get_storyline_full("updated").await.unwrap(),
+        Some(updated)
+    );
+}
+
+#[tokio::test]
 async fn object_store_rejects_invalid_utf8_unsafe_and_dangling_current() {
     let cases: [(&str, &[u8], &str); 3] = [
         ("utf8", &[0xff], "not valid UTF-8"),

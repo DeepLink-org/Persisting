@@ -673,9 +673,32 @@ impl StorylineLanceStore {
         if mode == StorylineStreamWriteMode::Replace {
             wait_after_replacement_current_read(&self.root_uri).await;
         }
+        let writer_owner = next_generation();
+        let writer_lease = if mode == StorylineStreamWriteMode::Replace && original.is_some() {
+            Some(
+                self.acquire_writer_lease_for_generation(
+                    &writer_owner,
+                    expected_generation.as_deref(),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let mut writer_renewal = writer_lease
+            .as_ref()
+            .map(|lease| self.start_writer_lease_renewal(writer_owner.clone(), lease.lease.epoch));
         let rebuild = mode == StorylineStreamWriteMode::Rebuild;
-        let mut paths = if rebuild { None } else { original.clone() };
-        let mut new_table_generation = None;
+        let takeover_generation = writer_lease
+            .as_ref()
+            .filter(|lease| lease.takeover)
+            .map(|_| next_generation());
+        let mut paths = if rebuild || takeover_generation.is_some() {
+            None
+        } else {
+            original.clone()
+        };
+        let mut new_table_generation = takeover_generation.clone();
         let mut iterator = stories.into_iter();
         let mut chunk_state = StorylineChunkState::default();
         let mut next_storage_ordinal = if rebuild {
@@ -687,7 +710,13 @@ impl StorylineLanceStore {
         };
         let mut report = StorylineStreamImportReport::default();
 
-        let result = async {
+        let mut result = async {
+            if let Some(generation) = takeover_generation.as_deref() {
+                let source = original
+                    .as_ref()
+                    .context("missing committed Storyline generation during lease takeover")?;
+                paths = Some(self.clone_table_generation(source, generation).await?);
+            }
             loop {
                 let Some(mut chunk) = next_storyline_stream_chunk(
                     &mut iterator,
@@ -882,7 +911,21 @@ impl StorylineLanceStore {
                 objects_version: current.objects_version,
                 projection,
             };
-            let published = if mode == StorylineStreamWriteMode::CreateProjection {
+            let published = if let Some(lease) = &writer_lease {
+                let renewal = writer_renewal
+                    .take()
+                    .context("missing Storyline writer lease renewal")?;
+                anyhow::ensure!(renewal.stop().await, "Storyline writer lease lost");
+                let published = self
+                    .publish_writer_snapshot(&writer_owner, lease.lease.epoch, &snapshot)
+                    .await?;
+                anyhow::ensure!(
+                    published,
+                    "Storyline writer lease lost while publishing generation {}",
+                    snapshot.generation
+                );
+                true
+            } else if mode == StorylineStreamWriteMode::CreateProjection {
                 self.try_commit_snapshot(&snapshot, expected_generation.as_deref())
                     .await?
             } else {
@@ -898,6 +941,27 @@ impl StorylineLanceStore {
         }
         .await;
 
+        let mut cleanup_failures = Vec::new();
+        if let Some(renewal) = writer_renewal.take() {
+            if !renewal.stop().await {
+                cleanup_failures.push("writer lease renewal reported ownership loss".to_string());
+            }
+        }
+        if result.is_err() {
+            if let Some(lease) = &writer_lease {
+                match self
+                    .release_writer_lease(&writer_owner, lease.lease.epoch)
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => cleanup_failures
+                        .push("writer lease was lost before error cleanup".to_string()),
+                    Err(error) => cleanup_failures
+                        .push(format!("release writer lease after error: {error:#}")),
+                }
+            }
+        }
+
         if result.is_err()
             || matches!(
                 &result,
@@ -905,11 +969,24 @@ impl StorylineLanceStore {
             )
         {
             if let Some(generation) = new_table_generation {
-                let _ = self
+                if let Err(error) = self
                     .object_store
                     .remove_dir_all(self.generation_object_path(&generation))
-                    .await;
+                    .await
+                {
+                    cleanup_failures.push(format!(
+                        "remove uncommitted Storyline generation {generation}: {error:#}"
+                    ));
+                }
             }
+        }
+        if result.is_err() && !cleanup_failures.is_empty() {
+            result = result.map_err(|error| {
+                error.context(format!(
+                    "Storyline cleanup also failed: {}",
+                    cleanup_failures.join("; ")
+                ))
+            });
         }
         result
     }
@@ -1155,6 +1232,46 @@ impl StorylineLanceStore {
             objects_version: 0,
             projection: None,
         }
+    }
+
+    async fn clone_table_generation(
+        &self,
+        source: &StorylineTablePaths,
+        generation: &str,
+    ) -> Result<StorylineTablePaths> {
+        let (run_batches, step_batches, tool_call_batches) = tokio::try_join!(
+            read_projected_batches(&source.runs, source.runs_version, &[], None),
+            read_projected_batches(&source.steps, source.steps_version, &[], None),
+            read_projected_batches(&source.tool_calls, source.tool_calls_version, &[], None,),
+        )?;
+        let mut cloned = self.paths_for_generation(generation);
+        let (runs_version, steps_version, tool_calls_version) = tokio::try_join!(
+            write_batches(
+                &cloned.runs,
+                run_batches,
+                story_runs_arrow_schema(),
+                &RUN_INDEXES,
+            ),
+            write_batches(
+                &cloned.steps,
+                step_batches,
+                story_steps_arrow_schema(),
+                &STEP_INDEXES,
+            ),
+            write_batches(
+                &cloned.tool_calls,
+                tool_call_batches,
+                story_tool_calls_arrow_schema(),
+                &TOOL_CALL_INDEXES,
+            ),
+        )?;
+        cloned.generation.clone_from(&source.generation);
+        cloned.runs_version = runs_version;
+        cloned.steps_version = steps_version;
+        cloned.tool_calls_version = tool_calls_version;
+        cloned.objects_version = source.objects_version;
+        cloned.projection.clone_from(&source.projection);
+        Ok(cloned)
     }
 
     fn generation_object_path(&self, generation: &str) -> ObjectPath {
