@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 
 mod agent;
+mod analysis;
 mod analysis_agent;
 mod analysis_session;
 mod api;
