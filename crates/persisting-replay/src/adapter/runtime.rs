@@ -389,6 +389,67 @@ pub(super) fn configure_mini_python_environment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mini_version_probe_accepts_exact_banner_before_config_noise() {
+        let output = "This is mini-swe-agent version 2.4.6.\n\
+Check the v2 migration guide at https://example.invalid\n\
+Loading global config from '/root/.config/mini-swe-agent/.env'";
+        assert_eq!(
+            parse_version(AgentKind::MiniSweAgent, output),
+            Some("2.4.6")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mini_python_runtime_finds_the_portable_uv_bundle() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let local = root.path().join(".local");
+        let entrypoint = local.join("bin/mini-swe-agent");
+        let virtual_env = local.join("share/uv/tools/mini-swe-agent");
+        let python_home = local.join("share/uv/python/cpython-3.12.11");
+        let python = python_home.join("bin/python3.12");
+        fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+        fs::create_dir_all(virtual_env.join("bin")).unwrap();
+        fs::create_dir_all(virtual_env.join("lib/python3.12/site-packages")).unwrap();
+        fs::create_dir_all(python_home.join("lib/python3.12/encodings")).unwrap();
+        fs::create_dir_all(python.parent().unwrap()).unwrap();
+        let loader = local.join("share/uv/sweeval-system-libs/ld-linux-x86-64.so.2");
+        fs::create_dir_all(loader.parent().unwrap()).unwrap();
+        fs::write(&loader, "loader").unwrap();
+        fs::write(&entrypoint, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::write(&python, "python").unwrap();
+        symlink(&python, virtual_env.join("bin/python")).unwrap();
+
+        let runtime = mini_python_runtime(&entrypoint).unwrap();
+        let canonical_python_home = fs::canonicalize(&python_home).unwrap();
+        assert_eq!(runtime.python, fs::canonicalize(&python).unwrap());
+        assert_eq!(
+            runtime.python_home.as_deref(),
+            Some(canonical_python_home.as_path())
+        );
+        assert_eq!(runtime.loader.as_deref(), Some(loader.as_path()));
+        assert_eq!(runtime.virtual_env.as_deref(), Some(virtual_env.as_path()));
+        let mut command = Command::new(&runtime.python);
+        configure_mini_python_environment(&mut command, &runtime).unwrap();
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "PYTHONHOME" && value == Some(canonical_python_home.as_os_str())
+        }));
+        let path = command
+            .get_envs()
+            .find_map(|(name, value)| {
+                (name == "PATH").then(|| value.expect("PATH value").to_os_string())
+            })
+            .expect("PATH override");
+        assert_eq!(
+            std::env::split_paths(&path).next().unwrap(),
+            virtual_env.join("bin")
+        );
+    }
+
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
