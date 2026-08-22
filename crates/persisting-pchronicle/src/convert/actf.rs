@@ -648,20 +648,17 @@ fn attempt_solved_at(value: &Value) -> Option<String> {
 }
 
 fn actf_final_metrics(document: &ActfDocument, attempt: &ActfAttempt) -> Value {
-    let mut metrics = json!({
-        "correct": attempt.correct,
-        "score": attempt.score,
-        "status": attempt.status,
-        "task_correct": document.correct,
-        "analysis_result": attempt.analysis_result,
-    });
+    let mut metrics = Map::from_iter([
+        ("correct".into(), json!(attempt.correct)),
+        ("score".into(), attempt.score.clone()),
+        ("status".into(), json!(attempt.status)),
+        ("task_correct".into(), json!(document.correct)),
+        ("analysis_result".into(), attempt.analysis_result.clone()),
+    ]);
     if let Some(max_score) = omit_empty_value(&attempt.max_score) {
-        metrics
-            .as_object_mut()
-            .expect("actf final metrics")
-            .insert("max_score".into(), max_score);
+        metrics.insert("max_score".into(), max_score);
     }
-    metrics
+    Value::Object(metrics)
 }
 
 fn capture_actf_unknowns(
@@ -906,25 +903,25 @@ fn storylines_to_actf_pointer(stories: &[StorylineDocument]) -> Result<ActfDocum
         .and_then(|result| result.solved_at.clone())
         .map(Value::String)
         .unwrap_or(Value::Null);
-    let mut value = json!({
-        "task_id": task_id,
-        "category": category,
-        "k": k,
-        "correct": task_correct,
-        "attempts_tried": attempts_tried,
-        "solved_at": solved_at,
-        "attempts": attempts,
-    });
+    let mut root = Map::from_iter([
+        ("task_id".into(), Value::String(task_id)),
+        ("category".into(), Value::String(category)),
+        ("k".into(), Value::Number(k.into())),
+        ("correct".into(), task_correct),
+        (
+            "attempts_tried".into(),
+            Value::Number(attempts_tried.into()),
+        ),
+        ("solved_at".into(), solved_at),
+        ("attempts".into(), Value::Object(attempts)),
+    ]);
     if let Some(retry_count) = stories[0]
         .task
         .as_ref()
         .and_then(|task| task.result.as_ref())
         .and_then(|result| result.retry_count.clone())
     {
-        value
-            .as_object_mut()
-            .expect("actf root")
-            .insert("retry_count".into(), retry_count);
+        root.insert("retry_count".into(), retry_count);
     }
     if let Some(retry_counts) = stories[0]
         .task
@@ -932,11 +929,9 @@ fn storylines_to_actf_pointer(stories: &[StorylineDocument]) -> Result<ActfDocum
         .and_then(|task| task.result.as_ref())
         .and_then(|result| result.retry_counts.clone())
     {
-        value
-            .as_object_mut()
-            .expect("actf root")
-            .insert("retry_counts".into(), retry_counts);
+        root.insert("retry_counts".into(), retry_counts);
     }
+    let mut value = Value::Object(root);
     let mut source_id = None::<String>;
     let mut unknown_fields = BTreeMap::<String, Value>::new();
     let actf_sources = stories
