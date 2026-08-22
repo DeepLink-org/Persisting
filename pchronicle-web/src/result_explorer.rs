@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use dioxus::prelude::*;
 use serde_json::Value;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::json_value::{is_structured_json, JsonValue};
 use crate::model::QueryEvidence;
@@ -28,19 +29,25 @@ pub fn identity_href(row: &Value) -> Option<ResultIdentity> {
     };
     let dataset = coordinate("dataset")?;
     let file = coordinate("_file_")?;
-    let run_id = coordinate("run_id")?;
     let agent_id = coordinate("agent_id")?;
     let session_id = coordinate("session_id")?;
-    let root_session_id = coordinate("root_session_id")?;
-    let run_href = format!(
-        "?page=detail&dataset={}&file={}&run_id={}&agent_id={}&session_id={}&root_session_id={}",
+    let mut run_href = format!(
+        "?page=detail&dataset={}&file={}",
         urlencoding::encode(dataset),
         urlencoding::encode(file),
-        urlencoding::encode(run_id),
-        urlencoding::encode(agent_id),
-        urlencoding::encode(session_id),
-        urlencoding::encode(root_session_id),
     );
+    if let Some(run_id) = coordinate("run_id") {
+        run_href.push_str("&run_id=");
+        run_href.push_str(&urlencoding::encode(run_id));
+    }
+    run_href.push_str("&agent_id=");
+    run_href.push_str(&urlencoding::encode(agent_id));
+    run_href.push_str("&session_id=");
+    run_href.push_str(&urlencoding::encode(session_id));
+    if let Some(root_session_id) = coordinate("root_session_id") {
+        run_href.push_str("&root_session_id=");
+        run_href.push_str(&urlencoding::encode(root_session_id));
+    }
     let turn_id = object.get("turn_id").and_then(Value::as_i64);
     Some(ResultIdentity {
         turn_href: turn_id.map(|turn_id| format!("{run_href}&turn={turn_id}")),
@@ -53,7 +60,12 @@ pub fn profile_scope_label(evidence: &QueryEvidence) -> String {
         return "No distribution · 0 returned rows".into();
     }
     format!(
-        "Preview distribution · {} returned {}{}",
+        "{} · {} returned {}{}",
+        if evidence.truncated {
+            "Preview distribution"
+        } else {
+            "Distribution of all returned rows"
+        },
         evidence.returned_rows,
         if evidence.returned_rows == 1 {
             "row"
@@ -166,7 +178,10 @@ pub fn ResultExplorer(
                                 strong { "{intent.column} · {intent.label}" }
                                 small { "No query has run and the current SQL is unchanged." }
                             }
-                            button { class: "button primary", r#type: "button", disabled: !refinement_enabled, onclick: move |_| on_prepare_refinement.call(AnalysisRefinement::Filter { intent: intent.clone() }), "Apply through Copilot" }
+                            div { class: "result-refinement-actions",
+                                button { class: "analyze-link-button", r#type: "button", onclick: move |_| staged_intent.set(None), "Cancel" }
+                                button { class: "button primary", r#type: "button", disabled: !refinement_enabled, onclick: move |_| on_prepare_refinement.call(AnalysisRefinement::Filter { intent: intent.clone() }), "Apply through Copilot" }
+                            }
                         }
                     }
                 }
@@ -269,9 +284,9 @@ fn ProfilePanel(
                 div { dt { "Present" } dd { "{profile.non_null_count}" } }
                 div { dt { "Unique" } dd { "{profile.unique_count}" } }
                 div { dt { "Missing" } dd { "{missing:.1}%" } }
-                if let Some(min) = profile.min { div { dt { "Minimum" } dd { "{format_number(min)}" } } }
-                if let Some(max) = profile.max { div { dt { "Maximum" } dd { "{format_number(max)}" } } }
-                if let Some(mean) = profile.mean { div { dt { "Mean" } dd { "{format_number(mean)}" } } }
+                for (label, value) in profile_stat_rows(&profile) {
+                    div { dt { "{label}" } dd { "{value}" } }
+                }
             }
             if profile.row_count == 0 {
                 p { class: "result-profile-none", "No returned rows; no distribution is available." }
@@ -327,8 +342,8 @@ fn profile_counts(profile: &ColumnProfile) -> Vec<ProfileCount> {
         .map(|(index, bin)| ProfileCount {
             label: format!(
                 "{} to {}{}",
-                format_number(bin.lower),
-                format_number(bin.upper),
+                format_profile_value(&profile.kind, bin.lower),
+                format_profile_value(&profile.kind, bin.upper),
                 if index + 1 == profile.histogram.len() {
                     " (inclusive)"
                 } else {
@@ -515,9 +530,62 @@ fn kind_label(kind: &ColumnKind) -> &'static str {
 
 fn profile_summary(profile: &ColumnProfile) -> String {
     match (profile.min, profile.max) {
-        (Some(min), Some(max)) => format!("{}–{}", format_number(min), format_number(max)),
+        (Some(min), Some(max)) => format!(
+            "{}–{}",
+            format_profile_value(&profile.kind, min),
+            format_profile_value(&profile.kind, max)
+        ),
         _ => format!("{} unique", profile.unique_count),
     }
+}
+
+fn profile_stat_rows(profile: &ColumnProfile) -> Vec<(&'static str, String)> {
+    let labels = match profile.kind {
+        ColumnKind::Number => Some(("Minimum", "Maximum", "Mean", "Median")),
+        ColumnKind::Text | ColumnKind::Array => Some((
+            "Minimum length",
+            "Maximum length",
+            "Mean length",
+            "Median length",
+        )),
+        ColumnKind::DateTime => Some(("Earliest", "Latest", "", "")),
+        _ => None,
+    };
+    let Some((min_label, max_label, mean_label, median_label)) = labels else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    if let Some(value) = profile.min {
+        rows.push((min_label, format_profile_value(&profile.kind, value)));
+    }
+    if let Some(value) = profile.max {
+        rows.push((max_label, format_profile_value(&profile.kind, value)));
+    }
+    if !mean_label.is_empty() {
+        if let Some(value) = profile.mean {
+            rows.push((mean_label, format_profile_value(&profile.kind, value)));
+        }
+    }
+    if !median_label.is_empty() {
+        if let Some(value) = profile.median {
+            rows.push((median_label, format_profile_value(&profile.kind, value)));
+        }
+    }
+    rows
+}
+
+fn format_profile_value(kind: &ColumnKind, value: f64) -> String {
+    if kind != &ColumnKind::DateTime || !value.is_finite() {
+        return format_number(value);
+    }
+    let nanos = (value * 1_000_000_000.0).round();
+    if nanos < i128::MIN as f64 || nanos > i128::MAX as f64 {
+        return format_number(value);
+    }
+    OffsetDateTime::from_unix_timestamp_nanos(nanos as i128)
+        .ok()
+        .and_then(|timestamp| timestamp.format(&Rfc3339).ok())
+        .unwrap_or_else(|| format_number(value))
 }
 
 fn format_number(value: f64) -> String {
@@ -554,7 +622,9 @@ mod tests {
 
     use crate::model::QueryEvidence;
 
-    use super::{identity_href, profile_scope_label};
+    use crate::result_profile::profile_rows;
+
+    use super::{identity_href, profile_counts, profile_scope_label};
 
     fn evidence(rows: Vec<Value>, returned_rows: usize, truncated: bool) -> QueryEvidence {
         QueryEvidence {
@@ -591,10 +661,50 @@ mod tests {
     }
 
     #[test]
+    fn nullable_run_and_root_coordinates_still_create_links() {
+        let row = json!({
+            "dataset":"captures",
+            "_file_":"gateway/events.lance",
+            "agent_id":"gateway",
+            "session_id":"session-a",
+            "run_id": null,
+            "root_session_id": null,
+            "turn_id": 12
+        });
+
+        let identity = identity_href(&row).expect("detail supports nullable run and root ids");
+
+        assert!(!identity.run_href.contains("run_id="));
+        assert!(!identity.run_href.contains("root_session_id="));
+        assert!(identity.run_href.contains("agent_id=gateway"));
+        assert!(identity.turn_href.unwrap().contains("turn=12"));
+    }
+
+    #[test]
     fn truncated_results_are_labeled_as_preview() {
         assert_eq!(
             profile_scope_label(&evidence(Vec::new(), 100, true)),
             "Preview distribution · 100 returned rows · truncated"
         );
+    }
+
+    #[test]
+    fn complete_results_are_labeled_as_all_returned_rows() {
+        assert_eq!(
+            profile_scope_label(&evidence(Vec::new(), 3, false)),
+            "Distribution of all returned rows · 3 returned rows"
+        );
+    }
+
+    #[test]
+    fn datetime_profile_bins_use_datetime_labels() {
+        let profiles = profile_rows(&[
+            json!({"occurred_at":"2026-08-22T01:02:03Z"}),
+            json!({"occurred_at":"2026-08-23T02:03:04Z"}),
+        ]);
+        let counts = profile_counts(&profiles[0]);
+
+        assert!(counts[0].label.contains("2026-08-22"));
+        assert!(!counts[0].label.contains("1.77e"));
     }
 }

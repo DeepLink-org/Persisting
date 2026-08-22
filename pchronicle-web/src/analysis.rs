@@ -77,6 +77,10 @@ fn apply_manual_sql(revision: &mut AnalysisRevision, sql: String) -> Result<(), 
     revision.manually_edited = true;
     revision.state = RevisionState::PlanReady;
     revision.error = None;
+    revision.execution = None;
+    revision.evidence = None;
+    revision.interpretation = None;
+    revision.needs_rerun = false;
     revision.pending_effect = None;
     revision.active_operation_id = None;
     Ok(())
@@ -179,7 +183,7 @@ fn interpretation_reference_identity(reference: &EvidenceReference) -> Option<Re
     }))
 }
 
-fn active_revision_for_callback<'a>(
+fn revision_for_callback<'a>(
     session: &'a mut AnalysisSession,
     expected_session_id: &str,
     revision_id: u64,
@@ -188,8 +192,42 @@ fn active_revision_for_callback<'a>(
         return None;
     }
     session
-        .active_revision_mut()
-        .filter(|revision| revision.id == revision_id)
+        .revisions
+        .iter_mut()
+        .find(|revision| revision.id == revision_id)
+}
+
+fn scope_without_item(
+    scope: &AnalysisScope,
+    index: usize,
+    catalog: Option<&QueryCatalog>,
+) -> Option<AnalysisScope> {
+    if index >= scope.items.len() {
+        return None;
+    }
+    if scope.items.len() == 1 {
+        return matches!(
+            scope.items.first(),
+            Some(AnalysisScopeItem::Root { .. } | AnalysisScopeItem::Run { .. })
+        )
+        .then(|| catalog.map(AnalysisScope::from_catalog))
+        .flatten();
+    }
+    let mut next = scope.clone();
+    next.items.remove(index);
+    Some(next)
+}
+
+fn scope_item_removal_enabled(
+    scope: &AnalysisScope,
+    catalog: Option<&QueryCatalog>,
+    state: Option<&RevisionState>,
+) -> bool {
+    scope_without_item(scope, 0, catalog).is_some()
+        && !matches!(
+            state,
+            Some(RevisionState::GeneratingPlan | RevisionState::Executing)
+        )
 }
 
 fn launch_interpretation(
@@ -213,12 +251,11 @@ fn launch_interpretation(
         if current.id != expected_session_id {
             return;
         }
-        let Some(revision) = current.active_revision_mut() else {
+        let Some(revision) =
+            revision_for_callback(&mut current, &expected_session_id, prepared.revision_id)
+        else {
             return;
         };
-        if revision.id != prepared.revision_id {
-            return;
-        }
         match result {
             Ok(mut interpretation) => {
                 analysis_agent::ensure_truncation_limitation(&mut interpretation, &prepared.digest);
@@ -404,12 +441,11 @@ pub fn AnalysisWorkspace(
             if current.id != expected_session_id {
                 return;
             }
-            let Some(revision) = current.active_revision_mut() else {
+            let Some(revision) =
+                revision_for_callback(&mut current, &expected_session_id, revision_id)
+            else {
                 return;
             };
-            if revision.id != revision_id {
-                return;
-            }
             match result {
                 Ok(plan) => {
                     let _ = revision.finish_plan(revision_id, operation_id, plan);
@@ -456,12 +492,11 @@ pub fn AnalysisWorkspace(
             if current.id != expected_session_id {
                 return;
             }
-            let Some(revision) = current.active_revision_mut() else {
+            let Some(revision) =
+                revision_for_callback(&mut current, &expected_session_id, revision_id)
+            else {
                 return;
             };
-            if revision.id != revision_id {
-                return;
-            }
             let prepared = match result {
                 Ok(evidence) => {
                     let profiles = profile_rows(&evidence.rows);
@@ -553,7 +588,7 @@ pub fn AnalysisWorkspace(
                 return;
             };
             let Some(revision) =
-                active_revision_for_callback(&mut current, &expected_session_id, revision_id)
+                revision_for_callback(&mut current, &expected_session_id, revision_id)
             else {
                 return;
             };
@@ -657,12 +692,11 @@ pub fn AnalysisWorkspace(
             if current.id != expected_session_id {
                 return;
             }
-            let Some(revision) = current.active_revision_mut() else {
+            let Some(revision) =
+                revision_for_callback(&mut current, &expected_session_id, revision_id)
+            else {
                 return;
             };
-            if revision.id != revision_id {
-                return;
-            }
             match result {
                 Ok(plan) => {
                     let _ = revision.finish_plan(revision_id, operation_id, plan);
@@ -711,8 +745,37 @@ pub fn AnalysisWorkspace(
     };
     let regenerate_plan = generate_plan.clone();
 
+    let catalog_for_scope_removal = catalog.clone();
+    let remove_scope_item = EventHandler::new(move |index: usize| {
+        let Some(current_scope) = scope() else {
+            return;
+        };
+        let Some(next_scope) =
+            scope_without_item(&current_scope, index, catalog_for_scope_removal.as_ref())
+        else {
+            return;
+        };
+        if let Some(mut current) = session() {
+            if current
+                .apply_working_scope_change(question(), next_scope.clone())
+                .is_err()
+            {
+                return;
+            }
+            persist_session(&current, &mut recent_sessions, &mut storage_notice);
+            session.set(Some(current));
+        }
+        scope.set(Some(next_scope));
+    });
+
     let catalog_for_recent = catalog.clone();
     let select_recent_session = EventHandler::new(move |session_id: String| {
+        if let Some(mut departing) = session() {
+            if departing.id != session_id {
+                departing.normalize_inflight_for_navigation();
+                persist_session(&departing, &mut recent_sessions, &mut storage_notice);
+            }
+        }
         let Some(mut selected) = recent_sessions()
             .into_iter()
             .find(|candidate| candidate.id == session_id)
@@ -787,6 +850,9 @@ pub fn AnalysisWorkspace(
         .map(|current| current.revisions)
         .unwrap_or_default();
     let timeline_now_ms = current_time_millis();
+    let scope_revision_state = active_revision
+        .as_ref()
+        .map(|revision| revision.state.clone());
 
     rsx! {
         section { class: "analyze-workspace", aria_label: "Question-driven analysis workspace",
@@ -849,8 +915,38 @@ pub fn AnalysisWorkspace(
                             }
                             span { class: "analyze-chip lock", "Read-only" }
                             if let Some(scope) = scope() {
-                                for item in &scope.items {
-                                    span { class: "analyze-chip", "{scope_item_label(item)}" }
+                                for (index, item) in scope.items.iter().enumerate() {
+                                    {
+                                        let label = scope_item_label(item);
+                                        let only_item = scope.items.len() == 1;
+                                        let removal_enabled = scope_item_removal_enabled(
+                                            &scope,
+                                            catalog.as_ref(),
+                                            scope_revision_state.as_ref(),
+                                        );
+                                        let blocked_by_operation = matches!(
+                                            scope_revision_state.as_ref(),
+                                            Some(RevisionState::GeneratingPlan | RevisionState::Executing)
+                                        );
+                                        let single_dataset = only_item && matches!(
+                                            scope.items.first(),
+                                            Some(AnalysisScopeItem::Dataset { .. })
+                                        );
+                                        rsx! {
+                                            span { class: "analyze-chip",
+                                                "{label}"
+                                                button {
+                                                    class: "analyze-chip-remove",
+                                                    r#type: "button",
+                                                    disabled: !removal_enabled,
+                                                    aria_label: if removal_enabled { "Remove {label} from analysis scope" } else if blocked_by_operation { "Analysis scope cannot change while an operation is running" } else if single_dataset { "The dataset analysis scope cannot be removed" } else { "The catalog is required before this scope can be removed" },
+                                                    title: if removal_enabled { "Remove scope" } else if blocked_by_operation { "Wait for the current plan or query operation to finish" } else if single_dataset { "At least one explicit scope is required" } else { "Wait for the catalog to load" },
+                                                    onclick: move |_| remove_scope_item.call(index),
+                                                    "×"
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1490,8 +1586,184 @@ mod tests {
         let mut session = AnalysisSession::with_revision(plan_ready_revision());
         let expected_session_id = session.id.clone();
 
-        assert!(active_revision_for_callback(&mut session, &expected_session_id, 7).is_some());
-        assert!(active_revision_for_callback(&mut session, "another-session", 7).is_none());
+        assert!(revision_for_callback(&mut session, &expected_session_id, 7).is_some());
+        assert!(revision_for_callback(&mut session, "another-session", 7).is_none());
+    }
+
+    #[test]
+    fn callback_can_finish_an_inactive_revision_but_operation_token_still_decides() {
+        let mut planning =
+            AnalysisRevision::draft(7, "Compare run outcomes", plan_ready_revision().scope);
+        let operation_id = planning.begin_plan_generation().unwrap();
+        let mut session = AnalysisSession::with_revision(planning);
+        let expected_session_id = session.id.clone();
+        let active_id = session
+            .new_revision("Another question", plan_ready_revision().scope)
+            .id;
+
+        let revision = revision_for_callback(&mut session, &expected_session_id, 7).unwrap();
+        assert_eq!(
+            revision
+                .finish_plan(7, operation_id + 1, plan_ready_revision().plan.unwrap())
+                .unwrap(),
+            None
+        );
+        assert_eq!(revision.state, RevisionState::GeneratingPlan);
+        revision
+            .finish_plan(7, operation_id, plan_ready_revision().plan.unwrap())
+            .unwrap();
+
+        assert_eq!(revision.state, RevisionState::PlanReady);
+        assert_eq!(session.active_revision_id, active_id);
+    }
+
+    #[test]
+    fn query_and_interpretation_callbacks_can_finish_inactive_revisions() {
+        let mut executing = plan_ready_revision();
+        executing.confirm_execution().unwrap();
+        let (revision_id, query_operation) = match executing.take_pending_effect().unwrap() {
+            AnalysisEffect::ExecuteSql {
+                revision_id,
+                operation_id,
+                ..
+            } => (revision_id, operation_id),
+            effect => panic!("expected execute effect, got {effect:?}"),
+        };
+        let mut query_session = AnalysisSession::with_revision(executing);
+        let query_session_id = query_session.id.clone();
+        let query_active_id = query_session
+            .new_revision("Another question", plan_ready_revision().scope)
+            .id;
+
+        revision_for_callback(&mut query_session, &query_session_id, revision_id)
+            .unwrap()
+            .finish_query(
+                revision_id,
+                query_operation,
+                QueryEvidence {
+                    rows: Vec::new(),
+                    returned_rows: 0,
+                    truncated: false,
+                    max_rows: 100,
+                    max_bytes: 4 * 1024 * 1024,
+                },
+                Vec::new(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            query_session
+                .revisions
+                .iter()
+                .find(|revision| revision.id == revision_id)
+                .unwrap()
+                .state,
+            RevisionState::Complete
+        );
+        assert_eq!(query_session.active_revision_id, query_active_id);
+
+        let mut interpreting = plan_ready_revision();
+        interpreting.confirm_execution().unwrap();
+        let (revision_id, query_operation) = match interpreting.take_pending_effect().unwrap() {
+            AnalysisEffect::ExecuteSql {
+                revision_id,
+                operation_id,
+                ..
+            } => (revision_id, operation_id),
+            effect => panic!("expected execute effect, got {effect:?}"),
+        };
+        let interpretation_operation = match interpreting
+            .finish_query(
+                revision_id,
+                query_operation,
+                QueryEvidence {
+                    rows: vec![serde_json::json!({"status": "failed"})],
+                    returned_rows: 1,
+                    truncated: false,
+                    max_rows: 100,
+                    max_bytes: 4 * 1024 * 1024,
+                },
+                Vec::new(),
+            )
+            .unwrap()
+            .unwrap()
+        {
+            AnalysisEffect::Interpret { operation_id, .. } => operation_id,
+            effect => panic!("expected interpretation effect, got {effect:?}"),
+        };
+        let mut interpretation_session = AnalysisSession::with_revision(interpreting);
+        let interpretation_session_id = interpretation_session.id.clone();
+        let interpretation_active_id = interpretation_session
+            .new_revision("Another question", plan_ready_revision().scope)
+            .id;
+
+        revision_for_callback(
+            &mut interpretation_session,
+            &interpretation_session_id,
+            revision_id,
+        )
+        .unwrap()
+        .finish_interpretation(
+            revision_id,
+            interpretation_operation,
+            AnalysisInterpretation::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            interpretation_session
+                .revisions
+                .iter()
+                .find(|revision| revision.id == revision_id)
+                .unwrap()
+                .state,
+            RevisionState::Complete
+        );
+        assert_eq!(
+            interpretation_session.active_revision_id,
+            interpretation_active_id
+        );
+    }
+
+    #[test]
+    fn scope_removal_policy_blocks_the_last_chip_and_plan_or_query_generation() {
+        let catalog = QueryCatalog {
+            snapshot_id: "snapshot-1".into(),
+            read_only: true,
+            database: "default".into(),
+            storage_path: "/tmp/evidence".into(),
+            path_column: "_file_".into(),
+            datasets: Vec::new(),
+            tables: Vec::new(),
+        };
+        let dataset_scope = AnalysisScope::from_catalog(&catalog);
+        let root_scope = AnalysisScope::from_root(&catalog, "default", "source.json", "root-a");
+        assert!(!scope_item_removal_enabled(
+            &dataset_scope,
+            Some(&catalog),
+            None
+        ));
+        assert!(scope_item_removal_enabled(
+            &root_scope,
+            Some(&catalog),
+            None
+        ));
+        assert!(!scope_item_removal_enabled(&root_scope, None, None));
+        assert!(!scope_item_removal_enabled(
+            &root_scope,
+            Some(&catalog),
+            Some(&RevisionState::GeneratingPlan)
+        ));
+        assert!(!scope_item_removal_enabled(
+            &root_scope,
+            Some(&catalog),
+            Some(&RevisionState::Executing)
+        ));
+        assert!(scope_item_removal_enabled(
+            &root_scope,
+            Some(&catalog),
+            Some(&RevisionState::Interpreting)
+        ));
     }
 
     #[test]
@@ -1566,6 +1838,128 @@ mod tests {
         assert_eq!(revision.state, RevisionState::Interpreting);
         assert_eq!(prepared.revision_id, revision_id);
         assert_eq!(prepared.digest.rows.len(), 1);
+    }
+
+    #[test]
+    fn manual_sql_on_a_restored_revision_discards_all_derived_result_state() {
+        let mut revision = plan_ready_revision();
+        revision.confirm_execution().unwrap();
+        let (revision_id, query_operation) = match revision.take_pending_effect().unwrap() {
+            AnalysisEffect::ExecuteSql {
+                revision_id,
+                operation_id,
+                ..
+            } => (revision_id, operation_id),
+            effect => panic!("expected execute effect, got {effect:?}"),
+        };
+        let interpretation_effect = revision
+            .finish_query(
+                revision_id,
+                query_operation,
+                QueryEvidence {
+                    rows: vec![serde_json::json!({"status": "failed"})],
+                    returned_rows: 1,
+                    truncated: false,
+                    max_rows: 100,
+                    max_bytes: 4 * 1024 * 1024,
+                },
+                Vec::new(),
+            )
+            .unwrap()
+            .unwrap();
+        let AnalysisEffect::Interpret {
+            operation_id: interpretation_operation,
+            ..
+        } = interpretation_effect
+        else {
+            panic!("expected interpretation effect");
+        };
+        revision
+            .finish_interpretation(
+                revision_id,
+                interpretation_operation,
+                AnalysisInterpretation {
+                    observations: vec!["old conclusion".into()],
+                    ..AnalysisInterpretation::default()
+                },
+            )
+            .unwrap();
+        revision.evidence = None;
+        revision.state = RevisionState::QueryError;
+        revision.needs_rerun = true;
+
+        apply_manual_sql(&mut revision, "SELECT 1".into()).unwrap();
+
+        assert_eq!(revision.state, RevisionState::PlanReady);
+        assert!(revision.execution.is_none());
+        assert!(revision.evidence.is_none());
+        assert!(revision.interpretation.is_none());
+        assert!(!revision.needs_rerun);
+    }
+
+    #[test]
+    fn removing_scope_items_changes_only_the_working_scope_and_never_removes_the_last() {
+        let mut working_scope = plan_ready_revision().scope;
+        working_scope.items.push(AnalysisScopeItem::Dataset {
+            name: "secondary".into(),
+        });
+        let reviewed_scope = working_scope.clone();
+
+        let next_scope = scope_without_item(&working_scope, 0, None).unwrap();
+
+        assert_eq!(next_scope.items.len(), 1);
+        assert_eq!(
+            next_scope.items[0],
+            AnalysisScopeItem::Dataset {
+                name: "secondary".into()
+            }
+        );
+        assert_eq!(working_scope, reviewed_scope);
+        assert!(scope_without_item(&next_scope, 0, None).is_none());
+        assert!(scope_without_item(&working_scope, 9, None).is_none());
+    }
+
+    #[test]
+    fn removing_a_single_run_or_root_falls_back_to_catalog_scope() {
+        let catalog = QueryCatalog {
+            snapshot_id: "snapshot-1".into(),
+            read_only: true,
+            database: "default".into(),
+            storage_path: "/tmp/evidence".into(),
+            path_column: "_file_".into(),
+            datasets: Vec::new(),
+            tables: Vec::new(),
+        };
+        let run_scope = AnalysisScope::from_run(
+            &catalog,
+            RunSummary {
+                dataset: "default".into(),
+                file: "source.json".into(),
+                run_id: Some("run-a".into()),
+                agent_id: "agent".into(),
+                model_name: None,
+                session_id: "session-a".into(),
+                root_session_id: Some("root-a".into()),
+                path: "agent/root-a/session-a".into(),
+                row_count: 1,
+                duplicate_event_ids: 0,
+                status: "ok".into(),
+            },
+        );
+        let root_scope = AnalysisScope::from_root(&catalog, "default", "source.json", "root-a");
+        let dataset_scope = AnalysisScope::from_catalog(&catalog);
+        let expected = AnalysisScope::from_catalog(&catalog);
+
+        assert_eq!(
+            scope_without_item(&run_scope, 0, Some(&catalog)),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            scope_without_item(&root_scope, 0, Some(&catalog)),
+            Some(expected)
+        );
+        assert!(scope_without_item(&dataset_scope, 0, Some(&catalog)).is_none());
+        assert!(scope_without_item(&run_scope, 0, None).is_none());
     }
 
     #[test]

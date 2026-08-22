@@ -43,6 +43,8 @@ pub struct ColumnProfile {
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub mean: Option<f64>,
+    #[serde(default)]
+    pub median: Option<f64>,
     pub histogram: Vec<HistogramBin>,
     pub top_values: Vec<ValueCount>,
     pub other_count: usize,
@@ -129,6 +131,7 @@ fn profile_column(rows: &[Value], name: String) -> ColumnProfile {
         min: None,
         max: None,
         mean: None,
+        median: None,
         histogram: Vec::new(),
         top_values: Vec::new(),
         other_count: 0,
@@ -139,9 +142,11 @@ fn profile_column(rows: &[Value], name: String) -> ColumnProfile {
         ColumnKind::Number => add_numeric_summary(&mut profile, &values),
         ColumnKind::DateTime => add_datetime_summary(&mut profile, &values),
         ColumnKind::Text => add_text_summary(&mut profile, &values),
+        ColumnKind::Object => add_object_summary(&mut profile, &values),
+        ColumnKind::Array => add_array_summary(&mut profile, &values),
         ColumnKind::Categorical | ColumnKind::Boolean => add_top_values(&mut profile, value_counts),
         ColumnKind::Mixed => profile.type_counts = count_types(&values),
-        ColumnKind::Empty | ColumnKind::Object | ColumnKind::Array | ColumnKind::Identifier => {}
+        ColumnKind::Empty | ColumnKind::Identifier => {}
     }
 
     profile
@@ -286,6 +291,40 @@ fn add_text_summary(profile: &mut ColumnProfile, values: &[&Value]) {
     add_distribution_summary(profile, &lengths);
 }
 
+fn add_object_summary(profile: &mut ColumnProfile, values: &[&Value]) {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for object in values.iter().filter_map(|value| value.as_object()) {
+        for key in object.keys() {
+            *counts.entry(key.clone()).or_default() += 1;
+        }
+    }
+    let mut counts = counts.into_iter().collect::<Vec<_>>();
+    counts.sort_by(|(left_key, left_count), (right_key, right_count)| {
+        right_count
+            .cmp(left_count)
+            .then_with(|| left_key.cmp(right_key))
+    });
+    profile.other_count = counts
+        .iter()
+        .skip(MAX_TOP_VALUES)
+        .map(|(_, count)| *count)
+        .sum();
+    profile.top_values = counts
+        .into_iter()
+        .take(MAX_TOP_VALUES)
+        .map(|(label, count)| ValueCount { label, count })
+        .collect();
+}
+
+fn add_array_summary(profile: &mut ColumnProfile, values: &[&Value]) {
+    let lengths = values
+        .iter()
+        .filter_map(|value| value.as_array())
+        .map(|array| array.len() as f64)
+        .collect::<Vec<_>>();
+    add_distribution_summary(profile, &lengths);
+}
+
 fn add_distribution_summary(profile: &mut ColumnProfile, values: &[f64]) {
     let Some(min) = values.iter().copied().reduce(f64::min) else {
         return;
@@ -293,7 +332,18 @@ fn add_distribution_summary(profile: &mut ColumnProfile, values: &[f64]) {
     let max = values.iter().copied().reduce(f64::max).expect("min exists");
     profile.min = Some(min);
     profile.max = Some(max);
-    profile.mean = Some(values.iter().sum::<f64>() / values.len() as f64);
+    profile.mean = Some(values.iter().enumerate().fold(0.0, |mean, (index, value)| {
+        let count = (index + 1) as f64;
+        mean * ((count - 1.0) / count) + value / count
+    }));
+    let mut ordered = values.to_vec();
+    ordered.sort_by(f64::total_cmp);
+    let middle = ordered.len() / 2;
+    profile.median = Some(if ordered.len().is_multiple_of(2) {
+        ordered[middle - 1] / 2.0 + ordered[middle] / 2.0
+    } else {
+        ordered[middle]
+    });
     profile.histogram = equal_width_histogram(values, min, max);
 }
 
@@ -465,12 +515,38 @@ mod tests {
     fn profiles_uniform_boolean_object_and_array_values() {
         let profiles = profile_rows(&[
             json!({"enabled": true, "metadata": {"a": 1}, "tags": ["a"]}),
-            json!({"enabled": false, "metadata": {"b": 2}, "tags": ["b", "c"]}),
+            json!({"enabled": false, "metadata": {"a": 2, "b": 2}, "tags": ["b", "c"]}),
+            json!({"enabled": true, "metadata": {"a": 3}, "tags": ["d", "e", "f"]}),
         ]);
 
         assert_eq!(profile(&profiles, "enabled").kind, ColumnKind::Boolean);
-        assert_eq!(profile(&profiles, "metadata").kind, ColumnKind::Object);
-        assert_eq!(profile(&profiles, "tags").kind, ColumnKind::Array);
+        let object = profile(&profiles, "metadata");
+        assert_eq!(object.kind, ColumnKind::Object);
+        assert_eq!(object.top_values[0].label, "a");
+        assert_eq!(object.top_values[0].count, 3);
+
+        let array = profile(&profiles, "tags");
+        assert_eq!(array.kind, ColumnKind::Array);
+        assert_eq!(
+            (array.min, array.max, array.median),
+            (Some(1.0), Some(3.0), Some(2.0))
+        );
+        assert_eq!(
+            array.histogram.iter().map(|bin| bin.count).sum::<usize>(),
+            3
+        );
+    }
+
+    #[test]
+    fn numeric_profiles_include_an_even_sample_median() {
+        let profiles = profile_rows(&[
+            json!({"latency_ms": 1}),
+            json!({"latency_ms": 9}),
+            json!({"latency_ms": 3}),
+            json!({"latency_ms": 5}),
+        ]);
+
+        assert_eq!(profile(&profiles, "latency_ms").median, Some(4.0));
     }
 
     #[test]
@@ -550,6 +626,11 @@ mod tests {
         assert_eq!(numeric.histogram[0].count, 2);
         assert!(numeric.histogram[0].lower.is_finite());
         assert!(numeric.histogram[0].upper.is_finite());
+
+        let same_sign = profile_rows(&[json!({"value": 1.0e308}), json!({"value": 1.0e308})]);
+        let same_sign = profile(&same_sign, "value");
+        assert!(same_sign.mean.unwrap().is_finite());
+        assert!(same_sign.median.unwrap().is_finite());
     }
 
     #[test]

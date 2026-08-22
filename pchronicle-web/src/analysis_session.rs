@@ -263,6 +263,10 @@ impl AnalysisRevision {
             return Err("A plan is required before running this analysis.".into());
         };
         let sql = plan.sql.clone();
+        self.execution = None;
+        self.evidence = None;
+        self.interpretation = None;
+        self.needs_rerun = false;
         let operation_id = self.begin_operation();
         self.state = RevisionState::Executing;
         self.error = None;
@@ -298,6 +302,7 @@ impl AnalysisRevision {
             profiles,
         });
         self.evidence = Some(evidence);
+        self.interpretation = None;
         self.error = None;
         self.needs_rerun = false;
         let effect = has_rows.then(|| AnalysisEffect::Interpret {
@@ -532,6 +537,104 @@ impl AnalysisSession {
             {
                 revision.state = RevisionState::Stale;
                 revision.error = None;
+                revision.pending_effect = None;
+                revision.active_operation_id = None;
+                revision.touch();
+                changed = true;
+            }
+        }
+        if changed {
+            self.updated_at_ms = now_millis();
+        }
+    }
+
+    pub fn apply_working_scope_change(
+        &mut self,
+        question: impl Into<String>,
+        next_scope: AnalysisScope,
+    ) -> Result<u64, String> {
+        let (active_revision_id, state, was_executed, prior_plan_context) = self
+            .active_revision()
+            .map(|revision| {
+                (
+                    revision.id,
+                    revision.state.clone(),
+                    revision.execution.is_some(),
+                    revision.plan.clone(),
+                )
+            })
+            .ok_or_else(|| "The active analysis revision is unavailable.".to_string())?;
+
+        if matches!(
+            &state,
+            RevisionState::GeneratingPlan | RevisionState::Executing
+        ) {
+            return Err("Analysis scope cannot change while an operation is running.".into());
+        }
+
+        if was_executed {
+            let revision = self.new_revision(question, next_scope);
+            revision.prior_plan_context = prior_plan_context;
+            return Ok(revision.id);
+        }
+
+        let next_state = match state {
+            RevisionState::Draft | RevisionState::PlanError => RevisionState::Draft,
+            RevisionState::PlanReady | RevisionState::QueryError | RevisionState::Stale => {
+                if prior_plan_context.is_some() {
+                    RevisionState::Stale
+                } else {
+                    RevisionState::Draft
+                }
+            }
+            _ => return Err("Analysis scope cannot change in this revision state.".into()),
+        };
+
+        let revision = self
+            .active_revision_mut()
+            .ok_or_else(|| "The active analysis revision is unavailable.".to_string())?;
+        revision.scope = next_scope;
+        revision.state = next_state;
+        revision.error = None;
+        revision.needs_rerun = false;
+        revision.pending_effect = None;
+        revision.active_operation_id = None;
+        revision.touch();
+        self.updated_at_ms = now_millis();
+        Ok(active_revision_id)
+    }
+
+    pub fn normalize_inflight_for_navigation(&mut self) {
+        let mut changed = false;
+        for revision in &mut self.revisions {
+            let normalized = match revision.state {
+                RevisionState::GeneratingPlan => {
+                    revision.state = RevisionState::Draft;
+                    revision.error = None;
+                    true
+                }
+                RevisionState::Executing => {
+                    revision.state = RevisionState::PlanReady;
+                    revision.error = None;
+                    revision.needs_rerun = true;
+                    true
+                }
+                RevisionState::Interpreting => {
+                    if revision.evidence.is_some() {
+                        revision.state = RevisionState::InterpretationError;
+                        revision.error = Some(
+                            "Interpretation was interrupted when this analysis was left.".into(),
+                        );
+                    } else {
+                        revision.state = RevisionState::QueryError;
+                        revision.error = None;
+                        revision.needs_rerun = true;
+                    }
+                    true
+                }
+                _ => false,
+            };
+            if normalized {
                 revision.pending_effect = None;
                 revision.active_operation_id = None;
                 revision.touch();
@@ -1038,6 +1141,51 @@ mod tests {
     }
 
     #[test]
+    fn rerun_failure_cannot_reveal_a_previous_interpretation() {
+        let raw = serde_json::to_string(&complete_session()).unwrap();
+        let mut restored = restore_session(&raw).unwrap();
+        let revision = restored.active_revision_mut().unwrap();
+        assert!(revision.execution.is_some());
+        assert!(revision.interpretation.is_some());
+        assert!(revision.needs_rerun);
+
+        revision.confirm_execution().unwrap();
+        let (revision_id, operation_id) = match revision.take_pending_effect().unwrap() {
+            AnalysisEffect::ExecuteSql {
+                revision_id,
+                operation_id,
+                ..
+            } => (revision_id, operation_id),
+            effect => panic!("expected execute effect, got {effect:?}"),
+        };
+        revision
+            .fail_query(revision_id, operation_id, "rerun failed")
+            .unwrap();
+
+        assert_eq!(revision.state, RevisionState::QueryError);
+        assert!(revision.execution.is_none());
+        assert!(revision.evidence.is_none());
+        assert!(revision.interpretation.is_none());
+        assert!(!revision.needs_rerun);
+    }
+
+    #[test]
+    fn new_query_evidence_defensively_discards_an_old_interpretation() {
+        let (mut revision, query_operation) = executing_revision();
+        revision.interpretation = Some(AnalysisInterpretation {
+            observations: vec!["old conclusion".into()],
+            ..AnalysisInterpretation::default()
+        });
+
+        revision
+            .finish_query(1, query_operation, evidence_with_rows(), Vec::new())
+            .unwrap();
+
+        assert!(revision.interpretation.is_none());
+        assert_eq!(revision.state, RevisionState::Interpreting);
+    }
+
+    #[test]
     fn analysis_href_round_trips_dataset_root_run_and_multi_run_scopes() {
         let scopes = vec![
             scope(),
@@ -1124,6 +1272,268 @@ mod tests {
             session.active_revision().unwrap().state,
             RevisionState::Stale
         );
+    }
+
+    #[test]
+    fn scope_change_marks_only_unexecuted_review_stale() {
+        for state in [RevisionState::PlanReady, RevisionState::QueryError] {
+            let mut unexecuted = plan_ready_session("snapshot-a");
+            unexecuted.active_revision_mut().unwrap().state = state;
+            let active_revision_id = unexecuted.active_revision_id;
+            let reviewed_scope = unexecuted.active_revision().unwrap().scope.clone();
+            let next_scope = AnalysisScope {
+                items: vec![AnalysisScopeItem::Dataset {
+                    name: "secondary".into(),
+                }],
+                ..reviewed_scope.clone()
+            };
+
+            let returned_revision_id = unexecuted
+                .apply_working_scope_change("compare failures", next_scope.clone())
+                .unwrap();
+
+            assert_eq!(returned_revision_id, active_revision_id);
+            assert_eq!(
+                unexecuted.active_revision().unwrap().state,
+                RevisionState::Stale
+            );
+            assert_eq!(unexecuted.active_revision().unwrap().scope, next_scope);
+        }
+    }
+
+    #[test]
+    fn draft_and_plan_error_scope_changes_persist_as_editable_drafts() {
+        let next_scope = AnalysisScope {
+            items: vec![AnalysisScopeItem::Dataset {
+                name: "secondary".into(),
+            }],
+            ..scope()
+        };
+        let draft = AnalysisRevision::draft(1, "draft question", scope());
+        let mut failed = AnalysisRevision::draft(1, "failed question", scope());
+        let operation_id = failed.begin_plan_generation().unwrap();
+        failed
+            .fail_plan(1, operation_id, "provider unavailable")
+            .unwrap();
+
+        for revision in [draft, failed] {
+            let mut session = AnalysisSession::with_revision(revision);
+            session
+                .apply_working_scope_change("working question", next_scope.clone())
+                .unwrap();
+
+            let changed = session.active_revision().unwrap();
+            assert_eq!(changed.scope, next_scope);
+            assert_eq!(changed.state, RevisionState::Draft);
+            assert!(changed.error.is_none());
+            assert_eq!(session.revisions.len(), 1);
+        }
+    }
+
+    #[test]
+    fn reviewed_unexecuted_scope_changes_persist_and_become_stale() {
+        for state in [
+            RevisionState::PlanReady,
+            RevisionState::QueryError,
+            RevisionState::Stale,
+        ] {
+            let mut session = plan_ready_session("snapshot-a");
+            let revision = session.active_revision_mut().unwrap();
+            revision.state = state;
+            revision.error = Some("old state error".into());
+            let next_scope = AnalysisScope {
+                items: vec![AnalysisScopeItem::Dataset {
+                    name: "secondary".into(),
+                }],
+                ..scope()
+            };
+
+            session
+                .apply_working_scope_change("compare failures", next_scope.clone())
+                .unwrap();
+
+            let changed = session.active_revision().unwrap();
+            assert_eq!(changed.scope, next_scope);
+            assert_eq!(changed.state, RevisionState::Stale);
+            assert!(changed.error.is_none());
+            assert_eq!(session.revisions.len(), 1);
+        }
+    }
+
+    #[test]
+    fn changed_draft_scope_survives_refresh_and_revision_selection() {
+        let mut session =
+            AnalysisSession::with_revision(AnalysisRevision::draft(1, "draft question", scope()));
+        let next_scope = AnalysisScope {
+            items: vec![AnalysisScopeItem::Dataset {
+                name: "secondary".into(),
+            }],
+            ..scope()
+        };
+        session
+            .apply_working_scope_change("draft question", next_scope.clone())
+            .unwrap();
+        let changed_revision_id = session.active_revision_id;
+        session.new_revision("another question", scope());
+
+        let mut restored: AnalysisSession =
+            serde_json::from_slice(&session.persisted_bytes().unwrap()).unwrap();
+        restored.select_revision(changed_revision_id).unwrap();
+
+        assert_eq!(restored.active_revision().unwrap().scope, next_scope);
+        assert_eq!(
+            restored.active_revision().unwrap().state,
+            RevisionState::Draft
+        );
+    }
+
+    #[test]
+    fn executed_scope_change_creates_a_draft_and_preserves_the_old_snapshot() {
+        let mut session = complete_session();
+        let old_revision_id = session.active_revision_id;
+        let old_scope = session.active_revision().unwrap().scope.clone();
+        let old_plan = session.active_revision().unwrap().plan.clone();
+        let next_scope = AnalysisScope {
+            items: vec![AnalysisScopeItem::Dataset {
+                name: "secondary".into(),
+            }],
+            ..old_scope.clone()
+        };
+
+        let next_revision_id = session
+            .apply_working_scope_change("Compare the new scope", next_scope.clone())
+            .unwrap();
+
+        assert_ne!(next_revision_id, old_revision_id);
+        let next = session.active_revision().unwrap();
+        assert_eq!(next.state, RevisionState::Draft);
+        assert_eq!(next.question, "Compare the new scope");
+        assert_eq!(next.scope, next_scope);
+        assert_eq!(next.prior_plan_context, old_plan);
+        let old = session
+            .revisions
+            .iter()
+            .find(|revision| revision.id == old_revision_id)
+            .unwrap();
+        assert_eq!(old.state, RevisionState::Complete);
+        assert_eq!(old.scope, old_scope);
+        assert!(old.execution.is_some());
+    }
+
+    #[test]
+    fn scope_change_is_rejected_while_plan_or_query_generation_is_in_flight() {
+        let next_scope = AnalysisScope {
+            items: vec![AnalysisScopeItem::Dataset {
+                name: "secondary".into(),
+            }],
+            ..scope()
+        };
+        let mut planning =
+            AnalysisSession::with_revision(AnalysisRevision::draft(1, "planning", scope()));
+        planning
+            .active_revision_mut()
+            .unwrap()
+            .begin_plan_generation()
+            .unwrap();
+
+        assert!(planning
+            .apply_working_scope_change("planning", next_scope.clone())
+            .is_err());
+        assert_eq!(
+            planning.active_revision().unwrap().state,
+            RevisionState::GeneratingPlan
+        );
+
+        let (executing, _) = executing_revision();
+        let mut querying = AnalysisSession::with_revision(executing);
+
+        assert!(querying
+            .apply_working_scope_change("executing", next_scope)
+            .is_err());
+        assert_eq!(
+            querying.active_revision().unwrap().state,
+            RevisionState::Executing
+        );
+    }
+
+    #[test]
+    fn restored_query_error_scope_change_also_preserves_the_executed_snapshot() {
+        let raw = serde_json::to_string(&complete_session()).unwrap();
+        let mut session = restore_session(&raw).unwrap();
+        let old_revision_id = session.active_revision_id;
+        assert_eq!(
+            session.active_revision().unwrap().state,
+            RevisionState::QueryError
+        );
+        assert!(session.active_revision().unwrap().execution.is_some());
+        let next_scope = AnalysisScope {
+            items: vec![AnalysisScopeItem::Dataset {
+                name: "secondary".into(),
+            }],
+            ..scope()
+        };
+
+        session
+            .apply_working_scope_change("retry with less scope", next_scope.clone())
+            .unwrap();
+
+        assert_eq!(
+            session.active_revision().unwrap().state,
+            RevisionState::Draft
+        );
+        assert_eq!(session.active_revision().unwrap().scope, next_scope);
+        let old = session
+            .revisions
+            .iter()
+            .find(|revision| revision.id == old_revision_id)
+            .unwrap();
+        assert_eq!(old.state, RevisionState::QueryError);
+        assert!(old.execution.is_some());
+        assert!(old.interpretation.is_some());
+    }
+
+    #[test]
+    fn leaving_a_session_normalizes_every_inflight_revision_for_retry() {
+        let mut session =
+            AnalysisSession::with_revision(AnalysisRevision::draft(1, "planning", scope()));
+        session
+            .active_revision_mut()
+            .unwrap()
+            .begin_plan_generation()
+            .unwrap();
+
+        let mut executing = AnalysisRevision::draft(2, "executing", scope());
+        let plan_operation = executing.begin_plan_generation().unwrap();
+        executing.finish_plan(2, plan_operation, plan()).unwrap();
+        executing.confirm_execution().unwrap();
+        session.revisions.push(executing);
+
+        let (mut interpreting, query_operation) = executing_revision();
+        interpreting.id = 3;
+        if let Some(AnalysisEffect::ExecuteSql { revision_id, .. }) =
+            interpreting.pending_effect.as_mut()
+        {
+            *revision_id = 3;
+        }
+        interpreting
+            .finish_query(3, query_operation, evidence_with_rows(), Vec::new())
+            .unwrap();
+        session.revisions.push(interpreting);
+
+        session.normalize_inflight_for_navigation();
+
+        assert_eq!(session.revisions[0].state, RevisionState::Draft);
+        assert_eq!(session.revisions[1].state, RevisionState::PlanReady);
+        assert!(session.revisions[1].needs_rerun);
+        assert_eq!(
+            session.revisions[2].state,
+            RevisionState::InterpretationError
+        );
+        assert!(session.revisions[2].evidence.is_some());
+        for revision in &session.revisions {
+            assert!(revision.active_operation_id.is_none());
+            assert!(revision.pending_effect.is_none());
+        }
     }
 
     #[test]
@@ -1528,6 +1938,7 @@ mod tests {
                     min: None,
                     max: None,
                     mean: None,
+                    median: None,
                     histogram: Vec::new(),
                     top_values: (0..10)
                         .map(|value| crate::result_profile::ValueCount {

@@ -265,6 +265,33 @@
   color: var(--analyze-accent);
 }
 
+.analyze-chip-remove {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  margin: -1px -3px -1px 5px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #667582;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.analyze-chip-remove:hover:not(:disabled),
+.analyze-chip-remove:focus-visible:not(:disabled) {
+  background: #dcebe8;
+  color: var(--analyze-accent-dark);
+}
+
+.analyze-chip-remove:disabled {
+  color: #b4bdc5;
+  cursor: not-allowed;
+}
+
 .analyze-starters {
   margin-top: 19px;
 }
@@ -1166,6 +1193,17 @@ button.result-mini-bar:hover i {
 .result-refinement-stage small {
   color: #657872;
   font-size: 8px;
+}
+
+.result-refinement-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.result-refinement-actions .analyze-link-button {
+  margin-top: 0;
 }
 
 .result-explorer-footer {

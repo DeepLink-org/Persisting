@@ -112,7 +112,7 @@ pub async fn interpret(
     let system = interpretation_system_prompt();
     let messages = vec![json!({
         "role": "user",
-        "content": serde_json::to_string(&request.digest)?,
+        "content": serde_json::to_string(&evidence_digest_prompt_value(&request.digest))?,
     })];
     let content = request_json_content(&request.config, &system, messages).await?;
     match parse_interpretation_content(&content)
@@ -219,7 +219,7 @@ pub fn plan_system_prompt(
     refinement: Option<&AnalysisRefinement>,
 ) -> Result<String, AnalysisAgentError> {
     let catalog = catalog_prompt_value(catalog);
-    let scope = serde_json::to_value(scope)?;
+    let scope = scope_prompt_value(scope);
     let previous_plan = previous_plan.map(serde_json::to_value).transpose()?;
     let refinement = refinement.map(serde_json::to_value).transpose()?;
     let context = json!({
@@ -650,17 +650,6 @@ fn validate_text_array(name: &str, values: &[String]) -> Result<(), AnalysisAgen
 
 fn catalog_prompt_value(catalog: &QueryCatalog) -> Value {
     json!({
-        "snapshot_id": catalog.snapshot_id,
-        "read_only": catalog.read_only,
-        "database": catalog.database,
-        "storage_path": catalog.storage_path,
-        "path_column": catalog.path_column,
-        "datasets": catalog.datasets.iter().map(|dataset| json!({
-            "name": dataset.name,
-            "uri": dataset.uri,
-            "ready_sources": dataset.ready_sources,
-            "error_sources": dataset.error_sources,
-        })).collect::<Vec<_>>(),
         "tables": catalog.tables.iter().map(|table| json!({
             "name": table.name,
             "description": table.description,
@@ -671,6 +660,59 @@ fn catalog_prompt_value(catalog: &QueryCatalog) -> Value {
                 "description": field.description,
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
+    })
+}
+
+fn scope_prompt_value(scope: &AnalysisScope) -> Value {
+    json!({
+        "database": scope.database,
+        "items": scope.items.iter().map(scope_item_prompt_value).collect::<Vec<_>>(),
+    })
+}
+
+fn scope_item_prompt_value(item: &AnalysisScopeItem) -> Value {
+    match item {
+        AnalysisScopeItem::Dataset { name } => json!({
+            "kind": "dataset",
+            "name": name,
+        }),
+        AnalysisScopeItem::Root {
+            dataset,
+            file,
+            root_session_id,
+        } => json!({
+            "kind": "root",
+            "dataset": dataset,
+            "file": file,
+            "root_session_id": root_session_id,
+        }),
+        AnalysisScopeItem::Run { run } => json!({
+            "kind": "run",
+            "run": {
+                "dataset": run.dataset,
+                "file": run.file,
+                "run_id": run.run_id,
+                "agent_id": run.agent_id,
+                "session_id": run.session_id,
+                "root_session_id": run.root_session_id,
+            },
+        }),
+    }
+}
+
+fn evidence_digest_prompt_value(digest: &EvidenceDigest) -> Value {
+    json!({
+        "question": digest.question,
+        "scope": scope_prompt_value(&digest.scope),
+        "sql": digest.sql,
+        "columns": digest.columns,
+        "profiles": digest.profiles,
+        "rows": digest.rows,
+        "returned_rows": digest.returned_rows,
+        "query_truncated": digest.query_truncated,
+        "max_rows": digest.max_rows,
+        "max_bytes": digest.max_bytes,
+        "digest_truncated": digest.digest_truncated,
     })
 }
 
@@ -880,7 +922,10 @@ mod tests {
 
     use super::*;
     use crate::analysis_session::{AnalysisPlan, AnalysisScope, AnalysisScopeItem, SuggestedView};
-    use crate::model::{QueryCatalog, QueryEvidence, QueryFieldSummary, QueryTableSummary};
+    use crate::model::{
+        QueryCatalog, QueryDatasetSummary, QueryEvidence, QueryFieldSummary, QueryTableSummary,
+        RunSummary,
+    };
     use crate::result_profile::profile_rows;
 
     #[test]
@@ -1136,6 +1181,161 @@ mod tests {
         assert!(prompt.contains("Status of each recorded run"));
         assert!(prompt.contains("Stable identifier for a recorded run"));
         assert!(prompt.contains("one row per recorded run"));
+    }
+
+    #[test]
+    fn plan_prompt_sends_only_approved_catalog_and_scope_context() {
+        let mut catalog = catalog();
+        catalog.datasets = vec![QueryDatasetSummary {
+            name: "private-dataset".into(),
+            uri: "s3://secret-bucket/?token=private".into(),
+            ready_sources: 17,
+            error_sources: 4,
+        }];
+        let scope = private_scope();
+
+        let prompt = plan_system_prompt(&catalog, &scope, None, None).unwrap();
+        let (_, context) = prompt.split_once("Planning context:\n").unwrap();
+        let context: Value = serde_json::from_str(context).unwrap();
+
+        assert_eq!(
+            context,
+            json!({
+                "catalog": {
+                    "tables": [{
+                        "name": "default.runs",
+                        "description": "Recorded agent runs",
+                        "grain": "one row per recorded run",
+                        "fields": [
+                            {
+                                "name": "status",
+                                "data_type": "VARCHAR",
+                                "description": "Status of each recorded run",
+                            },
+                            {
+                                "name": "run_id",
+                                "data_type": "VARCHAR",
+                                "description": "Stable identifier for a recorded run",
+                            },
+                        ],
+                    }],
+                },
+                "scope": {
+                    "database": "default",
+                    "items": [
+                        {
+                            "kind": "dataset",
+                            "name": "default",
+                        },
+                        {
+                            "kind": "root",
+                            "dataset": "default",
+                            "file": "source.json",
+                            "root_session_id": "root-1",
+                        },
+                        {
+                            "kind": "run",
+                            "run": {
+                                "dataset": "default",
+                                "file": "source.json",
+                                "run_id": "run-1",
+                                "agent_id": "agent-1",
+                                "session_id": "session-1",
+                                "root_session_id": "root-1",
+                            },
+                        },
+                    ],
+                },
+                "prior_plan": null,
+                "refinement": null,
+                "server_budgets": {
+                    "max_rows": 100,
+                    "max_bytes": 4 * 1024 * 1024,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn interpretation_digest_sends_only_approved_scope_context() {
+        let mut digest = digest_with_rows(vec![json!({"status": "failed"})]);
+        digest.scope = private_scope();
+        digest.columns = vec!["status".into()];
+
+        assert_eq!(
+            evidence_digest_prompt_value(&digest),
+            json!({
+                "question": "compare outcomes",
+                "scope": {
+                    "database": "default",
+                    "items": [
+                        {
+                            "kind": "dataset",
+                            "name": "default",
+                        },
+                        {
+                            "kind": "root",
+                            "dataset": "default",
+                            "file": "source.json",
+                            "root_session_id": "root-1",
+                        },
+                        {
+                            "kind": "run",
+                            "run": {
+                                "dataset": "default",
+                                "file": "source.json",
+                                "run_id": "run-1",
+                                "agent_id": "agent-1",
+                                "session_id": "session-1",
+                                "root_session_id": "root-1",
+                            },
+                        },
+                    ],
+                },
+                "sql": "SELECT 1",
+                "columns": ["status"],
+                "profiles": [],
+                "rows": [{"status": "failed"}],
+                "returned_rows": 1,
+                "query_truncated": false,
+                "max_rows": 100,
+                "max_bytes": 4 * 1024 * 1024,
+                "digest_truncated": false,
+            })
+        );
+    }
+
+    fn private_scope() -> AnalysisScope {
+        AnalysisScope {
+            database: "default".into(),
+            storage_path: "/Users/alice/private-trajectories".into(),
+            snapshot_id: "snapshot-secret".into(),
+            items: vec![
+                AnalysisScopeItem::Dataset {
+                    name: "default".into(),
+                },
+                AnalysisScopeItem::Root {
+                    dataset: "default".into(),
+                    file: "source.json".into(),
+                    root_session_id: "root-1".into(),
+                },
+                AnalysisScopeItem::Run {
+                    run: RunSummary {
+                        dataset: "default".into(),
+                        file: "source.json".into(),
+                        run_id: Some("run-1".into()),
+                        agent_id: "agent-1".into(),
+                        model_name: Some("private-model".into()),
+                        session_id: "session-1".into(),
+                        root_session_id: Some("root-1".into()),
+                        path: "private/internal/path".into(),
+                        row_count: 99,
+                        duplicate_event_ids: 3,
+                        status: "private-status".into(),
+                    },
+                },
+            ],
+        }
     }
 
     fn catalog() -> QueryCatalog {
