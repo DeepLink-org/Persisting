@@ -388,7 +388,12 @@ pub(super) fn configure_mini_python_environment(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::{fs, process::Command};
+
+    use super::{
+        configure_mini_python_environment, mini_python_runtime, parse_version, resolve_launch_spec,
+    };
+    use crate::model::{AgentKind, PlaybackRequest, ReplayMode};
 
     #[test]
     fn mini_version_probe_accepts_exact_banner_before_config_noise() {

@@ -657,9 +657,9 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        openhands_action_signature, openhands_complete_batches,
-        openhands_fatal_controller_marker, openhands_observation_content,
-        openhands_reconstructed_tool_metadata, prepend_openhands_runtime_tools, LaunchSpec,
+        openhands_action_signature, openhands_complete_batches, openhands_fatal_controller_marker,
+        openhands_observation_content, openhands_reconstructed_tool_metadata,
+        prepend_openhands_runtime_tools, LaunchSpec,
     };
 
     #[test]

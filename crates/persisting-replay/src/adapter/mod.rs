@@ -65,14 +65,6 @@ pub(super) fn check_boundary(after_step: usize, complete: usize) -> Result<(), R
     Ok(())
 }
 
-fn required_str<'a>(value: &'a Value, field: &str, context: &str) -> Result<&'a str, ReplayError> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ReplayError::trajectory(format!("{context} has no {field}")))
-}
-
 pub(super) fn prepared_outcome(path: PathBuf) -> ReplayOutcome {
     ReplayOutcome {
         status: "prepared".into(),

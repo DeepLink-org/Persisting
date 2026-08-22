@@ -7,8 +7,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use super::{
-    agent_command, check_boundary, required_str, sanitized_environment, RunContext,
-    MAX_TOOL_OUTPUT_BYTES,
+    agent_command, check_boundary, sanitized_environment, RunContext, MAX_TOOL_OUTPUT_BYTES,
 };
 use crate::claude_bridge::ClaudeBridgeHandle;
 use crate::claude_resume::ResumeTransportManifest;
@@ -31,6 +30,14 @@ const STALE_CLAUDE_TOOLS: &[&str] = &[
     "TaskUpdate",
     "TodoWrite",
 ];
+
+fn required_str<'a>(value: &'a Value, field: &str, context: &str) -> Result<&'a str, ReplayError> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ReplayError::trajectory(format!("{context} has no {field}")))
+}
 
 pub(super) fn build(request: &PlaybackRequest) -> Result<AdapterPlan, ReplayError> {
     build_claude_plan(request).map(AdapterPlan::ClaudeCode)
