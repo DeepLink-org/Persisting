@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::api;
 use crate::components::{table_fence, trajectory_fence};
-use crate::model::{RunAnalysis, RunSummary, TurnDetail, TurnSummary};
+use crate::model::{QueryEvidence, RunAnalysis, RunSummary, TurnDetail, TurnSummary};
 
 const STORAGE_KEY: &str = "pchronicle_llm_config";
 const DEFAULT_CONTEXT_LIMIT: usize = 32 * 1024;
@@ -14,6 +14,8 @@ const FULL_CONTEXT_LIMIT: usize = 64 * 1024;
 
 pub const THREAD_BYTE_LIMIT: usize = 200 * 1024;
 pub const LLM_MESSAGE_BYTE_LIMIT: usize = 32 * 1024;
+pub const TURN_BODY_LIMIT: usize = 8 * 1024;
+pub const TOOL_NAMES: [&str; 3] = ["get_analysis", "get_turn", "query_sql"];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -753,6 +755,87 @@ fn truncate(value: &str, limit: usize) -> (String, bool) {
     (format!("{}\n[… truncated …]", &value[..end]), true)
 }
 
+pub fn unknown_tool_result(name: &str) -> String {
+    format!("Unknown tool `{name}`. Valid tools: get_analysis, get_turn, query_sql.")
+}
+
+pub fn format_analysis_result(analysis: &RunAnalysis) -> String {
+    format!(
+        "turns={} events={} tools={} explicit_errors={} tokens={} latency_p95={} latency_samples={}/{}\nsources={:?}\nkinds={:?}\nmodels={:?}\ntool_names={:?}",
+        analysis.turn_count,
+        analysis.event_count,
+        analysis.tool_call_count,
+        analysis.error_count,
+        analysis
+            .total_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unavailable".into()),
+        analysis
+            .latency_ms
+            .p95
+            .map(|value| format!("{value:.1}"))
+            .unwrap_or_else(|| "unavailable".into()),
+        analysis.latency_ms.sample_count,
+        analysis.latency_ms.total_count,
+        analysis
+            .source_breakdown
+            .iter()
+            .map(|item| format!("{}:{}", item.name, item.turn_count))
+            .collect::<Vec<_>>(),
+        analysis
+            .kind_breakdown
+            .iter()
+            .map(|item| format!("{}:{}", item.name, item.turn_count))
+            .collect::<Vec<_>>(),
+        analysis
+            .model_breakdown
+            .iter()
+            .map(|item| format!("{}:{}", item.name, item.turn_count))
+            .collect::<Vec<_>>(),
+        analysis
+            .tools
+            .iter()
+            .map(|tool| format!("{}:{}", tool.name, tool.count))
+            .collect::<Vec<_>>(),
+    )
+}
+
+pub fn format_turn_result(detail: &TurnDetail) -> String {
+    let (body, truncated) = truncate(&detail.turn.text(), TURN_BODY_LIMIT);
+    format!(
+        "[turn:{}] source={} kind={} model={} latency={} tools={}\n{}\n{}",
+        detail.summary.id,
+        detail.summary.source,
+        detail.summary.kind.as_deref().unwrap_or("unknown"),
+        detail
+            .summary
+            .model_name
+            .as_deref()
+            .unwrap_or("unavailable"),
+        detail
+            .summary
+            .latency_ms
+            .map(|value| format!("{value:.1}"))
+            .unwrap_or_else(|| "unavailable".into()),
+        detail.summary.tool_names.join(","),
+        body,
+        if truncated {
+            "truncated=true"
+        } else {
+            "truncated=false"
+        }
+    )
+}
+
+pub fn format_sql_result(sql: &str, evidence: &QueryEvidence) -> String {
+    format!(
+        "SQL:\n{sql}\nreturned_rows={} truncated={}\n{}",
+        evidence.returned_rows,
+        evidence.truncated,
+        serde_json::to_string(&evidence.rows).unwrap_or_default()
+    )
+}
+
 fn optional_number(value: Option<f64>) -> String {
     value
         .map(|value| format!("{value:.1}"))
@@ -1064,5 +1147,103 @@ mod tests {
             parse_json_fallback(r#"{"tool":"get_turn","arguments":42}"#),
             AssistantTurn::Invalid
         );
+    }
+
+    use crate::model::{MetricStats, StorylineTurn};
+
+    fn stats() -> MetricStats {
+        MetricStats {
+            sample_count: 1,
+            total_count: 3,
+            p50: None,
+            p95: None,
+            max: None,
+        }
+    }
+
+    fn sample_analysis() -> RunAnalysis {
+        RunAnalysis {
+            run: sample_run("s-a", Some("r1")),
+            event_count: 3,
+            turn_count: 3,
+            tool_call_count: 0,
+            error_count: 0,
+            start_timestamp: None,
+            end_timestamp: None,
+            models: Vec::new(),
+            prompt_tokens: None,
+            completion_tokens: None,
+            total_tokens: None,
+            latency_ms: stats(),
+            ttft_ms: stats(),
+            latency_histogram: Vec::new(),
+            source_breakdown: Vec::new(),
+            kind_breakdown: Vec::new(),
+            model_breakdown: Vec::new(),
+            tools: Vec::new(),
+        }
+    }
+
+    fn sample_detail(message: Value) -> TurnDetail {
+        TurnDetail {
+            summary: TurnSummary {
+                id: 9,
+                source: "agent".into(),
+                kind: None,
+                timestamp: None,
+                call_id: None,
+                preview: String::new(),
+                char_count: 0,
+                modalities: Vec::new(),
+                model_name: None,
+                latency_ms: None,
+                ttft_ms: None,
+                prompt_tokens: None,
+                completion_tokens: None,
+                total_tokens: None,
+                tool_names: Vec::new(),
+                event_seqs: Vec::new(),
+                has_error: false,
+            },
+            turn: StorylineTurn {
+                id: 9,
+                kind: None,
+                timestamp: None,
+                source: "agent".into(),
+                message,
+                reasoning_content: None,
+                tool_calls: None,
+                observation: None,
+                metrics: None,
+                model_name: None,
+                latency_ms: None,
+                ttft_ms: None,
+                extra: None,
+            },
+            wire_tool_calls: Vec::new(),
+            events: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn turn_formatter_truncates_on_utf8_boundary() {
+        let detail = sample_detail(Value::String("轨".repeat(20_000)));
+        let text = format_turn_result(&detail);
+        assert!(text.contains("[… truncated …]"));
+        assert!(text.is_char_boundary(text.find("[… truncated …]").unwrap()));
+    }
+
+    #[test]
+    fn unknown_tool_is_an_error_string() {
+        let text = unknown_tool_result("drop_table");
+        assert!(text.contains("drop_table"));
+        assert!(text.to_ascii_lowercase().contains("unknown"));
+    }
+
+    #[test]
+    fn analysis_formatter_omits_turn_bodies() {
+        let text = format_analysis_result(&sample_analysis());
+        assert!(text.contains("turns=3"));
+        assert!(!text.contains("preview"));
     }
 }
