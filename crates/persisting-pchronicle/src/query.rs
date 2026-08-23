@@ -7,7 +7,8 @@ pub use crate::document::{FilterPushdown, QueryCapabilities, QueryTables};
 #[cfg(feature = "lance-store")]
 pub use crate::store::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat, ExternalTableSpec,
-    FileTrajectoryQueryMetricsSnapshot, QueryBackendInfo, QuerySnapshot, QueryWriteOutcome,
-    CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE, DATAFUSION_EVENTS_TABLE,
-    DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE, SOURCE_FILE_COLUMN,
+    FileTrajectoryQueryMetricsSnapshot, IntrospectedField, IntrospectedTable, QueryBackendInfo,
+    QuerySnapshot, QueryWriteOutcome, CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE,
+    DATAFUSION_EVENTS_TABLE, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,
+    DATAFUSION_TOOL_CALLS_TABLE, SOURCE_FILE_COLUMN,
 };

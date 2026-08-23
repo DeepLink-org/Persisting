@@ -1,6 +1,7 @@
+use crate::analysis_session::{AnalysisScope, AnalysisSpec, CompileFailure, CompiledQuery};
 use crate::model::{
-    CatalogTree, QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, TurnDetail,
-    TurnPage,
+    CatalogTree, QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, StorylineSnapshot,
+    TurnDetail, TurnPage,
 };
 use gloo_net::http::{Request, Response};
 use serde_json::json;
@@ -101,6 +102,19 @@ pub async fn turn_detail(run: &RunSummary, turn_id: i64) -> Result<TurnDetail, S
     .map_err(|e| e.to_string())
 }
 
+pub async fn storyline(run: &RunSummary) -> Result<StorylineSnapshot, String> {
+    checked(
+        Request::get(&format!("/api/storyline?{}", run.query()))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?,
+    )
+    .await?
+    .json()
+    .await
+    .map_err(|e| e.to_string())
+}
+
 pub async fn query_evidence(sql: &str) -> Result<QueryEvidence, String> {
     query_evidence_with_budget(sql, 50, 64 * 1024).await
 }
@@ -125,6 +139,51 @@ async fn query_evidence_with_budget(
         .json()
         .await
         .map_err(|e| e.to_string())
+}
+
+pub async fn compile_analysis(
+    spec: &AnalysisSpec,
+    snapshot_id: &str,
+    scope: &AnalysisScope,
+) -> Result<CompiledQuery, CompileFailure> {
+    let response = Request::post("/api/analysis/compile")
+        .json(&json!({
+            "spec": spec,
+            "snapshot_id": snapshot_id,
+            "scope": scope,
+        }))
+        .map_err(|error| CompileFailure {
+            code: "invalid_request".into(),
+            message: error.to_string(),
+            field: None,
+            engine_detail: None,
+        })?
+        .send()
+        .await
+        .map_err(|error| CompileFailure {
+            code: "unavailable".into(),
+            message: error.to_string(),
+            field: None,
+            engine_detail: None,
+        })?;
+    if response.ok() {
+        return response.json().await.map_err(|error| CompileFailure {
+            code: "invalid_request".into(),
+            message: error.to_string(),
+            field: None,
+            engine_detail: None,
+        });
+    }
+    let status = response.status();
+    match response.json::<CompileFailure>().await {
+        Ok(failure) => Err(failure),
+        Err(_) => Err(CompileFailure {
+            code: "invalid_request".into(),
+            message: format!("HTTP {status}: compile failed"),
+            field: None,
+            engine_detail: None,
+        }),
+    }
 }
 
 pub async fn query_catalog() -> Result<QueryCatalog, String> {

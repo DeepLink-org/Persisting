@@ -190,7 +190,7 @@ JSON 序列化和解码都使用短名；长名仅用于说明字段概念，不
 
 `task.env` 与 `turns[].env` 形状相同：`name` / `endpoint` / `id` / `event_type` / `request_id` 为可选字符串；`state` 为开放 JSON object。重建某 turn 的有效 env 时，先取 `/task/env` 再浅合并该 turn 的 `env`（`state` 也浅合并）。落盘保持未合并形态。
 
-`task.llm` 目前只有可选正整数 `k`。`task.result` 承载评测与预算：`task_correct` / `correct` / `final_answer` / `ground_truth` / `status` / `score` / `max_score` / `error` / `artifacts` / `category` / `attempts_tried` / `solved_at` / `retry_count` / `retry_counts`。空字符串、空 object、`null` 视为缺省。
+`task.llm` 目前只有可选正整数 `k`。`task.result` 承载通用评测：`correct` / `final_answer` / `ground_truth` / `status` / `score` / `max_score` / `error` / `artifacts`。ACTF 私货（`task_correct`、`category`、`attempts_tried`、`solved_at`、`retry_count`、`retry_counts`）不是强类型 hub 字段；读写旧 Storyline JSON 时这些键进入 `task.result` extra（与 typed 字段同级 flatten），不得静默丢弃。RFC-0004 的 JSON Pointer 不变，ACTF 转换层从 extra 还原。空字符串、空 object、`null` 视为缺省。
 
 `prompt` 与 `turns[].prompt` 形状相同：可选字符串 `system` / `user`。有效 prompt 取该 turn 的 `/prompt`，缺省则用文档 `/prompt`；turn 一旦出现 `/prompt` 就整段替换，缺省键视为空字符串，不从文档继承。`copied == true` 的 turn 不得写 `prompt`。文档 `/prompt` 不能是空对象。turn 上唯一允许的双空对象是显式 `{"system":"","user":""}`，用来清空文档基线。
 
@@ -268,3 +268,4 @@ convert(from, to, input)       ≡ from_storyline(to, into_storyline(from, input
 | 2026-08-21 | Storyline schema 与外围格式映射分离；映射由各格式 RFC 独立负责 |
 | 2026-08-22 | 增加可选 `/task`、文档/turn 时间、turn `env`、tool `kind`/`response`；`schema_version` 仍为 `storyline/v1` |
 | 2026-08-22 | 增加可选文档 `/prompt` 与 turn `/prompt`（`{system, user}`）；`msg` 仍是助手正文 |
+| 2026-08-23 | `task.result` 强类型只保留通用评测；ACTF 私货进 extra，旧 JSON 同级键不得静默丢弃 |

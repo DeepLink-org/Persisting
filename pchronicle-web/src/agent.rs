@@ -38,6 +38,9 @@ pub struct ThreadMessage {
     pub sql: Option<String>,
     #[serde(default)]
     pub truncated: bool,
+    /// Thinking-mode models require this echoed on the next chat request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -83,6 +86,7 @@ pub enum DriveResult {
 pub fn apply_model_turn(
     state: &mut LoopState,
     turn: AssistantTurn,
+    reasoning_content: Option<String>,
     mut execute: impl FnMut(&ParsedToolCall) -> String,
 ) -> DriveResult {
     if state.force_final {
@@ -112,6 +116,7 @@ pub fn apply_model_turn(
                     tool_name: None,
                     sql: None,
                     truncated: false,
+                    reasoning_content,
                 });
             }
 
@@ -141,6 +146,7 @@ pub fn apply_model_turn(
                     tool_name: Some(call.name),
                     sql: None,
                     truncated: false,
+                    reasoning_content: None,
                 });
             }
 
@@ -318,6 +324,7 @@ pub async fn answer(request: AnswerRequest<'_>) -> Result<AgentAnswer, String> {
         tool_name: None,
         sql: None,
         truncated: false,
+        reasoning_content: None,
     });
 
     let catalog_context = match api::query_catalog().await {
@@ -385,11 +392,16 @@ pub async fn answer(request: AnswerRequest<'_>) -> Result<AgentAnswer, String> {
             }
         }
 
-        let result = apply_model_turn(&mut state, turn, |_| {
-            results
-                .pop_front()
-                .unwrap_or_else(|| "Tool call budget exhausted.".into())
-        });
+        let result = apply_model_turn(
+            &mut state,
+            turn,
+            extract_reasoning_content(&message),
+            |_| {
+                results
+                    .pop_front()
+                    .unwrap_or_else(|| "Tool call budget exhausted.".into())
+            },
+        );
         for message in state.messages.iter_mut().rev() {
             let Some(call_id) = message.tool_call_id.as_ref() else {
                 continue;
@@ -534,14 +546,16 @@ fn openai_messages(messages: &[ThreadMessage], json_mode: bool) -> Vec<Value> {
                                 })
                             })
                             .collect::<Vec<_>>();
-                        mapped.push(json!({
-                            "role": "assistant",
-                            "content": null,
-                            "tool_calls": tool_calls,
-                        }));
+                        mapped.push(assistant_tool_call_message(
+                            tool_calls,
+                            message.reasoning_content.as_deref(),
+                        ));
                     }
                 } else {
-                    mapped.push(json!({"role": "assistant", "content": message.text}));
+                    mapped.push(assistant_text_message(
+                        &message.text,
+                        message.reasoning_content.as_deref(),
+                    ));
                 }
             }
             ThreadRole::Tool if json_mode => {
@@ -562,6 +576,36 @@ fn openai_messages(messages: &[ThreadMessage], json_mode: bool) -> Vec<Value> {
     }
 
     mapped
+}
+
+fn assistant_tool_call_message(tool_calls: Vec<Value>, reasoning_content: Option<&str>) -> Value {
+    json!({
+        "role": "assistant",
+        "content": null,
+        "tool_calls": tool_calls,
+        "reasoning_content": reasoning_content.unwrap_or(""),
+    })
+}
+
+fn assistant_text_message(text: &str, reasoning_content: Option<&str>) -> Value {
+    let mut payload = json!({"role": "assistant", "content": text});
+    if let Some(reasoning) = reasoning_content.filter(|text| !text.is_empty()) {
+        payload["reasoning_content"] = json!(reasoning);
+    }
+    payload
+}
+
+fn extract_reasoning_content(message: &Value) -> Option<String> {
+    ["reasoning_content", "reasoning", "reasoning_text"]
+        .into_iter()
+        .find_map(|key| {
+            message
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+        })
 }
 
 fn tools_payload() -> Value {
@@ -736,6 +780,7 @@ fn finish_answer(
         tool_name: None,
         sql: sql.clone(),
         truncated: evidence_truncated,
+        reasoning_content: None,
     });
     thread.updated_at = now_millis();
     trim_thread(&mut thread);
@@ -814,10 +859,195 @@ pub fn parse_native_message(message: &Value) -> AssistantTurn {
         }
         // empty array: fall through to content
     }
-    match message.get("content").and_then(Value::as_str) {
-        Some(text) if !text.trim().is_empty() => AssistantTurn::Final(text.to_string()),
-        _ => AssistantTurn::Invalid,
+    let content = message.get("content").and_then(Value::as_str).unwrap_or("");
+    if looks_like_dsml_tool_calls(content) {
+        return match parse_dsml_tool_calls(content) {
+            Some(calls) if !calls.is_empty() => AssistantTurn::ToolCalls(calls),
+            _ => AssistantTurn::Invalid,
+        };
     }
+    if !content.trim().is_empty() {
+        AssistantTurn::Final(content.to_string())
+    } else {
+        AssistantTurn::Invalid
+    }
+}
+
+const DSML_MARKER: &str = "|DSML|";
+
+pub fn visible_assistant_text(text: &str) -> Option<String> {
+    if !looks_like_dsml_tool_calls(text) {
+        return Some(text.to_string());
+    }
+    let stripped = strip_dsml_markup(text);
+    let trimmed = stripped.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(stripped)
+    }
+}
+
+fn looks_like_dsml_tool_calls(content: &str) -> bool {
+    let content = canonicalize_dsml_tags(content);
+    content.contains(&format!("<{DSML_MARKER}tool_calls>"))
+        || content.contains(&format!("<{DSML_MARKER}function_calls>"))
+        || content.contains(&format!("<{DSML_MARKER}invoke"))
+        || content.contains(&format!("</{DSML_MARKER}tool_calls>"))
+        || content.contains(&format!("</{DSML_MARKER}function_calls>"))
+}
+
+fn canonicalize_dsml_tags(content: &str) -> String {
+    let mut output = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(offset) = rest.find("DSML") {
+        output.push_str(&rest[..offset]);
+        let (before, dsml_and_after) = rest.split_at(offset);
+        let prefix = before
+            .chars()
+            .rev()
+            .take_while(|ch| ch.is_whitespace() || is_dsml_pipe(*ch))
+            .collect::<String>();
+        let pipe_left = prefix.chars().any(is_dsml_pipe);
+        let after_dsml = &dsml_and_after["DSML".len()..];
+        let suffix_len = after_dsml
+            .chars()
+            .take_while(|ch| ch.is_whitespace() || is_dsml_pipe(*ch))
+            .map(char::len_utf8)
+            .sum::<usize>();
+        let pipe_right = after_dsml[..suffix_len].chars().any(is_dsml_pipe);
+        if pipe_left && pipe_right {
+            output.truncate(output.len() - prefix.len());
+            output.push_str(DSML_MARKER);
+            rest = &after_dsml[suffix_len..];
+        } else {
+            output.push_str("DSML");
+            rest = after_dsml;
+        }
+    }
+    output.push_str(rest);
+    output
+        .replace(
+            &format!("<{DSML_MARKER}function_calls>"),
+            &format!("<{DSML_MARKER}tool_calls>"),
+        )
+        .replace(
+            &format!("</{DSML_MARKER}function_calls>"),
+            &format!("</{DSML_MARKER}tool_calls>"),
+        )
+}
+
+fn is_dsml_pipe(ch: char) -> bool {
+    matches!(ch, '|' | '｜' | '│')
+}
+
+fn parse_dsml_tool_calls(content: &str) -> Option<Vec<ParsedToolCall>> {
+    let content = canonicalize_dsml_tags(content);
+    let open = format!("<{DSML_MARKER}tool_calls>");
+    let close = format!("</{DSML_MARKER}tool_calls>");
+    let body = if let Some(start) = content.find(&open) {
+        let start = start + open.len();
+        let end = content[start..]
+            .find(&close)
+            .map(|rel| start + rel)
+            .unwrap_or(content.len());
+        &content[start..end]
+    } else {
+        content.as_str()
+    };
+    let invoke_open = format!("<{DSML_MARKER}invoke");
+    let invoke_close = format!("</{DSML_MARKER}invoke>");
+    let mut calls = Vec::new();
+    let mut rest = body;
+    while let Some(offset) = rest.find(&invoke_open) {
+        rest = &rest[offset + invoke_open.len()..];
+        let gt = rest.find('>')?;
+        let attrs = &rest[..gt];
+        let name = dsml_attr(attrs, "name")?;
+        rest = &rest[gt + 1..];
+        let close_at = rest.find(&invoke_close)?;
+        let params = parse_dsml_parameters(DSML_MARKER, &rest[..close_at])?;
+        rest = &rest[close_at + invoke_close.len()..];
+        if name.trim().is_empty() {
+            return None;
+        }
+        calls.push(ParsedToolCall {
+            id: format!(
+                "dsml-{}-{}",
+                now_millis(),
+                JSON_TOOL_ID.fetch_add(1, Ordering::Relaxed)
+            ),
+            name: name.to_string(),
+            arguments: params,
+        });
+    }
+    (!calls.is_empty()).then_some(calls)
+}
+
+fn strip_dsml_markup(text: &str) -> String {
+    let mut text = canonicalize_dsml_tags(text);
+    let open = format!("<{DSML_MARKER}tool_calls>");
+    let close = format!("</{DSML_MARKER}tool_calls>");
+    while let Some(start) = text.find(&open) {
+        if let Some(rel) = text[start + open.len()..].find(&close) {
+            let end = start + open.len() + rel + close.len();
+            text.replace_range(start..end, "");
+        } else {
+            text.replace_range(start.., "");
+            break;
+        }
+    }
+    let invoke_open = format!("<{DSML_MARKER}invoke");
+    let invoke_close = format!("</{DSML_MARKER}invoke>");
+    while let Some(start) = text.find(&invoke_open) {
+        if let Some(rel) = text[start..].find(&invoke_close) {
+            let end = start + rel + invoke_close.len();
+            text.replace_range(start..end, "");
+        } else {
+            text.replace_range(start.., "");
+            break;
+        }
+    }
+    for tag in [
+        format!("</{DSML_MARKER}invoke>"),
+        format!("</{DSML_MARKER}tool_calls>"),
+        format!("</{DSML_MARKER}parameter>"),
+    ] {
+        text = text.replace(&tag, "");
+    }
+    text
+}
+
+fn parse_dsml_parameters(marker: &str, body: &str) -> Option<Value> {
+    let open = format!("<{marker}parameter");
+    let close = format!("</{marker}parameter>");
+    let mut map = serde_json::Map::new();
+    let mut rest = body;
+    while let Some(offset) = rest.find(&open) {
+        rest = &rest[offset + open.len()..];
+        let gt = rest.find('>')?;
+        let attrs = &rest[..gt];
+        let name = dsml_attr(attrs, "name")?;
+        let is_string = dsml_attr(attrs, "string").unwrap_or("true") != "false";
+        rest = &rest[gt + 1..];
+        let close_at = rest.find(&close)?;
+        let raw = rest[..close_at].trim();
+        rest = &rest[close_at + close.len()..];
+        let value = if is_string {
+            Value::String(raw.to_string())
+        } else {
+            serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+        };
+        map.insert(name.to_string(), value);
+    }
+    Some(Value::Object(map))
+}
+
+fn dsml_attr<'a>(attrs: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("{key}=\"");
+    let start = attrs.find(&needle)? + needle.len();
+    let end = attrs[start..].find('"')? + start;
+    Some(&attrs[start..end])
 }
 
 pub fn parse_json_fallback(content: &str) -> AssistantTurn {
@@ -988,7 +1218,7 @@ mod tests {
                 arguments: json!({"sql": "SELECT 1"}),
             },
         ];
-        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(calls), |call| {
+        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(calls), None, |call| {
             format!("ok {}", call.name)
         });
         assert!(matches!(result, DriveResult::Continue));
@@ -999,6 +1229,7 @@ mod tests {
         let done = apply_model_turn(
             &mut state,
             AssistantTurn::Final("see [turn:4]".into()),
+            None,
             |_| String::new(),
         );
         assert_eq!(
@@ -1017,9 +1248,12 @@ mod tests {
             name: "drop".into(),
             arguments: json!({}),
         };
-        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(vec![call]), |call| {
-            unknown_tool_result(&call.name)
-        });
+        let result = apply_model_turn(
+            &mut state,
+            AssistantTurn::ToolCalls(vec![call]),
+            None,
+            |call| unknown_tool_result(&call.name),
+        );
         assert!(matches!(result, DriveResult::Continue));
         assert!(state.messages[1].text.contains("Unknown tool"));
     }
@@ -1029,10 +1263,10 @@ mod tests {
         let mut state = empty_state();
         state.json_mode = true;
         assert!(matches!(
-            apply_model_turn(&mut state, AssistantTurn::Invalid, |_| String::new()),
+            apply_model_turn(&mut state, AssistantTurn::Invalid, None, |_| String::new()),
             DriveResult::Continue
         ));
-        match apply_model_turn(&mut state, AssistantTurn::Invalid, |_| String::new()) {
+        match apply_model_turn(&mut state, AssistantTurn::Invalid, None, |_| String::new()) {
             DriveResult::Failed { message } => assert!(message.contains("tool-calling")),
             other => panic!("{other:?}"),
         }
@@ -1047,9 +1281,12 @@ mod tests {
             name: "get_analysis".into(),
             arguments: json!({}),
         };
-        apply_model_turn(&mut state, AssistantTurn::ToolCalls(vec![call]), |_| {
-            "ok".into()
-        });
+        apply_model_turn(
+            &mut state,
+            AssistantTurn::ToolCalls(vec![call]),
+            None,
+            |_| "ok".into(),
+        );
         assert_eq!(state.tool_rounds, 8);
         assert!(state.force_final);
     }
@@ -1064,10 +1301,15 @@ mod tests {
             arguments: json!({}),
         };
         let mut executed = false;
-        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(vec![call]), |_| {
-            executed = true;
-            "should not execute".into()
-        });
+        let result = apply_model_turn(
+            &mut state,
+            AssistantTurn::ToolCalls(vec![call]),
+            None,
+            |_| {
+                executed = true;
+                "should not execute".into()
+            },
+        );
         match result {
             DriveResult::Failed { message } => {
                 assert!(message.contains("final answer"));
@@ -1096,7 +1338,7 @@ mod tests {
             },
         ];
         let mut executed = Vec::new();
-        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(calls), |call| {
+        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(calls), None, |call| {
             executed.push(call.id.clone());
             "ok".into()
         });
@@ -1144,6 +1386,7 @@ mod tests {
         apply_model_turn(
             &mut state,
             AssistantTurn::ToolCalls(calls),
+            None,
             |call| match call.id.as_str() {
                 "number" | "duplicate" => "[turn:4] evidence".into(),
                 "string" => "[turn:5] evidence".into(),
@@ -1157,7 +1400,7 @@ mod tests {
     fn native_invalid_switches_mode_without_incrementing_streak() {
         let mut state = empty_state();
         assert_eq!(
-            apply_model_turn(&mut state, AssistantTurn::Invalid, |_| String::new()),
+            apply_model_turn(&mut state, AssistantTurn::Invalid, None, |_| String::new()),
             DriveResult::Continue
         );
         assert!(state.json_mode);
@@ -1173,9 +1416,12 @@ mod tests {
             name: "query_sql".into(),
             arguments: json!({"sql": "SELECT 7"}),
         };
-        apply_model_turn(&mut state, AssistantTurn::ToolCalls(vec![call]), |_| {
-            "seven".into()
-        });
+        apply_model_turn(
+            &mut state,
+            AssistantTurn::ToolCalls(vec![call]),
+            None,
+            |_| "seven".into(),
+        );
         assert_eq!(state.messages[0].role, ThreadRole::Assistant);
         assert_eq!(state.messages[1].role, ThreadRole::Tool);
         assert_eq!(state.messages[1].tool_call_id.as_deref(), Some("call-7"));
@@ -1183,9 +1429,12 @@ mod tests {
         assert_eq!(state.messages[1].sql, None);
 
         assert_eq!(
-            apply_model_turn(&mut state, AssistantTurn::Final("done".into()), |_| {
-                String::new()
-            }),
+            apply_model_turn(
+                &mut state,
+                AssistantTurn::Final("done".into()),
+                None,
+                |_| { String::new() }
+            ),
             DriveResult::Done {
                 text: "done".into()
             }
@@ -1225,6 +1474,7 @@ mod tests {
             tool_name: Some("query_sql".into()),
             sql: None,
             truncated: false,
+            reasoning_content: None,
         }
     }
 
@@ -1257,6 +1507,7 @@ mod tests {
                     tool_name: None,
                     sql: None,
                     truncated: false,
+                    reasoning_content: None,
                 },
                 tool_msg(&"x".repeat(180 * 1024)),
                 tool_msg(&"y".repeat(180 * 1024)),
@@ -1268,6 +1519,7 @@ mod tests {
                     tool_name: None,
                     sql: None,
                     truncated: false,
+                    reasoning_content: None,
                 },
             ],
             updated_at: 1,
@@ -1294,6 +1546,7 @@ mod tests {
                 tool_name: None,
                 sql: None,
                 truncated: false,
+                reasoning_content: None,
             },
         ];
         let compressed = compress_messages_for_llm(&messages);
@@ -1313,6 +1566,7 @@ mod tests {
             tool_name: None,
             sql: None,
             truncated: false,
+            reasoning_content: None,
         };
         let messages = vec![unshrinkable_tool, bulk];
         let before = serde_json::to_string(&messages).unwrap();
@@ -1403,6 +1657,7 @@ mod tests {
                 tool_name: None,
                 sql: None,
                 truncated: false,
+                reasoning_content: None,
             },
             ThreadMessage {
                 role: ThreadRole::Assistant,
@@ -1423,6 +1678,7 @@ mod tests {
                 tool_name: None,
                 sql: None,
                 truncated: false,
+                reasoning_content: None,
             },
             ThreadMessage {
                 role: ThreadRole::Tool,
@@ -1432,6 +1688,7 @@ mod tests {
                 tool_name: Some("get_analysis".into()),
                 sql: None,
                 truncated: false,
+                reasoning_content: None,
             },
             ThreadMessage {
                 role: ThreadRole::Tool,
@@ -1441,6 +1698,7 @@ mod tests {
                 tool_name: Some("get_turn".into()),
                 sql: None,
                 truncated: false,
+                reasoning_content: None,
             },
             ThreadMessage {
                 role: ThreadRole::Assistant,
@@ -1450,6 +1708,7 @@ mod tests {
                 tool_name: None,
                 sql: None,
                 truncated: false,
+                reasoning_content: None,
             },
         ];
 
@@ -1469,6 +1728,7 @@ mod tests {
             mapped[1]["tool_calls"][1]["function"]["arguments"],
             r#"{"turn_id":4}"#
         );
+        assert_eq!(mapped[1]["reasoning_content"], "");
         assert_eq!(mapped[2]["role"], "tool");
         assert_eq!(mapped[2]["tool_call_id"], "analysis-1");
         assert_eq!(mapped[3]["role"], "tool");
@@ -1486,6 +1746,7 @@ mod tests {
                 name: "get_analysis".into(),
                 arguments: json!({}),
             }]),
+            None,
             |_| "analysis".into(),
         );
         apply_model_turn(
@@ -1495,6 +1756,7 @@ mod tests {
                 name: "get_turn".into(),
                 arguments: json!({"turn_id": 4}),
             }]),
+            None,
             |_| "[turn:4] evidence".into(),
         );
 
@@ -1514,6 +1776,46 @@ mod tests {
             assistant_tool_calls[1]["tool_calls"][0]["function"]["arguments"],
             r#"{"turn_id":4}"#
         );
+        assert_eq!(assistant_tool_calls[0]["reasoning_content"], "");
+        assert_eq!(assistant_tool_calls[1]["reasoning_content"], "");
+    }
+
+    #[test]
+    fn openai_messages_echo_thinking_mode_reasoning_on_tool_call_assistants() {
+        let mut state = empty_state();
+        apply_model_turn(
+            &mut state,
+            AssistantTurn::ToolCalls(vec![ParsedToolCall {
+                id: "round-1".into(),
+                name: "get_analysis".into(),
+                arguments: json!({}),
+            }]),
+            Some("need the run summary first".into()),
+            |_| "analysis".into(),
+        );
+
+        let mapped = openai_messages(&state.messages, false);
+        assert_eq!(mapped[0]["role"], "assistant");
+        assert_eq!(mapped[0]["reasoning_content"], "need the run summary first");
+        assert_eq!(mapped[0]["tool_calls"][0]["id"], "round-1");
+    }
+
+    #[test]
+    fn extract_reasoning_content_prefers_provider_field() {
+        assert_eq!(
+            extract_reasoning_content(&json!({
+                "role": "assistant",
+                "content": null,
+                "reasoning_content": "plan the tool call",
+                "tool_calls": []
+            })),
+            Some("plan the tool call".into())
+        );
+        assert_eq!(
+            extract_reasoning_content(&json!({"reasoning": "alt"})),
+            Some("alt".into())
+        );
+        assert_eq!(extract_reasoning_content(&json!({"content": "hi"})), None);
     }
 
     #[test]
@@ -1532,6 +1834,7 @@ mod tests {
                     tool_name: None,
                     sql: None,
                     truncated: false,
+                    reasoning_content: None,
                 },
                 ThreadMessage {
                     role: ThreadRole::Tool,
@@ -1541,6 +1844,7 @@ mod tests {
                     tool_name: Some("query_sql".into()),
                     sql: Some("SELECT 1".into()),
                     truncated: false,
+                    reasoning_content: None,
                 },
             ],
             true,
@@ -1651,6 +1955,128 @@ mod tests {
         assert_eq!(
             parse_native_message(&message),
             AssistantTurn::Final("done".into())
+        );
+    }
+
+    #[test]
+    fn native_deepseek_dsml_tool_calls_are_parsed_from_content() {
+        let content = concat!(
+            "<think>need a few turns</think>\n",
+            "<｜DSML｜tool_calls>\n",
+            "<｜DSML｜invoke name=\"get_turn\">\n",
+            "<｜DSML｜parameter name=\"turn_id\" string=\"false\">16</｜DSML｜parameter>\n",
+            "</｜DSML｜invoke>\n",
+            "<｜DSML｜invoke name=\"get_turn\">\n",
+            "<｜DSML｜parameter name=\"turn_id\" string=\"false\">18</｜DSML｜parameter>\n",
+            "</｜DSML｜invoke>\n",
+            "</｜DSML｜tool_calls>"
+        );
+        match parse_native_message(&json!({"content": content})) {
+            AssistantTurn::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 2);
+                assert_eq!(calls[0].name, "get_turn");
+                assert_eq!(calls[0].arguments["turn_id"], 16);
+                assert_eq!(calls[1].arguments["turn_id"], 18);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn native_deepseek_dsml_parses_string_and_ascii_tokens() {
+        let content = concat!(
+            "<|DSML|tool_calls>\n",
+            "<|DSML|invoke name=\"query_sql\">\n",
+            "<|DSML|parameter name=\"sql\" string=\"true\">SELECT 1</|DSML|parameter>\n",
+            "</|DSML|invoke>\n",
+            "</|DSML|tool_calls>"
+        );
+        match parse_native_message(&json!({"content": content})) {
+            AssistantTurn::ToolCalls(calls) => {
+                assert_eq!(calls[0].name, "query_sql");
+                assert_eq!(calls[0].arguments["sql"], "SELECT 1");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn native_openai_tool_calls_win_over_dsml_content() {
+        let message = json!({
+            "content": "<｜DSML｜tool_calls><｜DSML｜invoke name=\"get_turn\"></｜DSML｜invoke></｜DSML｜tool_calls>",
+            "tool_calls": [{
+                "id": "c1",
+                "function": {"name": "get_analysis", "arguments": "{}"}
+            }]
+        });
+        match parse_native_message(&message) {
+            AssistantTurn::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].name, "get_analysis");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn native_broken_dsml_tool_calls_are_invalid() {
+        let content = "<｜DSML｜tool_calls><｜DSML｜invoke name=\"get_turn\">";
+        assert_eq!(
+            parse_native_message(&json!({"content": content})),
+            AssistantTurn::Invalid
+        );
+    }
+
+    #[test]
+    fn native_spaced_dsml_fragment_is_parsed_as_tool_calls() {
+        let content = concat!(
+            "</ | | DSML | | invoke>\n",
+            "< | | DSML | | invoke name=\"get_turn\">\n",
+            "< | | DSML | | parameter name=\"turn_id\" string=\"false\">13</ | | DSML | | parameter>\n",
+            "</ | | DSML | | invoke>\n",
+            "</ | | DSML | | tool_calls>"
+        );
+        match parse_native_message(&json!({"content": content})) {
+            AssistantTurn::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].name, "get_turn");
+                assert_eq!(calls[0].arguments["turn_id"], 13);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(visible_assistant_text(content), None);
+    }
+
+    #[test]
+    fn native_dsml_function_calls_wrapper_is_accepted() {
+        let content = concat!(
+            "<｜DSML｜function_calls>\n",
+            "<｜DSML｜invoke name=\"get_analysis\">\n",
+            "</｜DSML｜invoke>\n",
+            "</｜DSML｜function_calls>"
+        );
+        match parse_native_message(&json!({"content": content})) {
+            AssistantTurn::ToolCalls(calls) => {
+                assert_eq!(calls[0].name, "get_analysis");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn visible_assistant_text_keeps_prose_and_strips_dsml() {
+        let mixed = concat!(
+            "Redundant retries appear after turn 7.\n",
+            "<｜DSML｜tool_calls><｜DSML｜invoke name=\"get_turn\">",
+            "<｜DSML｜parameter name=\"turn_id\" string=\"false\">7</｜DSML｜parameter>",
+            "</｜DSML｜invoke></｜DSML｜tool_calls>"
+        );
+        let visible = visible_assistant_text(mixed).expect("prose remains");
+        assert!(visible.contains("Redundant retries"));
+        assert!(!visible.contains("DSML"));
+        assert_eq!(
+            visible_assistant_text("No markup here."),
+            Some("No markup here.".into())
         );
     }
 

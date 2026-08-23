@@ -289,19 +289,13 @@ fn deserialize_atif_value<R: Read>(reader: R) -> Result<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_support::fixture_path;
     use super::*;
     use std::io::Cursor;
-    use std::path::PathBuf;
-
-    fn atif_fixture(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/atif")
-            .join(name)
-    }
 
     #[test]
     fn streams_atif_fixture_without_whole_file_buffer() {
-        let path = atif_fixture("dialogue_10.json");
+        let path = fixture_path("atif/dialogue_10.json");
         let raw = std::fs::read(&path).unwrap();
         let mut reader = Cursor::new(raw);
         let stories = parse_atif_storylines_from_reader(
@@ -317,7 +311,7 @@ mod tests {
     fn ndjson_reader_enforces_the_configured_record_limit() {
         let input = tempfile::NamedTempFile::with_suffix(".ndjson").unwrap();
         let trajectory: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(atif_fixture("dialogue_10.json")).unwrap(),
+            &std::fs::read_to_string(fixture_path("atif/dialogue_10.json")).unwrap(),
         )
         .unwrap();
         std::fs::write(

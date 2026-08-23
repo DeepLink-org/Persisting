@@ -767,7 +767,12 @@ async fn warehouse_keeps_api_v1_aliases_for_embedded_web_ui() {
 
     let root = json_dataset_root();
     let app = router(root.to_string_lossy().to_string());
-    for uri in ["/api/v1/explorer/runs?limit=10", "/api/v1/query/tables"] {
+    for uri in [
+        "/api/explorer/runs?limit=10",
+        "/api/query/tables",
+        "/api/v1/explorer/runs?limit=10",
+        "/api/v1/query/tables",
+    ] {
         let response = app
             .clone()
             .oneshot(
@@ -782,6 +787,38 @@ async fn warehouse_keeps_api_v1_aliases_for_embedded_web_ui() {
             response.status(),
             StatusCode::OK,
             "{uri} failed: {}",
+            String::from_utf8_lossy(&response.into_body().collect().await.unwrap().to_bytes())
+        );
+    }
+}
+
+#[tokio::test]
+async fn warehouse_does_not_expose_unused_har_or_revisions_routes() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let root = json_dataset_root();
+    let app = router(root.to_string_lossy().to_string());
+    for uri in [
+        "/api/export/har",
+        "/api/revisions",
+        "/api/v1/export/har",
+        "/api/v1/revisions",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{uri} should be gone: {}",
             String::from_utf8_lossy(&response.into_body().collect().await.unwrap().to_bytes())
         );
     }
@@ -1238,4 +1275,83 @@ fn sql_validation_rejects_empty_and_mutating_statements() {
     assert!(validate_read_only_sql("DELETE FROM runs").is_err());
     assert!(validate_read_only_sql("EXPLAIN DELETE FROM runs").is_err());
     assert!(validate_read_only_sql("SELECT 1; DELETE FROM runs").is_err());
+}
+
+#[tokio::test]
+async fn analysis_compile_validates_snapshot_and_rejects_uncomputable_specs() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let root = json_dataset_root();
+    let app = router(root.to_string_lossy().to_string());
+    let tables = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/query/tables")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let tables: Value =
+        serde_json::from_slice(&tables.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let snapshot_id = tables["snapshot_id"].as_str().unwrap();
+
+    let stale = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/analysis/compile")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    json!({
+                        "spec": {
+                            "intent": "distribution",
+                            "grain": "step",
+                            "measure": "step_latency_ms",
+                            "output": "distribution"
+                        },
+                        "snapshot_id": "stale",
+                        "scope": { "database": "dataset", "items": [] }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    let stale: Value =
+        serde_json::from_slice(&stale.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(stale["code"], "stale_snapshot");
+
+    let rejected = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/analysis/compile")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    json!({
+                        "spec": {
+                            "intent": "compare",
+                            "grain": "run",
+                            "measure": "status",
+                            "output": "comparison"
+                        },
+                        "snapshot_id": snapshot_id,
+                        "scope": { "database": "dataset", "items": [] }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let rejected: Value =
+        serde_json::from_slice(&rejected.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(rejected["code"], "uncomputable");
 }

@@ -12,6 +12,8 @@
 .pc-catalog-errors{margin:0 0 10px;color:#b42318;font-size:11px}
 .pc-catalog-mosaic{min-height:0;flex:1;display:flex;flex-direction:column}
 .pc-catalog-tree{position:relative;min-height:0;flex:1;border:1px solid #dfe3e8;border-radius:12px;background:#eef2f6;overflow:hidden}
+.pc-catalog-tree.compact{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:10px;padding:12px;overflow:visible}
+.pc-catalog-tree.compact .pc-catalog-tile{position:static;width:260px;height:120px}
 .pc-catalog-tile{position:absolute;display:flex;flex-direction:column;align-items:flex-start;justify-content:space-between;padding:10px;border:1px solid #ffffffaa;border-radius:8px;color:#102033;text-align:left;cursor:pointer;overflow:hidden}
 .pc-catalog-tile strong{max-width:100%;overflow:hidden;font-size:13px;text-overflow:ellipsis;white-space:nowrap}
 .pc-catalog-tile small{color:#1f2937cc;font:11px ui-monospace,SFMono-Regular,Menlo,monospace}

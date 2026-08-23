@@ -12,7 +12,8 @@ use crate::llm;
 use crate::llm_settings::LlmSettings;
 use crate::model::{
     CatalogTree, DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary,
-    RunAnalysis, RunExplorerItem, RunPage, RunSummary, ToolAggregate, TurnDetail, TurnSummary,
+    RunAnalysis, RunExplorerItem, RunPage, RunSummary, StorylineSnapshot, ToolAggregate,
+    TurnDetail, TurnSummary,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,6 +140,7 @@ pub fn App() -> Element {
     let mut selected_turn = use_signal(|| None::<TurnDetail>);
     let mut expanded_turn_id =
         use_signal(|| url_param("turn").and_then(|value| value.parse::<i64>().ok()));
+    let mut storyline = use_signal(|| None::<StorylineSnapshot>);
     let detail_loading = use_signal(|| false);
     let turn_loading = use_signal(|| false);
     let mut detail_mode = use_signal(|| url_param("workspace").unwrap_or_else(|| "trace".into()));
@@ -151,6 +153,7 @@ pub fn App() -> Element {
     let mut catalog = use_signal(|| None::<QueryCatalog>);
     let mut selected_table = use_signal(String::new);
     let mut copilot_open = use_signal(|| false);
+    let mut copilot_wide = use_signal(load_copilot_wide);
     let mut analysis_session_id = use_signal(move || initial_analysis_session_id);
     let mut analysis_seed_scope = use_signal(move || initial_analysis_seed_scope);
 
@@ -188,7 +191,7 @@ pub fn App() -> Element {
     use_effect(move || {
         if analysis().is_none() {
             if let Some(run) = selected_run() {
-                load_workspace(run, analysis, turns, detail_loading, error);
+                load_workspace(run, analysis, turns, storyline, detail_loading, error);
             }
         }
     });
@@ -324,7 +327,7 @@ pub fn App() -> Element {
                         rsx! { div { class: "pc2-detail-layout",
                             PathExplorer { runs: path_runs, selected_path, loading: runs_loading(), filter_folders: false,
                                 on_path: move |value| { run_path.set(value); offset.set(0); page.set("runs".into()); },
-                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); },
+                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); storyline.set(None); },
                             }
                             if let (Some(_run), Some(value)) = (selected_run(), analysis()) {
                                 RunDetailWorkspace {
@@ -332,6 +335,7 @@ pub fn App() -> Element {
                                     analysis: value,
                                     turns: turns(),
                                     selected: selected_turn(),
+                                    storyline: storyline(),
                                     expanded_turn_id: expanded_turn_id(),
                                     loading: detail_loading(),
                                     turn_loading: turn_loading(),
@@ -422,6 +426,7 @@ pub fn App() -> Element {
                                 turns.set(Vec::new());
                                 selected_turn.set(None);
                                 expanded_turn_id.set(None);
+                                storyline.set(None);
                                 detail_mode.set("trace".into());
                                 page.set("detail".into());
                             },
@@ -438,6 +443,12 @@ pub fn App() -> Element {
                         analysis: value,
                         turns: turns(),
                         selected: selected_turn(),
+                        wide: copilot_wide(),
+                        on_toggle_wide: move |_| {
+                            let next = !copilot_wide();
+                            copilot_wide.set(next);
+                            save_copilot_wide(next);
+                        },
                         on_close: move |_| copilot_open.set(false),
                         on_turn: move |id| {
                             if let Some(run) = selected_run() {
@@ -449,8 +460,21 @@ pub fn App() -> Element {
                         },
                     }
                 } else {
-                    aside { class: "pc2-copilot",
-                        div { class: "pc2-copilot-head", strong { "Trajectory Copilot" } button { onclick: move |_| copilot_open.set(false), "×" } }
+                    aside { class: copilot_panel_class(copilot_wide()),
+                        div { class: "pc2-copilot-head",
+                            div { strong { "Trajectory Copilot" } }
+                            div {
+                                CopilotWideToggle {
+                                    wide: copilot_wide(),
+                                    on_toggle: move |_| {
+                                        let next = !copilot_wide();
+                                        copilot_wide.set(next);
+                                        save_copilot_wide(next);
+                                    },
+                                }
+                                button { aria_label: "Close Copilot", onclick: move |_| copilot_open.set(false), "×" }
+                            }
+                        }
                         div { class: "pc2-copilot-empty", "Open a trajectory before asking Copilot to analyze evidence." }
                     }
                 }
@@ -508,23 +532,35 @@ fn load_workspace(
     run: RunSummary,
     mut analysis: Signal<Option<RunAnalysis>>,
     mut turns: Signal<Vec<TurnSummary>>,
+    mut storyline: Signal<Option<StorylineSnapshot>>,
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
     loading.set(true);
-    spawn(async move {
-        let (next_analysis, next_turns) =
-            futures_util::join!(api::run_analysis(&run), api::turns(&run, "", "all"),);
-        match (next_analysis, next_turns) {
-            (Ok(next_analysis), Ok(next_turns)) => {
-                analysis.set(Some(next_analysis));
-                turns.set(next_turns.records);
+    spawn({
+        let run = run.clone();
+        async move {
+            let (next_analysis, next_turns) =
+                futures_util::join!(api::run_analysis(&run), api::turns(&run, "", "all"),);
+            match (next_analysis, next_turns) {
+                (Ok(next_analysis), Ok(next_turns)) => {
+                    analysis.set(Some(next_analysis));
+                    turns.set(next_turns.records);
+                }
+                (Err(message), _) | (_, Err(message)) => {
+                    error.set(Some(workspace_notice(message)));
+                }
             }
-            (Err(message), _) | (_, Err(message)) => {
-                error.set(Some(workspace_notice(message)));
-            }
+            loading.set(false);
         }
-        loading.set(false);
+    });
+    // The storyline powers context reconstruction in the turn inspector. It is
+    // additive and can be slow to project, so it loads independently: it must
+    // neither block nor blank the workspace.
+    spawn(async move {
+        if let Ok(snapshot) = api::storyline(&run).await {
+            storyline.set(Some(snapshot));
+        }
     });
 }
 
@@ -771,6 +807,7 @@ fn RunDetailWorkspace(
     analysis: RunAnalysis,
     turns: Vec<TurnSummary>,
     selected: Option<TurnDetail>,
+    storyline: Option<StorylineSnapshot>,
     expanded_turn_id: Option<i64>,
     loading: bool,
     turn_loading: bool,
@@ -842,7 +879,7 @@ fn RunDetailWorkspace(
                     div { class: "pc2-turn-list pc2-span-scroll",
                         if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing evidence…" } }
                         if turns.is_empty() { div { class: "pc2-empty", strong { "No visible turns" } span { "No compact turn evidence matches this filter." } } }
-                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, view: view_for_list, source: source_for_list, query: query_for_list, on_turn } }
+                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, context: storyline.map(|snapshot| snapshot.turns), view: view_for_list, source: source_for_list, query: query_for_list, on_turn } }
                     }
                 }
             }
@@ -1217,12 +1254,96 @@ fn EmptyAnalysis(label: &'static str) -> Element {
     rsx! { div { class: "pc2-analysis-empty", "{label}" } }
 }
 
+const COPILOT_WIDE_KEY: &str = "pchronicle_copilot_wide";
+
+fn load_copilot_wide() -> bool {
+    web_sys::window()
+        .and_then(|window| window.local_storage().ok().flatten())
+        .and_then(|storage| storage.get_item(COPILOT_WIDE_KEY).ok().flatten())
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn save_copilot_wide(wide: bool) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(storage) = window.local_storage().ok().flatten() else {
+        return;
+    };
+    let _ = storage.set_item(COPILOT_WIDE_KEY, if wide { "1" } else { "0" });
+}
+
+fn copilot_panel_class(wide: bool) -> &'static str {
+    if wide {
+        "pc2-copilot wide"
+    } else {
+        "pc2-copilot"
+    }
+}
+
+const COPILOT_CHAT_ID: &str = "pc2-copilot-chat";
+const COPILOT_FOLLOW_THRESHOLD: f64 = 48.0;
+
+fn copilot_distance_from_bottom(scroll_top: f64, client_height: f64, scroll_height: f64) -> f64 {
+    (scroll_height - client_height - scroll_top).max(0.0)
+}
+
+fn copilot_is_near_bottom(scroll_top: f64, client_height: f64, scroll_height: f64) -> bool {
+    copilot_distance_from_bottom(scroll_top, client_height, scroll_height)
+        <= COPILOT_FOLLOW_THRESHOLD
+}
+
+fn copilot_following_after_scroll(following: bool, near_bottom: bool) -> bool {
+    following && near_bottom
+}
+
+fn copilot_chat_element() -> Option<web_sys::Element> {
+    web_sys::window()?
+        .document()?
+        .get_element_by_id(COPILOT_CHAT_ID)
+}
+
+fn copilot_chat_is_near_bottom() -> bool {
+    let Some(element) = copilot_chat_element() else {
+        return true;
+    };
+    copilot_is_near_bottom(
+        f64::from(element.scroll_top()),
+        f64::from(element.client_height()),
+        f64::from(element.scroll_height()),
+    )
+}
+
+fn scroll_copilot_chat_to_bottom() {
+    let Some(element) = copilot_chat_element() else {
+        return;
+    };
+    element.set_scroll_top(element.scroll_height());
+}
+
+#[component]
+fn CopilotWideToggle(wide: bool, on_toggle: EventHandler<MouseEvent>) -> Element {
+    rsx! {
+        button {
+            class: "pc2-copilot-wide-toggle",
+            aria_label: if wide { "Restore Copilot width" } else { "Expand Copilot to two-thirds width" },
+            title: if wide { "Restore Copilot width" } else { "Expand Copilot to two-thirds of the screen" },
+            aria_pressed: wide,
+            onclick: on_toggle,
+            if wide { "⤡" } else { "⤢" }
+        }
+    }
+}
+
 #[component]
 fn CopilotPanel(
     run: RunSummary,
     analysis: RunAnalysis,
     turns: Vec<TurnSummary>,
     selected: Option<TurnDetail>,
+    wide: bool,
+    on_toggle_wide: EventHandler<MouseEvent>,
     on_close: EventHandler<MouseEvent>,
     on_turn: EventHandler<i64>,
 ) -> Element {
@@ -1233,6 +1354,7 @@ fn CopilotPanel(
     let mut settings = use_signal(|| false);
     let mut config = use_signal(llm::load_config);
     let mut step = use_signal(|| "Working…".to_string());
+    let mut following = use_signal(|| true);
     let submit_run = run.clone();
     let submit_analysis = analysis.clone();
     let focused_turn_id = selected.as_ref().map(|detail| detail.summary.id);
@@ -1260,6 +1382,7 @@ fn CopilotPanel(
                     tool_name: None,
                     sql: None,
                     truncated: false,
+                    reasoning_content: None,
                 });
                 agent::save_thread(&submit_run, &next_thread);
                 thread.set(next_thread);
@@ -1277,10 +1400,12 @@ fn CopilotPanel(
             tool_name: None,
             sql: None,
             truncated: false,
+            reasoning_content: None,
         });
         thread.set(pending_thread.clone());
         input.set(String::new());
         step.set("Working…".into());
+        following.set(true);
         busy.set(true);
         let run_value = submit_run.clone();
         let analysis_value = submit_analysis.clone();
@@ -1310,6 +1435,7 @@ fn CopilotPanel(
                         tool_name: None,
                         sql: None,
                         truncated: false,
+                        reasoning_content: None,
                     });
                     agent::save_thread(&run_value, &pending_thread);
                     thread.set(pending_thread);
@@ -1318,28 +1444,68 @@ fn CopilotPanel(
             busy.set(false);
         });
     });
-    rsx! { aside { class: "pc2-copilot",
-        div { class: "pc2-copilot-head", div { strong { "Trajectory Copilot" } span { "Read-only · minimal evidence" } } div { button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" } button { aria_label: "Close Copilot", onclick: on_close, "×" } } }
+    use_effect(move || {
+        let _len = thread().messages.len();
+        let _busy = busy();
+        let _step = step();
+        if following() {
+            scroll_copilot_chat_to_bottom();
+        }
+    });
+    rsx! { aside { class: copilot_panel_class(wide),
+        div { class: "pc2-copilot-head", div { strong { "Trajectory Copilot" } span { "Read-only · minimal evidence" } } div { button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" } CopilotWideToggle { wide, on_toggle: on_toggle_wide } button { aria_label: "Close Copilot", onclick: on_close, "×" } } }
         div { class: "pc2-context-card", div { span { "Grounded in" } strong { "{short(&run.session_id, 30)}" } } div { span { "Evidence" } strong { "{analysis.turn_count} turns · {analysis.error_count} explicit errors" } } }
-        div { class: "pc2-chat",
-            if thread().messages.is_empty() {
-                div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" }
-                    if config().is_configured() {
-                        p { "Copilot can inspect this analysis, examine a turn, or run read-only SQL." }
-                    } else {
-                        p { "Configure an OpenAI-compatible model in Settings before asking Copilot." }
+        div { class: "pc2-chat-wrap",
+            div {
+                id: COPILOT_CHAT_ID,
+                class: "pc2-chat",
+                onscroll: move |_| {
+                    following.set(copilot_following_after_scroll(following(), copilot_chat_is_near_bottom()));
+                },
+                if thread().messages.is_empty() {
+                    div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" }
+                        if config().is_configured() {
+                            p { "Copilot can inspect this analysis, examine a turn, or run read-only SQL." }
+                        } else {
+                            p { "Configure an OpenAI-compatible model in Settings before asking Copilot." }
+                        }
+                    }
+                }
+                for (index, message) in thread().messages.iter().enumerate() {
+                    if !(message.role == ThreadRole::Assistant
+                        && message.text.trim().is_empty()
+                        && message.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()))
+                    {
+                        ChatBubble { key: "message-{index}", message: message.clone(), turns: turns.clone(), on_turn }
+                    }
+                }
+                if busy() { div { class: "pc2-chat-working", span { class: "spinner" } "{step}" } }
+            }
+            if !thread().messages.is_empty() || busy() {
+                if following() {
+                    button {
+                        class: "pc2-chat-follow",
+                        r#type: "button",
+                        aria_pressed: "true",
+                        title: "Stop following new output",
+                        aria_label: "Stop following new output",
+                        onclick: move |_| following.set(false),
+                        "Following"
+                    }
+                } else {
+                    button {
+                        class: "pc2-chat-follow jump",
+                        r#type: "button",
+                        title: "Jump to latest output and follow",
+                        aria_label: "Jump to latest output and follow",
+                        onclick: move |_| {
+                            following.set(true);
+                            scroll_copilot_chat_to_bottom();
+                        },
+                        "↓ Latest"
                     }
                 }
             }
-            for (index, message) in thread().messages.iter().enumerate() {
-                if !(message.role == ThreadRole::Assistant
-                    && message.text.trim().is_empty()
-                    && message.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()))
-                {
-                    ChatBubble { key: "message-{index}", message: message.clone(), turns: turns.clone(), on_turn }
-                }
-            }
-            if busy() { div { class: "pc2-chat-working", span { class: "spinner" } "{step}" } }
         }
         form { class: "pc2-composer", onsubmit: move |event| { event.prevent_default(); submit_copilot.call(()); },
             textarea { value: "{input}", rows: "3", placeholder: "Ask Copilot about this trajectory…", oninput: move |event| input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); submit_copilot.call(()); }, disabled: busy() }
@@ -1355,6 +1521,14 @@ fn ChatBubble(
     turns: Vec<TurnSummary>,
     on_turn: EventHandler<i64>,
 ) -> Element {
+    let message = if message.role == ThreadRole::Assistant {
+        match agent::visible_assistant_text(&message.text) {
+            None => return rsx! {},
+            Some(text) => ThreadMessage { text, ..message },
+        }
+    } else {
+        message
+    };
     if message.role == ThreadRole::Tool {
         let action = message
             .tool_name
@@ -1706,6 +1880,22 @@ mod tests {
             duplicate_event_ids: 0,
             status: "completed".into(),
         }
+    }
+
+    #[test]
+    fn copilot_panel_class_marks_expanded_width() {
+        assert_eq!(copilot_panel_class(false), "pc2-copilot");
+        assert_eq!(copilot_panel_class(true), "pc2-copilot wide");
+    }
+
+    #[test]
+    fn copilot_follow_stays_on_near_the_bottom() {
+        assert!(copilot_is_near_bottom(100.0, 400.0, 500.0));
+        assert!(copilot_is_near_bottom(52.0, 400.0, 500.0));
+        assert!(!copilot_is_near_bottom(0.0, 400.0, 800.0));
+        assert!(copilot_following_after_scroll(true, true));
+        assert!(!copilot_following_after_scroll(true, false));
+        assert!(!copilot_following_after_scroll(false, true));
     }
 
     #[test]

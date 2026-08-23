@@ -17,12 +17,17 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use persisting_pchronicle::document::{events_to_har, events_to_otlp_json, InputIssue};
+use persisting_pchronicle::analysis_compile::{
+    compile, AnalysisSpec, CompileError, CompileScope, CompiledQuery, TableSchema,
+};
+use persisting_pchronicle::document::{events_to_otlp_json, InputIssue};
 use persisting_pchronicle::model::{EventRecord, StorylineTurn};
 use persisting_pchronicle::query::ChronicleQueryEngine;
+#[cfg(test)]
+use persisting_pchronicle::storage::StoryCoords;
 use persisting_pchronicle::storage::{
-    read_revisions, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogStorylineKey,
-    DatasetCatalogSnapshot, DatasetMount, StoryCoords, DEFAULT_DATASET_NAME,
+    CatalogErrorPolicy, CatalogSnapshotOptions, CatalogStorylineKey, DatasetCatalogSnapshot,
+    DatasetMount, DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -79,7 +84,7 @@ struct CatalogRuntime {
     built_at: Instant,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RunSummary {
     pub(crate) dataset: String,
     pub(crate) file: String,
@@ -190,12 +195,11 @@ fn api_routes() -> Router<AppState> {
         .route("/events", get(events))
         .route("/storyline", get(storyline))
         .route("/trajectory-view", get(trajectory_view))
-        .route("/export/har", get(export_har))
         .route("/export/otlp", get(export_otlp))
-        .route("/revisions", get(revisions))
         .route("/catalog", get(catalog).post(refresh_catalog))
         .route("/query/tables", get(query_tables))
         .route("/query/evidence", post(query_evidence))
+        .route("/analysis/compile", post(compile_analysis))
 }
 
 fn read_routes() -> Router<AppState> {
@@ -565,28 +569,7 @@ fn catalog_storyline_key(run: &RunSummary) -> CatalogStorylineKey {
     }
 }
 
-async fn canonical_run_coords(
-    state: &AppState,
-    query: &SessionQuery,
-) -> Result<Option<StoryCoords>, ApiError> {
-    let run = resolve_run_summary(state, query).await?;
-    canonical_run_coords_for_summary(state, &run).await
-}
-
-async fn canonical_run_coords_for_summary(
-    state: &AppState,
-    run: &RunSummary,
-) -> Result<Option<StoryCoords>, ApiError> {
-    let runtime = current_catalog(state).await?;
-    let event_uri = runtime
-        .snapshot
-        .canonical_event_uri(&catalog_storyline_key(run))
-        .map_err(ApiError::internal)?;
-    event_uri
-        .map(|event_uri| event_uri_coords(event_uri, run).map_err(ApiError::internal))
-        .transpose()
-}
-
+#[cfg(test)]
 fn event_uri_coords(uri: &str, run: &RunSummary) -> anyhow::Result<StoryCoords> {
     let uri = uri.trim_end_matches('/');
     let run_uri = uri
@@ -992,14 +975,6 @@ async fn explorer_turn(
     Ok(Json(explorer::turn_detail(item, &loaded.records)))
 }
 
-async fn export_har(
-    State(state): State<AppState>,
-    query: Result<Query<SessionQuery>, QueryRejection>,
-) -> Result<Json<Value>, ApiError> {
-    let query = api_query(query)?;
-    Ok(Json(events_to_har(&load_events(&state, &query).await?)))
-}
-
 async fn export_otlp(
     State(state): State<AppState>,
     query: Result<Query<SessionQuery>, QueryRejection>,
@@ -1008,21 +983,6 @@ async fn export_otlp(
     Ok(Json(events_to_otlp_json(
         &load_events(&state, &query).await?,
     )))
-}
-
-async fn revisions(
-    State(state): State<AppState>,
-    query: Result<Query<SessionQuery>, QueryRejection>,
-) -> Result<Json<Value>, ApiError> {
-    let query = api_query(query)?;
-    let Some(coords) = canonical_run_coords(&state, &query).await? else {
-        return Err(ApiError::not_found("canonical event source was not found"));
-    };
-    Ok(Json(
-        serde_json::to_value(read_revisions(&coords).await.map_err(ApiError::internal)?)
-            .map_err(anyhow::Error::from)
-            .map_err(ApiError::internal)?,
-    ))
 }
 
 #[derive(Debug, Serialize)]
@@ -1317,6 +1277,189 @@ async fn query_tables(State(state): State<AppState>) -> Result<Json<QueryCatalog
             },
         ],
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CompileAnalysisRequest {
+    spec: AnalysisSpec,
+    snapshot_id: String,
+    scope: AnalysisCompileScope,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnalysisCompileScope {
+    #[serde(default)]
+    database: String,
+    #[serde(default)]
+    items: Vec<AnalysisCompileScopeItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum AnalysisCompileScopeItem {
+    Dataset {
+        name: String,
+    },
+    Root {
+        dataset: String,
+        file: String,
+        root_session_id: String,
+    },
+    Run {
+        run: RunSummary,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct CompileFailureBody {
+    code: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    field: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine_detail: Option<String>,
+}
+
+struct CompileHttpError {
+    status: StatusCode,
+    body: CompileFailureBody,
+}
+
+impl CompileHttpError {
+    fn stale_snapshot() -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            body: CompileFailureBody {
+                code: "stale_snapshot".into(),
+                message: "catalog snapshot changed; refresh and analyze again".into(),
+                field: Some("snapshot_id".into()),
+                engine_detail: None,
+            },
+        }
+    }
+
+    fn from_compile(error: CompileError) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            body: CompileFailureBody {
+                code: error.code,
+                message: error.message,
+                field: error.field,
+                engine_detail: None,
+            },
+        }
+    }
+
+    fn unplannable(detail: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            body: CompileFailureBody {
+                code: "unplannable".into(),
+                message: "compiled SQL could not be planned against the live catalog".into(),
+                field: None,
+                engine_detail: Some(truncate_engine_detail(detail.into())),
+            },
+        }
+    }
+}
+
+impl IntoResponse for CompileHttpError {
+    fn into_response(self) -> Response {
+        (self.status, Json(self.body)).into_response()
+    }
+}
+
+fn truncate_engine_detail(detail: String) -> String {
+    const MAX_DETAIL_CHARS: usize = 1500;
+    if detail.chars().count() > MAX_DETAIL_CHARS {
+        format!(
+            "{}…",
+            detail.chars().take(MAX_DETAIL_CHARS).collect::<String>()
+        )
+    } else {
+        detail
+    }
+}
+
+fn compile_scope_from(scope: AnalysisCompileScope) -> CompileScope {
+    let mut dataset = scope.database;
+    let mut file = None;
+    let mut session_ids = Vec::new();
+    let mut document_id = None;
+    for item in scope.items {
+        match item {
+            AnalysisCompileScopeItem::Dataset { name } => dataset = name,
+            AnalysisCompileScopeItem::Root {
+                dataset: next_dataset,
+                file: next_file,
+                root_session_id,
+            } => {
+                dataset = next_dataset;
+                file = Some(next_file);
+                session_ids.push(root_session_id);
+            }
+            AnalysisCompileScopeItem::Run { run } => {
+                dataset = run.dataset;
+                file = Some(run.file);
+                session_ids.push(run.session_id);
+                document_id = Some(run.document_id).filter(|value| !value.is_empty());
+            }
+        }
+    }
+    CompileScope {
+        dataset,
+        file,
+        session_ids,
+        document_id,
+    }
+}
+
+async fn compile_analysis(
+    State(state): State<AppState>,
+    request: Result<Json<CompileAnalysisRequest>, JsonRejection>,
+) -> Result<Json<CompiledQuery>, CompileHttpError> {
+    let Json(request) = request.map_err(|_| CompileHttpError {
+        status: StatusCode::BAD_REQUEST,
+        body: CompileFailureBody {
+            code: "invalid_request".into(),
+            message: "request body must be valid JSON".into(),
+            field: None,
+            engine_detail: None,
+        },
+    })?;
+    let runtime = current_catalog(&state)
+        .await
+        .map_err(|_| CompileHttpError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            body: CompileFailureBody {
+                code: "unavailable".into(),
+                message: "catalog is not ready".into(),
+                field: None,
+                engine_detail: None,
+            },
+        })?;
+    if request.snapshot_id != runtime.snapshot.snapshot_id() {
+        return Err(CompileHttpError::stale_snapshot());
+    }
+    let schema = runtime
+        .engine
+        .introspect_tables()
+        .await
+        .map_err(|error| CompileHttpError::unplannable(format!("{error:#}")))?
+        .into_iter()
+        .map(|table| TableSchema {
+            name: table.name,
+            columns: table.fields.into_iter().map(|field| field.name).collect(),
+        })
+        .collect::<Vec<_>>();
+    let compiled = compile(request.spec, &schema, &compile_scope_from(request.scope))
+        .map_err(CompileHttpError::from_compile)?;
+    runtime
+        .engine
+        .query(&format!("EXPLAIN {}", compiled.sql))
+        .await
+        .map_err(|error| CompileHttpError::unplannable(format!("{error:#}")))?;
+    Ok(Json(compiled))
 }
 
 #[derive(Debug, Deserialize)]

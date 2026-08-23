@@ -12,6 +12,8 @@ mod agenticmd_datafusion;
 #[cfg(feature = "lance-store")]
 mod attempt_registry;
 #[cfg(feature = "lance-store")]
+mod cas_store;
+#[cfg(feature = "lance-store")]
 mod catalog;
 #[cfg(feature = "lance-store")]
 mod datafusion_bridge;
@@ -46,9 +48,9 @@ mod storyline_model;
 #[cfg(feature = "lance-store")]
 pub(crate) use agenticmd_datafusion::AgenticMdDataSource;
 #[cfg(feature = "lance-store")]
-pub use attempt_registry::{
-    unix_now_ms as attempt_registry_now_ms, AttemptRecord, AttemptRecordState, AttemptRegistry,
-};
+pub use attempt_registry::{AttemptRecord, AttemptRecordState, AttemptRegistry};
+#[cfg(feature = "lance-store")]
+pub use cas_store::unix_now_ms as attempt_registry_now_ms;
 #[cfg(feature = "lance-store")]
 pub use catalog::{
     CatalogDataset, CatalogErrorPolicy, CatalogNamespace, CatalogPage, CatalogProjectionStatus,
@@ -89,7 +91,7 @@ pub use local_query_manifest::{DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCA
 #[cfg(feature = "lance-store")]
 pub use query_engine::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat, ExternalTableSpec,
-    QueryBackendInfo, QuerySnapshot, QueryWriteOutcome,
+    IntrospectedField, IntrospectedTable, QueryBackendInfo, QuerySnapshot, QueryWriteOutcome,
 };
 #[cfg(feature = "lance-store")]
 pub use run_control::{CommitRunOutcome, LeaseAcquireOutcome, RunControlStore};

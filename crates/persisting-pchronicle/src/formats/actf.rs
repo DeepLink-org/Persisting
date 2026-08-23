@@ -93,6 +93,9 @@ impl ActfTrajectory {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ActfTrajectoryWire {
+    /// OpenClaw session event log. ACTF-only lossy entry, not a
+    /// [`crate::format::DocumentFormat`]. Export writes the canonical
+    /// object shape, not this array.
     Events(Vec<Value>),
     Canonical {
         schema_version: String,

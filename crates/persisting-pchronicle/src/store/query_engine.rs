@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::json::LineDelimitedWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::dataframe::DataFrame;
@@ -74,6 +75,19 @@ pub struct ChronicleQueryExecutionOptions {
 pub enum QueryWriteOutcome {
     Complete,
     LimitExceeded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntrospectedTable {
+    pub name: String,
+    pub fields: Vec<IntrospectedField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntrospectedField {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
 }
 
 impl ExternalTableSpec {
@@ -170,6 +184,55 @@ impl ChronicleQueryEngine {
 
     pub fn context(&self) -> &SessionContext {
         &self.context
+    }
+
+    /// List engine-qualified tables and their live Arrow fields.
+    ///
+    /// Bare public aliases and `information_schema` are omitted so catalog
+    /// names match SQL that evidence queries can actually run.
+    pub async fn introspect_tables(&self) -> Result<Vec<IntrospectedTable>> {
+        let mut tables = Vec::new();
+        for catalog_name in self.context.catalog_names() {
+            let Some(catalog) = self.context.catalog(&catalog_name) else {
+                continue;
+            };
+            for schema_name in catalog.schema_names() {
+                if schema_name.eq_ignore_ascii_case("information_schema")
+                    || schema_name.eq_ignore_ascii_case("public")
+                {
+                    continue;
+                }
+                let Some(schema) = catalog.schema(&schema_name) else {
+                    continue;
+                };
+                for table_name in schema.table_names() {
+                    let provider = schema
+                        .table(&table_name)
+                        .await
+                        .map_err(|error| {
+                            from_datafusion("introspect DataFusion table schema", error)
+                        })?
+                        .with_context(|| {
+                            format!("DataFusion table {schema_name}.{table_name} disappeared")
+                        })?;
+                    tables.push(IntrospectedTable {
+                        name: format!("{schema_name}.{table_name}"),
+                        fields: provider
+                            .schema()
+                            .fields()
+                            .iter()
+                            .map(|field| IntrospectedField {
+                                name: field.name().to_string(),
+                                data_type: sql_type(field.data_type(), field.is_nullable()),
+                                nullable: field.is_nullable(),
+                            })
+                            .collect(),
+                    });
+                }
+            }
+        }
+        tables.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(tables)
     }
 
     pub fn backend_info(&self) -> Option<&QueryBackendInfo> {
@@ -590,5 +653,23 @@ fn is_read_only_sql_statement(statement: &SqlStatement) -> bool {
         SqlStatement::Query(_) | SqlStatement::ExplainTable { .. } => true,
         SqlStatement::Explain { statement, .. } => is_read_only_sql_statement(statement),
         _ => false,
+    }
+}
+
+fn sql_type(data_type: &DataType, nullable: bool) -> String {
+    let base = match data_type {
+        DataType::Boolean => "BOOLEAN",
+        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => "INTEGER",
+        DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => "INTEGER",
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => "DOUBLE",
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => "TEXT",
+        DataType::Timestamp(_, _) => "TIMESTAMP",
+        DataType::Date32 | DataType::Date64 => "DATE",
+        other => return format!("{other}"),
+    };
+    if nullable {
+        format!("{base}?")
+    } else {
+        base.to_string()
     }
 }
