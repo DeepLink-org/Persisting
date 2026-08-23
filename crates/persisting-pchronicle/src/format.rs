@@ -96,7 +96,15 @@ mod tests {
             assert_eq!(expected.to_string(), name);
         }
 
-        for alias in ["events", "lance", "md", "openai_msg", "session_steps"] {
+        for alias in [
+            "events",
+            "lance",
+            "md",
+            "openai_msg",
+            "session_steps",
+            "openclaw",
+            "openclaw-events",
+        ] {
             assert!(DocumentFormat::from_str(alias).is_err(), "accepted {alias}");
         }
     }

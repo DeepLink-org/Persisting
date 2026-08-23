@@ -179,7 +179,13 @@ fn atif_storyline_hub_roundtrip() {
     let back: crate::atif::AtifTrajectory = serde_json::from_str(&out).unwrap();
     assert_eq!(back.effective_session_id().unwrap(), "sess-1");
     assert_eq!(back.steps.len(), 2);
+    assert_eq!(back.steps[0].source, "user");
+    assert_eq!(back.steps[1].source, "agent");
     assert_eq!(back.steps[1].tool_calls.as_ref().unwrap().len(), 2);
+    assert_eq!(
+        back.steps[1].tool_calls.as_ref().unwrap()[0].function_name,
+        "financial_search"
+    );
     assert_eq!(
         back.steps[1].tool_calls.as_ref().unwrap()[0].result,
         Some(serde_json::json!({"price": 185.35}))
@@ -214,55 +220,6 @@ fn convert_peripheral_via_hub_only() {
     let traj: crate::atif::AtifTrajectory = serde_json::from_str(&back).unwrap();
     assert_eq!(traj.effective_session_id().unwrap(), "sess-1");
     assert!(!traj.steps.is_empty());
-}
-
-#[test]
-fn events_in_memory_to_storyline() {
-    use crate::formats::events::{EventRecord, EventsDocument};
-    use serde_json::json;
-    let doc = EventsDocument::new(vec![
-        EventRecord {
-            identity: crate::EventIdentity::default(),
-            seq: 0,
-            source: "proxy".into(),
-            kind: "llm.request".into(),
-            timestamp: Some("2026-01-01T00:00:00Z".into()),
-            session_id: Some("s1".into()),
-            agent_id: Some("a1".into()),
-            parent_uuid: None,
-            trace_id: Some("t1".into()),
-            call_id: Some("c1".into()),
-            subagent_id: None,
-            parent_agent_id: None,
-            branch: None,
-            parent_call_id: None,
-            payload: json!({"model":"m","messages":[{"role":"user","content":"hi"}]}),
-        },
-        EventRecord {
-            identity: crate::EventIdentity::default(),
-            seq: 1,
-            source: "proxy".into(),
-            kind: "llm.response".into(),
-            timestamp: Some("2026-01-01T00:00:01Z".into()),
-            session_id: Some("s1".into()),
-            agent_id: Some("a1".into()),
-            parent_uuid: None,
-            trace_id: Some("t1".into()),
-            call_id: Some("c1".into()),
-            subagent_id: None,
-            parent_agent_id: None,
-            branch: None,
-            parent_call_id: None,
-            payload: json!({"content":"hello", "latency_ms": 1000, "ttft_ms": 120}),
-        },
-    ]);
-    let story = crate::convert::events_to_storyline(&doc).unwrap();
-    assert_eq!(story.session_id, "s1");
-    assert!(!story.turns.is_empty());
-    let agent = story.turns.iter().find(|t| t.source == "agent").unwrap();
-    assert_eq!(agent.message, json!("hello"));
-    assert_eq!(agent.latency_ms, Some(1000));
-    assert_eq!(agent.ttft_ms, Some(120));
 }
 
 #[test]
@@ -357,45 +314,6 @@ fn export_events_jsonl_debug_roundtrip_via_test_parser() {
 }
 
 #[test]
-fn parse_openai_msg_envelope() {
-    let raw = r#"{
-      "session_id": "s1",
-      "session_dir": "s1",
-      "agent_id": "a1",
-      "run_bucket": "2026-07-29",
-      "source": "dlcapt-proxy",
-      "authoritative": "json_file",
-      "session_steps": [{
-        "id": "step-1",
-        "session_id": "s1",
-        "step_id": 1,
-        "job_id": "",
-        "agent_id": "a1",
-        "group_id": "",
-        "env_name": "",
-        "llm_model": "gpt-4o",
-        "step_reward": 0.0,
-        "reward": 0.0,
-        "is_terminal": true,
-        "is_truncated": false,
-        "is_session_completed": true,
-        "is_trainable": true,
-        "created_at": "2026-07-29T00:00:00Z",
-        "messages": [{"role":"user","content":"ping"}],
-        "response": {"role":"assistant","content":"pong"},
-        "run_bucket": "2026-07-29",
-        "call_id": "c1"
-      }]
-    }"#;
-    let value = serde_json::from_str(raw).unwrap();
-    let stories =
-        crate::formats::parse_openai_msg_corpus_value(&value, "session_steps.json").unwrap();
-    assert_eq!(stories.len(), 1);
-    assert_eq!(stories[0].session_id, "s1");
-    assert_eq!(stories[0].turns[0].message, json!("ping"));
-}
-
-#[test]
 fn detect_format_from_content_and_path() {
     use crate::formats::detect::{detect_format, detect_format_from_path};
     use std::path::Path;
@@ -447,45 +365,6 @@ fn detect_format_from_content_and_path() {
         detect_format(None, Some(response_only)).unwrap(),
         Some(crate::DocumentFormat::OpenaiMsg)
     );
-}
-
-#[test]
-fn openai_msg_preserves_user_and_llm_turns() {
-    let raw = r#"{
-      "session_id": "s1",
-      "session_dir": "s1",
-      "agent_id": "a1",
-      "run_bucket": "2026-07-29",
-      "source": "dlcapt-proxy",
-      "authoritative": "json_file",
-      "session_steps": [{
-        "id": "step-1",
-        "session_id": "s1",
-        "step_id": 1,
-        "job_id": "",
-        "agent_id": "a1",
-        "group_id": "",
-        "env_name": "",
-        "llm_model": "gpt-4o",
-        "step_reward": 0.0,
-        "reward": 0.0,
-        "is_terminal": true,
-        "is_truncated": false,
-        "is_session_completed": true,
-        "is_trainable": true,
-        "created_at": "2026-07-29T00:00:00Z",
-        "messages": [{"role":"user","content":"ping"}],
-        "response": {"role":"assistant","content":"pong"},
-        "run_bucket": "2026-07-29",
-        "call_id": "c1"
-      }]
-    }"#;
-    let story = into_storyline(TestFormat::OpenaiMsg, raw).unwrap();
-    assert_eq!(story.turns.len(), 2);
-    assert_eq!(story.turns[0].source, "user");
-    assert_eq!(story.turns[0].message, serde_json::json!("ping"));
-    assert_eq!(story.turns[1].source, "agent");
-    assert_eq!(story.turns[1].message, serde_json::json!("pong"));
 }
 
 #[test]
@@ -639,7 +518,10 @@ fn convert_openai_msg_storyline_roundtrip_messages() {
     let story = convert(TestFormat::OpenaiMsg, TestFormat::Storyline, raw).unwrap();
     let v: serde_json::Value = serde_json::from_str(&story).unwrap();
     assert_eq!(v["session"], "s-om");
+    assert_eq!(v["turns"].as_array().unwrap().len(), 2);
+    assert_eq!(v["turns"][0]["src"], "user");
     assert_eq!(v["turns"][0]["msg"], "ping");
+    assert_eq!(v["turns"][1]["src"], "agent");
     assert_eq!(v["turns"][1]["msg"], "pong");
 
     let back = convert(TestFormat::Storyline, TestFormat::OpenaiMsg, &story).unwrap();
@@ -710,25 +592,6 @@ fn events_storyline_roundtrip_preserves_call_dialogue() {
     let agent = again.turns.iter().find(|t| t.source == "agent").unwrap();
     assert_eq!(user.message, json!("hi there"));
     assert_eq!(agent.message, json!("hello back"));
-}
-
-#[test]
-fn convert_identity_and_cross_atif_storyline() {
-    let atif = serde_json::to_string_pretty(&sample_traj()).unwrap();
-    let same = convert(TestFormat::Atif, TestFormat::Atif, &atif).unwrap();
-    assert_eq!(same, atif);
-
-    let story = convert(TestFormat::Atif, TestFormat::Storyline, &atif).unwrap();
-    let back = convert(TestFormat::Storyline, TestFormat::Atif, &story).unwrap();
-    let traj: crate::atif::AtifTrajectory = serde_json::from_str(&back).unwrap();
-    assert_eq!(traj.effective_session_id().unwrap(), "sess-1");
-    assert_eq!(traj.steps.len(), 2);
-    assert_eq!(traj.steps[0].source, "user");
-    assert_eq!(traj.steps[1].source, "agent");
-    assert_eq!(
-        traj.steps[1].tool_calls.as_ref().unwrap()[0].function_name,
-        "financial_search"
-    );
 }
 
 #[test]

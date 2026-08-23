@@ -5,8 +5,11 @@ use persisting_pchronicle::document::{
     decode_json_storylines, encode_json_storylines, DocumentFormat,
 };
 use persisting_pchronicle::model::{StorylineDocument, StorylineTimestamp};
-use persisting_pchronicle::storage::StorylineLanceStore;
 use serde_json::{json, Map, Value};
+
+mod support;
+
+use support::{persist_and_restore, LookupStrategy};
 
 const JSON_FORMATS: [DocumentFormat; 3] = [
     DocumentFormat::Atif,
@@ -224,23 +227,6 @@ fn format_cases() -> Vec<FormatCase> {
             }),
         },
     ]
-}
-
-async fn persist_and_restore(stories: &[StorylineDocument]) -> Result<Vec<StorylineDocument>> {
-    let temporary = tempfile::tempdir()?;
-    let store = StorylineLanceStore::open(temporary.path()).await?;
-    store.replace_storylines(stories).await?;
-    let document_ids = stories
-        .iter()
-        .map(StorylineDocument::document_id)
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    store
-        .get_storylines_by_document_ids(&document_ids)
-        .await?
-        .into_iter()
-        .map(|story| story.context("Lance roundtrip lost a Storyline"))
-        .collect()
 }
 
 fn assert_unknown_contract(format: DocumentFormat, stories: &[StorylineDocument]) {
@@ -496,7 +482,7 @@ async fn direct_formats_survive_lance_semantically() -> Result<()> {
                 .is_some_and(|call| !call.contains_key("result")));
         }
 
-        let restored = persist_and_restore(&stories)
+        let restored = persist_and_restore(&stories, LookupStrategy::DocumentIds)
             .await
             .with_context(|| format!("persist {} Storylines", case.name))?;
         assert_unknown_contract(case.format, &restored);
@@ -539,7 +525,7 @@ async fn every_directed_cross_format_hop_is_semantically_stable_through_lance() 
             assert_common_storyline_semantics(&bridge_stories, &source_stories);
             assert_target_modeled_semantics(source.name, bridge, &bridge_stories);
 
-            let restored = persist_and_restore(&bridge_stories)
+            let restored = persist_and_restore(&bridge_stories, LookupStrategy::DocumentIds)
                 .await
                 .with_context(|| format!("persist {edge}"))?;
             assert_eq!(restored, bridge_stories, "Storyline changed across {edge}");

@@ -913,27 +913,12 @@ fn embedded_text_tool_calls_are_normalized() {
 #[cfg(feature = "lance-store")]
 #[tokio::test]
 async fn openai_canonical_export_survives_lance_roundtrip() {
-    let input = multi_session_corpus();
-    let expected = parse_openai_msg_corpus_value(&input, "corpus.json").unwrap();
-    let canonical = recover_openai_msg_files(&expected).unwrap()[0]
-        .document
-        .clone();
-    let temporary = tempfile::tempdir().unwrap();
-    let store = StorylineLanceStore::open(temporary.path()).await.unwrap();
-    store.replace_storylines(&expected).await.unwrap();
-
-    let session_ids = expected
-        .iter()
-        .map(|story| story.session_id.clone())
-        .collect::<Vec<_>>();
-    let restored = store
-        .get_storylines_full(&session_ids)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(Option::unwrap)
-        .collect::<Vec<_>>();
-    let recovered = recover_openai_msg_files(&restored).unwrap();
+    let mut input = multi_session_corpus();
+    input[0]["created_at"] = json!(1_700_000_001.123_456_f64);
+    let (canonical, recovered) =
+        openai_lance_roundtrip(&input, "corpus.json", OpenaiLanceLookup::SessionIds)
+            .await
+            .unwrap();
 
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].relative_path, PathBuf::from("corpus.json"));
@@ -941,34 +926,52 @@ async fn openai_canonical_export_survives_lance_roundtrip() {
 }
 
 #[cfg(feature = "lance-store")]
-#[tokio::test]
-async fn openai_fractional_timestamp_survives_lance_roundtrip() {
-    let mut input = multi_session_corpus();
-    input[0]["created_at"] = json!(1_700_000_001.123_456_f64);
-    let expected = parse_openai_msg_corpus_value(&input, "fractional.json").unwrap();
-    let canonical = recover_openai_msg_files(&expected).unwrap()[0]
-        .document
-        .clone();
-    let temporary = tempfile::tempdir().unwrap();
-    let store = StorylineLanceStore::open(temporary.path()).await.unwrap();
-    store.replace_storylines(&expected).await.unwrap();
+#[derive(Clone, Copy)]
+enum OpenaiLanceLookup {
+    SessionIds,
+    DocumentIds,
+}
 
-    let session_ids = expected
-        .iter()
-        .map(|story| story.session_id.clone())
-        .collect::<Vec<_>>();
-    let restored = store
-        .get_storylines_full(&session_ids)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(Option::unwrap)
-        .collect::<Vec<_>>();
+#[cfg(feature = "lance-store")]
+async fn openai_lance_roundtrip(
+    input: &Value,
+    relative_path: &str,
+    lookup: OpenaiLanceLookup,
+) -> Result<(Value, Vec<RecoveredOpenaiMsgFile>)> {
+    let expected = parse_openai_msg_corpus_value(input, relative_path)?;
+    let canonical = recover_openai_msg_files(&expected)?[0].document.clone();
+    let temporary = tempfile::tempdir()?;
+    let store = StorylineLanceStore::open(temporary.path()).await?;
+    store.replace_storylines(&expected).await?;
 
-    assert_eq!(
-        recover_openai_msg_files(&restored).unwrap()[0].document,
-        canonical
-    );
+    let restored = match lookup {
+        OpenaiLanceLookup::SessionIds => {
+            let session_ids = expected
+                .iter()
+                .map(|story| story.session_id.clone())
+                .collect::<Vec<_>>();
+            store
+                .get_storylines_full(&session_ids)
+                .await?
+                .into_iter()
+                .map(Option::unwrap)
+                .collect::<Vec<_>>()
+        }
+        OpenaiLanceLookup::DocumentIds => {
+            let document_ids = expected
+                .iter()
+                .map(|story| story.document_id().to_string())
+                .collect::<Vec<_>>();
+            store
+                .get_storylines_by_document_ids(&document_ids)
+                .await?
+                .into_iter()
+                .map(Option::unwrap)
+                .collect::<Vec<_>>()
+        }
+    };
+
+    Ok((canonical, recover_openai_msg_files(&restored)?))
 }
 
 #[cfg(feature = "lance-store")]
@@ -981,28 +984,10 @@ async fn openai_null_source_fields_survive_lance_roundtrip() {
         "created_at": null,
         "messages": [{"role": "assistant", "content": "ok"}]
     }]);
-    let expected = parse_openai_msg_corpus_value(&input, "nulls.json").unwrap();
-    let canonical = recover_openai_msg_files(&expected).unwrap()[0]
-        .document
-        .clone();
-    let temporary = tempfile::tempdir().unwrap();
-    let store = StorylineLanceStore::open(temporary.path()).await.unwrap();
-    store.replace_storylines(&expected).await.unwrap();
+    let (canonical, recovered) =
+        openai_lance_roundtrip(&input, "nulls.json", OpenaiLanceLookup::DocumentIds)
+            .await
+            .unwrap();
 
-    let document_ids = expected
-        .iter()
-        .map(|story| story.document_id().to_string())
-        .collect::<Vec<_>>();
-    let restored = store
-        .get_storylines_by_document_ids(&document_ids)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(Option::unwrap)
-        .collect::<Vec<_>>();
-
-    assert_eq!(
-        recover_openai_msg_files(&restored).unwrap()[0].document,
-        canonical
-    );
+    assert_eq!(recovered[0].document, canonical);
 }

@@ -25,13 +25,6 @@ use super::{
     DEFAULT_MAX_EVENT_FALLBACK_ROWS,
 };
 
-pub(crate) trait QueryDocumentSource {
-    fn format(&self) -> DocumentFormat;
-    fn tables(&self) -> QueryTables;
-    fn capabilities(&self) -> QueryCapabilities;
-    fn register(&self, context: &SessionContext) -> Result<()>;
-}
-
 #[derive(Debug)]
 pub(crate) enum DocumentSourceImpl {
     Events {
@@ -96,16 +89,85 @@ pub(crate) async fn open_document_source(
 
 impl DocumentSourceImpl {
     pub(crate) fn format(&self) -> DocumentFormat {
-        QueryDocumentSource::format(self)
+        match self {
+            Self::Events { .. } => DocumentFormat::CanonicalEvent,
+            Self::StorylineLance { .. } => DocumentFormat::StorylineLance,
+            Self::AgenticMd { .. } => DocumentFormat::AgenticMd,
+            Self::Files { format, .. } => *format,
+        }
     }
 
     pub(crate) fn capabilities(&self) -> QueryCapabilities {
-        QueryDocumentSource::capabilities(self)
+        match self.format() {
+            DocumentFormat::CanonicalEvent => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::Exact,
+                limit_pushdown: true,
+                scalar_indexes: true,
+                streaming_decode: true,
+                late_content_materialization: false,
+                snapshot_consistent: true,
+            },
+            DocumentFormat::StorylineLance => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::ExpressionDependent,
+                limit_pushdown: true,
+                scalar_indexes: true,
+                streaming_decode: false,
+                late_content_materialization: true,
+                snapshot_consistent: true,
+            },
+            DocumentFormat::Atif => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::Inexact,
+                limit_pushdown: true,
+                scalar_indexes: false,
+                streaming_decode: true,
+                late_content_materialization: false,
+                snapshot_consistent: false,
+            },
+            DocumentFormat::Actf => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::Inexact,
+                limit_pushdown: true,
+                scalar_indexes: false,
+                streaming_decode: true,
+                late_content_materialization: false,
+                snapshot_consistent: false,
+            },
+            DocumentFormat::OpenaiMsg => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::Unsupported,
+                limit_pushdown: true,
+                scalar_indexes: false,
+                streaming_decode: false,
+                late_content_materialization: false,
+                snapshot_consistent: false,
+            },
+            DocumentFormat::Storyline => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::Unsupported,
+                limit_pushdown: true,
+                scalar_indexes: false,
+                streaming_decode: false,
+                late_content_materialization: false,
+                snapshot_consistent: false,
+            },
+            DocumentFormat::AgenticMd => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::Unsupported,
+                limit_pushdown: false,
+                scalar_indexes: false,
+                streaming_decode: false,
+                late_content_materialization: false,
+                snapshot_consistent: false,
+            },
+        }
     }
 
     pub(crate) fn register_datafusion(&self, context: &SessionContext) -> Result<QueryTables> {
-        QueryDocumentSource::register(self, context)?;
-        Ok(QueryDocumentSource::tables(self))
+        self.register(context)?;
+        Ok(self.tables())
     }
 
     pub(crate) async fn project_storylines(&self) -> Result<Vec<StorylineDocument>> {
@@ -240,90 +302,11 @@ impl DocumentSourceImpl {
             _ => None,
         }
     }
-}
-
-impl QueryDocumentSource for DocumentSourceImpl {
-    fn format(&self) -> DocumentFormat {
-        match self {
-            Self::Events { .. } => DocumentFormat::CanonicalEvent,
-            Self::StorylineLance { .. } => DocumentFormat::StorylineLance,
-            Self::AgenticMd { .. } => DocumentFormat::AgenticMd,
-            Self::Files { format, .. } => *format,
-        }
-    }
 
     fn tables(&self) -> QueryTables {
         match self {
             Self::Events { .. } => QueryTables::Events,
             _ => QueryTables::Storyline,
-        }
-    }
-
-    fn capabilities(&self) -> QueryCapabilities {
-        match self.format() {
-            DocumentFormat::CanonicalEvent => QueryCapabilities {
-                projection_pushdown: true,
-                filter_pushdown: FilterPushdown::Exact,
-                limit_pushdown: true,
-                scalar_indexes: true,
-                streaming_decode: true,
-                late_content_materialization: false,
-                snapshot_consistent: true,
-            },
-            DocumentFormat::StorylineLance => QueryCapabilities {
-                projection_pushdown: true,
-                filter_pushdown: FilterPushdown::ExpressionDependent,
-                limit_pushdown: true,
-                scalar_indexes: true,
-                streaming_decode: false,
-                late_content_materialization: true,
-                snapshot_consistent: true,
-            },
-            DocumentFormat::Atif => QueryCapabilities {
-                projection_pushdown: true,
-                filter_pushdown: FilterPushdown::Inexact,
-                limit_pushdown: true,
-                scalar_indexes: false,
-                streaming_decode: true,
-                late_content_materialization: false,
-                snapshot_consistent: false,
-            },
-            DocumentFormat::Actf => QueryCapabilities {
-                projection_pushdown: true,
-                filter_pushdown: FilterPushdown::Inexact,
-                limit_pushdown: true,
-                scalar_indexes: false,
-                streaming_decode: true,
-                late_content_materialization: false,
-                snapshot_consistent: false,
-            },
-            DocumentFormat::OpenaiMsg => QueryCapabilities {
-                projection_pushdown: true,
-                filter_pushdown: FilterPushdown::Unsupported,
-                limit_pushdown: true,
-                scalar_indexes: false,
-                streaming_decode: false,
-                late_content_materialization: false,
-                snapshot_consistent: false,
-            },
-            DocumentFormat::Storyline => QueryCapabilities {
-                projection_pushdown: true,
-                filter_pushdown: FilterPushdown::Unsupported,
-                limit_pushdown: true,
-                scalar_indexes: false,
-                streaming_decode: false,
-                late_content_materialization: false,
-                snapshot_consistent: false,
-            },
-            DocumentFormat::AgenticMd => QueryCapabilities {
-                projection_pushdown: true,
-                filter_pushdown: FilterPushdown::Unsupported,
-                limit_pushdown: false,
-                scalar_indexes: false,
-                streaming_decode: false,
-                late_content_materialization: false,
-                snapshot_consistent: false,
-            },
         }
     }
 

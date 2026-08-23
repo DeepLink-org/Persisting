@@ -767,7 +767,12 @@ async fn warehouse_keeps_api_v1_aliases_for_embedded_web_ui() {
 
     let root = json_dataset_root();
     let app = router(root.to_string_lossy().to_string());
-    for uri in ["/api/v1/explorer/runs?limit=10", "/api/v1/query/tables"] {
+    for uri in [
+        "/api/explorer/runs?limit=10",
+        "/api/query/tables",
+        "/api/v1/explorer/runs?limit=10",
+        "/api/v1/query/tables",
+    ] {
         let response = app
             .clone()
             .oneshot(
@@ -782,6 +787,38 @@ async fn warehouse_keeps_api_v1_aliases_for_embedded_web_ui() {
             response.status(),
             StatusCode::OK,
             "{uri} failed: {}",
+            String::from_utf8_lossy(&response.into_body().collect().await.unwrap().to_bytes())
+        );
+    }
+}
+
+#[tokio::test]
+async fn warehouse_does_not_expose_unused_har_or_revisions_routes() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let root = json_dataset_root();
+    let app = router(root.to_string_lossy().to_string());
+    for uri in [
+        "/api/export/har",
+        "/api/revisions",
+        "/api/v1/export/har",
+        "/api/v1/revisions",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{uri} should be gone: {}",
             String::from_utf8_lossy(&response.into_body().collect().await.unwrap().to_bytes())
         );
     }

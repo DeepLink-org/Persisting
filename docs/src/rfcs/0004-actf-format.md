@@ -79,9 +79,10 @@ opaque JSON 保留。
 - `attempts` 必须非空；`attempts_tried` 等于实际 attempt 数且不得大于 `k`。
 - trajectory 的 `schema_version` 必须是 `ACTF_v1.0`，时间字段必须非空。失败 attempt
   允许把 `trajectory` 写成 OpenClaw 事件数组（`session` / `message` / `model_change`
-  等），而不是 `{schema_version, steps, ...}` 对象。探测仍认作 ACTF；导入时
-  `message.role=user|assistant|toolResult` 收成 Storyline turns，`toolResult` 折回
-  前一条 assistant 的 `tool_calls`。
+  等），而不是 `{schema_version, steps, ...}` 对象。这是 **ACTF 专属有损入口**，不是
+  独立 `DocumentFormat`，探测仍认作 ACTF。导入时 `message.role=user|assistant|toolResult`
+  收成 Storyline turns，`toolResult` 折回前一条 assistant 的 `tool_calls`。导出写回
+  canonical ACTF trajectory **对象**（含 `schema_version` / `steps`），不还原为事件数组。
 - step id 必须为正数并严格递增。
 - 同一步内 tool call id 唯一（缺 `id` 时按 `step-{step_id}-tool-{index}` 合成后再比）。`tools` 与 `assistant_content.tool_calls` 都非空时必须相等；一侧为空时以非空一侧为工具来源。`type` / `id` 可选；`{name, arguments}` 与 OpenAI `{id,type,function:{name,arguments}}` 都合法。attempt `status` 可为空。
 - observation 的 `type` 可选；仅有 `content` 的环境输出合法。存在 `tool_use_id` 或 `id` 时，必须引用同一步的 tool call。
@@ -91,7 +92,7 @@ opaque JSON 保留。
 
 ## ACTF → Storyline JSON Pointer 映射 {#actf-storyline-json-pointer-mapping}
 
-本节是 ACTF 到 Storyline 字段映射的权威定义。指针遵循 RFC 6901；`{a}`、`{s}`、
+本节是 ACTF 到 Storyline 字段映射的权威定义。指针遵循 RFC 6901。Storyline 强类型 hub 只保留通用评测字段（`correct` / `score` / `status` / `error` / `final_answer` / `ground_truth` / `artifacts` / `max_score`）；表中的 ACTF 私货目标（`/task/result/task_correct`、`category`、`attempts_tried`、`solved_at`、`retry_count`、`retry_counts`）落在 `task.result` extra，JSON Pointer 不变。`{a}`、`{s}`、
 `{c}`、`{o}` 和 `{t}` 分别表示 attempt key、源 step 下标、tool call 下标、observation
 result 下标和目标 turn 下标。代入实际 token 后即为普通 JSON Pointer。
 
@@ -277,6 +278,7 @@ missing/显式 `null` 会按 Storyline 语义规范化；源文件空白、缩�
 
 | Date | Change |
 | --- | --- |
+| 2026-08-23 | `task.result` 强类型只保留通用评测字段；ACTF 私货进 extra，旧 Storyline JSON 同级键不得静默丢弃。OpenClaw 事件数组标为 ACTF 专属有损入口，不是独立 DocumentFormat。 |
 | 2026-08-22 | 主映射改为每个源 pointer 恰好一个权威目标。`/session` 与 `source_document_id` 从 `/task_id` 拆出为派生身份；`kind`、`/fn` 回退、`latency_ms` / `duration_ms` / `source_call_id` / 规范化 `content` 改为便利提升。基数用语不再把 Storyline 文档叫成 run。 |
 | 2026-08-22 | 评测/预算、文档与 step 结束时间、tool `type`/`status`/`exit_code` 进入 `/task`、`/started_at`、`/finished_at`、`tool_calls[].kind`/`response`；`task_correct`/`correct`/`status`/`score` 提升到 `/final_metrics`。 |
 | 2026-08-22 | `system_prompt` / `user_content` 进入文档 `/prompt` 与 turn `/prompt`；不再作为残差。 |

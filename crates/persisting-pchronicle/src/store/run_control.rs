@@ -4,22 +4,13 @@
 //! important: checking a lease in one object and creating a commit in another
 //! leaves a race where a newer lease can be issued between the two operations.
 
+use super::cas_store::{unix_now_ms, CasStore, Mutation};
 use anyhow::{bail, Context};
-use fs2::FileExt;
-use futures::TryStreamExt;
-use lance::io::ObjectStore;
-use object_store::path::Path as ObjectPath;
-use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
 use persisting_agentctl::{
     AttemptId, RunCommit, RunCommitRequest, RunControlRecord, RunId, RunLeaseRecord,
 };
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 const CONTROL_DIR: &str = "run-control";
-const CAS_RETRIES: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LeaseAcquireOutcome {
@@ -40,61 +31,31 @@ pub enum CommitRunOutcome {
     Conflict(RunCommit),
 }
 
-enum Backend {
-    Local(PathBuf),
-    Object {
-        store: Arc<ObjectStore>,
-        root: ObjectPath,
-    },
-}
-
 /// A lightweight pChronicle control store backed by a local directory or an
 /// object-store URI. Local updates use an advisory file lock plus atomic rename;
 /// object stores use conditional create/update with ETag/version preconditions.
 pub struct RunControlStore {
-    root_uri: String,
-    backend: Backend,
+    store: CasStore,
 }
 
 impl std::fmt::Debug for RunControlStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("RunControlStore")
-            .field("root_uri", &self.root_uri)
+            .field("root_uri", &self.store.root_uri())
             .finish_non_exhaustive()
     }
 }
 
 impl RunControlStore {
     pub async fn open(root: impl AsRef<str>) -> anyhow::Result<Self> {
-        let root = root.as_ref().trim();
-        if root.is_empty() {
-            bail!("Run control root must not be empty");
-        }
-        if !root.contains("://") {
-            let path = PathBuf::from(root).join(CONTROL_DIR);
-            tokio::fs::create_dir_all(&path)
-                .await
-                .with_context(|| format!("create Run control root {}", path.display()))?;
-            return Ok(Self {
-                root_uri: root.to_string(),
-                backend: Backend::Local(path),
-            });
-        }
-        let (store, object_root) = ObjectStore::from_uri(root)
-            .await
-            .with_context(|| format!("open Run control object store {root}"))?;
         Ok(Self {
-            root_uri: root.to_string(),
-            backend: Backend::Object {
-                store,
-                root: object_root.join(CONTROL_DIR),
-            },
+            store: CasStore::open(root, CONTROL_DIR, "Run control").await?,
         })
     }
 
     pub fn root_uri(&self) -> &str {
-        &self.root_uri
+        self.store.root_uri()
     }
 
     pub async fn acquire_lease(
@@ -136,7 +97,7 @@ impl RunControlStore {
         let owned_run_id = run_id.clone();
         let owned_task_id = task_id.map(str::to_owned);
         let owned_owner = owner.to_string();
-        let mutate = move |current: Option<&RunControlRecord>| -> anyhow::Result<Mutation<_>> {
+        let mutate = move |current: Option<&RunControlRecord>| -> anyhow::Result<Mutation<_, _>> {
             if let Some(commit) = current.and_then(|record| record.commit.clone()) {
                 return Ok(Mutation::Unchanged(LeaseAcquireOutcome::AlreadyCommitted(
                     commit,
@@ -155,7 +116,7 @@ impl RunControlStore {
                         record.lease = Some(renewed.clone());
                     })?;
                     return Ok(Mutation::Replace(
-                        Box::new(record),
+                        record,
                         LeaseAcquireOutcome::Acquired(renewed),
                     ));
                 }
@@ -178,7 +139,7 @@ impl RunControlStore {
                 record.lease = Some(lease.clone());
             })?;
             Ok(Mutation::Replace(
-                Box::new(record),
+                record,
                 LeaseAcquireOutcome::Acquired(lease),
             ))
         };
@@ -214,7 +175,7 @@ impl RunControlStore {
                     lease.attempt_id = Some(attempt_id.clone());
                 }
             })?;
-            Ok(Mutation::Replace(Box::new(record), true))
+            Ok(Mutation::Replace(record, true))
         })
         .await
     }
@@ -250,7 +211,7 @@ impl RunControlStore {
                     lease.expires_at_unix_ms = expires_at;
                 }
             })?;
-            Ok(Mutation::Replace(Box::new(record), true))
+            Ok(Mutation::Replace(record, true))
         })
         .await
     }
@@ -304,7 +265,7 @@ impl RunControlStore {
                 record.commit = Some(commit.clone());
             })?;
             Ok(Mutation::Replace(
-                Box::new(record),
+                record,
                 CommitRunOutcome::Committed(commit),
             ))
         })
@@ -312,55 +273,11 @@ impl RunControlStore {
     }
 
     pub async fn get(&self, run_id: &RunId) -> anyhow::Result<Option<RunControlRecord>> {
-        match &self.backend {
-            Backend::Local(root) => read_local_record(&record_path(root, run_id)),
-            Backend::Object { store, root } => {
-                Ok(read_object_record(store, &object_record_path(root, run_id))
-                    .await?
-                    .map(|(record, _)| record))
-            }
-        }
+        self.store.get(run_id.as_str()).await
     }
 
     pub async fn list(&self) -> anyhow::Result<Vec<RunControlRecord>> {
-        let mut records = match &self.backend {
-            Backend::Local(root) => {
-                let root = root.clone();
-                tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<_>> {
-                    let mut out = Vec::new();
-                    for entry in std::fs::read_dir(&root)? {
-                        let entry = entry?;
-                        if entry.path().extension().and_then(|value| value.to_str()) != Some("json")
-                        {
-                            continue;
-                        }
-                        if let Some(record) = read_local_record(&entry.path())? {
-                            out.push(record);
-                        }
-                    }
-                    Ok(out)
-                })
-                .await??
-            }
-            Backend::Object { store, root } => {
-                let prefix = root.clone();
-                let objects = store
-                    .inner
-                    .list(Some(&prefix))
-                    .try_collect::<Vec<_>>()
-                    .await?;
-                let mut out = Vec::new();
-                for object in objects {
-                    if object.location.extension() != Some("json") {
-                        continue;
-                    }
-                    if let Some((record, _)) = read_object_record(store, &object.location).await? {
-                        out.push(record);
-                    }
-                }
-                out
-            }
-        };
+        let mut records = self.store.list::<RunControlRecord>().await?;
         records.sort_by(|left, right| left.run_id.cmp(&right.run_id));
         Ok(records)
     }
@@ -368,67 +285,13 @@ impl RunControlStore {
     async fn mutate<T, F>(&self, run_id: &RunId, mutate: F) -> anyhow::Result<T>
     where
         T: Send + 'static,
-        F: Fn(Option<&RunControlRecord>) -> anyhow::Result<Mutation<T>> + Send + Sync + 'static,
+        F: Fn(Option<&RunControlRecord>) -> anyhow::Result<Mutation<RunControlRecord, T>>
+            + Send
+            + Sync
+            + 'static,
     {
-        match &self.backend {
-            Backend::Local(root) => {
-                let path = record_path(root, run_id);
-                let lock_path = path.with_extension("lock");
-                tokio::task::spawn_blocking(move || {
-                    if let Some(parent) = path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    let lock = OpenOptions::new()
-                        .create(true)
-                        .truncate(false)
-                        .read(true)
-                        .write(true)
-                        .open(&lock_path)?;
-                    lock.lock_exclusive()?;
-                    let current = read_local_record(&path)?;
-                    let outcome = mutate(current.as_ref())?;
-                    let result = match outcome {
-                        Mutation::Unchanged(value) => value,
-                        Mutation::Replace(record, value) => {
-                            write_local_record(&path, &record)?;
-                            value
-                        }
-                    };
-                    FileExt::unlock(&lock)?;
-                    Ok(result)
-                })
-                .await?
-            }
-            Backend::Object { store, root } => {
-                let path = object_record_path(root, run_id);
-                for _ in 0..CAS_RETRIES {
-                    let current = read_object_record(store, &path).await?;
-                    let outcome = mutate(current.as_ref().map(|(record, _)| record))?;
-                    let (record, value) = match outcome {
-                        Mutation::Unchanged(value) => return Ok(value),
-                        Mutation::Replace(record, value) => (record, value),
-                    };
-                    let mode = match current {
-                        None => PutMode::Create,
-                        Some((_, version)) => PutMode::Update(version),
-                    };
-                    let bytes = serde_json::to_vec_pretty(&record)?;
-                    match store.inner.put_opts(&path, bytes.into(), mode.into()).await {
-                        Ok(_) => return Ok(value),
-                        Err(ObjectStoreError::AlreadyExists { .. })
-                        | Err(ObjectStoreError::Precondition { .. }) => continue,
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                bail!("Run control CAS contention exceeded {CAS_RETRIES} retries")
-            }
-        }
+        self.store.mutate(run_id.as_str(), mutate).await
     }
-}
-
-enum Mutation<T> {
-    Unchanged(T),
-    Replace(Box<RunControlRecord>, T),
 }
 
 fn next_record(
@@ -451,89 +314,6 @@ fn next_record(
         .context("revision overflow")?;
     apply(&mut record);
     Ok(record)
-}
-
-fn encoded_run_id(run_id: &RunId) -> String {
-    let mut encoded = String::with_capacity(run_id.as_str().len());
-    for byte in run_id.as_str().bytes() {
-        match byte {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
-                encoded.push(char::from(byte));
-            }
-            other => encoded.push_str(&format!("~{other:02x}")),
-        }
-    }
-    encoded
-}
-
-fn record_path(root: &Path, run_id: &RunId) -> PathBuf {
-    root.join(format!("{}.json", encoded_run_id(run_id)))
-}
-
-fn object_record_path(root: &ObjectPath, run_id: &RunId) -> ObjectPath {
-    root.clone()
-        .join(format!("{}.json", encoded_run_id(run_id)))
-}
-
-fn read_local_record(path: &Path) -> anyhow::Result<Option<RunControlRecord>> {
-    let mut file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
-        format!("decode Run control record {}", path.display())
-    })?))
-}
-
-fn write_local_record(path: &Path, record: &RunControlRecord) -> anyhow::Result<()> {
-    let parent = path.parent().context("Run control path has no parent")?;
-    std::fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(
-        ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("run"),
-        std::process::id()
-    ));
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&temporary)?;
-    file.write_all(&serde_json::to_vec_pretty(record)?)?;
-    file.sync_all()?;
-    std::fs::rename(&temporary, path)?;
-    File::open(parent)?.sync_all()?;
-    Ok(())
-}
-
-async fn read_object_record(
-    store: &Arc<ObjectStore>,
-    path: &ObjectPath,
-) -> anyhow::Result<Option<(RunControlRecord, UpdateVersion)>> {
-    let result = match store.inner.get(path).await {
-        Ok(result) => result,
-        Err(ObjectStoreError::NotFound { .. }) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    let version = UpdateVersion {
-        e_tag: result.meta.e_tag.clone(),
-        version: result.meta.version.clone(),
-    };
-    let bytes = result.bytes().await?;
-    let record = serde_json::from_slice(&bytes)
-        .with_context(|| format!("decode Run control object {path}"))?;
-    Ok(Some((record, version)))
-}
-
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

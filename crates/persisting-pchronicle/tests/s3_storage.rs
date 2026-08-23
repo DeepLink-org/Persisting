@@ -16,6 +16,10 @@ use persisting_pchronicle::storage::{
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
+mod support;
+
+use support::fixture_path;
+
 const REPLACEMENT_WORKER_ROOT_ENV: &str = "PCHRONICLE_S3_REPLACEMENT_WORKER_ROOT";
 const REPLACEMENT_WORKER_SESSION_ENV: &str = "PCHRONICLE_S3_REPLACEMENT_WORKER_SESSION";
 const REPLACEMENT_WORKER_BARRIER_ENV: &str = "PCHRONICLE_S3_REPLACEMENT_WORKER_BARRIER";
@@ -35,10 +39,7 @@ fn unique_root() -> Result<String> {
 }
 
 fn fixture_storyline() -> Result<StorylineDocument> {
-    let source = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/atif/parallel_tools_14.json"),
-    )?;
+    let source = std::fs::read_to_string(fixture_path("atif/parallel_tools_14.json"))?;
     decode_json_storylines(DocumentFormat::Atif, &source, "fixture.json")?
         .pop()
         .context("missing fixture Storyline")

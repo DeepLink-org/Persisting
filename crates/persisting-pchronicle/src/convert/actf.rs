@@ -17,11 +17,18 @@ use crate::formats::storyline::{
 };
 use crate::formats::timestamp::StorylineTimestamp;
 use crate::formats::unknown_fields::{
-    decode_json_pointer, normalize_actf_pointer, restore_json_pointer,
-    validate_unknown_fields_with, write_foreign_unknown_fields_envelope, CarrierBinding,
-    PointerWrite, UnknownFieldLimits,
+    decode_json_pointer, insert_unknown_map, normalize_actf_pointer, pointer_join,
+    restore_json_pointer, validate_unknown_fields_with, write_foreign_unknown_fields_envelope,
+    CarrierBinding, PointerWrite, UnknownFieldLimits,
 };
 use crate::Result;
+
+const ACTF_EXTRA_TASK_CORRECT: &str = "task_correct";
+const ACTF_EXTRA_CATEGORY: &str = "category";
+const ACTF_EXTRA_ATTEMPTS_TRIED: &str = "attempts_tried";
+const ACTF_EXTRA_SOLVED_AT: &str = "solved_at";
+const ACTF_EXTRA_RETRY_COUNT: &str = "retry_count";
+const ACTF_EXTRA_RETRY_COUNTS: &str = "retry_counts";
 
 fn actf_tool_to_storyline(
     call: &ActfToolCall,
@@ -613,8 +620,24 @@ fn omit_empty_value(value: &Value) -> Option<Value> {
 }
 
 fn actf_task(document: &ActfDocument, attempt: &ActfAttempt) -> Option<StorylineTask> {
+    let mut extra = Map::new();
+    extra.insert(ACTF_EXTRA_TASK_CORRECT.into(), json!(document.correct));
+    if let Some(category) = omit_empty_string(&document.category) {
+        extra.insert(ACTF_EXTRA_CATEGORY.into(), json!(category));
+    }
+    if let Some(attempts_tried) = i64::try_from(document.attempts_tried).ok() {
+        extra.insert(ACTF_EXTRA_ATTEMPTS_TRIED.into(), json!(attempts_tried));
+    }
+    if let Some(solved_at) = attempt_solved_at(&document.solved_at) {
+        extra.insert(ACTF_EXTRA_SOLVED_AT.into(), json!(solved_at));
+    }
+    if let Some(retry_count) = document.extra.get(ACTF_EXTRA_RETRY_COUNT).cloned() {
+        extra.insert(ACTF_EXTRA_RETRY_COUNT.into(), retry_count);
+    }
+    if let Some(retry_counts) = document.extra.get(ACTF_EXTRA_RETRY_COUNTS).cloned() {
+        extra.insert(ACTF_EXTRA_RETRY_COUNTS.into(), retry_counts);
+    }
     let result = StorylineTaskResult {
-        task_correct: Some(document.correct),
         correct: Some(attempt.correct),
         final_answer: omit_empty_value(&attempt.final_answer),
         ground_truth: omit_empty_value(&attempt.ground_truth),
@@ -622,12 +645,8 @@ fn actf_task(document: &ActfDocument, attempt: &ActfAttempt) -> Option<Storyline
         score: omit_empty_value(&attempt.score),
         error: omit_empty_string(&attempt.error),
         artifacts: omit_empty_value(&attempt.artifacts),
-        category: omit_empty_string(&document.category),
-        attempts_tried: i64::try_from(document.attempts_tried).ok(),
-        solved_at: attempt_solved_at(&document.solved_at),
-        retry_count: document.extra.get("retry_count").cloned(),
-        retry_counts: document.extra.get("retry_counts").cloned(),
         max_score: omit_empty_value(&attempt.max_score),
+        extra,
     };
     let llm = StorylineTaskLlm {
         k: i64::try_from(document.k).ok().filter(|k| *k > 0),
@@ -686,7 +705,7 @@ fn capture_actf_unknowns(
     ] {
         root.remove(key);
     }
-    insert_actf_map(story, source_id, "", root)?;
+    insert_unknown_map(story, "actf", source_id, "", root)?;
 
     let attempt_prefix = pointer_join("/attempts", attempt_id);
     let mut attempt_value = serde_json::to_value(attempt)
@@ -710,7 +729,7 @@ fn capture_actf_unknowns(
     ] {
         attempt_map.remove(key);
     }
-    insert_actf_map(story, source_id, &attempt_prefix, attempt_map)?;
+    insert_unknown_map(story, "actf", source_id, &attempt_prefix, attempt_map)?;
 
     let trajectory_prefix = pointer_join(&attempt_prefix, "trajectory");
     let mut trajectory_value = serde_json::to_value(&attempt.trajectory)
@@ -727,7 +746,7 @@ fn capture_actf_unknowns(
     ] {
         trajectory_map.remove(key);
     }
-    insert_actf_map(story, source_id, &trajectory_prefix, trajectory_map)?;
+    insert_unknown_map(story, "actf", source_id, &trajectory_prefix, trajectory_map)?;
 
     for (step_index, step) in attempt.trajectory.steps.iter().enumerate() {
         let step_prefix = pointer_join(
@@ -753,7 +772,7 @@ fn capture_actf_unknowns(
         ] {
             step_map.remove(key);
         }
-        insert_actf_map(story, source_id, &step_prefix, step_map)?;
+        insert_unknown_map(story, "actf", source_id, &step_prefix, step_map)?;
         if let Some(mut assistant) = assistant {
             let assistant = assistant.as_object_mut().ok_or_else(|| {
                 crate::InputIssue::invalid("serialized ACTF assistant content must be an object")
@@ -761,8 +780,9 @@ fn capture_actf_unknowns(
             for key in ["content", "reasoning_content", "tool_calls"] {
                 assistant.remove(key);
             }
-            insert_actf_map(
+            insert_unknown_map(
                 story,
+                "actf",
                 source_id,
                 &pointer_join(&step_prefix, "assistant_content"),
                 assistant,
@@ -816,25 +836,7 @@ fn capture_actf_tool(
     ] {
         unknown.remove(key);
     }
-    insert_actf_map(story, source_id, prefix, &unknown)
-}
-
-fn insert_actf_map(
-    story: &mut StorylineDocument,
-    source_id: &str,
-    prefix: &str,
-    fields: &Map<String, Value>,
-) -> crate::InputResult<()> {
-    for (key, value) in fields {
-        story
-            .unknown_fields
-            .insert("actf", source_id, pointer_join(prefix, key), value.clone())?;
-    }
-    Ok(())
-}
-
-fn pointer_join(parent: &str, token: &str) -> String {
-    format!("{parent}/{}", token.replace('~', "~0").replace('/', "~1"))
+    insert_unknown_map(story, "actf", source_id, prefix, &unknown)
 }
 
 fn storylines_to_actf_pointer(stories: &[StorylineDocument]) -> Result<ActfDocument> {
@@ -863,26 +865,25 @@ fn storylines_to_actf_pointer(stories: &[StorylineDocument]) -> Result<ActfDocum
             pointer: pointer_join("/attempts", attempt_id),
         });
     }
-    let task_correct = stories[0]
+    let task_result = stories[0]
         .task
         .as_ref()
-        .and_then(|task| task.result.as_ref())
-        .and_then(|result| result.task_correct)
+        .and_then(|task| task.result.as_ref());
+    let task_correct = task_result
+        .and_then(|result| result.extra_bool(ACTF_EXTRA_TASK_CORRECT))
         .map(Value::Bool)
         .or_else(|| {
             stories[0]
                 .final_metrics
                 .as_ref()
-                .and_then(|metrics| metrics.get("task_correct"))
+                .and_then(|metrics| metrics.get(ACTF_EXTRA_TASK_CORRECT))
                 .cloned()
         })
         .unwrap_or(Value::Bool(false));
-    let category = stories[0]
-        .task
-        .as_ref()
-        .and_then(|task| task.result.as_ref())
-        .and_then(|result| result.category.clone())
-        .unwrap_or_else(|| "unknown".into());
+    let category = task_result
+        .and_then(|result| result.extra_str(ACTF_EXTRA_CATEGORY))
+        .unwrap_or("unknown")
+        .to_string();
     let k = stories[0]
         .task
         .as_ref()
@@ -890,18 +891,12 @@ fn storylines_to_actf_pointer(stories: &[StorylineDocument]) -> Result<ActfDocum
         .and_then(|llm| llm.k)
         .filter(|k| *k > 0)
         .unwrap_or(stories.len() as i64);
-    let attempts_tried = stories[0]
-        .task
-        .as_ref()
-        .and_then(|task| task.result.as_ref())
-        .and_then(|result| result.attempts_tried)
+    let attempts_tried = task_result
+        .and_then(|result| result.extra_i64(ACTF_EXTRA_ATTEMPTS_TRIED))
         .unwrap_or(stories.len() as i64);
-    let solved_at = stories[0]
-        .task
-        .as_ref()
-        .and_then(|task| task.result.as_ref())
-        .and_then(|result| result.solved_at.clone())
-        .map(Value::String)
+    let solved_at = task_result
+        .and_then(|result| result.extra_str(ACTF_EXTRA_SOLVED_AT))
+        .map(|text| Value::String(text.to_string()))
         .unwrap_or(Value::Null);
     let mut root = Map::from_iter([
         ("task_id".into(), Value::String(task_id)),
@@ -915,21 +910,15 @@ fn storylines_to_actf_pointer(stories: &[StorylineDocument]) -> Result<ActfDocum
         ("solved_at".into(), solved_at),
         ("attempts".into(), Value::Object(attempts)),
     ]);
-    if let Some(retry_count) = stories[0]
-        .task
-        .as_ref()
-        .and_then(|task| task.result.as_ref())
-        .and_then(|result| result.retry_count.clone())
+    if let Some(retry_count) =
+        task_result.and_then(|result| result.extra_value(ACTF_EXTRA_RETRY_COUNT).cloned())
     {
-        root.insert("retry_count".into(), retry_count);
+        root.insert(ACTF_EXTRA_RETRY_COUNT.into(), retry_count);
     }
-    if let Some(retry_counts) = stories[0]
-        .task
-        .as_ref()
-        .and_then(|task| task.result.as_ref())
-        .and_then(|result| result.retry_counts.clone())
+    if let Some(retry_counts) =
+        task_result.and_then(|result| result.extra_value(ACTF_EXTRA_RETRY_COUNTS).cloned())
     {
-        root.insert("retry_counts".into(), retry_counts);
+        root.insert(ACTF_EXTRA_RETRY_COUNTS.into(), retry_counts);
     }
     let mut value = Value::Object(root);
     let mut source_id = None::<String>;
@@ -1431,6 +1420,13 @@ mod tests {
         assert_eq!(call.result.as_ref().unwrap(), "ok");
         assert_eq!(call.duration_ms, Some(12));
         assert_eq!(call.response.as_ref().unwrap().exit_code, Some(0));
+
+        let exported = serde_json::to_value(storyline_to_actf(&story).unwrap()).unwrap();
+        assert!(
+            exported["attempts"]["1"]["trajectory"].is_object(),
+            "OpenClaw event-log import is a lossy ACTF entry; export is canonical object"
+        );
+        assert!(!exported["attempts"]["1"]["trajectory"].is_array());
     }
 
     #[test]
@@ -1604,10 +1600,13 @@ mod tests {
         let task = story.task.as_ref().unwrap();
         assert_eq!(task.llm.as_ref().unwrap().k, Some(1));
         assert_eq!(
-            task.result.as_ref().unwrap().category.as_deref(),
+            task.result.as_ref().unwrap().extra_str("category"),
             Some("software-engineering")
         );
-        assert_eq!(task.result.as_ref().unwrap().retry_count, Some(json!(2)));
+        assert_eq!(
+            task.result.as_ref().unwrap().extra_value("retry_count"),
+            Some(&json!(2))
+        );
         assert_eq!(
             story.turns[0].observation.as_ref().unwrap()["results"][0]["content"],
             "/app\n"

@@ -17,13 +17,15 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use persisting_pchronicle::document::{events_to_har, events_to_otlp_json, InputIssue};
+use persisting_pchronicle::document::{events_to_otlp_json, InputIssue};
 use persisting_pchronicle::model::{EventRecord, StorylineTurn};
 use persisting_pchronicle::query::ChronicleQueryEngine;
 use persisting_pchronicle::storage::{
-    read_revisions, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogStorylineKey,
-    DatasetCatalogSnapshot, DatasetMount, StoryCoords, DEFAULT_DATASET_NAME,
+    CatalogErrorPolicy, CatalogSnapshotOptions, CatalogStorylineKey,
+    DatasetCatalogSnapshot, DatasetMount, DEFAULT_DATASET_NAME,
 };
+#[cfg(test)]
+use persisting_pchronicle::storage::StoryCoords;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -190,9 +192,7 @@ fn api_routes() -> Router<AppState> {
         .route("/events", get(events))
         .route("/storyline", get(storyline))
         .route("/trajectory-view", get(trajectory_view))
-        .route("/export/har", get(export_har))
         .route("/export/otlp", get(export_otlp))
-        .route("/revisions", get(revisions))
         .route("/catalog", get(catalog).post(refresh_catalog))
         .route("/query/tables", get(query_tables))
         .route("/query/evidence", post(query_evidence))
@@ -565,28 +565,7 @@ fn catalog_storyline_key(run: &RunSummary) -> CatalogStorylineKey {
     }
 }
 
-async fn canonical_run_coords(
-    state: &AppState,
-    query: &SessionQuery,
-) -> Result<Option<StoryCoords>, ApiError> {
-    let run = resolve_run_summary(state, query).await?;
-    canonical_run_coords_for_summary(state, &run).await
-}
-
-async fn canonical_run_coords_for_summary(
-    state: &AppState,
-    run: &RunSummary,
-) -> Result<Option<StoryCoords>, ApiError> {
-    let runtime = current_catalog(state).await?;
-    let event_uri = runtime
-        .snapshot
-        .canonical_event_uri(&catalog_storyline_key(run))
-        .map_err(ApiError::internal)?;
-    event_uri
-        .map(|event_uri| event_uri_coords(event_uri, run).map_err(ApiError::internal))
-        .transpose()
-}
-
+#[cfg(test)]
 fn event_uri_coords(uri: &str, run: &RunSummary) -> anyhow::Result<StoryCoords> {
     let uri = uri.trim_end_matches('/');
     let run_uri = uri
@@ -992,14 +971,6 @@ async fn explorer_turn(
     Ok(Json(explorer::turn_detail(item, &loaded.records)))
 }
 
-async fn export_har(
-    State(state): State<AppState>,
-    query: Result<Query<SessionQuery>, QueryRejection>,
-) -> Result<Json<Value>, ApiError> {
-    let query = api_query(query)?;
-    Ok(Json(events_to_har(&load_events(&state, &query).await?)))
-}
-
 async fn export_otlp(
     State(state): State<AppState>,
     query: Result<Query<SessionQuery>, QueryRejection>,
@@ -1008,21 +979,6 @@ async fn export_otlp(
     Ok(Json(events_to_otlp_json(
         &load_events(&state, &query).await?,
     )))
-}
-
-async fn revisions(
-    State(state): State<AppState>,
-    query: Result<Query<SessionQuery>, QueryRejection>,
-) -> Result<Json<Value>, ApiError> {
-    let query = api_query(query)?;
-    let Some(coords) = canonical_run_coords(&state, &query).await? else {
-        return Err(ApiError::not_found("canonical event source was not found"));
-    };
-    Ok(Json(
-        serde_json::to_value(read_revisions(&coords).await.map_err(ApiError::internal)?)
-            .map_err(anyhow::Error::from)
-            .map_err(ApiError::internal)?,
-    ))
 }
 
 #[derive(Debug, Serialize)]

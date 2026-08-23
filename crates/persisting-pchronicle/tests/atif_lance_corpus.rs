@@ -13,6 +13,10 @@ use persisting_pchronicle::query::{
 };
 use persisting_pchronicle::storage::StorylineLanceStore;
 
+mod support;
+
+use support::fixture_path;
+
 #[derive(Clone, Copy)]
 enum TestFormat {
     Storyline,
@@ -73,7 +77,7 @@ fn from_storyline(
 }
 
 fn fixture_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/atif")
+    fixture_path("atif")
 }
 
 fn fixture_paths() -> Result<Vec<PathBuf>> {

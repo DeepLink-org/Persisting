@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 use datafusion::prelude::SessionContext;
@@ -10,12 +10,12 @@ use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument
 use persisting_pchronicle::storage::{RawEventLanceStore, StoryCoords, StorylineLanceStore};
 use serde_json::json;
 
+mod support;
+
+use support::fixture_path;
+
 fn accepts_anyhow<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
     result
-}
-
-fn fixture(relative: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
 fn turn(id: i64, message: &str) -> StorylineTurn {
@@ -145,19 +145,15 @@ async fn opens_all_seven_formats_and_reports_true_capabilities() -> Result<()> {
 
     assert_storyline_tables(DocumentFormat::Storyline, &storyline_json_path).await?;
 
-    assert_storyline_tables(
-        DocumentFormat::Atif,
-        &fixture("tests/fixtures/atif/dialogue_10.json"),
-    )
-    .await?;
+    assert_storyline_tables(DocumentFormat::Atif, &fixture_path("atif/dialogue_10.json")).await?;
     assert_storyline_tables(
         DocumentFormat::OpenaiMsg,
-        &fixture("tests/fixtures/import_roundtrip/cybergym_0729001_trimmed.json"),
+        &fixture_path("import_roundtrip/cybergym_0729001_trimmed.json"),
     )
     .await?;
     let actf = open_document(
         DocumentFormat::Actf,
-        &fixture("tests/fixtures/import_roundtrip/make-doom-for-mips_trimmed.actf.json"),
+        &fixture_path("import_roundtrip/make-doom-for-mips_trimmed.actf.json"),
     )
     .await?;
     assert_eq!(

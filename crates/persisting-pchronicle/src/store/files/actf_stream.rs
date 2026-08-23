@@ -860,17 +860,12 @@ fn project_actf_step(
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_support::fixture_path;
     use super::*;
-
-    fn fixture(name: &str) -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/import_roundtrip")
-            .join(name)
-    }
 
     #[test]
     fn projected_actf_document_parses_trimmed_fixture() {
-        let path = fixture("protein-assembly_trimmed.actf.json");
+        let path = fixture_path("import_roundtrip/protein-assembly_trimmed.actf.json");
         let raw = std::fs::read(&path).unwrap();
         let scan = FileScanSpec::new(Some(&vec![0, 1, 2, 3]), &[], &story_steps_arrow_schema());
         let document = deserialize_projected_actf_from_slice(&raw, &scan).unwrap();

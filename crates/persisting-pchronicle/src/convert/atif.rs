@@ -8,9 +8,9 @@ use crate::formats::storyline::{
 };
 use crate::formats::timestamp::StorylineTimestamp;
 use crate::formats::unknown_fields::{
-    attach_carried_unknown_fields, canonical_source_document_id, restore_json_pointer,
-    take_unknown_fields_envelope, validate_unknown_fields, write_foreign_unknown_fields_envelope,
-    CarrierBinding, PointerWrite, UnknownFieldLimits,
+    attach_carried_unknown_fields, canonical_source_document_id, insert_unknown_map, pointer_join,
+    restore_json_pointer, take_unknown_fields_envelope, validate_unknown_fields,
+    write_foreign_unknown_fields_envelope, CarrierBinding, PointerWrite, UnknownFieldLimits,
 };
 use anyhow::Context as _;
 use serde_json::{Map, Value};
@@ -292,12 +292,14 @@ fn capture_atif_unknowns(
 ) -> crate::InputResult<()> {
     insert_unknown_map(
         story,
+        "atif",
         source_document_id,
         source_pointer,
         &trajectory.unknown,
     )?;
     insert_unknown_map(
         story,
+        "atif",
         source_document_id,
         &pointer_join(source_pointer, "agent"),
         &trajectory.agent.unknown,
@@ -307,10 +309,17 @@ fn capture_atif_unknowns(
             &pointer_join(source_pointer, "steps"),
             &step_index.to_string(),
         );
-        insert_unknown_map(story, source_document_id, &step_pointer, &step.unknown)?;
+        insert_unknown_map(
+            story,
+            "atif",
+            source_document_id,
+            &step_pointer,
+            &step.unknown,
+        )?;
         if let Some(observation) = step.observation.as_ref() {
             insert_unknown_map(
                 story,
+                "atif",
                 source_document_id,
                 &pointer_join(&step_pointer, "observation"),
                 &observation.unknown,
@@ -322,32 +331,17 @@ fn capture_atif_unknowns(
                     &pointer_join(&step_pointer, "tool_calls"),
                     &call_index.to_string(),
                 );
-                insert_unknown_map(story, source_document_id, &call_pointer, &call.unknown)?;
+                insert_unknown_map(
+                    story,
+                    "atif",
+                    source_document_id,
+                    &call_pointer,
+                    &call.unknown,
+                )?;
             }
         }
     }
     Ok(())
-}
-
-fn insert_unknown_map(
-    story: &mut StorylineDocument,
-    source_document_id: &str,
-    parent: &str,
-    fields: &Map<String, Value>,
-) -> crate::InputResult<()> {
-    for (key, value) in fields {
-        story.unknown_fields.insert(
-            "atif",
-            source_document_id,
-            pointer_join(parent, key),
-            value.clone(),
-        )?;
-    }
-    Ok(())
-}
-
-fn pointer_join(parent: &str, token: &str) -> String {
-    format!("{parent}/{}", token.replace('~', "~0").replace('/', "~1"))
 }
 
 #[cfg(test)]
