@@ -18,3 +18,26 @@
 .pc2-chat-follow:hover{background:#1c334d}
 .pc2-chat-follow.jump{border-color:#3b82f6;background:#1d4ed8;color:#fff}
 .pc2-chat-follow.jump:hover{background:#2563eb}
+
+/* copilot session shell — keep the original right-docked drawer */
+.pc2-copilot-head{position:relative;gap:8px}
+.pc2-copilot-head-title{min-width:0;flex:1}
+.pc2-copilot-head-title strong{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pc2-copilot-actions{display:flex;align-items:center;gap:2px;flex-shrink:0}
+.pc2-copilot-head button:disabled{opacity:.35;cursor:default}
+.pc2-copilot-history{position:absolute;z-index:8;top:62px;left:8px;right:8px;max-height:280px;overflow:auto;border:1px solid #2b3a4f;border-radius:10px;background:#101e30;box-shadow:0 16px 40px #00000073}
+.pc2-copilot-history-empty{padding:16px 12px;color:#8291a5;font-size:11px;text-align:center}
+.pc2-copilot-history-row{display:flex;align-items:stretch;border-bottom:1px solid #223046}
+.pc2-copilot-history-row:last-child{border-bottom:0}
+.pc2-copilot-history-row.active{background:#1d4ed81f}
+.pc2-copilot-history-open{min-width:0;flex:1;display:flex;flex-direction:column;align-items:flex-start;gap:3px;height:auto;padding:9px 10px;text-align:left}
+.pc2-copilot-history-open strong{max-width:100%;overflow:hidden;color:#e5edf7;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.pc2-copilot-history-open span{color:#8291a5;font-size:9px}
+.pc2-copilot-history-delete{flex-shrink:0;width:30px;color:#94a3b8}
+.pc2-composer-compact{grid-template-columns:minmax(0,1fr) 64px;padding:8px 10px 6px}
+.pc2-composer-compact textarea{min-height:44px;height:44px}
+.pc2-composer-compact button{min-height:44px;height:44px;padding:0 12px}
+.pc2-composer-context{padding:0 12px 10px;color:#8291a5;font-size:10px}
+.pc2-message.tool{max-width:100%;margin-bottom:6px;padding:2px 0;border:0;background:transparent;color:#93a4bb}
+.pc2-message.tool .pc2-action-label{margin:0;color:#93c5fd;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0;text-transform:none;font-weight:600}
+.pc2-chat-working,.pc2-chat-working{justify-content:flex-start;padding:4px 2px;color:#93c5fd;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}

@@ -1,0 +1,1021 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pChronicle · Trace 调试器原型（时间旅行）</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: light-dark(#f5f7fb, #0e1626);
+  --surface: light-dark(#fff, #121d30);
+  --surface-2: light-dark(#f9fbfd, #142034);
+  --border: light-dark(#dce2ec, #2b374b);
+  --border-soft: light-dark(#e5eaf1, #29364a);
+  --text: light-dark(#172036, #e7edf8);
+  --muted: light-dark(#68758b, #9aa9bf);
+  --label: light-dark(#718096, #95a5be);
+  --code: light-dark(#34557f, #acc7ed);
+  --primary: #2463df;
+  --accent: #3476e8;
+  --good: light-dark(#11653d, #78dba5);
+  --warn: light-dark(#80520d, #efc472);
+  --bad: light-dark(#b7423b, #ff8d85);
+  --added-bg: light-dark(#eff9f3, #152d22);
+  --changed-bg: light-dark(#fff8e7, #302714);
+  --bad-bg: light-dark(#fff1f0, #321b1d);
+  --focus-bg: light-dark(#f2f6fd, #17253b);
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  padding: 14px;
+  color: var(--text);
+  background: light-dark(#e9edf4, #090f1c);
+  font: 13px/1.45 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+}
+button, input, select, textarea { font: inherit; }
+button { cursor: pointer; }
+h1, h2, h3, p { margin: 0; }
+h1 { font-size: 22px; font-weight: 500; line-height: 1.2; }
+h2 { font-size: 15px; font-weight: 500; }
+h3 { font-size: 13px; font-weight: 500; }
+code { color: var(--code); font-family: var(--mono); font-size: 11.5px; }
+
+.shell {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  max-width: 1280px;
+  min-height: 900px;
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid light-dark(#dce2ec, #2b364b);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+/* ── 左侧 rail（与四页原型一致） ─────────────────── */
+.rail {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 14px 8px 12px;
+  color: #b9c7dd;
+  background: #0c172b;
+  border-right: 1px solid #26344c;
+}
+.logo {
+  display: grid; place-items: center;
+  width: 46px; height: 46px; margin: 0 auto 14px;
+  border-radius: 12px;
+  color: #fff; background: #2463df;
+  font-size: 16px; font-weight: 500;
+}
+.nav {
+  display: grid; justify-items: center; gap: 3px;
+  width: 100%; padding: 8px 2px;
+  border: 1px solid transparent; border-radius: 9px;
+  color: #92a3bd; background: transparent;
+}
+.nav svg { width: 17px; height: 17px; }
+.nav span:last-child { font-size: 11px; }
+.nav.active { color: #9fc3ff; border-color: #285294; background: #122744; }
+.rail-fill { flex: 1; }
+.local { display: grid; justify-items: center; gap: 4px; color: #8191aa; font-size: 11px; }
+.local i { width: 8px; height: 8px; border-radius: 50%; background: #2ac56f; }
+
+.main { min-width: 0; display: flex; flex-direction: column; }
+
+/* ── 顶栏 ───────────────────────────────────────── */
+.ctxbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  min-height: 54px; padding: 9px 18px;
+  border-bottom: 1px solid var(--border);
+  background: light-dark(#fff, #121c2e);
+}
+.ctx-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.dataset { display: grid; gap: 1px; padding-right: 14px; border-right: 1px solid var(--border-soft); }
+.eyebrow { color: var(--label); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+.dataset strong { font-weight: 500; font-size: 12.5px; }
+.ctx-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 7px;
+  border: 1px solid light-dark(#d8deea, #344159); border-radius: 6px;
+  color: light-dark(#45536b, #b8c5d9);
+  background: light-dark(#f7f9fc, #18243a);
+  font-size: 11px; white-space: nowrap;
+}
+.badge.good { color: var(--good); border-color: light-dark(#b9dec9, #24573d); background: light-dark(#edf8f1, #132b22); }
+.badge.warn { color: var(--warn); border-color: light-dark(#ead09e, #624b20); background: light-dark(#fff8e8, #302512); }
+.badge.bad  { color: var(--bad);  border-color: light-dark(#eab6b3, #5e2f2c); background: var(--bad-bg); }
+.button {
+  min-height: 32px; padding: 6px 10px;
+  border: 1px solid light-dark(#cfd7e4, #3a4962); border-radius: 7px;
+  color: light-dark(#25324a, #d9e2f2);
+  background: light-dark(#fff, #18243a);
+  font-weight: 500;
+}
+.button.primary { color: #fff; border-color: var(--primary); background: var(--primary); }
+.button.small { min-height: 26px; padding: 3px 8px; font-size: 11px; }
+.button.quiet { background: transparent; }
+
+/* ── trace 头部 ─────────────────────────────────── */
+.trace-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  padding: 16px 18px 12px;
+}
+.trace-title h1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.trace-id { color: var(--code); font-size: 14px; font-weight: 400; }
+.trace-sub { margin-top: 5px; color: var(--muted); }
+.signal-chips { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.signal-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid light-dark(#eab6b3, #5e2f2c); border-radius: 8px;
+  color: light-dark(#a03d37, #ff9d95);
+  background: var(--bad-bg);
+  font-size: 12px; text-align: left;
+}
+.signal-chip i { width: 8px; height: 8px; border-radius: 50%; background: light-dark(#d45b54, #ff847a); flex: none; }
+.signal-chip small { display: block; color: var(--muted); font-size: 11px; }
+.signal-chip:hover { border-color: var(--bad); }
+
+/* ── 调试器三栏 ─────────────────────────────────── */
+.dbg {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr) 268px;
+  gap: 12px;
+  padding: 0 18px 12px;
+  min-height: 0;
+}
+.panel { min-width: 0; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); display: flex; flex-direction: column; overflow: hidden; }
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.panel-head h3 { display: flex; align-items: center; gap: 7px; }
+.panel-head p { color: var(--label); font-size: 11px; }
+.panel-body { flex: 1; min-height: 0; overflow: auto; }
+
+/* 步进列表 */
+.step-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 8px; align-items: center;
+  width: 100%; padding: 8px 10px;
+  border: 0; border-bottom: 1px solid var(--border-soft);
+  background: transparent; color: inherit; text-align: left;
+}
+.step-row:hover { background: var(--focus-bg); }
+.step-row.current { background: var(--focus-bg); box-shadow: inset 2px 0 0 var(--accent); }
+.step-no { color: var(--label); font-family: var(--mono); font-size: 11px; text-align: right; }
+.step-main { min-width: 0; }
+.step-kind { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.step-sum { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.step-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.step-ms { color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+.step-marks { display: flex; gap: 4px; }
+.mark { width: 7px; height: 7px; flex: none; }
+.mark.loop { border-radius: 50%; background: light-dark(#d45b54, #ff847a); }
+.mark.bp { transform: rotate(45deg); background: light-dark(#d39a37, #d9a94d); }
+.k-user .step-kind { color: light-dark(#7c53c9, #b9a0f2); }
+.k-assistant .step-kind { color: light-dark(#2d62b8, #91b9fa); }
+.k-tool .step-kind { color: light-dark(#1a7a58, #6fd3a8); }
+.k-tool.err .step-sum { color: var(--bad); }
+.k-system .step-kind { color: var(--muted); }
+
+/* 中央区 */
+.center-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.tabs { display: flex; gap: 14px; }
+.tab {
+  padding: 7px 2px 8px; border: 0;
+  border-bottom: 2px solid transparent;
+  color: light-dark(#6c7890, #98a8bd);
+  background: transparent;
+}
+.tab.active { color: light-dark(#1f55a4, #91b9fa); border-bottom-color: var(--accent); }
+.token-meter { display: flex; align-items: center; gap: 8px; padding-bottom: 7px; }
+.token-meter .bar { width: 130px; height: 6px; border-radius: 3px; background: light-dark(#e1e8f2, #243350); overflow: hidden; }
+.token-meter .bar i { display: block; height: 100%; background: var(--accent); }
+.token-meter span { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+
+.ctx-body { padding: 12px 14px; display: grid; gap: 8px; }
+.msg { border: 1px solid var(--border-soft); border-radius: 8px; overflow: hidden; }
+.msg-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  background: light-dark(#f7f9fc, #142136);
+  font-size: 11px;
+}
+.msg-role { text-transform: uppercase; letter-spacing: .05em; font-weight: 500; }
+.msg-tok { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+.msg-content { padding: 9px 11px; font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg-content code { white-space: pre-wrap; }
+.msg.future { opacity: .32; }
+.msg.new { border-color: light-dark(#9fd8b6, #2c5e45); box-shadow: 0 0 0 1px light-dark(#9fd8b6, #2c5e45); }
+.msg.new .msg-head { background: var(--added-bg); }
+.msg-tag {
+  display: inline-flex; padding: 1px 6px; border-radius: 5px;
+  color: var(--good); background: var(--added-bg);
+  font-size: 10px; font-weight: 500; letter-spacing: .04em;
+}
+.r-user .msg-role { color: light-dark(#7c53c9, #b9a0f2); }
+.r-assistant .msg-role { color: light-dark(#2d62b8, #91b9fa); }
+.r-tool .msg-role { color: light-dark(#1a7a58, #6fd3a8); }
+.r-system .msg-role { color: var(--muted); }
+.msg-err .msg-role { color: var(--bad); }
+.msg-err .msg-content { color: var(--bad); }
+.ctx-note {
+  padding: 7px 10px; border-radius: 7px;
+  color: var(--muted); font-size: 11.5px;
+  background: light-dark(#f2f5fa, #142136);
+  border: 1px dashed var(--border);
+}
+
+/* step diff 视图 */
+.diff-body { padding: 12px 14px; display: grid; gap: 10px; }
+.diff-cols { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 8px; }
+.diff-cell { border: 1px solid var(--border-soft); border-radius: 8px; overflow: hidden; }
+.diff-cell > h4 {
+  margin: 0; padding: 7px 10px; font-size: 11px; font-weight: 500;
+  color: var(--label);
+  border-bottom: 1px solid var(--border-soft);
+  background: light-dark(#f7f9fc, #142136);
+}
+.diff-cell .msg-content { font-size: 11.5px; color: var(--muted); }
+.diff-cell.added > h4 { color: var(--good); background: var(--added-bg); }
+.delta-grid { display: grid; gap: 6px; }
+.delta-row {
+  display: grid; grid-template-columns: 150px minmax(0,1fr);
+  gap: 8px; align-items: baseline;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft); border-radius: 8px;
+  font-size: 12px;
+}
+.delta-row span { color: var(--muted); }
+.delta-row strong { font-weight: 500; }
+.delta-row .up { color: var(--good); }
+.delta-row .down { color: var(--bad); }
+.delta-row.warnrow { background: var(--changed-bg); border-color: light-dark(#ead09e, #624b20); }
+
+.raw-body { padding: 0; }
+.raw-body pre {
+  margin: 0; padding: 12px 14px;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  color: #dce7f8; background: #0d182a;
+  font: 11px/1.55 var(--mono);
+}
+
+/* 右侧 inspector */
+.insp-section { padding: 11px 12px; border-bottom: 1px solid var(--border-soft); }
+.insp-section:last-child { border-bottom: 0; }
+.insp-section > h3 { margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
+.facts { display: grid; gap: 6px; }
+.facts > div { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 8px; font-size: 12px; }
+.facts span { color: var(--muted); }
+.facts strong { font-weight: 500; overflow-wrap: anywhere; }
+.bp-item {
+  display: grid; gap: 5px;
+  padding: 8px 9px; margin-bottom: 7px;
+  border: 1px solid var(--border-soft); border-radius: 8px;
+  background: var(--surface-2);
+}
+.bp-item:last-child { margin-bottom: 0; }
+.bp-top { display: flex; align-items: center; gap: 7px; }
+.bp-sql { font-family: var(--mono); font-size: 11px; color: var(--code); overflow-wrap: anywhere; }
+.bp-hit {
+  margin-left: auto; flex: none;
+  padding: 2px 7px; border-radius: 5px; border: 1px solid light-dark(#ead09e, #624b20);
+  color: var(--warn); background: var(--changed-bg);
+  font-size: 10.5px;
+}
+.bp-off { opacity: .45; }
+.switch {
+  width: 28px; height: 16px; border-radius: 999px; border: 0; flex: none;
+  background: light-dark(#c9d2e0, #33415a); position: relative;
+}
+.switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: #fff; transition: left .15s;
+}
+.switch.on { background: var(--accent); }
+.switch.on::after { left: 14px; }
+.exp-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 9px; margin-bottom: 7px;
+  border: 1px solid var(--border-soft); border-radius: 8px;
+  font-size: 12px;
+}
+.exp-item:last-child { margin-bottom: 0; }
+.exp-item small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+
+/* ── 底部 transport ─────────────────────────────── */
+.transport {
+  display: grid; gap: 8px;
+  padding: 10px 18px 14px;
+}
+.transport-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tbtn {
+  min-width: 34px; min-height: 30px; padding: 4px 9px;
+  border: 1px solid light-dark(#cfd7e4, #3a4962); border-radius: 7px;
+  color: light-dark(#25324a, #d9e2f2);
+  background: light-dark(#fff, #18243a);
+  font-size: 13px;
+}
+.tbtn:hover { border-color: var(--accent); color: var(--accent); }
+.tbtn.primary { min-width: 40px; border-color: var(--primary); background: var(--primary); color: #fff; }
+.tbtn.jump { font-size: 11.5px; }
+.t-readout { margin-left: 8px; color: var(--muted); font-size: 11.5px; }
+.t-readout code { color: var(--code); }
+.kbd-hint { margin-left: auto; color: var(--label); font-size: 11px; }
+.kbd-hint kbd {
+  padding: 1px 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px;
+  font-family: var(--mono); font-size: 10px; background: var(--surface-2);
+}
+.timeline {
+  position: relative;
+  height: 58px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface);
+  padding: 8px 10px 6px;
+}
+.tl-lane { position: relative; height: 20px; display: flex; gap: 2px; }
+.tl-seg { flex: 1; border-radius: 3px; min-width: 3px; opacity: .55; }
+.tl-seg.system { background: #7d8aa0; }
+.tl-seg.user { background: #9d6bf0; }
+.tl-seg.assistant { background: #3476e8; }
+.tl-seg.tool { background: #2aa876; }
+.tl-seg.error { background: #e0564f; }
+.tl-seg.past { opacity: 1; }
+.tl-row2 { position: relative; height: 16px; }
+.tl-signal {
+  position: absolute; top: 0; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid light-dark(#d45b54, #ff847a); border-radius: 4px;
+  background: var(--bad-bg);
+  color: light-dark(#a03d37, #ff9d95);
+  font-size: 9.5px; white-space: nowrap; overflow: hidden;
+}
+.tl-bp {
+  position: absolute; top: 3px; width: 9px; height: 9px;
+  transform: translateX(-50%) rotate(45deg);
+  background: light-dark(#d39a37, #d9a94d);
+}
+.tl-cursor {
+  position: absolute; top: 2px; bottom: 4px; width: 0;
+  border-left: 2px solid var(--accent);
+  pointer-events: none;
+}
+.tl-cursor::after {
+  content: ""; position: absolute; top: -2px; left: -5px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent);
+}
+.tl-hover {
+  position: absolute; bottom: 20px; transform: translateX(-50%);
+  padding: 3px 7px; border-radius: 5px;
+  border: 1px solid var(--border);
+  background: light-dark(#fff, #1a2740);
+  font-size: 10.5px; white-space: nowrap; pointer-events: none;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 18%);
+  display: none;
+}
+
+/* ── 模态 ───────────────────────────────────────── */
+.overlay {
+  position: fixed; inset: 0;
+  display: none; place-items: center;
+  background: rgb(6 12 24 / 55%);
+  z-index: 50;
+}
+.overlay.open { display: grid; }
+.modal {
+  width: min(560px, calc(100vw - 40px));
+  border: 1px solid var(--border); border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 18px 60px rgb(0 0 0 / 35%);
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.modal-body { padding: 16px; display: grid; gap: 12px; }
+.modal-body label { display: grid; gap: 5px; font-size: 12px; color: var(--muted); }
+.modal-body input[type="text"], .modal-body textarea {
+  min-height: 34px; padding: 7px 9px;
+  border: 1px solid light-dark(#cfd7e4, #3a4962); border-radius: 7px;
+  color: inherit; background: light-dark(#fff, #142136);
+  resize: vertical;
+}
+.preset-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.preset-chip {
+  padding: 4px 9px; border: 1px dashed light-dark(#bbceed, #365d91); border-radius: 6px;
+  color: light-dark(#294f87, #a8c9fb); background: light-dark(#eff5ff, #173153);
+  font-family: var(--mono); font-size: 11px;
+}
+.preset-chip.on { border-style: solid; border-color: var(--accent); }
+.modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border-soft); }
+.fork-from {
+  padding: 9px 11px; border-radius: 8px;
+  border: 1px solid var(--border-soft); background: var(--surface-2);
+  font-size: 12px;
+}
+.fork-from code { font-size: 11px; }
+
+/* toast */
+.toast {
+  position: fixed; right: 20px; bottom: 20px;
+  padding: 10px 14px; border-radius: 9px;
+  border: 1px solid light-dark(#b9dec9, #24573d);
+  color: var(--good); background: light-dark(#edf8f1, #132b22);
+  font-size: 12.5px;
+  box-shadow: 0 8px 30px rgb(0 0 0 / 25%);
+  opacity: 0; transform: translateY(8px);
+  transition: all .2s; pointer-events: none; z-index: 60;
+}
+.toast.show { opacity: 1; transform: none; }
+
+/* sparkline */
+.spark { display: block; }
+
+@media (max-width: 1080px) {
+  .dbg { grid-template-columns: 240px minmax(0, 1fr); }
+  .inspector { grid-column: 1 / -1; }
+  .insp-sections { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+}
+@media (max-width: 780px) {
+  .dbg { grid-template-columns: minmax(0, 1fr); }
+  .diff-cols { grid-template-columns: 1fr; }
+  .kbd-hint { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <aside class="rail">
+    <div class="logo">pC</div>
+    <button class="nav" title="Summary">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="12" y="3" width="5" height="4" rx="1.5"/><rect x="3" y="12" width="5" height="5" rx="1.5"/><rect x="10" y="10" width="7" height="7" rx="1.5"/></svg>
+      <span>Summary</span>
+    </button>
+    <button class="nav" title="Sources">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><ellipse cx="10" cy="5" rx="6.5" ry="2.6"/><path d="M3.5 5v10c0 1.4 2.9 2.6 6.5 2.6s6.5-1.2 6.5-2.6V5"/><path d="M3.5 10c0 1.4 2.9 2.6 6.5 2.6s6.5-1.2 6.5-2.6"/></svg>
+      <span>Sources</span>
+    </button>
+    <button class="nav active" title="Inspector">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 3l6.5 3.8v6.4L10 17l-6.5-3.8V6.8z"/><path d="M10 8.2v4M10 6.4v.2"/></svg>
+      <span>Inspector</span>
+    </button>
+    <button class="nav" title="Ask">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 15.5V5.5C4 4.7 4.7 4 5.5 4h9c.8 0 1.5.7 1.5 1.5v7c0 .8-.7 1.5-1.5 1.5H8l-4 3.5z"/></svg>
+      <span>Ask</span>
+    </button>
+    <div class="rail-fill"></div>
+    <div class="local"><i></i>local · 16 sources</div>
+  </aside>
+
+  <div class="main">
+    <header class="ctxbar">
+      <div class="ctx-left">
+        <div class="dataset">
+          <span class="eyebrow">Dataset snapshot</span>
+          <strong>benchmark-ci · 2026-08-22</strong>
+        </div>
+        <div class="ctx-badges">
+          <span class="badge good">read-only · 本地快照</span>
+          <span class="badge">projection ready</span>
+        </div>
+      </div>
+      <div class="ctx-badges">
+        <button class="button small">Pin to compare</button>
+        <button class="button small primary" id="btnForkTop">Fork 实验</button>
+      </div>
+    </header>
+
+    <div class="trace-head">
+      <div class="trace-title">
+        <h1>Trace <span class="trace-id">trace-9f3c-e471</span>
+          <span class="badge">agent-v4</span>
+          <span class="badge">24 steps</span>
+          <span class="badge">6m 12s</span>
+        </h1>
+        <p class="trace-sub">任务：修复 PR #482 的 CI 失败并提交修复 · 结果：完成（测试未本地验证）</p>
+        <div class="signal-chips">
+          <button class="signal-chip" id="chipLoop">
+            <i></i>
+            <span>Repeated tool loop · execute_bash ×5<small>steps 17–21 · 同一命令连续失败后重复执行 · 点击跳转</small></span>
+          </button>
+          <button class="signal-chip" id="chipFirst">
+            <i></i>
+            <span>First tool error · execute_bash timeout<small>step 13 · 修复后验证首次失败</small></span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="dbg">
+      <!-- 左：步进列表 -->
+      <section class="panel">
+        <div class="panel-head">
+          <h3>Steps</h3>
+          <p>24 events</p>
+        </div>
+        <div class="panel-body" id="stepList"></div>
+      </section>
+
+      <!-- 中：上下文重建 -->
+      <section class="panel">
+        <div class="center-head">
+          <div class="tabs">
+            <button class="tab active" data-view="context">Context</button>
+            <button class="tab" data-view="diff">Step diff</button>
+            <button class="tab" data-view="raw">Raw</button>
+          </div>
+          <div class="token-meter">
+            <svg class="spark" id="spark" width="120" height="26" viewBox="0 0 120 26"></svg>
+            <div class="bar"><i id="tokBar"></i></div>
+            <span id="tokText"></span>
+          </div>
+        </div>
+        <div class="panel-body" id="viewContext"></div>
+        <div class="panel-body" id="viewDiff" style="display:none"></div>
+        <div class="panel-body raw-body" id="viewRaw" style="display:none"><pre id="rawPre"></pre></div>
+      </section>
+
+      <!-- 右：状态 / 断点 / 实验 -->
+      <aside class="panel inspector">
+        <div class="panel-head"><h3>Inspector</h3><p id="inspStep"></p></div>
+        <div class="panel-body insp-sections">
+          <div class="insp-section">
+            <h3>State <span class="badge small" style="border:0;padding:0;color:var(--muted)">state @ step</span></h3>
+            <div class="facts" id="stateFacts"></div>
+          </div>
+          <div class="insp-section">
+            <h3>Breakpoints <span style="color:var(--label);font-size:11px;font-weight:400">SQL 条件</span></h3>
+            <div id="bpList"></div>
+            <button class="button small quiet" id="bpAdd" style="margin-top:8px;width:100%">+ New breakpoint</button>
+          </div>
+          <div class="insp-section">
+            <h3>Experiments <span style="color:var(--label);font-size:11px;font-weight:400">fork &amp; rerun</span></h3>
+            <button class="button small primary" id="btnForkSide" style="width:100%;margin-bottom:9px">在此步分叉实验</button>
+            <div id="expList"></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- 底部 transport -->
+    <div class="transport">
+      <div class="transport-controls">
+        <button class="tbtn" id="tFirst" title="首步">|◀</button>
+        <button class="tbtn" id="tPrev" title="上一步">◀</button>
+        <button class="tbtn primary" id="tPlay" title="播放/暂停">▶</button>
+        <button class="tbtn" id="tNext" title="下一步">▶|</button>
+        <button class="tbtn" id="tLast" title="末步">▶▶|</button>
+        <button class="tbtn jump" id="tNextErr" title="下一个错误">⚡ 下一错误</button>
+        <button class="tbtn jump" id="tNextBp" title="下一个断点命中">◆ 下一断点</button>
+        <span class="t-readout" id="tReadout"></span>
+        <span class="kbd-hint"><kbd>←</kbd><kbd>→</kbd> 步进 · <kbd>space</kbd> 播放 · <kbd>e</kbd> 下一错误 · <kbd>b</kbd> 下一断点</span>
+      </div>
+      <div class="timeline" id="timeline">
+        <div class="tl-lane" id="tlLane"></div>
+        <div class="tl-row2" id="tlRow2"></div>
+        <div class="tl-cursor" id="tlCursor"></div>
+        <div class="tl-hover" id="tlHover"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Fork 实验模态 -->
+<div class="overlay" id="forkOverlay">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>Fork 实验 · 时间旅行</h2>
+      <button class="button small quiet" id="forkClose">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="fork-from" id="forkFrom"></div>
+      <label>实验名称
+        <input type="text" id="forkName" value="timeout-120s-retry">
+      </label>
+      <label>修改项（可多选）
+        <div class="preset-chips" id="forkPresets">
+          <button class="preset-chip on" data-preset="tool_timeout: 30s → 120s">tool_timeout: 30s → 120s</button>
+          <button class="preset-chip" data-preset="model: gpt-4o → claude-sonnet-4">model: gpt-4o → claude-sonnet-4</button>
+          <button class="preset-chip" data-preset="system_prompt += 失败重试上限 2 次">system_prompt += 失败重试上限 2 次</button>
+        </div>
+      </label>
+      <label>备注
+        <textarea id="forkNote" rows="2">假设：tool loop 的根因是 30s 超时太短，调大后第 13 步即可通过，后续 5 次重试不会发生。</textarea>
+      </label>
+    </div>
+    <div class="modal-foot">
+      <button class="button" id="forkCancel">取消</button>
+      <button class="button primary" id="forkCreate">创建实验（从此步分叉重跑）</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ── 数据：一条真实结构的 trace（CI 修复任务，含 tool loop signal） ── */
+const steps = [
+  {id:0, kind:"system", title:"System prompt", sum:"agent-v4 · 工具 12 个 · CI 修复任务", tok:1840, ms:0,
+   content:"You are a CI repair agent. Fix the failing CI pipeline for the given PR, verify locally, and commit the fix. Tools: read_file, edit_file, execute_bash, git_commit, ..."},
+  {id:1, kind:"user", title:"User task", sum:"修复 PR #482 的 CI 失败并提交", tok:96, ms:0,
+   content:"CI 又挂了，PR #482 的 test_runner 一直超时。请修复并提交，最好本地验证通过后再提交。"},
+  {id:2, kind:"assistant", title:"Plan", sum:"读日志 → 定位失败测试 → 修复 → 本地验证 → 提交", tok:412, ms:2100,
+   content:"计划：1) 读取 CI 日志定位失败用例 2) 阅读测试代码 3) 修复 4) 本地重跑验证 5) 提交。"},
+  {id:3, kind:"tool", tool:"read_file", sum:"读取 CI 失败日志", args:"ci.log", tok:2210, ms:340, status:"ok",
+   result:"... FAIL test_runner::test_timeout — TimeoutError after 30000ms (×2)\n... 2 failed, 34 passed in 61.2s"},
+  {id:4, kind:"assistant", title:"分析", sum:"test_timeout 不稳定，需看测试代码", tok:238, ms:1800,
+   content:"失败的是 test_timeout，连续超时两次。需要查看 tests/test_runner.py 的实现，判断是逻辑错误还是阈值问题。"},
+  {id:5, kind:"tool", tool:"read_file", sum:"读取 tests/test_runner.py", args:"tests/test_runner.py", tok:1840, ms:290, status:"ok",
+   result:"def test_timeout():\n    time.sleep(35)          # ← 模拟慢任务\n    assert runner.wait(timeout=30) ...  # 30s 超时"},
+  {id:6, kind:"assistant", title:"定位", sum:"sleep(35) > timeout(30)，属阈值设置问题", tok:301, ms:2400,
+   content:"定位：测试 sleep 35s，而 runner.wait 超时 30s——这是上游 PR 引入的阈值回归。修复方案：把测试里的 sleep 改为 25s。"},
+  {id:7, kind:"tool", tool:"edit_file", sum:"修改 sleep(35) → sleep(25)", args:"tests/test_runner.py", tok:210, ms:410, status:"ok",
+   result:"patch applied: tests/test_runner.py L18: sleep(35) → sleep(25)"},
+  {id:8, kind:"assistant", title:"验证前检查", sum:"检查 pytest 配置确认超时设置", tok:186, ms:900,
+   content:"提交验证前，先确认 pytest 的全局超时配置，避免和单用例超时叠加。"},
+  {id:9, kind:"tool", tool:"read_file", sum:"读取 pyproject.toml", args:"pyproject.toml", tok:640, ms:180, status:"ok",
+   result:"[tool.pytest.ini_options]\ntimeout = 30"},
+  {id:10, kind:"assistant", title:"确认配置", sum:"全局 timeout=30s，逐项检查 conftest", tok:204, ms:1200,
+   content:"全局超时 30s。再看 conftest.py 是否有 fixture 级别的覆盖。"},
+  {id:11, kind:"tool", tool:"read_file", sum:"读取 conftest.py", args:"conftest.py", tok:520, ms:150, status:"ok",
+   result:"import pytest\n@pytest.fixture(autouse=True)\ndef slow_ci(request): ...  # 无额外超时覆盖"},
+  {id:12, kind:"assistant", title:"开始验证", sum:"配置无误，本地重跑该测试", tok:165, ms:800,
+   content:"配置无冲突。本地重跑 test_timeout 验证修复。"},
+  {id:13, kind:"tool", tool:"execute_bash", sum:"pytest test_timeout（首次验证）", args:"pytest tests/test_runner.py -k test_timeout", tok:289, ms:31200, status:"error",
+   result:"ERROR: TimeoutError — test_timeout exceeded 30000ms\n1 failed in 30.1s"},
+  {id:14, kind:"assistant", title:"怀疑修改未生效", sum:"重新读取文件确认修改已保存", tok:242, ms:1900,
+   content:"修复未生效？重新读一遍文件，确认 edit 已落盘。"},
+  {id:15, kind:"tool", tool:"read_file", sum:"确认 tests/test_runner.py 修改", args:"tests/test_runner.py", tok:1810, ms:220, status:"ok",
+   result:"L18: time.sleep(25)  # ← 修改已在"},
+  {id:16, kind:"assistant", title:"归因外部环境", sum:"「可能是环境慢」，再重跑一次", tok:198, ms:1500,
+   content:"修改确实在。那可能是 CI 环境慢导致偶发——再跑一次看看。"},
+  {id:17, kind:"tool", tool:"execute_bash", sum:"pytest 重跑（loop 第 1 次）", args:"pytest tests/test_runner.py -k test_timeout", tok:289, ms:31100, status:"error",
+   result:"ERROR: TimeoutError — test_timeout exceeded 30000ms\n1 failed in 30.1s"},
+  {id:18, kind:"tool", tool:"execute_bash", sum:"pytest 重跑（loop 第 2 次）", args:"pytest tests/test_runner.py -k test_timeout", tok:289, ms:31050, status:"error",
+   result:"ERROR: TimeoutError — test_timeout exceeded 30000ms\n1 failed in 30.0s"},
+  {id:19, kind:"tool", tool:"execute_bash", sum:"pytest 重跑（loop 第 3 次）", args:"pytest tests/test_runner.py -k test_timeout", tok:289, ms:31080, status:"error",
+   result:"ERROR: TimeoutError — test_timeout exceeded 30000ms\n1 failed in 30.1s"},
+  {id:20, kind:"tool", tool:"execute_bash", sum:"pytest 重跑（loop 第 4 次）", args:"pytest tests/test_runner.py -k test_timeout", tok:289, ms:31120, status:"error",
+   result:"ERROR: TimeoutError — test_timeout exceeded 30000ms\n1 failed in 30.1s"},
+  {id:21, kind:"tool", tool:"execute_bash", sum:"pytest 重跑（loop 第 5 次）", args:"pytest tests/test_runner.py -k test_timeout", tok:289, ms:31090, status:"error",
+   result:"ERROR: TimeoutError — test_timeout exceeded 30000ms\n1 failed in 30.0s"},
+  {id:22, kind:"assistant", title:"放弃本地验证", sum:"连续 5 次超时，改为提交并在 PR 说明", tok:356, ms:2800,
+   content:"本地连续 5 次超时（修复前是同样超时，修复后没有变化）。可能是本地环境本身过慢。选择直接提交修复，并在 PR 描述中注明「本地未能验证」。"},
+  {id:23, kind:"tool", tool:"git_commit", sum:"提交修复（注明未验证）", args:"git commit -m 'fix: shorten test sleep'", tok:120, ms:2600, status:"ok",
+   result:"[fix/ci-timeout a41f2c7] fix: shorten test sleep\n 1 file changed"},
+  {id:24, kind:"assistant", title:"总结", sum:"已提交；遗留本地验证风险", tok:284, ms:1100,
+   content:"已提交修复。遗留风险：本地验证未通过（5 次超时），需要人工在 CI 上确认。"}
+];
+
+const signals = [
+  {id:"loop", label:"Repeated tool loop", from:17, to:21},
+  {id:"first-err", label:"First tool error", from:13, to:13}
+];
+
+let breakpoints = [
+  {id:1, on:true,  sql:"tool_name = 'execute_bash' AND status = 'error'", hits:[13,17,18,19,20,21]},
+  {id:2, on:false, sql:"cum_tokens_in > 100000", hits:[]},
+  {id:3, on:true,  sql:"same_tool_repeats >= 3", hits:[19]}
+];
+
+let experiments = [
+  {name:"timeout-120s", from:13, note:"假设超时太短；结论：第 13 步通过，loop 未发生", status:"done"},
+  {name:"no-sleep-hack", from:6, note:"改为调大 runner.wait 阈值而非缩短 sleep", status:"done"}
+];
+
+/* ── 派生数据 ── */
+const cumTok = [];
+steps.reduce((acc, s) => { acc += s.tok; cumTok.push(acc); return acc; }, 0);
+const CONTEXT_LIMIT = 128000;
+const totalMs = steps.reduce((a, s) => a + s.ms, 0);
+const kindLabel = {system:"system", user:"user", assistant:"assistant", tool:"tool"};
+const esc = t => String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const fmtTok = n => n >= 1000 ? (n/1000).toFixed(1).replace(/\.0$/,"") + "k" : String(n);
+const fmtMs = ms => ms >= 1000 ? (ms/1000).toFixed(ms >= 10000 ? 0 : 1) + "s" : ms + "ms";
+
+let cur = 18;          // 默认停在 loop 第 2 次：错误现场
+let curView = "context";
+let playTimer = null;
+
+/* ── 步进列表 ── */
+function renderSteps() {
+  const el = document.getElementById("stepList");
+  el.innerHTML = steps.map(s => {
+    const inLoop = s.id >= 17 && s.id <= 21;
+    const bpHit = breakpoints.filter(b => b.on).some(b => b.hits.includes(s.id));
+    const cls = ["step-row", "k-" + s.kind, s.status === "error" ? "err" : "", s.id === cur ? "current" : ""].join(" ");
+    const kind = s.kind === "tool" ? (s.tool || "tool") : kindLabel[s.kind];
+    return `<button class="${cls}" data-step="${s.id}">
+      <span class="step-no">${s.id}</span>
+      <span class="step-main">
+        <span class="step-kind">${kind}</span>
+        <span class="step-sum">${esc(s.sum)}</span>
+      </span>
+      <span class="step-meta">
+        <span class="step-ms">${s.ms ? fmtMs(s.ms) : ""}</span>
+        <span class="step-marks">
+          ${inLoop ? '<i class="mark loop" title="signal: tool loop"></i>' : ""}
+          ${bpHit ? '<i class="mark bp" title="breakpoint hit"></i>' : ""}
+        </span>
+      </span>
+    </button>`;
+  }).join("");
+  el.querySelectorAll("[data-step]").forEach(b => b.addEventListener("click", () => setStep(+b.dataset.step)));
+}
+
+/* ── 上下文重建 ── */
+function ctxMessages(upTo) {
+  const msgs = [];
+  for (const s of steps) {
+    if (s.id > upTo) break;
+    if (s.kind === "tool") {
+      msgs.push({step:s.id, role:"assistant", head:`assistant · tool_call`, tok:Math.round(s.tok*0.2), content:`${s.tool}(${s.args})`});
+      msgs.push({step:s.id, role:"tool", head:`tool · ${s.tool} ${s.status === "error" ? "· ERROR" : ""}`, tok:Math.round(s.tok*0.8), content:s.result, err:s.status === "error"});
+    } else if (s.kind === "assistant") {
+      msgs.push({step:s.id, role:"assistant", head:"assistant", tok:s.tok, content:s.content});
+    } else {
+      msgs.push({step:s.id, role:s.kind, head:s.kind, tok:s.tok, content:s.content});
+    }
+  }
+  return msgs;
+}
+
+function renderContext() {
+  const s = steps[cur];
+  const msgs = ctxMessages(cur);
+  const visible = msgs.filter(m => m.step <= cur);
+  const future = msgs.filter(m => m.step > cur);
+  const el = document.getElementById("viewContext");
+
+  let html = `<div class="ctx-note">▼ 模型在 <b>step ${cur}</b> 这一刻看到的完整上下文 —— 共 ${visible.length} 条消息 · ${fmtTok(cumTok[cur])} tokens。绿色高亮 = 相对上一步新增。</div>`;
+  for (const m of visible) {
+    const isNew = m.step === cur;
+    html += `<div class="msg r-${m.role} ${m.err ? "msg-err" : ""} ${isNew ? "new" : ""}">
+      <div class="msg-head"><span class="msg-role">${esc(m.head)}</span>
+        ${isNew ? '<span class="msg-tag">NEW · 本步新增</span>' : ""}
+        <span class="msg-tok">step ${m.step} · ${fmtTok(m.tok)} tok</span>
+      </div>
+      <div class="msg-content"><code>${esc(m.content)}</code></div>
+    </div>`;
+  }
+  if (future.length) {
+    html += `<div class="ctx-note" style="margin-top:4px">▽ 之后的 ${future.length} 条消息尚未发生（时间旅行：scrubber 只重建过去）</div>`;
+    for (const m of future) {
+      html += `<div class="msg future r-${m.role} ${m.err ? "msg-err" : ""}">
+        <div class="msg-head"><span class="msg-role">${esc(m.head)}</span><span class="msg-tok">step ${m.step}</span></div>
+        <div class="msg-content"><code>${esc(m.content.length > 90 ? m.content.slice(0, 90) + "…" : m.content)}</code></div>
+      </div>`;
+    }
+  }
+  el.innerHTML = html;
+  el.scrollTop = el.scrollHeight;
+}
+
+/* ── step diff ── */
+function renderDiff() {
+  const el = document.getElementById("viewDiff");
+  const s = steps[cur];
+  if (cur === 0) { el.innerHTML = `<div class="diff-body"><div class="ctx-note">Step 0 是首步，没有上一步可对比。</div></div>`; return; }
+  const prev = steps[cur - 1];
+  const tokPrev = cumTok[cur-1], tokNow = cumTok[cur];
+  const toolCalls = steps.slice(0, cur + 1).filter(x => x.kind === "tool").length;
+  const toolErrs = steps.slice(0, cur + 1).filter(x => x.status === "error").length;
+  const repeatN = (() => {
+    let n = 1, i = cur;
+    while (i > 0 && steps[i-1].kind === "tool" && steps[i-1].tool === s.tool && steps[i-1].args === s.args) { n++; i--; }
+    return n;
+  })();
+  const warnRow = s.status === "error" ? `<div class="delta-row warnrow"><span>重复性</span><strong>同一命令连续第 <span class="down">${repeatN}</span> 次执行，此前 ${repeatN - 1} 次均 timeout</strong></div>` : "";
+  el.innerHTML = `<div class="diff-body">
+    <div class="delta-grid">
+      <div class="delta-row"><span>新增消息</span><strong class="up">+${s.kind === "tool" ? "2 条（tool_call + tool_result）" : "1 条 " + kindLabel[s.kind]}</strong></div>
+      <div class="delta-row"><span>上下文 tokens</span><strong>${fmtTok(tokPrev)} → ${fmtTok(tokNow)} <span class="up">(+${s.tok})</span></strong></div>
+      <div class="delta-row"><span>累计工具调用</span><strong>${toolCalls} 次 · 失败 ${toolErrs} 次</strong></div>
+      <div class="delta-row"><span>耗时</span><strong>${fmtMs(prev.ms)} → ${fmtMs(s.ms)}</strong></div>
+      ${warnRow}
+    </div>
+    <div class="diff-cols">
+      <div class="diff-cell">
+        <h4>context @ step ${cur - 1}（尾部 2 条）</h4>
+        <div class="msg-content"><code>${esc(tailSummary(cur - 1))}</code></div>
+      </div>
+      <div class="diff-cell added">
+        <h4>context @ step ${cur} · 新增部分</h4>
+        <div class="msg-content"><code>${esc(s.kind === "tool" ? s.tool + "(" + s.args + ")\n→ " + s.result : s.content)}</code></div>
+      </div>
+    </div>
+  </div>`;
+}
+function tailSummary(upTo) {
+  const msgs = ctxMessages(upTo).slice(-2);
+  return msgs.map(m => `[${m.head}] ${m.content.length > 120 ? m.content.slice(0, 120) + "…" : m.content}`).join("\n");
+}
+
+/* ── raw ── */
+function renderRaw() {
+  const s = steps[cur];
+  document.getElementById("rawPre").textContent = JSON.stringify({
+    step: s.id, kind: s.kind, tool: s.tool, args: s.args, status: s.status,
+    duration_ms: s.ms, tokens: s.tok, cum_tokens_in: cumTok[cur],
+    summary: s.sum, signal: (s.id >= 17 && s.id <= 21) ? "tool_loop" : undefined
+  }, null, 2);
+}
+
+/* ── inspector ── */
+function renderInspector() {
+  document.getElementById("inspStep").textContent = "@" + steps[cur].kind + " · step " + cur;
+  const toolCalls = steps.slice(0, cur + 1).filter(x => x.kind === "tool");
+  const errs = toolCalls.filter(x => x.status === "error").length;
+  const elapsed = steps.slice(0, cur + 1).reduce((a, x) => a + x.ms, 0);
+  const files = [...new Set(toolCalls.filter(t => t.tool === "read_file" || t.tool === "edit_file").map(t => t.args))];
+  document.getElementById("stateFacts").innerHTML = `
+    <div><span>已用时间</span><strong>${fmtMs(elapsed)} / 6m 12s</strong></div>
+    <div><span>上下文占用</span><strong>${fmtTok(cumTok[cur])} / 128k tokens</strong></div>
+    <div><span>工具调用</span><strong>${toolCalls.length} 次 · 失败 ${errs} 次</strong></div>
+    <div><span>涉及文件</span><strong>${files.length ? esc(files.join(", ")) : "—"}</strong></div>
+    <div><span>Signals</span><strong>tool loop（进行中）</strong></div>`;
+
+  document.getElementById("bpList").innerHTML = breakpoints.map(b => `
+    <div class="bp-item ${b.on ? "" : "bp-off"}">
+      <div class="bp-top">
+        <button class="switch ${b.on ? "on" : ""}" data-bp="${b.id}" title="启用/停用"></button>
+        <code class="bp-sql">${esc(b.sql)}</code>
+        <button class="bp-hit" data-bpj="${b.id}" title="跳到下一个命中">${b.hits.length} hits</button>
+      </div>
+    </div>`).join("");
+  document.querySelectorAll("[data-bp]").forEach(sw => sw.addEventListener("click", () => {
+    const b = breakpoints.find(x => x.id === +sw.dataset.bp); b.on = !b.on; renderAll();
+  }));
+  document.querySelectorAll("[data-bpj]").forEach(btn => btn.addEventListener("click", () => {
+    const b = breakpoints.find(x => x.id === +btn.dataset.bpj);
+    const next = b.hits.find(h => h > cur);
+    if (next != null) setStep(next);
+    else if (b.hits.length) setStep(b.hits[0]);
+  }));
+
+  document.getElementById("expList").innerHTML = experiments.map(e => `
+    <div class="exp-item">
+      <span>${esc(e.name)}<small>从 step ${e.from} 分叉 · ${esc(e.note)}</small></span>
+      <span class="badge ${e.status === "done" ? "good" : "warn"}">${e.status === "done" ? "完成 · 可对比" : "运行中"}</span>
+    </div>`).join("");
+}
+
+/* ── token sparkline ── */
+function renderSpark() {
+  const w = 120, h = 26, max = Math.max(...cumTok);
+  const pts = cumTok.map((v, i) => `${(i / (steps.length - 1)) * w},${h - 2 - (v / max) * (h - 5)}`).join(" ");
+  const cx = (cur / (steps.length - 1)) * w;
+  const cy = h - 2 - (cumTok[cur] / max) * (h - 5);
+  document.getElementById("spark").innerHTML = `
+    <polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".5"/>
+    <circle cx="${cx}" cy="${cy}" r="2.6" fill="var(--accent)"/>`;
+  document.getElementById("tokBar").style.width = Math.min(100, cumTok[cur] / CONTEXT_LIMIT * 100) + "%";
+  document.getElementById("tokText").textContent = `${fmtTok(cumTok[cur])} / 128k`;
+}
+
+/* ── timeline ── */
+function renderTimeline() {
+  const lane = document.getElementById("tlLane");
+  lane.innerHTML = steps.map(s => {
+    const cls = ["tl-seg", s.kind, s.status === "error" ? "error" : "", s.id <= cur ? "past" : ""].join(" ");
+    return `<i class="${cls}" data-ts="${s.id}" title="step ${s.id} · ${esc(s.sum)}"></i>`;
+  }).join("");
+  const row2 = document.getElementById("tlRow2");
+  const pct = i => (i + 0.5) / steps.length * 100;
+  const bpMarks = [...new Set(breakpoints.filter(b => b.on).flatMap(b => b.hits))]
+    .map(h => `<i class="tl-bp" style="left:${pct(h)}%" title="breakpoint hit @ step ${h}"></i>`).join("");
+  const loop = signals[0];
+  row2.innerHTML = `
+    <div class="tl-signal" style="left:${(loop.from) / steps.length * 100}%; width:${(loop.to - loop.from + 1) / steps.length * 100}%" title="signal: Repeated tool loop · steps 17–21">tool loop ×5</div>
+    ${bpMarks}`;
+  document.getElementById("tlCursor").style.left = `calc(${pct(cur)}% )`;
+  lane.querySelectorAll("[data-ts]").forEach(seg => seg.addEventListener("click", () => setStep(+seg.dataset.ts)));
+}
+
+function renderReadout() {
+  const s = steps[cur];
+  document.getElementById("tReadout").innerHTML =
+    `step <code>${cur} / ${steps.length - 1}</code> · <code>${s.kind === "tool" ? s.tool : kindLabel[s.kind]}</code> · ${s.status === "error" ? '<span style="color:var(--bad)">ERROR</span> · ' : ""}${fmtMs(s.ms) || "—"} · context <code>${fmtTok(cumTok[cur])} tok</code>`;
+}
+
+/* ── 调度 ── */
+function renderAll() {
+  renderSteps(); renderContext(); renderDiff(); renderRaw(); renderInspector(); renderSpark(); renderTimeline(); renderReadout();
+}
+function setStep(i) {
+  cur = Math.max(0, Math.min(steps.length - 1, i));
+  renderAll();
+}
+function nextError() { const n = steps.find(s => s.id > cur && s.status === "error"); if (n) setStep(n.id); else if (steps[0]) { const f = steps.find(s => s.status === "error"); if (f) setStep(f.id); } }
+function nextBp() {
+  const hits = [...new Set(breakpoints.filter(b => b.on).flatMap(b => b.hits))].sort((a, b) => a - b);
+  const n = hits.find(h => h > cur); if (n != null) setStep(n); else if (hits.length) setStep(hits[0]);
+}
+function togglePlay() {
+  if (playTimer) { clearInterval(playTimer); playTimer = null; document.getElementById("tPlay").textContent = "▶"; }
+  else {
+    document.getElementById("tPlay").textContent = "❚❚";
+    playTimer = setInterval(() => {
+      if (cur >= steps.length - 1) { togglePlay(); return; }
+      setStep(cur + 1);
+    }, 550);
+  }
+}
+
+document.getElementById("tFirst").addEventListener("click", () => setStep(0));
+document.getElementById("tPrev").addEventListener("click", () => setStep(cur - 1));
+document.getElementById("tNext").addEventListener("click", () => setStep(cur + 1));
+document.getElementById("tLast").addEventListener("click", () => setStep(steps.length - 1));
+document.getElementById("tPlay").addEventListener("click", togglePlay);
+document.getElementById("tNextErr").addEventListener("click", nextError);
+document.getElementById("tNextBp").addEventListener("click", nextBp);
+document.getElementById("chipLoop").addEventListener("click", () => setStep(17));
+document.getElementById("chipFirst").addEventListener("click", () => setStep(13));
+
+document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+  t.classList.add("active");
+  curView = t.dataset.view;
+  ["context", "diff", "raw"].forEach(v => {
+    document.getElementById("view" + v[0].toUpperCase() + v.slice(1)).style.display = v === curView ? "" : "none";
+  });
+}));
+
+document.addEventListener("keydown", e => {
+  if (e.target.matches("input, textarea")) return;
+  if (e.key === "ArrowLeft") { setStep(cur - 1); e.preventDefault(); }
+  else if (e.key === "ArrowRight") { setStep(cur + 1); e.preventDefault(); }
+  else if (e.key === " ") { togglePlay(); e.preventDefault(); }
+  else if (e.key === "e") nextError();
+  else if (e.key === "b") nextBp();
+});
+
+/* ── fork 实验 ── */
+const overlay = document.getElementById("forkOverlay");
+function openFork() {
+  const s = steps[cur];
+  document.getElementById("forkFrom").innerHTML =
+    `分叉起点：<b>step ${cur}</b> · ${esc(s.kind === "tool" ? s.tool + " → " + s.result.split("\n")[0] : s.sum)}<br>分叉后沿用 <code>step 0–${cur - 1}</code> 的完整上下文（${fmtTok(cumTok[Math.max(0, cur - 1)])} tokens），仅替换以下变量后重跑：`;
+  overlay.classList.add("open");
+}
+document.getElementById("btnForkTop").addEventListener("click", openFork);
+document.getElementById("btnForkSide").addEventListener("click", openFork);
+document.getElementById("forkClose").addEventListener("click", () => overlay.classList.remove("open"));
+document.getElementById("forkCancel").addEventListener("click", () => overlay.classList.remove("open"));
+overlay.addEventListener("click", e => { if (e.target === overlay) overlay.classList.remove("open"); });
+document.querySelectorAll(".preset-chip").forEach(c => c.addEventListener("click", () => c.classList.toggle("on")));
+document.getElementById("forkCreate").addEventListener("click", () => {
+  const presets = [...document.querySelectorAll(".preset-chip.on")].map(c => c.dataset.preset);
+  const name = document.getElementById("forkName").value || "experiment";
+  experiments.push({name, from:cur, note:(presets[0] || "自定义修改") + " · 重跑中", status:"running"});
+  overlay.classList.remove("open");
+  renderInspector();
+  showToast(`实验 ${name} 已创建：从 step ${cur} 分叉重跑，完成后可在 Traces 页与原 trace diff。`);
+});
+
+document.getElementById("bpAdd").addEventListener("click", () => {
+  showToast("断点即 SQL：如 tool_name = 'execute_bash' AND status = 'error'（原型演示）");
+});
+
+function showToast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove("show"), 3600);
+}
+
+/* timeline hover */
+const timeline = document.getElementById("timeline");
+const hover = document.getElementById("tlHover");
+timeline.addEventListener("mousemove", e => {
+  const r = timeline.getBoundingClientRect();
+  const idx = Math.min(steps.length - 1, Math.max(0, Math.round((e.clientX - r.left - 10) / (r.width - 20) * steps.length - 0.5)));
+  const s = steps[idx];
+  hover.textContent = `step ${s.id} · ${s.kind === "tool" ? s.tool : kindLabel[s.kind]} · ${s.status === "error" ? "ERROR" : "ok"}`;
+  hover.style.display = "block";
+  hover.style.left = ((idx + 0.5) / steps.length * (r.width - 20) + 10) + "px";
+});
+timeline.addEventListener("mouseleave", () => hover.style.display = "none");
+
+renderAll();
+</script>
+</body>
+</html>

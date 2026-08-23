@@ -8,6 +8,7 @@ mod api;
 mod catalog;
 mod chat_view;
 mod components;
+mod copilot_sessions;
 mod json_value;
 mod llm;
 mod llm_settings;

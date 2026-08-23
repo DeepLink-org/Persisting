@@ -258,7 +258,7 @@ pub fn spec_system_prompt(
         },
     });
     Ok(format!(
-        "You write an AnalysisSpec for pChronicle. Never write SQL. Return one JSON object with intent, grain, measure, optional dimension, optional filters, optional ranking, and output. intent must be one of distribution, compare, rank_outlier, composition, drilldown. grain must be run, step, or tool_call. Use only registered measures and live catalog columns. Do not use status, tokens, or *_json fields. Causal questions are not intents. If compile_error is present, revise the spec to address it.\n\nPlanning context:\n{}",
+        "You write an AnalysisSpec for pChronicle. Never write SQL. Return one JSON object with intent, grain, measure, optional dimension, optional filters, optional ranking, and output. intent must be one of distribution, compare, rank_outlier, composition, drilldown. grain must be run, step, or tool_call. ranking, if present, must be an object {{\"kind\":\"top_n\"|\"bottom_n\"|\"outlier\",\"n\":20}}; omit ranking or use null when it does not apply. Never emit ranking as an array. Use only registered measures and live catalog columns. Do not use status, tokens, or *_json fields. Causal questions are not intents. If compile_error is present, revise the spec to address it.\n\nPlanning context:\n{}",
         serde_json::to_string(&context)?
     ))
 }
@@ -996,6 +996,40 @@ mod tests {
         let spec = parse_spec_content(raw).unwrap();
         assert_eq!(spec.intent, "composition");
         assert_eq!(spec.measure, "tool_call_count");
+    }
+
+    #[test]
+    fn spec_parser_treats_empty_ranking_array_as_absent() {
+        let raw = r#"{
+          "intent":"compare",
+          "grain":"run",
+          "measure":"step_count_per_run",
+          "dimension":"agent_model_name",
+          "ranking":[],
+          "output":"comparison"
+        }"#;
+        let spec = parse_spec_content(raw).expect("empty ranking array should not fail parse");
+        assert_eq!(spec.ranking, None);
+        assert_eq!(spec.intent, "compare");
+    }
+
+    #[test]
+    fn spec_parser_accepts_tuple_ranking() {
+        let raw = r#"{
+          "intent":"rank_outlier",
+          "grain":"step",
+          "measure":"step_latency_ms",
+          "ranking":["top_n", 10],
+          "output":"table"
+        }"#;
+        let spec = parse_spec_content(raw).unwrap();
+        assert_eq!(
+            spec.ranking,
+            Some(crate::analysis_session::Ranking {
+                kind: "top_n".into(),
+                n: Some(10),
+            })
+        );
     }
 
     #[test]

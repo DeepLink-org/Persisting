@@ -27,6 +27,58 @@ enum PrimaryAction {
     None,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComposerTab {
+    Ask,
+    Sql,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ComposerModel {
+    primary_label: &'static str,
+    primary_enabled: bool,
+    submits_sql: bool,
+    show_spec_summary: bool,
+}
+
+impl ComposerModel {
+    fn from_context(
+        tab: ComposerTab,
+        revision: Option<&AnalysisRevision>,
+        draft_question: &str,
+        generating: bool,
+        catalog_ready: bool,
+        scope_ready: bool,
+        model_ready: bool,
+    ) -> Self {
+        let show_spec_summary =
+            revision.is_some_and(|revision| revision.spec.is_some() && !revision.manually_edited);
+        match tab {
+            ComposerTab::Ask => Self {
+                primary_label: "Analyze",
+                primary_enabled: catalog_ready
+                    && scope_ready
+                    && model_ready
+                    && !draft_question.trim().is_empty()
+                    && !generating,
+                submits_sql: false,
+                show_spec_summary,
+            },
+            ComposerTab::Sql => Self {
+                primary_label: "Run",
+                primary_enabled: !generating
+                    && revision.is_some_and(|revision| revision.executable_sql().is_some()),
+                submits_sql: true,
+                show_spec_summary,
+            },
+        }
+    }
+}
+
+fn composer_tab_after_catalog_insert() -> ComposerTab {
+    ComposerTab::Sql
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AnalysisViewModel {
     primary_action: PrimaryAction,
@@ -377,6 +429,7 @@ pub fn AnalysisWorkspace(
     let mut selected_table = use_signal(String::new);
     let mut sql_caret = use_signal(|| None::<usize>);
     let mut analyze_trace_open = use_signal(|| false);
+    let mut composer_tab = use_signal(|| ComposerTab::Ask);
 
     use_effect(use_reactive(
         (&catalog, &requested_session_id),
@@ -453,11 +506,15 @@ pub fn AnalysisWorkspace(
             RevisionState::GeneratingPlan | RevisionState::Executing | RevisionState::Interpreting
         )
     });
-    let can_generate = catalog.is_some()
-        && scope().is_some()
-        && config().is_configured()
-        && !question().trim().is_empty()
-        && !generating;
+    let composer = ComposerModel::from_context(
+        composer_tab(),
+        active_revision.as_ref(),
+        &draft_question,
+        generating,
+        catalog.is_some(),
+        scope().is_some(),
+        config().is_configured(),
+    );
 
     let scope_for_generate = scope;
     let catalog_for_generate = catalog.clone();
@@ -480,74 +537,6 @@ pub fn AnalysisWorkspace(
                 scope.clone(),
             ))
         });
-        if next_session.active_revision().is_some_and(|revision| {
-            (revision.needs_rerun || revision.manually_edited)
-                && revision.executable_sql().is_some()
-        }) {
-            let Some(revision) = next_session.active_revision_mut() else {
-                return;
-            };
-            if revision.confirm_execution().is_err() {
-                return;
-            }
-            let Some(AnalysisEffect::ExecuteSql {
-                revision_id,
-                operation_id,
-                sql,
-            }) = revision.take_pending_effect()
-            else {
-                return;
-            };
-            let expected_session_id = next_session.id.clone();
-            let interpretation_config = config();
-            persist_session(&next_session, &mut recent_sessions, &mut storage_notice);
-            session.set(Some(next_session));
-            spawn(async move {
-                let result = api::query_evidence_interactive(&sql).await;
-                let Some(mut current) = session() else {
-                    return;
-                };
-                if current.id != expected_session_id {
-                    return;
-                }
-                let Some(revision) =
-                    revision_for_callback(&mut current, &expected_session_id, revision_id)
-                else {
-                    return;
-                };
-                let prepared = match result {
-                    Ok(evidence) => {
-                        let profiles = profile_rows(&evidence.rows);
-                        finish_query_for_interpretation(
-                            revision,
-                            revision_id,
-                            operation_id,
-                            evidence,
-                            profiles,
-                        )
-                        .ok()
-                        .flatten()
-                    }
-                    Err(message) => {
-                        let _ = revision.fail_query(revision_id, operation_id, message);
-                        None
-                    }
-                };
-                persist_session(&current, &mut recent_sessions, &mut storage_notice);
-                session.set(Some(current));
-                if let Some(prepared) = prepared {
-                    launch_interpretation(
-                        interpretation_config,
-                        expected_session_id,
-                        prepared,
-                        session,
-                        recent_sessions,
-                        storage_notice,
-                    );
-                }
-            });
-            return;
-        }
         let previous_plan = next_session.active_revision_mut().and_then(|revision| {
             revision
                 .plan
@@ -618,17 +607,17 @@ pub fn AnalysisWorkspace(
         });
     };
 
-    let _run_analysis = move |_event: dioxus::prelude::MouseEvent| {
+    let run_sql = move |_| {
         let Some(mut current) = session() else {
             return;
         };
         let Some(revision) = current.active_revision_mut() else {
             return;
         };
-        if !AnalysisViewModel::from_revision(revision, &question()).run_enabled {
+        if revision.executable_sql().is_none() {
             return;
         }
-        if revision.confirm_execution().is_err() {
+        if revision.confirm_sql_run().is_err() {
             return;
         }
         let Some(AnalysisEffect::ExecuteSql {
@@ -1032,8 +1021,8 @@ pub fn AnalysisWorkspace(
 
     rsx! {
         section { class: "analyze-workspace", aria_label: "Question-driven analysis workspace",
-            header { class: "analyze-header",
-                div { class: "analyze-header-inner",
+            div { class: "analyze-body",
+                header { class: "analyze-header",
                     div { class: "analyze-header-bar",
                         p { class: "analyze-eyebrow", "pChronicle / Analyze" }
                         div { class: "analyze-header-actions",
@@ -1064,12 +1053,7 @@ pub fn AnalysisWorkspace(
                             }
                         }
                     }
-                    h1 { "Ask a question. Or write SQL." }
-                    p { class: "analyze-header-lede", "Describe what you want in plain language, or write a read-only query. Nothing is queried until you Run." }
                 }
-            }
-
-            div { class: "analyze-body",
                 if let Some(message) = storage_notice() {
                     p { class: "analyze-storage-notice analyze-storage-notice-inline", role: "status", "{message}" }
                 }
@@ -1124,11 +1108,19 @@ pub fn AnalysisWorkspace(
                                                         disabled: locked,
                                                         title: if description.is_empty() { data_type.clone() } else { format!("{data_type} · {description}") },
                                                         onclick: move |_| {
-                                                            let Some(mut current) = session() else { return; };
+                                                            let Some(scope) = scope() else { return; };
+                                                            let mut current = session().unwrap_or_else(|| {
+                                                                AnalysisSession::with_revision(AnalysisRevision::draft(
+                                                                    1,
+                                                                    question(),
+                                                                    scope.clone(),
+                                                                ))
+                                                            });
                                                             let Some(active) = current.active_revision_mut() else { return; };
                                                             let Ok(caret) = apply_inserted_token(active, &token, sql_textarea_cursor()) else { return; };
                                                             persist_session(&current, &mut recent_sessions, &mut storage_notice);
                                                             session.set(Some(current));
+                                                            composer_tab.set(composer_tab_after_catalog_insert());
                                                             sql_caret.set(Some(caret));
                                                         },
                                                         code { "{field.name}" }
@@ -1147,20 +1139,42 @@ pub fn AnalysisWorkspace(
                     }
                 }
                 div { class: "analyze-main",
-                    section { class: "analyze-question-card", aria_label: "Analysis question",
-                        div { class: "analyze-section-heading",
-                            div { span { "01" } div { h2 { "What do you want to understand?" } p { "Describe the comparison, pattern, or anomaly you want to investigate." } } }
-                            span { class: "analyze-step-state", if generating { { analyze_progress_label(active_revision.as_ref()) } } else { "Draft" } }
+                    div { class: "analyze-main-intro",
+                        h1 { "Ask a question. Or write SQL." }
+                        p { class: "analyze-header-lede",
+                            if composer_tab() == ComposerTab::Ask {
+                                "Analyze compiles a spec, then runs bounded evidence."
+                            } else {
+                                "Run executes this query. Editing skips spec repair."
+                            }
                         }
-                        label { class: "analyze-question-label", r#for: "analysis-question", "Question" }
-                        textarea {
-                            id: "analysis-question",
-                            class: "analyze-question-input",
-                            rows: "5",
-                            value: "{question}",
-                            placeholder: "Ask about runs, errors, latency, tool use, or model behavior…",
-                            disabled: generating,
-                            oninput: move |event| question.set(event.value()),
+                    }
+                    section { class: "analyze-question-card", aria_label: "Analysis composer",
+                        div { class: "analyze-section-heading",
+                            div { span { "01" } div { h2 { "Compose the query" } p { "Ask in plain language, or write the SQL Analyze will run." } } }
+                            span { class: "analyze-step-state",
+                                if generating { { analyze_progress_label(active_revision.as_ref()) } }
+                                else if composer.show_spec_summary == false && active_revision.as_ref().is_some_and(|revision| revision.manually_edited) { "Manually edited" }
+                                else { "Draft" }
+                            }
+                        }
+                        div { class: "analyze-composer-tabs", role: "tablist", aria_label: "Analysis input mode",
+                            button {
+                                class: if composer_tab() == ComposerTab::Ask { "active" } else { "" },
+                                r#type: "button",
+                                role: "tab",
+                                aria_selected: composer_tab() == ComposerTab::Ask,
+                                onclick: move |_| composer_tab.set(ComposerTab::Ask),
+                                "Ask"
+                            }
+                            button {
+                                class: if composer_tab() == ComposerTab::Sql { "active" } else { "" },
+                                r#type: "button",
+                                role: "tab",
+                                aria_selected: composer_tab() == ComposerTab::Sql,
+                                onclick: move |_| composer_tab.set(ComposerTab::Sql),
+                                "Write SQL"
+                            }
                         }
                         div { class: "analyze-context-row", aria_label: "Analysis context",
                             span { class: if catalog.is_some() { "analyze-status ready" } else { "analyze-status" },
@@ -1204,116 +1218,131 @@ pub fn AnalysisWorkspace(
                                 }
                             }
                         }
-                        div { class: "analyze-starters", aria_label: "Question starters",
-                            span { "Try a starting point" }
-                            div {
-                                for starter in QUESTION_STARTERS {
-                                    button { r#type: "button", disabled: generating, onclick: move |_| question.set(starter.into()), "{starter}" }
-                                }
+                        if composer_tab() == ComposerTab::Ask {
+                            label { class: "analyze-question-label", r#for: "analysis-question", "Question" }
+                            textarea {
+                                id: "analysis-question",
+                                class: "analyze-question-input",
+                                rows: "5",
+                                value: "{question}",
+                                placeholder: "Ask about runs, errors, latency, tool use, or model behavior…",
+                                disabled: generating,
+                                oninput: move |event| question.set(event.value()),
                             }
-                        }
-                        if !config().is_configured() {
-                            div { class: "analyze-config-callout", role: "status",
-                                div { strong { "Connect a model to Analyze" } p { "Your draft stays here while you configure the endpoint." } }
-                                button { class: "button", r#type: "button", onclick: move |_| settings_open.set(true), "Open model settings" }
-                            }
-                        }
-                        if let Some(revision) = active_revision.as_ref() {
-                            if revision.state == RevisionState::PlanError {
-                                div { class: "analyze-error", role: "alert",
-                                    strong { "The spec could not be compiled" }
-                                    if let Some(message) = revision.error.as_ref() { p { "{message}" } }
-                                    else { p { "The model did not return a valid AnalysisSpec." } }
-                                    p { "Your question is unchanged. Adjust it or Analyze again." }
-                                }
-                            }
-                        }
-                        div { class: "analyze-question-actions",
-                            p { "Analyze compiles a spec, validates the query, then runs bounded evidence." }
-                            button { class: "button primary", r#type: "button", disabled: !can_generate, onclick: generate_plan,
-                                if generating {
-                                    span { class: "analyze-spinner", aria_hidden: "true" }
-                                    { analyze_progress_label(active_revision.as_ref()) }
-                                } else { "Analyze" }
-                            }
-                        }
-                    }
-
-                    section { class: "analyze-sql-card analyze-trace-card", aria_label: "How Analyze ran",
-                        details {
-                            class: "analyze-sql-details",
-                            open: generating || analyze_trace_open(),
-                            summary {
-                                onclick: move |event| {
-                                    event.prevent_default();
-                                    if !generating {
-                                        analyze_trace_open.set(!analyze_trace_open());
+                            div { class: "analyze-starters", aria_label: "Question starters",
+                                span { "Try a starting point" }
+                                div {
+                                    for starter in QUESTION_STARTERS {
+                                        button { r#type: "button", disabled: generating, onclick: move |_| question.set(starter.into()), "{starter}" }
                                     }
-                                },
-                                div { class: "analyze-section-heading",
-                                    div { span { "02" } div { h2 { "How Analyze ran" } p { "Spec, compile, evidence, and interpretation as a trajectory. Open a step to see the prompt or result." } } }
+                                }
+                            }
+                            if !config().is_configured() {
+                                div { class: "analyze-config-callout", role: "status",
+                                    div { strong { "Connect a model to Analyze" } p { "Your draft stays here while you configure the endpoint." } }
+                                    button { class: "button", r#type: "button", onclick: move |_| settings_open.set(true), "Open model settings" }
                                 }
                             }
                             if let Some(revision) = active_revision.as_ref() {
-                                if revision.trace.is_empty() {
-                                    p { class: "analyze-trace-empty", "Analyze to watch the model write a spec, compile SQL, and run bounded evidence." }
-                                } else {
-                                    AnalyzeTraceView { steps: revision.trace.clone() }
+                                if revision.state == RevisionState::PlanError {
+                                    div { class: "analyze-error", role: "alert",
+                                        strong { "The spec could not be compiled" }
+                                        if let Some(message) = revision.error.as_ref() { p { "{message}" } }
+                                        else { p { "The model did not return a valid AnalysisSpec." } }
+                                        p { "Your question is unchanged. Adjust it or Analyze again." }
+                                    }
                                 }
-                            } else {
-                                p { class: "analyze-trace-empty", "Analyze to watch the model write a spec, compile SQL, and run bounded evidence." }
+                            }
+                            if view_model.as_ref().is_some_and(|model| model.question_out_of_date) {
+                                div { class: "analyze-config-callout", role: "status",
+                                    div {
+                                        strong { "This spec is for the previous question" }
+                                        p { "Analyze again for the current question, or restore the reviewed question." }
+                                    }
+                                }
+                            }
+                            div { class: "analyze-question-actions",
+                                p { "Analyze compiles a spec, then runs bounded evidence." }
+                                button { class: "button primary", r#type: "button", disabled: !composer.primary_enabled, onclick: generate_plan,
+                                    if generating {
+                                        span { class: "analyze-spinner", aria_hidden: "true" }
+                                        { analyze_progress_label(active_revision.as_ref()) }
+                                    } else { "{composer.primary_label}" }
+                                }
+                            }
+                        } else {
+                            label { class: "analyze-question-label", r#for: "analysis-sql", "SQL" }
+                            textarea {
+                                id: "analysis-sql",
+                                class: "analyze-sql-editor",
+                                rows: "10",
+                                value: "{sql_text}",
+                                placeholder: "SELECT …",
+                                disabled: sql_locked,
+                                oninput: move |event| {
+                                    let Some(scope) = scope() else { return; };
+                                    let mut current = session().unwrap_or_else(|| {
+                                        AnalysisSession::with_revision(AnalysisRevision::draft(
+                                            1,
+                                            question(),
+                                            scope.clone(),
+                                        ))
+                                    });
+                                    let Some(active) = current.active_revision_mut() else { return; };
+                                    if apply_manual_sql(active, event.value()).is_err() {
+                                        return;
+                                    }
+                                    persist_session(&current, &mut recent_sessions, &mut storage_notice);
+                                    session.set(Some(current));
+                                },
+                            }
+                            if let Some(revision) = active_revision.as_ref() {
+                                if revision.state == RevisionState::QueryError {
+                                    if let Some(error) = revision.error.as_ref() {
+                                        div { class: "analyze-error", role: "alert", strong { "Analysis could not run" } p { "{error}" } p { "Fix the SQL and Run. Analyze will not repair a handwritten query." } }
+                                    }
+                                }
+                                if revision.needs_rerun {
+                                    div { class: "analyze-config-callout", role: "status",
+                                        div { strong { "Rerun to restore rows" } p { "Saved summaries remain visible, but result rows are never stored in browser history." } }
+                                    }
+                                }
+                            }
+                            div { class: "analyze-question-actions",
+                                p { "Run executes this query. Editing skips spec repair." }
+                                button { class: "button primary", r#type: "button", disabled: !composer.primary_enabled, onclick: run_sql,
+                                    if generating {
+                                        span { class: "analyze-spinner", aria_hidden: "true" }
+                                        { analyze_progress_label(active_revision.as_ref()) }
+                                    } else { "{composer.primary_label}" }
+                                }
                             }
                         }
                     }
 
-                    section { class: "analyze-sql-card", aria_label: "Compiled SQL",
-                        details { class: "analyze-sql-details",
+                    details {
+                        class: "analyze-sql-card",
+                        aria_label: "How Analyze ran",
+                        open: generating || analyze_trace_open(),
                         summary {
-                            div { class: "analyze-section-heading",
-                                div { span { "03" } div { h2 { "Compiled SQL" } p { "Read-only compilation artifact. Open to inspect or write an escape-hatch query." } } }
-                                if active_revision.as_ref().is_some_and(|revision| revision.manually_edited) {
-                                    span { class: "analyze-edited-badge", "Manually edited" }
+                            onclick: move |event| {
+                                event.prevent_default();
+                                if !generating {
+                                    analyze_trace_open.set(!analyze_trace_open());
                                 }
-                            }
-                        }
-                        label { class: "analyze-question-label", r#for: "analysis-sql", "Compiled query" }
-                        textarea {
-                            id: "analysis-sql",
-                            class: "analyze-sql-editor",
-                            rows: "10",
-                            value: "{sql_text}",
-                            placeholder: "SELECT …",
-                            disabled: sql_locked,
-                            oninput: move |event| {
-                                let Some(mut current) = session() else { return; };
-                                let Some(active) = current.active_revision_mut() else { return; };
-                                if apply_manual_sql(active, event.value()).is_err() {
-                                    return;
-                                }
-                                persist_session(&current, &mut recent_sessions, &mut storage_notice);
-                                session.set(Some(current));
                             },
+                            div { class: "analyze-section-heading",
+                                div { span { "02" } div { h2 { "How Analyze ran" } p { "Spec, compile, evidence, and interpretation as a trajectory. Open a step to see the prompt or result." } } }
+                            }
                         }
                         if let Some(revision) = active_revision.as_ref() {
-                            if revision.state == RevisionState::QueryError {
-                                if let Some(error) = revision.error.as_ref() {
-                                    div { class: "analyze-error", role: "alert", strong { "Analysis could not run" } p { "{error}" } p { "Analyze will revise the spec instead of replaying this SQL." } }
-                                }
+                            if revision.trace.is_empty() {
+                                p { class: "analyze-trace-empty", "Analyze or Run to watch compilation and evidence." }
+                            } else {
+                                AnalyzeTraceView { steps: revision.trace.clone() }
                             }
-                            if revision.needs_rerun {
-                                div { class: "analyze-config-callout", role: "status",
-                                    div { strong { "Rerun to restore rows" } p { "Saved summaries remain visible, but result rows are never stored in browser history." } }
-                                }
-                            }
-                        }
-                        if view_model.as_ref().is_some_and(|model| model.question_out_of_date) {
-                            div { class: "analyze-config-callout", role: "status",
-                                div {
-                                    strong { "This spec is for the previous question" }
-                                    p { "Analyze again for the current question, or restore the reviewed question." }
-                                }
-                            }
-                        }
+                        } else {
+                            p { class: "analyze-trace-empty", "Analyze or Run to watch compilation and evidence." }
                         }
                     }
 
@@ -1335,11 +1364,11 @@ pub fn AnalysisWorkspace(
                     }
 
                     if let Some(revision) = active_revision.as_ref() {
-                        if let Some(spec) = revision.spec.as_ref() {
+                        if composer.show_spec_summary {
+                            if let Some(spec) = revision.spec.as_ref() {
                             section { class: "analyze-plan-card", aria_label: "Analysis spec",
                                 div { class: "analyze-section-heading",
                                     div { span { "Spec" } div { h2 { "Compiled analysis spec" } p { "SQL is a compilation artifact. The spec is what Analyze repairs." } } }
-                                    if revision.manually_edited { span { class: "analyze-edited-badge", "Manually edited" } }
                                 }
                                 dl { class: "analyze-plan-summary",
                                     div { dt { "Intent" } dd { "{spec.intent}" } }
@@ -1354,12 +1383,12 @@ pub fn AnalysisWorkspace(
                                     div { class: "analyze-warnings", role: "note", strong { "Assumptions" } ul { for assumption in &spec.assumptions { li { "{assumption}" } } } }
                                 }
                             }
+                            }
                         } else if let Some(plan) = revision.plan.as_ref() {
-                            if shows_plan_summary(plan) {
+                            if !revision.manually_edited && shows_plan_summary(plan) {
                             section { class: "analyze-plan-card", aria_label: "Proposed analysis plan",
                                 div { class: "analyze-section-heading",
                                     div { span { "Plan" } div { h2 { "Review the analysis plan" } p { "This saved SQL plan is stale. Analyze again to compile a spec." } } }
-                                    if revision.manually_edited { span { class: "analyze-edited-badge", "Manually edited" } }
                                 }
                                 dl { class: "analyze-plan-summary",
                                     div { dt { "Intent" } dd { "{plan.intent_summary}" } }
@@ -1863,7 +1892,7 @@ fn AnalyzeTraceView(steps: Vec<AnalyzeTraceStep>) -> Element {
     let axis_len = steps.len().max(1);
     let bar_width = 100.0 / axis_len as f64;
     rsx! {
-        div { class: "pc2-trajectory-component embedded pc2-inline-trace analyze-trace-surface",
+        div { class: "analyze-trace-surface",
             div { class: "span-table",
                 div { class: "span-table-head",
                     div { "Structure" }
@@ -2098,7 +2127,7 @@ mod tests {
     use super::*;
     use crate::analysis_session::{
         AnalysisEffect, AnalysisPlan, AnalysisRevision, AnalysisScope, AnalysisScopeItem,
-        EvidenceReference, RevisionState, SuggestedView,
+        AnalysisSpec, EvidenceReference, RevisionState, SuggestedView,
     };
     use crate::model::{QueryEvidence, RunSummary};
 
@@ -2148,6 +2177,102 @@ mod tests {
         assert_eq!(model.sql_disclosure_label, "Compiled SQL");
         assert!(!model.trace_open);
         assert!(revision.pending_effect.is_none());
+    }
+
+    fn compiled_spec() -> AnalysisSpec {
+        AnalysisSpec {
+            intent: "composition".into(),
+            grain: "run".into(),
+            measure: "step_count".into(),
+            dimension: Some("agent_model_name".into()),
+            filters: Vec::new(),
+            ranking: None,
+            output: "table".into(),
+            assumptions: Vec::new(),
+            identity_columns: Vec::new(),
+            uncomputable_reason: None,
+        }
+    }
+
+    #[test]
+    fn ask_tab_analyzes_even_when_sql_is_already_runnable() {
+        let mut revision = plan_ready_revision();
+        revision.spec = Some(compiled_spec());
+        let composer = ComposerModel::from_context(
+            ComposerTab::Ask,
+            Some(&revision),
+            &revision.question,
+            false,
+            true,
+            true,
+            true,
+        );
+        assert_eq!(composer.primary_label, "Analyze");
+        assert!(composer.primary_enabled);
+        assert!(!composer.submits_sql);
+        assert!(composer.show_spec_summary);
+    }
+
+    #[test]
+    fn sql_tab_runs_the_shared_query_and_hides_spec_after_edits() {
+        let mut revision = plan_ready_revision();
+        revision.spec = Some(compiled_spec());
+        let compiled = ComposerModel::from_context(
+            ComposerTab::Sql,
+            Some(&revision),
+            &revision.question,
+            false,
+            true,
+            true,
+            true,
+        );
+        assert_eq!(compiled.primary_label, "Run");
+        assert!(compiled.primary_enabled);
+        assert!(compiled.submits_sql);
+        assert!(compiled.show_spec_summary);
+
+        apply_manual_sql(&mut revision, "SELECT 1".into()).unwrap();
+        let edited = ComposerModel::from_context(
+            ComposerTab::Sql,
+            Some(&revision),
+            &revision.question,
+            false,
+            true,
+            true,
+            true,
+        );
+        assert!(edited.primary_enabled);
+        assert!(!edited.show_spec_summary);
+    }
+
+    #[test]
+    fn composer_disables_empty_ask_or_empty_sql() {
+        let draft = empty_draft();
+        let ask = ComposerModel::from_context(
+            ComposerTab::Ask,
+            Some(&draft),
+            "",
+            false,
+            true,
+            true,
+            true,
+        );
+        assert!(!ask.primary_enabled);
+        let sql = ComposerModel::from_context(
+            ComposerTab::Sql,
+            Some(&draft),
+            "Count tool calls",
+            false,
+            true,
+            true,
+            true,
+        );
+        assert!(!sql.primary_enabled);
+    }
+
+    #[test]
+    fn catalog_insert_switches_to_the_sql_tab() {
+        assert_eq!(composer_tab_after_catalog_insert(), ComposerTab::Sql);
     }
 
     #[test]

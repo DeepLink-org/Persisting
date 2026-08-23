@@ -18,6 +18,7 @@ product and storage boundary, see the [pChronicle product architecture](../desig
 | `status` | Report Dataset health, aggregate counts, and automatic projection state |
 | `query` | Execute one bounded, read-only SQL statement |
 | `analysis` | Run a built-in `overview`, `agents`, `models`, or `tools` report |
+| `agent` | Launch Codex or Claude with a read-only Dataset analysis prompt and skill |
 | `find` | Locate Run, Session, or Step candidates by Source-local ID |
 | `import` | Create a new Dataset from exchange JSON or a canonical Event Store |
 | `export` | Export complete trajectories as ATIF, ACTF, OpenAI Messages, or Storyline JSON |
@@ -152,6 +153,83 @@ pchronicle analysis tools [./dataset]
 All four accept `--format table|jsonl|csv`, `--limit`, byte and discovery
 limits, and a timeout. Use `query` for arbitrary SQL. There is no `users`
 report because the normalized schema does not define a stable user identity.
+
+## Codex and Claude analysis sessions
+
+```bash
+pchronicle agent --dataset ./dataset codex
+pchronicle agent --dataset s3://bucket/evals claude
+pchronicle agent --dataset ./dataset \
+  --ask "Compare successful and failed tool calls" codex
+pchronicle agent --dataset ./dataset \
+  --ask "Compare model latency" --no-overview claude
+pchronicle agent --dataset ./dataset --dry-run codex
+pchronicle agent codex
+```
+
+`agent` resolves and normalizes the explicit Dataset URI, or uses the default
+Warehouse when `--dataset` is omitted. It then launches the selected
+interactive CLI while preserving the caller's working directory, terminal,
+authentication, and unrelated Codex or Claude settings. The launch-specific
+injections described below apply only to the child session. Interactive launch
+requires terminal stdin and stdout; `--dry-run` remains available in pipes and
+CI without staging an injection.
+
+The startup modes are:
+
+- by default, instruct the Agent to run a bounded `status` check plus compact
+  `analysis overview`, then ask what to investigate;
+- with `--ask QUESTION`, instruct it to run the same bootstrap and then
+  investigate that question without asking the user to repeat it;
+- with `--no-overview`, instruct it to retain the bounded status check but skip
+  the automatic generic overview; targeted analysis can still run the commands
+  needed for the question, including an overview when the question explicitly
+  asks for one;
+- with `--dry-run`, print a versioned JSON launch plan and exit without staging
+  an injection, locating or authenticating the Agent, cataloging or reading
+  Dataset contents, or starting a child process. The plan reports question
+  presence, byte length, and redaction without echoing its contents.
+
+For Codex, pChronicle stages a uniquely named temporary skill under the
+Codex user skill root (`$CODEX_HOME/skills`, or `~/.codex/skills`) and enables
+that temporary skill for the child session with a session-only `skills.config`
+override containing compatible folder and `SKILL.md` selectors. It does not
+change persistent Codex configuration files. For Claude, pChronicle injects the
+same guidance as a temporary plugin through `--plugin-dir`, together with an
+appended system prompt and initial prompt. The staged files are removed after a
+normal child exit. If pChronicle is forcibly terminated, a generic
+`pchronicle-agent-*` directory can remain under the Codex skill root; it
+contains no Dataset URI and can be removed once no matching session is running.
+
+The target URI and current pChronicle executable are passed as
+`PCHRONICLE_DATASET_URI` and `PCHRONICLE_BIN`, with the same structured context
+embedded in the initial prompt as a fallback. Other environment variables are
+inherited, while these two session variables are set and replace values with the
+same names. The normalized Dataset URI, current executable, analysis guidance,
+and `--ask` text are pChronicle-supplied model context; pChronicle command
+results used during analysis also become model-visible. The target Agent can
+add its own model context from its configuration and working directory. Do not
+populate `--ask` with unreviewed Dataset messages, ticket bodies, or other
+untrusted text. The initial prompt is passed to the native Agent CLI as a
+process argument, so the question can also be visible to local
+process-inspection tools while the child runs; do not include credentials or
+other secrets.
+
+The Agent is instructed to use only `ls`, `status`, `analysis`, `find`, and
+read-only `query` for Dataset access. This is behavioral guidance, not a
+filesystem or network sandbox. pChronicle does not change the child Agent's
+existing tool permissions, credentials, or workspace access. The skill inspects
+live schemas with `DESCRIBE`, keeps drill-down queries bounded, preserves
+`_file_` in same-Dataset joins, and reports Snapshot changes, degraded Sources,
+and truncation.
+
+The injection is ephemeral. Native Codex or Claude resume commands do not
+guarantee that the temporary skill, plugin, or environment will still be
+available in a resumed session.
+
+The selected `codex` or `claude` executable must already be installed,
+available on `PATH`, and authenticated. A missing executable or non-zero child
+exit is reported as a pChronicle runtime error.
 
 ## Find by Source-local ID
 

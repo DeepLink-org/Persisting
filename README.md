@@ -77,12 +77,17 @@ analysis belong to pChronicle.
 ```bash
 pchronicle onboard
 pchronicle onboard query
+pchronicle agent --dataset ./trajectory-data \
+  --ask "Which tools fail most often?" codex
 ```
 
 The installed-product onboarding flow creates temporary example Datasets and
 does not require a source checkout. External Sources can enter pChronicle
 without pVisor. `pchronicle import` accepts ATIF, ACTF, and OpenAI Messages;
 `pchronicle export` supports those formats plus Storyline JSON.
+`pchronicle agent` launches Codex or Claude with an ephemeral Dataset analysis
+skill. It instructs the Agent to use read-only pChronicle commands without
+changing the Agent's existing filesystem, network, or tool permissions.
 `pchronicle serve` starts the loopback-only, read-only Warehouse UI and API.
 
 ## pChronicle performance
