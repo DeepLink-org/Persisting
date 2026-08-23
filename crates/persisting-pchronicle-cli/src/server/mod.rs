@@ -17,6 +17,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use persisting_pchronicle::analysis_compile::{
+    compile, AnalysisSpec, CompileError, CompileScope, CompiledQuery, TableSchema,
+};
 use persisting_pchronicle::document::{events_to_otlp_json, InputIssue};
 use persisting_pchronicle::model::{EventRecord, StorylineTurn};
 use persisting_pchronicle::query::ChronicleQueryEngine;
@@ -81,7 +84,7 @@ struct CatalogRuntime {
     built_at: Instant,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RunSummary {
     pub(crate) dataset: String,
     pub(crate) file: String,
@@ -196,6 +199,7 @@ fn api_routes() -> Router<AppState> {
         .route("/catalog", get(catalog).post(refresh_catalog))
         .route("/query/tables", get(query_tables))
         .route("/query/evidence", post(query_evidence))
+        .route("/analysis/compile", post(compile_analysis))
 }
 
 fn read_routes() -> Router<AppState> {
@@ -1273,6 +1277,184 @@ async fn query_tables(State(state): State<AppState>) -> Result<Json<QueryCatalog
             },
         ],
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CompileAnalysisRequest {
+    spec: AnalysisSpec,
+    snapshot_id: String,
+    scope: AnalysisCompileScope,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnalysisCompileScope {
+    #[serde(default)]
+    database: String,
+    #[serde(default)]
+    items: Vec<AnalysisCompileScopeItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum AnalysisCompileScopeItem {
+    Dataset {
+        name: String,
+    },
+    Root {
+        dataset: String,
+        file: String,
+        root_session_id: String,
+    },
+    Run {
+        run: RunSummary,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct CompileFailureBody {
+    code: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    field: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine_detail: Option<String>,
+}
+
+struct CompileHttpError {
+    status: StatusCode,
+    body: CompileFailureBody,
+}
+
+impl CompileHttpError {
+    fn stale_snapshot() -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            body: CompileFailureBody {
+                code: "stale_snapshot".into(),
+                message: "catalog snapshot changed; refresh and analyze again".into(),
+                field: Some("snapshot_id".into()),
+                engine_detail: None,
+            },
+        }
+    }
+
+    fn from_compile(error: CompileError) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            body: CompileFailureBody {
+                code: error.code,
+                message: error.message,
+                field: error.field,
+                engine_detail: None,
+            },
+        }
+    }
+
+    fn unplannable(detail: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            body: CompileFailureBody {
+                code: "unplannable".into(),
+                message: "compiled SQL could not be planned against the live catalog".into(),
+                field: None,
+                engine_detail: Some(truncate_engine_detail(detail.into())),
+            },
+        }
+    }
+}
+
+impl IntoResponse for CompileHttpError {
+    fn into_response(self) -> Response {
+        (self.status, Json(self.body)).into_response()
+    }
+}
+
+fn truncate_engine_detail(detail: String) -> String {
+    const MAX_DETAIL_CHARS: usize = 1500;
+    if detail.chars().count() > MAX_DETAIL_CHARS {
+        format!("{}…", detail.chars().take(MAX_DETAIL_CHARS).collect::<String>())
+    } else {
+        detail
+    }
+}
+
+fn compile_scope_from(scope: AnalysisCompileScope) -> CompileScope {
+    let mut dataset = scope.database;
+    let mut file = None;
+    let mut session_ids = Vec::new();
+    let mut document_id = None;
+    for item in scope.items {
+        match item {
+            AnalysisCompileScopeItem::Dataset { name } => dataset = name,
+            AnalysisCompileScopeItem::Root {
+                dataset: next_dataset,
+                file: next_file,
+                root_session_id,
+            } => {
+                dataset = next_dataset;
+                file = Some(next_file);
+                session_ids.push(root_session_id);
+            }
+            AnalysisCompileScopeItem::Run { run } => {
+                dataset = run.dataset;
+                file = Some(run.file);
+                session_ids.push(run.session_id);
+                document_id = Some(run.document_id).filter(|value| !value.is_empty());
+            }
+        }
+    }
+    CompileScope {
+        dataset,
+        file,
+        session_ids,
+        document_id,
+    }
+}
+
+async fn compile_analysis(
+    State(state): State<AppState>,
+    request: Result<Json<CompileAnalysisRequest>, JsonRejection>,
+) -> Result<Json<CompiledQuery>, CompileHttpError> {
+    let Json(request) = request.map_err(|_| CompileHttpError {
+        status: StatusCode::BAD_REQUEST,
+        body: CompileFailureBody {
+            code: "invalid_request".into(),
+            message: "request body must be valid JSON".into(),
+            field: None,
+            engine_detail: None,
+        },
+    })?;
+    let runtime = current_catalog(&state).await.map_err(|_| CompileHttpError {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        body: CompileFailureBody {
+            code: "unavailable".into(),
+            message: "catalog is not ready".into(),
+            field: None,
+            engine_detail: None,
+        },
+    })?;
+    if request.snapshot_id != runtime.snapshot.snapshot_id() {
+        return Err(CompileHttpError::stale_snapshot());
+    }
+    let schema = runtime
+        .engine
+        .introspect_tables()
+        .await
+        .map_err(|error| CompileHttpError::unplannable(format!("{error:#}")))?
+        .into_iter()
+        .map(|table| TableSchema {
+            name: table.name,
+            columns: table.fields.into_iter().map(|field| field.name).collect(),
+        })
+        .collect::<Vec<_>>();
+    let compiled = compile(request.spec, &schema, &compile_scope_from(request.scope))
+        .map_err(CompileHttpError::from_compile)?;
+    runtime
+        .engine
+        .query(&format!("EXPLAIN {}", compiled.sql))
+        .await
+        .map_err(|error| CompileHttpError::unplannable(format!("{error:#}")))?;
+    Ok(Json(compiled))
 }
 
 #[derive(Debug, Deserialize)]

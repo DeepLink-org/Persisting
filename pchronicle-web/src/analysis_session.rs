@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::model::{QueryCatalog, QueryEvidence, RunSummary};
@@ -9,6 +10,7 @@ use crate::result_profile::ColumnProfile;
 pub const MAX_ANALYSIS_SESSIONS: usize = 20;
 pub const MAX_SESSION_BYTES: usize = 256 * 1024;
 pub const STORAGE_PREFIX: &str = "pchronicle_analysis:";
+pub const MAX_SPEC_REPAIRS: u32 = 2;
 
 pub type AnalysisOperationId = u64;
 
@@ -135,6 +137,70 @@ pub struct AnalysisPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AnalysisSpec {
+    pub intent: String,
+    pub grain: String,
+    pub measure: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dimension: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<SpecFilter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranking: Option<Ranking>,
+    pub output: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assumptions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncomputable_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpecFilter {
+    pub field: String,
+    pub op: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Ranking {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct CompiledQuery {
+    pub spec: AnalysisSpec,
+    pub sql: String,
+    pub assumptions: Vec<String>,
+    pub identity_columns: Vec<String>,
+    pub expected_columns: Vec<String>,
+    pub output: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct CompileFailure {
+    pub code: String,
+    pub message: String,
+    #[serde(default)]
+    pub field: Option<String>,
+    #[serde(default)]
+    pub engine_detail: Option<String>,
+}
+
+impl CompileFailure {
+    pub fn summary(&self) -> String {
+        match self.field.as_deref() {
+            Some(field) => format!("{}: {}", field, self.message),
+            None => self.message.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EvidenceReference {
     pub label: String,
     pub row_index: Option<usize>,
@@ -156,6 +222,59 @@ pub struct AnalysisInterpretation {
     pub references: Vec<EvidenceReference>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalyzeTraceKind {
+    GenerateSpec,
+    Compile,
+    RepairSpec,
+    Execute,
+    Interpret,
+}
+
+impl AnalyzeTraceKind {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::GenerateSpec => "Write spec",
+            Self::Compile => "Compile SQL",
+            Self::RepairSpec => "Repair spec",
+            Self::Execute => "Run evidence",
+            Self::Interpret => "Interpret results",
+        }
+    }
+
+    pub fn phase(self) -> &'static str {
+        match self {
+            Self::GenerateSpec | Self::RepairSpec | Self::Interpret => "agent",
+            Self::Compile | Self::Execute => "system",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalyzeTraceStatus {
+    Pending,
+    Running,
+    Ok,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AnalyzeTraceStep {
+    pub id: u64,
+    pub kind: AnalyzeTraceKind,
+    pub status: AnalyzeTraceStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+const TRACE_TEXT_CHARS: usize = 4 * 1024;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionSummary {
     pub returned_rows: usize,
@@ -174,7 +293,15 @@ pub struct AnalysisRevision {
     pub state: RevisionState,
     pub plan: Option<AnalysisPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<AnalysisSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled_sql: Option<String>,
+    #[serde(default)]
+    pub repair_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prior_plan_context: Option<AnalysisPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_spec_context: Option<AnalysisSpec>,
     pub manually_edited: bool,
     pub execution: Option<ExecutionSummary>,
     pub interpretation: Option<AnalysisInterpretation>,
@@ -182,6 +309,8 @@ pub struct AnalysisRevision {
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     pub needs_rerun: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<AnalyzeTraceStep>,
     #[serde(skip)]
     pub evidence: Option<QueryEvidence>,
     #[serde(skip)]
@@ -201,7 +330,11 @@ impl AnalysisRevision {
             scope,
             state: RevisionState::Draft,
             plan: None,
+            spec: None,
+            compiled_sql: None,
+            repair_count: 0,
             prior_plan_context: None,
+            prior_spec_context: None,
             manually_edited: false,
             execution: None,
             interpretation: None,
@@ -209,6 +342,7 @@ impl AnalysisRevision {
             created_at_ms: now,
             updated_at_ms: now,
             needs_rerun: false,
+            trace: Vec::new(),
             evidence: None,
             pending_effect: None,
             active_operation_id: None,
@@ -218,17 +352,95 @@ impl AnalysisRevision {
 
     pub fn begin_plan_generation(&mut self) -> Result<AnalysisOperationId, String> {
         match self.state {
-            RevisionState::Draft | RevisionState::PlanError | RevisionState::Stale => {
+            RevisionState::Draft
+            | RevisionState::PlanError
+            | RevisionState::Stale
+            | RevisionState::QueryError => {
                 self.state = RevisionState::GeneratingPlan;
                 self.error = None;
                 self.pending_effect = None;
+                self.repair_count = 0;
+                self.compiled_sql = None;
+                self.trace.clear();
+                let question = self.question.clone();
+                self.start_trace_step(AnalyzeTraceKind::GenerateSpec, Some(&question));
                 self.touch();
                 Ok(self.begin_operation())
             }
-            _ => Err(
-                "A plan can only be generated from a draft, plan error, or stale revision.".into(),
-            ),
+            _ => Err("A spec can only be generated from a draft, error, or stale revision.".into()),
         }
+    }
+
+    pub fn finish_compiled_spec(
+        &mut self,
+        revision_id: u64,
+        operation_id: AnalysisOperationId,
+        spec: AnalysisSpec,
+        sql: String,
+    ) -> Result<Option<AnalysisEffect>, String> {
+        if !self.accepts(revision_id, operation_id) {
+            return Ok(None);
+        }
+        if self.state != RevisionState::GeneratingPlan {
+            return Err("This revision is not waiting for a compiled spec.".into());
+        }
+        self.spec = Some(spec.clone());
+        self.compiled_sql = Some(sql.clone());
+        self.repair_count = 0;
+        self.manually_edited = false;
+        self.plan = Some(plan_from_compiled(
+            self.id,
+            &self.question,
+            &self.scope,
+            &spec,
+            &sql,
+        ));
+        self.state = RevisionState::PlanReady;
+        self.error = None;
+        self.complete_trace_step(Some(&sql));
+        self.touch();
+        self.confirm_execution()?;
+        Ok(self.pending_effect.clone())
+    }
+
+    pub fn note_spec_ready(&mut self, spec: &AnalysisSpec) {
+        let output = serde_json::to_string_pretty(spec).ok();
+        self.complete_trace_step(output.as_deref());
+        let prompt = format!("{} · {} · {}", spec.intent, spec.grain, spec.measure);
+        self.start_trace_step(AnalyzeTraceKind::Compile, Some(&prompt));
+        self.touch();
+    }
+
+    pub fn fail_compile(
+        &mut self,
+        revision_id: u64,
+        operation_id: AnalysisOperationId,
+        error: impl Into<String>,
+    ) -> Result<Option<AnalysisEffect>, String> {
+        if !self.accepts(revision_id, operation_id) {
+            return Ok(None);
+        }
+        if self.state != RevisionState::GeneratingPlan {
+            return Err("This revision is not waiting for a compiled spec.".into());
+        }
+        let error = error.into();
+        self.fail_running_trace_step(&error);
+        self.compiled_sql = None;
+        self.pending_effect = None;
+        if self.repair_count < MAX_SPEC_REPAIRS {
+            self.repair_count = self.repair_count.saturating_add(1);
+            self.error = Some(error.clone());
+            self.start_trace_step(AnalyzeTraceKind::RepairSpec, Some(&error));
+            self.touch();
+            return Ok(None);
+        }
+        self.fail(
+            revision_id,
+            operation_id,
+            RevisionState::GeneratingPlan,
+            RevisionState::PlanError,
+            error,
+        )
     }
 
     pub fn finish_plan(
@@ -244,25 +456,30 @@ impl AnalysisRevision {
             return Err("This revision is not waiting for a generated plan.".into());
         }
         self.plan = Some(plan);
+        self.compiled_sql = self.plan.as_ref().map(|plan| plan.sql.clone());
         self.state = RevisionState::PlanReady;
         self.error = None;
         self.pending_effect = None;
         self.active_operation_id = None;
+        let sql = self.compiled_sql.clone();
+        self.complete_trace_step(sql.as_deref());
         self.touch();
         Ok(None)
     }
 
     pub fn confirm_execution(&mut self) -> Result<(), String> {
+        if self.state == RevisionState::QueryError && !self.manually_edited && !self.needs_rerun {
+            return Err("Revise the spec instead of replaying the failed SQL.".into());
+        }
         if !matches!(
             self.state,
             RevisionState::PlanReady | RevisionState::QueryError
         ) {
-            return Err("Review a ready plan before running this analysis.".into());
+            return Err("Review a ready spec before running this analysis.".into());
         }
-        let Some(plan) = self.plan.as_ref() else {
-            return Err("A plan is required before running this analysis.".into());
-        };
-        let sql = plan.sql.clone();
+        let sql = self
+            .executable_sql()
+            .ok_or_else(|| "Compiled SQL is required before running this analysis.".to_string())?;
         self.execution = None;
         self.evidence = None;
         self.interpretation = None;
@@ -273,8 +490,9 @@ impl AnalysisRevision {
         self.pending_effect = Some(AnalysisEffect::ExecuteSql {
             revision_id: self.id,
             operation_id,
-            sql,
+            sql: sql.clone(),
         });
+        self.start_trace_step(AnalyzeTraceKind::Execute, Some(&sql));
         self.touch();
         Ok(())
     }
@@ -293,6 +511,10 @@ impl AnalysisRevision {
             return Err("This revision is not waiting for query results.".into());
         }
         let has_rows = !evidence.rows.is_empty();
+        let summary = format!(
+            "returned_rows={} truncated={}",
+            evidence.returned_rows, evidence.truncated
+        );
         self.execution = Some(ExecutionSummary {
             returned_rows: evidence.returned_rows,
             truncated: evidence.truncated,
@@ -305,12 +527,14 @@ impl AnalysisRevision {
         self.interpretation = None;
         self.error = None;
         self.needs_rerun = false;
+        self.complete_trace_step(Some(&summary));
         let effect = has_rows.then(|| AnalysisEffect::Interpret {
             revision_id: self.id,
             operation_id: self.begin_operation(),
         });
         self.pending_effect = effect.clone();
         self.state = if effect.is_some() {
+            self.start_trace_step(AnalyzeTraceKind::Interpret, Some(&summary));
             RevisionState::Interpreting
         } else {
             self.active_operation_id = None;
@@ -332,11 +556,13 @@ impl AnalysisRevision {
         if self.state != RevisionState::Interpreting {
             return Err("This revision is not waiting for an interpretation.".into());
         }
-        self.interpretation = Some(interpretation);
+        self.interpretation = Some(interpretation.clone());
         self.state = RevisionState::Complete;
         self.error = None;
         self.pending_effect = None;
         self.active_operation_id = None;
+        let output = serde_json::to_string_pretty(&interpretation).ok();
+        self.complete_trace_step(output.as_deref());
         self.touch();
         Ok(None)
     }
@@ -390,6 +616,25 @@ impl AnalysisRevision {
         self.pending_effect.take()
     }
 
+    pub fn executable_sql(&self) -> Option<String> {
+        if self.manually_edited {
+            return self
+                .plan
+                .as_ref()
+                .map(|plan| plan.sql.clone())
+                .filter(|sql| !sql.trim().is_empty());
+        }
+        self.compiled_sql
+            .clone()
+            .filter(|sql| !sql.trim().is_empty())
+            .or_else(|| {
+                self.plan
+                    .as_ref()
+                    .map(|plan| plan.sql.clone())
+                    .filter(|sql| !sql.trim().is_empty())
+            })
+    }
+
     pub fn retry_interpretation(&mut self) -> Result<AnalysisEffect, String> {
         if self.state != RevisionState::InterpretationError || self.evidence.is_none() {
             return Err("Interpretation can only be retried after an interpretation error.".into());
@@ -402,6 +647,7 @@ impl AnalysisRevision {
             operation_id,
         };
         self.pending_effect = Some(effect.clone());
+        self.start_trace_step(AnalyzeTraceKind::Interpret, Some("retry interpretation"));
         self.touch();
         Ok(effect)
     }
@@ -426,10 +672,58 @@ impl AnalysisRevision {
         }
         self.state = failed;
         self.error = Some(error.into());
+        let message = self.error.clone().unwrap_or_default();
+        self.fail_running_trace_step(&message);
         self.pending_effect = None;
         self.active_operation_id = None;
         self.touch();
         Ok(None)
+    }
+
+    fn start_trace_step(&mut self, kind: AnalyzeTraceKind, prompt: Option<&str>) -> u64 {
+        let id = self
+            .trace
+            .last()
+            .map(|step| step.id)
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.trace.push(AnalyzeTraceStep {
+            id,
+            kind,
+            status: AnalyzeTraceStatus::Running,
+            prompt: prompt
+                .map(digest_trace_text)
+                .filter(|value| !value.is_empty()),
+            output: None,
+            error: None,
+        });
+        id
+    }
+
+    fn complete_trace_step(&mut self, output: Option<&str>) {
+        if let Some(step) = self.running_trace_step() {
+            step.status = AnalyzeTraceStatus::Ok;
+            step.output = output
+                .map(digest_trace_text)
+                .filter(|value| !value.is_empty());
+            step.error = None;
+        }
+    }
+
+    fn fail_running_trace_step(&mut self, error: &str) {
+        if let Some(step) = self.running_trace_step() {
+            step.status = AnalyzeTraceStatus::Error;
+            if !error.is_empty() {
+                step.error = Some(digest_trace_text(error));
+            }
+        }
+    }
+
+    fn running_trace_step(&mut self) -> Option<&mut AnalyzeTraceStep> {
+        self.trace
+            .iter_mut()
+            .rev()
+            .find(|step| step.status == AnalyzeTraceStatus::Running)
     }
 
     fn touch(&mut self) {
@@ -839,6 +1133,81 @@ fn normalize_persisted_revision(revision: &mut AnalysisRevision) {
     if was_in_flight || revision.execution.is_some() {
         revision.needs_rerun = true;
     }
+    for step in &mut revision.trace {
+        if matches!(
+            step.status,
+            AnalyzeTraceStatus::Running | AnalyzeTraceStatus::Pending
+        ) {
+            step.status = AnalyzeTraceStatus::Error;
+            if step.error.is_none() {
+                step.error = Some("Session restored before this step finished.".into());
+            }
+        }
+    }
+    mark_legacy_sql_plan_stale(revision);
+}
+
+fn mark_legacy_sql_plan_stale(revision: &mut AnalysisRevision) {
+    let has_legacy_sql = revision.spec.is_none()
+        && revision
+            .compiled_sql
+            .as_ref()
+            .is_none_or(|sql| sql.trim().is_empty())
+        && !revision.manually_edited
+        && revision
+            .plan
+            .as_ref()
+            .is_some_and(|plan| !plan.sql.trim().is_empty());
+    if has_legacy_sql {
+        revision.state = RevisionState::Stale;
+        revision.error = Some(
+            "This session stored a handwritten SQL plan. Analyze again to compile a spec.".into(),
+        );
+        revision.compiled_sql = None;
+        revision.pending_effect = None;
+        revision.active_operation_id = None;
+    }
+}
+
+fn plan_from_compiled(
+    id: u64,
+    question: &str,
+    scope: &AnalysisScope,
+    spec: &AnalysisSpec,
+    sql: &str,
+) -> AnalysisPlan {
+    AnalysisPlan {
+        id,
+        question: question.into(),
+        intent_summary: spec.intent.clone(),
+        scope_summary: scope
+            .items
+            .first()
+            .map(|item| match item {
+                AnalysisScopeItem::Dataset { name } => format!("dataset {name}"),
+                AnalysisScopeItem::Root {
+                    dataset,
+                    root_session_id,
+                    ..
+                } => format!("{dataset} root {root_session_id}"),
+                AnalysisScopeItem::Run { run } => format!("{} {}", run.dataset, run.session_id),
+            })
+            .unwrap_or_else(|| scope.database.clone()),
+        filters: spec
+            .filters
+            .iter()
+            .map(|filter| format!("{} {}", filter.field, filter.op))
+            .collect(),
+        groupings: spec.dimension.iter().cloned().collect(),
+        measures: vec![spec.measure.clone()],
+        expected_columns: spec.identity_columns.clone(),
+        suggested_view: match spec.output.as_str() {
+            "distribution" => SuggestedView::Distribution,
+            _ => SuggestedView::Table,
+        },
+        sql: sql.into(),
+        warnings: spec.assumptions.clone(),
+    }
 }
 
 fn fit_session_budget(session: &mut AnalysisSession) -> Result<(), String> {
@@ -878,6 +1247,11 @@ fn discard_oldest_derived_data(session: &mut AnalysisSession) -> bool {
         if revision.interpretation.take().is_some() {
             return true;
         }
+        for step in &mut revision.trace {
+            if step.prompt.take().is_some() || step.output.take().is_some() {
+                return true;
+            }
+        }
     }
     false
 }
@@ -915,6 +1289,18 @@ fn compact_session(session: &mut AnalysisSession) {
         }
         if let Some(error) = &mut revision.error {
             truncate_text(error, 4 * 1024);
+        }
+        revision.trace.truncate(32);
+        for step in &mut revision.trace {
+            if let Some(prompt) = &mut step.prompt {
+                truncate_text(prompt, TRACE_TEXT_CHARS);
+            }
+            if let Some(output) = &mut step.output {
+                truncate_text(output, TRACE_TEXT_CHARS);
+            }
+            if let Some(error) = &mut step.error {
+                truncate_text(error, TRACE_TEXT_CHARS);
+            }
         }
     }
 }
@@ -958,6 +1344,12 @@ fn compact_plan(plan: &mut AnalysisPlan) {
             truncate_text(value, 1024);
         }
     }
+}
+
+fn digest_trace_text(value: &str) -> String {
+    let mut text = value.to_string();
+    truncate_text(&mut text, TRACE_TEXT_CHARS);
+    text
 }
 
 fn truncate_text(value: &mut String, max_chars: usize) {
@@ -1126,18 +1518,10 @@ mod tests {
             .unwrap();
         assert_eq!(revision.state, RevisionState::QueryError);
         assert!(revision.take_pending_effect().is_none());
-
-        revision.confirm_execution().unwrap();
-
-        assert_eq!(revision.state, RevisionState::Executing);
-        assert_eq!(
-            revision.take_pending_effect(),
-            Some(AnalysisEffect::ExecuteSql {
-                revision_id: 1,
-                operation_id: query_operation + 1,
-                sql: "SELECT status, COUNT(*) FROM default.runs GROUP BY status".into(),
-            })
-        );
+        assert!(revision.confirm_execution().is_err());
+        assert!(revision.begin_plan_generation().is_ok());
+        assert_eq!(revision.state, RevisionState::GeneratingPlan);
+        assert!(revision.compiled_sql.is_none());
     }
 
     #[test]
@@ -1610,6 +1994,7 @@ mod tests {
         revision
             .fail_query(1, first_operation, "query timed out")
             .unwrap();
+        revision.needs_rerun = true;
         revision.confirm_execution().unwrap();
         let second_operation = take_execute_operation(&mut revision);
 
@@ -2020,5 +2405,189 @@ mod tests {
         let operation_id = revision.begin_plan_generation().unwrap();
         revision.finish_plan(1, operation_id, plan()).unwrap();
         AnalysisSession::with_revision(revision)
+    }
+
+    fn sample_spec() -> AnalysisSpec {
+        AnalysisSpec {
+            intent: "composition".into(),
+            grain: "tool_call".into(),
+            measure: "tool_call_count".into(),
+            dimension: Some("function_name".into()),
+            filters: Vec::new(),
+            ranking: None,
+            output: "table".into(),
+            assumptions: Vec::new(),
+            identity_columns: Vec::new(),
+            uncomputable_reason: None,
+        }
+    }
+
+    #[test]
+    fn compile_failures_repair_spec_twice_then_stop_without_executing_sql() {
+        let mut revision = AnalysisRevision::draft(1, "compare failures", scope());
+        let operation_id = revision.begin_plan_generation().unwrap();
+        assert!(revision
+            .fail_compile(1, operation_id, "runs has no unified status")
+            .unwrap()
+            .is_none());
+        assert_eq!(revision.state, RevisionState::GeneratingPlan);
+        assert_eq!(revision.repair_count, 1);
+        assert!(revision.pending_effect.is_none());
+        assert!(revision.compiled_sql.is_none());
+
+        assert!(revision
+            .fail_compile(1, operation_id, "runs has no unified status")
+            .unwrap()
+            .is_none());
+        assert_eq!(revision.state, RevisionState::GeneratingPlan);
+        assert_eq!(revision.repair_count, 2);
+
+        assert!(revision
+            .fail_compile(1, operation_id, "runs has no unified status")
+            .unwrap()
+            .is_none());
+        assert_eq!(revision.state, RevisionState::PlanError);
+        assert!(revision.pending_effect.is_none());
+        assert!(revision.compiled_sql.is_none());
+    }
+
+    #[test]
+    fn compiled_spec_queues_execution_of_the_new_sql() {
+        let mut revision = AnalysisRevision::draft(1, "compare models", scope());
+        let operation_id = revision.begin_plan_generation().unwrap();
+        let effect = revision
+            .finish_compiled_spec(
+                1,
+                operation_id,
+                sample_spec(),
+                "SELECT t.function_name, COUNT(*) AS tool_call_count FROM dataset.tool_calls AS t GROUP BY t.function_name".into(),
+            )
+            .unwrap();
+        match effect {
+            Some(AnalysisEffect::ExecuteSql { sql, .. }) => {
+                assert!(sql.contains("tool_calls"));
+            }
+            other => panic!("expected ExecuteSql, got {other:?}"),
+        }
+        assert_eq!(revision.state, RevisionState::Executing);
+    }
+
+    #[test]
+    fn analyze_trace_records_generate_compile_execute_and_interpret() {
+        let mut revision = AnalysisRevision::draft(1, "compare models", scope());
+        let operation_id = revision.begin_plan_generation().unwrap();
+        assert_eq!(revision.trace[0].kind, AnalyzeTraceKind::GenerateSpec);
+        assert_eq!(revision.trace[0].status, AnalyzeTraceStatus::Running);
+        assert!(revision.trace[0]
+            .prompt
+            .as_deref()
+            .unwrap()
+            .contains("compare models"));
+
+        revision.note_spec_ready(&sample_spec());
+        assert_eq!(revision.trace[0].status, AnalyzeTraceStatus::Ok);
+        assert_eq!(revision.trace[1].kind, AnalyzeTraceKind::Compile);
+        assert_eq!(revision.trace[1].status, AnalyzeTraceStatus::Running);
+
+        let query_operation = revision
+            .finish_compiled_spec(1, operation_id, sample_spec(), "SELECT 1".into())
+            .unwrap()
+            .and_then(|effect| match effect {
+                AnalysisEffect::ExecuteSql { operation_id, .. } => Some(operation_id),
+                _ => None,
+            })
+            .expect("execute");
+        assert_eq!(revision.trace[1].status, AnalyzeTraceStatus::Ok);
+        assert_eq!(revision.trace[1].output.as_deref(), Some("SELECT 1"));
+        assert_eq!(revision.trace[2].kind, AnalyzeTraceKind::Execute);
+        assert_eq!(revision.trace[2].status, AnalyzeTraceStatus::Running);
+
+        let interpret = revision
+            .finish_query(1, query_operation, evidence_with_rows(), Vec::new())
+            .unwrap()
+            .expect("interpret");
+        assert_eq!(revision.trace[2].status, AnalyzeTraceStatus::Ok);
+        assert_eq!(revision.trace[3].kind, AnalyzeTraceKind::Interpret);
+        assert_eq!(revision.trace[3].status, AnalyzeTraceStatus::Running);
+
+        let AnalysisEffect::Interpret {
+            operation_id: interpret_op,
+            ..
+        } = interpret
+        else {
+            panic!("expected interpret");
+        };
+        revision
+            .finish_interpretation(
+                1,
+                interpret_op,
+                AnalysisInterpretation {
+                    observations: vec!["two rows".into()],
+                    inferences: Vec::new(),
+                    limitations: Vec::new(),
+                    follow_ups: Vec::new(),
+                    references: Vec::new(),
+                },
+            )
+            .unwrap();
+        assert_eq!(revision.trace[3].status, AnalyzeTraceStatus::Ok);
+        assert_eq!(revision.state, RevisionState::Complete);
+    }
+
+    #[test]
+    fn compile_failure_records_repair_then_stops_on_the_third_error() {
+        let mut revision = AnalysisRevision::draft(1, "compare failures", scope());
+        let operation_id = revision.begin_plan_generation().unwrap();
+        revision.note_spec_ready(&sample_spec());
+        revision
+            .fail_compile(1, operation_id, "runs has no unified status")
+            .unwrap();
+        assert_eq!(revision.trace[1].kind, AnalyzeTraceKind::Compile);
+        assert_eq!(revision.trace[1].status, AnalyzeTraceStatus::Error);
+        assert_eq!(revision.trace[2].kind, AnalyzeTraceKind::RepairSpec);
+        assert_eq!(revision.trace[2].status, AnalyzeTraceStatus::Running);
+
+        revision.note_spec_ready(&sample_spec());
+        revision
+            .fail_compile(1, operation_id, "runs has no unified status")
+            .unwrap();
+        revision.note_spec_ready(&sample_spec());
+        revision
+            .fail_compile(1, operation_id, "runs has no unified status")
+            .unwrap();
+        assert_eq!(revision.state, RevisionState::PlanError);
+        assert_eq!(
+            revision.trace.last().unwrap().kind,
+            AnalyzeTraceKind::Compile
+        );
+        assert_eq!(
+            revision.trace.last().unwrap().status,
+            AnalyzeTraceStatus::Error
+        );
+        assert!(!revision
+            .trace
+            .iter()
+            .any(|step| step.status == AnalyzeTraceStatus::Running));
+    }
+
+    #[test]
+    fn query_error_does_not_replay_failed_sql() {
+        let (mut revision, query_operation) = executing_revision();
+        revision
+            .fail_query(1, query_operation, "column does not exist")
+            .unwrap();
+        assert_eq!(revision.state, RevisionState::QueryError);
+        assert!(revision.confirm_execution().is_err());
+        assert!(revision.begin_plan_generation().is_ok());
+    }
+
+    #[test]
+    fn legacy_sql_plan_without_spec_is_stale() {
+        let mut revision = AnalysisRevision::draft(1, "compare failures", scope());
+        revision.plan = Some(plan());
+        revision.state = RevisionState::PlanReady;
+        mark_legacy_sql_plan_stale(&mut revision);
+        assert_eq!(revision.state, RevisionState::Stale);
+        assert!(revision.confirm_execution().is_err());
     }
 }

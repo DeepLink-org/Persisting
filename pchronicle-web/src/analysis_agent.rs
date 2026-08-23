@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::analysis_session::{
-    AnalysisInterpretation, AnalysisPlan, AnalysisScope, AnalysisScopeItem, EvidenceReference,
-    SuggestedView,
+    AnalysisInterpretation, AnalysisPlan, AnalysisScope, AnalysisScopeItem, AnalysisSpec,
+    EvidenceReference, SuggestedView,
 };
 use crate::llm::{self, CompletionRequest, LlmConfig};
 use crate::model::QueryCatalog;
@@ -25,6 +25,7 @@ const PROFILE_TEXT_DIGEST_CHARS: usize = 512;
 const MAX_SCOPE_ITEMS: usize = 16;
 const MAX_DIGEST_COLUMNS: usize = 64;
 
+#[derive(Clone)]
 pub struct PlanRequest {
     pub config: LlmConfig,
     pub catalog: QueryCatalog,
@@ -32,6 +33,8 @@ pub struct PlanRequest {
     pub question: String,
     pub plan_id: u64,
     pub previous_plan: Option<AnalysisPlan>,
+    pub previous_spec: Option<AnalysisSpec>,
+    pub compile_error: Option<String>,
     pub refinement: Option<AnalysisRefinement>,
 }
 
@@ -75,11 +78,12 @@ impl From<serde_json::Error> for AnalysisAgentError {
     }
 }
 
-pub async fn generate_plan(request: PlanRequest) -> Result<AnalysisPlan, AnalysisAgentError> {
-    let system = plan_system_prompt(
+pub async fn generate_spec(request: PlanRequest) -> Result<AnalysisSpec, AnalysisAgentError> {
+    let system = spec_system_prompt(
         &request.catalog,
         &request.scope,
-        request.previous_plan.as_ref(),
+        request.previous_spec.as_ref(),
+        request.compile_error.as_deref(),
         request.refinement.as_ref(),
     )?;
     let messages = vec![json!({
@@ -87,23 +91,31 @@ pub async fn generate_plan(request: PlanRequest) -> Result<AnalysisPlan, Analysi
         "content": serde_json::to_string(&json!({"question": request.question}))?,
     })];
     let content = request_json_content(&request.config, &system, messages).await?;
-    match parse_plan_content(&content, request.plan_id, &request.question) {
-        Ok(plan) => Ok(plan),
+    match parse_spec_content(&content) {
+        Ok(spec) => Ok(spec),
         Err(first_error) => {
             let repair_messages = vec![
                 json!({"role":"user", "content": content}),
                 json!({
                     "role":"user",
                     "content": format!(
-                        "Return one corrected AnalysisPlan JSON object only. Validation error: {}",
+                        "Return one corrected AnalysisSpec JSON object only. Validation error: {}",
                         first_error.message
                     ),
                 }),
             ];
             let repaired = request_json_content(&request.config, &system, repair_messages).await?;
-            parse_plan_content(&repaired, request.plan_id, &request.question)
+            parse_spec_content(&repaired)
         }
     }
+}
+
+pub async fn generate_plan(request: PlanRequest) -> Result<AnalysisPlan, AnalysisAgentError> {
+    let spec = generate_spec(request).await?;
+    Err(AnalysisAgentError::new(format!(
+        "SQL plans are no longer generated; received spec intent {}",
+        spec.intent
+    )))
 }
 
 pub async fn interpret(
@@ -212,34 +224,62 @@ fn describes_incomplete_coverage(limitation: &str) -> bool {
         || limitation.contains("partial coverage")
 }
 
-pub fn plan_system_prompt(
+pub fn spec_system_prompt(
     catalog: &QueryCatalog,
     scope: &AnalysisScope,
-    previous_plan: Option<&AnalysisPlan>,
+    previous_spec: Option<&AnalysisSpec>,
+    compile_error: Option<&str>,
     refinement: Option<&AnalysisRefinement>,
 ) -> Result<String, AnalysisAgentError> {
     let catalog = catalog_prompt_value(catalog);
     let scope = scope_prompt_value(scope);
-    let previous_plan = previous_plan.map(serde_json::to_value).transpose()?;
+    let previous_spec = previous_spec.map(serde_json::to_value).transpose()?;
     let refinement = refinement.map(serde_json::to_value).transpose()?;
     let context = json!({
         "catalog": catalog,
         "scope": scope,
-        "prior_plan": previous_plan,
+        "prior_spec": previous_spec,
+        "compile_error": compile_error,
         "refinement": refinement,
+        "allowed_intents": ["distribution", "compare", "rank_outlier", "composition", "drilldown"],
+        "allowed_grains": ["run", "step", "tool_call"],
+        "allowed_measures": [
+            "row_count",
+            "step_count_per_run",
+            "tool_call_count_per_run",
+            "tool_call_count",
+            "step_latency_ms",
+            "step_ttft_ms",
+            "tool_duration_ms"
+        ],
         "server_budgets": {
             "max_rows": INTERACTIVE_MAX_ROWS,
             "max_bytes": INTERACTIVE_MAX_BYTES,
         },
     });
     Ok(format!(
-        "You create reviewable analysis plans for pChronicle. Never execute SQL; only return an AnalysisPlan proposal. You have no tools and must only propose read-only SQL for later user-confirmed execution. Return a single JSON object with intent_summary, scope_summary, filters, groupings, measures, expected_columns, suggested_view, sql, and warnings. SQL must begin with SELECT, WITH, or EXPLAIN. Use only the catalog and scope below; do not invent schema or evidence.\n\nPlanning context:\n{}",
+        "You write an AnalysisSpec for pChronicle. Never write SQL. Return one JSON object with intent, grain, measure, optional dimension, optional filters, optional ranking, and output. intent must be one of distribution, compare, rank_outlier, composition, drilldown. grain must be run, step, or tool_call. Use only registered measures and live catalog columns. Do not use status, tokens, or *_json fields. Causal questions are not intents. If compile_error is present, revise the spec to address it.\n\nPlanning context:\n{}",
         serde_json::to_string(&context)?
     ))
 }
 
+pub fn plan_system_prompt(
+    catalog: &QueryCatalog,
+    scope: &AnalysisScope,
+    previous_plan: Option<&AnalysisPlan>,
+    refinement: Option<&AnalysisRefinement>,
+) -> Result<String, AnalysisAgentError> {
+    spec_system_prompt(
+        catalog,
+        scope,
+        None,
+        previous_plan.and_then(|_| None),
+        refinement,
+    )
+}
+
 pub fn interpretation_system_prompt() -> String {
-    "AnalysisInterpretation\nInterpret only the supplied evidence digest. Do not add facts not present in that digest. Return one JSON object with the required arrays observations, inferences, limitations, follow_ups, and references. Keep observations separate from inferences; references must identify digest rows or scope coordinates. If query_truncated or digest_truncated is true, limitations must explicitly describe that incomplete coverage."
+    "AnalysisInterpretation\nInterpret only the supplied evidence digest and AnalysisSpec. Do not add facts not present in that digest. Do not judge task success or failure unless those values appear as result columns. Return one JSON object with the required arrays observations, inferences, limitations, follow_ups, and references. Keep observations separate from inferences; references must identify digest rows or scope coordinates. If query_truncated or digest_truncated is true, limitations must explicitly describe that incomplete coverage."
         .into()
 }
 
@@ -345,6 +385,22 @@ fn parse_plan_content(
         sql: sql.into(),
         warnings: payload.warnings,
     })
+}
+
+fn parse_spec_content(raw: &str) -> Result<AnalysisSpec, AnalysisAgentError> {
+    require_json_object(raw)?;
+    let spec: AnalysisSpec = serde_json::from_str(raw)
+        .map_err(|error| AnalysisAgentError::new(format!("Invalid AnalysisSpec JSON: {error}")))?;
+    require_text("intent", &spec.intent)?;
+    require_text("grain", &spec.grain)?;
+    require_text("measure", &spec.measure)?;
+    require_text("output", &spec.output)?;
+    if spec.intent.contains(';') || spec.measure.contains("SELECT") {
+        return Err(AnalysisAgentError::new(
+            "AnalysisSpec fields cannot contain SQL.",
+        ));
+    }
+    Ok(spec)
 }
 
 #[derive(Deserialize)]
@@ -929,6 +985,20 @@ mod tests {
     use crate::result_profile::profile_rows;
 
     #[test]
+    fn spec_parser_accepts_registered_analysis_spec() {
+        let raw = r#"{
+          "intent":"composition",
+          "grain":"tool_call",
+          "measure":"tool_call_count",
+          "dimension":"function_name",
+          "output":"table"
+        }"#;
+        let spec = parse_spec_content(raw).unwrap();
+        assert_eq!(spec.intent, "composition");
+        assert_eq!(spec.measure, "tool_call_count");
+    }
+
+    #[test]
     fn plan_parser_accepts_only_complete_structured_content() {
         let raw = r#"{
           "intent_summary":"Compare outcomes",
@@ -1176,7 +1246,7 @@ mod tests {
     #[test]
     fn plan_prompt_keeps_catalog_descriptions_and_no_execution_rule() {
         let prompt = plan_system_prompt(&catalog(), &scope(), None, None).unwrap();
-        assert!(prompt.contains("Never execute SQL; only return an AnalysisPlan proposal."));
+        assert!(prompt.contains("Never write SQL."));
         assert!(prompt.contains("default.runs"));
         assert!(prompt.contains("Status of each recorded run"));
         assert!(prompt.contains("Stable identifier for a recorded run"));
@@ -1246,8 +1316,20 @@ mod tests {
                         },
                     ],
                 },
-                "prior_plan": null,
+                "prior_spec": null,
+                "compile_error": null,
                 "refinement": null,
+                "allowed_intents": ["distribution", "compare", "rank_outlier", "composition", "drilldown"],
+                "allowed_grains": ["run", "step", "tool_call"],
+                "allowed_measures": [
+                    "row_count",
+                    "step_count_per_run",
+                    "tool_call_count_per_run",
+                    "tool_call_count",
+                    "step_latency_ms",
+                    "step_ttft_ms",
+                    "tool_duration_ms"
+                ],
                 "server_budgets": {
                     "max_rows": 100,
                     "max_bytes": 4 * 1024 * 1024,

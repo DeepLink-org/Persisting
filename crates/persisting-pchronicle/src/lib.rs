@@ -26,6 +26,7 @@
 //! `search` 是单独的 feature，其既有 API 不属于本次门面收敛范围。
 
 mod agenticmd;
+pub mod analysis_compile;
 #[cfg(feature = "lance-store")]
 mod append_queue;
 mod atif;
