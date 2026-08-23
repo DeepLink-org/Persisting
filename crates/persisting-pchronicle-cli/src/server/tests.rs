@@ -1103,6 +1103,35 @@ async fn boundary_unsupported_query_input_returns_unprocessable_entity() {
 }
 
 #[tokio::test]
+async fn query_evidence_sql_failure_returns_visible_invalid_request() {
+    use tower::ServiceExt as _;
+
+    let root = json_dataset_root();
+    let response = router(root.to_string_lossy().to_string())
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/query/evidence")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    json!({"sql":"SELECT no_such_column_xyz FROM runs"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "invalid_request");
+    let message = body["message"].as_str().unwrap();
+    assert!(
+        message.contains("no_such_column_xyz"),
+        "error message should expose the failing column: {message}"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn query_evidence_byte_budget_uses_writer_exhaustion_outcome() {
     use tower::ServiceExt as _;
 
@@ -1125,6 +1154,78 @@ async fn query_evidence_byte_budget_uses_writer_exhaustion_outcome() {
     let body = response_json(response).await;
     assert_eq!(body["code"], "resource_exhausted");
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn explorer_tree_lists_mounted_datasets_by_run_count() -> anyhow::Result<()> {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let live = json_dataset_root();
+    std::fs::create_dir_all(live.join("nested"))?;
+    write_gateway_fixture(&live, "nested/run.json", "nested-session", "nested-job");
+    let archive = json_dataset_root();
+    let config = ChronicleServerConfig::mounted(vec![
+        DatasetMount::new("live", live.to_string_lossy())?,
+        DatasetMount::new("archive", archive.to_string_lossy())?,
+    ])?;
+    let app = test_router_with_config(config);
+
+    let warehouse = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/tree")
+                .body(axum::body::Body::empty())?,
+        )
+        .await?;
+    assert_eq!(warehouse.status(), StatusCode::OK);
+    let warehouse: Value =
+        serde_json::from_slice(&warehouse.into_body().collect().await?.to_bytes())?;
+    assert_eq!(warehouse["run_count"], 3);
+    assert_eq!(warehouse["children"][0]["name"], "live");
+    assert_eq!(warehouse["children"][0]["kind"], "dataset");
+    assert_eq!(warehouse["children"][0]["run_count"], 2);
+    assert_eq!(warehouse["children"][1]["name"], "archive");
+    assert_eq!(warehouse["children"][1]["run_count"], 1);
+
+    let dataset = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/tree?dataset=live")
+                .body(axum::body::Body::empty())?,
+        )
+        .await?;
+    assert_eq!(dataset.status(), StatusCode::OK);
+    let dataset: Value = serde_json::from_slice(&dataset.into_body().collect().await?.to_bytes())?;
+    assert_eq!(dataset["dataset"], "live");
+    assert_eq!(dataset["run_count"], 2);
+    assert!(dataset["ready_sources"].as_u64().unwrap() >= 1);
+    let names: Vec<_> = dataset["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|child| child["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"gateway.json".into()));
+    assert!(names.contains(&"nested".into()));
+
+    let prefixed = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/runs?dataset=live&file=nested&limit=10")
+                .body(axum::body::Body::empty())?,
+        )
+        .await?;
+    let prefixed: Value =
+        serde_json::from_slice(&prefixed.into_body().collect().await?.to_bytes())?;
+    assert_eq!(prefixed["snapshot"]["total"], 1);
+    assert_eq!(prefixed["records"][0]["file"], "nested/run.json");
+
+    std::fs::remove_dir_all(live)?;
+    std::fs::remove_dir_all(archive)?;
+    Ok(())
 }
 
 #[test]

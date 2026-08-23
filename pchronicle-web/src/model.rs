@@ -89,6 +89,42 @@ pub struct QueryDatasetSummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct CatalogTree {
+    #[serde(default)]
+    pub dataset: Option<String>,
+    #[serde(default)]
+    pub prefix: String,
+    #[serde(default)]
+    pub run_count: usize,
+    #[serde(default)]
+    pub failed_count: usize,
+    #[serde(default)]
+    pub ready_sources: Option<usize>,
+    #[serde(default)]
+    pub error_sources: Option<usize>,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
+    #[serde(default)]
+    pub children: Vec<CatalogTreeChild>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct CatalogTreeChild {
+    pub name: String,
+    pub kind: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub run_count: usize,
+    #[serde(default)]
+    pub failed_count: usize,
+    #[serde(default)]
+    pub entries: Vec<CatalogTreeChild>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct QueryTableSummary {
     pub name: String,
     pub description: String,
@@ -101,6 +137,35 @@ pub struct QueryFieldSummary {
     pub name: String,
     pub data_type: String,
     pub description: String,
+}
+
+pub fn queryable_tables(catalog: &QueryCatalog) -> Vec<QueryTableSummary> {
+    if catalog.tables.iter().any(|table| table.name.contains('.')) {
+        return catalog.tables.clone();
+    }
+    let datasets: Vec<String> = if catalog.datasets.is_empty() {
+        if catalog.database.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![catalog.database.clone()]
+        }
+    } else {
+        catalog
+            .datasets
+            .iter()
+            .map(|dataset| dataset.name.clone())
+            .collect()
+    };
+    datasets
+        .into_iter()
+        .flat_map(|dataset| {
+            catalog.tables.iter().map(move |table| {
+                let mut qualified = table.clone();
+                qualified.name = format!("{dataset}.{}", table.name);
+                qualified
+            })
+        })
+        .collect()
 }
 
 impl RunSummary {
@@ -164,10 +229,38 @@ pub struct StorylineTurn {
 
 impl StorylineTurn {
     pub fn text(&self) -> String {
-        match &self.message {
-            Value::String(value) => value.clone(),
-            value => serde_json::to_string_pretty(value).unwrap_or_default(),
+        extract_message_text(&self.message)
+            .unwrap_or_else(|| serde_json::to_string_pretty(&self.message).unwrap_or_default())
+    }
+}
+
+/// Extract human-readable text from common message shapes:
+/// - plain string
+/// - `{ "type": "text", "text": "..." }` object
+/// - `[{ "type": "text", "text": "..." }, ...]` content array
+pub fn extract_message_text(message: &Value) -> Option<String> {
+    match message {
+        Value::String(value) => Some(value.clone()),
+        Value::Object(object) => object
+            .get("text")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string()),
+        Value::Array(array) => {
+            let mut parts = Vec::new();
+            for item in array {
+                if let Some(text) = extract_message_text(item) {
+                    if !text.is_empty() {
+                        parts.push(text);
+                    }
+                }
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
+            }
         }
+        _ => None,
     }
 }
 
@@ -402,5 +495,111 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(rfc3339.timestamp.as_deref(), Some("2026-07-29T00:00:00Z"));
+    }
+
+    #[test]
+    fn extract_message_text_prefers_text_field_in_object() {
+        let message = serde_json::json!({
+            "type": "text",
+            "text": "<RUNTIME_INFORMATION>...",
+            "image_bytes": null,
+            "image_url": null,
+            "input_audio": null,
+            "media_type": null
+        });
+        assert_eq!(
+            extract_message_text(&message),
+            Some("<RUNTIME_INFORMATION>...".into())
+        );
+    }
+
+    #[test]
+    fn extract_message_text_joins_text_parts_in_array() {
+        let message = serde_json::json!([
+            {"type": "text", "text": "first"},
+            {"type": "image", "image_url": {"url": "http://example.com/a.png"}},
+            {"type": "text", "text": "second"}
+        ]);
+        assert_eq!(extract_message_text(&message), Some("first\nsecond".into()));
+    }
+
+    #[test]
+    fn extract_message_text_falls_back_to_none_for_pure_objects() {
+        let message = serde_json::json!({"foo": "bar"});
+        assert_eq!(extract_message_text(&message), None);
+    }
+
+    fn kind_catalog() -> QueryCatalog {
+        QueryCatalog {
+            snapshot_id: "s".into(),
+            read_only: true,
+            database: "atif".into(),
+            storage_path: "/tmp".into(),
+            path_column: "_file_".into(),
+            datasets: vec![
+                QueryDatasetSummary {
+                    name: "atif".into(),
+                    uri: "atif".into(),
+                    ready_sources: 1,
+                    error_sources: 0,
+                },
+                QueryDatasetSummary {
+                    name: "actf".into(),
+                    uri: "actf".into(),
+                    ready_sources: 1,
+                    error_sources: 0,
+                },
+            ],
+            tables: vec![
+                QueryTableSummary {
+                    name: "runs".into(),
+                    description: "trajectories".into(),
+                    grain: "trajectory".into(),
+                    fields: Vec::new(),
+                },
+                QueryTableSummary {
+                    name: "steps".into(),
+                    description: "steps".into(),
+                    grain: "step".into(),
+                    fields: Vec::new(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn queryable_tables_are_dataset_qualified_sql_names() {
+        let names: Vec<_> = queryable_tables(&kind_catalog())
+            .into_iter()
+            .map(|table| table.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["atif.runs", "atif.steps", "actf.runs", "actf.steps"]
+        );
+    }
+
+    #[test]
+    fn queryable_tables_use_database_when_datasets_are_missing() {
+        let mut catalog = kind_catalog();
+        catalog.datasets.clear();
+        catalog.database = "dataset".into();
+        let names: Vec<_> = queryable_tables(&catalog)
+            .into_iter()
+            .map(|table| table.name)
+            .collect();
+        assert_eq!(names, vec!["dataset.runs", "dataset.steps"]);
+    }
+
+    #[test]
+    fn queryable_tables_keep_already_qualified_names() {
+        let mut catalog = kind_catalog();
+        catalog.tables[0].name = "default.runs".into();
+        catalog.tables.truncate(1);
+        let names: Vec<_> = queryable_tables(&catalog)
+            .into_iter()
+            .map(|table| table.name)
+            .collect();
+        assert_eq!(names, vec!["default.runs"]);
     }
 }

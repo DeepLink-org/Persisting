@@ -14,10 +14,205 @@ pub(crate) struct ExplorerRunsQuery {
     pub(crate) agent: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) path: Option<String>,
+    pub(crate) file: Option<String>,
     pub(crate) sort: Option<String>,
     pub(crate) direction: Option<String>,
     pub(crate) offset: Option<usize>,
     pub(crate) limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub(crate) struct ExplorerTreeQuery {
+    pub(crate) dataset: Option<String>,
+    pub(crate) prefix: Option<String>,
+}
+
+pub(crate) const MAX_TREE_CHILDREN: usize = 16;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct CatalogTree {
+    pub(crate) dataset: Option<String>,
+    #[serde(default)]
+    pub(crate) prefix: String,
+    pub(crate) run_count: usize,
+    pub(crate) failed_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) ready_sources: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) error_sources: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) duration_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) total_tokens: Option<u64>,
+    pub(crate) children: Vec<CatalogTreeChild>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct CatalogTreeChild {
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) path: String,
+    pub(crate) run_count: usize,
+    pub(crate) failed_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) entries: Vec<CatalogTreeChild>,
+}
+
+pub(crate) fn catalog_tree(
+    summaries: &[RunSummary],
+    dataset: Option<&str>,
+    prefix: &str,
+    max_children: usize,
+) -> CatalogTree {
+    let prefix = prefix.trim().trim_matches('/');
+    let scoped = summaries
+        .iter()
+        .filter(|run| {
+            dataset.is_none_or(|name| run.dataset == name)
+                && (dataset.is_none() || file_matches_prefix(&run.file, prefix))
+        })
+        .collect::<Vec<_>>();
+    let run_count = scoped.len();
+    let failed_count = scoped
+        .iter()
+        .filter(|run| is_failed_status(&run.status))
+        .count();
+    let children = if dataset.is_none() {
+        fold_tree_children(dataset_children(&scoped), max_children, prefix)
+    } else {
+        fold_tree_children(file_children(&scoped, prefix), max_children, prefix)
+    };
+    CatalogTree {
+        dataset: dataset.map(str::to_string),
+        prefix: prefix.to_string(),
+        run_count,
+        failed_count,
+        children,
+        ..CatalogTree::default()
+    }
+}
+
+fn is_failed_status(status: &str) -> bool {
+    matches!(status, "failed" | "error")
+}
+
+fn file_matches_prefix(file: &str, prefix: &str) -> bool {
+    prefix.is_empty() || file == prefix || file.starts_with(&format!("{prefix}/"))
+}
+
+struct ChildAcc {
+    run_count: usize,
+    failed_count: usize,
+    has_deeper: bool,
+}
+
+fn dataset_children(runs: &[&RunSummary]) -> Vec<CatalogTreeChild> {
+    let mut groups = BTreeMap::<String, ChildAcc>::new();
+    for run in runs {
+        let entry = groups.entry(run.dataset.clone()).or_insert(ChildAcc {
+            run_count: 0,
+            failed_count: 0,
+            has_deeper: false,
+        });
+        entry.run_count += 1;
+        if is_failed_status(&run.status) {
+            entry.failed_count += 1;
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(name, acc)| CatalogTreeChild {
+            name: name.clone(),
+            kind: "dataset".into(),
+            path: name,
+            run_count: acc.run_count,
+            failed_count: acc.failed_count,
+            entries: Vec::new(),
+        })
+        .collect()
+}
+
+fn file_children(runs: &[&RunSummary], prefix: &str) -> Vec<CatalogTreeChild> {
+    let mut groups = BTreeMap::<String, ChildAcc>::new();
+    for run in runs {
+        if !prefix.is_empty() && run.file == prefix {
+            continue;
+        }
+        let rest = if prefix.is_empty() {
+            run.file.as_str()
+        } else {
+            match run.file.strip_prefix(&format!("{prefix}/")) {
+                Some(rest) => rest,
+                None => continue,
+            }
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        let (name, has_deeper) = match rest.split_once('/') {
+            Some((name, _)) => (name, true),
+            None => (rest, false),
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let entry = groups.entry(name.to_string()).or_insert(ChildAcc {
+            run_count: 0,
+            failed_count: 0,
+            has_deeper: false,
+        });
+        entry.run_count += 1;
+        if is_failed_status(&run.status) {
+            entry.failed_count += 1;
+        }
+        entry.has_deeper |= has_deeper;
+    }
+    groups
+        .into_iter()
+        .map(|(name, acc)| CatalogTreeChild {
+            path: if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            },
+            kind: if acc.has_deeper {
+                "dir".into()
+            } else {
+                "file".into()
+            },
+            name,
+            run_count: acc.run_count,
+            failed_count: acc.failed_count,
+            entries: Vec::new(),
+        })
+        .collect()
+}
+
+fn fold_tree_children(
+    mut children: Vec<CatalogTreeChild>,
+    max_children: usize,
+    prefix: &str,
+) -> Vec<CatalogTreeChild> {
+    children.sort_by(|left, right| {
+        right
+            .run_count
+            .cmp(&left.run_count)
+            .then(left.name.cmp(&right.name))
+    });
+    if max_children == 0 || children.len() <= max_children {
+        return children;
+    }
+    let keep = max_children.saturating_sub(1);
+    let rest = children.split_off(keep);
+    children.push(CatalogTreeChild {
+        name: "other".into(),
+        kind: "other".into(),
+        path: prefix.to_string(),
+        run_count: rest.iter().map(|child| child.run_count).sum(),
+        failed_count: rest.iter().map(|child| child.failed_count).sum(),
+        entries: rest,
+    });
+    children
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -195,6 +390,15 @@ pub(crate) fn run_page(summaries: Vec<RunSummary>, query: &ExplorerRunsQuery) ->
                 && matches_filter(
                     item.model.as_deref().unwrap_or_default(),
                     query.model.as_deref(),
+                )
+                && file_matches_prefix(
+                    &item.run.file,
+                    query
+                        .file
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or(""),
                 )
         })
         .collect::<Vec<_>>();
@@ -1030,5 +1234,163 @@ mod tests {
         );
         assert!(from_markup.modalities.contains(&"tool_call".to_string()));
         assert!(from_markup.modalities.contains(&"text".to_string()));
+    }
+
+    fn sample_run(dataset: &str, file: &str, status: &str, session: &str) -> RunSummary {
+        RunSummary {
+            dataset: dataset.into(),
+            file: file.into(),
+            document_id: session.into(),
+            run_id: None,
+            agent_id: "agent".into(),
+            model_name: None,
+            session_id: session.into(),
+            root_session_id: None,
+            path: format!("{dataset}/{file}/{session}"),
+            row_count: 1,
+            duplicate_event_ids: 0,
+            status: status.into(),
+        }
+    }
+
+    #[test]
+    fn warehouse_tree_sizes_datasets_by_run_count() {
+        let tree = catalog_tree(
+            &[
+                sample_run("evals", "a.json", "completed", "s1"),
+                sample_run("evals", "b.json", "failed", "s2"),
+                sample_run("archive", "c.json", "completed", "s3"),
+            ],
+            None,
+            "",
+            16,
+        );
+        assert_eq!(tree.dataset, None);
+        assert_eq!(tree.run_count, 3);
+        assert_eq!(tree.failed_count, 1);
+        let names: Vec<_> = tree
+            .children
+            .iter()
+            .map(|child| (child.name.as_str(), child.kind.as_str(), child.run_count))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("evals", "dataset", 2), ("archive", "dataset", 1)]
+        );
+    }
+
+    #[test]
+    fn dataset_tree_groups_the_next_file_segment() {
+        let tree = catalog_tree(
+            &[
+                sample_run("evals", "gsm8k/train/events.lance", "completed", "s1"),
+                sample_run("evals", "gsm8k/test/events.lance", "failed", "s2"),
+                sample_run("evals", "mmlu.json", "completed", "s3"),
+                sample_run("archive", "skip.json", "completed", "s4"),
+            ],
+            Some("evals"),
+            "",
+            16,
+        );
+        assert_eq!(tree.dataset.as_deref(), Some("evals"));
+        assert_eq!(tree.run_count, 3);
+        assert_eq!(tree.failed_count, 1);
+        assert_eq!(
+            tree.children
+                .iter()
+                .map(|child| (
+                    child.name.as_str(),
+                    child.kind.as_str(),
+                    child.path.as_str(),
+                    child.run_count
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("gsm8k", "dir", "gsm8k", 2),
+                ("mmlu.json", "file", "mmlu.json", 1),
+            ]
+        );
+
+        let nested = catalog_tree(
+            &[
+                sample_run("evals", "gsm8k/train/events.lance", "completed", "s1"),
+                sample_run("evals", "gsm8k/test/events.lance", "failed", "s2"),
+            ],
+            Some("evals"),
+            "gsm8k",
+            16,
+        );
+        assert_eq!(nested.prefix, "gsm8k");
+        assert_eq!(
+            nested
+                .children
+                .iter()
+                .map(|child| child.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["test", "train"]
+        );
+    }
+
+    #[test]
+    fn exact_file_prefix_has_no_children() {
+        let tree = catalog_tree(
+            &[sample_run("evals", "mmlu.json", "completed", "s1")],
+            Some("evals"),
+            "mmlu.json",
+            16,
+        );
+        assert_eq!(tree.run_count, 1);
+        assert!(tree.children.is_empty());
+    }
+
+    #[test]
+    fn tree_folds_the_tail_into_other() {
+        let runs: Vec<_> = (0..5)
+            .map(|index| {
+                sample_run(
+                    "evals",
+                    &format!("f{index}.json"),
+                    "completed",
+                    &format!("s{index}"),
+                )
+            })
+            .collect();
+        let tree = catalog_tree(&runs, Some("evals"), "", 3);
+        assert_eq!(tree.children.len(), 3);
+        let other = tree.children.last().unwrap();
+        assert_eq!(other.kind, "other");
+        assert_eq!(other.run_count, 3);
+        assert_eq!(
+            other
+                .entries
+                .iter()
+                .map(|child| child.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["f2.json", "f3.json", "f4.json"]
+        );
+    }
+
+    #[test]
+    fn run_page_file_prefix_is_not_run_path() {
+        let summaries = vec![
+            sample_run("evals", "gsm8k/train/events.lance", "completed", "s1"),
+            sample_run("evals", "gsm8k/test/events.lance", "completed", "s2"),
+            sample_run("evals", "mmlu.json", "completed", "s3"),
+        ];
+        let page = run_page(
+            summaries,
+            &ExplorerRunsQuery {
+                dataset: Some("evals".into()),
+                file: Some("gsm8k".into()),
+                limit: Some(50),
+                ..ExplorerRunsQuery::default()
+            },
+        );
+        assert_eq!(page.snapshot.total, 2);
+        assert!(page
+            .records
+            .iter()
+            .all(|item| item.run.file.starts_with("gsm8k")));
+        assert_eq!(page.path_index.len(), 2);
     }
 }

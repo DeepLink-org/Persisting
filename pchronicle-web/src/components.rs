@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::chat_view::{chat_row_visible, group_chats, source_class, step_row_visible, TraceCard};
 use crate::json_value::{is_structured_json, JsonValue};
-use crate::model::{QueryEvidence, TurnDetail, TurnSummary};
+use crate::model::{extract_message_text, QueryEvidence, TurnDetail, TurnSummary, WireToolCall};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrajectoryEmbed {
@@ -891,13 +891,31 @@ fn CompactTurnRow(
 fn InlineTurnDetail(value: TurnDetail) -> Element {
     let message = value.turn.message.clone();
     let message_text = value.turn.text();
+    let message_is_text_bearing = extract_message_text(&message).is_some();
     let structured_message = is_structured_json(&message);
-    let tool_calls =
-        serde_json::to_value(&value.wire_tool_calls).unwrap_or(Value::Array(Vec::new()));
+    let embedded_from_message = parse_embedded_tool_calls_from_text(&message_text);
+    let mut embedded_seen = HashSet::new();
+    for call in &embedded_from_message {
+        let _ = embedded_seen.insert((call.name.clone(), call.arguments.to_string()));
+    }
+    let deduped_wire_calls: Vec<WireToolCall> = value
+        .wire_tool_calls
+        .into_iter()
+        .filter(|call| !embedded_seen.contains(&(call.name.clone(), call.arguments.to_string())))
+        .collect();
+    let wire_tool_calls_value =
+        serde_json::to_value(&deduped_wire_calls).unwrap_or(Value::Array(Vec::new()));
     let events = serde_json::to_value(&value.events).unwrap_or(Value::Array(Vec::new()));
-    rsx! { div { class: "pc2-inline-detail-head", strong { "Full turn evidence" } }
+    let tool_block_title = if embedded_from_message.len() == 1 {
+        "Tool call"
+    } else {
+        "Tool calls"
+    };
+    rsx! {
         div { class: "pc2-inspector-facts", Fact { label: "Turn", value: format!("#{}", value.summary.id) } Fact { label: "Source", value: value.summary.source.clone() } Fact { label: "Kind", value: value.summary.kind.clone().unwrap_or_else(|| "unavailable".into()) } Fact { label: "Model", value: value.summary.model_name.clone().unwrap_or_else(|| "unavailable".into()) } Fact { label: "Latency", value: value.summary.latency_ms.map(format_ms).unwrap_or_else(|| "unavailable".into()) } Fact { label: "TTFT", value: value.summary.ttft_ms.map(format_ms).unwrap_or_else(|| "unavailable".into()) } Fact { label: "Tokens", value: value.summary.total_tokens.map(|tokens| tokens.to_string()).unwrap_or_else(|| "unavailable".into()) } Fact { label: "Token split", value: format!("{} in · {} out", optional_u64(value.summary.prompt_tokens), optional_u64(value.summary.completion_tokens)) } Fact { label: "Events", value: value.events.len().to_string() } }
-        if structured_message {
+        if !embedded_from_message.is_empty() {
+            EvidenceBlock { title: tool_block_title, open: true, ToolCallCards { calls: embedded_from_message } }
+        } else if structured_message && !message_is_text_bearing {
             EvidenceBlock { title: "Message", open: true, JsonValue { value: message } }
         } else {
             EvidenceBlock { title: "Message", open: true, pre { "{message_text}" } }
@@ -905,8 +923,8 @@ fn InlineTurnDetail(value: TurnDetail) -> Element {
         if let Some(reasoning) = &value.turn.reasoning_content {
             EvidenceBlock { title: "Reasoning", pre { "{reasoning.clone()}" } }
         }
-        if !value.wire_tool_calls.is_empty() {
-            EvidenceBlock { title: "Tool calls", JsonValue { value: tool_calls } }
+        if !deduped_wire_calls.is_empty() {
+            EvidenceBlock { title: "Tool calls", JsonValue { value: wire_tool_calls_value } }
         }
         if let Some(observation) = value.turn.observation.clone() {
             EvidenceBlock { title: "Observation", JsonValue { value: observation } }
@@ -937,6 +955,95 @@ fn EvidenceBlock(
     rsx! { details { class: "pc2-evidence-block", open, summary { "{title}" } {children} } }
 }
 
+#[component]
+fn ToolCallCards(calls: Vec<WireToolCall>) -> Element {
+    rsx! {
+        div { class: "pc2-tool-call-stack",
+            for call in calls {
+                div { class: "pc2-tool-call-card",
+                    div { class: "pc2-tool-call-header",
+                        div { class: "pc2-tool-call-head-left",
+                            span { class: "pc2-tool-call-type", "function" }
+                            strong { "{clean_tool_call_name(&call.name)}" }
+                        }
+                        div { class: "pc2-tool-call-head-right",
+                            span { class: "pc2-tool-call-meta", "{argument_count_label(&call.arguments)}" }
+                            if let Some(id) = &call.id {
+                                span { class: "pc2-tool-call-id", "#{id}" }
+                            }
+                        }
+                    }
+                    div { class: "pc2-tool-call-body",
+                        if let Value::Object(args) = &call.arguments {
+                            for (key, val) in args {
+                                div { class: "pc2-tool-call-arg",
+                                    code { "{key}" }
+                                    span { "{format_tool_call_arg(val)}" }
+                                }
+                            }
+                        } else {
+                            pre { "{call.arguments}" }
+                        }
+                    }
+                    details { class: "pc2-tool-call-raw",
+                        summary { "Raw call" }
+                        pre { "{serde_json::to_string_pretty(&call).unwrap_or_default()}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn clean_tool_call_name(name: &str) -> String {
+    clean_embedded_text(name)
+}
+
+/// Trim whitespace plus literal `\n` / `\r` / `\t` escape sequences that models
+/// often emit around embedded tool call fields (e.g. `<parameter=command>\ncat foo\n</parameter>`).
+fn clean_embedded_text(value: &str) -> String {
+    let mut text = value.trim();
+    while let Some(stripped) = text
+        .strip_prefix("\\r\\n")
+        .or_else(|| text.strip_prefix("\\n"))
+        .or_else(|| text.strip_prefix("\\r"))
+        .or_else(|| text.strip_prefix("\\t"))
+    {
+        text = stripped.trim_start();
+    }
+    while let Some(stripped) = text
+        .strip_suffix("\\r\\n")
+        .or_else(|| text.strip_suffix("\\n"))
+        .or_else(|| text.strip_suffix("\\r"))
+        .or_else(|| text.strip_suffix("\\t"))
+    {
+        text = stripped.trim_end();
+    }
+    text.to_string()
+}
+
+fn argument_count_label(arguments: &Value) -> String {
+    match arguments {
+        Value::Object(args) => format!(
+            "{} arg{}",
+            args.len(),
+            if args.len() == 1 { "" } else { "s" }
+        ),
+        _ => "raw".to_string(),
+    }
+}
+
+fn format_tool_call_arg(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => "null".to_string(),
+        Value::Bool(v) => v.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::Array(arr) => serde_json::to_string(arr).unwrap_or_default(),
+        Value::Object(obj) => serde_json::to_string(obj).unwrap_or_default(),
+    }
+}
+
 fn format_ms(value: f64) -> String {
     if value >= 1000.0 {
         format!("{:.2}s", value / 1000.0)
@@ -950,6 +1057,61 @@ fn optional_u64(value: Option<u64>) -> String {
         .map(|value| value.to_string())
         .unwrap_or_else(|| "—".into())
 }
+
+fn parse_embedded_tool_calls_from_text(text: &str) -> Vec<WireToolCall> {
+    let mut calls = Vec::new();
+    let mut remaining = text;
+    loop {
+        let (after_offset, end_tag) = if let Some(offset) = remaining.find("<tool_call>") {
+            (offset + "<tool_call>".len(), "</tool_call>")
+        } else if let Some(offset) = remaining.find("<function=") {
+            (offset + "<function=".len(), "</function>")
+        } else {
+            break;
+        };
+        let after = &remaining[after_offset..];
+        let name_end = after.find(['>', '\n', '<']).unwrap_or(after.len());
+        let name = clean_embedded_text(&after[..name_end]);
+        let after_name = &after[name_end..];
+        let (block, rest) = if let Some(end) = after_name.find(end_tag) {
+            (&after_name[..end], &after_name[end + end_tag.len()..])
+        } else {
+            (after_name, "")
+        };
+        let mut arguments = serde_json::Map::new();
+        let mut param_remaining = block;
+        while let Some((_, after_param)) = param_remaining.split_once("<parameter=") {
+            let Some((key, after_opening)) = after_param.split_once('>') else {
+                break;
+            };
+            let key = key.trim();
+            if key.is_empty() {
+                param_remaining = after_opening;
+                continue;
+            }
+            let (value, rest_param) = after_opening
+                .split_once("</parameter>")
+                .unwrap_or((after_opening, ""));
+            arguments.insert(key.to_string(), Value::String(clean_embedded_text(value)));
+            param_remaining = rest_param;
+        }
+        if !name.is_empty() {
+            calls.push(WireToolCall {
+                id: Some(format!(
+                    "embedded-{name}-{}-{}-{}-0",
+                    name.len(),
+                    calls.len(),
+                    text.len()
+                )),
+                name: name.to_string(),
+                arguments: Value::Object(arguments),
+            });
+        }
+        remaining = rest;
+    }
+    calls
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1192,5 +1354,40 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].label, "#1");
         assert_eq!(groups[1].first_seq, 3);
+    }
+
+    #[test]
+    fn parse_embedded_tool_calls_from_text_extracts_multiple_calls() {
+        let text = "<tool_call>execute_bash<parameter=command>cat /workspace/README.md</parameter></tool_call><tool_call>execute_bash<parameter=command>ls</parameter></tool_call>";
+        let calls = parse_embedded_tool_calls_from_text(text);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "execute_bash");
+        assert_eq!(
+            calls[0].arguments,
+            serde_json::json!({"command": "cat /workspace/README.md"})
+        );
+        assert_eq!(calls[1].name, "execute_bash");
+        assert_eq!(calls[1].arguments, serde_json::json!({"command": "ls"}));
+    }
+
+    #[test]
+    fn parse_embedded_function_call_from_text_extracts_parameters() {
+        let text = "<function=execute_bash><parameter=command>pwd</parameter></function>";
+        let calls = parse_embedded_tool_calls_from_text(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "execute_bash");
+        assert_eq!(calls[0].arguments, serde_json::json!({"command": "pwd"}));
+    }
+
+    #[test]
+    fn parse_embedded_tool_call_strips_literal_escape_sequences() {
+        let text = "<tool_call>execute_bash\\n<parameter=command>\\ncat /workspace/README.md\\n</parameter>";
+        let calls = parse_embedded_tool_calls_from_text(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "execute_bash");
+        assert_eq!(
+            calls[0].arguments,
+            serde_json::json!({"command": "cat /workspace/README.md"})
+        );
     }
 }

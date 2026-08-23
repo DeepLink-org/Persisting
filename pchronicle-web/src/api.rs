@@ -1,5 +1,6 @@
 use crate::model::{
-    QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, TurnDetail, TurnPage,
+    CatalogTree, QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, TurnDetail,
+    TurnPage,
 };
 use gloo_net::http::{Request, Response};
 use serde_json::json;
@@ -24,16 +25,31 @@ pub async fn explorer_runs(
     sort: &str,
     direction: &str,
     path: &str,
+    file: &str,
     offset: usize,
 ) -> Result<RunPage, String> {
     let url = format!(
-        "/api/explorer/runs?q={}&dataset={}&status={}&sort={}&direction={}&path={}&offset={offset}&limit=50",
+        "/api/explorer/runs?q={}&dataset={}&status={}&sort={}&direction={}&path={}&file={}&offset={offset}&limit=50",
         urlencoding::encode(q),
         urlencoding::encode(dataset),
         urlencoding::encode(status),
         urlencoding::encode(sort),
         urlencoding::encode(direction),
         urlencoding::encode(path),
+        urlencoding::encode(file),
+    );
+    checked(Request::get(&url).send().await.map_err(|e| e.to_string())?)
+        .await?
+        .json()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+pub async fn explorer_tree(dataset: &str, prefix: &str) -> Result<CatalogTree, String> {
+    let url = format!(
+        "/api/explorer/tree?dataset={}&prefix={}",
+        urlencoding::encode(dataset),
+        urlencoding::encode(prefix),
     );
     checked(Request::get(&url).send().await.map_err(|e| e.to_string())?)
         .await?
