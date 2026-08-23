@@ -78,6 +78,15 @@ fn looks_like_actf_attempt(attempt: &serde_json::Value) -> bool {
     }
 }
 
+fn looks_like_actf_document(v: &serde_json::Value) -> bool {
+    v.get("task_id").is_some()
+        && v.get("attempts")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|attempts| {
+                !attempts.is_empty() && attempts.values().all(looks_like_actf_attempt)
+            })
+}
+
 fn detect_json_format(v: &serde_json::Value) -> Option<DocumentFormat> {
     let candidate = v.as_array().and_then(|values| values.first()).unwrap_or(v);
     if candidate
@@ -87,13 +96,10 @@ fn detect_json_format(v: &serde_json::Value) -> Option<DocumentFormat> {
     {
         return Some(DocumentFormat::Storyline);
     }
-    let is_actf_document = v.get("task_id").is_some()
-        && v.get("attempts")
-            .and_then(serde_json::Value::as_object)
-            .is_some_and(|attempts| {
-                !attempts.is_empty() && attempts.values().all(looks_like_actf_attempt)
-            });
-    if is_actf_document {
+    if looks_like_actf_document(v)
+        || v.as_array()
+            .is_some_and(|values| !values.is_empty() && values.iter().all(looks_like_actf_document))
+    {
         return Some(DocumentFormat::Actf);
     }
     if candidate.get("session_id").is_some()
@@ -180,6 +186,15 @@ mod tests {
                 ]
             }}
         }"#;
+        assert_eq!(
+            detect_format_from_content(input).unwrap(),
+            Some(DocumentFormat::Actf)
+        );
+    }
+
+    #[test]
+    fn detects_array_of_actf_documents() {
+        let input = r#"[{"task_id":"a","category":"test","k":1,"correct":false,"attempts_tried":1,"attempts":{"1":{"trajectory":{"schema_version":"ACTF_v1.0","steps":[]}}}},{"task_id":"b","category":"test","k":1,"correct":false,"attempts_tried":1,"attempts":{"1":{"trajectory":{"schema_version":"ACTF_v1.0","steps":[]}}}}]"#;
         assert_eq!(
             detect_format_from_content(input).unwrap(),
             Some(DocumentFormat::Actf)

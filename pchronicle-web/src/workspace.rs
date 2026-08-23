@@ -11,8 +11,8 @@ use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView}
 use crate::llm;
 use crate::llm_settings::LlmSettings;
 use crate::model::{
-    CatalogTree, DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary,
-    RunAnalysis, RunExplorerItem, RunPage, RunSummary, ToolAggregate, TurnDetail, TurnSummary,
+    DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary, RunAnalysis,
+    RunExplorerItem, RunPage, RunSummary, ToolAggregate, TurnDetail, TurnSummary, WarehouseSources,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -128,7 +128,8 @@ pub fn App() -> Element {
     let mut file_prefix = use_signal(|| url_param("file_prefix").unwrap_or_default());
     let mut catalog_dataset = use_signal(|| String::new());
     let mut catalog_prefix = use_signal(|| String::new());
-    let catalog_tree = use_signal(|| None::<CatalogTree>);
+    let mut catalog_selected = use_signal(|| None::<(String, String)>);
+    let catalog_sources = use_signal(|| None::<WarehouseSources>);
     let catalog_loading = use_signal(|| false);
     let mut offset = use_signal(|| 0usize);
     let mut error = use_signal(|| None::<WorkspaceNotice>);
@@ -176,13 +177,7 @@ pub fn App() -> Element {
         if page() != "catalog" {
             return;
         }
-        load_catalog_tree(
-            catalog_dataset(),
-            catalog_prefix(),
-            catalog_tree,
-            catalog_loading,
-            error,
-        );
+        load_catalog_sources(catalog_sources, catalog_loading, error);
     });
 
     use_effect(move || {
@@ -267,7 +262,7 @@ pub fn App() -> Element {
             a { class: "skip-link", href: "#pc2-main", "Skip to trajectory workspace" }
             nav { class: "rail", aria_label: "pChronicle workspace",
                 div { class: "brand-mark", title: "pChronicle", "pC" }
-                RailButton { active: page() == "catalog", icon: "▣", label: "Data", onclick: move |_| { catalog_dataset.set(String::new()); catalog_prefix.set(String::new()); page.set("catalog".into()); } }
+                RailButton { active: page() == "catalog", icon: "▣", label: "Data", onclick: move |_| { catalog_dataset.set(String::new()); catalog_prefix.set(String::new()); catalog_selected.set(None); page.set("catalog".into()); } }
                 RailButton { active: page() == "runs" || page() == "detail", icon: "◫", label: "Runs", onclick: move |_| page.set("runs".into()) }
                 RailButton { active: page() == "tools", icon: "⌁", label: "Analyze", onclick: move |_| page.set("tools".into()) }
                 div { class: "rail-spacer" }
@@ -292,18 +287,50 @@ pub fn App() -> Element {
                 match page().as_str() {
                     "catalog" => rsx! {
                         CatalogExplorer {
-                            tree: catalog_tree(),
+                            page: catalog_sources(),
                             loading: catalog_loading(),
+                            dataset: catalog_dataset(),
+                            prefix: catalog_prefix(),
+                            selected: catalog_selected(),
                             on_open: move |(dataset, prefix): (String, String)| {
                                 catalog_dataset.set(dataset);
                                 catalog_prefix.set(prefix);
+                                catalog_selected.set(None);
                             },
-                            on_runs: move |(dataset, prefix): (String, String)| {
-                                dataset_filter.set(if dataset.is_empty() { "all".into() } else { dataset });
-                                file_prefix.set(prefix);
+                            on_select: move |key: (String, String)| catalog_selected.set(Some(key)),
+                            on_open_traces: move |_| {
+                                dataset_filter.set("all".into());
+                                file_prefix.set(String::new());
                                 run_path.set(String::new());
                                 offset.set(0);
                                 page.set("runs".into());
+                            },
+                            on_analyze: move |_| {
+                                let Some(active_catalog) = catalog() else { return; };
+                                analysis_session_id.set(String::new());
+                                analysis_seed_scope.set(Some(
+                                    crate::analysis_session::AnalysisScope::from_catalog(&active_catalog),
+                                ));
+                                page.set("tools".into());
+                            },
+                            on_source_traces: move |(dataset, file): (String, String)| {
+                                dataset_filter.set(dataset);
+                                file_prefix.set(file);
+                                run_path.set(String::new());
+                                offset.set(0);
+                                page.set("runs".into());
+                            },
+                            on_source_analyze: move |(dataset, file): (String, String)| {
+                                let Some(active_catalog) = catalog() else { return; };
+                                analysis_session_id.set(String::new());
+                                analysis_seed_scope.set(Some(
+                                    crate::analysis_session::AnalysisScope::from_source(
+                                        &active_catalog,
+                                        dataset,
+                                        file,
+                                    ),
+                                ));
+                                page.set("tools".into());
                             },
                         }
                     },
@@ -487,17 +514,15 @@ fn load_runs(
     });
 }
 
-fn load_catalog_tree(
-    dataset: String,
-    prefix: String,
-    mut tree: Signal<Option<CatalogTree>>,
+fn load_catalog_sources(
+    mut page: Signal<Option<WarehouseSources>>,
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
     loading.set(true);
     spawn(async move {
-        match api::explorer_tree(&dataset, &prefix).await {
-            Ok(value) => tree.set(Some(value)),
+        match api::explorer_sources().await {
+            Ok(value) => page.set(Some(value)),
             Err(message) => error.set(Some(workspace_notice(message))),
         }
         loading.set(false);

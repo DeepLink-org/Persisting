@@ -2553,6 +2553,64 @@ async fn export_filters_complete_trajectories_and_streams_finite_json() -> Resul
 }
 
 #[tokio::test]
+async fn export_reports_progress_on_stderr() -> Result<()> {
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "export",
+        "--from",
+        example_dataset("atif").to_str().unwrap(),
+        "--output",
+        "-",
+        "--stream",
+        "--format",
+        "storyline",
+        "--session-id",
+        "support-001",
+        "--where",
+        "TRUE",
+    ])?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    run(cli, false, &mut stdout, &mut stderr).await?;
+    let story: persisting_pchronicle::model::StorylineDocument = serde_json::from_slice(&stdout)?;
+    assert_eq!(story.session_id, "support-001");
+    let stderr = String::from_utf8(stderr)?;
+    assert!(stderr.contains('\r'), "{stderr}");
+    assert!(stderr.contains("export discovering"), "{stderr}");
+    assert!(stderr.contains("export selecting"), "{stderr}");
+    assert!(stderr.contains("export loading ["), "{stderr}");
+    assert!(stderr.contains("] 1/1"), "{stderr}");
+    assert!(stderr.contains("export encoding"), "{stderr}");
+    assert!(stderr.contains("export writing"), "{stderr}");
+    assert!(stderr.contains("trajectories=1"), "{stderr}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_reports_progress_on_stderr() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let output = temp.path().join("dataset");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        example_source("atif").to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ])?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    run(cli, false, &mut stdout, &mut stderr).await?;
+    let stderr = String::from_utf8(stderr)?;
+    assert!(stderr.contains('\r'), "{stderr}");
+    assert!(stderr.contains("import discovering"), "{stderr}");
+    assert!(stderr.contains("import loading ["), "{stderr}");
+    assert!(stderr.contains("] 1/1"), "{stderr}");
+    assert!(stderr.contains("import writing"), "{stderr}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn export_converts_complete_trajectories_between_formats() -> Result<()> {
     let cli = Cli::try_parse_from([
         "pchronicle",
@@ -2602,36 +2660,25 @@ async fn export_is_bounded_create_only_and_has_no_partial_output() -> Result<()>
     let cli = Cli::try_parse_from(overwrite)?;
     run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
     assert!(fs::read_to_string(&output)?.contains("support-001"));
+    Ok(())
+}
 
-    let limited = temp.path().join("limited.json");
-    let cli = Cli::try_parse_from([
+#[test]
+fn export_does_not_accept_max_output_bytes() {
+    let error = Cli::try_parse_from([
         "pchronicle",
         "export",
         "--from",
-        example_dataset("atif").to_str().unwrap(),
+        "/tmp/data",
         "--output",
-        limited.to_str().unwrap(),
+        "out.json",
         "--format",
         "atif",
         "--max-output-bytes",
         "8",
-    ])?;
-    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
-        .await
-        .unwrap_err();
-    assert!(
-        error.to_string().starts_with("resource_exhausted:"),
-        "{error:#}"
-    );
-    assert!(error.to_string().contains("exact export"), "{error:#}");
-    assert!(!limited.exists());
-    assert!(!fs::read_dir(temp.path())?.any(|entry| {
-        entry
-            .ok()
-            .and_then(|entry| entry.file_name().into_string().ok())
-            .is_some_and(|name| name.starts_with(".pchronicle-export-"))
-    }));
-    Ok(())
+    ])
+    .unwrap_err();
+    assert!(error.to_string().contains("unexpected argument"));
 }
 
 #[tokio::test]
@@ -2725,31 +2772,6 @@ async fn export_normalized_budgets_are_resource_exhausted_without_partial_output
     );
     assert!(error.to_string().contains("max_trajectories"), "{error:#}");
     assert!(!exact_trajectory_limited.exists());
-
-    let byte_limited = temp.path().join("normalized-byte-limited.json");
-    let cli = Cli::try_parse_from([
-        "pchronicle",
-        "export",
-        "--from",
-        example_dataset("atif").to_str().unwrap(),
-        "--output",
-        byte_limited.to_str().unwrap(),
-        "--format",
-        "atif",
-        "--where",
-        "TRUE",
-        "--max-output-bytes",
-        "512",
-    ])?;
-    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
-        .await
-        .unwrap_err();
-    assert!(
-        error.to_string().starts_with("resource_exhausted:"),
-        "{error:#}"
-    );
-    assert!(error.to_string().contains("normalized export"), "{error:#}");
-    assert!(!byte_limited.exists());
     Ok(())
 }
 

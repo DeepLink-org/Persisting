@@ -18,6 +18,10 @@ pub enum AnalysisScopeItem {
     Dataset {
         name: String,
     },
+    Source {
+        dataset: String,
+        file: String,
+    },
     Root {
         dataset: String,
         file: String,
@@ -38,12 +42,39 @@ pub struct AnalysisScope {
 
 impl AnalysisScope {
     pub fn from_catalog(catalog: &QueryCatalog) -> Self {
+        let items = if catalog.datasets.is_empty() {
+            vec![AnalysisScopeItem::Dataset {
+                name: catalog.database.clone(),
+            }]
+        } else {
+            catalog
+                .datasets
+                .iter()
+                .map(|dataset| AnalysisScopeItem::Dataset {
+                    name: dataset.name.clone(),
+                })
+                .collect()
+        };
         Self {
             database: catalog.database.clone(),
             storage_path: catalog.storage_path.clone(),
             snapshot_id: catalog.snapshot_id.clone(),
-            items: vec![AnalysisScopeItem::Dataset {
-                name: catalog.database.clone(),
+            items,
+        }
+    }
+
+    pub fn from_source(
+        catalog: &QueryCatalog,
+        dataset: impl Into<String>,
+        file: impl Into<String>,
+    ) -> Self {
+        Self {
+            database: catalog.database.clone(),
+            storage_path: catalog.storage_path.clone(),
+            snapshot_id: catalog.snapshot_id.clone(),
+            items: vec![AnalysisScopeItem::Source {
+                dataset: dataset.into(),
+                file: file.into(),
             }],
         }
     }
@@ -775,6 +806,9 @@ pub fn scope_from_query(query: &str) -> Result<AnalysisScope, String> {
         || scope.items.is_empty()
         || scope.items.iter().any(|item| match item {
             AnalysisScopeItem::Dataset { name } => name.trim().is_empty(),
+            AnalysisScopeItem::Source { dataset, file } => {
+                dataset.trim().is_empty() || file.trim().is_empty()
+            }
             AnalysisScopeItem::Root {
                 dataset,
                 file,
@@ -895,6 +929,10 @@ fn compact_session(session: &mut AnalysisSession) {
         for item in &mut revision.scope.items {
             match item {
                 AnalysisScopeItem::Dataset { name } => truncate_text(name, 1024),
+                AnalysisScopeItem::Source { dataset, file } => {
+                    truncate_text(dataset, 1024);
+                    truncate_text(file, 4 * 1024);
+                }
                 AnalysisScopeItem::Root {
                     dataset,
                     file,
@@ -1219,6 +1257,56 @@ mod tests {
         for scope in scopes {
             assert_eq!(scope_from_query(&analysis_href(&scope)).unwrap(), scope);
         }
+    }
+
+    #[test]
+    fn from_catalog_uses_every_mounted_dataset() {
+        let catalog = QueryCatalog {
+            snapshot_id: "snapshot-a".into(),
+            read_only: true,
+            database: "evals".into(),
+            storage_path: "tmp/evals/".into(),
+            path_column: "_file_".into(),
+            datasets: vec![
+                crate::model::QueryDatasetSummary {
+                    name: "evals".into(),
+                    uri: "evals".into(),
+                    ready_sources: 1,
+                    error_sources: 0,
+                },
+                crate::model::QueryDatasetSummary {
+                    name: "archive".into(),
+                    uri: "archive".into(),
+                    ready_sources: 1,
+                    error_sources: 0,
+                },
+            ],
+            tables: Vec::new(),
+        };
+        assert_eq!(
+            AnalysisScope::from_catalog(&catalog).items,
+            vec![
+                AnalysisScopeItem::Dataset {
+                    name: "evals".into(),
+                },
+                AnalysisScopeItem::Dataset {
+                    name: "archive".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn from_source_scopes_one_catalog_file() {
+        let scope = AnalysisScope::from_source(&catalog(), "evals", "gateway/capture");
+        assert_eq!(
+            scope.items,
+            vec![AnalysisScopeItem::Source {
+                dataset: "evals".into(),
+                file: "gateway/capture".into(),
+            }]
+        );
+        assert_eq!(scope_from_query(&analysis_href(&scope)).unwrap(), scope);
     }
 
     #[test]

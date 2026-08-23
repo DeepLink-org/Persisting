@@ -89,39 +89,40 @@ pub struct QueryDatasetSummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct CatalogTree {
-    #[serde(default)]
-    pub dataset: Option<String>,
-    #[serde(default)]
-    pub prefix: String,
+pub struct WarehouseSources {
     #[serde(default)]
     pub run_count: usize,
     #[serde(default)]
     pub failed_count: usize,
     #[serde(default)]
-    pub ready_sources: Option<usize>,
+    pub source_count: usize,
     #[serde(default)]
-    pub error_sources: Option<usize>,
-    #[serde(default)]
+    pub error_sources: usize,
     pub duration_ms: Option<i64>,
-    #[serde(default)]
     pub total_tokens: Option<u64>,
     #[serde(default)]
-    pub children: Vec<CatalogTreeChild>,
+    pub sources: Vec<WarehouseSource>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct CatalogTreeChild {
-    pub name: String,
-    pub kind: String,
+pub struct WarehouseSource {
+    pub dataset: String,
+    pub file: String,
+    pub format: Option<String>,
     #[serde(default)]
-    pub path: String,
+    pub kind: String,
+    pub snapshot_ref: Option<String>,
+    pub projection_status: Option<String>,
+    pub projection_generation: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub last_modified: Option<String>,
+    #[serde(default)]
+    pub status: String,
+    pub error: Option<String>,
     #[serde(default)]
     pub run_count: usize,
     #[serde(default)]
     pub failed_count: usize,
-    #[serde(default)]
-    pub entries: Vec<CatalogTreeChild>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

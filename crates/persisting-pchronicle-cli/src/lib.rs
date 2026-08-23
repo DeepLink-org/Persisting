@@ -3,6 +3,7 @@ mod exchange;
 mod gateway_capture;
 mod onboard;
 mod output;
+mod progress;
 mod projection_supervisor;
 pub mod server;
 mod settings;
@@ -451,17 +452,13 @@ struct ExportArgs {
     #[arg(long)]
     stream: bool,
 
-    /// Maximum number of complete Trajectories to export.
-    #[arg(long, default_value_t = 10_000)]
-    max_trajectories: u64,
+    /// Maximum number of complete Trajectories to export. Omitted means no cap.
+    #[arg(long)]
+    max_trajectories: Option<u64>,
 
-    /// Reject encoded output larger than this many bytes.
-    #[arg(long, default_value_t = 64 * 1024 * 1024)]
-    max_output_bytes: usize,
-
-    /// Maximum time for address selection and Storyline loading.
-    #[arg(long, default_value_t = 30)]
-    timeout_seconds: u64,
+    /// Time limit for address selection and Storyline loading. Omitted means no timeout.
+    #[arg(long)]
+    timeout_seconds: Option<u64>,
 
     /// Maximum number of trajectory Sources to discover.
     #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]

@@ -1,6 +1,6 @@
 use crate::model::{
-    CatalogTree, QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, TurnDetail,
-    TurnPage,
+    QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, TurnDetail, TurnPage,
+    WarehouseSources,
 };
 use gloo_net::http::{Request, Response};
 use serde_json::json;
@@ -45,17 +45,17 @@ pub async fn explorer_runs(
         .map_err(|e| e.to_string())
 }
 
-pub async fn explorer_tree(dataset: &str, prefix: &str) -> Result<CatalogTree, String> {
-    let url = format!(
-        "/api/explorer/tree?dataset={}&prefix={}",
-        urlencoding::encode(dataset),
-        urlencoding::encode(prefix),
-    );
-    checked(Request::get(&url).send().await.map_err(|e| e.to_string())?)
-        .await?
-        .json()
-        .await
-        .map_err(|e| e.to_string())
+pub async fn explorer_sources() -> Result<WarehouseSources, String> {
+    checked(
+        Request::get("/api/explorer/sources")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?,
+    )
+    .await?
+    .json()
+    .await
+    .map_err(|e| e.to_string())
 }
 
 pub async fn run_analysis(run: &RunSummary) -> Result<RunAnalysis, String> {

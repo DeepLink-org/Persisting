@@ -513,6 +513,14 @@ fn reference_matches_scope_item(reference: &EvidenceReference, item: &AnalysisSc
                 && reference.session_id.is_none()
                 && reference.root_session_id.is_none()
         }
+        AnalysisScopeItem::Source { dataset, file } => {
+            matches_optional_text(reference.dataset.as_deref(), dataset)
+                && matches_optional_text(reference.file.as_deref(), file)
+                && reference.run_id.is_none()
+                && reference.agent_id.is_none()
+                && reference.session_id.is_none()
+                && reference.root_session_id.is_none()
+        }
         AnalysisScopeItem::Root {
             dataset,
             file,
@@ -676,6 +684,11 @@ fn scope_item_prompt_value(item: &AnalysisScopeItem) -> Value {
             "kind": "dataset",
             "name": name,
         }),
+        AnalysisScopeItem::Source { dataset, file } => json!({
+            "kind": "source",
+            "dataset": dataset,
+            "file": file,
+        }),
         AnalysisScopeItem::Root {
             dataset,
             file,
@@ -764,6 +777,12 @@ fn compact_scope_item(item: &AnalysisScopeItem, truncated: &mut bool) -> Analysi
             let (name, was_truncated) = clamp_text(name, SCOPE_TEXT_DIGEST_CHARS);
             *truncated |= was_truncated;
             AnalysisScopeItem::Dataset { name }
+        }
+        AnalysisScopeItem::Source { dataset, file } => {
+            let (dataset, dataset_truncated) = clamp_text(dataset, SCOPE_TEXT_DIGEST_CHARS);
+            let (file, file_truncated) = clamp_text(file, SCOPE_TEXT_DIGEST_CHARS);
+            *truncated |= dataset_truncated || file_truncated;
+            AnalysisScopeItem::Source { dataset, file }
         }
         AnalysisScopeItem::Root {
             dataset,

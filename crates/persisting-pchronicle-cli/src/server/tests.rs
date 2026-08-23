@@ -368,9 +368,9 @@ fn evidence_queries_are_wrapped_with_a_server_side_row_bound() {
         "SELECT * FROM (SELECT * FROM dataset.runs) AS __pchronicle_evidence LIMIT 201"
     );
     assert_eq!(
-            bounded_evidence_sql("WITH rows AS (SELECT 1) SELECT * FROM rows", 1),
-            "SELECT * FROM (WITH rows AS (SELECT 1) SELECT * FROM rows) AS __pchronicle_evidence LIMIT 2"
-        );
+        bounded_evidence_sql("WITH rows AS (SELECT 1) SELECT * FROM rows", 1),
+        "SELECT * FROM (WITH rows AS (SELECT 1) SELECT * FROM rows) AS __pchronicle_evidence LIMIT 2"
+    );
     assert_eq!(
         bounded_evidence_sql("EXPLAIN SELECT * FROM dataset.runs", 10),
         "EXPLAIN SELECT * FROM dataset.runs"
@@ -1222,6 +1222,51 @@ async fn explorer_tree_lists_mounted_datasets_by_run_count() -> anyhow::Result<(
         serde_json::from_slice(&prefixed.into_body().collect().await?.to_bytes())?;
     assert_eq!(prefixed["snapshot"]["total"], 1);
     assert_eq!(prefixed["records"][0]["file"], "nested/run.json");
+
+    std::fs::remove_dir_all(live)?;
+    std::fs::remove_dir_all(archive)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn explorer_sources_lists_catalog_sources_across_the_warehouse() -> anyhow::Result<()> {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let live = json_dataset_root();
+    std::fs::create_dir_all(live.join("nested"))?;
+    write_gateway_fixture(&live, "nested/run.json", "nested-session", "nested-job");
+    let archive = json_dataset_root();
+    let config = ChronicleServerConfig::mounted(vec![
+        DatasetMount::new("live", live.to_string_lossy())?,
+        DatasetMount::new("archive", archive.to_string_lossy())?,
+    ])?;
+    let app = test_router_with_config(config);
+
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/sources")
+                .body(axum::body::Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+    let sources = body["sources"].as_array().expect("sources list");
+    assert_eq!(body["source_count"], sources.len());
+    assert!(sources.len() >= 2);
+    let datasets: Vec<_> = sources
+        .iter()
+        .map(|source| source["dataset"].as_str().unwrap_or_default())
+        .collect();
+    assert!(datasets.contains(&"live"));
+    assert!(datasets.contains(&"archive"));
+    assert!(sources.iter().all(|source| source.get("file").is_some()));
+    assert!(sources.iter().any(|source| {
+        source["dataset"] == "live"
+            && source["file"] == "nested/run.json"
+            && source["run_count"].as_u64().unwrap_or(0) >= 1
+    }));
 
     std::fs::remove_dir_all(live)?;
     std::fs::remove_dir_all(archive)?;

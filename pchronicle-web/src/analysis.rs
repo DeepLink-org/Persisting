@@ -280,7 +280,11 @@ fn scope_without_item(
     if scope.items.len() == 1 {
         return matches!(
             scope.items.first(),
-            Some(AnalysisScopeItem::Root { .. } | AnalysisScopeItem::Run { .. })
+            Some(
+                AnalysisScopeItem::Root { .. }
+                    | AnalysisScopeItem::Run { .. }
+                    | AnalysisScopeItem::Source { .. }
+            )
         )
         .then(|| catalog.map(AnalysisScope::from_catalog))
         .flatten();
@@ -1431,6 +1435,7 @@ fn refinement_plan_allowed(
 fn scope_item_label(item: &AnalysisScopeItem) -> String {
     match item {
         AnalysisScopeItem::Dataset { name } => format!("Dataset · {name}"),
+        AnalysisScopeItem::Source { dataset, file } => format!("Source · {dataset} / {file}"),
         AnalysisScopeItem::Root {
             dataset,
             root_session_id,
@@ -2275,6 +2280,7 @@ mod tests {
             },
         );
         let root_scope = AnalysisScope::from_root(&catalog, "default", "source.json", "root-a");
+        let source_scope = AnalysisScope::from_source(&catalog, "default", "source.json");
         let dataset_scope = AnalysisScope::from_catalog(&catalog);
         let expected = AnalysisScope::from_catalog(&catalog);
 
@@ -2284,6 +2290,10 @@ mod tests {
         );
         assert_eq!(
             scope_without_item(&root_scope, 0, Some(&catalog)),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            scope_without_item(&source_scope, 0, Some(&catalog)),
             Some(expected)
         );
         assert!(scope_without_item(&dataset_scope, 0, Some(&catalog)).is_none());
