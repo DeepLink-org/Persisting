@@ -55,7 +55,10 @@ before-all = [
     "yum install -y curl glibc-static",
     "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
 ]
-environment = { PATH = "$HOME/.cargo/bin:$PATH" }
+# rustc 1.90+ defaults to rust-lld on x86_64 linux. lld treats libstd's
+# weakly referenced statx/copy_file_range as hard undefined symbols, so
+# manylinux2014 (glibc 2.17) fails to link. GNU ld still honors the weaks.
+environment = { PATH = "$HOME/.cargo/bin:$PATH", RUSTFLAGS = "-C linker-features=-lld" }
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
