@@ -119,6 +119,7 @@ pub fn App() -> Element {
         match url_param("page").as_deref() {
             Some("tools") => "tools",
             Some("runs") => "runs",
+            Some("physical") => "physical",
             _ => "catalog",
         }
     };
@@ -279,6 +280,7 @@ pub fn App() -> Element {
                 RailButton { active: page() == "catalog", icon: "▣", label: "Data", onclick: move |_| { catalog_dataset.set(String::new()); catalog_prefix.set(String::new()); page.set("catalog".into()); } }
                 RailButton { active: page() == "runs" || page() == "detail", icon: "◫", label: "Runs", onclick: move |_| page.set("runs".into()) }
                 RailButton { active: page() == "tools", icon: "⌁", label: "Analyze", onclick: move |_| page.set("tools".into()) }
+                RailButton { active: page() == "physical", icon: "▤", label: "Physical", onclick: move |_| page.set("physical".into()) }
                 div { class: "rail-spacer" }
                 button { class: if copilot_open() { "rail-button active" } else { "rail-button" }, aria_label: "Toggle trajectory Copilot", onclick: move |_| copilot_open.set(!copilot_open()), span { class: "rail-icon", "◇" } span { "Copilot" } }
                 div { class: "rail-status", span { class: "live-dot" } "Local" }
@@ -316,6 +318,7 @@ pub fn App() -> Element {
                             },
                         }
                     },
+                    "physical" => rsx! { crate::physical::PhysicalWorkspace {} },
                     "tools" => rsx! {
                         crate::analysis::AnalysisWorkspace {
                             catalog: catalog(),
@@ -1953,6 +1956,9 @@ fn sync_workspace_url(
         let _ = window
             .history()
             .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&url)));
+        return;
+    }
+    if page == "physical" {
         return;
     }
     let mut params = vec![format!("page={}", urlencoding::encode(page))];

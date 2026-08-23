@@ -2,6 +2,8 @@
 
 Import 和 export 位于互操作边界。Import 创建新 Dataset；export 从一个 Catalog Snapshot
 重建完整轨迹。Import 与 export 均接受 ATIF、ACTF、OpenAI Messages 和 Storyline JSON。
+Import 还接受仅解码的 Codex（`codex`）与 Claude Code（`claude-code`）会话 JSONL；
+export 拒绝这两种格式。
 
 ## 导入到新 Dataset
 
@@ -16,6 +18,8 @@ pchronicle import --from input.json \
 
 ```bash
 pchronicle import --from ./corpus --output ./imported
+pchronicle import --from @codex --output ./codex-ds
+pchronicle import --from @claude --output ./claude-ds
 ```
 
 默认输出逐字节保留源文件。若要把所有解码后的 Source 规范化并 squash 成输出根目录下的

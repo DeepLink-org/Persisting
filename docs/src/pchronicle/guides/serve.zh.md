@@ -37,13 +37,16 @@ pchronicle serve --config warehouse.toml \
 [`pchronicle` 命令参考](../reference/cli.md)；Snapshot 行为见
 [Dataset Catalog 设计](../design/catalog.md)。
 
-`serve` 只启动命令行明确指定的服务。不传 `--listen` 就不会启动 Warehouse HTTP。也可以
+`serve` 只启动命令行明确指定的服务。同时省略 `--listen`、`--control` 和
+`--gateway` 时，会在 `127.0.0.1` 上用临时端口启动 Warehouse HTTP。只传
+`--control` 或 `--gateway`、不传 `--listen` 时仍不启动 Warehouse。也可以
 用一个 storage URI 启动 pPilot 和 pVisor 使用的本地认证 Control 协议：
 
 ```bash
 pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
 pchronicle serve --storage ./tmp --storage ./data/evals --listen 127.0.0.1:9980
 pchronicle serve --storage default=./tmp --storage evals=./data --control 127.0.0.1:0
+pchronicle serve --storage @codex
 ```
 
 `--config` 与 `--storage` 互斥，`--control` 要求使用 `--storage`。只传一次
@@ -55,7 +58,7 @@ pchronicle serve --storage default=./tmp --storage evals=./data --control 127.0.
 使用 `--storage` 时，`serve` 会先发现经过验证且非空的 canonical `events.lance` Store，
 将每个投影收敛到确定的同级 `storyline`，全部 startup target 变为 fresh 后才输出 readiness。
 随后以有界并发和重试继续发现、维护投影。projection failure 不进入 durable canonical write
-路径，没有匹配 lineage 的外来目标绝不覆盖。若同时传入 `--listen`，每次成功发布投影都会
+路径，没有匹配 lineage 的外来目标绝不覆盖。Warehouse HTTP 运行时，每次成功发布投影都会
 自动完整重建并原子切换 Warehouse Catalog。可用只读命令观察状态：
 
 ```bash

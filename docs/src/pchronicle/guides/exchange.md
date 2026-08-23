@@ -3,6 +3,8 @@
 Use import and export at the interoperability boundary. Import creates a new
 Dataset; export reconstructs complete trajectories from one Catalog Snapshot.
 Import and export accept ATIF, ACTF, OpenAI Messages, and Storyline JSON.
+Import also accepts decode-only Codex (`codex`) and Claude Code (`claude-code`)
+session JSONL. Export refuses those two formats.
 
 ## Import into a new Dataset
 
@@ -20,6 +22,8 @@ trajectory format is skipped with a warning:
 
 ```bash
 pchronicle import --from ./corpus --output ./imported
+pchronicle import --from @codex --output ./codex-ds
+pchronicle import --from @claude --output ./claude-ds
 ```
 
 The default output preserves source bytes. To normalize and squash all decoded

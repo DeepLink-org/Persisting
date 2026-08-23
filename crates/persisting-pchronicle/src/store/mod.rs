@@ -32,6 +32,8 @@ mod files;
 #[cfg(feature = "lance-store")]
 mod index_build_gate;
 #[cfg(feature = "lance-store")]
+mod inspect;
+#[cfg(feature = "lance-store")]
 mod local_query_manifest;
 #[cfg(feature = "lance-store")]
 mod query_engine;
@@ -82,6 +84,12 @@ pub(crate) use files::{
 };
 #[cfg(feature = "lance-store")]
 pub use files::{FileTrajectoryQueryMetricsSnapshot, SOURCE_FILE_COLUMN};
+#[cfg(feature = "lance-store")]
+pub use inspect::{
+    inspect_physical_file, inspect_physical_layout, inspect_physical_page, list_physical_sources,
+    PhysicalColumn, PhysicalDataFile, PhysicalFileLayout, PhysicalFragment, PhysicalLayout,
+    PhysicalPage, PhysicalPagePreview, PhysicalSource, PhysicalTable, DEFAULT_PHYSICAL_PAGE_LIMIT,
+};
 #[cfg(feature = "lance-store")]
 pub(crate) use local_query_manifest::{
     LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,

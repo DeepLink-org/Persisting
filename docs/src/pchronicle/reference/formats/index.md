@@ -7,6 +7,8 @@
 | ACTF | JSON trajectory interchange | [RFC-0004 § JSON Pointer mapping](../../../rfcs/0004-actf-format.md#actf-storyline-json-pointer-mapping) |
 | ATIF | Agent trajectory interchange | [RFC-0008 § JSON Pointer mapping](../../../rfcs/0008-atif-format.md#atif-storyline-json-pointer-mapping) |
 | OpenAI Messages | Row-based training and evaluation corpus | [RFC-0009 § JSON Pointer mapping](../../../rfcs/0009-openai-messages-format.md#openai-storyline-json-pointer-mapping) |
+| Codex | Local Codex CLI/TUI session JSONL (`~/.codex/sessions/**/rollout-*.jsonl`). Decode-only. | — |
+| Claude Code | Local Claude Code transcript JSONL (`~/.claude/projects/**/*.jsonl`). Decode-only. | — |
 | AgenticMD | Human-readable live and materialized view | [AgenticMD reference](../agenticmd.md) |
 
 Canonical events and derived projections have different fidelity and ownership.

@@ -18,7 +18,7 @@
 //! # 公共入口
 //!
 //! - [`model`]：Storyline、Canonical Event 与 LLM payload 权威类型；
-//! - [`document`]：六种磁盘格式、Storyline 语义 codec 与统一读取入口；
+//! - [`document`]：磁盘格式、Storyline 语义 codec 与统一读取入口；Codex / Claude Code 会话 JSONL 为 decode-only；
 //! - [`storage`]：Catalog、Lance store、append、投影和 revision；
 //! - [`query`]：DataFusion 查询引擎与能力快照。
 //!

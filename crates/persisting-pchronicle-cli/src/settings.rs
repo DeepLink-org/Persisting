@@ -225,7 +225,9 @@ pub(super) fn load_warehouse_config(path: &Path) -> Result<server::ChronicleServ
     let mut mounts = Vec::with_capacity(file.datasets.len());
     let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
     for dataset in file.datasets {
-        let input = if !dataset.uri.contains("://") && Path::new(&dataset.uri).is_relative() {
+        let input = if dataset.uri.trim_start().starts_with('@') {
+            dataset.uri
+        } else if !dataset.uri.contains("://") && Path::new(&dataset.uri).is_relative() {
             config_dir.join(&dataset.uri).to_string_lossy().into_owned()
         } else {
             dataset.uri

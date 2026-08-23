@@ -3,14 +3,14 @@ use std::path::Path;
 
 /// Top-level JSON stream shapes supported by local trajectory datasources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum JsonStreamShape {
+pub(crate) enum JsonStreamShape {
     Object,
     Array,
     Ndjson,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum JsonRecordLocation {
+pub(crate) enum JsonRecordLocation {
     ArrayElement(usize),
     NdjsonLine(usize),
 }
@@ -25,20 +25,20 @@ impl std::fmt::Display for JsonRecordLocation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct JsonStreamVisit {
-    pub(super) record_count: usize,
-    pub(super) peak_record_bytes: usize,
+pub(crate) struct JsonStreamVisit {
+    pub(crate) record_count: usize,
+    pub(crate) peak_record_bytes: usize,
 }
 
 /// Bounded reader that tracks source bytes and rejects reads past `maximum`.
-pub(super) struct BoundedCountingReader<R> {
+pub(crate) struct BoundedCountingReader<R> {
     inner: R,
     bytes_read: u64,
     maximum: u64,
 }
 
 impl<R> BoundedCountingReader<R> {
-    pub(super) fn new(inner: R, maximum: u64) -> Self {
+    pub(crate) fn new(inner: R, maximum: u64) -> Self {
         Self {
             inner,
             bytes_read: 0,
@@ -46,7 +46,7 @@ impl<R> BoundedCountingReader<R> {
         }
     }
 
-    pub(super) fn bytes_read(&self) -> u64 {
+    pub(crate) fn bytes_read(&self) -> u64 {
         self.bytes_read
     }
 }
@@ -76,7 +76,7 @@ impl<R: Read> Read for BoundedCountingReader<R> {
 ///
 /// The reader tracks object depth and stops at the matching `}`. Bytes consumed
 /// are counted against `maximum`; oversized objects fail closed.
-pub(super) struct ScopedJsonObjectReader<'a, R> {
+pub(crate) struct ScopedJsonObjectReader<'a, R: ?Sized> {
     inner: &'a mut R,
     maximum: usize,
     bytes: usize,
@@ -87,8 +87,8 @@ pub(super) struct ScopedJsonObjectReader<'a, R> {
     escaped: bool,
 }
 
-impl<'a, R: BufRead> ScopedJsonObjectReader<'a, R> {
-    pub(super) fn new(inner: &'a mut R, maximum: usize) -> Self {
+impl<'a, R: BufRead + ?Sized> ScopedJsonObjectReader<'a, R> {
+    pub(crate) fn new(inner: &'a mut R, maximum: usize) -> Self {
         Self {
             inner,
             maximum,
@@ -101,12 +101,12 @@ impl<'a, R: BufRead> ScopedJsonObjectReader<'a, R> {
         }
     }
 
-    pub(super) fn is_finished(&self) -> bool {
+    pub(crate) fn is_finished(&self) -> bool {
         self.finished
     }
 }
 
-impl<R: BufRead> Read for ScopedJsonObjectReader<'_, R> {
+impl<R: BufRead + ?Sized> Read for ScopedJsonObjectReader<'_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if self.finished || buffer.is_empty() {
             return Ok(0);
@@ -199,7 +199,7 @@ impl<R: BufRead> Read for ScopedJsonObjectReader<'_, R> {
 /// call, which makes parsing through `Read` several times slower than parsing a
 /// slice. Copying one bounded element into a reused buffer keeps peak memory at
 /// `maximum` while letting callers use the much faster slice parser.
-pub(super) fn read_bounded_json_object<R: BufRead>(
+pub(crate) fn read_bounded_json_object<R: BufRead + ?Sized>(
     reader: &mut R,
     record: &mut Vec<u8>,
     maximum: usize,
@@ -288,7 +288,7 @@ pub(super) fn read_bounded_json_object<R: BufRead>(
     }
 }
 
-pub(super) fn read_bounded_line<R: BufRead>(
+pub(crate) fn read_bounded_line<R: BufRead + ?Sized>(
     reader: &mut R,
     buffer: &mut Vec<u8>,
     maximum: usize,
@@ -318,7 +318,7 @@ pub(super) fn read_bounded_line<R: BufRead>(
     }
 }
 
-pub(super) fn trim_ascii_whitespace(mut input: &[u8]) -> &[u8] {
+pub(crate) fn trim_ascii_whitespace(mut input: &[u8]) -> &[u8] {
     while input.first().is_some_and(u8::is_ascii_whitespace) {
         input = &input[1..];
     }
@@ -328,7 +328,7 @@ pub(super) fn trim_ascii_whitespace(mut input: &[u8]) -> &[u8] {
     input
 }
 
-pub(super) fn first_non_whitespace<R: BufRead>(reader: &mut R) -> io::Result<Option<u8>> {
+pub(crate) fn first_non_whitespace<R: BufRead + ?Sized>(reader: &mut R) -> io::Result<Option<u8>> {
     loop {
         let available = reader.fill_buf()?;
         if available.is_empty() {
@@ -347,13 +347,13 @@ pub(super) fn first_non_whitespace<R: BufRead>(reader: &mut R) -> io::Result<Opt
     }
 }
 
-pub(super) fn is_ndjson(path: &Path) -> bool {
+pub(crate) fn is_ndjson(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
         .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "jsonl" | "ndjson"))
 }
 
-pub(super) fn detect_json_stream_shape<R: BufRead>(
+pub(crate) fn detect_json_stream_shape<R: BufRead + ?Sized>(
     path: &Path,
     reader: &mut R,
 ) -> io::Result<JsonStreamShape> {
@@ -377,7 +377,7 @@ pub(super) fn detect_json_stream_shape<R: BufRead>(
 /// Dispatch all supported top-level JSON shapes while keeping array and
 /// NDJSON records bounded. The object callback receives the original reader,
 /// allowing callers to deserialize it directly without an intermediate copy.
-pub(super) fn visit_json_stream<R, S, O, F>(
+pub(crate) fn visit_json_stream<R, S, O, F>(
     path: &Path,
     reader: &mut R,
     max_record_bytes: usize,
@@ -386,7 +386,7 @@ pub(super) fn visit_json_stream<R, S, O, F>(
     mut visit_record: F,
 ) -> io::Result<JsonStreamVisit>
 where
-    R: BufRead,
+    R: BufRead + ?Sized,
     O: FnOnce(&mut R, &mut S) -> io::Result<()>,
     F: FnMut(&[u8], JsonRecordLocation, &mut S) -> io::Result<()>,
 {
@@ -422,13 +422,13 @@ where
 /// `visit` receives the raw bytes of a single element, valid until the next
 /// iteration. Peak memory stays within `max_record_bytes` because the backing
 /// buffer is reused across elements.
-pub(super) fn for_each_json_array_record<R, F>(
+pub(crate) fn for_each_json_array_record<R, F>(
     reader: &mut R,
     max_record_bytes: usize,
     mut visit: F,
 ) -> io::Result<usize>
 where
-    R: BufRead,
+    R: BufRead + ?Sized,
     F: FnMut(&[u8], usize) -> io::Result<()>,
 {
     let mut record = Vec::new();
@@ -497,13 +497,13 @@ where
 }
 
 /// Stream non-empty NDJSON/JSONL records through `visit`.
-pub(super) fn for_each_ndjson_line<R, F>(
+pub(crate) fn for_each_ndjson_line<R, F>(
     reader: &mut R,
     max_record_bytes: usize,
     mut visit: F,
 ) -> io::Result<usize>
 where
-    R: BufRead,
+    R: BufRead + ?Sized,
     F: FnMut(&[u8], usize) -> io::Result<()>,
 {
     let mut buffer = Vec::new();

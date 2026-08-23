@@ -32,6 +32,22 @@ pchronicle onboard
 pchronicle onboard query
 ```
 
+### 直接读取 Codex 与 Claude Code 的历史
+
+对于 Codex 和 Claude Code，连导入都可以省略——pChronicle 能直接读取两者在本机的历史存储目录，用 `@codex` 和 `@claude` 两个别名引用：
+
+```bash
+pchronicle ls @codex        # Codex 历史（~/.codex/sessions）
+pchronicle ls @claude       # Claude Code 历史（~/.claude/projects）
+
+pchronicle query @codex "SELECT COUNT(*) AS runs FROM dataset.runs"
+pchronicle query @claude "SELECT * FROM dataset.runs LIMIT 10"
+```
+
+别名指向的目录可用环境变量覆盖：`CODEX_HOME` 对应 `@codex`，`CLAUDE_CONFIG_DIR` 对应 `@claude`（`@claude-code` 是等价写法）。别名后还可以拼接子路径，例如 `@codex/2026/05/29` 只查某一天的会话。
+
+历史目录是只读引用，不复制、不搬运：每次查询针对目录当下内容建立快照，Codex 和 Claude Code 里新产生的会话，下一条查询就能看到。
+
 ### 导入轨迹
 
 外部 Agent 的轨迹通过标准格式导入，目前支持 ATIF、ACTF 和 OpenAI Messages 三种格式。pChronicle 在导入时保留来源信息，并将不同格式的轨迹规范化为统一的模型：
@@ -115,6 +131,12 @@ find /tmp/pch-bench/storyline -type f -exec stat -f %z {} + | awk '{s+=$1} END {
 
 ```bash
 pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
+```
+
+`--storage` 同样支持别名和命名挂载，可以把多个来源一起挂进同一个界面：
+
+```bash
+pchronicle serve --storage codex=@codex --storage claude=@claude --control 127.0.0.1:0
 ```
 
 服务只监听本机回环地址，且为只读，打开浏览器即可使用。在 Web 界面中可以：

@@ -7,19 +7,17 @@ mod actf_reader;
 mod actf_stream;
 mod atif_reader;
 mod atif_stream;
-mod json_stream;
 mod projected_steps;
 
+use crate::formats::common::json_stream::BoundedCountingReader;
 use actf_reader::parse_actf_storylines_from_reader_with_stats;
 use actf_stream::{stream_projected_actf_steps, ACTF_TRAJECTORY_NOT_PROJECTABLE};
-use atif_reader::parse_atif_storylines_from_reader_with_stats;
 pub(crate) use atif_reader::AtifReader;
 use atif_stream::stream_projected_atif_steps;
-use json_stream::BoundedCountingReader;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,9 +40,7 @@ use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, SchemaRe
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use tokio::sync::mpsc::Sender;
 
-use crate::document::decode_json_storylines;
 use crate::format::DocumentFormat;
-use crate::formats::parse_openai_msg_corpus_value;
 
 use super::{
     datafusion_bridge::{from_datafusion, into_datafusion},
@@ -184,13 +180,8 @@ impl FileTrajectoryDataSource {
         validate_options(options)?;
         let format = manifest.format();
         anyhow::ensure!(
-            matches!(
-                format,
-                DocumentFormat::Storyline
-                    | DocumentFormat::Atif
-                    | DocumentFormat::OpenaiMsg
-                    | DocumentFormat::Actf
-            ),
+            crate::formats::registry::get(format)
+                .is_some_and(|handler| handler.capabilities().direct_query),
             "file trajectory datasource does not support '{format}'"
         );
         let manifest = Arc::new(manifest);
@@ -816,7 +807,7 @@ fn load_file(
         runtime.options.max_file_bytes
     );
     let parsed = match format {
-        DocumentFormat::Atif | DocumentFormat::Actf => {
+        DocumentFormat::Actf => {
             let input = File::open(state.file.path()).with_context(|| {
                 format!(
                     "open {} input {}",
@@ -828,24 +819,12 @@ fn load_file(
                 64 * 1024,
                 BoundedCountingReader::new(input, runtime.options.max_file_bytes),
             );
-            let (stories, peak_record_bytes) = match format {
-                DocumentFormat::Atif => parse_atif_storylines_from_reader_with_stats(
-                    state.file.path(),
-                    &mut reader,
-                    runtime.options.max_record_bytes,
-                )
-                .with_context(|| format!("parse ATIF input {}", state.file.path().display()))?,
-                DocumentFormat::Actf => parse_actf_storylines_from_reader_with_stats(
-                    state.file.path(),
-                    &mut reader,
-                    runtime.options.max_record_bytes,
-                )
-                .with_context(|| format!("parse ACTF input {}", state.file.path().display()))?,
-                _ => anyhow::bail!(
-                    "{} does not support streaming trajectory parsing",
-                    format.as_str()
-                ),
-            };
+            let (stories, peak_record_bytes) = parse_actf_storylines_from_reader_with_stats(
+                state.file.path(),
+                &mut reader,
+                runtime.options.max_record_bytes,
+            )
+            .with_context(|| format!("parse ACTF input {}", state.file.path().display()))?;
             runtime.metrics.inner.streaming_buffer_peak_bytes.fetch_max(
                 (reader.capacity() as u64).saturating_add(peak_record_bytes as u64),
                 Ordering::Relaxed,
@@ -858,40 +837,51 @@ fn load_file(
                 .fetch_add(reader.get_ref().bytes_read(), Ordering::Relaxed);
             stories_to_parsed_file(&state.file, format, stories, runtime.options.batch_size)?
         }
-        DocumentFormat::Storyline | DocumentFormat::OpenaiMsg => {
-            let content = fs::read_to_string(state.file.path()).with_context(|| {
+        registered
+            if crate::formats::registry::get(registered)
+                .is_some_and(|handler| handler.capabilities().direct_query) =>
+        {
+            let handler = crate::formats::registry::get(registered)
+                .expect("registered codec with direct_query");
+            let input = File::open(state.file.path()).with_context(|| {
                 format!(
-                    "read {} input {}",
+                    "open {} input {}",
                     format.as_str(),
                     state.file.path().display()
                 )
             })?;
-            anyhow::ensure!(
-                content.len() as u64 <= runtime.options.max_file_bytes,
-                "{} input {} exceeded max_file_bytes {} while reading",
-                format.as_str(),
-                state.file.path().display(),
-                runtime.options.max_file_bytes
+            let mut reader = BufReader::with_capacity(
+                64 * 1024,
+                BoundedCountingReader::new(input, runtime.options.max_file_bytes),
             );
+            let source = crate::formats::codec::DocumentSource::new(state.file.relative_path());
+            let ctx = crate::formats::codec::DecodeContext::new(&source).with_limits(
+                runtime.options.max_file_bytes,
+                runtime.options.max_record_bytes,
+            );
+            let (stories, report) =
+                crate::formats::codec::decode_all_with(handler, &mut reader, &ctx)
+                    .map_err(anyhow::Error::from)
+                    .with_context(|| {
+                        format!(
+                            "parse {} input {}",
+                            format.as_str(),
+                            state.file.path().display()
+                        )
+                    })?;
             state.file.validate_unchanged()?;
             runtime
                 .metrics
                 .inner
                 .source_bytes_read
-                .fetch_add(content.len() as u64, Ordering::Relaxed);
-            match format {
-                DocumentFormat::Storyline => parse_storyline_stories_from_content(
-                    &state.file,
-                    &content,
-                    runtime.options.batch_size,
-                )?,
-                DocumentFormat::OpenaiMsg => parse_openai_stories_from_content(
-                    &state.file,
-                    &content,
-                    runtime.options.batch_size,
-                )?,
-                _ => anyhow::bail!("unexpected JSON trajectory format '{format}'"),
+                .fetch_add(reader.get_ref().bytes_read(), Ordering::Relaxed);
+            if report.peak_record_bytes > 0 {
+                runtime.metrics.inner.streaming_buffer_peak_bytes.fetch_max(
+                    (reader.capacity() as u64).saturating_add(report.peak_record_bytes as u64),
+                    Ordering::Relaxed,
+                );
             }
+            stories_to_parsed_file(&state.file, format, stories, runtime.options.batch_size)?
         }
         unsupported => {
             anyhow::bail!("file trajectory datasource does not support '{unsupported}'")
@@ -915,30 +905,6 @@ fn load_file(
         .cache_evictions
         .fetch_add(evictions, Ordering::Relaxed);
     Ok(parsed)
-}
-
-fn parse_storyline_stories_from_content(
-    file: &LocalQueryInputFile,
-    content: &str,
-    batch_size: usize,
-) -> Result<ParsedFile> {
-    let stories = decode_json_storylines(DocumentFormat::Storyline, content, file.relative_path())
-        .map_err(anyhow::Error::from)
-        .with_context(|| format!("parse Storyline input {}", file.path().display()))?;
-    stories_to_parsed_file(file, DocumentFormat::Storyline, stories, batch_size)
-}
-
-fn parse_openai_stories_from_content(
-    file: &LocalQueryInputFile,
-    content: &str,
-    batch_size: usize,
-) -> Result<ParsedFile> {
-    let value = serde_json::from_str(content)
-        .with_context(|| format!("parse OpenAI JSON input {}", file.path().display()))?;
-    let stories = parse_openai_msg_corpus_value(&value, file.relative_path())
-        .map_err(anyhow::Error::from)
-        .with_context(|| format!("normalize OpenAI input {}", file.path().display()))?;
-    stories_to_parsed_file(file, DocumentFormat::OpenaiMsg, stories, batch_size)
 }
 
 fn stories_to_parsed_file(

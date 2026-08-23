@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) async fn run_import(
-    args: ImportArgs,
+    mut args: ImportArgs,
     settings_override: Option<&Path>,
     stdin: &mut dyn Read,
     stdout: &mut dyn Write,
@@ -23,6 +23,9 @@ pub(super) async fn run_import(
             args.format != ExchangeFormat::Auto,
             "stdin import requires an explicit --format"
         );
+    }
+    if args.from != "-" {
+        args.from = expand_dataset_alias(&args.from)?;
     }
     let canonical = if !args.stream && (args.from.contains("://") || Path::new(&args.from).is_dir())
     {
@@ -597,7 +600,10 @@ fn encode_export(format: ExchangeFormat, stories: &[StorylineDocument]) -> Resul
             encode_json_storylines(DocumentFormat::OpenaiMsg, stories)?
         }
         ExchangeFormat::Storyline => encode_json_storylines(DocumentFormat::Storyline, stories)?,
-        _ => unreachable!("exchange export format was validated"),
+        ExchangeFormat::Codex | ExchangeFormat::ClaudeCode => {
+            bail!("{format} is decode-only and cannot be exported")
+        }
+        ExchangeFormat::Auto => unreachable!("exchange export format was validated"),
     };
     let mut output = serde_json::to_vec_pretty(&value).context("encode export JSON")?;
     output.push(b'\n');
@@ -611,6 +617,9 @@ fn export_format(format: ExchangeFormat) -> Result<ExchangeFormat> {
         ExchangeFormat::Actf => ExchangeFormat::Actf,
         ExchangeFormat::OpenaiMessages => ExchangeFormat::OpenaiMessages,
         ExchangeFormat::Storyline => ExchangeFormat::Storyline,
+        ExchangeFormat::Codex | ExchangeFormat::ClaudeCode => {
+            bail!("{format} is decode-only and cannot be exported")
+        }
     })
 }
 
@@ -620,6 +629,8 @@ fn exchange_document_format(format: ExchangeFormat) -> Option<DocumentFormat> {
         ExchangeFormat::Actf => Some(DocumentFormat::Actf),
         ExchangeFormat::OpenaiMessages => Some(DocumentFormat::OpenaiMsg),
         ExchangeFormat::Storyline => Some(DocumentFormat::Storyline),
+        ExchangeFormat::Codex => Some(DocumentFormat::Codex),
+        ExchangeFormat::ClaudeCode => Some(DocumentFormat::ClaudeCode),
         ExchangeFormat::Auto => None,
     }
 }
@@ -1213,6 +1224,8 @@ fn resolve_import_format(
             Some(DocumentFormat::Actf) => ExchangeFormat::Actf,
             Some(DocumentFormat::OpenaiMsg) => ExchangeFormat::OpenaiMessages,
             Some(DocumentFormat::Storyline) => ExchangeFormat::Storyline,
+            Some(DocumentFormat::Codex) => ExchangeFormat::Codex,
+            Some(DocumentFormat::ClaudeCode) => ExchangeFormat::ClaudeCode,
             Some(format) if allow_skip => {
                 return Ok(ImportFormatResolution::Skip(format!(
                     "detected import format '{format}' is not a queryable JSON format"
@@ -1240,6 +1253,8 @@ fn resolve_import_format(
         ExchangeFormat::Actf => ExchangeFormat::Actf,
         ExchangeFormat::OpenaiMessages => ExchangeFormat::OpenaiMessages,
         ExchangeFormat::Storyline => ExchangeFormat::Storyline,
+        ExchangeFormat::Codex => ExchangeFormat::Codex,
+        ExchangeFormat::ClaudeCode => ExchangeFormat::ClaudeCode,
     };
     if !matches!(
         format,
@@ -1247,6 +1262,8 @@ fn resolve_import_format(
             | ExchangeFormat::Actf
             | ExchangeFormat::OpenaiMessages
             | ExchangeFormat::Storyline
+            | ExchangeFormat::Codex
+            | ExchangeFormat::ClaudeCode
     ) {
         return Err(cli_boundary_error(
             BoundaryCode::Unsupported,
@@ -1296,6 +1313,8 @@ fn import_source_name(format: ExchangeFormat) -> &'static str {
         ExchangeFormat::Actf => "trajectories.actf.json",
         ExchangeFormat::OpenaiMessages => "session_steps.json",
         ExchangeFormat::Storyline => "trajectories.storyline.json",
+        ExchangeFormat::Codex => "session.codex.jsonl",
+        ExchangeFormat::ClaudeCode => "session.claude-code.jsonl",
         _ => unreachable!("unsupported import format was rejected"),
     }
 }

@@ -139,6 +139,88 @@ pub struct QueryFieldSummary {
     pub description: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalSource {
+    pub dataset: String,
+    pub file: String,
+    pub format: String,
+    pub uri: String,
+    pub size_bytes: Option<u64>,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalLayout {
+    pub dataset: String,
+    pub file: String,
+    pub format: String,
+    pub tables: Vec<PhysicalTable>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalTable {
+    pub name: String,
+    pub uri: String,
+    pub version: u64,
+    pub num_rows: u64,
+    pub fragments: Vec<PhysicalFragment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalFragment {
+    pub id: u64,
+    pub physical_rows: Option<u64>,
+    pub deletion_file: Option<String>,
+    pub files: Vec<PhysicalDataFile>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalDataFile {
+    pub path: String,
+    pub field_ids: Vec<i32>,
+    pub field_names: Vec<String>,
+    pub size_bytes: Option<u64>,
+    pub encoding: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalFileLayout {
+    pub table: String,
+    pub fragment_id: u64,
+    pub data_file: String,
+    pub num_rows: Option<u64>,
+    pub file_size_bytes: Option<u64>,
+    pub remaining_columns: usize,
+    pub columns: Vec<PhysicalColumn>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalColumn {
+    pub name: String,
+    pub field_id: i32,
+    pub pages: Vec<PhysicalPage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalPage {
+    pub index: u32,
+    pub offset: u64,
+    pub size: u64,
+    pub num_rows: Option<u64>,
+    pub encoding: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct PhysicalPagePreview {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub offset: usize,
+    pub limit: usize,
+    pub truncated: bool,
+    pub truncated_cells: usize,
+}
+
 pub fn queryable_tables(catalog: &QueryCatalog) -> Vec<QueryTableSummary> {
     if catalog.tables.iter().any(|table| table.name.contains('.')) {
         return catalog.tables.clone();

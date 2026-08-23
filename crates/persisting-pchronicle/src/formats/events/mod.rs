@@ -5,8 +5,8 @@
 //!
 //! What this module provides:
 //! - [`EventRecord`] / [`EventsDocument`]: in-memory shape aligned with EventRecord
-//! - [`events_to_storyline`](crate::convert::events_to_storyline) / storyline→events
-//!   (programmatic, after you already loaded rows from Lance)
+//! - [`events_to_storyline`] / [`storyline_to_events`] (programmatic, after you
+//!   already loaded rows from Lance)
 //! - [`export_events_jsonl`]: **test/debug export only**
 //!
 //! Use the pChronicle APIs to extract Lance events for inspection.
@@ -15,6 +15,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::Result;
 pub use persisting_events::{EventIdentity, EventRecord};
+
+mod convert;
+#[cfg(feature = "lance-store")]
+pub(crate) use convert::event_storyline_key;
+pub use convert::{events_to_storyline, project_event_records, storyline_to_events};
 
 /// In-memory batch of events (not a file format).
 ///

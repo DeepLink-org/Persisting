@@ -568,6 +568,18 @@ async fn open_visible_snapshot(root_uri: &str) -> Result<Option<(EventManifest, 
     Ok(Some((manifest, datasets)))
 }
 
+pub(crate) async fn inspect_visible_event_tables(uri: &str) -> Result<Vec<(String, Dataset)>> {
+    let Some((manifest, datasets)) = open_visible_snapshot(uri).await? else {
+        return Ok(Vec::new());
+    };
+    Ok(manifest
+        .segments
+        .iter()
+        .zip(datasets)
+        .map(|(segment, dataset)| (segment.id.clone(), dataset))
+        .collect())
+}
+
 /// Read only the small visibility manifest. The returned segment versions are
 /// the immutable catalog descriptor used for later lazy resolution.
 async fn pin_visible_snapshot(root_uri: &str) -> Result<Option<EventManifest>> {

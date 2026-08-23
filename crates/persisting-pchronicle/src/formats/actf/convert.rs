@@ -5,11 +5,11 @@ use std::collections::BTreeMap;
 use anyhow::Context as _;
 use serde_json::{json, Map, Value};
 
-use crate::format::DocumentFormat;
-use crate::formats::actf::{
+use super::{
     ActfAttempt, ActfDocument, ActfObservation, ActfStep, ActfToolCall, ActfTrajectory,
     ACTF_SCHEMA_VERSION,
 };
+use crate::format::DocumentFormat;
 use crate::formats::storyline::{
     StorylineAgent, StorylineDocument, StorylineEnv, StorylineOrigin, StorylinePrompt,
     StorylineTask, StorylineTaskLlm, StorylineTaskResult, StorylineToolCall, StorylineToolResponse,

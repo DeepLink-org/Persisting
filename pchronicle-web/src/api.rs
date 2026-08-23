@@ -1,7 +1,8 @@
 use crate::analysis_session::{AnalysisScope, AnalysisSpec, CompileFailure, CompiledQuery};
 use crate::model::{
-    CatalogTree, QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, StorylineSnapshot,
-    TurnDetail, TurnPage,
+    CatalogTree, PhysicalFileLayout, PhysicalLayout, PhysicalPagePreview, PhysicalSource,
+    QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, StorylineSnapshot, TurnDetail,
+    TurnPage,
 };
 use gloo_net::http::{Request, Response};
 use serde_json::json;
@@ -208,4 +209,79 @@ pub async fn refresh_catalog() -> Result<(), String> {
     )
     .await?;
     Ok(())
+}
+
+pub async fn physical_sources() -> Result<Vec<PhysicalSource>, String> {
+    checked(
+        Request::get("/api/physical/sources")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?,
+    )
+    .await?
+    .json()
+    .await
+    .map_err(|e| e.to_string())
+}
+
+pub async fn physical_layout(dataset: &str, file: &str) -> Result<PhysicalLayout, String> {
+    let url = format!(
+        "/api/physical/layout?dataset={}&file={}",
+        urlencoding::encode(dataset),
+        urlencoding::encode(file),
+    );
+    checked(Request::get(&url).send().await.map_err(|e| e.to_string())?)
+        .await?
+        .json()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+pub async fn physical_file(
+    dataset: &str,
+    file: &str,
+    table: &str,
+    fragment: u64,
+    data_file: &str,
+) -> Result<PhysicalFileLayout, String> {
+    let url = format!(
+        "/api/physical/file?dataset={}&file={}&table={}&fragment={fragment}&data_file={}",
+        urlencoding::encode(dataset),
+        urlencoding::encode(file),
+        urlencoding::encode(table),
+        urlencoding::encode(data_file),
+    );
+    checked(Request::get(&url).send().await.map_err(|e| e.to_string())?)
+        .await?
+        .json()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+pub async fn physical_page(
+    dataset: &str,
+    file: &str,
+    table: &str,
+    fragment: u64,
+    data_file: &str,
+    column: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> Result<PhysicalPagePreview, String> {
+    let mut url = format!(
+        "/api/physical/page?dataset={}&file={}&table={}&fragment={fragment}&data_file={}&offset={offset}&limit={limit}",
+        urlencoding::encode(dataset),
+        urlencoding::encode(file),
+        urlencoding::encode(table),
+        urlencoding::encode(data_file),
+    );
+    if let Some(column) = column {
+        url.push_str("&column=");
+        url.push_str(&urlencoding::encode(column));
+    }
+    checked(Request::get(&url).send().await.map_err(|e| e.to_string())?)
+        .await?
+        .json()
+        .await
+        .map_err(|e| e.to_string())
 }

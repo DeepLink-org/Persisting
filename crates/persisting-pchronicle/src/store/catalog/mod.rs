@@ -72,6 +72,12 @@ use super::{
 };
 
 pub const DEFAULT_DATASET_NAME: &str = "dataset";
+
+#[derive(Debug, Clone)]
+pub(crate) enum PhysicalOpenTarget {
+    Events { uri: String },
+    Storyline { paths: StorylineTablePaths },
+}
 pub const CATALOG_SOURCES_TABLE: &str = "sources";
 pub const CATALOG_TRAJECTORIES_TABLE: &str = "trajectories";
 pub const DEFAULT_MAX_EVENT_FALLBACK_ROWS: usize = 100_000;
@@ -435,6 +441,33 @@ impl DatasetCatalogSnapshot {
     /// roots because a mount may start at any hierarchy level.
     pub fn canonical_event_uri(&self, key: &CatalogStorylineKey) -> Result<Option<&str>> {
         Ok(self.lazy_source(key)?.canonical_event_uri())
+    }
+
+    pub(crate) fn physical_open_target(
+        &self,
+        dataset: &str,
+        file: &str,
+    ) -> Result<PhysicalOpenTarget> {
+        let dataset_name = identity::normalize_sql_alias(dataset)?;
+        let prepared = self
+            .prepared
+            .iter()
+            .find(|candidate| candidate.name == dataset_name)
+            .with_context(|| format!("physical source not found: {dataset}/{file}"))?;
+        let source = prepared
+            .sources
+            .iter()
+            .find(|source| source.file() == file)
+            .with_context(|| format!("physical source not found: {dataset}/{file}"))?;
+        match &source.spec {
+            LazySourceSpec::Events { uri, .. } => {
+                Ok(PhysicalOpenTarget::Events { uri: uri.clone() })
+            }
+            LazySourceSpec::Storyline { paths } => Ok(PhysicalOpenTarget::Storyline {
+                paths: paths.clone(),
+            }),
+            _ => anyhow::bail!("physical source is not a Lance dataset: {dataset}/{file}"),
+        }
     }
 
     fn lazy_source(&self, key: &CatalogStorylineKey) -> Result<&LazySource> {

@@ -343,6 +343,9 @@ enum ExchangeFormat {
     #[value(name = "openai-messages")]
     OpenaiMessages,
     Storyline,
+    Codex,
+    #[value(name = "claude-code")]
+    ClaudeCode,
 }
 
 impl ExchangeFormat {
@@ -353,6 +356,8 @@ impl ExchangeFormat {
             Self::Actf => "actf",
             Self::OpenaiMessages => "openai-messages",
             Self::Storyline => "storyline",
+            Self::Codex => "codex",
+            Self::ClaudeCode => "claude-code",
         }
     }
 }
@@ -484,7 +489,6 @@ struct ExportArgs {
     ),
     group(
         ArgGroup::new("serve_component")
-            .required(true)
             .multiple(true)
             .args(["listen", "control", "gateway"])
     )
@@ -499,6 +503,7 @@ struct ServeArgs {
     storage: Vec<String>,
 
     /// Loopback address for the read-only API and Web UI.
+    /// Defaults to 127.0.0.1:0 when no other service is selected.
     #[arg(long)]
     listen: Option<SocketAddr>,
 
@@ -1223,6 +1228,16 @@ fn write_projection_diagnostic<W: Write + ?Sized>(
     .context("write pChronicle projection diagnostic")
 }
 
+fn warehouse_listen(args: &ServeArgs) -> Option<SocketAddr> {
+    match args.listen {
+        Some(listen) => Some(listen),
+        None if args.control.is_none() && args.gateway.is_none() => {
+            Some(SocketAddr::from(([127, 0, 0, 1], 0)))
+        }
+        None => None,
+    }
+}
+
 async fn run_serve(args: ServeArgs, stdout: &mut dyn Write, stderr: &mut dyn Write) -> Result<()> {
     let config = resolve_serve_config(&args)?;
     let control_uri = args
@@ -1237,7 +1252,7 @@ async fn run_serve(args: ServeArgs, stdout: &mut dyn Write, stderr: &mut dyn Wri
     let mut projections =
         projection_supervisor::ProjectionSupervisor::new(config.clone(), None, diagnostic_tx);
     projections.converge_before_readiness().await?;
-    let warehouse = match args.listen {
+    let warehouse = match warehouse_listen(&args) {
         Some(listen) => {
             anyhow::ensure!(
                 listen.ip().is_loopback(),
@@ -1404,11 +1419,11 @@ fn parse_storage_argument(raw: &str) -> Result<(Option<String>, String)> {
             anyhow::ensure!(!uri.is_empty(), "--storage NAME=URI must include a URI");
             return Ok((
                 Some(DatasetMount::new(name, "validation")?.name),
-                uri.to_string(),
+                expand_dataset_alias(uri)?,
             ));
         }
     }
-    Ok((None, raw.to_string()))
+    Ok((None, expand_dataset_alias(raw)?))
 }
 
 fn looks_like_dataset_name(name: &str) -> bool {

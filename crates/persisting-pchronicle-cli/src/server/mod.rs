@@ -3,6 +3,7 @@
 mod acceleration;
 mod asset;
 mod explorer;
+mod physical;
 pub(crate) mod problem;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -197,6 +198,10 @@ fn api_routes() -> Router<AppState> {
         .route("/trajectory-view", get(trajectory_view))
         .route("/export/otlp", get(export_otlp))
         .route("/catalog", get(catalog).post(refresh_catalog))
+        .route("/physical/sources", get(physical::sources))
+        .route("/physical/layout", get(physical::layout))
+        .route("/physical/file", get(physical::file))
+        .route("/physical/page", get(physical::page))
         .route("/query/tables", get(query_tables))
         .route("/query/evidence", post(query_evidence))
         .route("/analysis/compile", post(compile_analysis))

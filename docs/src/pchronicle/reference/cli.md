@@ -122,6 +122,18 @@ pchronicle query \
   "SELECT * FROM live.runs UNION ALL SELECT * FROM archive.runs"
 ```
 
+`@codex` and `@claude` (or `@claude-code`) expand to the local Codex sessions
+and Claude Code projects directories before discovery, including `query`,
+`import --from`, warehouse config URIs, and `serve --storage`. A suffix is
+allowed:
+
+```bash
+pchronicle query @codex 'SELECT COUNT(*) AS runs FROM dataset.runs'
+pchronicle query @codex/2026/05/29 'SELECT COUNT(*) AS runs FROM dataset.runs'
+pchronicle query --dataset vendor=@claude \
+  'SELECT COUNT(*) AS runs FROM vendor.runs'
+```
+
 The normalized schemas expose the relations available for each Source,
 including `sources`, `runs`, `steps`, `tool_calls`, `events`, and
 `trajectories`. Use `DESCRIBE dataset.steps` rather than relying on an exchange
@@ -253,6 +265,8 @@ pchronicle import --from input.json --output ./imported --format atif
 pchronicle import --from input.json
 pchronicle import --from ./corpus --output ./normalized \
   --output-format storyline
+pchronicle import --from @codex --output ./codex-ds
+pchronicle import --from @claude --output ./claude-ds
 cat input.json | pchronicle import --from - --stream \
   --output ./imported --format openai-messages
 ```
@@ -318,10 +332,11 @@ pchronicle export --from ./imported --output one.json --format actf \
   --source source.json --session-id session-42 --strict
 ```
 
-Import supports `atif`, `actf`, `openai-messages`, and `storyline`. Export
-supports the same four exchange formats. Output files are create-only unless
-`--overwrite` is explicit. `--strict` refuses a conversion that cannot preserve
-the original exchange document.
+Import supports `atif`, `actf`, `openai-messages`, `storyline`, and the
+decode-only session formats `codex` and `claude-code`. Export supports the four
+JSON exchange formats and refuses `codex` and `claude-code`. Output files are
+create-only unless `--overwrite` is explicit. `--strict` refuses a conversion
+that cannot preserve the original exchange document.
 
 ## Deterministic Echo upstream
 
@@ -352,17 +367,20 @@ uri = "../data/atif"
 pchronicle serve --config warehouse.toml --listen 127.0.0.1:8081 --open
 pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
 pchronicle serve --storage ./tmp --storage ./data/evals --listen 127.0.0.1:9980
+pchronicle serve --storage @codex
+pchronicle serve --storage @codex --listen 127.0.0.1:9977
 ```
 
 Relative local Dataset paths are resolved from the configuration file's
-directory. At least one of `--listen`, `--control`, or `--gateway` is required.
-`--config` and `--storage` are mutually exclusive: configuration mounts named
-Datasets, while `--storage URI` mounts one Dataset named `default`. Repeat
-`--storage` to mount several Datasets named from each URI's last path
-component; `NAME=URI` overrides that name. `--listen` enables Warehouse HTTP;
-omitting it does not start Warehouse. `--control` requires `--storage` and
-uses the Dataset named `default` as the authenticated write/control root on a
-loopback listener. `--open` requires `--listen`.
+directory. `--config` and `--storage` are mutually exclusive: configuration
+mounts named Datasets, while `--storage URI` mounts one Dataset named
+`default`. Repeat `--storage` to mount several Datasets named from each URI's
+last path component; `NAME=URI` overrides that name. `--listen` enables
+Warehouse HTTP on a loopback address. Omitting `--listen`, `--control`, and
+`--gateway` starts Warehouse on `127.0.0.1` with an ephemeral port. `--control`
+or `--gateway` without `--listen` does not start Warehouse. `--control`
+requires `--storage` and uses the Dataset named `default` as the authenticated
+write/control root on a loopback listener. `--open` requires `--listen`.
 
 Warehouse rejects non-loopback listeners because it has no authentication. Its
 Dataset mounts and API are read-only; import, export, maintenance, and arbitrary
@@ -373,7 +391,7 @@ and converges their deterministic sibling `storyline` projections before it
 publishes readiness. It continues discovery at runtime, using bounded
 concurrency and retry for incremental sync or rebuild. Projection failures do
 not block canonical durable writes, and a destination without matching lineage
-is never overwritten. If `--listen` is enabled, each successful publication
+is never overwritten. If Warehouse HTTP is running, each successful publication
 triggers a complete Catalog rebuild outside the reader lock and an atomic
 snapshot swap; a failed refresh retains the old queryable snapshot for retry.
 

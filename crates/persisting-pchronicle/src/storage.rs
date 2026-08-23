@@ -28,19 +28,22 @@ pub use crate::discovery::{
 #[cfg(feature = "lance-store")]
 pub use crate::store::{
     attempt_registry_now_ms, distinct_session_ids_in_run, export_source_dirs, export_story_bundle,
+    inspect_physical_file, inspect_physical_layout, inspect_physical_page, list_physical_sources,
     raw_event_lance_path, AppendOutcome, AttemptRecord, AttemptRecordState, AttemptRegistry,
     CatalogDataset, CatalogErrorPolicy, CatalogNamespace, CatalogPage, CatalogProjectionStatus,
     CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind, CatalogSourceRevision,
     CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle, CommitRunOutcome,
     DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, EventFactSnapshot, EventLogLayoutStats,
     EventWriterFence, ExportOutcome, LanceMaintenanceOptions, LanceMaintenanceReport,
-    LeaseAcquireOutcome, NamespacePath, ObjectStoreManifestWriteMode, ProjectionSourceSnapshot,
+    LeaseAcquireOutcome, NamespacePath, ObjectStoreManifestWriteMode, PhysicalColumn,
+    PhysicalDataFile, PhysicalFileLayout, PhysicalFragment, PhysicalLayout, PhysicalPage,
+    PhysicalPagePreview, PhysicalSource, PhysicalTable, ProjectionSourceSnapshot,
     RawEventLanceAppender, RawEventLanceStore, ReplayOutcome, RunControlStore,
     StorylineContentOptions, StorylineContentReadMode, StorylineLanceStore,
     StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
     StorylineTablePaths, TrajectoryStats, DEFAULT_CONTENT_OFFLOAD_THRESHOLD,
     DEFAULT_CONTENT_PREVIEW_BYTES, DEFAULT_DATASET_NAME, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
-    DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+    DEFAULT_MAX_EVENT_FALLBACK_ROWS, DEFAULT_PHYSICAL_PAGE_LIMIT,
 };
 
 #[cfg(feature = "lance-store")]

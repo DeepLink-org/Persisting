@@ -284,8 +284,66 @@ pub(super) fn sql_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-pub(super) fn normalize_and_validate_dataset_uri(input: &str) -> Result<String> {
+pub(super) fn expand_dataset_alias(input: &str) -> Result<String> {
     let input = input.trim();
+    if !input.starts_with('@') {
+        return Ok(input.to_string());
+    }
+    anyhow::ensure!(
+        !input[1..].contains("://"),
+        "dataset alias must not contain a URI scheme"
+    );
+    let rest = &input[1..];
+    let (name, suffix) = rest.split_once('/').unwrap_or((rest, ""));
+    anyhow::ensure!(
+        !name.is_empty(),
+        "dataset alias must include a name after '@'"
+    );
+    let remainder = suffix.trim_start_matches('/');
+    if !remainder.is_empty() {
+        for component in remainder.split('/') {
+            anyhow::ensure!(
+                !component.is_empty() && component != "..",
+                "dataset alias path must not contain empty or parent segments"
+            );
+        }
+    }
+    let root = match name {
+        "codex" => alias_root("CODEX_HOME", ".codex", "sessions", "@codex")?,
+        "claude" => alias_root("CLAUDE_CONFIG_DIR", ".claude", "projects", "@claude")?,
+        "claude-code" => alias_root("CLAUDE_CONFIG_DIR", ".claude", "projects", "@claude-code")?,
+        other => anyhow::bail!("unknown dataset alias '@{other}'; expected @codex or @claude"),
+    };
+    if remainder.is_empty() {
+        return Ok(root.to_string_lossy().into_owned());
+    }
+    Ok(root.join(remainder).to_string_lossy().into_owned())
+}
+
+fn alias_root(env_key: &str, home_subdir: &str, leaf: &str, label: &str) -> Result<PathBuf> {
+    let configured = std::env::var_os(env_key).filter(|value| !value.is_empty());
+    let base = match configured {
+        Some(value) => {
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()
+                    .with_context(|| {
+                        format!("cannot resolve {label}: current directory is unknown")
+                    })?
+                    .join(path)
+            }
+        }
+        None => dirs::home_dir()
+            .ok_or_else(|| anyhow!("cannot resolve {label}: home directory is unknown"))?
+            .join(home_subdir),
+    };
+    Ok(base.join(leaf))
+}
+
+pub(super) fn normalize_and_validate_dataset_uri(input: &str) -> Result<String> {
+    let input = expand_dataset_alias(input)?;
     anyhow::ensure!(!input.is_empty(), "Dataset URI must not be empty");
     if !input.contains("://") {
         return Ok(std::fs::canonicalize(input)
@@ -294,7 +352,7 @@ pub(super) fn normalize_and_validate_dataset_uri(input: &str) -> Result<String> 
             .into_owned());
     }
 
-    let url = Url::parse(input).context("parse Dataset URI")?;
+    let url = Url::parse(&input).context("parse Dataset URI")?;
     anyhow::ensure!(
         matches!(url.scheme(), "local" | "file" | "s3" | "az" | "gs"),
         "unsupported Dataset URI scheme '{}'",

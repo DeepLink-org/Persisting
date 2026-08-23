@@ -41,13 +41,16 @@ To capture new LLM traffic in the same process, continue with
 read the [Dataset Catalog design](../design/catalog.md).
 
 `serve` only starts the services named on the command line. Omitting
-`--listen` disables Warehouse HTTP. A storage URI can instead host the local
+`--listen`, `--control`, and `--gateway` starts Warehouse HTTP on `127.0.0.1`
+with an ephemeral port. `--control` or `--gateway` without `--listen` still
+does not start Warehouse. A storage URI can instead host the local
 authenticated Control protocol used by pPilot and pVisor:
 
 ```bash
 pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
 pchronicle serve --storage ./tmp --storage ./data/evals --listen 127.0.0.1:9980
 pchronicle serve --storage default=./tmp --storage evals=./data --control 127.0.0.1:0
+pchronicle serve --storage @codex
 ```
 
 `--config` and `--storage` are mutually exclusive, and `--control` requires
@@ -64,7 +67,7 @@ readiness is emitted only after all startup targets are fresh. It then keeps
 discovering and maintaining projections with bounded concurrency and retry.
 Projection failures remain outside the durable canonical write path, and
 foreign destinations without matching lineage are never overwritten. When
-`--listen` is also present, successful projection publication automatically
+Warehouse HTTP is running, successful projection publication automatically
 rebuilds and swaps the Warehouse Catalog. Observe the state without mutation:
 
 ```bash

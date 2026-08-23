@@ -71,15 +71,17 @@ pub(crate) async fn open_document_source(
                 source,
             })
         }
-        DocumentFormat::Storyline
-        | DocumentFormat::Atif
-        | DocumentFormat::OpenaiMsg
-        | DocumentFormat::Actf => {
-            let manifest = LocalQueryManifest::for_format(&path, format)?;
+        other => {
+            anyhow::ensure!(
+                crate::formats::registry::supports_direct_query(other),
+                "unsupported document source format '{other}' in {}",
+                path.display()
+            );
+            let manifest = LocalQueryManifest::for_format(&path, other)?;
             let source = FileTrajectoryDataSource::from_manifest(manifest.clone())?;
-            debug_assert_eq!(source.format(), format);
+            debug_assert_eq!(source.format(), other);
             Ok(DocumentSourceImpl::Files {
-                format,
+                format: other,
                 manifest,
                 source,
             })
@@ -135,28 +137,19 @@ impl DocumentSourceImpl {
                 late_content_materialization: false,
                 snapshot_consistent: false,
             },
-            DocumentFormat::OpenaiMsg => QueryCapabilities {
-                projection_pushdown: true,
-                filter_pushdown: FilterPushdown::Unsupported,
-                limit_pushdown: true,
-                scalar_indexes: false,
-                streaming_decode: false,
-                late_content_materialization: false,
-                snapshot_consistent: false,
-            },
-            DocumentFormat::Storyline => QueryCapabilities {
-                projection_pushdown: true,
-                filter_pushdown: FilterPushdown::Unsupported,
-                limit_pushdown: true,
-                scalar_indexes: false,
-                streaming_decode: false,
-                late_content_materialization: false,
-                snapshot_consistent: false,
-            },
             DocumentFormat::AgenticMd => QueryCapabilities {
                 projection_pushdown: true,
                 filter_pushdown: FilterPushdown::Unsupported,
                 limit_pushdown: false,
+                scalar_indexes: false,
+                streaming_decode: false,
+                late_content_materialization: false,
+                snapshot_consistent: false,
+            },
+            _ => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::Unsupported,
+                limit_pushdown: true,
                 scalar_indexes: false,
                 streaming_decode: false,
                 late_content_materialization: false,
@@ -370,10 +363,27 @@ where
                 }
             }
         }
-        DocumentFormat::CanonicalEvent
-        | DocumentFormat::StorylineLance
-        | DocumentFormat::AgenticMd => {
-            anyhow::bail!("{format} is not a file-backed trajectory document format");
+        other => {
+            let handler = crate::formats::registry::get(other).ok_or_else(|| {
+                anyhow::anyhow!("{other} is not a file-backed trajectory document format")
+            })?;
+            anyhow::ensure!(
+                handler.capabilities().direct_query,
+                "{other} is not a file-backed trajectory document format"
+            );
+            for file in manifest.files() {
+                let input = read_bounded_file(file, max_file_bytes, other)?;
+                let mut reader = std::io::Cursor::new(input);
+                for story in crate::formats::codec::decode_all(
+                    handler,
+                    &mut reader,
+                    &crate::formats::codec::DocumentSource::new(file.relative_path()),
+                )
+                .map_err(anyhow::Error::from)?
+                {
+                    on_storyline(story)?;
+                }
+            }
         }
     }
     Ok(())
