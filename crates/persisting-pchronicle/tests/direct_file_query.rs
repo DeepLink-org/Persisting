@@ -9,12 +9,16 @@ use persisting_pchronicle::query::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, SOURCE_FILE_COLUMN,
 };
 
+mod support;
+
+use support::fixture_path;
+
 fn fixtures() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/import_roundtrip")
+    fixture_path("import_roundtrip")
 }
 
 fn atif_fixtures() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/atif")
+    fixture_path("atif")
 }
 
 fn json_rows(output: &str) -> Result<Vec<serde_json::Value>> {

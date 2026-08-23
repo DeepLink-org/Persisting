@@ -1,12 +1,7 @@
+use super::test_support::fixture_path;
 use super::*;
 use datafusion::logical_expr::{col, lit};
 use std::io::{BufReader, Cursor, Read as _};
-
-fn atif_fixture(name: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/atif")
-        .join(name)
-}
 
 #[test]
 fn default_options_allow_records_above_legacy_64_mib_cap() {
@@ -93,7 +88,7 @@ fn projected_read_falls_back_for_lossless_only_step_columns() {
 #[test]
 fn private_provider_options_and_table_names_fail_closed() {
     let manifest =
-        LocalQueryManifest::for_format(atif_fixture("dialogue_10.json"), DocumentFormat::Atif)
+        LocalQueryManifest::for_format(fixture_path("atif/dialogue_10.json"), DocumentFormat::Atif)
             .unwrap();
     let error = FileTrajectoryDataSource::from_manifest_with_options(
         manifest,
@@ -121,7 +116,7 @@ fn private_provider_options_and_table_names_fail_closed() {
 
 #[tokio::test]
 async fn projected_ndjson_enforces_private_record_bound() {
-    let trajectory = std::fs::read_to_string(atif_fixture("dialogue_10.json")).unwrap();
+    let trajectory = std::fs::read_to_string(fixture_path("atif/dialogue_10.json")).unwrap();
     let value: serde_json::Value = serde_json::from_str(&trajectory).unwrap();
     let input = tempfile::NamedTempFile::with_suffix(".ndjson").unwrap();
     std::fs::write(
@@ -155,7 +150,7 @@ async fn projected_ndjson_enforces_private_record_bound() {
 
 #[tokio::test]
 async fn projected_array_enforces_private_record_bound_per_element() {
-    let trajectory = std::fs::read_to_string(atif_fixture("dialogue_10.json")).unwrap();
+    let trajectory = std::fs::read_to_string(fixture_path("atif/dialogue_10.json")).unwrap();
     let value: serde_json::Value = serde_json::from_str(&trajectory).unwrap();
     let input = tempfile::NamedTempFile::with_suffix(".json").unwrap();
     std::fs::write(
@@ -189,7 +184,7 @@ async fn projected_array_enforces_private_record_bound_per_element() {
 
 #[tokio::test]
 async fn full_atif_array_enforces_private_record_bound_per_element() {
-    let trajectory = std::fs::read_to_string(atif_fixture("dialogue_10.json")).unwrap();
+    let trajectory = std::fs::read_to_string(fixture_path("atif/dialogue_10.json")).unwrap();
     let value: serde_json::Value = serde_json::from_str(&trajectory).unwrap();
     let input = tempfile::NamedTempFile::with_suffix(".json").unwrap();
     std::fs::write(
@@ -223,7 +218,7 @@ async fn full_atif_array_enforces_private_record_bound_per_element() {
 
 #[tokio::test]
 async fn full_atif_array_reports_bounded_input_buffer_peak() {
-    let trajectory = std::fs::read_to_string(atif_fixture("dialogue_10.json")).unwrap();
+    let trajectory = std::fs::read_to_string(fixture_path("atif/dialogue_10.json")).unwrap();
     let input = tempfile::NamedTempFile::with_suffix(".json").unwrap();
     std::fs::write(input.path(), format!("[{trajectory}]")).unwrap();
     let manifest = LocalQueryManifest::for_format(input.path(), DocumentFormat::Atif).unwrap();
@@ -298,8 +293,7 @@ async fn queries_actf_event_log_trajectory_as_steps() {
 
 #[tokio::test]
 async fn projected_actf_pushdown_matches_session_id_and_step_id() {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/import_roundtrip/protein-assembly_trimmed.actf.json");
+    let path = fixture_path("import_roundtrip/protein-assembly_trimmed.actf.json");
     let manifest = LocalQueryManifest::for_format(&path, DocumentFormat::Actf).unwrap();
     let source = FileTrajectoryDataSource::from_manifest(manifest).unwrap();
     let context = SessionContext::new();

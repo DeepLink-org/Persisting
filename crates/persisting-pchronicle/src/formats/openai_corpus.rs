@@ -18,9 +18,10 @@ use crate::formats::storyline::{
 };
 use crate::formats::timestamp::StorylineTimestamp;
 use crate::formats::unknown_fields::{
-    attach_carried_unknown_fields, decode_json_pointer, normalize_openai_pointer,
-    restore_json_pointer, take_unknown_fields_envelope, validate_unknown_fields_with,
-    write_foreign_unknown_fields_envelope, CarrierBinding, PointerWrite, UnknownFieldLimits,
+    attach_carried_unknown_fields, decode_json_pointer, insert_unknown_map,
+    normalize_openai_pointer, pointer_join, restore_json_pointer, take_unknown_fields_envelope,
+    validate_unknown_fields_with, write_foreign_unknown_fields_envelope, CarrierBinding,
+    PointerWrite, UnknownFieldLimits,
 };
 use crate::{InputIssue, InputResult, Result};
 
@@ -121,7 +122,7 @@ fn capture_openai_unknowns(
     root_unknown: &Map<String, Value>,
     records: &[(usize, Value)],
 ) -> InputResult<()> {
-    insert_openai_map(story, source_document_id, "", root_unknown)?;
+    insert_unknown_map(story, "openai-msg", source_document_id, "", root_unknown)?;
     for (ordinal, record) in records {
         let row = record.as_object().ok_or_else(|| {
             InputIssue::invalid("OpenAI corpus row must be an object")
@@ -260,27 +261,6 @@ fn capture_openai_meta(
         )?;
     }
     Ok(())
-}
-
-fn insert_openai_map(
-    story: &mut StorylineDocument,
-    source_document_id: &str,
-    prefix: &str,
-    fields: &Map<String, Value>,
-) -> InputResult<()> {
-    for (key, value) in fields {
-        story.unknown_fields.insert(
-            "openai-msg",
-            source_document_id,
-            pointer_join(prefix, key),
-            value.clone(),
-        )?;
-    }
-    Ok(())
-}
-
-fn pointer_join(parent: &str, token: &str) -> String {
-    format!("{parent}/{}", token.replace('~', "~0").replace('/', "~1"))
 }
 
 const OPENAI_ROW_METRIC_FIELDS: &[&str] = &[

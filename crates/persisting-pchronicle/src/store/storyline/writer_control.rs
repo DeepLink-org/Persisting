@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+pub(super) use super::super::cas_store::unix_now_ms;
 use super::{
     validate_current_control, write_local_current, StorylineLanceStore, StorylineSnapshotPointer,
     CURRENT_FILE,
@@ -13,16 +14,6 @@ use super::{
 const CONTROL_CAS_RETRIES: usize = 32;
 pub(super) const WRITER_LEASE_TTL_MS: u64 = 60_000;
 pub(super) const CURRENT_CONTROL_VERSION: u32 = 1;
-
-pub(super) fn unix_now_ms() -> u64 {
-    u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-    )
-    .unwrap_or(u64::MAX)
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct StorylineCurrentControl {

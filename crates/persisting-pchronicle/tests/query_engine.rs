@@ -12,6 +12,10 @@ use persisting_pchronicle::query::{
 };
 use persisting_pchronicle::storage::{RawEventLanceStore, StoryCoords, StorylineLanceStore};
 
+mod support;
+
+use support::fixture_path;
+
 const SHARED_SQL: &str =
     "SELECT s.session_id, s.step_id, s.source, t.tool_call_id, t.function_name \
      FROM steps s LEFT JOIN tool_calls t \
@@ -20,7 +24,7 @@ const SHARED_SQL: &str =
      ORDER BY s.session_id, s.step_id, t.call_index";
 
 fn fixture_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/atif")
+    fixture_path("atif")
 }
 
 fn fixture_paths() -> Result<Vec<PathBuf>> {

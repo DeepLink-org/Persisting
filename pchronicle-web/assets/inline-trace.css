@@ -148,6 +148,133 @@
   padding: 10px;
 }
 
+.pc2-context-rebuild {
+  margin: 0 0 10px;
+  border: 1px solid #d7e0ec;
+  border-radius: 8px;
+  background: #f7fafd;
+  overflow: hidden;
+}
+
+.pc2-context-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e3eaf3;
+  background: #eef4fb;
+}
+
+.pc2-context-head strong {
+  color: #1d4ed8;
+  font-size: 11px;
+}
+
+.pc2-context-head span {
+  color: #667085;
+  font-size: 10px;
+}
+
+.pc2-context-head .pc2-context-stats {
+  margin-left: auto;
+  color: #344054;
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.pc2-context-empty {
+  margin: 0;
+  padding: 10px;
+  color: #98a2b3;
+  font-size: 10px;
+}
+
+.pc2-context-list {
+  display: grid;
+  gap: 0;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.pc2-context-message {
+  padding: 6px 10px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.pc2-context-message:last-child {
+  border-bottom: 0;
+}
+
+.pc2-context-message-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.pc2-context-message-head code {
+  color: #667085;
+  font-size: 9px;
+}
+
+.pc2-context-message-meta {
+  margin-left: auto;
+  color: #98a2b3;
+  font: 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.pc2-context-message-body {
+  margin: 0;
+  color: #475467;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+details.pc2-context-message-body summary {
+  cursor: pointer;
+  list-style: none;
+  white-space: normal;
+}
+
+details.pc2-context-message-body summary::before {
+  content: "▸ ";
+  color: #98a2b3;
+}
+
+details.pc2-context-message-body[open] summary {
+  margin-bottom: 4px;
+  color: #98a2b3;
+}
+
+details.pc2-context-message-body[open] summary::before {
+  content: "▾ ";
+}
+
+details.pc2-context-message-body pre {
+  max-height: 260px;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid #e3eaf3;
+  border-radius: 6px;
+  background: #fff;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 10px;
+}
+
+.pc2-context-boundary {
+  display: flex;
+  justify-content: center;
+  padding: 6px 10px;
+  border-top: 1px dashed #c7d6ea;
+  background: #eef4fb;
+  color: #1d4ed8;
+  font-size: 10px;
+}
+
 .pc2-inline-unavailable {
   padding: 12px;
   border: 1px dashed #d0d5dd;

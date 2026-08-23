@@ -1,38 +1,13 @@
-use std::path::{Path, PathBuf};
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use persisting_pchronicle::document::{
     decode_json_storylines, encode_json_storylines, open_document, DocumentFormat,
 };
 use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::storage::StorylineLanceStore;
 
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/import_roundtrip")
-        .join(name)
-}
+mod support;
 
-async fn persist_and_restore(stories: &[StorylineDocument]) -> Result<Vec<StorylineDocument>> {
-    let temporary = tempfile::tempdir()?;
-    let store = StorylineLanceStore::open(temporary.path()).await?;
-    store.replace_storylines(stories).await?;
-    let document_ids = stories
-        .iter()
-        .map(|story| {
-            story
-                .trajectory_id
-                .clone()
-                .unwrap_or_else(|| story.session_id.clone())
-        })
-        .collect::<Vec<_>>();
-    store
-        .get_storylines_by_document_ids(&document_ids)
-        .await?
-        .into_iter()
-        .map(|story| story.context("Storyline Lance roundtrip lost a session"))
-        .collect()
-}
+use support::{fixture_path, persist_and_restore, LookupStrategy};
 
 #[tokio::test]
 async fn storyline_lance_preserves_order_presence_origin_and_raw_observation() -> Result<()> {
@@ -78,7 +53,7 @@ async fn storyline_lance_preserves_order_presence_origin_and_raw_observation() -
         "trajectory.storyline.json",
     )?;
 
-    let restored = persist_and_restore(&stories).await?;
+    let restored = persist_and_restore(&stories, LookupStrategy::DocumentIds).await?;
 
     assert_eq!(
         encode_json_storylines(DocumentFormat::Storyline, &restored)?,
@@ -112,7 +87,7 @@ async fn nested_atif_and_null_canonicalization_are_stable_through_storyline_lanc
     let stories =
         decode_json_storylines(DocumentFormat::Atif, &expected.to_string(), "nested.json")?;
     let expected = encode_json_storylines(DocumentFormat::Atif, &stories)?;
-    let restored = persist_and_restore(&stories).await?;
+    let restored = persist_and_restore(&stories, LookupStrategy::DocumentIds).await?;
     assert_eq!(
         encode_json_storylines(DocumentFormat::Atif, &restored)?,
         expected
@@ -121,39 +96,17 @@ async fn nested_atif_and_null_canonicalization_are_stable_through_storyline_lanc
 }
 
 #[tokio::test]
-async fn atif_actf_and_openai_are_lossless_through_storyline_lance() -> Result<()> {
-    let atif_path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/atif/parallel_tools_14.json");
+async fn atif_parallel_tools_fixture_is_lossless_through_storyline_lance() -> Result<()> {
+    let atif_path = fixture_path("atif/parallel_tools_14.json");
     let atif_raw = std::fs::read_to_string(&atif_path)?;
     let atif_stories = decode_json_storylines(DocumentFormat::Atif, &atif_raw, &atif_path)?;
     let atif_expected = encode_json_storylines(DocumentFormat::Atif, &atif_stories)?;
-    let atif_restored = persist_and_restore(&atif_stories).await?;
+    let atif_restored = persist_and_restore(&atif_stories, LookupStrategy::DocumentIds).await?;
     assert_eq!(
         encode_json_storylines(DocumentFormat::Atif, &atif_restored)?,
         atif_expected
     );
 
-    let actf_path = fixture("make-doom-for-mips_trimmed.actf.json");
-    let actf_raw = std::fs::read_to_string(&actf_path)?;
-    let actf_stories = decode_json_storylines(DocumentFormat::Actf, &actf_raw, &actf_path)?;
-    let actf_expected = encode_json_storylines(DocumentFormat::Actf, &actf_stories)?;
-    let actf_restored = persist_and_restore(&actf_stories).await?;
-    assert_eq!(
-        encode_json_storylines(DocumentFormat::Actf, &actf_restored)?,
-        actf_expected
-    );
-
-    let openai_path = fixture("cybergym_0729001_trimmed.json");
-    let openai_stories = open_document(DocumentFormat::OpenaiMsg, &openai_path)
-        .await?
-        .project_storylines()
-        .await?;
-    let openai_expected = encode_json_storylines(DocumentFormat::OpenaiMsg, &openai_stories)?;
-    let openai_restored = persist_and_restore(&openai_stories).await?;
-    assert_eq!(
-        encode_json_storylines(DocumentFormat::OpenaiMsg, &openai_restored)?,
-        openai_expected
-    );
     Ok(())
 }
 

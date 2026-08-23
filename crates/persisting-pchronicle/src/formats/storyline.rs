@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::timestamp::StorylineTimestamp;
 use super::unknown_fields::{compute_unknown_key_counts, StorylineUnknownFields, UnknownKeyCounts};
@@ -359,11 +359,18 @@ impl StorylineTaskLlm {
     }
 }
 
+/// Generic evaluation fields live on the typed hub. ACTF-private keys
+/// (`task_correct`, `category`, `attempts_tried`, `solved_at`,
+/// `retry_count`, `retry_counts`) are not hub fields: they deserialize
+/// into [`Self::extra`] at the same JSON object so old Storyline
+/// documents keep those keys instead of dropping them.
+///
+/// | Kind | Keys |
+/// |---|---|
+/// | Generic eval | `correct`, `final_answer`, `ground_truth`, `status`, `score`, `error`, `artifacts`, `max_score` |
+/// | ACTF-private extra | `task_correct`, `category`, `attempts_tried`, `solved_at`, `retry_count`, `retry_counts` |
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct StorylineTaskResult {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_correct: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correct: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -379,35 +386,42 @@ pub struct StorylineTaskResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifacts: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub category: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempts_tried: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub solved_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retry_count: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retry_counts: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_score: Option<Value>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 impl StorylineTaskResult {
     pub fn is_empty(&self) -> bool {
-        self.task_correct.is_none()
-            && self.correct.is_none()
+        self.correct.is_none()
             && self.final_answer.is_none()
             && self.ground_truth.is_none()
             && self.status.is_none()
             && self.score.is_none()
             && self.error.is_none()
             && self.artifacts.is_none()
-            && self.category.is_none()
-            && self.attempts_tried.is_none()
-            && self.solved_at.is_none()
-            && self.retry_count.is_none()
-            && self.retry_counts.is_none()
             && self.max_score.is_none()
+            && self.extra.is_empty()
+    }
+
+    pub fn extra_bool(&self, key: &str) -> Option<bool> {
+        self.extra.get(key).and_then(Value::as_bool)
+    }
+
+    pub fn extra_i64(&self, key: &str) -> Option<i64> {
+        self.extra.get(key).and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_u64().and_then(|n| i64::try_from(n).ok()))
+        })
+    }
+
+    pub fn extra_str(&self, key: &str) -> Option<&str> {
+        self.extra.get(key).and_then(Value::as_str)
+    }
+
+    pub fn extra_value(&self, key: &str) -> Option<&Value> {
+        self.extra.get(key)
     }
 }
 
@@ -661,7 +675,7 @@ pub fn parse_storyline_document(input: &str) -> Result<StorylineDocument> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Map};
 
     fn story_with_source_normalized_counts() -> StorylineDocument {
         let mut story = StorylineDocument::new("session", "agent");
@@ -774,6 +788,55 @@ mod tests {
         let story = StorylineDocument::new("session", "agent");
         let value = serde_json::to_value(story).unwrap();
         assert!(value.get("unknown_fields").is_none());
+    }
+
+    #[test]
+    fn legacy_actf_task_result_keys_land_in_extra_and_are_not_dropped() {
+        let encoded = serde_json::json!({
+            "correct": true,
+            "final_answer": "42",
+            "ground_truth": "42",
+            "status": "completed",
+            "score": 1,
+            "error": "none",
+            "artifacts": {"log": "ok"},
+            "max_score": 1,
+            "task_correct": false,
+            "category": "software-engineering",
+            "attempts_tried": 2,
+            "solved_at": "2026-01-01T00:00:00Z",
+            "retry_count": 3,
+            "retry_counts": {"environment": 3}
+        });
+        let result: StorylineTaskResult = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(result.correct, Some(true));
+        assert_eq!(result.final_answer, Some(json!("42")));
+        assert_eq!(result.ground_truth, Some(json!("42")));
+        assert_eq!(result.status.as_deref(), Some("completed"));
+        assert_eq!(result.score, Some(json!(1)));
+        assert_eq!(result.error.as_deref(), Some("none"));
+        assert_eq!(result.artifacts, Some(json!({"log": "ok"})));
+        assert_eq!(result.max_score, Some(json!(1)));
+        assert_eq!(result.extra["task_correct"], false);
+        assert_eq!(result.extra["category"], "software-engineering");
+        assert_eq!(result.extra["attempts_tried"], 2);
+        assert_eq!(result.extra["solved_at"], "2026-01-01T00:00:00Z");
+        assert_eq!(result.extra["retry_count"], 3);
+        assert_eq!(result.extra["retry_counts"], json!({"environment": 3}));
+
+        let roundtrip = serde_json::to_value(&result).unwrap();
+        for key in [
+            "task_correct",
+            "category",
+            "attempts_tried",
+            "solved_at",
+            "retry_count",
+            "retry_counts",
+            "correct",
+            "final_answer",
+        ] {
+            assert_eq!(roundtrip[key], encoded[key], "dropped {key}");
+        }
     }
 
     #[test]
@@ -999,7 +1062,7 @@ mod tests {
             llm: Some(StorylineTaskLlm { k: Some(3) }),
             result: Some(StorylineTaskResult {
                 correct: Some(true),
-                category: Some("software-engineering".into()),
+                extra: Map::from_iter([("category".into(), json!("software-engineering"))]),
                 ..StorylineTaskResult::default()
             }),
         });

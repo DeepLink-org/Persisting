@@ -2,7 +2,7 @@ use crate::format::DocumentFormat;
 use crate::formats::StorylineDocument;
 use crate::{InputIssue, InputResult, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
 /// Default unknown-field count limit. `usize::MAX` means unbounded.
@@ -688,6 +688,28 @@ fn encode_json_pointer(tokens: &[String]) -> String {
     })
 }
 
+pub(crate) fn pointer_join(parent: &str, token: &str) -> String {
+    format!("{parent}/{}", token.replace('~', "~0").replace('/', "~1"))
+}
+
+pub(crate) fn insert_unknown_map(
+    story: &mut StorylineDocument,
+    source_format: &str,
+    source_document_id: &str,
+    parent: &str,
+    fields: &Map<String, Value>,
+) -> InputResult<()> {
+    for (key, value) in fields {
+        story.unknown_fields.insert(
+            source_format,
+            source_document_id,
+            pointer_join(parent, key),
+            value.clone(),
+        )?;
+    }
+    Ok(())
+}
+
 fn is_array_index(token: &str) -> bool {
     !token.is_empty()
         && !(token.len() > 1 && token.starts_with('0'))
@@ -840,6 +862,29 @@ mod tests {
     use super::*;
     use crate::formats::StorylineDocument;
     use serde_json::json;
+
+    #[test]
+    fn pointer_join_appends_rfc6901_escaped_tokens() {
+        assert_eq!(pointer_join("", "steps"), "/steps");
+        assert_eq!(pointer_join("/steps", "0"), "/steps/0");
+        assert_eq!(pointer_join("/x", "a/b"), "/x/a~1b");
+        assert_eq!(pointer_join("/x", "tilde~"), "/x/tilde~0");
+        assert_eq!(pointer_join("/attempts", "1"), "/attempts/1");
+    }
+
+    #[test]
+    fn insert_unknown_map_copies_fields_under_source_and_parent_pointer() {
+        let mut story = StorylineDocument::new("s", "a");
+        let fields = serde_json::Map::from_iter([
+            ("vendor".into(), json!({"trace": 7})),
+            ("a/b".into(), json!(null)),
+        ]);
+        insert_unknown_map(&mut story, "atif", "doc-1", "/steps/0", &fields).unwrap();
+        let stored = &story.unknown_fields.sources["atif"];
+        assert_eq!(stored.source_document_id, "doc-1");
+        assert_eq!(stored.fields["/steps/0/vendor"], json!({"trace": 7}));
+        assert_eq!(stored.fields["/steps/0/a~1b"], json!(null));
+    }
 
     #[test]
     fn import_warnings_dedupe_by_source_and_normalized_key_across_observations() {

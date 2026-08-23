@@ -6993,6 +6993,7 @@ dependencies = [
  "bytes",
  "clap",
  "datafusion",
+ "dirs",
  "futures",
  "http-body-util",
  "include_dir",

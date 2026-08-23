@@ -1410,8 +1410,11 @@ pub(super) fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
     let to = CString::new(to.as_os_str().as_bytes())?;
     #[cfg(target_os = "linux")]
     // SAFETY: both pointers come from live CString values and are NUL-terminated.
+    // Call SYS_renameat2 directly so the binary still links on manylinux2014
+    // (glibc 2.17). The renameat2() wrapper only exists in glibc 2.28+.
     let result = unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
             from.as_ptr(),
             libc::AT_FDCWD,

@@ -221,8 +221,16 @@ fn CatalogMosaic(
         .collect::<Vec<_>>();
     let boxes = layout_treemap(&sizes, 100.0, 100.0);
     let dataset = tree.dataset.clone().unwrap_or_default();
+    // A treemap with one or two children stretches a single tile across the
+    // whole viewport. Render those as fixed-size cards instead.
+    let compact = tree.children.len() <= 2;
+    let tree_class = if compact {
+        "pc-catalog-tree compact"
+    } else {
+        "pc-catalog-tree"
+    };
     rsx! {
-        div { class: "pc-catalog-tree",
+        div { class: "{tree_class}",
             for (index, child) in tree.children.iter().cloned().enumerate() {
                 {
                     let tile = boxes.get(index).copied().unwrap_or(TileBox { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
@@ -234,6 +242,7 @@ fn CatalogMosaic(
                             dataset: dataset.clone(),
                             tile,
                             tone,
+                            compact,
                             on_open,
                             on_runs,
                             on_other,
@@ -251,14 +260,19 @@ fn CatalogTile(
     dataset: String,
     tile: TileBox,
     tone: usize,
+    compact: bool,
     on_open: EventHandler<(String, String)>,
     on_runs: EventHandler<(String, String)>,
     on_other: EventHandler<MouseEvent>,
 ) -> Element {
-    let style = format!(
-        "left:{:.3}%;top:{:.3}%;width:{:.3}%;height:{:.3}%;",
-        tile.x, tile.y, tile.w, tile.h
-    );
+    let style = if compact {
+        String::new()
+    } else {
+        format!(
+            "left:{:.3}%;top:{:.3}%;width:{:.3}%;height:{:.3}%;",
+            tile.x, tile.y, tile.w, tile.h
+        )
+    };
     let kind = child.kind.clone();
     let path = child.path.clone();
     let name = child.name.clone();

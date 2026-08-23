@@ -117,18 +117,13 @@ fn deserialize_actf_document<R: Read>(reader: R) -> Result<ActfDocument> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_support::fixture_path;
     use super::*;
     use std::io::Cursor;
 
-    fn fixture(name: &str) -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/import_roundtrip")
-            .join(name)
-    }
-
     #[test]
     fn streams_single_actf_object_without_whole_file_buffer() {
-        let path = fixture("protein-assembly_trimmed.actf.json");
+        let path = fixture_path("import_roundtrip/protein-assembly_trimmed.actf.json");
         let raw = std::fs::read(&path).unwrap();
         let mut reader = Cursor::new(raw);
         let stories =
@@ -138,7 +133,7 @@ mod tests {
 
     #[test]
     fn streams_actf_array_without_record_vec() {
-        let path = fixture("protein-assembly_trimmed.actf.json");
+        let path = fixture_path("import_roundtrip/protein-assembly_trimmed.actf.json");
         let object = std::fs::read_to_string(&path).unwrap();
         let corpus = format!("[{object},{object}]");
         let mut reader = Cursor::new(corpus.into_bytes());
@@ -149,7 +144,7 @@ mod tests {
 
     #[test]
     fn enforces_max_record_bytes_on_actf_array_elements() {
-        let path = fixture("protein-assembly_trimmed.actf.json");
+        let path = fixture_path("import_roundtrip/protein-assembly_trimmed.actf.json");
         let object = std::fs::read_to_string(&path).unwrap();
         let corpus = format!("[{object}]");
         let mut reader = Cursor::new(corpus.into_bytes());

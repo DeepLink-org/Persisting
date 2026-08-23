@@ -8,11 +8,18 @@ use crate::api;
 use crate::catalog::CatalogExplorer;
 use crate::chat_view::normalize_trace_view;
 use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView};
+use crate::copilot_sessions::{
+    can_start_new_chat, delete_session, empty_thread, load_index, load_session_thread,
+    new_session_id, now_millis, page_after_history_switch, persist_indexed_thread, relative_time,
+    restore_for_run, save_index, session_storage_key, title_from_thread, BrowserStore,
+    CopilotSessionMeta, KvStore,
+};
 use crate::llm;
 use crate::llm_settings::LlmSettings;
 use crate::model::{
     CatalogTree, DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary,
-    RunAnalysis, RunExplorerItem, RunPage, RunSummary, ToolAggregate, TurnDetail, TurnSummary,
+    RunAnalysis, RunExplorerItem, RunPage, RunSummary, StorylineSnapshot, ToolAggregate,
+    TurnDetail, TurnSummary,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,6 +146,7 @@ pub fn App() -> Element {
     let mut selected_turn = use_signal(|| None::<TurnDetail>);
     let mut expanded_turn_id =
         use_signal(|| url_param("turn").and_then(|value| value.parse::<i64>().ok()));
+    let mut storyline = use_signal(|| None::<StorylineSnapshot>);
     let detail_loading = use_signal(|| false);
     let turn_loading = use_signal(|| false);
     let mut detail_mode = use_signal(|| url_param("workspace").unwrap_or_else(|| "trace".into()));
@@ -151,6 +159,7 @@ pub fn App() -> Element {
     let mut catalog = use_signal(|| None::<QueryCatalog>);
     let mut selected_table = use_signal(String::new);
     let mut copilot_open = use_signal(|| false);
+    let mut copilot_wide = use_signal(load_copilot_wide);
     let mut analysis_session_id = use_signal(move || initial_analysis_session_id);
     let mut analysis_seed_scope = use_signal(move || initial_analysis_seed_scope);
 
@@ -188,7 +197,7 @@ pub fn App() -> Element {
     use_effect(move || {
         if analysis().is_none() {
             if let Some(run) = selected_run() {
-                load_workspace(run, analysis, turns, detail_loading, error);
+                load_workspace(run, analysis, turns, storyline, detail_loading, error);
             }
         }
     });
@@ -324,7 +333,7 @@ pub fn App() -> Element {
                         rsx! { div { class: "pc2-detail-layout",
                             PathExplorer { runs: path_runs, selected_path, loading: runs_loading(), filter_folders: false,
                                 on_path: move |value| { run_path.set(value); offset.set(0); page.set("runs".into()); },
-                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); },
+                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); storyline.set(None); },
                             }
                             if let (Some(_run), Some(value)) = (selected_run(), analysis()) {
                                 RunDetailWorkspace {
@@ -332,6 +341,7 @@ pub fn App() -> Element {
                                     analysis: value,
                                     turns: turns(),
                                     selected: selected_turn(),
+                                    storyline: storyline(),
                                     expanded_turn_id: expanded_turn_id(),
                                     loading: detail_loading(),
                                     turn_loading: turn_loading(),
@@ -422,6 +432,7 @@ pub fn App() -> Element {
                                 turns.set(Vec::new());
                                 selected_turn.set(None);
                                 expanded_turn_id.set(None);
+                                storyline.set(None);
                                 detail_mode.set("trace".into());
                                 page.set("detail".into());
                             },
@@ -432,12 +443,17 @@ pub fn App() -> Element {
             }
 
             if copilot_open() {
-                if let (Some(run), Some(value)) = (selected_run(), analysis()) {
                     CopilotPanel {
-                        run,
-                        analysis: value,
+                        run: selected_run(),
+                        analysis: analysis(),
                         turns: turns(),
                         selected: selected_turn(),
+                        wide: copilot_wide(),
+                        on_toggle_wide: move |_| {
+                            let next = !copilot_wide();
+                            copilot_wide.set(next);
+                            save_copilot_wide(next);
+                        },
                         on_close: move |_| copilot_open.set(false),
                         on_turn: move |id| {
                             if let Some(run) = selected_run() {
@@ -447,13 +463,27 @@ pub fn App() -> Element {
                                 page.set("detail".into());
                             }
                         },
+                        on_open_session: move |meta: CopilotSessionMeta| {
+                            let next_page = page_after_history_switch(&page());
+                            let changed = selected_run().as_ref().map(|run| run.query())
+                                != Some(meta.run.query());
+                            if changed {
+                                if page() == "tools" {
+                                    analysis_session_id.set(String::new());
+                                    analysis_seed_scope.set(None);
+                                }
+                                selected_run.set(Some(meta.run.clone()));
+                                analysis.set(None);
+                                turns.set(Vec::new());
+                                selected_turn.set(None);
+                                expanded_turn_id.set(None);
+                                storyline.set(None);
+                            }
+                            if page() != next_page {
+                                page.set(next_page.to_string());
+                            }
+                        },
                     }
-                } else {
-                    aside { class: "pc2-copilot",
-                        div { class: "pc2-copilot-head", strong { "Trajectory Copilot" } button { onclick: move |_| copilot_open.set(false), "×" } }
-                        div { class: "pc2-copilot-empty", "Open a trajectory before asking Copilot to analyze evidence." }
-                    }
-                }
             }
 
         }
@@ -508,23 +538,35 @@ fn load_workspace(
     run: RunSummary,
     mut analysis: Signal<Option<RunAnalysis>>,
     mut turns: Signal<Vec<TurnSummary>>,
+    mut storyline: Signal<Option<StorylineSnapshot>>,
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
     loading.set(true);
-    spawn(async move {
-        let (next_analysis, next_turns) =
-            futures_util::join!(api::run_analysis(&run), api::turns(&run, "", "all"),);
-        match (next_analysis, next_turns) {
-            (Ok(next_analysis), Ok(next_turns)) => {
-                analysis.set(Some(next_analysis));
-                turns.set(next_turns.records);
+    spawn({
+        let run = run.clone();
+        async move {
+            let (next_analysis, next_turns) =
+                futures_util::join!(api::run_analysis(&run), api::turns(&run, "", "all"),);
+            match (next_analysis, next_turns) {
+                (Ok(next_analysis), Ok(next_turns)) => {
+                    analysis.set(Some(next_analysis));
+                    turns.set(next_turns.records);
+                }
+                (Err(message), _) | (_, Err(message)) => {
+                    error.set(Some(workspace_notice(message)));
+                }
             }
-            (Err(message), _) | (_, Err(message)) => {
-                error.set(Some(workspace_notice(message)));
-            }
+            loading.set(false);
         }
-        loading.set(false);
+    });
+    // The storyline powers context reconstruction in the turn inspector. It is
+    // additive and can be slow to project, so it loads independently: it must
+    // neither block nor blank the workspace.
+    spawn(async move {
+        if let Ok(snapshot) = api::storyline(&run).await {
+            storyline.set(Some(snapshot));
+        }
     });
 }
 
@@ -771,6 +813,7 @@ fn RunDetailWorkspace(
     analysis: RunAnalysis,
     turns: Vec<TurnSummary>,
     selected: Option<TurnDetail>,
+    storyline: Option<StorylineSnapshot>,
     expanded_turn_id: Option<i64>,
     loading: bool,
     turn_loading: bool,
@@ -842,7 +885,7 @@ fn RunDetailWorkspace(
                     div { class: "pc2-turn-list pc2-span-scroll",
                         if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing evidence…" } }
                         if turns.is_empty() { div { class: "pc2-empty", strong { "No visible turns" } span { "No compact turn evidence matches this filter." } } }
-                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, view: view_for_list, source: source_for_list, query: query_for_list, on_turn } }
+                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, context: storyline.map(|snapshot| snapshot.turns), view: view_for_list, source: source_for_list, query: query_for_list, on_turn } }
                     }
                 }
             }
@@ -1217,28 +1260,140 @@ fn EmptyAnalysis(label: &'static str) -> Element {
     rsx! { div { class: "pc2-analysis-empty", "{label}" } }
 }
 
+const COPILOT_WIDE_KEY: &str = "pchronicle_copilot_wide";
+
+fn load_copilot_wide() -> bool {
+    web_sys::window()
+        .and_then(|window| window.local_storage().ok().flatten())
+        .and_then(|storage| storage.get_item(COPILOT_WIDE_KEY).ok().flatten())
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn save_copilot_wide(wide: bool) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(storage) = window.local_storage().ok().flatten() else {
+        return;
+    };
+    let _ = storage.set_item(COPILOT_WIDE_KEY, if wide { "1" } else { "0" });
+}
+
+fn copilot_panel_class(wide: bool) -> &'static str {
+    if wide {
+        "pc2-copilot wide"
+    } else {
+        "pc2-copilot"
+    }
+}
+
+const COPILOT_CHAT_ID: &str = "pc2-copilot-chat";
+const COPILOT_FOLLOW_THRESHOLD: f64 = 48.0;
+
+fn copilot_distance_from_bottom(scroll_top: f64, client_height: f64, scroll_height: f64) -> f64 {
+    (scroll_height - client_height - scroll_top).max(0.0)
+}
+
+fn copilot_is_near_bottom(scroll_top: f64, client_height: f64, scroll_height: f64) -> bool {
+    copilot_distance_from_bottom(scroll_top, client_height, scroll_height)
+        <= COPILOT_FOLLOW_THRESHOLD
+}
+
+fn copilot_following_after_scroll(following: bool, near_bottom: bool) -> bool {
+    following && near_bottom
+}
+
+fn copilot_chat_element() -> Option<web_sys::Element> {
+    web_sys::window()?
+        .document()?
+        .get_element_by_id(COPILOT_CHAT_ID)
+}
+
+fn copilot_chat_is_near_bottom() -> bool {
+    let Some(element) = copilot_chat_element() else {
+        return true;
+    };
+    copilot_is_near_bottom(
+        f64::from(element.scroll_top()),
+        f64::from(element.client_height()),
+        f64::from(element.scroll_height()),
+    )
+}
+
+fn scroll_copilot_chat_to_bottom() {
+    let Some(element) = copilot_chat_element() else {
+        return;
+    };
+    element.set_scroll_top(element.scroll_height());
+}
+
+#[component]
+fn CopilotWideToggle(wide: bool, on_toggle: EventHandler<MouseEvent>) -> Element {
+    rsx! {
+        button {
+            class: "pc2-copilot-wide-toggle",
+            aria_label: if wide { "Restore Copilot width" } else { "Expand Copilot to two-thirds width" },
+            title: if wide { "Restore Copilot width" } else { "Expand Copilot to two-thirds of the screen" },
+            aria_pressed: wide,
+            onclick: on_toggle,
+            if wide { "⤡" } else { "⤢" }
+        }
+    }
+}
+
 #[component]
 fn CopilotPanel(
-    run: RunSummary,
-    analysis: RunAnalysis,
+    run: Option<RunSummary>,
+    analysis: Option<RunAnalysis>,
     turns: Vec<TurnSummary>,
     selected: Option<TurnDetail>,
+    wide: bool,
+    on_toggle_wide: EventHandler<MouseEvent>,
     on_close: EventHandler<MouseEvent>,
     on_turn: EventHandler<i64>,
+    on_open_session: EventHandler<CopilotSessionMeta>,
 ) -> Element {
-    let initial_run = run.clone();
-    let mut thread = use_signal(move || agent::load_thread(&initial_run));
+    let mut index = use_signal(|| load_index(&BrowserStore));
+    let mut session_id = use_signal(|| None::<String>);
+    let mut bound_query = use_signal(|| None::<String>);
+    let mut thread = use_signal(empty_thread);
     let mut input = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut settings = use_signal(|| false);
+    let mut history_open = use_signal(|| false);
     let mut config = use_signal(llm::load_config);
     let mut step = use_signal(|| "Working…".to_string());
-    let submit_run = run.clone();
-    let submit_analysis = analysis.clone();
+    let mut following = use_signal(|| true);
+    let run_for_effect = run.clone();
+    use_effect(move || {
+        let Some(current) = run_for_effect.clone() else {
+            return;
+        };
+        let query = current.query();
+        if Some(query.clone()) == bound_query() {
+            return;
+        }
+        bound_query.set(Some(query));
+        let now = now_millis();
+        let (next_index, id, next_thread) =
+            restore_for_run(&BrowserStore, &current, &new_session_id(now), now);
+        index.set(next_index);
+        session_id.set(id);
+        thread.set(next_thread);
+    });
     let focused_turn_id = selected.as_ref().map(|detail| detail.summary.id);
     let update_step = Callback::new(move |next: String| step.set(next));
+    let submit_run = run.clone();
+    let submit_analysis = analysis.clone();
     let submit_copilot = Callback::new(move |()| {
         let question = input().trim().to_string();
+        let Some(submit_run) = submit_run.clone() else {
+            return;
+        };
+        let Some(submit_analysis) = submit_analysis.clone() else {
+            return;
+        };
         if question.is_empty() || busy() {
             return;
         }
@@ -1260,8 +1415,8 @@ fn CopilotPanel(
                     tool_name: None,
                     sql: None,
                     truncated: false,
+                    reasoning_content: None,
                 });
-                agent::save_thread(&submit_run, &next_thread);
                 thread.set(next_thread);
             }
             return;
@@ -1277,30 +1432,27 @@ fn CopilotPanel(
             tool_name: None,
             sql: None,
             truncated: false,
+            reasoning_content: None,
         });
         thread.set(pending_thread.clone());
         input.set(String::new());
         step.set("Working…".into());
+        following.set(true);
         busy.set(true);
-        let run_value = submit_run.clone();
-        let analysis_value = submit_analysis.clone();
         spawn(async move {
             let report_step = |next: &str| update_step.call(next.to_string());
             let result = agent::answer(agent::AnswerRequest {
                 config: &config_value,
                 user_message: &question,
-                run: &run_value,
-                analysis: &analysis_value,
+                run: &submit_run,
+                analysis: &submit_analysis,
                 focused_turn_id,
                 thread: prior_thread,
                 on_step: Some(&report_step),
             })
             .await;
-            match result {
-                Ok(answer) => {
-                    agent::save_thread(&run_value, &answer.thread);
-                    thread.set(answer.thread);
-                }
+            let finished = match result {
+                Ok(answer) => answer.thread,
                 Err(message) => {
                     pending_thread.messages.push(ThreadMessage {
                         role: ThreadRole::Assistant,
@@ -1310,51 +1462,216 @@ fn CopilotPanel(
                         tool_name: None,
                         sql: None,
                         truncated: false,
+                        reasoning_content: None,
                     });
-                    agent::save_thread(&run_value, &pending_thread);
-                    thread.set(pending_thread);
+                    pending_thread
                 }
-            }
+            };
+            let now = now_millis();
+            let id = session_id().unwrap_or_else(|| new_session_id(now));
+            session_id.set(Some(id.clone()));
+            let mut next_index = index();
+            persist_indexed_thread(
+                &BrowserStore,
+                &mut next_index,
+                &id,
+                &submit_run,
+                &finished,
+                now,
+            );
+            index.set(next_index);
+            thread.set(finished);
             busy.set(false);
         });
     });
-    rsx! { aside { class: "pc2-copilot",
-        div { class: "pc2-copilot-head", div { strong { "Trajectory Copilot" } span { "Read-only · minimal evidence" } } div { button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" } button { aria_label: "Close Copilot", onclick: on_close, "×" } } }
-        div { class: "pc2-context-card", div { span { "Grounded in" } strong { "{short(&run.session_id, 30)}" } } div { span { "Evidence" } strong { "{analysis.turn_count} turns · {analysis.error_count} explicit errors" } } }
-        div { class: "pc2-chat",
-            if thread().messages.is_empty() {
-                div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" }
-                    if config().is_configured() {
-                        p { "Copilot can inspect this analysis, examine a turn, or run read-only SQL." }
-                    } else {
-                        p { "Configure an OpenAI-compatible model in Settings before asking Copilot." }
+    use_effect(move || {
+        let _len = thread().messages.len();
+        let _busy = busy();
+        let _step = step();
+        if following() {
+            scroll_copilot_chat_to_bottom();
+        }
+    });
+    let title = title_from_thread(&thread());
+    let new_chat_enabled = can_start_new_chat(run.is_some(), &thread()) && !busy();
+    let context_line = match (&run, &analysis, selected.as_ref()) {
+        (None, _, _) => "Open a trajectory to start a chat.".to_string(),
+        (Some(_), None, _) => "Loading trajectory evidence…".to_string(),
+        (Some(_), Some(_), Some(detail)) => format!("Step {} in context", detail.summary.id),
+        (Some(_), Some(_), None) => "Current trajectory in context".to_string(),
+    };
+    let composer_enabled = run.is_some() && analysis.is_some() && !busy();
+    let sessions = index().sessions;
+    rsx! { aside { class: copilot_panel_class(wide),
+        div { class: "pc2-copilot-head",
+            div { class: "pc2-copilot-head-title", strong { "{title}" } span { "Read-only · minimal evidence" } }
+            div { class: "pc2-copilot-actions",
+                button {
+                    aria_label: "New chat",
+                    title: "New chat",
+                    disabled: !new_chat_enabled,
+                    onclick: move |_| {
+                        if !new_chat_enabled { return; }
+                        session_id.set(None);
+                        thread.set(empty_thread());
+                        history_open.set(false);
+                    },
+                    "+"
+                }
+                button {
+                    aria_label: "Chat history",
+                    title: "Chat history",
+                    aria_pressed: history_open(),
+                    disabled: busy(),
+                    onclick: move |_| history_open.set(!history_open()),
+                    "◷"
+                }
+                button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" }
+                CopilotWideToggle { wide, on_toggle: on_toggle_wide }
+                button { aria_label: "Close Copilot", onclick: on_close, "×" }
+            }
+        }
+        if history_open() {
+            div { class: "pc2-copilot-history", role: "listbox", aria_label: "Copilot history",
+                if sessions.is_empty() {
+                    div { class: "pc2-copilot-history-empty", "No saved chats yet." }
+                }
+                for meta in sessions.iter().cloned() {
+                    {
+                        let active = session_id().as_deref() == Some(meta.id.as_str());
+                        let row = meta.clone();
+                        let delete_id = meta.id.clone();
+                        rsx! {
+                            div { class: if active { "pc2-copilot-history-row active" } else { "pc2-copilot-history-row" },
+                                button {
+                                    r#type: "button",
+                                    class: "pc2-copilot-history-open",
+                                    onclick: move |_| {
+                                        if busy() { return; }
+                                        let loaded = load_session_thread(&BrowserStore, &row.id);
+                                        session_id.set(Some(row.id.clone()));
+                                        thread.set(loaded);
+                                        bound_query.set(Some(row.run.query()));
+                                        history_open.set(false);
+                                        following.set(true);
+                                        on_open_session.call(row.clone());
+                                    },
+                                    strong { "{meta.title}" }
+                                    span { "{short(&meta.run.session_id, 18)} · {relative_time(now_millis(), meta.updated_at)}" }
+                                }
+                                button {
+                                    r#type: "button",
+                                    class: "pc2-copilot-history-delete",
+                                    aria_label: "Delete chat",
+                                    onclick: move |event| {
+                                        event.stop_propagation();
+                                        let mut next = index();
+                                        let fallback = delete_session(&mut next, &delete_id);
+                                        let store = BrowserStore;
+                                        store.remove(&session_storage_key(&delete_id));
+                                        save_index(&BrowserStore, &next);
+                                        index.set(next);
+                                        if session_id().as_deref() == Some(delete_id.as_str()) {
+                                            if let Some(id) = fallback {
+                                                session_id.set(Some(id.clone()));
+                                                thread.set(load_session_thread(&BrowserStore, &id));
+                                            } else {
+                                                session_id.set(None);
+                                                thread.set(empty_thread());
+                                            }
+                                        }
+                                    },
+                                    "×"
+                                }
+                            }
+                        }
                     }
                 }
             }
-            for (index, message) in thread().messages.iter().enumerate() {
-                if !(message.role == ThreadRole::Assistant
-                    && message.text.trim().is_empty()
-                    && message.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()))
-                {
-                    ChatBubble { key: "message-{index}", message: message.clone(), turns: turns.clone(), on_turn }
+        }
+        div { class: "pc2-chat-wrap",
+            div {
+                id: COPILOT_CHAT_ID,
+                class: "pc2-chat",
+                onscroll: move |_| {
+                    following.set(copilot_following_after_scroll(following(), copilot_chat_is_near_bottom()));
+                },
+                if thread().messages.is_empty() {
+                    div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" }
+                        if run.is_none() {
+                            p { "Open a trajectory, or pick a previous chat from history." }
+                        } else if config().is_configured() {
+                            p { "Copilot can inspect this analysis, examine a turn, or run read-only SQL." }
+                        } else {
+                            p { "Configure an OpenAI-compatible model in Settings before asking Copilot." }
+                        }
+                    }
+                }
+                for (index, message) in thread().messages.iter().enumerate() {
+                    if !(message.role == ThreadRole::Assistant
+                        && message.text.trim().is_empty()
+                        && message.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()))
+                    {
+                        ChatBubble { key: "message-{index}", message: message.clone(), turns: turns.clone(), on_turn }
+                    }
+                }
+                if busy() { div { class: "pc2-chat-working", span { class: "spinner" } "{step}" } }
+            }
+            if !thread().messages.is_empty() || busy() {
+                if following() {
+                    button {
+                        class: "pc2-chat-follow",
+                        r#type: "button",
+                        aria_pressed: "true",
+                        title: "Stop following new output",
+                        aria_label: "Stop following new output",
+                        onclick: move |_| following.set(false),
+                        "Following"
+                    }
+                } else {
+                    button {
+                        class: "pc2-chat-follow jump",
+                        r#type: "button",
+                        title: "Jump to latest output and follow",
+                        aria_label: "Jump to latest output and follow",
+                        onclick: move |_| {
+                            following.set(true);
+                            scroll_copilot_chat_to_bottom();
+                        },
+                        "↓ Latest"
+                    }
                 }
             }
-            if busy() { div { class: "pc2-chat-working", span { class: "spinner" } "{step}" } }
         }
-        form { class: "pc2-composer", onsubmit: move |event| { event.prevent_default(); submit_copilot.call(()); },
-            textarea { value: "{input}", rows: "3", placeholder: "Ask Copilot about this trajectory…", oninput: move |event| input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); submit_copilot.call(()); }, disabled: busy() }
-            button { class: "button primary", disabled: busy() || input().trim().is_empty(), "Ask Copilot" }
+        form { class: "pc2-composer pc2-composer-compact", onsubmit: move |event| { event.prevent_default(); submit_copilot.call(()); },
+            textarea {
+                value: "{input}",
+                rows: "2",
+                placeholder: if run.is_none() { "Open a trajectory to start a chat…" } else if analysis.is_none() { "Loading trajectory evidence…" } else { "Ask about this trajectory…" },
+                oninput: move |event| input.set(event.value()),
+                onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); submit_copilot.call(()); },
+                disabled: !composer_enabled
+            }
+            button { class: "button primary", disabled: !composer_enabled || input().trim().is_empty(), "Send" }
         }
+        div { class: "pc2-composer-context", "{context_line}" }
         if settings() { LlmSettings { config: config(), on_close: move |_| settings.set(false), on_save: move |value| { llm::save_config(&value); config.set(value); settings.set(false); } } }
     } }
 }
-
 #[component]
 fn ChatBubble(
     message: ThreadMessage,
     turns: Vec<TurnSummary>,
     on_turn: EventHandler<i64>,
 ) -> Element {
+    let message = if message.role == ThreadRole::Assistant {
+        match agent::visible_assistant_text(&message.text) {
+            None => return rsx! {},
+            Some(text) => ThreadMessage { text, ..message },
+        }
+    } else {
+        message
+    };
     if message.role == ThreadRole::Tool {
         let action = message
             .tool_name
@@ -1362,7 +1679,7 @@ fn ChatBubble(
             .unwrap_or_else(|| "tool".to_string());
         return rsx! {
             div { class: "pc2-message tool",
-                span { class: "pc2-action-label", "{action}" }
+                span { class: "pc2-action-label", "Running {action} ›" }
                 if !message.text.trim().is_empty() {
                     details { summary { "Tool evidence" } pre { "{message.text}" } }
                 }
@@ -1706,6 +2023,22 @@ mod tests {
             duplicate_event_ids: 0,
             status: "completed".into(),
         }
+    }
+
+    #[test]
+    fn copilot_panel_class_marks_expanded_width() {
+        assert_eq!(copilot_panel_class(false), "pc2-copilot");
+        assert_eq!(copilot_panel_class(true), "pc2-copilot wide");
+    }
+
+    #[test]
+    fn copilot_follow_stays_on_near_the_bottom() {
+        assert!(copilot_is_near_bottom(100.0, 400.0, 500.0));
+        assert!(copilot_is_near_bottom(52.0, 400.0, 500.0));
+        assert!(!copilot_is_near_bottom(0.0, 400.0, 800.0));
+        assert!(copilot_following_after_scroll(true, true));
+        assert!(!copilot_following_after_scroll(true, false));
+        assert!(!copilot_following_after_scroll(false, true));
     }
 
     #[test]
