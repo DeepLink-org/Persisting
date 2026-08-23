@@ -96,7 +96,7 @@ async fn nested_atif_and_null_canonicalization_are_stable_through_storyline_lanc
 }
 
 #[tokio::test]
-async fn atif_actf_and_openai_are_lossless_through_storyline_lance() -> Result<()> {
+async fn atif_parallel_tools_fixture_is_lossless_through_storyline_lance() -> Result<()> {
     let atif_path = fixture_path("atif/parallel_tools_14.json");
     let atif_raw = std::fs::read_to_string(&atif_path)?;
     let atif_stories = decode_json_storylines(DocumentFormat::Atif, &atif_raw, &atif_path)?;
@@ -107,27 +107,6 @@ async fn atif_actf_and_openai_are_lossless_through_storyline_lance() -> Result<(
         atif_expected
     );
 
-    let actf_path = fixture_path("import_roundtrip/make-doom-for-mips_trimmed.actf.json");
-    let actf_raw = std::fs::read_to_string(&actf_path)?;
-    let actf_stories = decode_json_storylines(DocumentFormat::Actf, &actf_raw, &actf_path)?;
-    let actf_expected = encode_json_storylines(DocumentFormat::Actf, &actf_stories)?;
-    let actf_restored = persist_and_restore(&actf_stories, LookupStrategy::DocumentIds).await?;
-    assert_eq!(
-        encode_json_storylines(DocumentFormat::Actf, &actf_restored)?,
-        actf_expected
-    );
-
-    let openai_path = fixture_path("import_roundtrip/cybergym_0729001_trimmed.json");
-    let openai_stories = open_document(DocumentFormat::OpenaiMsg, &openai_path)
-        .await?
-        .project_storylines()
-        .await?;
-    let openai_expected = encode_json_storylines(DocumentFormat::OpenaiMsg, &openai_stories)?;
-    let openai_restored = persist_and_restore(&openai_stories, LookupStrategy::DocumentIds).await?;
-    assert_eq!(
-        encode_json_storylines(DocumentFormat::OpenaiMsg, &openai_restored)?,
-        openai_expected
-    );
     Ok(())
 }
 

@@ -6,7 +6,11 @@ mod support;
 
 use support::{fixture_path, persist_and_restore, LookupStrategy};
 
-async fn assert_openai_fixture_roundtrip(name: &str, expected_sessions: usize) -> Result<()> {
+async fn assert_openai_fixture_roundtrip(
+    name: &str,
+    expected_sessions: usize,
+    lookups: &[LookupStrategy],
+) -> Result<()> {
     let path = fixture_path(format!("import_roundtrip/{name}"));
     let stories = open_document(DocumentFormat::OpenaiMsg, &path)
         .await?
@@ -15,47 +19,71 @@ async fn assert_openai_fixture_roundtrip(name: &str, expected_sessions: usize) -
     assert_eq!(stories.len(), expected_sessions);
     let expected = encode_json_storylines(DocumentFormat::OpenaiMsg, &stories)?;
 
-    let restored = persist_and_restore(&stories, LookupStrategy::SessionIds).await?;
+    for lookup in lookups {
+        let restored = persist_and_restore(&stories, *lookup).await?;
 
-    assert_eq!(
-        encode_json_storylines(DocumentFormat::OpenaiMsg, &restored)?,
-        expected
-    );
+        assert_eq!(
+            encode_json_storylines(DocumentFormat::OpenaiMsg, &restored)?,
+            expected,
+            "{name} roundtrip via {lookup:?}"
+        );
+    }
     Ok(())
 }
 
-async fn assert_actf_fixture_roundtrip(name: &str) -> Result<()> {
+async fn assert_actf_fixture_roundtrip(name: &str, lookups: &[LookupStrategy]) -> Result<()> {
     let path = fixture_path(format!("import_roundtrip/{name}"));
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("read fixture {}", path.display()))?;
     let stories = decode_json_storylines(DocumentFormat::Actf, &raw, name)?;
     let expected = encode_json_storylines(DocumentFormat::Actf, &stories)?;
 
-    let restored = persist_and_restore(&stories, LookupStrategy::SessionIds).await?;
+    for lookup in lookups {
+        let restored = persist_and_restore(&stories, *lookup).await?;
 
-    assert_eq!(
-        encode_json_storylines(DocumentFormat::Actf, &restored)?,
-        expected
-    );
+        assert_eq!(
+            encode_json_storylines(DocumentFormat::Actf, &restored)?,
+            expected,
+            "{name} roundtrip via {lookup:?}"
+        );
+    }
     Ok(())
 }
 
 #[tokio::test]
 async fn cybergym_07270003_import_and_restore_matches_trimmed_source() -> Result<()> {
-    assert_openai_fixture_roundtrip("cybergym_07270003_trimmed.json", 1).await
+    assert_openai_fixture_roundtrip(
+        "cybergym_07270003_trimmed.json",
+        1,
+        &[LookupStrategy::SessionIds],
+    )
+    .await
 }
 
 #[tokio::test]
 async fn cybergym_0729001_multi_session_import_and_restore_matches_trimmed_source() -> Result<()> {
-    assert_openai_fixture_roundtrip("cybergym_0729001_trimmed.json", 2).await
+    assert_openai_fixture_roundtrip(
+        "cybergym_0729001_trimmed.json",
+        2,
+        &[LookupStrategy::SessionIds, LookupStrategy::DocumentIds],
+    )
+    .await
 }
 
 #[tokio::test]
 async fn tool_use_actf_import_and_restore_matches_trimmed_source() -> Result<()> {
-    assert_actf_fixture_roundtrip("make-doom-for-mips_trimmed.actf.json").await
+    assert_actf_fixture_roundtrip(
+        "make-doom-for-mips_trimmed.actf.json",
+        &[LookupStrategy::SessionIds, LookupStrategy::DocumentIds],
+    )
+    .await
 }
 
 #[tokio::test]
 async fn command_execution_actf_import_and_restore_matches_trimmed_source() -> Result<()> {
-    assert_actf_fixture_roundtrip("protein-assembly_trimmed.actf.json").await
+    assert_actf_fixture_roundtrip(
+        "protein-assembly_trimmed.actf.json",
+        &[LookupStrategy::SessionIds],
+    )
+    .await
 }
