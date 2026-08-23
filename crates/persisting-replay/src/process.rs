@@ -288,38 +288,46 @@ fn terminate_remaining_group(process_group: i32, grace: Duration) -> Result<(), 
 
 #[cfg(unix)]
 fn process_group_exists(process_group: i32) -> Result<bool, ReplayError> {
-    match unsafe { libc::kill(-process_group, 0) } {
-        0 => Ok(true),
-        _ => {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ESRCH) {
-                Ok(false)
-            } else {
-                Err(ReplayError::new(
-                    ReplayErrorKind::Executor,
-                    format!("inspect replay process group {process_group}: {error}"),
-                ))
-            }
-        }
+    let result = unsafe { libc::kill(-process_group, 0) };
+    classify_process_group_kill(
+        process_group,
+        "inspect replay process group",
+        result,
+        io::Error::last_os_error(),
+    )
+}
+
+/// POSIX `kill(-pgid, sig)`: 0 means members exist, ESRCH means the group is
+/// gone, and EPERM means members exist that this process cannot signal.
+#[cfg(unix)]
+fn classify_process_group_kill(
+    process_group: i32,
+    operation: &str,
+    result: i32,
+    error: io::Error,
+) -> Result<bool, ReplayError> {
+    if result == 0 {
+        return Ok(true);
+    }
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(ReplayError::new(
+            ReplayErrorKind::Executor,
+            format!("{operation} {process_group}: {error}"),
+        )),
     }
 }
 
 #[cfg(unix)]
 fn signal_group(process_group: i32, signal: i32) -> Result<bool, ReplayError> {
-    match unsafe { libc::kill(-process_group, signal) } {
-        0 => Ok(true),
-        _ => {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ESRCH) {
-                Ok(false)
-            } else {
-                Err(ReplayError::new(
-                    ReplayErrorKind::Executor,
-                    format!("signal replay process group {process_group}: {error}"),
-                ))
-            }
-        }
-    }
+    let result = unsafe { libc::kill(-process_group, signal) };
+    classify_process_group_kill(
+        process_group,
+        "signal replay process group",
+        result,
+        io::Error::last_os_error(),
+    )
 }
 
 #[cfg(all(test, unix))]
@@ -397,6 +405,22 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
+    }
+
+    #[test]
+    fn eperm_means_the_process_group_still_has_members() {
+        let error = io::Error::from_raw_os_error(libc::EPERM);
+        assert!(
+            classify_process_group_kill(4242, "inspect replay process group", -1, error).unwrap()
+        );
+    }
+
+    #[test]
+    fn esrch_means_the_process_group_is_gone() {
+        let error = io::Error::from_raw_os_error(libc::ESRCH);
+        assert!(
+            !classify_process_group_kill(4242, "inspect replay process group", -1, error).unwrap()
+        );
     }
 
     #[test]
