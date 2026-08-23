@@ -23,12 +23,12 @@ use persisting_pchronicle::analysis_compile::{
 use persisting_pchronicle::document::{events_to_otlp_json, InputIssue};
 use persisting_pchronicle::model::{EventRecord, StorylineTurn};
 use persisting_pchronicle::query::ChronicleQueryEngine;
-use persisting_pchronicle::storage::{
-    CatalogErrorPolicy, CatalogSnapshotOptions, CatalogStorylineKey,
-    DatasetCatalogSnapshot, DatasetMount, DEFAULT_DATASET_NAME,
-};
 #[cfg(test)]
 use persisting_pchronicle::storage::StoryCoords;
+use persisting_pchronicle::storage::{
+    CatalogErrorPolicy, CatalogSnapshotOptions, CatalogStorylineKey, DatasetCatalogSnapshot,
+    DatasetMount, DEFAULT_DATASET_NAME,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -1372,7 +1372,10 @@ impl IntoResponse for CompileHttpError {
 fn truncate_engine_detail(detail: String) -> String {
     const MAX_DETAIL_CHARS: usize = 1500;
     if detail.chars().count() > MAX_DETAIL_CHARS {
-        format!("{}…", detail.chars().take(MAX_DETAIL_CHARS).collect::<String>())
+        format!(
+            "{}…",
+            detail.chars().take(MAX_DETAIL_CHARS).collect::<String>()
+        )
     } else {
         detail
     }
@@ -1424,15 +1427,17 @@ async fn compile_analysis(
             engine_detail: None,
         },
     })?;
-    let runtime = current_catalog(&state).await.map_err(|_| CompileHttpError {
-        status: StatusCode::SERVICE_UNAVAILABLE,
-        body: CompileFailureBody {
-            code: "unavailable".into(),
-            message: "catalog is not ready".into(),
-            field: None,
-            engine_detail: None,
-        },
-    })?;
+    let runtime = current_catalog(&state)
+        .await
+        .map_err(|_| CompileHttpError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            body: CompileFailureBody {
+                code: "unavailable".into(),
+                message: "catalog is not ready".into(),
+                field: None,
+                engine_detail: None,
+            },
+        })?;
     if request.snapshot_id != runtime.snapshot.snapshot_id() {
         return Err(CompileHttpError::stale_snapshot());
     }
