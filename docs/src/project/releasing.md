@@ -64,6 +64,12 @@ script. macOS CI installs libkrunfw explicitly and passes
 firmware paths; a missing payload is a build error rather than an incomplete
 wheel.
 
+Linux wheels stay on the manylinux2014 / glibc 2.17 tag. cibuildwheel still
+runs inside that image, but the three CLIs are linked with
+`cargo zigbuild --target x86_64-unknown-linux-gnu.2.17` so rustc's libstd does
+not pull glibc 2.27+ symbols. Local `python -m build` on Linux keeps using
+plain `cargo build` unless `PERSISTING_CARGO_ZIGBUILD=1`.
+
 Every wheel is checked for its component set and install-time CLI smoke tests.
 The release-set check then requires exactly one supported wheel per platform,
 matching versions, valid package metadata, and bounded artifact size before

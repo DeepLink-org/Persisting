@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,29 @@ from pathlib import Path
 
 EXPECTED_BINARIES = ("pchronicle", "pvisor", "ppilot")
 FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
+MANYLINUX_MAX_GLIBC = (2, 17, 0)
+_GLIBC_NEED = re.compile(r"GLIBC_(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def glibc_requirement(symbols: str) -> tuple[int, int, int] | None:
+    versions = [
+        (int(match.group(1)), int(match.group(2)), int(match.group(3) or 0))
+        for match in _GLIBC_NEED.finditer(symbols)
+    ]
+    return max(versions) if versions else None
+
+
+def _assert_manylinux_glibc(name: str, executable: Path) -> None:
+    symbols = _run(["readelf", "-W", "--dyn-syms", str(executable)])
+    required = glibc_requirement(symbols)
+    if required is None:
+        return
+    if required > MANYLINUX_MAX_GLIBC:
+        pretty = ".".join(str(part) for part in required)
+        ceiling = ".".join(str(part) for part in MANYLINUX_MAX_GLIBC)
+        raise RuntimeError(
+            f"{name} requires GLIBC {pretty}, which exceeds manylinux2014 ({ceiling})"
+        )
 
 
 def _wheel_contents(
@@ -127,6 +151,8 @@ def verify_native_payloads(
                         raise RuntimeError(f"{name} has unresolved dependencies:\n{dependencies}")
                     if name == "pvisor" and "libkrun" in dependencies:
                         raise RuntimeError("pvisor dynamically links libkrun")
+                    if "manylinux" in wheel_name:
+                        _assert_manylinux_glibc(name, executable)
 
 
 def install_smoke(wheel: Path, version: str) -> None:
