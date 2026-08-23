@@ -45,6 +45,7 @@ def test_python_wheel_uses_setuptools_and_platform_builds() -> None:
     assert 'build = "cp312-*"' in contents
     assert 'manylinux-x86_64-image = "manylinux2014"' in contents
     assert 'archs = ["arm64"]' in contents
+    assert 'RUSTFLAGS = "-C linker-features=-lld"' in contents
 
 
 @pytest.mark.parametrize("workflow", ["nightly.yml", "release.yml"])
