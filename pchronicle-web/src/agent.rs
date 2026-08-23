@@ -1,48 +1,182 @@
-use std::cmp::Ordering;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::api;
-use crate::components::{table_fence, trajectory_fence};
-use crate::model::{RunAnalysis, RunSummary, TurnDetail, TurnSummary};
+use crate::components::trajectory_fence;
+use crate::llm::{self, LlmConfig};
+use crate::model::{QueryCatalog, QueryEvidence, RunAnalysis, RunSummary, TurnDetail};
 
-const STORAGE_KEY: &str = "pchronicle_llm_config";
-const DEFAULT_CONTEXT_LIMIT: usize = 32 * 1024;
-const FULL_CONTEXT_LIMIT: usize = 64 * 1024;
+pub const THREAD_BYTE_LIMIT: usize = 200 * 1024;
+pub const LLM_MESSAGE_BYTE_LIMIT: usize = 32 * 1024;
+pub const TURN_BODY_LIMIT: usize = 8 * 1024;
+pub const TOOL_NAMES: [&str; 3] = ["get_analysis", "get_turn", "query_sql"];
+static JSON_TOOL_ID: AtomicUsize = AtomicUsize::new(1);
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadRole {
+    User,
+    Assistant,
+    Tool,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct LlmConfig {
-    pub api_base: String,
-    pub api_key: String,
-    pub model: String,
+pub struct ThreadMessage {
+    pub role: ThreadRole,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ParsedToolCall>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sql: Option<String>,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
-impl Default for LlmConfig {
-    fn default() -> Self {
-        Self {
-            api_base: "https://api.deepseek.com/v1".into(),
-            api_key: String::new(),
-            model: "deepseek-chat".into(),
-        }
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CopilotThread {
+    pub messages: Vec<ThreadMessage>,
+    pub updated_at: i64,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ParsedToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AssistantTurn {
+    ToolCalls(Vec<ParsedToolCall>),
+    Final(String),
+    Invalid,
+}
+
+pub const MAX_TOOL_ROUNDS: usize = 8;
+
+pub struct LoopState {
+    pub messages: Vec<ThreadMessage>,
+    pub tool_rounds: usize,
+    pub json_mode: bool,
+    pub illegal_json_streak: usize,
+    pub fetched_turn_ids: Vec<i64>,
+    pub force_final: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum DriveResult {
+    Continue,
+    Done { text: String },
+    Failed { message: String },
+}
+
+pub fn apply_model_turn(
+    state: &mut LoopState,
+    turn: AssistantTurn,
+    mut execute: impl FnMut(&ParsedToolCall) -> String,
+) -> DriveResult {
+    if state.force_final {
+        return match turn {
+            AssistantTurn::Final(text) if !text.trim().is_empty() => {
+                state.illegal_json_streak = 0;
+                DriveResult::Done { text }
+            }
+            _ => DriveResult::Failed {
+                message:
+                    "The model did not produce a final answer because the available evidence was insufficient."
+                        .into(),
+            },
+        };
     }
-}
 
-impl LlmConfig {
-    pub fn is_configured(&self) -> bool {
-        !self.api_base.trim().is_empty()
-            && !self.api_key.trim().is_empty()
-            && !self.model.trim().is_empty()
+    match turn {
+        AssistantTurn::ToolCalls(calls) => {
+            let remaining = MAX_TOOL_ROUNDS.saturating_sub(state.tool_rounds);
+            let calls = calls.into_iter().take(remaining).collect::<Vec<_>>();
+            if !calls.is_empty() {
+                state.messages.push(ThreadMessage {
+                    role: ThreadRole::Assistant,
+                    text: String::new(),
+                    tool_calls: Some(calls.clone()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    sql: None,
+                    truncated: false,
+                });
+            }
+
+            for call in calls {
+                let result = execute(&call);
+                state.tool_rounds += 1;
+
+                if call.name == "get_turn" {
+                    let turn_id = call.arguments.get("turn_id").and_then(|value| {
+                        value
+                            .as_i64()
+                            .or_else(|| value.as_str().and_then(|raw| raw.parse().ok()))
+                    });
+                    if let Some(turn_id) = turn_id {
+                        let marker = format!("[turn:{turn_id}]");
+                        if result.contains(&marker) && !state.fetched_turn_ids.contains(&turn_id) {
+                            state.fetched_turn_ids.push(turn_id);
+                        }
+                    }
+                }
+
+                state.messages.push(ThreadMessage {
+                    role: ThreadRole::Tool,
+                    text: result,
+                    tool_calls: None,
+                    tool_call_id: Some(call.id),
+                    tool_name: Some(call.name),
+                    sql: None,
+                    truncated: false,
+                });
+            }
+
+            if state.tool_rounds >= MAX_TOOL_ROUNDS {
+                state.force_final = true;
+            }
+            DriveResult::Continue
+        }
+        AssistantTurn::Final(text) => {
+            state.illegal_json_streak = 0;
+            DriveResult::Done { text }
+        }
+        AssistantTurn::Invalid if !state.json_mode => {
+            state.json_mode = true;
+            DriveResult::Continue
+        }
+        AssistantTurn::Invalid => {
+            state.illegal_json_streak += 1;
+            if state.illegal_json_streak >= 2 {
+                DriveResult::Failed {
+                    message: "The model could not use tool-calling. Try a different OpenAI-compatible model in Settings.".into(),
+                }
+            } else {
+                DriveResult::Continue
+            }
+        }
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentAnswer {
+    pub thread: CopilotThread,
     pub text: String,
-    pub action: String,
     pub sql: Option<String>,
     pub truncated: bool,
+    pub fetched_turn_ids: Vec<i64>,
 }
 
 pub struct AnswerRequest<'a> {
@@ -50,494 +184,567 @@ pub struct AnswerRequest<'a> {
     pub user_message: &'a str,
     pub run: &'a RunSummary,
     pub analysis: &'a RunAnalysis,
-    pub turns: &'a [TurnSummary],
-    pub selected: Option<&'a TurnDetail>,
-    pub include_full_turn: bool,
+    pub focused_turn_id: Option<i64>,
+    pub thread: CopilotThread,
+    pub on_step: Option<&'a dyn Fn(&str)>,
 }
 
-#[derive(Debug, Deserialize)]
-struct Selection {
-    action: String,
-    skill_id: Option<String>,
-    sql: Option<String>,
-    #[serde(default)]
-    reply: String,
-}
-
-pub fn load_config() -> LlmConfig {
+pub fn load_thread(run: &RunSummary) -> CopilotThread {
     let Some(window) = web_sys::window() else {
-        return LlmConfig::default();
+        return CopilotThread {
+            messages: Vec::new(),
+            updated_at: 0,
+            truncated: false,
+        };
     };
     let Some(storage) = window.local_storage().ok().flatten() else {
-        return LlmConfig::default();
+        return CopilotThread {
+            messages: Vec::new(),
+            updated_at: 0,
+            truncated: false,
+        };
     };
     storage
-        .get_item(STORAGE_KEY)
+        .get_item(&thread_storage_key(run))
         .ok()
         .flatten()
         .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
+        .unwrap_or(CopilotThread {
+            messages: Vec::new(),
+            updated_at: 0,
+            truncated: false,
+        })
 }
 
-pub fn save_config(config: &LlmConfig) {
+pub fn save_thread(run: &RunSummary, thread: &CopilotThread) {
     let Some(window) = web_sys::window() else {
         return;
     };
     let Some(storage) = window.local_storage().ok().flatten() else {
         return;
     };
-    if let Ok(raw) = serde_json::to_string(config) {
-        let _ = storage.set_item(STORAGE_KEY, &raw);
+    let mut thread = thread.clone();
+    thread.updated_at = now_millis();
+    trim_thread(&mut thread);
+    if let Ok(raw) = serde_json::to_string(&thread) {
+        let _ = storage.set_item(&thread_storage_key(run), &raw);
     }
 }
 
-pub fn skill_ids() -> &'static [&'static str] {
-    &[
-        "trajectory_summary",
-        "failure_locator",
-        "latency_hotspots",
-        "tool_usage",
-        "cohort_compare",
-    ]
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(1)
+        .max(1)
+}
+
+pub fn thread_storage_key(run: &RunSummary) -> String {
+    format!("pchronicle_copilot:{}", run.query())
+}
+
+pub fn thread_byte_size(thread: &CopilotThread) -> usize {
+    serde_json::to_string(thread)
+        .map(|raw| raw.len())
+        .unwrap_or(0)
+}
+
+fn shrink_tool_text(text: &str) -> String {
+    const KEEP: usize = 512;
+    if text.len() <= KEEP {
+        return text.to_string();
+    }
+    let mut end = KEEP.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n[… truncated …]", &text[..end])
+}
+
+pub fn trim_thread(thread: &mut CopilotThread) {
+    while thread_byte_size(thread) > THREAD_BYTE_LIMIT {
+        let Some(index) = thread
+            .messages
+            .iter()
+            .position(|message| message.role == ThreadRole::Tool && !message.truncated)
+        else {
+            break;
+        };
+        thread.messages[index].text = shrink_tool_text(&thread.messages[index].text);
+        thread.messages[index].truncated = true;
+        thread.truncated = true;
+    }
+}
+
+pub fn compress_messages_for_llm(messages: &[ThreadMessage]) -> Vec<ThreadMessage> {
+    let mut out = messages.to_vec();
+    loop {
+        let encoded = serde_json::to_string(&out).unwrap_or_default();
+        if encoded.len() <= LLM_MESSAGE_BYTE_LIMIT {
+            return out;
+        }
+        let Some(index) = out.iter().position(|message| {
+            message.role == ThreadRole::Tool
+                && message.text.len() > 64
+                && shrink_tool_text(&message.text) != message.text
+        }) else {
+            return out;
+        };
+        out[index].text = shrink_tool_text(&out[index].text);
+        out[index].truncated = true;
+    }
 }
 
 pub async fn answer(request: AnswerRequest<'_>) -> Result<AgentAnswer, String> {
-    let AnswerRequest {
-        config,
-        user_message,
-        run,
-        analysis,
-        turns,
-        selected,
-        include_full_turn,
-    } = request;
-    let (base_context, context_truncated) =
-        evidence_context(run, analysis, turns, selected, include_full_turn);
-    let explicit_skill = resolve_skill(user_message);
-    if !config.is_configured() {
-        let skill = explicit_skill.unwrap_or("trajectory_summary");
-        let (evidence, sql) = run_skill(skill, run, analysis, turns).await?;
-        let evidence = decorate_skill_evidence(skill, evidence, turns);
-        return Ok(AgentAnswer {
-            text: format!(
-                "**{}**\n\n{}\n\nConfigure an OpenAI-compatible model in Settings for a natural-language interpretation.",
-                skill_title(skill),
-                evidence
-            ),
-            action: skill.into(),
-            sql,
-            truncated: context_truncated,
-        });
+    if !request.config.is_configured() {
+        return Err(
+            "Configure an OpenAI-compatible model in Settings before asking Copilot.".into(),
+        );
     }
 
-    let selection = if let Some(skill) = explicit_skill {
-        Selection {
-            action: "skill".into(),
-            skill_id: Some(skill.into()),
-            sql: None,
-            reply: String::new(),
-        }
-    } else {
-        select_action(config, user_message, &base_context).await?
+    let mut state = LoopState {
+        messages: request.thread.messages.clone(),
+        tool_rounds: 0,
+        json_mode: false,
+        illegal_json_streak: 0,
+        fetched_turn_ids: Vec::new(),
+        force_final: false,
     };
+    state.messages.push(ThreadMessage {
+        role: ThreadRole::User,
+        text: request.user_message.to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        tool_name: None,
+        sql: None,
+        truncated: false,
+    });
 
-    match selection.action.as_str() {
-        "sql" => {
-            let sql = selection
-                .sql
-                .filter(|sql| !sql.trim().is_empty())
-                .ok_or_else(|| "The model selected SQL without returning a query.".to_string())?;
-            let result = api::query_evidence(&sql).await?;
-            let evidence = format!(
-                "SQL:\n{sql}\n\nreturned_rows={} truncated={}\n{}",
-                result.returned_rows,
-                result.truncated,
-                serde_json::to_string_pretty(&result.rows).unwrap_or_default()
-            );
-            let summary = summarize(config, user_message, &base_context, &evidence).await?;
-            let component = table_fence("SQL query result", result.clone());
-            Ok(AgentAnswer {
-                text: format!("{summary}\n\n{component}"),
-                action: "read-only SQL".into(),
-                sql: Some(sql),
-                truncated: context_truncated || result.truncated,
-            })
+    let catalog_context = match api::query_catalog().await {
+        Ok(catalog) => format_catalog_schema(&catalog),
+        Err(_) => "SQL catalog unavailable; do not guess table or column names.".into(),
+    };
+    let base_system = system_prompt(
+        request.run,
+        request.analysis,
+        request.focused_turn_id,
+        &catalog_context,
+    );
+    let mut last_sql = None;
+    let mut evidence_truncated = false;
+
+    loop {
+        let tools_enabled = !state.json_mode && !state.force_final;
+        let system = mode_system_prompt(&base_system, state.json_mode, state.force_final);
+        let messages =
+            openai_messages(&compress_messages_for_llm(&state.messages), state.json_mode);
+        let message = match chat_with_tools(
+            request.config,
+            &system,
+            messages,
+            tools_enabled,
+            state.json_mode,
+        )
+        .await
+        {
+            Ok(message) => message,
+            Err(error) if !state.json_mode && error.suggests_tools_unsupported() => {
+                state.json_mode = true;
+                continue;
+            }
+            Err(error) => return Err(error.message),
+        };
+
+        let turn = if state.json_mode {
+            message
+                .get("content")
+                .and_then(Value::as_str)
+                .map(parse_json_fallback)
+                .unwrap_or(AssistantTurn::Invalid)
+        } else {
+            parse_native_message(&message)
+        };
+
+        let mut results = VecDeque::new();
+        let mut sql_by_call = HashMap::new();
+        if let AssistantTurn::ToolCalls(calls) = &turn {
+            let remaining = MAX_TOOL_ROUNDS.saturating_sub(state.tool_rounds);
+            for call in calls.iter().take(remaining) {
+                if let Some(on_step) = request.on_step {
+                    on_step(&tool_step(call));
+                }
+                let execution = execute_tool(call, request.run, request.analysis).await;
+                if execution.truncated {
+                    evidence_truncated = true;
+                }
+                if let Some(sql) = execution.sql {
+                    last_sql = Some(sql.clone());
+                    sql_by_call.insert(call.id.clone(), sql);
+                }
+                results.push_back(execution.text);
+            }
         }
-        "answer" => Ok(AgentAnswer {
-            text: if selection.reply.trim().is_empty() {
-                "I could not map that request to available trajectory evidence.".into()
-            } else {
-                selection.reply
-            },
-            action: "context answer".into(),
-            sql: None,
-            truncated: context_truncated,
-        }),
-        _ => {
-            let skill = selection
-                .skill_id
-                .as_deref()
-                .filter(|skill| skill_ids().contains(skill))
-                .unwrap_or("trajectory_summary");
-            let (evidence, sql) = run_skill(skill, run, analysis, turns).await?;
-            let evidence = decorate_skill_evidence(skill, evidence, turns);
-            let components = component_fences(&evidence);
-            let summary = summarize(config, user_message, &base_context, &evidence).await?;
-            Ok(AgentAnswer {
-                text: if components.is_empty() {
-                    summary
-                } else {
-                    format!("{summary}\n\n{components}")
-                },
-                action: skill.into(),
-                sql,
-                truncated: context_truncated,
-            })
+
+        let result = apply_model_turn(&mut state, turn, |_| {
+            results
+                .pop_front()
+                .unwrap_or_else(|| "Tool call budget exhausted.".into())
+        });
+        for message in state.messages.iter_mut().rev() {
+            let Some(call_id) = message.tool_call_id.as_ref() else {
+                continue;
+            };
+            if let Some(sql) = sql_by_call.remove(call_id) {
+                message.sql = Some(sql);
+            }
+            if sql_by_call.is_empty() {
+                break;
+            }
+        }
+
+        match result {
+            DriveResult::Continue => {}
+            DriveResult::Done { text } => {
+                return Ok(finish_answer(
+                    request.thread,
+                    state,
+                    text,
+                    last_sql,
+                    evidence_truncated,
+                ));
+            }
+            DriveResult::Failed { message } => {
+                return Ok(finish_answer(
+                    request.thread,
+                    state,
+                    message,
+                    last_sql,
+                    evidence_truncated,
+                ));
+            }
         }
     }
 }
 
-async fn run_skill(
-    skill: &str,
+fn system_prompt(
     run: &RunSummary,
     analysis: &RunAnalysis,
-    turns: &[TurnSummary],
-) -> Result<(String, Option<String>), String> {
-    match skill {
-        "failure_locator" => {
-            let evidence = turns
-                .iter()
-                .filter(|turn| turn.has_error)
-                .take(20)
-                .map(|turn| {
-                    format!(
-                        "- [turn:{}] {} {} — {}",
-                        turn.id,
-                        turn.source,
-                        turn.kind.as_deref().unwrap_or("unknown"),
-                        turn.preview
-                    )
-                })
-                .collect::<Vec<_>>();
-            Ok((
-                if evidence.is_empty() {
-                    "No turns contain an explicit error kind, failing status, non-null error_type, or HTTP status >= 400. This does not prove the run succeeded.".into()
-                } else {
-                    format!("Explicit error evidence:\n{}", evidence.join("\n"))
-                },
-                None,
-            ))
-        }
-        "latency_hotspots" => {
-            let mut ranked = turns
-                .iter()
-                .filter_map(|turn| turn.latency_ms.map(|latency| (turn, latency)))
-                .collect::<Vec<_>>();
-            ranked.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
-            let lines = ranked
-                .into_iter()
-                .take(20)
-                .map(|(turn, latency)| {
-                    format!("- [turn:{}] {:.1} ms — {}", turn.id, latency, turn.preview)
-                })
-                .collect::<Vec<_>>();
-            Ok((
-                format!(
-                    "Latency coverage: {}/{} turns; P50={}; P95={}; max={}\n{}",
-                    analysis.latency_ms.sample_count,
-                    analysis.latency_ms.total_count,
-                    optional_number(analysis.latency_ms.p50),
-                    optional_number(analysis.latency_ms.p95),
-                    optional_number(analysis.latency_ms.max),
-                    if lines.is_empty() {
-                        "No captured latency samples.".into()
-                    } else {
-                        lines.join("\n")
-                    }
-                ),
-                None,
-            ))
-        }
-        "tool_usage" => Ok((
-            if analysis.tools.is_empty() {
-                "No structured tool calls were captured.".into()
-            } else {
-                analysis
-                    .tools
-                    .iter()
-                    .map(|tool| {
-                        format!(
-                            "- {}: {} calls, duration coverage {}/{}, total {}, average {}, max {}, error-associated {}",
-                            tool.name,
-                            tool.count,
-                            tool.duration_sample_count,
-                            tool.count,
-                            optional_number(tool.total_duration_ms),
-                            optional_number(tool.average_duration_ms),
-                            optional_number(tool.max_duration_ms),
-                            tool.error_associated_count,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            },
-            None,
-        )),
-        "cohort_compare" => {
-            let catalog = api::query_catalog().await?;
-            let database = catalog.database;
-            let session = sql_literal(&run.session_id);
-            let sql = format!(
-                "SELECT session_id, COUNT(*) AS step_count, AVG(latency_ms) AS avg_latency_ms, MAX(latency_ms) AS max_latency_ms FROM {database}.steps GROUP BY session_id ORDER BY avg_latency_ms DESC NULLS LAST LIMIT 50"
-            );
-            let result = api::query_evidence(&sql).await?;
-            let component = table_fence("Cohort comparison", result.clone());
-            Ok((
-                format!(
-                    "Selected session: {session}\nCohort rows={} truncated={}\n\n{}",
-                    result.returned_rows, result.truncated, component
-                ),
-                Some(sql),
-            ))
-        }
-        _ => Ok((overview_evidence(run, analysis, turns), None)),
-    }
-}
-
-fn decorate_skill_evidence(skill: &str, evidence: String, turns: &[TurnSummary]) -> String {
-    let mut selected = match skill {
-        "failure_locator" => turns
-            .iter()
-            .filter(|turn| turn.has_error)
-            .map(|turn| turn.id)
-            .take(20)
-            .collect::<Vec<_>>(),
-        "latency_hotspots" => {
-            let mut ranked = turns
-                .iter()
-                .filter_map(|turn| turn.latency_ms.map(|latency| (turn.id, latency)))
-                .collect::<Vec<_>>();
-            ranked.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
-            ranked.into_iter().map(|(id, _)| id).take(20).collect()
-        }
-        "tool_usage" => turns
-            .iter()
-            .filter(|turn| !turn.tool_names.is_empty())
-            .map(|turn| turn.id)
-            .take(20)
-            .collect(),
-        "trajectory_summary" => turns.iter().map(|turn| turn.id).take(20).collect(),
-        _ => Vec::new(),
-    };
-    selected.dedup();
-    if selected.is_empty() {
-        evidence
-    } else {
-        format!(
-            "{evidence}\n\n{}",
-            trajectory_fence(skill_title(skill), selected)
-        )
-    }
-}
-
-fn component_fences(value: &str) -> String {
-    let lines = value.lines().collect::<Vec<_>>();
-    let mut fences = Vec::new();
-    let mut index = 0;
-    while index < lines.len() {
-        if lines[index].starts_with("```pchronicle:") {
-            let start = index;
-            index += 1;
-            while index < lines.len() && lines[index] != "```" {
-                index += 1;
-            }
-            if index < lines.len() {
-                fences.push(lines[start..=index].join("\n"));
-            }
-        }
-        index += 1;
-    }
-    fences.join("\n\n")
-}
-
-fn overview_evidence(run: &RunSummary, analysis: &RunAnalysis, turns: &[TurnSummary]) -> String {
-    let top = turns
-        .iter()
-        .take(12)
-        .map(|turn| format!("- [turn:{}] {} — {}", turn.id, turn.source, turn.preview))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "Run: agent={} session={} status={}\nEvents={} turns={} tools={} explicit_errors={}\nTokens: prompt={} completion={} total={}\nLatency: samples={}/{} p50={} p95={} max={}\nTurn evidence:\n{}",
-        run.agent_id,
+    focused_turn_id: Option<i64>,
+    catalog_context: &str,
+) -> String {
+    let mut prompt = format!(
+        "You are pChronicle Copilot for local agent trajectory debugging. Gather evidence only for the current run. Call tools when details are needed; do not invent evidence. Missing measurements are not zero. Do not infer an error from arbitrary message text. Answer in the user's language, preferably in 3–7 concise bullets. Separate captured facts from inference. Cite every inspected turn as [turn:ID]. Mention coverage or truncation when tool results report it.\n\nCurrent run analysis:\nsession={}\nstatus={}\nturn_count={}\nevent_count={}\nerror_count={}\ntotal_tokens={}\nlatency_p95={}\nlatency_samples={}/{}\n\nquery_sql schema:\n{}",
         run.session_id,
         run.status,
-        analysis.event_count,
         analysis.turn_count,
-        analysis.tool_call_count,
+        analysis.event_count,
         analysis.error_count,
-        optional_u64(analysis.prompt_tokens),
-        optional_u64(analysis.completion_tokens),
-        optional_u64(analysis.total_tokens),
+        analysis
+            .total_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unavailable".into()),
+        analysis
+            .latency_ms
+            .p95
+            .map(|value| format!("{value:.1}"))
+            .unwrap_or_else(|| "unavailable".into()),
         analysis.latency_ms.sample_count,
         analysis.latency_ms.total_count,
-        optional_number(analysis.latency_ms.p50),
-        optional_number(analysis.latency_ms.p95),
-        optional_number(analysis.latency_ms.max),
-        top
-    )
+        catalog_context,
+    );
+    if let Some(turn_id) = focused_turn_id {
+        prompt.push_str(&format!(
+            "\nThe user is currently viewing turn #{turn_id}. Do not assume its body; call get_turn if needed."
+        ));
+    }
+    prompt
 }
 
-fn evidence_context(
-    run: &RunSummary,
-    analysis: &RunAnalysis,
-    turns: &[TurnSummary],
-    selected: Option<&TurnDetail>,
-    include_full_turn: bool,
-) -> (String, bool) {
-    let mut context = overview_evidence(run, analysis, turns);
-    if let Some(detail) = selected {
-        context.push_str(&format!(
-            "\nSelected [turn:{}]: source={} kind={} model={} latency={} tools={}\n",
-            detail.summary.id,
-            detail.summary.source,
-            detail.summary.kind.as_deref().unwrap_or("unknown"),
-            detail
-                .summary
-                .model_name
-                .as_deref()
-                .unwrap_or("unavailable"),
-            optional_number(detail.summary.latency_ms),
-            detail.summary.tool_names.join(", ")
-        ));
-        if detail.summary.source != "system" {
-            let text = detail.turn.text();
-            let excerpt_limit = if include_full_turn {
-                FULL_CONTEXT_LIMIT
-            } else {
-                4 * 1024
-            };
-            context.push_str("Selected content:\n");
-            context.push_str(&truncate(&text, excerpt_limit).0);
-        } else {
-            context.push_str("System content omitted by the minimal-evidence policy.");
-        }
-        if include_full_turn {
-            context.push_str("\nTool calls:\n");
-            context.push_str(
-                &truncate(
-                    &serde_json::to_string_pretty(&detail.wire_tool_calls).unwrap_or_default(),
-                    12 * 1024,
-                )
-                .0,
-            );
+fn format_catalog_schema(catalog: &QueryCatalog) -> String {
+    let tables = crate::model::queryable_tables(catalog);
+    if tables.is_empty() {
+        return "SQL catalog is available but contains no tables.".into();
+    }
+    tables
+        .iter()
+        .map(|table| {
+            let fields = table
+                .fields
+                .iter()
+                .map(|field| format!("{} {}", field.name, field.data_type))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{} ({fields})", table.name)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn mode_system_prompt(base: &str, json_mode: bool, force_final: bool) -> String {
+    let mut prompt = base.to_string();
+    if json_mode {
+        prompt.push_str(
+            "\nReturn JSON only: either {\"tool\":\"get_analysis|get_turn|query_sql\",\"arguments\":{}} or {\"final\":\"...\"}.",
+        );
+    }
+    if force_final {
+        prompt.push_str("\nAnswer now from evidence already gathered. Do not call tools.");
+    }
+    prompt
+}
+
+fn openai_messages(messages: &[ThreadMessage], json_mode: bool) -> Vec<Value> {
+    let mut mapped = Vec::new();
+    for message in messages {
+        match message.role {
+            ThreadRole::User => {
+                mapped.push(json!({"role": "user", "content": message.text}));
+            }
+            ThreadRole::Assistant => {
+                if let Some(calls) = message
+                    .tool_calls
+                    .as_ref()
+                    .filter(|calls| !calls.is_empty())
+                {
+                    if json_mode {
+                        let replay = calls
+                            .iter()
+                            .map(|call| {
+                                serde_json::to_string(&json!({
+                                    "tool": call.name,
+                                    "arguments": call.arguments,
+                                }))
+                                .unwrap_or_else(|_| "{}".into())
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        mapped.push(json!({"role": "assistant", "content": replay}));
+                    } else {
+                        let tool_calls = calls
+                            .iter()
+                            .map(|call| {
+                                json!({
+                                    "id": call.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": call.name,
+                                        "arguments": serde_json::to_string(&call.arguments)
+                                            .unwrap_or_else(|_| "{}".into()),
+                                    },
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        mapped.push(json!({
+                            "role": "assistant",
+                            "content": null,
+                            "tool_calls": tool_calls,
+                        }));
+                    }
+                } else {
+                    mapped.push(json!({"role": "assistant", "content": message.text}));
+                }
+            }
+            ThreadRole::Tool if json_mode => {
+                let name = message.tool_name.as_deref().unwrap_or("unknown");
+                mapped.push(json!({
+                    "role": "user",
+                    "content": format!("Tool {name} result:\n{}", message.text),
+                }));
+            }
+            ThreadRole::Tool => {
+                mapped.push(json!({
+                    "role": "tool",
+                    "tool_call_id": message.tool_call_id,
+                    "content": message.text,
+                }));
+            }
         }
     }
-    let limit = if include_full_turn {
-        FULL_CONTEXT_LIMIT
-    } else {
-        DEFAULT_CONTEXT_LIMIT
-    };
-    truncate(&context, limit)
+
+    mapped
 }
 
-async fn select_action(
-    config: &LlmConfig,
-    user_message: &str,
-    context: &str,
-) -> Result<Selection, String> {
-    let catalog = api::query_catalog().await.ok();
-    let database = catalog
-        .as_ref()
-        .map(|catalog| catalog.database.as_str())
-        .unwrap_or("data");
-    let system = format!(
-        "You are pChronicle Copilot for local agent trajectory debugging. Select exactly one action. Return JSON only: {{\"action\":\"skill|sql|answer\",\"skill_id\":\"trajectory_summary|failure_locator|latency_hotspots|tool_usage|cohort_compare|null\",\"sql\":null,\"reply\":\"\"}}. For SQL, emit exactly one read-only SELECT/WITH/EXPLAIN over {database}.runs, {database}.steps, {database}.tool_calls, or {database}.trajectories. Prefer a built-in skill. Never claim missing data is zero and never infer an error from arbitrary message text.\n\nWorkspace evidence:\n{context}"
-    );
-    let text = chat(config, &system, user_message, true).await?;
-    serde_json::from_str(extract_json(&text))
-        .map_err(|error| format!("The model returned invalid routing JSON: {error}"))
+fn tools_payload() -> Value {
+    json!([
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_NAMES[0],
+                "description": "Get aggregate analysis for the current run.",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_NAMES[1],
+                "description": "Fetch one turn in the current run.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"turn_id": {"type": "integer"}},
+                    "required": ["turn_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_NAMES[2],
+                "description": "Run one server-enforced read-only SQL query.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"sql": {"type": "string"}},
+                    "required": ["sql"]
+                }
+            }
+        }
+    ])
 }
 
-async fn summarize(
-    config: &LlmConfig,
-    question: &str,
-    context: &str,
-    evidence: &str,
-) -> Result<String, String> {
-    let system = "You are pChronicle Copilot. Answer in the user's language in 3-7 concise bullets. Separate captured facts from inference. Cite relevant turns using the exact form [turn:ID]. Mention coverage and truncation when present. Do not invent costs, errors, or missing measurements.";
-    let user = format!(
-        "Question: {question}\n\nMinimal workspace context:\n{context}\n\nExecuted evidence:\n{evidence}"
-    );
-    chat(config, system, &user, false).await
-}
-
-async fn chat(
+async fn chat_with_tools(
     config: &LlmConfig,
     system: &str,
-    user: &str,
+    messages: Vec<Value>,
+    tools_enabled: bool,
     json_mode: bool,
-) -> Result<String, String> {
-    let url = format!(
-        "{}/chat/completions",
-        config.api_base.trim().trim_end_matches('/')
-    );
-    let mut body = json!({
-        "model": config.model.trim(),
-        "temperature": if json_mode { 0.1 } else { 0.3 },
-        "messages": [
-            {"role":"system","content":system},
-            {"role":"user","content":user}
-        ]
-    });
-    if json_mode {
-        body["response_format"] = json!({"type":"json_object"});
+) -> Result<Value, llm::CompletionError> {
+    let first = llm::complete(
+        config,
+        llm::CompletionRequest {
+            system: system.into(),
+            messages: messages.clone(),
+            tools: tools_enabled.then(tools_payload),
+            response_format: json_mode.then(|| json!({"type":"json_object"})),
+            temperature: if json_mode { 0.1 } else { 0.3 },
+        },
+    )
+    .await;
+    match first {
+        Err(error) if json_mode && error.suggests_response_format_unsupported() => {
+            llm::complete(
+                config,
+                llm::CompletionRequest {
+                    system: system.into(),
+                    messages,
+                    tools: tools_enabled.then(tools_payload),
+                    response_format: None,
+                    temperature: if json_mode { 0.1 } else { 0.3 },
+                },
+            )
+            .await
+        }
+        result => result,
     }
-    let response = Request::post(&url)
-        .header(
-            "Authorization",
-            &format!("Bearer {}", config.api_key.trim()),
-        )
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .map_err(|error| error.to_string())?
-        .send()
-        .await
-        .map_err(|error| format!("LLM request failed (check API base, key, and CORS): {error}"))?;
-    let status = response.status();
-    let value: Value = response.json().await.map_err(|error| error.to_string())?;
-    if !(200..300).contains(&status) {
-        return Err(format!("LLM HTTP {status}: {value}"));
-    }
-    value["choices"][0]["message"]["content"]
-        .as_str()
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| "LLM returned an empty response".into())
 }
 
-fn resolve_skill(message: &str) -> Option<&'static str> {
-    let normalized = message.trim().trim_start_matches('/').to_ascii_lowercase();
-    skill_ids().iter().copied().find(|skill| {
-        normalized == *skill
-            || normalized.starts_with(&format!("{skill} "))
-            || match *skill {
-                "failure_locator" => normalized.contains("fail") || normalized.contains("error"),
-                "latency_hotspots" => normalized.contains("slow") || normalized.contains("latency"),
-                "tool_usage" => normalized.contains("tool"),
-                "cohort_compare" => normalized.contains("compare") || normalized.contains("cohort"),
-                _ => false,
+struct ToolExecution {
+    text: String,
+    sql: Option<String>,
+    truncated: bool,
+}
+
+async fn execute_tool(
+    call: &ParsedToolCall,
+    run: &RunSummary,
+    analysis: &RunAnalysis,
+) -> ToolExecution {
+    match call.name.as_str() {
+        "get_analysis" => ToolExecution {
+            text: format_analysis_result(analysis),
+            sql: None,
+            truncated: false,
+        },
+        "get_turn" => {
+            let turn_id = call.arguments.get("turn_id").and_then(|value| {
+                value
+                    .as_i64()
+                    .or_else(|| value.as_str().and_then(|raw| raw.parse().ok()))
+            });
+            let text = match turn_id {
+                Some(turn_id) => api::turn_detail(run, turn_id)
+                    .await
+                    .map(|detail| format_turn_result(&detail))
+                    .unwrap_or_else(|error| format!("get_turn failed: {error}")),
+                None => "get_turn failed: `turn_id` must be an integer.".into(),
+            };
+            ToolExecution {
+                truncated: text.contains("truncated=true"),
+                text,
+                sql: None,
             }
-    })
+        }
+        "query_sql" => {
+            let Some(sql) = call.arguments.get("sql").and_then(Value::as_str) else {
+                return ToolExecution {
+                    text: "query_sql failed: `sql` must be a string.".into(),
+                    sql: None,
+                    truncated: false,
+                };
+            };
+            match api::query_evidence(sql).await {
+                Ok(evidence) => ToolExecution {
+                    text: format_sql_result(sql, &evidence),
+                    sql: Some(sql.to_string()),
+                    truncated: evidence.truncated,
+                },
+                Err(error) => ToolExecution {
+                    text: format!("query_sql failed: {error}"),
+                    sql: None,
+                    truncated: false,
+                },
+            }
+        }
+        name => ToolExecution {
+            text: unknown_tool_result(name),
+            sql: None,
+            truncated: false,
+        },
+    }
 }
 
-fn skill_title(skill: &str) -> &'static str {
-    match skill {
-        "failure_locator" => "Failure locator",
-        "latency_hotspots" => "Latency hotspots",
-        "tool_usage" => "Tool usage",
-        "cohort_compare" => "Cohort compare",
-        _ => "Trajectory summary",
+fn tool_step(call: &ParsedToolCall) -> String {
+    if call.name == "get_turn" {
+        if let Some(turn_id) = call.arguments.get("turn_id").and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_str().and_then(|raw| raw.parse().ok()))
+        }) {
+            return format!("get_turn #{turn_id}");
+        }
+    }
+    call.name.clone()
+}
+
+fn finish_answer(
+    mut thread: CopilotThread,
+    state: LoopState,
+    mut text: String,
+    sql: Option<String>,
+    evidence_truncated: bool,
+) -> AgentAnswer {
+    let fetched_turn_ids = state.fetched_turn_ids;
+    if !fetched_turn_ids.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(&trajectory_fence("Cited turns", fetched_turn_ids.clone()));
+    }
+    thread.messages = state.messages;
+    thread.messages.push(ThreadMessage {
+        role: ThreadRole::Assistant,
+        text: text.clone(),
+        tool_calls: None,
+        tool_call_id: None,
+        tool_name: None,
+        sql: sql.clone(),
+        truncated: evidence_truncated,
+    });
+    thread.updated_at = now_millis();
+    trim_thread(&mut thread);
+    AgentAnswer {
+        truncated: evidence_truncated || thread.truncated,
+        thread,
+        text,
+        sql,
+        fetched_turn_ids,
     }
 }
 
@@ -556,6 +763,97 @@ fn extract_json(value: &str) -> &str {
     value
 }
 
+fn parse_arguments(value: &Value) -> Result<Value, ()> {
+    match value {
+        Value::String(raw) => {
+            let parsed: Value = serde_json::from_str(raw).map_err(|_| ())?;
+            if parsed.is_object() {
+                Ok(parsed)
+            } else {
+                Err(())
+            }
+        }
+        Value::Object(_) => Ok(value.clone()),
+        _ => Err(()),
+    }
+}
+
+pub fn parse_native_message(message: &Value) -> AssistantTurn {
+    if let Some(tool_calls) = message.get("tool_calls") {
+        let Some(calls) = tool_calls.as_array() else {
+            return AssistantTurn::Invalid;
+        };
+        if !calls.is_empty() {
+            let mut parsed = Vec::new();
+            for (index, call) in calls.iter().enumerate() {
+                let fallback = format!("call-{index}");
+                let id = call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&fallback)
+                    .to_string();
+                let name = call
+                    .pointer("/function/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let arguments = call
+                    .pointer("/function/arguments")
+                    .ok_or(())
+                    .and_then(parse_arguments);
+                match (name.is_empty(), arguments) {
+                    (false, Ok(arguments)) => parsed.push(ParsedToolCall {
+                        id,
+                        name,
+                        arguments,
+                    }),
+                    _ => return AssistantTurn::Invalid,
+                }
+            }
+            return AssistantTurn::ToolCalls(parsed);
+        }
+        // empty array: fall through to content
+    }
+    match message.get("content").and_then(Value::as_str) {
+        Some(text) if !text.trim().is_empty() => AssistantTurn::Final(text.to_string()),
+        _ => AssistantTurn::Invalid,
+    }
+}
+
+pub fn parse_json_fallback(content: &str) -> AssistantTurn {
+    let raw = extract_json(content);
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return AssistantTurn::Invalid;
+    };
+    if let Some(final_text) = value
+        .get("final")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+    {
+        return AssistantTurn::Final(final_text.to_string());
+    }
+    let Some(name) = value.get("tool").and_then(Value::as_str) else {
+        return AssistantTurn::Invalid;
+    };
+    if !matches!(name, "get_analysis" | "get_turn" | "query_sql") {
+        return AssistantTurn::Invalid;
+    }
+    let arguments = match value.get("arguments") {
+        None => json!({}),
+        Some(args) if args.is_object() => args.clone(),
+        Some(_) => return AssistantTurn::Invalid,
+    };
+    AssistantTurn::ToolCalls(vec![ParsedToolCall {
+        id: format!(
+            "json-{}-{}",
+            now_millis(),
+            JSON_TOOL_ID.fetch_add(1, Ordering::Relaxed)
+        ),
+        name: name.into(),
+        arguments,
+    }])
+}
+
 fn truncate(value: &str, limit: usize) -> (String, bool) {
     if value.len() <= limit {
         return (value.to_string(), false);
@@ -567,25 +865,333 @@ fn truncate(value: &str, limit: usize) -> (String, bool) {
     (format!("{}\n[… truncated …]", &value[..end]), true)
 }
 
-fn optional_number(value: Option<f64>) -> String {
-    value
-        .map(|value| format!("{value:.1}"))
-        .unwrap_or_else(|| "unavailable".into())
+pub fn unknown_tool_result(name: &str) -> String {
+    format!("Unknown tool `{name}`. Valid tools: get_analysis, get_turn, query_sql.")
 }
 
-fn optional_u64(value: Option<u64>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "unavailable".into())
+pub fn format_analysis_result(analysis: &RunAnalysis) -> String {
+    format!(
+        "turns={} events={} tools={} explicit_errors={} tokens={} latency_p95={} latency_samples={}/{}\nsources={:?}\nkinds={:?}\nmodels={:?}\ntool_names={:?}",
+        analysis.turn_count,
+        analysis.event_count,
+        analysis.tool_call_count,
+        analysis.error_count,
+        analysis
+            .total_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unavailable".into()),
+        analysis
+            .latency_ms
+            .p95
+            .map(|value| format!("{value:.1}"))
+            .unwrap_or_else(|| "unavailable".into()),
+        analysis.latency_ms.sample_count,
+        analysis.latency_ms.total_count,
+        analysis
+            .source_breakdown
+            .iter()
+            .map(|item| format!("{}:{}", item.name, item.turn_count))
+            .collect::<Vec<_>>(),
+        analysis
+            .kind_breakdown
+            .iter()
+            .map(|item| format!("{}:{}", item.name, item.turn_count))
+            .collect::<Vec<_>>(),
+        analysis
+            .model_breakdown
+            .iter()
+            .map(|item| format!("{}:{}", item.name, item.turn_count))
+            .collect::<Vec<_>>(),
+        analysis
+            .tools
+            .iter()
+            .map(|tool| format!("{}:{}", tool.name, tool.count))
+            .collect::<Vec<_>>(),
+    )
 }
 
-fn sql_literal(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
+pub fn format_turn_result(detail: &TurnDetail) -> String {
+    let (body, truncated) = truncate(&detail.turn.text(), TURN_BODY_LIMIT);
+    format!(
+        "[turn:{}] source={} kind={} model={} latency={} tools={}\n{}\n{}",
+        detail.summary.id,
+        detail.summary.source,
+        detail.summary.kind.as_deref().unwrap_or("unknown"),
+        detail
+            .summary
+            .model_name
+            .as_deref()
+            .unwrap_or("unavailable"),
+        detail
+            .summary
+            .latency_ms
+            .map(|value| format!("{value:.1}"))
+            .unwrap_or_else(|| "unavailable".into()),
+        detail.summary.tool_names.join(","),
+        body,
+        if truncated {
+            "truncated=true"
+        } else {
+            "truncated=false"
+        }
+    )
+}
+
+pub fn format_sql_result(sql: &str, evidence: &QueryEvidence) -> String {
+    format!(
+        "SQL:\n{sql}\nreturned_rows={} truncated={}\n{}",
+        evidence.returned_rows,
+        evidence.truncated,
+        serde_json::to_string(&evidence.rows).unwrap_or_default()
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::TurnSummary;
+
+    fn empty_state() -> LoopState {
+        LoopState {
+            messages: Vec::new(),
+            tool_rounds: 0,
+            json_mode: false,
+            illegal_json_streak: 0,
+            fetched_turn_ids: Vec::new(),
+            force_final: false,
+        }
+    }
+
+    #[test]
+    fn unconfigured_config_is_detected() {
+        let config = LlmConfig::default();
+        assert!(!config.is_configured());
+    }
+
+    #[test]
+    fn loop_runs_three_tools_then_final() {
+        let mut state = empty_state();
+        let calls = vec![
+            ParsedToolCall {
+                id: "1".into(),
+                name: "get_analysis".into(),
+                arguments: json!({}),
+            },
+            ParsedToolCall {
+                id: "2".into(),
+                name: "get_turn".into(),
+                arguments: json!({"turn_id": 4}),
+            },
+            ParsedToolCall {
+                id: "3".into(),
+                name: "query_sql".into(),
+                arguments: json!({"sql": "SELECT 1"}),
+            },
+        ];
+        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(calls), |call| {
+            format!("ok {}", call.name)
+        });
+        assert!(matches!(result, DriveResult::Continue));
+        assert_eq!(state.tool_rounds, 3);
+        assert_eq!(state.messages.len(), 4);
+        assert_eq!(state.messages[0].role, ThreadRole::Assistant);
+        assert_eq!(state.messages[0].tool_calls.as_ref().unwrap().len(), 3);
+        let done = apply_model_turn(
+            &mut state,
+            AssistantTurn::Final("see [turn:4]".into()),
+            |_| String::new(),
+        );
+        assert_eq!(
+            done,
+            DriveResult::Done {
+                text: "see [turn:4]".into()
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_tool_does_not_stop_the_loop() {
+        let mut state = empty_state();
+        let call = ParsedToolCall {
+            id: "1".into(),
+            name: "drop".into(),
+            arguments: json!({}),
+        };
+        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(vec![call]), |call| {
+            unknown_tool_result(&call.name)
+        });
+        assert!(matches!(result, DriveResult::Continue));
+        assert!(state.messages[1].text.contains("Unknown tool"));
+    }
+
+    #[test]
+    fn two_invalid_json_rounds_stop() {
+        let mut state = empty_state();
+        state.json_mode = true;
+        assert!(matches!(
+            apply_model_turn(&mut state, AssistantTurn::Invalid, |_| String::new()),
+            DriveResult::Continue
+        ));
+        match apply_model_turn(&mut state, AssistantTurn::Invalid, |_| String::new()) {
+            DriveResult::Failed { message } => assert!(message.contains("tool-calling")),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn eighth_tool_sets_force_final() {
+        let mut state = empty_state();
+        state.tool_rounds = 7;
+        let call = ParsedToolCall {
+            id: "1".into(),
+            name: "get_analysis".into(),
+            arguments: json!({}),
+        };
+        apply_model_turn(&mut state, AssistantTurn::ToolCalls(vec![call]), |_| {
+            "ok".into()
+        });
+        assert_eq!(state.tool_rounds, 8);
+        assert!(state.force_final);
+    }
+
+    #[test]
+    fn apply_model_turn_force_final_tool_calls_fail_instead_of_continuing() {
+        let mut state = empty_state();
+        state.force_final = true;
+        let call = ParsedToolCall {
+            id: "late".into(),
+            name: "get_analysis".into(),
+            arguments: json!({}),
+        };
+        let mut executed = false;
+        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(vec![call]), |_| {
+            executed = true;
+            "should not execute".into()
+        });
+        match result {
+            DriveResult::Failed { message } => {
+                assert!(message.contains("final answer"));
+                assert!(message.contains("evidence"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(!executed);
+        assert!(state.messages.is_empty());
+    }
+
+    #[test]
+    fn tool_batch_executes_only_remaining_budget() {
+        let mut state = empty_state();
+        state.tool_rounds = 7;
+        let calls = vec![
+            ParsedToolCall {
+                id: "first".into(),
+                name: "get_analysis".into(),
+                arguments: json!({}),
+            },
+            ParsedToolCall {
+                id: "leftover".into(),
+                name: "query_sql".into(),
+                arguments: json!({"sql": "SELECT 1"}),
+            },
+        ];
+        let mut executed = Vec::new();
+        let result = apply_model_turn(&mut state, AssistantTurn::ToolCalls(calls), |call| {
+            executed.push(call.id.clone());
+            "ok".into()
+        });
+        assert_eq!(result, DriveResult::Continue);
+        assert_eq!(executed, vec!["first"]);
+        assert_eq!(state.messages.len(), 2);
+        assert_eq!(
+            state.messages[0]
+                .tool_calls
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|call| call.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first"]
+        );
+        assert!(state.force_final);
+    }
+
+    #[test]
+    fn records_only_successfully_fetched_turn_ids() {
+        let mut state = empty_state();
+        let calls = vec![
+            ParsedToolCall {
+                id: "number".into(),
+                name: "get_turn".into(),
+                arguments: json!({"turn_id": 4}),
+            },
+            ParsedToolCall {
+                id: "string".into(),
+                name: "get_turn".into(),
+                arguments: json!({"turn_id": "5"}),
+            },
+            ParsedToolCall {
+                id: "duplicate".into(),
+                name: "get_turn".into(),
+                arguments: json!({"turn_id": 4}),
+            },
+            ParsedToolCall {
+                id: "missing-marker".into(),
+                name: "get_turn".into(),
+                arguments: json!({"turn_id": 6}),
+            },
+        ];
+        apply_model_turn(
+            &mut state,
+            AssistantTurn::ToolCalls(calls),
+            |call| match call.id.as_str() {
+                "number" | "duplicate" => "[turn:4] evidence".into(),
+                "string" => "[turn:5] evidence".into(),
+                _ => "Turn evidence could not be loaded".into(),
+            },
+        );
+        assert_eq!(state.fetched_turn_ids, vec![4, 5]);
+    }
+
+    #[test]
+    fn native_invalid_switches_mode_without_incrementing_streak() {
+        let mut state = empty_state();
+        assert_eq!(
+            apply_model_turn(&mut state, AssistantTurn::Invalid, |_| String::new()),
+            DriveResult::Continue
+        );
+        assert!(state.json_mode);
+        assert_eq!(state.illegal_json_streak, 0);
+    }
+
+    #[test]
+    fn final_resets_invalid_streak_and_tool_messages_keep_call_metadata() {
+        let mut state = empty_state();
+        state.illegal_json_streak = 1;
+        let call = ParsedToolCall {
+            id: "call-7".into(),
+            name: "query_sql".into(),
+            arguments: json!({"sql": "SELECT 7"}),
+        };
+        apply_model_turn(&mut state, AssistantTurn::ToolCalls(vec![call]), |_| {
+            "seven".into()
+        });
+        assert_eq!(state.messages[0].role, ThreadRole::Assistant);
+        assert_eq!(state.messages[1].role, ThreadRole::Tool);
+        assert_eq!(state.messages[1].tool_call_id.as_deref(), Some("call-7"));
+        assert_eq!(state.messages[1].tool_name.as_deref(), Some("query_sql"));
+        assert_eq!(state.messages[1].sql, None);
+
+        assert_eq!(
+            apply_model_turn(&mut state, AssistantTurn::Final("done".into()), |_| {
+                String::new()
+            }),
+            DriveResult::Done {
+                text: "done".into()
+            }
+        );
+        assert_eq!(state.illegal_json_streak, 0);
+    }
 
     #[test]
     fn context_truncation_stays_on_utf8_boundaries() {
@@ -594,9 +1200,597 @@ mod tests {
         assert!(value.starts_with("轨轨"));
     }
 
+    fn sample_run(session: &str, run_id: Option<&str>) -> RunSummary {
+        RunSummary {
+            dataset: "captures".into(),
+            file: "events.lance".into(),
+            run_id: run_id.map(str::to_string),
+            agent_id: "agent".into(),
+            model_name: None,
+            session_id: session.into(),
+            root_session_id: None,
+            path: String::new(),
+            row_count: 1,
+            duplicate_event_ids: 0,
+            status: "completed".into(),
+        }
+    }
+
+    fn tool_msg(text: &str) -> ThreadMessage {
+        ThreadMessage {
+            role: ThreadRole::Tool,
+            text: text.into(),
+            tool_calls: None,
+            tool_call_id: Some("call-1".into()),
+            tool_name: Some("query_sql".into()),
+            sql: None,
+            truncated: false,
+        }
+    }
+
     #[test]
-    fn explicit_commands_resolve_to_known_skills() {
-        assert_eq!(resolve_skill("/latency_hotspots"), Some("latency_hotspots"));
-        assert_eq!(resolve_skill("compare this cohort"), Some("cohort_compare"));
+    fn thread_key_follows_run_query_and_isolates_sessions() {
+        let a = sample_run("s-a", Some("r1"));
+        let b = sample_run("s-b", Some("r1"));
+        let no_run = sample_run("s-a", None);
+        assert_eq!(
+            thread_storage_key(&a),
+            format!("pchronicle_copilot:{}", a.query())
+        );
+        assert_ne!(thread_storage_key(&a), thread_storage_key(&b));
+        assert_eq!(
+            thread_storage_key(&no_run),
+            format!("pchronicle_copilot:{}", no_run.query())
+        );
+        assert!(!thread_storage_key(&no_run).contains("run_id="));
+    }
+
+    #[test]
+    fn trim_thread_shrinks_oldest_tool_results_first() {
+        let mut thread = CopilotThread {
+            messages: vec![
+                ThreadMessage {
+                    role: ThreadRole::User,
+                    text: "keep me".into(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    tool_name: None,
+                    sql: None,
+                    truncated: false,
+                },
+                tool_msg(&"x".repeat(180 * 1024)),
+                tool_msg(&"y".repeat(180 * 1024)),
+                ThreadMessage {
+                    role: ThreadRole::Assistant,
+                    text: "final".into(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    tool_name: None,
+                    sql: None,
+                    truncated: false,
+                },
+            ],
+            updated_at: 1,
+            truncated: false,
+        };
+        trim_thread(&mut thread);
+        assert!(thread.truncated);
+        assert!(thread_byte_size(&thread) <= THREAD_BYTE_LIMIT);
+        assert_eq!(thread.messages[0].text, "keep me");
+        assert_eq!(thread.messages[3].text, "final");
+        assert!(thread.messages[1].truncated);
+        assert!(thread.messages[1].text.len() < 180 * 1024);
+    }
+
+    #[test]
+    fn compress_messages_for_llm_caps_tool_payload() {
+        let messages = vec![
+            tool_msg(&"z".repeat(40 * 1024)),
+            ThreadMessage {
+                role: ThreadRole::User,
+                text: "q".into(),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_name: None,
+                sql: None,
+                truncated: false,
+            },
+        ];
+        let compressed = compress_messages_for_llm(&messages);
+        let encoded = serde_json::to_string(&compressed).unwrap();
+        assert!(encoded.len() <= LLM_MESSAGE_BYTE_LIMIT);
+        assert_eq!(compressed.last().unwrap().text, "q");
+    }
+
+    #[test]
+    fn compress_messages_for_llm_stops_when_tool_payload_cannot_shrink() {
+        let unshrinkable_tool = tool_msg(&"t".repeat(200));
+        let bulk = ThreadMessage {
+            role: ThreadRole::User,
+            text: "u".repeat(35 * 1024),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+            sql: None,
+            truncated: false,
+        };
+        let messages = vec![unshrinkable_tool, bulk];
+        let before = serde_json::to_string(&messages).unwrap();
+        assert!(before.len() > LLM_MESSAGE_BYTE_LIMIT);
+
+        let compressed = compress_messages_for_llm(&messages);
+        let after = serde_json::to_string(&compressed).unwrap();
+        assert!(after.len() <= before.len());
+        assert_eq!(compressed[0].text, "t".repeat(200));
+    }
+
+    #[test]
+    fn native_tool_calls_parse_arguments_string() {
+        let message = serde_json::json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "get_turn", "arguments": "{\"turn_id\":12}"}
+            }]
+        });
+        match parse_native_message(&message) {
+            AssistantTurn::ToolCalls(calls) => {
+                assert_eq!(calls[0].id, "c1");
+                assert_eq!(calls[0].name, "get_turn");
+                assert_eq!(calls[0].arguments["turn_id"], 12);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn native_prose_is_final_not_invalid() {
+        let message = serde_json::json!({"content": "3 turns, no explicit errors."});
+        assert_eq!(
+            parse_native_message(&message),
+            AssistantTurn::Final("3 turns, no explicit errors.".into())
+        );
+    }
+
+    #[test]
+    fn json_fallback_accepts_tool_and_final() {
+        assert!(matches!(
+            parse_json_fallback(r#"{"tool":"get_analysis","arguments":{}}"#),
+            AssistantTurn::ToolCalls(_)
+        ));
+        assert_eq!(
+            parse_json_fallback("```json\n{\"final\":\"done\"}\n```"),
+            AssistantTurn::Final("done".into())
+        );
+        assert_eq!(parse_json_fallback("not json"), AssistantTurn::Invalid);
+    }
+
+    #[test]
+    fn json_fallback_tool_call_ids_are_unique() {
+        let first = parse_json_fallback(r#"{"tool":"get_analysis","arguments":{}}"#);
+        let second = parse_json_fallback(r#"{"tool":"get_analysis","arguments":{}}"#);
+        let AssistantTurn::ToolCalls(first) = first else {
+            panic!("expected first tool call");
+        };
+        let AssistantTurn::ToolCalls(second) = second else {
+            panic!("expected second tool call");
+        };
+        assert_ne!(first[0].id, second[0].id);
+    }
+
+    #[test]
+    fn json_fallback_rejects_empty_final() {
+        assert_eq!(
+            parse_json_fallback(r#"{"final":""}"#),
+            AssistantTurn::Invalid
+        );
+        assert_eq!(
+            parse_json_fallback(r#"{"final":"  \n\t"}"#),
+            AssistantTurn::Invalid
+        );
+    }
+
+    #[test]
+    fn openai_messages_precede_native_tool_runs_with_assistant_calls() {
+        let messages = vec![
+            ThreadMessage {
+                role: ThreadRole::User,
+                text: "inspect".into(),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_name: None,
+                sql: None,
+                truncated: false,
+            },
+            ThreadMessage {
+                role: ThreadRole::Assistant,
+                text: String::new(),
+                tool_calls: Some(vec![
+                    ParsedToolCall {
+                        id: "analysis-1".into(),
+                        name: "get_analysis".into(),
+                        arguments: json!({}),
+                    },
+                    ParsedToolCall {
+                        id: "turn-1".into(),
+                        name: "get_turn".into(),
+                        arguments: json!({"turn_id": 4}),
+                    },
+                ]),
+                tool_call_id: None,
+                tool_name: None,
+                sql: None,
+                truncated: false,
+            },
+            ThreadMessage {
+                role: ThreadRole::Tool,
+                text: "analysis result".into(),
+                tool_calls: None,
+                tool_call_id: Some("analysis-1".into()),
+                tool_name: Some("get_analysis".into()),
+                sql: None,
+                truncated: false,
+            },
+            ThreadMessage {
+                role: ThreadRole::Tool,
+                text: "turn result".into(),
+                tool_calls: None,
+                tool_call_id: Some("turn-1".into()),
+                tool_name: Some("get_turn".into()),
+                sql: None,
+                truncated: false,
+            },
+            ThreadMessage {
+                role: ThreadRole::Assistant,
+                text: "done".into(),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_name: None,
+                sql: None,
+                truncated: false,
+            },
+        ];
+
+        let mapped = openai_messages(&messages, false);
+        assert_eq!(mapped.len(), 5);
+        assert_eq!(mapped[1]["role"], "assistant");
+        assert!(mapped[1]["content"].is_null());
+        assert_eq!(mapped[1]["tool_calls"][0]["id"], "analysis-1");
+        assert_eq!(
+            mapped[1]["tool_calls"][0]["function"]["name"],
+            "get_analysis"
+        );
+        assert_eq!(mapped[1]["tool_calls"][0]["function"]["arguments"], "{}");
+        assert_eq!(mapped[1]["tool_calls"][1]["id"], "turn-1");
+        assert_eq!(mapped[1]["tool_calls"][1]["function"]["name"], "get_turn");
+        assert_eq!(
+            mapped[1]["tool_calls"][1]["function"]["arguments"],
+            r#"{"turn_id":4}"#
+        );
+        assert_eq!(mapped[2]["role"], "tool");
+        assert_eq!(mapped[2]["tool_call_id"], "analysis-1");
+        assert_eq!(mapped[3]["role"], "tool");
+        assert_eq!(mapped[3]["tool_call_id"], "turn-1");
+        assert_eq!(mapped[4]["role"], "assistant");
+    }
+
+    #[test]
+    fn openai_messages_preserve_sequential_tool_call_rounds_and_arguments() {
+        let mut state = empty_state();
+        apply_model_turn(
+            &mut state,
+            AssistantTurn::ToolCalls(vec![ParsedToolCall {
+                id: "round-1".into(),
+                name: "get_analysis".into(),
+                arguments: json!({}),
+            }]),
+            |_| "analysis".into(),
+        );
+        apply_model_turn(
+            &mut state,
+            AssistantTurn::ToolCalls(vec![ParsedToolCall {
+                id: "round-2".into(),
+                name: "get_turn".into(),
+                arguments: json!({"turn_id": 4}),
+            }]),
+            |_| "[turn:4] evidence".into(),
+        );
+
+        let mapped = openai_messages(&state.messages, false);
+        let assistant_tool_calls = mapped
+            .iter()
+            .filter(|message| {
+                message["role"] == "assistant"
+                    && message.get("tool_calls").is_some_and(Value::is_array)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(assistant_tool_calls.len(), 2);
+        assert_eq!(assistant_tool_calls[0]["tool_calls"][0]["id"], "round-1");
+        assert_eq!(assistant_tool_calls[1]["tool_calls"][0]["id"], "round-2");
+        assert_eq!(
+            assistant_tool_calls[1]["tool_calls"][0]["function"]["arguments"],
+            r#"{"turn_id":4}"#
+        );
+    }
+
+    #[test]
+    fn openai_messages_map_json_mode_tools_as_text() {
+        let mapped = openai_messages(
+            &[
+                ThreadMessage {
+                    role: ThreadRole::Assistant,
+                    text: String::new(),
+                    tool_calls: Some(vec![ParsedToolCall {
+                        id: "sql-1".into(),
+                        name: "query_sql".into(),
+                        arguments: json!({"sql": "SELECT 1"}),
+                    }]),
+                    tool_call_id: None,
+                    tool_name: None,
+                    sql: None,
+                    truncated: false,
+                },
+                ThreadMessage {
+                    role: ThreadRole::Tool,
+                    text: "three rows".into(),
+                    tool_calls: None,
+                    tool_call_id: Some("sql-1".into()),
+                    tool_name: Some("query_sql".into()),
+                    sql: Some("SELECT 1".into()),
+                    truncated: false,
+                },
+            ],
+            true,
+        );
+
+        assert_eq!(
+            mapped,
+            vec![
+                json!({
+                    "role": "assistant",
+                    "content": r#"{"arguments":{"sql":"SELECT 1"},"tool":"query_sql"}"#
+                }),
+                json!({
+                    "role": "user",
+                    "content": "Tool query_sql result:\nthree rows"
+                })
+            ]
+        );
+        assert!(mapped
+            .iter()
+            .all(|message| message.get("tool_calls").is_none()));
+        assert!(mapped.iter().all(|message| message["role"] != "tool"));
+    }
+
+    #[test]
+    fn tools_unsupported_requires_protocol_keyword_in_client_error() {
+        let unknown_model = llm::CompletionError {
+            status: Some(400),
+            message: "LLM HTTP 400: unknown model".into(),
+        };
+        let tool_choice = llm::CompletionError {
+            status: Some(400),
+            message: "LLM HTTP 400: unsupported tool_choice".into(),
+        };
+        assert!(!unknown_model.suggests_tools_unsupported());
+        assert!(tool_choice.suggests_tools_unsupported());
+    }
+
+    #[test]
+    fn native_tool_calls_reject_malformed_entries() {
+        let missing_name = serde_json::json!({
+            "tool_calls": [{
+                "id": "c1",
+                "function": {"arguments": "{}"}
+            }]
+        });
+        assert_eq!(parse_native_message(&missing_name), AssistantTurn::Invalid);
+
+        let bad_arguments = serde_json::json!({
+            "tool_calls": [{
+                "id": "c1",
+                "function": {"name": "get_turn", "arguments": "not-json"}
+            }]
+        });
+        assert_eq!(parse_native_message(&bad_arguments), AssistantTurn::Invalid);
+    }
+
+    #[test]
+    fn native_tool_calls_accept_object_arguments() {
+        let message = serde_json::json!({
+            "tool_calls": [{
+                "id": "c1",
+                "function": {"name": "get_turn", "arguments": {"turn_id": 12}}
+            }]
+        });
+        match parse_native_message(&message) {
+            AssistantTurn::ToolCalls(calls) => {
+                assert_eq!(calls[0].name, "get_turn");
+                assert_eq!(calls[0].arguments["turn_id"], 12);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn native_empty_content_without_tool_calls_is_invalid() {
+        let message = serde_json::json!({"content": ""});
+        assert_eq!(parse_native_message(&message), AssistantTurn::Invalid);
+    }
+
+    #[test]
+    fn native_non_array_tool_calls_with_content_is_invalid() {
+        let string_tool_calls = serde_json::json!({
+            "tool_calls": "not-an-array",
+            "content": "3 turns, no explicit errors."
+        });
+        assert_eq!(
+            parse_native_message(&string_tool_calls),
+            AssistantTurn::Invalid
+        );
+
+        let object_tool_calls = serde_json::json!({
+            "tool_calls": {"id": "c1"},
+            "content": "3 turns, no explicit errors."
+        });
+        assert_eq!(
+            parse_native_message(&object_tool_calls),
+            AssistantTurn::Invalid
+        );
+    }
+
+    #[test]
+    fn native_empty_tool_calls_falls_through_to_content() {
+        let message = serde_json::json!({
+            "tool_calls": [],
+            "content": "done"
+        });
+        assert_eq!(
+            parse_native_message(&message),
+            AssistantTurn::Final("done".into())
+        );
+    }
+
+    #[test]
+    fn native_tool_calls_reject_non_object_arguments() {
+        let array_args = serde_json::json!({
+            "tool_calls": [{
+                "id": "c1",
+                "function": {"name": "get_turn", "arguments": [1, 2]}
+            }]
+        });
+        assert_eq!(parse_native_message(&array_args), AssistantTurn::Invalid);
+
+        let number_args = serde_json::json!({
+            "tool_calls": [{
+                "id": "c1",
+                "function": {"name": "get_turn", "arguments": 42}
+            }]
+        });
+        assert_eq!(parse_native_message(&number_args), AssistantTurn::Invalid);
+
+        let string_array_args = serde_json::json!({
+            "tool_calls": [{
+                "id": "c1",
+                "function": {"name": "get_turn", "arguments": "[1,2]"}
+            }]
+        });
+        assert_eq!(
+            parse_native_message(&string_array_args),
+            AssistantTurn::Invalid
+        );
+    }
+
+    #[test]
+    fn json_fallback_rejects_non_object_arguments() {
+        assert_eq!(
+            parse_json_fallback(r#"{"tool":"get_analysis","arguments":[]}"#),
+            AssistantTurn::Invalid
+        );
+        assert_eq!(
+            parse_json_fallback(r#"{"tool":"get_turn","arguments":42}"#),
+            AssistantTurn::Invalid
+        );
+    }
+
+    use crate::model::{MetricStats, StorylineTurn};
+
+    fn stats() -> MetricStats {
+        MetricStats {
+            sample_count: 1,
+            total_count: 3,
+            p50: None,
+            p95: None,
+            max: None,
+        }
+    }
+
+    fn sample_analysis() -> RunAnalysis {
+        RunAnalysis {
+            run: sample_run("s-a", Some("r1")),
+            event_count: 3,
+            turn_count: 3,
+            tool_call_count: 0,
+            error_count: 0,
+            start_timestamp: None,
+            end_timestamp: None,
+            models: Vec::new(),
+            prompt_tokens: None,
+            completion_tokens: None,
+            total_tokens: None,
+            latency_ms: stats(),
+            ttft_ms: stats(),
+            latency_histogram: Vec::new(),
+            source_breakdown: Vec::new(),
+            kind_breakdown: Vec::new(),
+            model_breakdown: Vec::new(),
+            tools: Vec::new(),
+        }
+    }
+
+    fn sample_detail(message: Value) -> TurnDetail {
+        TurnDetail {
+            summary: TurnSummary {
+                id: 9,
+                source: "agent".into(),
+                kind: None,
+                timestamp: None,
+                call_id: None,
+                preview: String::new(),
+                char_count: 0,
+                modalities: Vec::new(),
+                model_name: None,
+                latency_ms: None,
+                ttft_ms: None,
+                prompt_tokens: None,
+                completion_tokens: None,
+                total_tokens: None,
+                tool_names: Vec::new(),
+                event_seqs: Vec::new(),
+                has_error: false,
+            },
+            turn: StorylineTurn {
+                id: 9,
+                kind: None,
+                timestamp: None,
+                source: "agent".into(),
+                message,
+                reasoning_content: None,
+                tool_calls: None,
+                observation: None,
+                metrics: None,
+                model_name: None,
+                latency_ms: None,
+                ttft_ms: None,
+                extra: None,
+            },
+            wire_tool_calls: Vec::new(),
+            events: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn turn_formatter_truncates_on_utf8_boundary() {
+        let detail = sample_detail(Value::String("轨".repeat(20_000)));
+        let text = format_turn_result(&detail);
+        assert!(text.contains("[… truncated …]"));
+        assert!(text.is_char_boundary(text.find("[… truncated …]").unwrap()));
+    }
+
+    #[test]
+    fn unknown_tool_is_an_error_string() {
+        let text = unknown_tool_result("drop_table");
+        assert!(text.contains("drop_table"));
+        assert!(text.to_ascii_lowercase().contains("unknown"));
+    }
+
+    #[test]
+    fn analysis_formatter_omits_turn_bodies() {
+        let text = format_analysis_result(&sample_analysis());
+        assert!(text.contains("turns=3"));
+        assert!(!text.contains("preview"));
     }
 }

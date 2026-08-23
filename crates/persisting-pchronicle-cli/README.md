@@ -11,7 +11,9 @@ export support ATIF, OpenAI Messages, ACTF, and Storyline JSON.
 ## Orchestrator control plane
 
 `pchronicle serve --storage URI --control 127.0.0.1:0` starts the write-capable
-storage control plane used by pPilot and pVisor. It owns Run lease acquisition
+storage control plane used by pPilot and pVisor. Repeat `--storage` to mount
+several read-only Datasets; `--control` still requires a Dataset named
+`default`. It owns Run lease acquisition
 and renewal, fencing, terminal commits, Attempt registry access, and trajectory
 append. The process publishes one structured readiness record through stdout,
 including the bound loopback endpoint and one-time token, then serves versioned
@@ -115,7 +117,8 @@ Its response reports `fact_rows` and omits `input_bytes`; explicit
 `--output-format preserve` is invalid for canonical events.
 
 `serve --storage URI` converges deterministic sibling Storyline projections
-before readiness and maintains them as canonical events are appended. Runtime
+before readiness and maintains them as canonical events are appended. Repeated
+`--storage` values each become a Dataset mount. Runtime
 failures are retried without blocking durable writes. `status URI --format
 json` reports each projection's state and watermark.
 

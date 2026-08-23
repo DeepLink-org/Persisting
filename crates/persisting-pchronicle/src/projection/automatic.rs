@@ -631,7 +631,7 @@ mod tests {
         };
         let current = projection_a.join("CURRENT");
         let mut pointer: serde_json::Value = serde_json::from_slice(&std::fs::read(&current)?)?;
-        pointer
+        pointer["committed"]
             .as_object_mut()
             .expect("CURRENT pointer object")
             .remove("projection");
@@ -728,15 +728,15 @@ mod tests {
 
         let current = projection.join("CURRENT");
         let mut pointer: serde_json::Value = serde_json::from_slice(&std::fs::read(&current)?)?;
-        pointer["projection"]["recipe_hash"] = serde_json::json!("blake3:obsolete");
+        pointer["committed"]["projection"]["recipe_hash"] = serde_json::json!("blake3:obsolete");
         std::fs::write(&current, serde_json::to_vec(&pointer)?)?;
         let rebuilt = maintain_automatic_storyline_projection(&target).await?;
         assert_eq!(rebuilt.mode, AutomaticProjectionMaintenanceMode::Rebuilt);
         assert!(rebuilt.published());
 
         let mut pointer: serde_json::Value = serde_json::from_slice(&std::fs::read(&current)?)?;
-        pointer["projection"]["source"]["fact_version"] = serde_json::json!(999);
-        pointer["projection"]["source"]["fact_rows"] = serde_json::json!(999);
+        pointer["committed"]["projection"]["source"]["fact_version"] = serde_json::json!(999);
+        pointer["committed"]["projection"]["source"]["fact_rows"] = serde_json::json!(999);
         std::fs::write(&current, serde_json::to_vec(&pointer)?)?;
         let rebuilt_non_monotonic = maintain_automatic_storyline_projection(&target).await?;
         assert_eq!(
@@ -745,7 +745,8 @@ mod tests {
         );
 
         let mut pointer: serde_json::Value = serde_json::from_slice(&std::fs::read(&current)?)?;
-        pointer["projection"]["source"]["source_uri"] = serde_json::json!("/foreign/events.lance");
+        pointer["committed"]["projection"]["source"]["source_uri"] =
+            serde_json::json!("/foreign/events.lance");
         std::fs::write(&current, serde_json::to_vec(&pointer)?)?;
         let before = std::fs::read(&current)?;
         let error = maintain_automatic_storyline_projection(&target)

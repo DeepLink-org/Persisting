@@ -3,23 +3,17 @@ use std::collections::BTreeMap;
 use dioxus::prelude::*;
 use wasm_bindgen::JsValue;
 
-use crate::agent::{self, AgentAnswer, LlmConfig};
+use crate::agent::{self, ThreadMessage, ThreadRole};
 use crate::api;
+use crate::catalog::CatalogExplorer;
 use crate::chat_view::normalize_trace_view;
 use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView};
+use crate::llm;
+use crate::llm_settings::LlmSettings;
 use crate::model::{
-    DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary, RunAnalysis,
-    RunExplorerItem, RunPage, RunSummary, ToolAggregate, TurnDetail, TurnSummary,
+    CatalogTree, DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary,
+    RunAnalysis, RunExplorerItem, RunPage, RunSummary, ToolAggregate, TurnDetail, TurnSummary,
 };
-
-#[derive(Clone, Debug, PartialEq)]
-struct ChatMessage {
-    user: bool,
-    text: String,
-    action: Option<String>,
-    sql: Option<String>,
-    truncated: bool,
-}
 
 #[derive(Clone, Debug, PartialEq)]
 struct WorkspaceNotice {
@@ -75,6 +69,7 @@ struct RunFilters {
     sort: String,
     direction: String,
     path: String,
+    file: String,
     offset: usize,
 }
 
@@ -103,12 +98,22 @@ pub fn App() -> Element {
             duplicate_event_ids: 0,
             status: "loading".into(),
         });
+    let initial_analysis_session_id = url_param("analysis_session").unwrap_or_default();
+    let initial_analysis_seed_scope = if initial_analysis_session_id.is_empty() {
+        web_sys::window()
+            .and_then(|window| window.location().search().ok())
+            .and_then(|search| crate::analysis_session::scope_from_query(&search).ok())
+    } else {
+        None
+    };
     let initial_page = if initial_run.is_some() {
         "detail"
-    } else if url_param("page").as_deref() == Some("tools") {
-        "tools"
     } else {
-        "runs"
+        match url_param("page").as_deref() {
+            Some("tools") => "tools",
+            Some("runs") => "runs",
+            _ => "catalog",
+        }
     };
     let mut page = use_signal(move || initial_page.to_string());
     let runs = use_signal(|| None::<RunPage>);
@@ -120,6 +125,11 @@ pub fn App() -> Element {
     let mut sort = use_signal(|| url_param("sort").unwrap_or_else(|| "session".into()));
     let mut direction = use_signal(|| url_param("direction").unwrap_or_else(|| "asc".into()));
     let mut run_path = use_signal(|| url_param("path").unwrap_or_default());
+    let mut file_prefix = use_signal(|| url_param("file_prefix").unwrap_or_default());
+    let mut catalog_dataset = use_signal(|| String::new());
+    let mut catalog_prefix = use_signal(|| String::new());
+    let catalog_tree = use_signal(|| None::<CatalogTree>);
+    let catalog_loading = use_signal(|| false);
     let mut offset = use_signal(|| 0usize);
     let mut error = use_signal(|| None::<WorkspaceNotice>);
 
@@ -141,6 +151,8 @@ pub fn App() -> Element {
     let mut catalog = use_signal(|| None::<QueryCatalog>);
     let mut selected_table = use_signal(String::new);
     let mut copilot_open = use_signal(|| false);
+    let mut analysis_session_id = use_signal(move || initial_analysis_session_id);
+    let mut analysis_seed_scope = use_signal(move || initial_analysis_seed_scope);
 
     use_effect(move || {
         load_runs(
@@ -151,10 +163,24 @@ pub fn App() -> Element {
                 sort: sort(),
                 direction: direction(),
                 path: run_path(),
+                file: file_prefix(),
                 offset: offset(),
             },
             runs,
             runs_loading,
+            error,
+        );
+    });
+
+    use_effect(move || {
+        if page() != "catalog" {
+            return;
+        }
+        load_catalog_tree(
+            catalog_dataset(),
+            catalog_prefix(),
+            catalog_tree,
+            catalog_loading,
             error,
         );
     });
@@ -188,6 +214,8 @@ pub fn App() -> Element {
     use_effect(move || {
         sync_workspace_url(
             &page(),
+            &analysis_session_id(),
+            analysis_seed_scope().is_some(),
             selected_run().as_ref(),
             &query(),
             &dataset_filter(),
@@ -195,6 +223,7 @@ pub fn App() -> Element {
             &sort(),
             &direction(),
             &run_path(),
+            &file_prefix(),
             &detail_mode(),
             &trace_mode(),
             &source(),
@@ -238,6 +267,7 @@ pub fn App() -> Element {
             a { class: "skip-link", href: "#pc2-main", "Skip to trajectory workspace" }
             nav { class: "rail", aria_label: "pChronicle workspace",
                 div { class: "brand-mark", title: "pChronicle", "pC" }
+                RailButton { active: page() == "catalog", icon: "▣", label: "Data", onclick: move |_| { catalog_dataset.set(String::new()); catalog_prefix.set(String::new()); page.set("catalog".into()); } }
                 RailButton { active: page() == "runs" || page() == "detail", icon: "◫", label: "Runs", onclick: move |_| page.set("runs".into()) }
                 RailButton { active: page() == "tools", icon: "⌁", label: "Analyze", onclick: move |_| page.set("tools".into()) }
                 div { class: "rail-spacer" }
@@ -260,7 +290,34 @@ pub fn App() -> Element {
                     }
                 }
                 match page().as_str() {
-                    "tools" => rsx! { crate::tools::ToolsWorkspace { catalog: catalog(), selected_table } },
+                    "catalog" => rsx! {
+                        CatalogExplorer {
+                            tree: catalog_tree(),
+                            loading: catalog_loading(),
+                            on_open: move |(dataset, prefix): (String, String)| {
+                                catalog_dataset.set(dataset);
+                                catalog_prefix.set(prefix);
+                            },
+                            on_runs: move |(dataset, prefix): (String, String)| {
+                                dataset_filter.set(if dataset.is_empty() { "all".into() } else { dataset });
+                                file_prefix.set(prefix);
+                                run_path.set(String::new());
+                                offset.set(0);
+                                page.set("runs".into());
+                            },
+                        }
+                    },
+                    "tools" => rsx! {
+                        crate::analysis::AnalysisWorkspace {
+                            catalog: catalog(),
+                            initial_scope: analysis_seed_scope(),
+                            requested_session_id: (!analysis_session_id().is_empty()).then(|| analysis_session_id()),
+                            on_session_change: move |session_id: String| {
+                                analysis_session_id.set(session_id);
+                                analysis_seed_scope.set(None);
+                            },
+                        }
+                    },
                     "detail" => {
                         let path_runs = runs().map(|page| page.path_index).unwrap_or_default();
                         let selected_path = analysis().map(|value| value.run.path).or_else(|| selected_run().map(|run| run.path)).unwrap_or_default();
@@ -301,6 +358,12 @@ pub fn App() -> Element {
                                         }
                                     },
                                     on_open_copilot: move |_| copilot_open.set(true),
+                                    on_analyze: move |run: RunSummary| {
+                                        let Some(active_catalog) = catalog() else { return; };
+                                        analysis_session_id.set(String::new());
+                                        analysis_seed_scope.set(Some(run_analysis_scope(&active_catalog, run)));
+                                        page.set("tools".into());
+                                    },
                                 }
                             } else { LoadingWorkspace { label: "Building trajectory evidence…" } }
                         } }
@@ -320,14 +383,16 @@ pub fn App() -> Element {
                             sort: sort(),
                             direction: direction(),
                             path: run_path(),
+                            file: file_prefix(),
                             datasets: catalog().map(|value| value.datasets).unwrap_or_default(),
                             dataset: dataset_filter(),
                             on_query: move |value| query.set(value),
-                            on_dataset: move |value| { dataset_filter.set(value); run_path.set(String::new()); offset.set(0); },
+                            on_dataset: move |value| { dataset_filter.set(value); run_path.set(String::new()); file_prefix.set(String::new()); offset.set(0); },
                             on_status: move |value| status.set(value),
                             on_sort: move |value| sort.set(value),
                             on_direction: move |value| direction.set(value),
                             on_path: move |value| { run_path.set(value); offset.set(0); },
+                            on_file: move |value| { file_prefix.set(value); offset.set(0); },
                             on_refresh: move |_| {
                                 let filters = RunFilters {
                                         query: query(),
@@ -336,6 +401,7 @@ pub fn App() -> Element {
                                         sort: sort(),
                                         direction: direction(),
                                         path: run_path(),
+                                        file: file_prefix(),
                                         offset: offset(),
                                     };
                                 spawn(async move {
@@ -409,11 +475,29 @@ fn load_runs(
             &filters.sort,
             &filters.direction,
             &filters.path,
+            &filters.file,
             filters.offset,
         )
         .await
         {
             Ok(value) => page.set(Some(value)),
+            Err(message) => error.set(Some(workspace_notice(message))),
+        }
+        loading.set(false);
+    });
+}
+
+fn load_catalog_tree(
+    dataset: String,
+    prefix: String,
+    mut tree: Signal<Option<CatalogTree>>,
+    mut loading: Signal<bool>,
+    mut error: Signal<Option<WorkspaceNotice>>,
+) {
+    loading.set(true);
+    spawn(async move {
+        match api::explorer_tree(&dataset, &prefix).await {
+            Ok(value) => tree.set(Some(value)),
             Err(message) => error.set(Some(workspace_notice(message))),
         }
         loading.set(false);
@@ -589,12 +673,14 @@ fn RunsExplorer(
     sort: String,
     direction: String,
     path: String,
+    file: String,
     on_query: EventHandler<String>,
     on_dataset: EventHandler<String>,
     on_status: EventHandler<String>,
     on_sort: EventHandler<String>,
     on_direction: EventHandler<String>,
     on_path: EventHandler<String>,
+    on_file: EventHandler<String>,
     on_refresh: EventHandler<MouseEvent>,
     on_page: EventHandler<usize>,
     on_select: EventHandler<RunSummary>,
@@ -620,6 +706,7 @@ fn RunsExplorer(
                 select { value: "{sort}", aria_label: "Sort runs", onchange: move |event| on_sort.call(event.value()), option { value: "session", "Session" } option { value: "events", "Events" } option { value: "status", "Status" } option { value: "agent", "Agent" } }
                 button { class: "pc2-sort", aria_label: "Toggle sort direction", onclick: move |_| on_direction.call(if direction == "asc" { "desc".into() } else { "asc".into() }), if direction == "asc" { "↑ Asc" } else { "↓ Desc" } }
                 if !path.is_empty() { button { class: "pc2-path-filter", title: "{path}", onclick: move |_| on_path.call(String::new()), "⌁ {short(&path, 24)} ×" } }
+                if !file.is_empty() { button { class: "pc2-path-filter", title: "{file}", onclick: move |_| on_file.call(String::new()), "_file_ {short(&file, 24)} ×" } }
                 span { class: "pc2-result-count", "{total} runs" }
             }
             div { class: "pc2-table-wrap",
@@ -699,6 +786,7 @@ fn RunDetailWorkspace(
     on_apply_filter: EventHandler<()>,
     on_turn: EventHandler<i64>,
     on_open_copilot: EventHandler<MouseEvent>,
+    on_analyze: EventHandler<RunSummary>,
 ) -> Element {
     let chats_active = view == "chats";
     let steps_active = view == "steps";
@@ -709,9 +797,20 @@ fn RunDetailWorkspace(
         section { class: "pc2-detail",
             header { class: "pc2-detail-head",
                 div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, "← Runs" } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
-                div { class: "pc2-head-actions", button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" } a { class: "button", href: "/api/export/otlp?{run.query()}", "OTLP" } }
+                div { class: "pc2-head-actions",
+                    button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" }
+                    button { class: "button", onclick: { let run = run.clone(); move |_| on_analyze.call(run.clone()) }, "Analyze this run" }
+                    a { class: "button", href: "/api/export/otlp?{run.query()}", "OTLP" }
+                }
             }
             MetricsStrip { analysis: analysis.clone() }
+            if detail_mode == "trace" {
+                CompactOverviewStrip {
+                    analysis: analysis.clone(),
+                    turns: turns.clone(),
+                    on_open_analysis: move |_| on_detail_mode.call("analysis".into()),
+                }
+            }
             nav { class: "pc2-detail-tabs", aria_label: "Trajectory detail view",
                 button { class: if detail_mode == "trace" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("trace".into()), "Trace" }
                 button { class: if detail_mode == "analysis" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("analysis".into()), "Analysis" }
@@ -765,6 +864,80 @@ fn MetricsStrip(analysis: RunAnalysis) -> Element {
 #[component]
 fn Metric(label: String, value: String, detail: String) -> Element {
     rsx! { div { class: "pc2-metric", span { "{label}" } strong { "{value}" } small { "{detail}" } } }
+}
+
+#[component]
+fn CompactOverviewStrip(
+    analysis: RunAnalysis,
+    turns: Vec<TurnSummary>,
+    on_open_analysis: EventHandler<MouseEvent>,
+) -> Element {
+    let sources = compact_mix(&analysis.source_breakdown, 3);
+    let kinds = compact_mix(&analysis.kind_breakdown, 3);
+    let models = compact_mix(&analysis.model_breakdown, 3);
+    let coverage = coverage_points(
+        analysis.latency_ms.sample_count,
+        analysis.latency_ms.total_count,
+        analysis.ttft_ms.sample_count,
+        analysis.ttft_ms.total_count,
+        turns.iter().filter(|turn| turn.timestamp.is_some()).count(),
+        analysis.turn_count,
+        turns
+            .iter()
+            .filter(|turn| turn.total_tokens.is_some())
+            .count(),
+        analysis.turn_count,
+    );
+    rsx! { div { class: "pc2-trace-overview",
+        CompactMixCard { title: "Composition", tone: "blue", segments: sources, onclick: on_open_analysis }
+        CompactMixCard { title: "Behavior", tone: "violet", segments: kinds, onclick: on_open_analysis }
+        CompactMixCard { title: "Models", tone: "green", segments: models, onclick: on_open_analysis }
+        CompactCoverageCard { points: coverage, onclick: on_open_analysis }
+    } }
+}
+
+#[component]
+fn CompactMixCard(
+    title: &'static str,
+    tone: &'static str,
+    segments: Vec<MixSegment>,
+    onclick: EventHandler<MouseEvent>,
+) -> Element {
+    let legend = segments.clone();
+    let title_attr = mix_title(&segments);
+    rsx! { button { class: "pc2-trace-overview-card", r#type: "button", aria_label: "Open Analysis overview · {title}", title: "Open Analysis for the full chart", onclick,
+        span { class: "pc2-trace-overview-title", "{title}" }
+        if segments.is_empty() {
+            span { class: "pc2-trace-overview-empty", "No captured values" }
+        } else {
+            div { class: "pc2-mix-track {tone}", title: "{title_attr}",
+                for segment in segments {
+                    i { style: format!("width:{:.2}%", segment.share), title: format!("{} {}", segment.name, segment.count) }
+                }
+            }
+            div { class: "pc2-mix-legend",
+                for (index, segment) in legend.into_iter().enumerate() {
+                    span { class: "pc2-mix-key {tone} n{index}", title: "{segment.name} {segment.count}", "{short(&segment.name, 16)} {segment.count}" }
+                }
+            }
+        }
+    } }
+}
+
+#[component]
+fn CompactCoverageCard(points: Vec<CoveragePoint>, onclick: EventHandler<MouseEvent>) -> Element {
+    rsx! { button { class: "pc2-trace-overview-card", r#type: "button", aria_label: "Open Analysis overview · Coverage", title: "Open Analysis for the full chart", onclick,
+        span { class: "pc2-trace-overview-title", "Coverage" }
+        div { class: "pc2-mini-coverage",
+            for point in points {
+                div { class: "pc2-mini-coverage-row",
+                    span { "{point.label}" }
+                    code { "{point.observed}/{point.total}" }
+                    span { class: "pc2-coverage-track", i { style: format!("width:{:.2}%", percent(point.observed as f64, point.total as f64)) } }
+                }
+            }
+        }
+    } }
 }
 
 #[component]
@@ -1053,67 +1226,152 @@ fn CopilotPanel(
     on_close: EventHandler<MouseEvent>,
     on_turn: EventHandler<i64>,
 ) -> Element {
-    let mut messages = use_signal(Vec::<ChatMessage>::new);
+    let initial_run = run.clone();
+    let mut thread = use_signal(move || agent::load_thread(&initial_run));
     let mut input = use_signal(String::new);
     let mut busy = use_signal(|| false);
-    let mut include_full = use_signal(|| false);
     let mut settings = use_signal(|| false);
-    let mut config = use_signal(agent::load_config);
+    let mut config = use_signal(llm::load_config);
+    let mut step = use_signal(|| "Working…".to_string());
+    let submit_run = run.clone();
+    let submit_analysis = analysis.clone();
+    let focused_turn_id = selected.as_ref().map(|detail| detail.summary.id);
+    let update_step = Callback::new(move |next: String| step.set(next));
+    let submit_copilot = Callback::new(move |()| {
+        let question = input().trim().to_string();
+        if question.is_empty() || busy() {
+            return;
+        }
+        let config_value = config();
+        if !config_value.is_configured() {
+            const CONFIGURE_MESSAGE: &str =
+                "Configure an OpenAI-compatible model in Settings before asking Copilot.";
+            settings.set(true);
+            let mut next_thread = thread();
+            let already_shown = next_thread.messages.last().is_some_and(|message| {
+                message.role == ThreadRole::Assistant && message.text == CONFIGURE_MESSAGE
+            });
+            if !already_shown {
+                next_thread.messages.push(ThreadMessage {
+                    role: ThreadRole::Assistant,
+                    text: CONFIGURE_MESSAGE.into(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    tool_name: None,
+                    sql: None,
+                    truncated: false,
+                });
+                agent::save_thread(&submit_run, &next_thread);
+                thread.set(next_thread);
+            }
+            return;
+        }
+
+        let prior_thread = thread();
+        let mut pending_thread = prior_thread.clone();
+        pending_thread.messages.push(ThreadMessage {
+            role: ThreadRole::User,
+            text: question.clone(),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+            sql: None,
+            truncated: false,
+        });
+        thread.set(pending_thread.clone());
+        input.set(String::new());
+        step.set("Working…".into());
+        busy.set(true);
+        let run_value = submit_run.clone();
+        let analysis_value = submit_analysis.clone();
+        spawn(async move {
+            let report_step = |next: &str| update_step.call(next.to_string());
+            let result = agent::answer(agent::AnswerRequest {
+                config: &config_value,
+                user_message: &question,
+                run: &run_value,
+                analysis: &analysis_value,
+                focused_turn_id,
+                thread: prior_thread,
+                on_step: Some(&report_step),
+            })
+            .await;
+            match result {
+                Ok(answer) => {
+                    agent::save_thread(&run_value, &answer.thread);
+                    thread.set(answer.thread);
+                }
+                Err(message) => {
+                    pending_thread.messages.push(ThreadMessage {
+                        role: ThreadRole::Assistant,
+                        text: format!("Unable to complete analysis: {message}"),
+                        tool_calls: None,
+                        tool_call_id: None,
+                        tool_name: None,
+                        sql: None,
+                        truncated: false,
+                    });
+                    agent::save_thread(&run_value, &pending_thread);
+                    thread.set(pending_thread);
+                }
+            }
+            busy.set(false);
+        });
+    });
     rsx! { aside { class: "pc2-copilot",
         div { class: "pc2-copilot-head", div { strong { "Trajectory Copilot" } span { "Read-only · minimal evidence" } } div { button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" } button { aria_label: "Close Copilot", onclick: on_close, "×" } } }
-        div { class: "pc2-context-card", div { span { "Grounded in" } strong { "{short(&run.session_id, 30)}" } } div { span { "Evidence" } strong { "{analysis.turn_count} turns · {analysis.error_count} explicit errors" } } label { input { r#type: "checkbox", checked: include_full(), disabled: selected.is_none(), onchange: move |event| include_full.set(event.checked()) } "Include selected turn content once (max 64 KiB)" } }
-        div { class: "pc2-skill-chips", for skill in agent::skill_ids() { button { disabled: busy(), onclick: move |_| input.set(format!("/{skill}")), "{skill_label(skill)}" } } }
+        div { class: "pc2-context-card", div { span { "Grounded in" } strong { "{short(&run.session_id, 30)}" } } div { span { "Evidence" } strong { "{analysis.turn_count} turns · {analysis.error_count} explicit errors" } } }
         div { class: "pc2-chat",
-            if messages().is_empty() { div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" } p { "Copilot can summarize this run, locate explicit failures, rank latency, inspect tool usage, or compare cohorts." } } }
-            for (index, message) in messages().iter().enumerate() { ChatBubble { key: "message-{index}", message: message.clone(), turns: turns.clone(), on_turn } }
-            if busy() { div { class: "pc2-chat-working", span { class: "spinner" } "Selecting one read-only analysis action…" } }
+            if thread().messages.is_empty() {
+                div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" }
+                    if config().is_configured() {
+                        p { "Copilot can inspect this analysis, examine a turn, or run read-only SQL." }
+                    } else {
+                        p { "Configure an OpenAI-compatible model in Settings before asking Copilot." }
+                    }
+                }
+            }
+            for (index, message) in thread().messages.iter().enumerate() {
+                if !(message.role == ThreadRole::Assistant
+                    && message.text.trim().is_empty()
+                    && message.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()))
+                {
+                    ChatBubble { key: "message-{index}", message: message.clone(), turns: turns.clone(), on_turn }
+                }
+            }
+            if busy() { div { class: "pc2-chat-working", span { class: "spinner" } "{step}" } }
         }
-        form { class: "pc2-composer", onsubmit: move |event| {
-            event.prevent_default();
-            let question = input().trim().to_string();
-            if question.is_empty() || busy() { return; }
-            messages.write().push(ChatMessage { user: true, text: question.clone(), action: None, sql: None, truncated: false });
-            input.set(String::new());
-            busy.set(true);
-            let config_value = config();
-            let run_value = run.clone();
-            let analysis_value = analysis.clone();
-            let turns_value = turns.clone();
-            let selected_value = selected.clone();
-            let include_value = include_full();
-            spawn(async move {
-                let result = agent::answer(agent::AnswerRequest {
-                    config: &config_value,
-                    user_message: &question,
-                    run: &run_value,
-                    analysis: &analysis_value,
-                    turns: &turns_value,
-                    selected: selected_value.as_ref(),
-                    include_full_turn: include_value,
-                }).await;
-                let message = match result {
-                    Ok(AgentAnswer { text, action, sql, truncated }) => ChatMessage { user: false, text, action: Some(action), sql, truncated },
-                    Err(message) => ChatMessage { user: false, text: format!("Unable to complete analysis: {message}"), action: Some("error".into()), sql: None, truncated: false },
-                };
-                messages.write().push(message);
-                include_full.set(false);
-                busy.set(false);
-            });
-        }, textarea { value: "{input}", rows: "3", placeholder: "Ask Copilot about this trajectory…", oninput: move |event| input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); }, disabled: busy() } button { class: "button primary", disabled: busy() || input().trim().is_empty(), "Ask Copilot" } }
-        if settings() { LlmSettings { config: config(), on_close: move |_| settings.set(false), on_save: move |value| { agent::save_config(&value); config.set(value); settings.set(false); } } }
+        form { class: "pc2-composer", onsubmit: move |event| { event.prevent_default(); submit_copilot.call(()); },
+            textarea { value: "{input}", rows: "3", placeholder: "Ask Copilot about this trajectory…", oninput: move |event| input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); submit_copilot.call(()); }, disabled: busy() }
+            button { class: "button primary", disabled: busy() || input().trim().is_empty(), "Ask Copilot" }
+        }
+        if settings() { LlmSettings { config: config(), on_close: move |_| settings.set(false), on_save: move |value| { llm::save_config(&value); config.set(value); settings.set(false); } } }
     } }
 }
 
 #[component]
 fn ChatBubble(
-    message: ChatMessage,
+    message: ThreadMessage,
     turns: Vec<TurnSummary>,
     on_turn: EventHandler<i64>,
 ) -> Element {
+    if message.role == ThreadRole::Tool {
+        let action = message
+            .tool_name
+            .clone()
+            .unwrap_or_else(|| "tool".to_string());
+        return rsx! {
+            div { class: "pc2-message tool",
+                span { class: "pc2-action-label", "{action}" }
+                if !message.text.trim().is_empty() {
+                    details { summary { "Tool evidence" } pre { "{message.text}" } }
+                }
+            }
+        };
+    }
     let refs = turn_references(&message.text);
     let blocks = parse_rich_blocks(&message.text);
-    rsx! { div { class: if message.user { "pc2-message user" } else { "pc2-message assistant" },
-        if let Some(action) = &message.action { span { class: "pc2-action-label", "{action}" } }
+    rsx! { div { class: if message.role == ThreadRole::User { "pc2-message user" } else { "pc2-message assistant" },
         for (index, block) in blocks.into_iter().enumerate() {
             match block {
                 RichBlock::Text(text) => rsx! { MessageText { key: "text-{index}", text } },
@@ -1137,18 +1395,6 @@ fn ChatBubble(
 #[component]
 fn MessageText(text: String) -> Element {
     rsx! { div { class: "pc2-message-text", for line in text.lines() { if let Some(item) = line.strip_prefix("- ") { div { class: "pc2-bullet", span { "•" } p { "{clean_markdown(item)}" } } } else if !line.trim().is_empty() { p { "{clean_markdown(line)}" } } } } }
-}
-
-#[component]
-fn LlmSettings(
-    config: LlmConfig,
-    on_close: EventHandler<MouseEvent>,
-    on_save: EventHandler<LlmConfig>,
-) -> Element {
-    let mut api_base = use_signal(|| config.api_base.clone());
-    let mut api_key = use_signal(|| config.api_key.clone());
-    let mut model = use_signal(|| config.model.clone());
-    rsx! { div { class: "pc2-modal-backdrop high", section { class: "pc2-settings", role: "dialog", aria_modal: "true", header { div { p { class: "eyebrow", "Browser BYOK" } h2 { "Copilot model" } } button { onclick: on_close, "×" } } p { class: "pc2-settings-note", "The key stays in this browser's localStorage. Selected evidence is sent directly to this OpenAI-compatible endpoint; pChronicle server never receives the key." } div { class: "pc2-form", label { span { "API base" } input { value: "{api_base}", oninput: move |event| api_base.set(event.value()) } } label { span { "API key" } input { r#type: "password", value: "{api_key}", oninput: move |event| api_key.set(event.value()) } } label { span { "Model" } input { value: "{model}", oninput: move |event| model.set(event.value()) } } } footer { button { class: "button", onclick: on_close, "Cancel" } button { class: "button primary", onclick: move |_| on_save.call(LlmConfig { api_base: api_base(), api_key: api_key(), model: model() }), "Save locally" } } } } }
 }
 
 fn short(value: &str, limit: usize) -> String {
@@ -1177,6 +1423,101 @@ fn optional_u64(value: Option<u64>) -> String {
         .map(|value| value.to_string())
         .unwrap_or_else(|| "—".into())
 }
+
+#[derive(Clone, Debug, PartialEq)]
+struct MixSegment {
+    name: String,
+    count: usize,
+    share: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CoveragePoint {
+    label: &'static str,
+    observed: usize,
+    total: usize,
+}
+
+fn compact_mix(items: &[DimensionAggregate], limit: usize) -> Vec<MixSegment> {
+    let total: usize = items.iter().map(|item| item.turn_count).sum();
+    if total == 0 || limit == 0 {
+        return Vec::new();
+    }
+    let mut ranked = items.to_vec();
+    ranked.sort_by(|left, right| right.turn_count.cmp(&left.turn_count));
+    let mut segments: Vec<MixSegment> = ranked
+        .iter()
+        .take(limit)
+        .map(|item| MixSegment {
+            name: item.name.clone(),
+            count: item.turn_count,
+            share: percent(item.turn_count as f64, total as f64),
+        })
+        .collect();
+    let rest: usize = ranked.iter().skip(limit).map(|item| item.turn_count).sum();
+    if rest > 0 {
+        segments.push(MixSegment {
+            name: "other".into(),
+            count: rest,
+            share: percent(rest as f64, total as f64),
+        });
+    }
+    if !segments.is_empty() {
+        let used: f64 = segments
+            .iter()
+            .rev()
+            .skip(1)
+            .map(|segment| segment.share)
+            .sum();
+        if let Some(last) = segments.last_mut() {
+            last.share = (100.0 - used).clamp(0.0, 100.0);
+        }
+    }
+    segments
+}
+
+fn coverage_points(
+    latency_observed: usize,
+    latency_total: usize,
+    ttft_observed: usize,
+    ttft_total: usize,
+    timestamp_observed: usize,
+    timestamp_total: usize,
+    token_observed: usize,
+    token_total: usize,
+) -> Vec<CoveragePoint> {
+    vec![
+        CoveragePoint {
+            label: "Latency",
+            observed: latency_observed,
+            total: latency_total,
+        },
+        CoveragePoint {
+            label: "TTFT",
+            observed: ttft_observed,
+            total: ttft_total,
+        },
+        CoveragePoint {
+            label: "Timestamp",
+            observed: timestamp_observed,
+            total: timestamp_total,
+        },
+        CoveragePoint {
+            label: "Tokens",
+            observed: token_observed,
+            total: token_total,
+        },
+    ]
+}
+
+fn mix_title(segments: &[MixSegment]) -> String {
+    segments
+        .iter()
+        .map(|segment| format!("{} {}", segment.name, segment.count))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 fn percent(value: f64, total: f64) -> f64 {
     if !value.is_finite() || !total.is_finite() || total <= 0.0 {
         0.0
@@ -1214,10 +1555,6 @@ fn metric_value(turn: &TurnSummary, metric: &str) -> String {
 fn clean_markdown(value: &str) -> String {
     value.replace("**", "").replace('`', "")
 }
-fn skill_label(value: &str) -> String {
-    value.replace('_', " ")
-}
-
 fn turn_references(value: &str) -> Vec<i64> {
     let mut ids = Vec::new();
     let mut rest = value;
@@ -1243,9 +1580,37 @@ fn url_param(name: &str) -> Option<String> {
         .get(name)
 }
 
+fn analyze_workspace_url(session_id: &str) -> String {
+    if session_id.is_empty() {
+        "/?page=tools".into()
+    } else {
+        format!(
+            "/?page=tools&analysis_session={}",
+            urlencoding::encode(session_id)
+        )
+    }
+}
+
+fn analysis_url_sync_target(session_id: &str, seed_scope_pending: bool) -> Option<String> {
+    if seed_scope_pending && session_id.is_empty() {
+        None
+    } else {
+        Some(analyze_workspace_url(session_id))
+    }
+}
+
+fn run_analysis_scope(
+    catalog: &QueryCatalog,
+    run: RunSummary,
+) -> crate::analysis_session::AnalysisScope {
+    crate::analysis_session::AnalysisScope::from_run(catalog, run)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn sync_workspace_url(
     page: &str,
+    analysis_session_id: &str,
+    analysis_seed_scope_pending: bool,
     run: Option<&RunSummary>,
     query: &str,
     dataset_filter: &str,
@@ -1253,6 +1618,7 @@ fn sync_workspace_url(
     sort: &str,
     direction: &str,
     path: &str,
+    file_prefix: &str,
     workspace: &str,
     view: &str,
     source: &str,
@@ -1262,6 +1628,16 @@ fn sync_workspace_url(
     let Some(window) = web_sys::window() else {
         return;
     };
+    if page == "tools" {
+        let Some(url) = analysis_url_sync_target(analysis_session_id, analysis_seed_scope_pending)
+        else {
+            return;
+        };
+        let _ = window
+            .history()
+            .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&url)));
+        return;
+    }
     let mut params = vec![format!("page={}", urlencoding::encode(page))];
     if let Some(run) = run.filter(|_| page == "detail") {
         params.push(format!("dataset={}", urlencoding::encode(&run.dataset)));
@@ -1301,6 +1677,9 @@ fn sync_workspace_url(
         params.push(format!("direction={}", urlencoding::encode(direction)));
         if !path.is_empty() {
             params.push(format!("path={}", urlencoding::encode(path)));
+        }
+        if !file_prefix.is_empty() {
+            params.push(format!("file_prefix={}", urlencoding::encode(file_prefix)));
         }
     }
     let url = format!("/?{}", params.join("&"));
@@ -1353,6 +1732,117 @@ mod tests {
         assert_eq!(percent(25.0, 100.0), 25.0);
         assert_eq!(percent(10.0, 0.0), 0.0);
         assert_eq!(percent(150.0, 100.0), 100.0);
+    }
+
+    #[test]
+    fn analyze_workspace_url_retains_only_the_session_id() {
+        assert_eq!(
+            analyze_workspace_url("analysis-123"),
+            "/?page=tools&analysis_session=analysis-123"
+        );
+        assert_eq!(analyze_workspace_url(""), "/?page=tools");
+    }
+
+    #[test]
+    fn bootstrap_scope_url_is_not_replaced_until_the_session_is_persisted() {
+        assert_eq!(analysis_url_sync_target("", true), None);
+        assert_eq!(
+            analysis_url_sync_target("analysis-123", false),
+            Some("/?page=tools&analysis_session=analysis-123".into())
+        );
+    }
+
+    #[test]
+    fn analyze_this_run_keeps_full_catalog_and_run_coordinates() {
+        let run = run_at("agent/root/session-a");
+        let catalog = QueryCatalog {
+            snapshot_id: "snapshot-a".into(),
+            read_only: true,
+            database: "default".into(),
+            storage_path: "/tmp/evidence".into(),
+            path_column: "_file_".into(),
+            datasets: Vec::new(),
+            tables: Vec::new(),
+        };
+
+        let scope = run_analysis_scope(&catalog, run.clone());
+
+        assert_eq!(scope.database, "default");
+        assert_eq!(scope.storage_path, "/tmp/evidence");
+        assert_eq!(scope.snapshot_id, "snapshot-a");
+        assert_eq!(
+            scope.items,
+            vec![crate::analysis_session::AnalysisScopeItem::Run { run }]
+        );
+    }
+
+    fn dim(name: &str, count: usize) -> DimensionAggregate {
+        DimensionAggregate {
+            name: name.into(),
+            turn_count: count,
+            error_count: 0,
+            latency_sample_count: 0,
+            average_latency_ms: None,
+            total_tokens: None,
+        }
+    }
+
+    #[test]
+    fn compact_mix_keeps_small_breakdowns_intact() {
+        let segments = compact_mix(&[dim("user", 43), dim("agent", 42), dim("system", 1)], 3);
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| (segment.name.as_str(), segment.count))
+                .collect::<Vec<_>>(),
+            vec![("user", 43), ("agent", 42), ("system", 1)]
+        );
+        let share: f64 = segments.iter().map(|segment| segment.share).sum();
+        assert!((share - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn compact_mix_folds_the_tail_into_other() {
+        let segments = compact_mix(
+            &[
+                dim("a", 10),
+                dim("b", 8),
+                dim("c", 6),
+                dim("d", 3),
+                dim("e", 1),
+            ],
+            3,
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| (segment.name.as_str(), segment.count))
+                .collect::<Vec<_>>(),
+            vec![("a", 10), ("b", 8), ("c", 6), ("other", 4)]
+        );
+    }
+
+    #[test]
+    fn compact_mix_ignores_empty_breakdowns() {
+        assert!(compact_mix(&[], 3).is_empty());
+        assert!(compact_mix(&[dim("user", 0)], 3).is_empty());
+    }
+
+    #[test]
+    fn coverage_points_use_observed_over_total() {
+        let points = coverage_points(42, 86, 8, 86, 84, 86, 42, 86);
+        assert_eq!(
+            points
+                .iter()
+                .map(|point| (point.label, point.observed, point.total))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Latency", 42, 86),
+                ("TTFT", 8, 86),
+                ("Timestamp", 84, 86),
+                ("Tokens", 42, 86),
+            ]
+        );
     }
 
     #[test]

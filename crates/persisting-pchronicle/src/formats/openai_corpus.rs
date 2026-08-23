@@ -1696,6 +1696,29 @@ fn encode_tool_calls(calls: &[StorylineToolCall]) -> Result<Value> {
         .map(Value::Array)
 }
 
+/// Trim whitespace plus literal `\n` / `\r` / `\t` escape sequences that models
+/// often emit around embedded tool call fields (e.g. `<parameter=command>\ncat foo\n</parameter>`).
+fn clean_embedded_text(value: &str) -> String {
+    let mut text = value.trim();
+    while let Some(stripped) = text
+        .strip_prefix("\\r\\n")
+        .or_else(|| text.strip_prefix("\\n"))
+        .or_else(|| text.strip_prefix("\\r"))
+        .or_else(|| text.strip_prefix("\\t"))
+    {
+        text = stripped.trim_start();
+    }
+    while let Some(stripped) = text
+        .strip_suffix("\\r\\n")
+        .or_else(|| text.strip_suffix("\\n"))
+        .or_else(|| text.strip_suffix("\\r"))
+        .or_else(|| text.strip_suffix("\\t"))
+    {
+        text = stripped.trim_end();
+    }
+    text.to_string()
+}
+
 fn parse_embedded_tool_call(
     content: Option<&Value>,
     step_id: i64,
@@ -1705,7 +1728,7 @@ fn parse_embedded_tool_call(
         .split_once("<tool_call>")
         .map(|(_, value)| value)
         .or_else(|| text.split_once("<function=").map(|(_, value)| value))?;
-    let name = name.trim().split(['>', '\n', '<']).next()?.trim();
+    let name = clean_embedded_text(name.split(['>', '\n', '<']).next().unwrap_or(name));
     if name.is_empty() {
         return None;
     }
@@ -1723,7 +1746,7 @@ fn parse_embedded_tool_call(
         let (value, rest) = after_opening
             .split_once("</parameter>")
             .unwrap_or((after_opening, ""));
-        arguments.insert(key.to_string(), Value::String(value.trim().to_string()));
+        arguments.insert(key.to_string(), Value::String(clean_embedded_text(value)));
         remaining = rest;
     }
     Some(vec![StorylineToolCall {
