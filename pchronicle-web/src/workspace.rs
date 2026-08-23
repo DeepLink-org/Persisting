@@ -1290,7 +1290,8 @@ fn copilot_distance_from_bottom(scroll_top: f64, client_height: f64, scroll_heig
 }
 
 fn copilot_is_near_bottom(scroll_top: f64, client_height: f64, scroll_height: f64) -> bool {
-    copilot_distance_from_bottom(scroll_top, client_height, scroll_height) <= COPILOT_FOLLOW_THRESHOLD
+    copilot_distance_from_bottom(scroll_top, client_height, scroll_height)
+        <= COPILOT_FOLLOW_THRESHOLD
 }
 
 fn copilot_following_after_scroll(following: bool, near_bottom: bool) -> bool {
