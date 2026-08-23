@@ -1,4 +1,5 @@
 use super::*;
+use crate::progress::StageProgress;
 
 pub(super) async fn run_import(
     args: ImportArgs,
@@ -33,6 +34,8 @@ pub(super) async fn run_import(
     if let Some(snapshot) = canonical {
         return run_canonical_event_import(args, snapshot, settings_override, stdout, stderr).await;
     }
+    let mut progress = StageProgress::new(stderr);
+    progress.begin("import discovering", None)?;
     let output_format = args.output_format.unwrap_or(ImportOutputFormat::Preserve);
     let input_path = (!args.stream).then(|| Path::new(&args.from));
     let (directory_input, candidates) = if let Some(input_path) = input_path {
@@ -40,6 +43,7 @@ pub(super) async fn run_import(
     } else {
         (false, Vec::new())
     };
+    progress.finish()?;
     let output_arg = match args.output.as_deref() {
         Some(output) => output.to_owned(),
         None => default_import_output(&args, settings_override)?,
@@ -58,6 +62,8 @@ pub(super) async fn run_import(
                 persisting_pchronicle::model::UnknownFieldImportWarnings::default();
             let mut imported_sources = Vec::new();
             let mut skipped_warnings = Vec::new();
+            let total = if args.stream { 1 } else { candidates.len() };
+            progress.begin("import loading", Some(total))?;
             if args.stream {
                 let input = read_bounded(stdin, max_input_bytes, "stdin")?;
                 if let Some(source) = stage_preserved_import_source(
@@ -72,8 +78,9 @@ pub(super) async fn run_import(
                 )? {
                     imported_sources.push(source);
                 }
+                progress.set(1)?;
             } else {
-                for candidate in &candidates {
+                for (index, candidate) in candidates.iter().enumerate() {
                     let label = format!("import source {}", candidate.relative_path.display());
                     let file = std::fs::File::open(&candidate.path)
                         .with_context(|| format!("open {label}"))?;
@@ -90,22 +97,38 @@ pub(super) async fn run_import(
                     )? {
                         imported_sources.push(source);
                     }
+                    progress.set(index + 1)?;
                 }
             }
+            progress.finish()?;
             (imported_sources, unknown_field_warnings, skipped_warnings)
         }
         ImportOutputFormat::Storyline => {
             let store = StorylineLanceStore::open(staging.path())
                 .await
                 .context("create squashed Storyline Lance Dataset")?;
+            let total = if args.stream { 1 } else { candidates.len() };
+            progress.begin("import loading", Some(total))?;
+            let mut on_source = |current: usize, _total: usize| progress.set(current);
             let mut import = if args.stream {
-                StorylineImportIterator::stdin(args.format, max_input_bytes, stdin)
+                StorylineImportIterator::stdin(
+                    args.format,
+                    max_input_bytes,
+                    stdin,
+                    Some(&mut on_source),
+                )
             } else {
-                StorylineImportIterator::files(args.format, max_input_bytes, &candidates)
+                StorylineImportIterator::files(
+                    args.format,
+                    max_input_bytes,
+                    &candidates,
+                    Some(&mut on_source),
+                )
             };
             let report = store.replace_storyline_stream(&mut import).await?;
             let (imported_sources, unknown_field_warnings, skipped_warnings) =
                 import.into_result_parts();
+            progress.finish()?;
             if imported_sources.is_empty() {
                 return Err(empty_auto_directory_import_error(directory_input));
             }
@@ -139,6 +162,7 @@ pub(super) async fn run_import(
             .checked_add(source.input_bytes)
             .context("import input byte count overflow")
     })?;
+    progress.begin("import writing", None)?;
     std::fs::File::open(staging.path())
         .and_then(|directory| directory.sync_all())
         .context("sync import staging directory")?;
@@ -152,6 +176,8 @@ pub(super) async fn run_import(
         .and_then(|directory| directory.sync_all())
         .with_context(|| format!("sync Dataset parent {}", parent.display()))?;
     cleanup.disarm();
+    progress.finish()?;
+    drop(progress);
 
     let single_source = (!directory_input).then(|| {
         imported_sources
@@ -253,7 +279,16 @@ async fn run_canonical_event_import(
         ));
     }
 
-    let report = match build_storyline_projection(&args.from, &output_uri, "events.lance").await? {
+    let mut progress = StageProgress::new(stderr);
+    progress.begin("import writing", None)?;
+    let report = match progress
+        .spin_while(build_storyline_projection(
+            &args.from,
+            &output_uri,
+            "events.lance",
+        ))
+        .await?
+    {
         StorylineProjectionBuildOutcome::Built(report) => report,
         StorylineProjectionBuildOutcome::OutputNotEmpty => {
             return Err(cli_boundary_error(
@@ -262,6 +297,8 @@ async fn run_canonical_event_import(
             ));
         }
     };
+    progress.finish()?;
+    drop(progress);
     let response = ImportResponse {
         dataset_uri: output_uri,
         source_path: Some("events.lance".into()),
@@ -297,18 +334,18 @@ pub(super) async fn run_export(
         args.format != ExchangeFormat::Auto,
         "export requires an explicit --format"
     );
-    anyhow::ensure!(
-        args.max_trajectories > 0,
-        "--max-trajectories must be greater than zero"
-    );
-    anyhow::ensure!(
-        args.max_output_bytes > 0,
-        "--max-output-bytes must be greater than zero"
-    );
-    anyhow::ensure!(
-        args.timeout_seconds > 0,
-        "--timeout-seconds must be greater than zero"
-    );
+    if let Some(max_trajectories) = args.max_trajectories {
+        anyhow::ensure!(
+            max_trajectories > 0,
+            "--max-trajectories must be greater than zero"
+        );
+    }
+    if let Some(timeout_seconds) = args.timeout_seconds {
+        anyhow::ensure!(
+            timeout_seconds > 0,
+            "--timeout-seconds must be greater than zero"
+        );
+    }
     anyhow::ensure!(
         (args.output == "-") == args.stream,
         "--stream requires --output -, and --output - requires --stream"
@@ -339,29 +376,37 @@ pub(super) async fn run_export(
 
     let format = export_format(args.format)?;
     let dataset = resolve_dataset_uri(args.from.as_deref(), settings_override)?;
-    let (_, dataset_uris, snapshot) =
-        discover_query_snapshot(Some(&dataset), &[], args.max_files, args.max_entries).await?;
+    let mut progress = StageProgress::new(stderr);
+    progress.begin("export discovering", None)?;
+    let (_, dataset_uris, snapshot) = progress
+        .spin_while(discover_query_snapshot(
+            Some(&dataset),
+            &[],
+            args.max_files,
+            args.max_entries,
+        ))
+        .await?;
+    progress.finish()?;
     let dataset_uri = dataset_uris
         .first()
         .cloned()
         .context("export Dataset URI missing after discovery")?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let deadline = Duration::from_secs(args.timeout_seconds);
-    let export = tokio::time::timeout(
-        deadline,
-        export_from_snapshot(&args, format, &dataset_uri, snapshot.clone()),
-    )
-    .await
-    .with_context(|| {
-        format!(
-            "Dataset export timed out after {} seconds",
-            args.timeout_seconds
-        )
-    })??;
+    let export =
+        export_with_optional_timeout(&args, format, &dataset_uri, snapshot.clone(), &mut progress)
+            .await?;
     ensure_export_trajectory_budget(export.trajectories, args.max_trajectories)?;
-    ensure_output_byte_budget(export.bytes.len(), args.max_output_bytes, "encoded export")?;
-    write_export_output(&args.output, &export.bytes, args.overwrite, stdout)?;
+    progress.begin("export writing", Some(export.bytes.len()))?;
+    write_export_output(
+        &args.output,
+        &export.bytes,
+        args.overwrite,
+        stdout,
+        &mut progress,
+    )?;
+    progress.finish()?;
+    drop(progress);
     writeln!(
         stderr,
         "snapshot_id={} format={} trajectories={} output_bytes={} exact={}",
@@ -381,13 +426,33 @@ struct EncodedExport {
     exact: bool,
 }
 
+async fn export_with_optional_timeout(
+    args: &ExportArgs,
+    format: ExchangeFormat,
+    dataset_uri: &str,
+    snapshot: Arc<DatasetCatalogSnapshot>,
+    progress: &mut StageProgress<'_>,
+) -> Result<EncodedExport> {
+    let export = export_from_snapshot(args, format, dataset_uri, snapshot, progress);
+    match args.timeout_seconds {
+        Some(timeout_seconds) => tokio::time::timeout(Duration::from_secs(timeout_seconds), export)
+            .await
+            .with_context(|| format!("Dataset export timed out after {timeout_seconds} seconds"))?,
+        None => export.await,
+    }
+}
+
 async fn export_from_snapshot(
     args: &ExportArgs,
     format: ExchangeFormat,
     dataset_uri: &str,
     snapshot: Arc<DatasetCatalogSnapshot>,
+    progress: &mut StageProgress<'_>,
 ) -> Result<EncodedExport> {
     if let Some(export) = exact_local_file_export(args, format, dataset_uri, &snapshot).await? {
+        progress.begin("export copying", Some(export.bytes.len()))?;
+        progress.set(export.bytes.len())?;
+        progress.finish()?;
         return Ok(export);
     }
     anyhow::ensure!(
@@ -395,37 +460,34 @@ async fn export_from_snapshot(
         "strict export requires an unfiltered Source already stored in the requested format"
     );
 
+    progress.begin("export selecting", None)?;
     let sql = export_address_sql(args)?;
     let engine = snapshot.clone().query_engine(Default::default()).await?;
-    let row_limit = args
-        .max_trajectories
-        .checked_add(1)
-        .context("--max-trajectories is too large")?;
-    let mut addresses = LimitedBuffer::new(args.max_output_bytes);
-    let write_result = engine
-        .write_query_jsonl_bounded(&sql, &mut addresses, Some(row_limit))
-        .await;
-    let address_bytes = match addresses.finish(write_result)? {
-        QueryOutputBudgetOutcome::Complete(bytes) => bytes,
-        QueryOutputBudgetOutcome::RowLimitExceeded => {
+    let row_limit = match args.max_trajectories {
+        Some(max_trajectories) => Some(
+            max_trajectories
+                .checked_add(1)
+                .context("--max-trajectories is too large")?,
+        ),
+        None => None,
+    };
+    let mut addresses = Vec::new();
+    let address_bytes = match progress
+        .spin_while(engine.write_query_jsonl_bounded(&sql, &mut addresses, row_limit))
+        .await?
+    {
+        persisting_pchronicle::query::QueryWriteOutcome::Complete => addresses,
+        persisting_pchronicle::query::QueryWriteOutcome::LimitExceeded => {
             return Err(cli_boundary_error(
                 BoundaryCode::ResourceExhausted,
                 format!(
                     "export exceeds max_trajectories limit of {}",
-                    args.max_trajectories
-                ),
-            ));
-        }
-        QueryOutputBudgetOutcome::ByteLimitExceeded => {
-            return Err(cli_boundary_error(
-                BoundaryCode::ResourceExhausted,
-                format!(
-                    "export address selection exceeds max_output_bytes limit of {}",
-                    args.max_output_bytes
+                    args.max_trajectories.unwrap_or(0)
                 ),
             ));
         }
     };
+    progress.finish()?;
     let mut addresses = address_bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
@@ -443,9 +505,10 @@ async fn export_from_snapshot(
             &right.session_id,
         ))
     });
-    let mut stories = Vec::with_capacity(addresses.len());
-    let mut normalized_bytes = 0usize;
-    for address in &addresses {
+    let total = addresses.len();
+    let mut stories = Vec::with_capacity(total);
+    progress.begin("export loading", Some(total))?;
+    for (index, address) in addresses.iter().enumerate() {
         let key = CatalogStorylineKey {
             dataset: DEFAULT_DATASET_NAME.into(),
             file: address.source_path.clone(),
@@ -475,14 +538,19 @@ async fn export_from_snapshot(
             story.run_id == address.run_id,
             "export Trajectory Run ID changed within the snapshot"
         );
-        normalized_bytes = normalized_bytes.saturating_add(serde_json::to_vec(&story)?.len());
-        ensure_output_byte_budget(normalized_bytes, args.max_output_bytes, "normalized export")?;
         stories.push(story);
+        progress.set(index + 1)?;
     }
-    let bytes = encode_export(format, &stories)?;
+    progress.finish()?;
+    let trajectories = stories.len();
+    progress.begin("export encoding", None)?;
+    let bytes = progress
+        .spin_blocking(move || encode_export(format, &stories))
+        .await?;
+    progress.finish()?;
     Ok(EncodedExport {
         bytes,
-        trajectories: stories.len(),
+        trajectories,
         exact: false,
     })
 }
@@ -527,7 +595,6 @@ async fn exact_local_file_export(
         "export Source resolves outside the local Dataset"
     );
     let input = std::fs::read(&source_path).context("read exact export Source")?;
-    ensure_output_byte_budget(input.len(), args.max_output_bytes, "exact export")?;
     let text = std::str::from_utf8(&input).context("exact export Source must be UTF-8")?;
     let detected = detect_format(Some(&source_path), Some(text))?;
     if detected != exchange_document_format(format) {
@@ -546,7 +613,13 @@ async fn exact_local_file_export(
     }))
 }
 
-fn ensure_export_trajectory_budget(trajectories: usize, max_trajectories: u64) -> Result<()> {
+fn ensure_export_trajectory_budget(
+    trajectories: usize,
+    max_trajectories: Option<u64>,
+) -> Result<()> {
+    let Some(max_trajectories) = max_trajectories else {
+        return Ok(());
+    };
     if usize::try_from(max_trajectories).is_ok_and(|limit| trajectories > limit) {
         return Err(cli_boundary_error(
             BoundaryCode::ResourceExhausted,
@@ -578,14 +651,19 @@ fn export_address_sql(args: &ExportArgs) -> Result<String> {
     } else {
         format!(" WHERE {}", predicates.join(" AND "))
     };
-    let limit = args
-        .max_trajectories
-        .checked_add(1)
-        .context("--max-trajectories is too large")?;
+    let limit = match args.max_trajectories {
+        Some(max_trajectories) => {
+            let limit = max_trajectories
+                .checked_add(1)
+                .context("--max-trajectories is too large")?;
+            format!(" LIMIT {limit}")
+        }
+        None => String::new(),
+    };
     Ok(format!(
         "SELECT _file_ AS source_path, document_id, run_id, session_id \
          FROM dataset.trajectories{predicate} \
-         ORDER BY _file_, document_id, session_id LIMIT {limit}"
+         ORDER BY _file_, document_id, session_id{limit}"
     ))
 }
 
@@ -629,9 +707,20 @@ fn write_export_output(
     bytes: &[u8],
     overwrite: bool,
     stdout: &mut dyn Write,
+    progress: &mut StageProgress<'_>,
 ) -> Result<()> {
+    const CHUNK: usize = 1024 * 1024;
+    let mut write_counted = |dest: &mut dyn Write| -> Result<()> {
+        let mut written = 0usize;
+        for chunk in bytes.chunks(CHUNK.max(1)) {
+            dest.write_all(chunk).context("write export bytes")?;
+            written += chunk.len();
+            progress.set(written)?;
+        }
+        Ok(())
+    };
     if output == "-" {
-        stdout.write_all(bytes).context("write export stream")?;
+        write_counted(stdout)?;
         return Ok(());
     }
     anyhow::ensure!(
@@ -654,9 +743,7 @@ fn write_export_output(
         .prefix(".pchronicle-export-")
         .tempfile_in(&parent)
         .context("create export staging file")?;
-    staging
-        .write_all(bytes)
-        .context("write export staging file")?;
+    write_counted(&mut staging)?;
     staging
         .as_file()
         .sync_all()
@@ -862,6 +949,9 @@ struct StorylineImportIterator<'a> {
     skipped_warnings: Vec<String>,
     seen_document_ids: HashSet<String>,
     failed: bool,
+    loaded_sources: usize,
+    total_sources: usize,
+    on_source: Option<&'a mut dyn FnMut(usize, usize) -> Result<()>>,
 }
 
 impl<'a> StorylineImportIterator<'a> {
@@ -869,6 +959,7 @@ impl<'a> StorylineImportIterator<'a> {
         requested_format: ExchangeFormat,
         max_input_bytes: usize,
         stdin: &'a mut dyn Read,
+        on_source: Option<&'a mut dyn FnMut(usize, usize) -> Result<()>>,
     ) -> Self {
         Self {
             requested_format,
@@ -881,6 +972,9 @@ impl<'a> StorylineImportIterator<'a> {
             skipped_warnings: Vec::new(),
             seen_document_ids: HashSet::new(),
             failed: false,
+            loaded_sources: 0,
+            total_sources: 1,
+            on_source,
         }
     }
 
@@ -888,6 +982,7 @@ impl<'a> StorylineImportIterator<'a> {
         requested_format: ExchangeFormat,
         max_input_bytes: usize,
         candidates: &'a [ImportFileCandidate],
+        on_source: Option<&'a mut dyn FnMut(usize, usize) -> Result<()>>,
     ) -> Self {
         Self {
             requested_format,
@@ -903,7 +998,18 @@ impl<'a> StorylineImportIterator<'a> {
             skipped_warnings: Vec::new(),
             seen_document_ids: HashSet::new(),
             failed: false,
+            loaded_sources: 0,
+            total_sources: candidates.len(),
+            on_source,
         }
+    }
+
+    fn note_source_progress(&mut self) -> Result<()> {
+        self.loaded_sources += 1;
+        if let Some(on_source) = &mut self.on_source {
+            on_source(self.loaded_sources, self.total_sources)?;
+        }
+        Ok(())
     }
 
     fn decode_next_source(&mut self) -> Result<Option<DecodedImportSource>> {
@@ -947,10 +1053,14 @@ impl<'a> StorylineImportIterator<'a> {
                 }
             };
             match outcome {
-                DecodeImportOutcome::Imported(decoded) => return Ok(Some(decoded)),
+                DecodeImportOutcome::Imported(decoded) => {
+                    self.note_source_progress()?;
+                    return Ok(Some(decoded));
+                }
                 DecodeImportOutcome::Skipped { path, reason } => {
                     self.skipped_warnings
                         .push(skipped_import_warning(&path, &reason));
+                    self.note_source_progress()?;
                 }
             }
         }
