@@ -15,7 +15,7 @@ mod actf;
 mod atif;
 mod events;
 
-pub(crate) use actf::{actf_to_storylines, storylines_to_actf};
+pub(crate) use actf::{actf_to_storylines, storylines_to_actf_documents};
 pub(crate) use atif::{atif_collection_to_storylines, storylines_to_atif};
 #[cfg(all(test, feature = "lance-store"))]
 pub(crate) use atif::{atif_to_storyline, storyline_to_atif};

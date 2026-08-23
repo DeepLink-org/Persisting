@@ -18,7 +18,9 @@ pub use crate::interop::{events_to_har, events_to_otlp_json, otlp_json_to_events
 
 pub type Result<T> = anyhow::Result<T>;
 
-use crate::convert::{atif_collection_to_storylines, storylines_to_actf, storylines_to_atif};
+use crate::convert::{
+    atif_collection_to_storylines, storylines_to_actf_documents, storylines_to_atif,
+};
 use crate::formats::actf::ActfDocument;
 use crate::formats::unknown_fields::{
     attach_carried_unknown_fields, take_unknown_fields_envelope, validate_unknown_fields,
@@ -128,37 +130,19 @@ pub fn decode_json_storylines_with_options(
             }
         }
         DocumentFormat::Actf => {
-            let mut value: serde_json::Value = serde_json::from_str(input)
+            let value: serde_json::Value = serde_json::from_str(input)
                 .map_err(|error| InputIssue::invalid(error.to_string()))?;
-            let envelope = take_unknown_fields_envelope(&mut value)?;
-            let document: ActfDocument = serde_json::from_value(value)
-                .map_err(|error| InputIssue::invalid(error.to_string()))?;
-            document.validate()?;
-            let mut stories = crate::convert::actf_to_storylines(&document)
-                .map_err(|error| InputIssue::invalid(error.to_string()))?;
-            let carriers = stories
-                .iter()
-                .enumerate()
-                .map(|(story_index, story)| CarrierBinding {
-                    story_index,
-                    pointer: format!(
-                        "/attempts/{}",
-                        story
-                            .attempt_id
-                            .as_deref()
-                            .unwrap_or("1")
-                            .replace('~', "~0")
-                            .replace('/', "~1")
-                    ),
-                })
-                .collect::<Vec<_>>();
-            attach_carried_unknown_fields(
-                DocumentFormat::Actf,
-                envelope,
-                &carriers,
-                &mut stories,
-                options.unknown_fields,
-            )?;
+            let values = match value {
+                serde_json::Value::Array(values) => values,
+                value => vec![value],
+            };
+            if values.is_empty() {
+                return Err(InputIssue::unsupported("ACTF document cannot be empty"));
+            }
+            let mut stories = Vec::new();
+            for value in values {
+                stories.extend(decode_actf_document_value(value, options)?);
+            }
             Ok(stories)
         }
         DocumentFormat::OpenaiMsg => {
@@ -174,6 +158,42 @@ pub fn decode_json_storylines_with_options(
         story.validate()?;
         validate_unknown_fields(&story.unknown_fields, options.unknown_fields)?;
     }
+    Ok(stories)
+}
+
+fn decode_actf_document_value(
+    mut value: serde_json::Value,
+    options: DocumentCodecOptions,
+) -> InputResult<Vec<StorylineDocument>> {
+    let envelope = take_unknown_fields_envelope(&mut value)?;
+    let document: ActfDocument =
+        serde_json::from_value(value).map_err(|error| InputIssue::invalid(error.to_string()))?;
+    document.validate()?;
+    let mut stories = crate::convert::actf_to_storylines(&document)
+        .map_err(|error| InputIssue::invalid(error.to_string()))?;
+    let carriers = stories
+        .iter()
+        .enumerate()
+        .map(|(story_index, story)| CarrierBinding {
+            story_index,
+            pointer: format!(
+                "/attempts/{}",
+                story
+                    .attempt_id
+                    .as_deref()
+                    .unwrap_or("1")
+                    .replace('~', "~0")
+                    .replace('/', "~1")
+            ),
+        })
+        .collect::<Vec<_>>();
+    attach_carried_unknown_fields(
+        DocumentFormat::Actf,
+        envelope,
+        &carriers,
+        &mut stories,
+        options.unknown_fields,
+    )?;
     Ok(stories)
 }
 
@@ -219,7 +239,14 @@ pub fn encode_json_storylines_with_options(
                 Ok(serde_json::to_value(documents)?)
             }
         }
-        DocumentFormat::Actf => Ok(serde_json::to_value(storylines_to_actf(stories)?)?),
+        DocumentFormat::Actf => {
+            let documents = storylines_to_actf_documents(stories)?;
+            if documents.len() == 1 {
+                Ok(serde_json::to_value(&documents[0])?)
+            } else {
+                Ok(serde_json::to_value(documents)?)
+            }
+        }
         DocumentFormat::OpenaiMsg => encode_openai_storylines(stories),
         unsupported => anyhow::bail!("'{unsupported}' is not a peripheral JSON document format"),
     }
@@ -336,6 +363,34 @@ mod tests {
         })
     }
 
+    fn independent_story(session: &str) -> StorylineDocument {
+        let mut story = StorylineDocument::new(session, "agent");
+        story.turns.push(crate::StorylineTurn {
+            id: 1,
+            kind: None,
+            timestamp: Some(
+                crate::model::StorylineTimestamp::from_rfc3339("2026-08-20T12:00:00Z").unwrap(),
+            ),
+            source: "user".into(),
+            message: serde_json::json!("hello"),
+            reasoning_content: None,
+            reasoning_effort: None,
+            tool_calls: None,
+            observation: None,
+            metrics: None,
+            model_name: None,
+            llm_call_count: None,
+            is_copied_context: None,
+            latency_ms: None,
+            ttft_ms: None,
+            extra: None,
+            env: None,
+            prompt: None,
+            finished_at: None,
+        });
+        story
+    }
+
     #[test]
     fn storyline_json_codec_roundtrips_the_strict_wire() {
         let mut story = StorylineDocument::new("storyline-session", "storyline-agent");
@@ -416,6 +471,112 @@ mod tests {
             decode_json_storylines(DocumentFormat::Atif, &input, "records.jsonl").unwrap_err();
 
         assert_eq!(error.location(), Some("line 2"));
+    }
+
+    #[test]
+    fn unrelated_storylines_encode_as_separate_actf_documents() {
+        let stories = [
+            independent_story("session-a"),
+            independent_story("session-b"),
+        ];
+        let encoded = encode_json_storylines(DocumentFormat::Actf, &stories).unwrap();
+        let documents = encoded
+            .as_array()
+            .expect("independent ACTF trajectories encode as a JSON array");
+        assert_eq!(documents.len(), 2);
+        assert!(documents[0]["attempts"].get("1").is_some());
+        assert!(documents[1]["attempts"].get("1").is_some());
+        assert_eq!(documents[0]["task_id"], "session-a");
+        assert_eq!(documents[1]["task_id"], "session-b");
+
+        let decoded = decode_json_storylines(
+            DocumentFormat::Actf,
+            &encoded.to_string(),
+            "export.actf.json",
+        )
+        .unwrap();
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0].session_id, "session-a");
+        assert_eq!(decoded[1].session_id, "session-b");
+    }
+
+    #[test]
+    fn related_actf_attempts_still_encode_as_one_document() {
+        let mut first = independent_story("task-1#attempt-1");
+        first.run_id = Some("task-1".into());
+        first.attempt_id = Some("1".into());
+        first
+            .unknown_fields
+            .insert(
+                "actf",
+                "task-1.json",
+                "/root_unknown",
+                serde_json::json!(true),
+            )
+            .unwrap();
+        first.refresh_unknown_key_counts().unwrap();
+
+        let mut second = independent_story("task-1#attempt-2");
+        second.run_id = Some("task-1".into());
+        second.attempt_id = Some("2".into());
+        second
+            .unknown_fields
+            .insert(
+                "actf",
+                "task-1.json",
+                "/root_unknown",
+                serde_json::json!(true),
+            )
+            .unwrap();
+        second.refresh_unknown_key_counts().unwrap();
+
+        let encoded = encode_json_storylines(DocumentFormat::Actf, &[first, second]).unwrap();
+        assert!(
+            encoded.is_object(),
+            "related ACTF attempts stay one document"
+        );
+        assert_eq!(encoded["attempts"].as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn duplicate_attempt_ids_from_same_actf_source_encode_separately() {
+        let mut first = independent_story("Energy_001");
+        first.run_id = Some("Energy_001".into());
+        first.attempt_id = Some("1".into());
+        first
+            .unknown_fields
+            .insert(
+                "actf",
+                "Energy_001",
+                "/root_unknown",
+                serde_json::json!(true),
+            )
+            .unwrap();
+        first.refresh_unknown_key_counts().unwrap();
+
+        let mut second = independent_story("Energy_001#1");
+        second.run_id = Some("Energy_001".into());
+        second.attempt_id = Some("1".into());
+        second
+            .unknown_fields
+            .insert(
+                "actf",
+                "Energy_001",
+                "/root_unknown",
+                serde_json::json!(true),
+            )
+            .unwrap();
+        second.refresh_unknown_key_counts().unwrap();
+
+        let encoded = encode_json_storylines(DocumentFormat::Actf, &[first, second]).unwrap();
+        let documents = encoded
+            .as_array()
+            .expect("duplicate attempt ids stay separate ACTF documents");
+        assert_eq!(documents.len(), 2);
+        assert!(documents[0]["attempts"].get("1").is_some());
+        assert!(documents[1]["attempts"].get("1").is_some());
+        assert_eq!(documents[0]["task_id"], "Energy_001");
+        assert_eq!(documents[1]["task_id"], "Energy_001");
     }
 
     #[test]

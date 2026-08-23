@@ -1,6 +1,6 @@
 //! ACTF ⇄ Storyline conversion.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Context as _;
 use serde_json::{json, Map, Value};
@@ -94,6 +94,89 @@ pub(crate) fn actf_to_storylines(document: &ActfDocument) -> Result<Vec<Storylin
 
 pub(crate) fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument> {
     storylines_to_actf_pointer(stories)
+}
+
+pub(crate) fn storylines_to_actf_documents(
+    stories: &[StorylineDocument],
+) -> Result<Vec<ActfDocument>> {
+    if stories.is_empty() {
+        anyhow::bail!("ACTF conversion requires at least one Storyline");
+    }
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut group_by_source: BTreeMap<String, usize> = BTreeMap::new();
+    for (index, story) in stories.iter().enumerate() {
+        match actf_source_document_id(story) {
+            Some(source_id) => {
+                if let Some(&group) = group_by_source.get(source_id) {
+                    groups[group].push(index);
+                } else {
+                    group_by_source.insert(source_id.to_string(), groups.len());
+                    groups.push(vec![index]);
+                }
+            }
+            None => groups.push(vec![index]),
+        }
+    }
+    groups
+        .into_iter()
+        .flat_map(|indexes| split_group_on_duplicate_attempt_ids(stories, indexes))
+        .map(|indexes| storylines_to_actf_group(stories, &indexes))
+        .collect()
+}
+
+fn actf_source_document_id(story: &StorylineDocument) -> Option<&str> {
+    story
+        .unknown_fields
+        .sources
+        .get("actf")
+        .map(|source| source.source_document_id.as_str())
+        .filter(|id| !id.is_empty())
+}
+
+fn actf_attempt_id(story: &StorylineDocument) -> &str {
+    story
+        .attempt_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .unwrap_or("1")
+}
+
+fn split_group_on_duplicate_attempt_ids(
+    stories: &[StorylineDocument],
+    indexes: Vec<usize>,
+) -> Vec<Vec<usize>> {
+    let mut used_ids: Vec<BTreeSet<String>> = Vec::new();
+    let mut documents: Vec<Vec<usize>> = Vec::new();
+    for index in indexes {
+        let attempt_id = actf_attempt_id(&stories[index]);
+        match used_ids.iter().position(|used| !used.contains(attempt_id)) {
+            Some(slot) => {
+                used_ids[slot].insert(attempt_id.to_string());
+                documents[slot].push(index);
+            }
+            None => {
+                used_ids.push(BTreeSet::from([attempt_id.to_string()]));
+                documents.push(vec![index]);
+            }
+        }
+    }
+    documents
+}
+
+fn storylines_to_actf_group(
+    stories: &[StorylineDocument],
+    indexes: &[usize],
+) -> Result<ActfDocument> {
+    match indexes {
+        [index] => storylines_to_actf(std::slice::from_ref(&stories[*index])),
+        _ => {
+            let grouped: Vec<StorylineDocument> = indexes
+                .iter()
+                .map(|&index| stories[index].clone())
+                .collect();
+            storylines_to_actf(&grouped)
+        }
+    }
 }
 
 fn attempt_to_storyline(
