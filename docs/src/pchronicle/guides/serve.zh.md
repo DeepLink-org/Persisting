@@ -42,10 +42,15 @@ pchronicle serve --config warehouse.toml \
 
 ```bash
 pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
+pchronicle serve --storage ./tmp --storage ./data/evals --listen 127.0.0.1:9980
+pchronicle serve --storage default=./tmp --storage evals=./data --control 127.0.0.1:0
 ```
 
-`--config` 与 `--storage` 互斥，`--control` 要求使用 `--storage`。进程只向 stdout 写一条
-机器可读的 readiness 记录，Control token 不会写入 stderr。
+`--config` 与 `--storage` 互斥，`--control` 要求使用 `--storage`。只传一次
+`--storage URI` 时，Dataset 名为 `default`。重复 `--storage` 会挂载多个 Dataset；
+默认名是 URI 的最后一段路径，也可用 `NAME=URI` 覆盖。`--control` 只绑定名为
+`default` 的挂载（单次裸 URI 会隐式使用该名；多次时需显式 `default=URI`）。
+进程只向 stdout 写一条机器可读的 readiness 记录，Control token 不会写入 stderr。
 
 使用 `--storage` 时，`serve` 会先发现经过验证且非空的 canonical `events.lance` Store，
 将每个投影收敛到确定的同级 `storyline`，全部 startup target 变为 fresh 后才输出 readiness。

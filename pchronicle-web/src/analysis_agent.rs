@@ -650,7 +650,7 @@ fn validate_text_array(name: &str, values: &[String]) -> Result<(), AnalysisAgen
 
 fn catalog_prompt_value(catalog: &QueryCatalog) -> Value {
     json!({
-        "tables": catalog.tables.iter().map(|table| json!({
+        "tables": crate::model::queryable_tables(catalog).iter().map(|table| json!({
             "name": table.name,
             "description": table.description,
             "grain": table.grain,

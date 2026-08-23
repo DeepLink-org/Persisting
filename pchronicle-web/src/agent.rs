@@ -461,11 +461,11 @@ fn system_prompt(
 }
 
 fn format_catalog_schema(catalog: &QueryCatalog) -> String {
-    if catalog.tables.is_empty() {
+    let tables = crate::model::queryable_tables(catalog);
+    if tables.is_empty() {
         return "SQL catalog is available but contains no tables.".into();
     }
-    catalog
-        .tables
+    tables
         .iter()
         .map(|table| {
             let fields = table

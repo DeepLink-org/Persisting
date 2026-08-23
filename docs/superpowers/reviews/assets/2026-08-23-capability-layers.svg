@@ -1,0 +1,56 @@
+<svg viewBox="0 0 680 560" width="100%" xmlns="http://www.w3.org/2000/svg" role="img"><title>pChronicle 能力分层与 UI 暴露度</title><desc>四层能力图：已暴露于 UI 的能力用彩色，后端已有但 UI 未暴露的用灰色虚线。</desc>
+<style>
+  .lay { font-family: var(--font-sans, system-ui); font-size: 13px; font-weight: 500; fill: var(--color-text-secondary, #5f5e5a); }
+  .bt { font-family: var(--font-sans, system-ui); font-size: 12px; font-weight: 500; fill: var(--color-text-primary, #2c2c2a); }
+  .bd { font-family: var(--font-sans, system-ui); font-size: 11px; font-weight: 400; fill: var(--color-text-secondary, #5f5e5a); }
+  .ghost { font-family: var(--font-sans, system-ui); font-size: 12px; font-weight: 400; fill: var(--color-text-tertiary, #888780); }
+</style>
+<rect x="40" y="16" width="14" height="14" rx="3" fill="#5DCAA5" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="60" y="28" class="bd">UI 已暴露</text>
+<rect x="150" y="16" width="14" height="14" rx="3" fill="#F1EFE8" stroke="#888780" stroke-width="0.8" stroke-dasharray="3 2"/>
+<text x="170" y="28" class="bd">后端已有 / 已有 spec，UI 未暴露</text>
+
+<rect x="40" y="48" width="600" height="112" rx="12" fill="#E1F5EE" stroke="#5DCAA5" stroke-width="0.5"/>
+<text x="56" y="72" class="lay">L1 · 数据与存储</text>
+<g><rect x="56" y="84" width="130" height="58" rx="8" fill="#FFFFFF" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="70" y="106" class="bt">dataset mounts</text><text x="70" y="124" class="bd">catalog treemap</text></g>
+<g><rect x="198" y="84" width="130" height="58" rx="8" fill="#FFFFFF" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="212" y="106" class="bt">error sources</text><text x="212" y="124" class="bd">红色横幅提示</text></g>
+<g><rect x="340" y="84" width="140" height="58" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.8" stroke-dasharray="3 2"/>
+<text x="354" y="106" class="ghost">/revisions</text><text x="354" y="124" class="ghost">快照时间旅行</text></g>
+<g><rect x="492" y="84" width="132" height="58" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.8" stroke-dasharray="3 2"/>
+<text x="506" y="106" class="ghost">多 storage 挂载</text><text x="506" y="124" class="ghost">spec 已批准</text></g>
+
+<rect x="40" y="172" width="600" height="112" rx="12" fill="#E6F1FB" stroke="#85B7EB" stroke-width="0.5"/>
+<text x="56" y="196" class="lay">L2 · 查询引擎</text>
+<g><rect x="56" y="208" width="130" height="58" rx="8" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
+<text x="70" y="230" class="bt">query console</text><text x="70" y="248" class="bd">tables + SQL</text></g>
+<g><rect x="198" y="208" width="130" height="58" rx="8" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
+<text x="212" y="230" class="bt">evidence</text><text x="212" y="248" class="bd">bounded 查询</text></g>
+<g><rect x="340" y="208" width="140" height="58" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.8" stroke-dasharray="3 2"/>
+<text x="354" y="230" class="ghost">/export/har</text><text x="354" y="248" class="ghost">浏览器可回放</text></g>
+<g><rect x="492" y="208" width="132" height="58" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.8" stroke-dasharray="3 2"/>
+<text x="506" y="230" class="ghost">/export/otlp</text><text x="506" y="248" class="ghost">接入 OTel 生态</text></g>
+
+<rect x="40" y="296" width="600" height="112" rx="12" fill="#EEEDFE" stroke="#AFA9EC" stroke-width="0.5"/>
+<text x="56" y="320" class="lay">L3 · 派生视图</text>
+<g><rect x="56" y="332" width="130" height="58" rx="8" fill="#FFFFFF" stroke="#534AB7" stroke-width="0.5"/>
+<text x="70" y="354" class="bt">runs + tree</text><text x="70" y="372" class="bd">explorer 全家桶</text></g>
+<g><rect x="198" y="332" width="130" height="58" rx="8" fill="#FFFFFF" stroke="#534AB7" stroke-width="0.5"/>
+<text x="212" y="354" class="bt">storyline/turns</text><text x="212" y="372" class="bd">trace + timeline</text></g>
+<g><rect x="340" y="332" width="140" height="58" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.8" stroke-dasharray="3 2"/>
+<text x="354" y="354" class="ghost">/events 原始流</text><text x="354" y="372" class="ghost">未派生的事件浏览</text></g>
+<g><rect x="492" y="332" width="132" height="58" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.8" stroke-dasharray="3 2"/>
+<text x="506" y="354" class="ghost">trajectory diff</text><text x="506" y="372" class="ghost">spec 已写未实现</text></g>
+
+<rect x="40" y="420" width="600" height="112" rx="12" fill="#FAEEDA" stroke="#FAC775" stroke-width="0.5"/>
+<text x="56" y="444" class="lay">L4 · 分析与协作</text>
+<g><rect x="56" y="456" width="130" height="58" rx="8" fill="#FFFFFF" stroke="#854F0B" stroke-width="0.5"/>
+<text x="70" y="478" class="bt">analyze agent</text><text x="70" y="496" class="bd">plan-review-run</text></g>
+<g><rect x="198" y="456" width="130" height="58" rx="8" fill="#FFFFFF" stroke="#854F0B" stroke-width="0.5"/>
+<text x="212" y="478" class="bt">sessions</text><text x="212" y="496" class="bd">recent analysis</text></g>
+<g><rect x="340" y="456" width="140" height="58" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.8" stroke-dasharray="3 2"/>
+<text x="354" y="478" class="ghost">signals 检测器</text><text x="354" y="496" class="ghost">Laminar 式模板</text></g>
+<g><rect x="492" y="456" width="132" height="58" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.8" stroke-dasharray="3 2"/>
+<text x="506" y="478" class="ghost">分享 / 协作</text><text x="506" y="496" class="ghost">deep link + 报告导出</text></g>
+</svg>

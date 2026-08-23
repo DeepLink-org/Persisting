@@ -5,13 +5,14 @@ use wasm_bindgen::JsValue;
 
 use crate::agent::{self, ThreadMessage, ThreadRole};
 use crate::api;
+use crate::catalog::CatalogExplorer;
 use crate::chat_view::normalize_trace_view;
 use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView};
 use crate::llm;
 use crate::llm_settings::LlmSettings;
 use crate::model::{
-    DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary, RunAnalysis,
-    RunExplorerItem, RunPage, RunSummary, ToolAggregate, TurnDetail, TurnSummary,
+    CatalogTree, DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary,
+    RunAnalysis, RunExplorerItem, RunPage, RunSummary, ToolAggregate, TurnDetail, TurnSummary,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -68,6 +69,7 @@ struct RunFilters {
     sort: String,
     direction: String,
     path: String,
+    file: String,
     offset: usize,
 }
 
@@ -106,10 +108,12 @@ pub fn App() -> Element {
     };
     let initial_page = if initial_run.is_some() {
         "detail"
-    } else if url_param("page").as_deref() == Some("tools") {
-        "tools"
     } else {
-        "runs"
+        match url_param("page").as_deref() {
+            Some("tools") => "tools",
+            Some("runs") => "runs",
+            _ => "catalog",
+        }
     };
     let mut page = use_signal(move || initial_page.to_string());
     let runs = use_signal(|| None::<RunPage>);
@@ -121,6 +125,11 @@ pub fn App() -> Element {
     let mut sort = use_signal(|| url_param("sort").unwrap_or_else(|| "session".into()));
     let mut direction = use_signal(|| url_param("direction").unwrap_or_else(|| "asc".into()));
     let mut run_path = use_signal(|| url_param("path").unwrap_or_default());
+    let mut file_prefix = use_signal(|| url_param("file_prefix").unwrap_or_default());
+    let mut catalog_dataset = use_signal(|| String::new());
+    let mut catalog_prefix = use_signal(|| String::new());
+    let catalog_tree = use_signal(|| None::<CatalogTree>);
+    let catalog_loading = use_signal(|| false);
     let mut offset = use_signal(|| 0usize);
     let mut error = use_signal(|| None::<WorkspaceNotice>);
 
@@ -154,10 +163,24 @@ pub fn App() -> Element {
                 sort: sort(),
                 direction: direction(),
                 path: run_path(),
+                file: file_prefix(),
                 offset: offset(),
             },
             runs,
             runs_loading,
+            error,
+        );
+    });
+
+    use_effect(move || {
+        if page() != "catalog" {
+            return;
+        }
+        load_catalog_tree(
+            catalog_dataset(),
+            catalog_prefix(),
+            catalog_tree,
+            catalog_loading,
             error,
         );
     });
@@ -200,6 +223,7 @@ pub fn App() -> Element {
             &sort(),
             &direction(),
             &run_path(),
+            &file_prefix(),
             &detail_mode(),
             &trace_mode(),
             &source(),
@@ -243,6 +267,7 @@ pub fn App() -> Element {
             a { class: "skip-link", href: "#pc2-main", "Skip to trajectory workspace" }
             nav { class: "rail", aria_label: "pChronicle workspace",
                 div { class: "brand-mark", title: "pChronicle", "pC" }
+                RailButton { active: page() == "catalog", icon: "▣", label: "Data", onclick: move |_| { catalog_dataset.set(String::new()); catalog_prefix.set(String::new()); page.set("catalog".into()); } }
                 RailButton { active: page() == "runs" || page() == "detail", icon: "◫", label: "Runs", onclick: move |_| page.set("runs".into()) }
                 RailButton { active: page() == "tools", icon: "⌁", label: "Analyze", onclick: move |_| page.set("tools".into()) }
                 div { class: "rail-spacer" }
@@ -265,6 +290,23 @@ pub fn App() -> Element {
                     }
                 }
                 match page().as_str() {
+                    "catalog" => rsx! {
+                        CatalogExplorer {
+                            tree: catalog_tree(),
+                            loading: catalog_loading(),
+                            on_open: move |(dataset, prefix): (String, String)| {
+                                catalog_dataset.set(dataset);
+                                catalog_prefix.set(prefix);
+                            },
+                            on_runs: move |(dataset, prefix): (String, String)| {
+                                dataset_filter.set(if dataset.is_empty() { "all".into() } else { dataset });
+                                file_prefix.set(prefix);
+                                run_path.set(String::new());
+                                offset.set(0);
+                                page.set("runs".into());
+                            },
+                        }
+                    },
                     "tools" => rsx! {
                         crate::analysis::AnalysisWorkspace {
                             catalog: catalog(),
@@ -341,14 +383,16 @@ pub fn App() -> Element {
                             sort: sort(),
                             direction: direction(),
                             path: run_path(),
+                            file: file_prefix(),
                             datasets: catalog().map(|value| value.datasets).unwrap_or_default(),
                             dataset: dataset_filter(),
                             on_query: move |value| query.set(value),
-                            on_dataset: move |value| { dataset_filter.set(value); run_path.set(String::new()); offset.set(0); },
+                            on_dataset: move |value| { dataset_filter.set(value); run_path.set(String::new()); file_prefix.set(String::new()); offset.set(0); },
                             on_status: move |value| status.set(value),
                             on_sort: move |value| sort.set(value),
                             on_direction: move |value| direction.set(value),
                             on_path: move |value| { run_path.set(value); offset.set(0); },
+                            on_file: move |value| { file_prefix.set(value); offset.set(0); },
                             on_refresh: move |_| {
                                 let filters = RunFilters {
                                         query: query(),
@@ -357,6 +401,7 @@ pub fn App() -> Element {
                                         sort: sort(),
                                         direction: direction(),
                                         path: run_path(),
+                                        file: file_prefix(),
                                         offset: offset(),
                                     };
                                 spawn(async move {
@@ -430,11 +475,29 @@ fn load_runs(
             &filters.sort,
             &filters.direction,
             &filters.path,
+            &filters.file,
             filters.offset,
         )
         .await
         {
             Ok(value) => page.set(Some(value)),
+            Err(message) => error.set(Some(workspace_notice(message))),
+        }
+        loading.set(false);
+    });
+}
+
+fn load_catalog_tree(
+    dataset: String,
+    prefix: String,
+    mut tree: Signal<Option<CatalogTree>>,
+    mut loading: Signal<bool>,
+    mut error: Signal<Option<WorkspaceNotice>>,
+) {
+    loading.set(true);
+    spawn(async move {
+        match api::explorer_tree(&dataset, &prefix).await {
+            Ok(value) => tree.set(Some(value)),
             Err(message) => error.set(Some(workspace_notice(message))),
         }
         loading.set(false);
@@ -610,12 +673,14 @@ fn RunsExplorer(
     sort: String,
     direction: String,
     path: String,
+    file: String,
     on_query: EventHandler<String>,
     on_dataset: EventHandler<String>,
     on_status: EventHandler<String>,
     on_sort: EventHandler<String>,
     on_direction: EventHandler<String>,
     on_path: EventHandler<String>,
+    on_file: EventHandler<String>,
     on_refresh: EventHandler<MouseEvent>,
     on_page: EventHandler<usize>,
     on_select: EventHandler<RunSummary>,
@@ -641,6 +706,7 @@ fn RunsExplorer(
                 select { value: "{sort}", aria_label: "Sort runs", onchange: move |event| on_sort.call(event.value()), option { value: "session", "Session" } option { value: "events", "Events" } option { value: "status", "Status" } option { value: "agent", "Agent" } }
                 button { class: "pc2-sort", aria_label: "Toggle sort direction", onclick: move |_| on_direction.call(if direction == "asc" { "desc".into() } else { "asc".into() }), if direction == "asc" { "↑ Asc" } else { "↓ Desc" } }
                 if !path.is_empty() { button { class: "pc2-path-filter", title: "{path}", onclick: move |_| on_path.call(String::new()), "⌁ {short(&path, 24)} ×" } }
+                if !file.is_empty() { button { class: "pc2-path-filter", title: "{file}", onclick: move |_| on_file.call(String::new()), "_file_ {short(&file, 24)} ×" } }
                 span { class: "pc2-result-count", "{total} runs" }
             }
             div { class: "pc2-table-wrap",
@@ -738,6 +804,13 @@ fn RunDetailWorkspace(
                 }
             }
             MetricsStrip { analysis: analysis.clone() }
+            if detail_mode == "trace" {
+                CompactOverviewStrip {
+                    analysis: analysis.clone(),
+                    turns: turns.clone(),
+                    on_open_analysis: move |_| on_detail_mode.call("analysis".into()),
+                }
+            }
             nav { class: "pc2-detail-tabs", aria_label: "Trajectory detail view",
                 button { class: if detail_mode == "trace" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("trace".into()), "Trace" }
                 button { class: if detail_mode == "analysis" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("analysis".into()), "Analysis" }
@@ -791,6 +864,80 @@ fn MetricsStrip(analysis: RunAnalysis) -> Element {
 #[component]
 fn Metric(label: String, value: String, detail: String) -> Element {
     rsx! { div { class: "pc2-metric", span { "{label}" } strong { "{value}" } small { "{detail}" } } }
+}
+
+#[component]
+fn CompactOverviewStrip(
+    analysis: RunAnalysis,
+    turns: Vec<TurnSummary>,
+    on_open_analysis: EventHandler<MouseEvent>,
+) -> Element {
+    let sources = compact_mix(&analysis.source_breakdown, 3);
+    let kinds = compact_mix(&analysis.kind_breakdown, 3);
+    let models = compact_mix(&analysis.model_breakdown, 3);
+    let coverage = coverage_points(
+        analysis.latency_ms.sample_count,
+        analysis.latency_ms.total_count,
+        analysis.ttft_ms.sample_count,
+        analysis.ttft_ms.total_count,
+        turns.iter().filter(|turn| turn.timestamp.is_some()).count(),
+        analysis.turn_count,
+        turns
+            .iter()
+            .filter(|turn| turn.total_tokens.is_some())
+            .count(),
+        analysis.turn_count,
+    );
+    rsx! { div { class: "pc2-trace-overview",
+        CompactMixCard { title: "Composition", tone: "blue", segments: sources, onclick: on_open_analysis }
+        CompactMixCard { title: "Behavior", tone: "violet", segments: kinds, onclick: on_open_analysis }
+        CompactMixCard { title: "Models", tone: "green", segments: models, onclick: on_open_analysis }
+        CompactCoverageCard { points: coverage, onclick: on_open_analysis }
+    } }
+}
+
+#[component]
+fn CompactMixCard(
+    title: &'static str,
+    tone: &'static str,
+    segments: Vec<MixSegment>,
+    onclick: EventHandler<MouseEvent>,
+) -> Element {
+    let legend = segments.clone();
+    let title_attr = mix_title(&segments);
+    rsx! { button { class: "pc2-trace-overview-card", r#type: "button", aria_label: "Open Analysis overview · {title}", title: "Open Analysis for the full chart", onclick,
+        span { class: "pc2-trace-overview-title", "{title}" }
+        if segments.is_empty() {
+            span { class: "pc2-trace-overview-empty", "No captured values" }
+        } else {
+            div { class: "pc2-mix-track {tone}", title: "{title_attr}",
+                for segment in segments {
+                    i { style: format!("width:{:.2}%", segment.share), title: format!("{} {}", segment.name, segment.count) }
+                }
+            }
+            div { class: "pc2-mix-legend",
+                for (index, segment) in legend.into_iter().enumerate() {
+                    span { class: "pc2-mix-key {tone} n{index}", title: "{segment.name} {segment.count}", "{short(&segment.name, 16)} {segment.count}" }
+                }
+            }
+        }
+    } }
+}
+
+#[component]
+fn CompactCoverageCard(points: Vec<CoveragePoint>, onclick: EventHandler<MouseEvent>) -> Element {
+    rsx! { button { class: "pc2-trace-overview-card", r#type: "button", aria_label: "Open Analysis overview · Coverage", title: "Open Analysis for the full chart", onclick,
+        span { class: "pc2-trace-overview-title", "Coverage" }
+        div { class: "pc2-mini-coverage",
+            for point in points {
+                div { class: "pc2-mini-coverage-row",
+                    span { "{point.label}" }
+                    code { "{point.observed}/{point.total}" }
+                    span { class: "pc2-coverage-track", i { style: format!("width:{:.2}%", percent(point.observed as f64, point.total as f64)) } }
+                }
+            }
+        }
+    } }
 }
 
 #[component]
@@ -1276,6 +1423,101 @@ fn optional_u64(value: Option<u64>) -> String {
         .map(|value| value.to_string())
         .unwrap_or_else(|| "—".into())
 }
+
+#[derive(Clone, Debug, PartialEq)]
+struct MixSegment {
+    name: String,
+    count: usize,
+    share: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CoveragePoint {
+    label: &'static str,
+    observed: usize,
+    total: usize,
+}
+
+fn compact_mix(items: &[DimensionAggregate], limit: usize) -> Vec<MixSegment> {
+    let total: usize = items.iter().map(|item| item.turn_count).sum();
+    if total == 0 || limit == 0 {
+        return Vec::new();
+    }
+    let mut ranked = items.to_vec();
+    ranked.sort_by(|left, right| right.turn_count.cmp(&left.turn_count));
+    let mut segments: Vec<MixSegment> = ranked
+        .iter()
+        .take(limit)
+        .map(|item| MixSegment {
+            name: item.name.clone(),
+            count: item.turn_count,
+            share: percent(item.turn_count as f64, total as f64),
+        })
+        .collect();
+    let rest: usize = ranked.iter().skip(limit).map(|item| item.turn_count).sum();
+    if rest > 0 {
+        segments.push(MixSegment {
+            name: "other".into(),
+            count: rest,
+            share: percent(rest as f64, total as f64),
+        });
+    }
+    if !segments.is_empty() {
+        let used: f64 = segments
+            .iter()
+            .rev()
+            .skip(1)
+            .map(|segment| segment.share)
+            .sum();
+        if let Some(last) = segments.last_mut() {
+            last.share = (100.0 - used).clamp(0.0, 100.0);
+        }
+    }
+    segments
+}
+
+fn coverage_points(
+    latency_observed: usize,
+    latency_total: usize,
+    ttft_observed: usize,
+    ttft_total: usize,
+    timestamp_observed: usize,
+    timestamp_total: usize,
+    token_observed: usize,
+    token_total: usize,
+) -> Vec<CoveragePoint> {
+    vec![
+        CoveragePoint {
+            label: "Latency",
+            observed: latency_observed,
+            total: latency_total,
+        },
+        CoveragePoint {
+            label: "TTFT",
+            observed: ttft_observed,
+            total: ttft_total,
+        },
+        CoveragePoint {
+            label: "Timestamp",
+            observed: timestamp_observed,
+            total: timestamp_total,
+        },
+        CoveragePoint {
+            label: "Tokens",
+            observed: token_observed,
+            total: token_total,
+        },
+    ]
+}
+
+fn mix_title(segments: &[MixSegment]) -> String {
+    segments
+        .iter()
+        .map(|segment| format!("{} {}", segment.name, segment.count))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 fn percent(value: f64, total: f64) -> f64 {
     if !value.is_finite() || !total.is_finite() || total <= 0.0 {
         0.0
@@ -1376,6 +1618,7 @@ fn sync_workspace_url(
     sort: &str,
     direction: &str,
     path: &str,
+    file_prefix: &str,
     workspace: &str,
     view: &str,
     source: &str,
@@ -1434,6 +1677,9 @@ fn sync_workspace_url(
         params.push(format!("direction={}", urlencoding::encode(direction)));
         if !path.is_empty() {
             params.push(format!("path={}", urlencoding::encode(path)));
+        }
+        if !file_prefix.is_empty() {
+            params.push(format!("file_prefix={}", urlencoding::encode(file_prefix)));
         }
     }
     let url = format!("/?{}", params.join("&"));
@@ -1527,6 +1773,75 @@ mod tests {
         assert_eq!(
             scope.items,
             vec![crate::analysis_session::AnalysisScopeItem::Run { run }]
+        );
+    }
+
+    fn dim(name: &str, count: usize) -> DimensionAggregate {
+        DimensionAggregate {
+            name: name.into(),
+            turn_count: count,
+            error_count: 0,
+            latency_sample_count: 0,
+            average_latency_ms: None,
+            total_tokens: None,
+        }
+    }
+
+    #[test]
+    fn compact_mix_keeps_small_breakdowns_intact() {
+        let segments = compact_mix(&[dim("user", 43), dim("agent", 42), dim("system", 1)], 3);
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| (segment.name.as_str(), segment.count))
+                .collect::<Vec<_>>(),
+            vec![("user", 43), ("agent", 42), ("system", 1)]
+        );
+        let share: f64 = segments.iter().map(|segment| segment.share).sum();
+        assert!((share - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn compact_mix_folds_the_tail_into_other() {
+        let segments = compact_mix(
+            &[
+                dim("a", 10),
+                dim("b", 8),
+                dim("c", 6),
+                dim("d", 3),
+                dim("e", 1),
+            ],
+            3,
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| (segment.name.as_str(), segment.count))
+                .collect::<Vec<_>>(),
+            vec![("a", 10), ("b", 8), ("c", 6), ("other", 4)]
+        );
+    }
+
+    #[test]
+    fn compact_mix_ignores_empty_breakdowns() {
+        assert!(compact_mix(&[], 3).is_empty());
+        assert!(compact_mix(&[dim("user", 0)], 3).is_empty());
+    }
+
+    #[test]
+    fn coverage_points_use_observed_over_total() {
+        let points = coverage_points(42, 86, 8, 86, 84, 86, 42, 86);
+        assert_eq!(
+            points
+                .iter()
+                .map(|point| (point.label, point.observed, point.total))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Latency", 42, 86),
+                ("TTFT", 8, 86),
+                ("Timestamp", 84, 86),
+                ("Tokens", 42, 86),
+            ]
         );
     }
 

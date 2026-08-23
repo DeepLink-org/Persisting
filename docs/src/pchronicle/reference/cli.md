@@ -273,14 +273,17 @@ uri = "../data/atif"
 ```bash
 pchronicle serve --config warehouse.toml --listen 127.0.0.1:8081 --open
 pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
+pchronicle serve --storage ./tmp --storage ./data/evals --listen 127.0.0.1:9980
 ```
 
 Relative local Dataset paths are resolved from the configuration file's
 directory. At least one of `--listen`, `--control`, or `--gateway` is required.
 `--config` and `--storage` are mutually exclusive: configuration mounts named
-Datasets, while `--storage URI` mounts one Dataset named `default`. `--listen`
-enables Warehouse HTTP; omitting it does not start Warehouse. `--control`
-requires `--storage` and enables the authenticated write/control protocol on a
+Datasets, while `--storage URI` mounts one Dataset named `default`. Repeat
+`--storage` to mount several Datasets named from each URI's last path
+component; `NAME=URI` overrides that name. `--listen` enables Warehouse HTTP;
+omitting it does not start Warehouse. `--control` requires `--storage` and
+uses the Dataset named `default` as the authenticated write/control root on a
 loopback listener. `--open` requires `--listen`.
 
 Warehouse rejects non-loopback listeners because it has no authentication. Its

@@ -183,6 +183,7 @@ fn api_routes() -> Router<AppState> {
         .route("/health", get(warehouse_health))
         .route("/runs", get(runs))
         .route("/explorer/runs", get(explorer_runs))
+        .route("/explorer/tree", get(explorer_tree))
         .route("/explorer/run", get(explorer_run))
         .route("/explorer/turns", get(explorer_turns))
         .route("/explorer/turn", get(explorer_turn))
@@ -414,6 +415,97 @@ async fn explorer_runs(
     let query = api_query(query)?;
     let summaries = load_run_summaries(&state).await?;
     Ok(Json(explorer::run_page(summaries, &query)))
+}
+
+async fn explorer_tree(
+    State(state): State<AppState>,
+    query: Result<Query<explorer::ExplorerTreeQuery>, QueryRejection>,
+) -> Result<Json<explorer::CatalogTree>, ApiError> {
+    let query = api_query(query)?;
+    let summaries = load_run_summaries(&state).await?;
+    let dataset = query
+        .dataset
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let prefix = query.prefix.as_deref().unwrap_or("");
+    let mut tree = explorer::catalog_tree(&summaries, dataset, prefix, explorer::MAX_TREE_CHILDREN);
+    if let Some(name) = tree.dataset.clone() {
+        let runtime = current_catalog(&state).await?;
+        if tree.prefix.is_empty() {
+            if let Some(dataset) = runtime.snapshot.dataset(&name) {
+                tree.ready_sources = Some(dataset.ready_source_count());
+                tree.error_sources = Some(dataset.error_source_count());
+            }
+        }
+        let (duration_ms, total_tokens) = tree_prefix_metrics(&runtime, &name, &tree.prefix).await;
+        tree.duration_ms = duration_ms;
+        tree.total_tokens = total_tokens;
+    }
+    Ok(Json(tree))
+}
+
+fn sql_ident(name: &str) -> Option<&str> {
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    (first.is_ascii_alphabetic() || first == '_')
+        .then_some(name)
+        .filter(|_| chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
+}
+
+async fn tree_prefix_metrics(
+    runtime: &CatalogRuntime,
+    dataset: &str,
+    prefix: &str,
+) -> (Option<i64>, Option<u64>) {
+    let Some(ident) = sql_ident(dataset) else {
+        return (None, None);
+    };
+    let file_clause = if prefix.is_empty() {
+        String::new()
+    } else {
+        let escaped = prefix.replace('\'', "''");
+        format!(" WHERE _file_ = '{escaped}' OR _file_ LIKE '{escaped}/%'")
+    };
+    let sql = format!(
+        "SELECT MIN(timestamp) AS start_ts, MAX(timestamp) AS end_ts FROM {ident}.steps{file_clause}"
+    );
+    let mut buffer = Vec::new();
+    let write = tokio::time::timeout(
+        Duration::from_secs(3),
+        runtime
+            .engine
+            .write_query_jsonl_with_max_rows(&sql, &mut buffer, Some(1)),
+    )
+    .await;
+    let Ok(Ok(())) = write else {
+        return (None, None);
+    };
+    let line = String::from_utf8(buffer).unwrap_or_default();
+    let line = line.lines().find(|line| !line.trim().is_empty());
+    let Some(Ok(row)) = line.map(serde_json::from_str::<Value>) else {
+        return (None, None);
+    };
+    (
+        timestamp_span_ms(row.get("start_ts"), row.get("end_ts")),
+        row.get("total_tokens").and_then(Value::as_u64),
+    )
+}
+
+fn timestamp_span_ms(start: Option<&Value>, end: Option<&Value>) -> Option<i64> {
+    let start = json_timestamp_ms(start?)?;
+    let end = json_timestamp_ms(end?)?;
+    (end >= start).then_some(end - start)
+}
+
+fn json_timestamp_ms(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_f64().map(|value| value as i64)),
+        Value::String(text) if !text.is_empty() => text.parse().ok(),
+        _ => None,
+    }
 }
 
 async fn resolve_run_summary(
@@ -1272,7 +1364,7 @@ async fn query_evidence(
             Some(max_rows.saturating_add(1) as u64),
         )
         .await;
-    let bytes = match output.finish(write_result).map_err(ApiError::internal)? {
+    let bytes = match output.finish(write_result).map_err(query_evidence_error)? {
         QueryEvidenceWriteOutcome::Complete(bytes) => bytes,
         QueryEvidenceWriteOutcome::LimitExceeded => {
             return Err(ApiError::resource_exhausted(
@@ -1356,6 +1448,24 @@ impl std::io::Write for BoundedOutput {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// Map a query-evidence execution failure to a client-visible error.
+///
+/// The SQL is caller-supplied, so planning and streaming failures (unknown
+/// columns, invalid syntax, unsupported expressions) are input problems. The
+/// original message is surfaced so Copilot tool loops and the query console
+/// can self-correct instead of retrying against an opaque 500.
+fn query_evidence_error(error: anyhow::Error) -> ApiError {
+    let detail = format!("{error:#}");
+    const MAX_DETAIL_CHARS: usize = 1500;
+    let message = if detail.chars().count() > MAX_DETAIL_CHARS {
+        let truncated: String = detail.chars().take(MAX_DETAIL_CHARS).collect();
+        format!("{truncated}…")
+    } else {
+        detail
+    };
+    ApiError::invalid_request(message)
 }
 
 fn bounded_evidence_sql(sql: &str, max_rows: usize) -> String {

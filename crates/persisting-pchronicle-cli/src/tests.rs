@@ -2817,6 +2817,177 @@ fn preserves_uri_roots_while_trimming_prefixes() {
     );
 }
 
+fn serve_args_with_storage(storage: Vec<String>) -> ServeArgs {
+    ServeArgs {
+        config: None,
+        storage,
+        listen: None,
+        control: None,
+        open: false,
+        gateway: None,
+        gateway_dataset: None,
+        gateway_state: None,
+        gateway_object_store_manifest_mode: GatewayObjectStoreManifestMode::default(),
+        gateway_stream_markdown: false,
+        debug: false,
+    }
+}
+
+#[test]
+fn serve_storage_config_uses_report_error_policy() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let dataset = temp.path().join("dataset");
+    fs::create_dir(&dataset)?;
+
+    let args = serve_args_with_storage(vec![dataset.to_string_lossy().into_owned()]);
+    let config = resolve_serve_config(&args)?;
+    assert_eq!(config.datasets.len(), 1);
+    assert_eq!(config.datasets[0].name, "default");
+    assert_eq!(config.default_dataset.as_deref(), Some("default"));
+    assert_eq!(
+        config.catalog_options.error_policy,
+        CatalogErrorPolicy::Report
+    );
+    Ok(())
+}
+
+#[test]
+fn serve_repeated_storage_mounts_basename_datasets() -> Result<()> {
+    let args = serve_args_with_storage(vec!["./tmp".into(), "./data/evals".into()]);
+    let config = resolve_serve_config(&args)?;
+    let mounts: Vec<_> = config
+        .datasets
+        .iter()
+        .map(|dataset| (dataset.name.as_str(), dataset.uri.as_str()))
+        .collect();
+    assert_eq!(mounts, vec![("tmp", "./tmp"), ("evals", "./data/evals")]);
+    assert_eq!(config.default_dataset, None);
+    assert_eq!(
+        config.catalog_options.error_policy,
+        CatalogErrorPolicy::Report
+    );
+    Ok(())
+}
+
+#[test]
+fn serve_storage_name_uri_overrides_basename() -> Result<()> {
+    let args = serve_args_with_storage(vec!["default=./tmp".into(), "archive=./data/evals".into()]);
+    let config = resolve_serve_config(&args)?;
+    let mounts: Vec<_> = config
+        .datasets
+        .iter()
+        .map(|dataset| (dataset.name.as_str(), dataset.uri.as_str()))
+        .collect();
+    assert_eq!(
+        mounts,
+        vec![("default", "./tmp"), ("archive", "./data/evals")]
+    );
+    assert_eq!(config.default_dataset.as_deref(), Some("default"));
+    Ok(())
+}
+
+#[test]
+fn serve_single_named_storage_keeps_explicit_name() -> Result<()> {
+    let args = serve_args_with_storage(vec!["evals=./data".into()]);
+    let config = resolve_serve_config(&args)?;
+    assert_eq!(config.datasets.len(), 1);
+    assert_eq!(config.datasets[0].name, "evals");
+    assert_eq!(config.datasets[0].uri, "./data");
+    assert_eq!(config.default_dataset.as_deref(), Some("evals"));
+    Ok(())
+}
+
+#[test]
+fn serve_storage_sanitizes_hyphenated_basename() -> Result<()> {
+    let args = serve_args_with_storage(vec!["./tmp".into(), "./trajectory-data".into()]);
+    let config = resolve_serve_config(&args)?;
+    let names: Vec<_> = config
+        .datasets
+        .iter()
+        .map(|dataset| dataset.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["tmp", "trajectory_data"]);
+    Ok(())
+}
+
+#[test]
+fn serve_storage_derives_object_uri_basename() -> Result<()> {
+    let args = serve_args_with_storage(vec![
+        "s3://bucket/archive".into(),
+        "s3://other/evals".into(),
+    ]);
+    let config = resolve_serve_config(&args)?;
+    let mounts: Vec<_> = config
+        .datasets
+        .iter()
+        .map(|dataset| (dataset.name.as_str(), dataset.uri.as_str()))
+        .collect();
+    assert_eq!(
+        mounts,
+        vec![
+            ("archive", "s3://bucket/archive"),
+            ("evals", "s3://other/evals")
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn serve_storage_keeps_object_uri_with_equals_in_path() -> Result<()> {
+    let args = serve_args_with_storage(vec!["./tmp".into(), "s3://bucket/key=value/path".into()]);
+    let config = resolve_serve_config(&args)?;
+    assert_eq!(config.datasets[1].name, "path");
+    assert_eq!(config.datasets[1].uri, "s3://bucket/key=value/path");
+    Ok(())
+}
+
+#[test]
+fn serve_storage_rejects_duplicate_names() {
+    let error = resolve_serve_config(&serve_args_with_storage(vec![
+        "./a/data".into(),
+        "./b/data".into(),
+    ]))
+    .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("unique") || message.contains("duplicate"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn serve_storage_rejects_underivable_basename() {
+    let error = resolve_serve_config(&serve_args_with_storage(vec!["./tmp".into(), ".".into()]))
+        .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("NAME=URI"), "unexpected error: {message}");
+}
+
+#[test]
+fn serve_control_storage_uses_default_mount() -> Result<()> {
+    let config = resolve_serve_config(&serve_args_with_storage(vec![
+        "default=./tmp".into(),
+        "evals=./data".into(),
+    ]))?;
+    assert_eq!(control_storage_uri(&config)?, "./tmp");
+    Ok(())
+}
+
+#[test]
+fn serve_control_storage_requires_default_mount() {
+    let config = resolve_serve_config(&serve_args_with_storage(vec![
+        "./tmp".into(),
+        "./data".into(),
+    ]))
+    .unwrap();
+    let error = control_storage_uri(&config).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("default=URI"),
+        "unexpected error: {message}"
+    );
+}
+
 #[test]
 fn warehouse_config_normalizes_mounts_and_selects_default() -> Result<()> {
     let temp = tempfile::tempdir()?;
@@ -2942,6 +3113,16 @@ fn serve_cli_requires_one_dataset_source_and_an_explicit_service() -> Result<()>
             "serve",
             "--config",
             "warehouse.toml",
+            "--listen",
+            "127.0.0.1:0",
+        ],
+        vec![
+            "pchronicle",
+            "serve",
+            "--storage",
+            "./tmp",
+            "--storage",
+            "./data",
             "--listen",
             "127.0.0.1:0",
         ],

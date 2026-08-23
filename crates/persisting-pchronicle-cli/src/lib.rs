@@ -491,9 +491,9 @@ struct ServeArgs {
     #[arg(long, value_name = "FILE", conflicts_with = "storage")]
     config: Option<PathBuf>,
 
-    /// Single Dataset URI and durable Control root.
+    /// Dataset URI and durable Control root. Repeatable; NAME=URI overrides the derived name.
     #[arg(long, value_name = "URI", conflicts_with = "config")]
-    storage: Option<String>,
+    storage: Vec<String>,
 
     /// Loopback address for the read-only API and Web UI.
     #[arg(long)]
@@ -1214,7 +1214,14 @@ fn write_projection_diagnostic<W: Write + ?Sized>(
 
 async fn run_serve(args: ServeArgs, stdout: &mut dyn Write, stderr: &mut dyn Write) -> Result<()> {
     let config = resolve_serve_config(&args)?;
-    prepare_local_control_storage(&args).await?;
+    let control_uri = args
+        .control
+        .is_some()
+        .then(|| control_storage_uri(&config).map(str::to_owned))
+        .transpose()?;
+    if let Some(uri) = control_uri.as_deref() {
+        prepare_local_control_storage(uri).await?;
+    }
     let (diagnostic_tx, diagnostic_rx) = tokio::sync::mpsc::channel(256);
     let mut projections =
         projection_supervisor::ProjectionSupervisor::new(config.clone(), None, diagnostic_tx);
@@ -1241,9 +1248,9 @@ async fn run_serve(args: ServeArgs, stdout: &mut dyn Write, stderr: &mut dyn Wri
     let control = match args.control {
         Some(listen) => Some(
             control::PreparedControl::bind(
-                args.storage
-                    .as_deref()
-                    .context("pChronicle Control requires --storage")?,
+                control_uri.as_deref().context(
+                    "pChronicle Control requires a Dataset named 'default'; pass --storage default=URI",
+                )?,
                 listen,
             )
             .await?,
@@ -1322,15 +1329,8 @@ async fn run_serve(args: ServeArgs, stdout: &mut dyn Write, stderr: &mut dyn Wri
     .await
 }
 
-async fn prepare_local_control_storage(args: &ServeArgs) -> Result<()> {
-    if args.control.is_none() {
-        return Ok(());
-    }
-    let storage = args
-        .storage
-        .as_deref()
-        .context("pChronicle Control requires --storage")?;
-    let Some(path) = local_dataset_path(storage)? else {
+async fn prepare_local_control_storage(uri: &str) -> Result<()> {
+    let Some(path) = local_dataset_path(uri)? else {
         return Ok(());
     };
     tokio::fs::create_dir_all(&path)
@@ -1339,14 +1339,127 @@ async fn prepare_local_control_storage(args: &ServeArgs) -> Result<()> {
 }
 
 fn resolve_serve_config(args: &ServeArgs) -> Result<server::ChronicleServerConfig> {
-    match (args.config.as_deref(), args.storage.as_deref()) {
-        (Some(config), None) => load_warehouse_config(config),
-        (None, Some(storage)) => server::ChronicleServerConfig::mounted(vec![DatasetMount::new(
-            SERVE_STORAGE_DATASET_NAME,
-            storage,
-        )?]),
+    match (args.config.as_deref(), args.storage.as_slice()) {
+        (Some(config), []) => load_warehouse_config(config),
+        (None, storage) if !storage.is_empty() => {
+            let mut config =
+                server::ChronicleServerConfig::mounted(resolve_storage_mounts(storage)?)?;
+            if config
+                .datasets
+                .iter()
+                .any(|dataset| dataset.name == SERVE_STORAGE_DATASET_NAME)
+            {
+                config.default_dataset = Some(SERVE_STORAGE_DATASET_NAME.into());
+            }
+            // A single unreadable source (for example a trajectory file that
+            // exceeds max_file_bytes) must degrade to an error source instead
+            // of preventing the Warehouse from serving the remaining data.
+            config.catalog_options.error_policy = CatalogErrorPolicy::Report;
+            Ok(config)
+        }
         _ => bail!("serve requires exactly one of --config or --storage"),
     }
+}
+
+fn resolve_storage_mounts(storages: &[String]) -> Result<Vec<DatasetMount>> {
+    anyhow::ensure!(!storages.is_empty(), "serve requires --storage");
+    let parsed = storages
+        .iter()
+        .map(|value| parse_storage_argument(value))
+        .collect::<Result<Vec<_>>>()?;
+    if parsed.len() == 1 {
+        let (name, uri) = &parsed[0];
+        let name = name.as_deref().unwrap_or(SERVE_STORAGE_DATASET_NAME);
+        return Ok(vec![DatasetMount::new(name, uri.clone())?]);
+    }
+    parsed
+        .into_iter()
+        .map(|(name, uri)| {
+            let name = match name {
+                Some(name) => name,
+                None => derived_dataset_name(&uri)?,
+            };
+            DatasetMount::new(name, uri)
+        })
+        .collect()
+}
+
+fn parse_storage_argument(raw: &str) -> Result<(Option<String>, String)> {
+    let raw = raw.trim();
+    anyhow::ensure!(!raw.is_empty(), "--storage URI must not be empty");
+    if let Some((name, uri)) = raw.split_once('=') {
+        if looks_like_dataset_name(name) {
+            let uri = uri.trim();
+            anyhow::ensure!(!uri.is_empty(), "--storage NAME=URI must include a URI");
+            return Ok((
+                Some(DatasetMount::new(name, "validation")?.name),
+                uri.to_string(),
+            ));
+        }
+    }
+    Ok((None, raw.to_string()))
+}
+
+fn looks_like_dataset_name(name: &str) -> bool {
+    DatasetMount::new(name, "validation").is_ok()
+}
+
+fn derived_dataset_name(uri: &str) -> Result<String> {
+    let basename = storage_basename(uri)?;
+    sanitize_derived_dataset_name(&basename).with_context(|| {
+        format!("cannot derive Dataset name from '{uri}'; pass --storage NAME=URI")
+    })
+}
+
+fn storage_basename(uri: &str) -> Result<String> {
+    if uri.contains("://") {
+        let url = Url::parse(uri).with_context(|| format!("parse --storage URI '{uri}'"))?;
+        if let Some(segment) = url
+            .path_segments()
+            .into_iter()
+            .flatten()
+            .rev()
+            .find(|segment| !segment.is_empty())
+        {
+            return Ok(segment.to_string());
+        }
+        if let Some(host) = url.host_str() {
+            return Ok(host.to_string());
+        }
+        bail!("cannot derive Dataset name from '{uri}'; pass --storage NAME=URI");
+    }
+    match Path::new(uri).file_name().and_then(|name| name.to_str()) {
+        Some(name) if name != "." && name != ".." => Ok(name.to_string()),
+        _ => bail!("cannot derive Dataset name from '{uri}'; pass --storage NAME=URI"),
+    }
+}
+
+fn sanitize_derived_dataset_name(raw: &str) -> Result<String> {
+    let name: String = raw
+        .chars()
+        .map(|character| match character {
+            '-' | '.' => '_',
+            other => other,
+        })
+        .collect();
+    DatasetMount::new(&name, "validation")
+        .map(|mount| mount.name)
+        .with_context(|| {
+            format!(
+                "derived Dataset name from '{raw}' is not a valid SQL alias; pass --storage NAME=URI"
+            )
+        })
+}
+
+fn control_storage_uri(config: &server::ChronicleServerConfig) -> Result<&str> {
+    config
+        .datasets
+        .iter()
+        .find(|dataset| dataset.name == SERVE_STORAGE_DATASET_NAME)
+        .map(|dataset| dataset.uri.as_str())
+        .context(
+            "pChronicle Control requires a Dataset named 'default'; pass --storage default=URI",
+        )
 }
 
 async fn run_echo(args: EchoArgs, stderr: &mut dyn Write) -> Result<()> {

@@ -148,26 +148,6 @@
   padding: 10px;
 }
 
-.pc2-inline-detail-head {
-  min-height: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.pc2-inline-detail-head strong {
-  color: #344054;
-  font-size: 10px;
-}
-
-.pc2-inline-detail-head .button {
-  min-height: 27px;
-  padding: 0 8px;
-  font-size: 9px;
-}
-
 .pc2-inline-unavailable {
   padding: 12px;
   border: 1px dashed #d0d5dd;
@@ -189,6 +169,118 @@
 .pc2-inline-detail .pc2-evidence-block .pc2-json-tree {
   max-height: 420px;
   overflow: auto;
+}
+
+.pc2-tool-call-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.pc2-tool-call-card {
+  overflow: hidden;
+  border: 1px solid #d0d5dd;
+  border-left: 3px solid #667085;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.pc2-tool-call-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 9px;
+  border-bottom: 1px solid #eaecf0;
+  background: #f2f4f7;
+}
+
+.pc2-tool-call-head-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pc2-tool-call-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.pc2-tool-call-type {
+  color: #667085;
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .055em;
+}
+
+.pc2-tool-call-header strong {
+  color: #1d2939;
+  font: 600 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.pc2-tool-call-meta,
+.pc2-tool-call-id {
+  color: #667085;
+  font: 500 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.pc2-tool-call-id {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc2-tool-call-body {
+  padding: 8px 10px;
+}
+
+.pc2-tool-call-raw {
+  border-top: 1px solid #eaecf0;
+  background: #f9fafb;
+}
+
+.pc2-tool-call-raw summary {
+  padding: 5px 9px;
+  color: #667085;
+  font-size: 9px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pc2-tool-call-raw pre {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 240px;
+  overflow: auto;
+  color: #475467;
+  font-size: 9px;
+  background: #fff;
+}
+
+.pc2-tool-call-arg {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+
+.pc2-tool-call-arg code {
+  flex: 0 0 auto;
+  color: #667085;
+  font: 500 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.pc2-tool-call-arg span {
+  min-width: 0;
+  color: #1d2939;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 @media (max-width: 1050px) {

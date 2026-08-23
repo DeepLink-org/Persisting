@@ -16,7 +16,7 @@ serde_json = "1"
 time = { version = "=0.3.55", features = ["formatting", "parsing"] }
 urlencoding = "2"
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Document", "DomRect", "Element", "History", "HtmlElement", "KeyboardEvent", "Location", "Storage", "UrlSearchParams", "Window"] }
+web-sys = { version = "0.3", features = ["Document", "DomRect", "Element", "History", "HtmlElement", "HtmlTextAreaElement", "KeyboardEvent", "Location", "Storage", "UrlSearchParams", "Window"] }
 web-time = "=1.1.0"
 
 [profile.dev]

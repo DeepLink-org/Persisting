@@ -5,6 +5,7 @@ mod analysis;
 mod analysis_agent;
 mod analysis_session;
 mod api;
+mod catalog;
 mod chat_view;
 mod components;
 mod json_value;

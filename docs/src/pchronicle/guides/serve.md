@@ -46,11 +46,17 @@ authenticated Control protocol used by pPilot and pVisor:
 
 ```bash
 pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
+pchronicle serve --storage ./tmp --storage ./data/evals --listen 127.0.0.1:9980
+pchronicle serve --storage default=./tmp --storage evals=./data --control 127.0.0.1:0
 ```
 
 `--config` and `--storage` are mutually exclusive, and `--control` requires
-`--storage`. The process writes one machine-readable readiness record to
-stdout; its Control token is never written to stderr.
+`--storage`. One `--storage URI` mounts a Dataset named `default`. Repeat
+`--storage` to mount several Datasets; each default name is the URI's last
+path component, and `NAME=URI` overrides it. `--control` uses the mount named
+`default` (the implicit name for a single bare URI, or an explicit
+`default=URI` among several). The process writes one machine-readable
+readiness record to stdout; its Control token is never written to stderr.
 
 For `--storage`, `serve` first discovers validated non-empty canonical
 `events.lance` Stores and converges each deterministic sibling `storyline`;
