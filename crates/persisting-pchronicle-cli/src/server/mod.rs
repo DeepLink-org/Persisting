@@ -21,8 +21,9 @@ use persisting_pchronicle::document::{events_to_har, events_to_otlp_json, InputI
 use persisting_pchronicle::model::{EventRecord, StorylineTurn};
 use persisting_pchronicle::query::ChronicleQueryEngine;
 use persisting_pchronicle::storage::{
-    read_revisions, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogStorylineKey,
-    DatasetCatalogSnapshot, DatasetMount, StoryCoords, DEFAULT_DATASET_NAME,
+    read_revisions, CatalogErrorPolicy, CatalogProjectionStatus, CatalogSnapshotOptions,
+    CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey, DatasetCatalogSnapshot,
+    DatasetMount, DiscoveredSource, StoryCoords, DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -184,6 +185,7 @@ fn api_routes() -> Router<AppState> {
         .route("/runs", get(runs))
         .route("/explorer/runs", get(explorer_runs))
         .route("/explorer/tree", get(explorer_tree))
+        .route("/explorer/sources", get(explorer_sources))
         .route("/explorer/run", get(explorer_run))
         .route("/explorer/turns", get(explorer_turns))
         .route("/explorer/turn", get(explorer_turn))
@@ -445,6 +447,54 @@ async fn explorer_tree(
     Ok(Json(tree))
 }
 
+async fn explorer_sources(
+    State(state): State<AppState>,
+) -> Result<Json<explorer::WarehouseSources>, ApiError> {
+    let summaries = load_run_summaries(&state).await?;
+    let runtime = current_catalog(&state).await?;
+    let seeds = runtime
+        .snapshot
+        .datasets()
+        .iter()
+        .flat_map(|dataset| {
+            dataset
+                .sources
+                .iter()
+                .map(|source| source_seed_from_catalog(&dataset.mount.name, source))
+        })
+        .collect::<Vec<_>>();
+    let mut page = explorer::warehouse_sources(&seeds, &summaries);
+    let (duration_ms, total_tokens) = warehouse_metrics(&runtime).await;
+    page.duration_ms = duration_ms;
+    page.total_tokens = total_tokens;
+    Ok(Json(page))
+}
+
+fn source_seed_from_catalog(dataset: &str, source: &DiscoveredSource) -> explorer::SourceSeed {
+    explorer::SourceSeed {
+        dataset: dataset.to_string(),
+        file: source.file.clone(),
+        format: source.format.clone(),
+        kind: match source.kind {
+            CatalogSourceKind::Store => "store".into(),
+            CatalogSourceKind::File => "file".into(),
+        },
+        snapshot_ref: source.snapshot_ref(),
+        projection_status: source.projection_status.map(|status| match status {
+            CatalogProjectionStatus::Fresh => "fresh".into(),
+            CatalogProjectionStatus::Stale => "stale".into(),
+        }),
+        projection_generation: source.projection_generation.clone(),
+        size_bytes: source.size_bytes,
+        last_modified: source.last_modified.clone(),
+        status: match source.status {
+            CatalogSourceStatus::Ready => "ready".into(),
+            CatalogSourceStatus::Error => "error".into(),
+        },
+        error: source.error.clone(),
+    }
+}
+
 fn sql_ident(name: &str) -> Option<&str> {
     let mut chars = name.chars();
     let first = chars.next()?;
@@ -489,6 +539,44 @@ async fn tree_prefix_metrics(
     (
         timestamp_span_ms(row.get("start_ts"), row.get("end_ts")),
         row.get("total_tokens").and_then(Value::as_u64),
+    )
+}
+
+async fn warehouse_metrics(runtime: &CatalogRuntime) -> (Option<i64>, Option<u64>) {
+    let idents = runtime
+        .snapshot
+        .datasets()
+        .iter()
+        .filter_map(|dataset| sql_ident(&dataset.mount.name))
+        .collect::<Vec<_>>();
+    if idents.is_empty() {
+        return (None, None);
+    }
+    let union = idents
+        .iter()
+        .map(|ident| format!("SELECT timestamp FROM {ident}.steps"))
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ");
+    let sql = format!("SELECT MIN(timestamp) AS start_ts, MAX(timestamp) AS end_ts FROM ({union})");
+    let mut buffer = Vec::new();
+    let write = tokio::time::timeout(
+        Duration::from_secs(3),
+        runtime
+            .engine
+            .write_query_jsonl_with_max_rows(&sql, &mut buffer, Some(1)),
+    )
+    .await;
+    let Ok(Ok(())) = write else {
+        return (None, None);
+    };
+    let line = String::from_utf8(buffer).unwrap_or_default();
+    let line = line.lines().find(|line| !line.trim().is_empty());
+    let Some(Ok(row)) = line.map(serde_json::from_str::<Value>) else {
+        return (None, None);
+    };
+    (
+        timestamp_span_ms(row.get("start_ts"), row.get("end_ts")),
+        None,
     )
 }
 

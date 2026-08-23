@@ -58,6 +58,115 @@ pub(crate) struct CatalogTreeChild {
     pub(crate) entries: Vec<CatalogTreeChild>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct WarehouseSources {
+    pub(crate) run_count: usize,
+    pub(crate) failed_count: usize,
+    pub(crate) source_count: usize,
+    pub(crate) error_sources: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) duration_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) total_tokens: Option<u64>,
+    pub(crate) sources: Vec<WarehouseSource>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct WarehouseSource {
+    pub(crate) dataset: String,
+    pub(crate) file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) format: Option<String>,
+    pub(crate) kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) snapshot_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) projection_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) projection_generation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_modified: Option<String>,
+    pub(crate) status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) error: Option<String>,
+    pub(crate) run_count: usize,
+    pub(crate) failed_count: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SourceSeed {
+    pub(crate) dataset: String,
+    pub(crate) file: String,
+    pub(crate) format: Option<String>,
+    pub(crate) kind: String,
+    pub(crate) snapshot_ref: Option<String>,
+    pub(crate) projection_status: Option<String>,
+    pub(crate) projection_generation: Option<String>,
+    pub(crate) size_bytes: Option<u64>,
+    pub(crate) last_modified: Option<String>,
+    pub(crate) status: String,
+    pub(crate) error: Option<String>,
+}
+
+pub(crate) fn warehouse_sources(
+    seeds: &[SourceSeed],
+    summaries: &[RunSummary],
+) -> WarehouseSources {
+    let run_count = summaries.len();
+    let failed_count = summaries
+        .iter()
+        .filter(|run| is_failed_status(&run.status))
+        .count();
+    let error_sources = seeds.iter().filter(|seed| seed.status == "error").count();
+    let mut sources: Vec<WarehouseSource> = seeds
+        .iter()
+        .map(|seed| {
+            let (run_count, failed_count) = summaries.iter().fold((0, 0), |acc, run| {
+                if run.dataset == seed.dataset && run.file == seed.file {
+                    (
+                        acc.0 + 1,
+                        acc.1 + usize::from(is_failed_status(&run.status)),
+                    )
+                } else {
+                    acc
+                }
+            });
+            WarehouseSource {
+                dataset: seed.dataset.clone(),
+                file: seed.file.clone(),
+                format: seed.format.clone(),
+                kind: seed.kind.clone(),
+                snapshot_ref: seed.snapshot_ref.clone(),
+                projection_status: seed.projection_status.clone(),
+                projection_generation: seed.projection_generation.clone(),
+                size_bytes: seed.size_bytes,
+                last_modified: seed.last_modified.clone(),
+                status: seed.status.clone(),
+                error: seed.error.clone(),
+                run_count,
+                failed_count,
+            }
+        })
+        .collect();
+    sources.sort_by(|left, right| {
+        right
+            .run_count
+            .cmp(&left.run_count)
+            .then(left.dataset.cmp(&right.dataset))
+            .then(left.file.cmp(&right.file))
+    });
+    WarehouseSources {
+        run_count,
+        failed_count,
+        source_count: sources.len(),
+        error_sources,
+        sources,
+        ..WarehouseSources::default()
+    }
+}
+
 pub(crate) fn catalog_tree(
     summaries: &[RunSummary],
     dataset: Option<&str>,
@@ -1392,5 +1501,55 @@ mod tests {
             .iter()
             .all(|item| item.run.file.starts_with("gsm8k")));
         assert_eq!(page.path_index.len(), 2);
+    }
+
+    fn source_seed(dataset: &str, file: &str, status: &str) -> SourceSeed {
+        SourceSeed {
+            dataset: dataset.into(),
+            file: file.into(),
+            format: Some("canonical-event".into()),
+            kind: "store".into(),
+            snapshot_ref: Some("manifest-revision:184".into()),
+            projection_status: Some("fresh".into()),
+            projection_generation: Some("42".into()),
+            size_bytes: Some(2_400_000_000),
+            last_modified: Some("2026-08-23T14:32:00Z".into()),
+            status: status.into(),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn warehouse_sources_join_run_counts_across_datasets_and_keep_every_source() {
+        let page = warehouse_sources(
+            &[
+                source_seed("evals", "gateway/capture", "ready"),
+                source_seed("evals", "experiments/v4", "ready"),
+                source_seed("archive", "old.json", "error"),
+            ],
+            &[
+                sample_run("evals", "gateway/capture", "completed", "s1"),
+                sample_run("evals", "gateway/capture", "completed", "s2"),
+                sample_run("evals", "experiments/v4", "failed", "s3"),
+                sample_run("archive", "unrelated.json", "completed", "s4"),
+            ],
+        );
+        assert_eq!(page.run_count, 4);
+        assert_eq!(page.failed_count, 1);
+        assert_eq!(page.source_count, 3);
+        assert_eq!(page.error_sources, 1);
+        assert_eq!(page.sources.len(), 3);
+        assert_eq!(page.sources[0].dataset, "evals");
+        assert_eq!(page.sources[0].file, "gateway/capture");
+        assert_eq!(page.sources[0].run_count, 2);
+        assert_eq!(page.sources[0].failed_count, 0);
+        let old = page
+            .sources
+            .iter()
+            .find(|source| source.file == "old.json")
+            .expect("keep catalog sources with zero runs");
+        assert_eq!(old.dataset, "archive");
+        assert_eq!(old.run_count, 0);
+        assert_eq!(old.status, "error");
     }
 }
