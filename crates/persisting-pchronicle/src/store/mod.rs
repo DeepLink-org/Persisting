@@ -88,7 +88,8 @@ pub use files::{FileTrajectoryQueryMetricsSnapshot, SOURCE_FILE_COLUMN};
 pub use inspect::{
     inspect_physical_file, inspect_physical_layout, inspect_physical_page, list_physical_sources,
     PhysicalColumn, PhysicalDataFile, PhysicalFileLayout, PhysicalFragment, PhysicalLayout,
-    PhysicalPage, PhysicalPagePreview, PhysicalSource, PhysicalTable, DEFAULT_PHYSICAL_PAGE_LIMIT,
+    PhysicalPage, PhysicalPagePreview, PhysicalPageQuery, PhysicalSource, PhysicalTable,
+    DEFAULT_PHYSICAL_PAGE_LIMIT,
 };
 #[cfg(feature = "lance-store")]
 pub(crate) use local_query_manifest::{

@@ -31,12 +31,14 @@ pub(crate) struct JsonStreamVisit {
 }
 
 /// Bounded reader that tracks source bytes and rejects reads past `maximum`.
+#[cfg(feature = "lance-store")]
 pub(crate) struct BoundedCountingReader<R> {
     inner: R,
     bytes_read: u64,
     maximum: u64,
 }
 
+#[cfg(feature = "lance-store")]
 impl<R> BoundedCountingReader<R> {
     pub(crate) fn new(inner: R, maximum: u64) -> Self {
         Self {
@@ -51,6 +53,7 @@ impl<R> BoundedCountingReader<R> {
     }
 }
 
+#[cfg(feature = "lance-store")]
 impl<R: Read> Read for BoundedCountingReader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let remaining = self.maximum.saturating_sub(self.bytes_read);

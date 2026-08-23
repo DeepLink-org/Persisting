@@ -3,7 +3,7 @@ use axum::extract::{Query, State};
 use axum::Json;
 use persisting_pchronicle::storage::{
     inspect_physical_file, inspect_physical_layout, inspect_physical_page, list_physical_sources,
-    PhysicalFileLayout, PhysicalLayout, PhysicalPagePreview, PhysicalSource,
+    PhysicalFileLayout, PhysicalLayout, PhysicalPagePreview, PhysicalPageQuery, PhysicalSource,
     DEFAULT_PHYSICAL_PAGE_LIMIT,
 };
 use serde::Deserialize;
@@ -83,14 +83,16 @@ pub(super) async fn page(
     let runtime = current_catalog(&state).await?;
     inspect_physical_page(
         &runtime.snapshot,
-        &query.dataset,
-        &query.file,
-        &query.table,
-        query.fragment,
-        &query.data_file,
-        query.column.as_deref(),
-        query.offset.unwrap_or(0),
-        query.limit.unwrap_or(DEFAULT_PHYSICAL_PAGE_LIMIT),
+        PhysicalPageQuery {
+            dataset: &query.dataset,
+            file: &query.file,
+            table: &query.table,
+            fragment_id: query.fragment,
+            data_file: &query.data_file,
+            column: query.column.as_deref(),
+            offset: query.offset.unwrap_or(0),
+            limit: query.limit.unwrap_or(DEFAULT_PHYSICAL_PAGE_LIMIT),
+        },
     )
     .await
     .map(Json)

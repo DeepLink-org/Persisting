@@ -11,6 +11,7 @@
 //! Physical format codecs and Event ↔ Storyline conversion live in `formats/`.
 //! This module remains the public conversion hub.
 
+#[cfg(feature = "lance-store")]
 pub(crate) use crate::formats::actf::actf_to_storylines;
 #[cfg(test)]
 pub(crate) use crate::formats::atif::atif_collection_to_storylines;

@@ -76,7 +76,7 @@ pub const DEFAULT_DATASET_NAME: &str = "dataset";
 #[derive(Debug, Clone)]
 pub(crate) enum PhysicalOpenTarget {
     Events { uri: String },
-    Storyline { paths: StorylineTablePaths },
+    Storyline { paths: Box<StorylineTablePaths> },
 }
 pub const CATALOG_SOURCES_TABLE: &str = "sources";
 pub const CATALOG_TRAJECTORIES_TABLE: &str = "trajectories";
@@ -464,7 +464,7 @@ impl DatasetCatalogSnapshot {
                 Ok(PhysicalOpenTarget::Events { uri: uri.clone() })
             }
             LazySourceSpec::Storyline { paths } => Ok(PhysicalOpenTarget::Storyline {
-                paths: paths.clone(),
+                paths: Box::new(paths.clone()),
             }),
             _ => anyhow::bail!("physical source is not a Lance dataset: {dataset}/{file}"),
         }

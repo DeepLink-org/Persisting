@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use futures::TryStreamExt;
 use lance::deps::arrow_array::{
     Array, BinaryArray, BooleanArray, Float64Array, Int32Array, Int64Array, LargeBinaryArray,
@@ -131,8 +131,7 @@ pub async fn inspect_physical_layout(
     dataset: &str,
     file: &str,
 ) -> Result<PhysicalLayout> {
-    let source = require_lance_source(snapshot, dataset, file)?;
-    let format = lance_format(source).expect("checked lance source");
+    let format = require_lance_source(snapshot, dataset, file)?;
     let tables = match snapshot.physical_open_target(dataset, file)? {
         PhysicalOpenTarget::Events { uri } => inspect_event_tables(&uri).await?,
         PhysicalOpenTarget::Storyline { paths } => inspect_storyline_tables(&paths).await?,
@@ -198,20 +197,32 @@ pub async fn inspect_physical_file(
     })
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PhysicalPageQuery<'a> {
+    pub dataset: &'a str,
+    pub file: &'a str,
+    pub table: &'a str,
+    pub fragment_id: u64,
+    pub data_file: &'a str,
+    pub column: Option<&'a str>,
+    pub offset: usize,
+    pub limit: usize,
+}
+
 pub async fn inspect_physical_page(
     snapshot: &DatasetCatalogSnapshot,
-    dataset: &str,
-    file: &str,
-    table: &str,
-    fragment_id: u64,
-    data_file: &str,
-    column: Option<&str>,
-    offset: usize,
-    limit: usize,
+    query: PhysicalPageQuery<'_>,
 ) -> Result<PhysicalPagePreview> {
-    let file_layout =
-        inspect_physical_file(snapshot, dataset, file, table, fragment_id, data_file).await?;
-    let columns = match column {
+    let file_layout = inspect_physical_file(
+        snapshot,
+        query.dataset,
+        query.file,
+        query.table,
+        query.fragment_id,
+        query.data_file,
+    )
+    .await?;
+    let columns = match query.column {
         Some(name) => vec![name.to_string()],
         None => file_layout
             .columns
@@ -220,12 +231,12 @@ pub async fn inspect_physical_page(
             .collect(),
     };
     anyhow::ensure!(!columns.is_empty(), "physical data file has no columns");
-    let limit = limit.clamp(1, DEFAULT_PHYSICAL_PAGE_LIMIT);
-    let uri = table_uri(snapshot, dataset, file, table).await?;
+    let limit = query.limit.clamp(1, DEFAULT_PHYSICAL_PAGE_LIMIT);
+    let uri = table_uri(snapshot, query.dataset, query.file, query.table).await?;
     let lance = Dataset::open(&uri)
         .await
         .with_context(|| format!("open Lance table {uri}"))?;
-    preview_rows(&lance, &columns, offset, limit).await
+    preview_rows(&lance, &columns, query.offset, limit).await
 }
 
 fn lance_format(source: &DiscoveredSource) -> Option<&str> {
@@ -239,7 +250,7 @@ fn require_lance_source<'a>(
     snapshot: &'a DatasetCatalogSnapshot,
     dataset: &str,
     file: &str,
-) -> Result<&'a DiscoveredSource> {
+) -> Result<&'a str> {
     let catalog = snapshot
         .dataset(dataset)
         .with_context(|| format!("physical source not found: {dataset}/{file}"))?;
@@ -248,10 +259,8 @@ fn require_lance_source<'a>(
         .iter()
         .find(|source| source.file == file)
         .with_context(|| format!("physical source not found: {dataset}/{file}"))?;
-    if lance_format(source).is_none() {
-        bail!("physical source is not a Lance dataset: {dataset}/{file}");
-    }
-    Ok(source)
+    lance_format(source)
+        .with_context(|| format!("physical source is not a Lance dataset: {dataset}/{file}"))
 }
 
 fn join_uri(mount: &str, file: &str) -> String {
@@ -604,14 +613,16 @@ mod tests {
 
         let preview = inspect_physical_page(
             &snapshot,
-            DEFAULT_DATASET_NAME,
-            "story",
-            "runs",
-            fragment.id,
-            &data_file.path,
-            Some("session_id"),
-            0,
-            8,
+            PhysicalPageQuery {
+                dataset: DEFAULT_DATASET_NAME,
+                file: "story",
+                table: "runs",
+                fragment_id: fragment.id,
+                data_file: &data_file.path,
+                column: Some("session_id"),
+                offset: 0,
+                limit: 8,
+            },
         )
         .await?;
         assert_eq!(preview.columns, vec!["session_id".to_string()]);

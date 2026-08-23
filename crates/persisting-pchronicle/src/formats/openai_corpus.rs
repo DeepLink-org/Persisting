@@ -96,7 +96,7 @@ impl TrajectoryFormat for OpenaiMsgFormat {
 fn path_has_openai_hint(path: Option<&Path>) -> bool {
     path.and_then(|path| path.file_name())
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.to_ascii_lowercase() == "session_steps.json")
+        .is_some_and(|name| name.eq_ignore_ascii_case("session_steps.json"))
 }
 
 fn looks_like_openai_value(value: &Value) -> bool {

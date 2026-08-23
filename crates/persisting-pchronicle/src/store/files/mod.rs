@@ -838,11 +838,9 @@ fn load_file(
             stories_to_parsed_file(&state.file, format, stories, runtime.options.batch_size)?
         }
         registered
-            if crate::formats::registry::get(registered)
-                .is_some_and(|handler| handler.capabilities().direct_query) =>
+            if let Some(handler) = crate::formats::registry::get(registered)
+                .filter(|handler| handler.capabilities().direct_query) =>
         {
-            let handler = crate::formats::registry::get(registered)
-                .expect("registered codec with direct_query");
             let input = File::open(state.file.path()).with_context(|| {
                 format!(
                     "open {} input {}",

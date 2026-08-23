@@ -17,5 +17,6 @@ pub mod unknown_fields;
 
 pub use detect::detect_format;
 pub use events::{EventIdentity, EventRecord};
+#[cfg(any(test, feature = "lance-store"))]
 pub use openai_corpus::parse_openai_msg_corpus_value;
 pub use storyline::StorylineDocument;

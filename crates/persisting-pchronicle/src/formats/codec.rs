@@ -42,6 +42,8 @@ impl<'a> DecodeContext<'a> {
         }
     }
 
+    #[must_use]
+    #[cfg(any(test, feature = "lance-store"))]
     pub fn with_limits(self, max_file_bytes: u64, max_record_bytes: usize) -> Self {
         Self {
             source: self.source,
@@ -58,6 +60,7 @@ pub struct DecodeReport {
     pub peak_record_bytes: usize,
 }
 
+#[cfg_attr(not(any(test, feature = "lance-store")), allow(dead_code))]
 pub(crate) fn is_candidate_path(path: &Path, extensions: &[&str]) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
@@ -108,10 +111,12 @@ pub enum ProbeConfidence {
 pub trait TrajectoryFormat: Send + Sync {
     fn id(&self) -> DocumentFormat;
 
+    #[cfg_attr(not(any(test, feature = "lance-store")), allow(dead_code))]
     fn extensions(&self) -> &'static [&'static str];
 
     fn capabilities(&self) -> FormatCapabilities;
 
+    #[cfg_attr(not(any(test, feature = "lance-store")), allow(dead_code))]
     fn is_candidate(&self, path: &Path) -> bool {
         is_candidate_path(path, self.extensions())
     }

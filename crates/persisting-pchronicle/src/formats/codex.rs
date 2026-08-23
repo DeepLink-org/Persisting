@@ -187,12 +187,14 @@ fn decode_from_reader<R: BufRead>(
                 &payload,
                 timestamp,
                 model.as_deref(),
-                &mut turns,
-                &mut pending_agent,
-                &mut pending_turn_key,
-                &mut call_index,
-                &mut prompt_system,
-                &mut unknown,
+                &mut ResponseItemSink {
+                    turns: &mut turns,
+                    pending_agent: &mut pending_agent,
+                    pending_turn_key: &mut pending_turn_key,
+                    call_index: &mut call_index,
+                    prompt_system: &mut prompt_system,
+                    unknown: &mut unknown,
+                },
                 line_number,
             ),
             "event_msg" => apply_event_msg(
@@ -274,18 +276,30 @@ fn empty_session(source_id: &str, session_id: &str) -> InputResult<Vec<Storyline
     Ok(vec![story])
 }
 
+struct ResponseItemSink<'a> {
+    turns: &'a mut Vec<StorylineTurn>,
+    pending_agent: &'a mut Option<usize>,
+    pending_turn_key: &'a mut Option<String>,
+    call_index: &'a mut HashMap<String, (usize, usize)>,
+    prompt_system: &'a mut String,
+    unknown: &'a mut Map<String, Value>,
+}
+
 fn apply_response_item(
     payload: &Value,
     timestamp: Option<StorylineTimestamp>,
     model: Option<&str>,
-    turns: &mut Vec<StorylineTurn>,
-    pending_agent: &mut Option<usize>,
-    pending_turn_key: &mut Option<String>,
-    call_index: &mut HashMap<String, (usize, usize)>,
-    prompt_system: &mut String,
-    unknown: &mut Map<String, Value>,
+    sink: &mut ResponseItemSink<'_>,
     line_number: usize,
 ) {
+    let ResponseItemSink {
+        turns,
+        pending_agent,
+        pending_turn_key,
+        call_index,
+        prompt_system,
+        unknown,
+    } = sink;
     let item_type = payload.get("type").and_then(Value::as_str).unwrap_or("");
     let turn_key = payload
         .get("internal_chat_message_metadata_passthrough")
@@ -732,7 +746,7 @@ mod tests {
     #[test]
     fn bad_line_reports_line_number() {
         let error = codex_to_storylines("{not-json}\n", "bad.jsonl").unwrap_err();
-        assert_eq!(error.location().as_deref(), Some("line 1"));
+        assert_eq!(error.location(), Some("line 1"));
     }
 
     #[test]

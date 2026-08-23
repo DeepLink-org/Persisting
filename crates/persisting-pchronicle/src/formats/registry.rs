@@ -23,10 +23,12 @@ pub fn get(format: DocumentFormat) -> Option<&'static dyn TrajectoryFormat> {
     FORMATS.iter().copied().find(|codec| codec.id() == format)
 }
 
+#[cfg_attr(not(feature = "lance-store"), allow(dead_code))]
 pub fn supports_direct_query(format: DocumentFormat) -> bool {
     get(format).is_some_and(|codec| codec.capabilities().direct_query)
 }
 
+#[cfg_attr(not(feature = "lance-store"), allow(dead_code))]
 pub fn is_direct_query_candidate(path: &Path) -> bool {
     FORMATS
         .iter()

@@ -74,7 +74,8 @@ pub(crate) fn leftover_textless_parts(value: &Value) -> Vec<(usize, Value)> {
     parts
         .iter()
         .enumerate()
-        .filter_map(|(index, part)| part_text(part).is_none().then(|| (index, part.clone())))
+        .filter(|(_, part)| part_text(part).is_none())
+        .map(|(index, part)| (index, part.clone()))
         .collect()
 }
 
