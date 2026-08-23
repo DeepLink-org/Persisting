@@ -625,7 +625,7 @@ fn actf_task(document: &ActfDocument, attempt: &ActfAttempt) -> Option<Storyline
     if let Some(category) = omit_empty_string(&document.category) {
         extra.insert(ACTF_EXTRA_CATEGORY.into(), json!(category));
     }
-    if let Some(attempts_tried) = i64::try_from(document.attempts_tried).ok() {
+    if let Ok(attempts_tried) = i64::try_from(document.attempts_tried) {
         extra.insert(ACTF_EXTRA_ATTEMPTS_TRIED.into(), json!(attempts_tried));
     }
     if let Some(solved_at) = attempt_solved_at(&document.solved_at) {
