@@ -461,10 +461,12 @@ async fn status_reports_projection_stale_and_safe_errors() -> Result<()> {
 
     let lineage_free = storage.join("agent/lineage-free/storyline/CURRENT");
     let mut pointer: Value = serde_json::from_slice(&fs::read(&lineage_free)?)?;
-    pointer
-        .as_object_mut()
-        .expect("CURRENT object")
+    let removed = pointer
+        .get_mut("committed")
+        .and_then(Value::as_object_mut)
+        .expect("CURRENT committed snapshot")
         .remove("projection");
+    assert!(removed.is_some(), "projection lineage fixture");
     fs::write(&lineage_free, serde_json::to_vec(&pointer)?)?;
     let malformed = storage.join("agent/malformed/storyline/CURRENT");
     fs::write(&malformed, b"{broken")?;
