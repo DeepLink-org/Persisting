@@ -4,9 +4,10 @@ Standalone command-line interface for onboarding, browsing, querying, importing,
 exporting, and serving pChronicle trajectory Datasets.
 
 The current implementation provides `onboard`, `default`, `ls`/`list`, `status`,
-bounded read-only `query`, built-in `analysis`, Source-local `find`, create-only
-`import`, complete-trajectory `export`, and loopback-only `serve`. Import and
-export support ATIF, OpenAI Messages, ACTF, and Storyline JSON.
+bounded read-only `query`, built-in `analysis`, assisted `agent` sessions,
+Source-local `find`, create-only `import`, complete-trajectory `export`, and
+loopback-only `serve`. Import and export support ATIF, OpenAI Messages, ACTF,
+and Storyline JSON.
 
 ## Orchestrator control plane
 
@@ -92,6 +93,59 @@ pchronicle analysis tools
 All analyses accept an optional explicit Dataset URI, `--format
 table|jsonl|csv`, and a bounded `--limit`. Use `query` for custom or larger
 analyses; `analysis` intentionally does not accept arbitrary SQL.
+
+## Analyze with Codex or Claude
+
+Launch an interactive coding Agent with a pChronicle analysis prompt and an
+ephemeral Dataset skill:
+
+```bash
+pchronicle agent --dataset ./trajectory-data codex
+pchronicle agent --dataset s3://bucket/evals claude
+pchronicle agent --dataset ./trajectory-data \
+  --ask "Compare successful and failed tool calls" codex
+pchronicle agent --dataset ./trajectory-data \
+  --ask "Compare model latency" --no-overview claude
+pchronicle agent --dataset ./trajectory-data --dry-run codex
+pchronicle agent codex
+```
+
+When `--dataset` is omitted, `agent` uses the configured default Warehouse.
+Local paths are normalized before launch. The child process inherits the
+caller's working directory, terminal, authentication, and unrelated Agent
+settings; the Dataset is not made the working directory. Codex receives a
+session-only `skills.config` override that selects the temporary skill. Claude
+receives a temporary plugin and appended system prompt. No persistent Agent
+configuration file is changed. Interactive launch requires terminal stdin and
+stdout; `--dry-run` remains available in pipes and CI.
+
+By default, pChronicle instructs the Agent to run a bounded `status` check and
+compact `analysis overview`, then ask what to investigate. `--ask` supplies that
+question at launch so analysis can continue without a second user turn.
+`--no-overview` asks the Agent to skip the automatic generic overview while
+retaining the bounded health check and any targeted queries needed to answer the
+question. `--dry-run` emits a JSON launch plan without creating a temporary
+injection, checking Agent installation or authentication, or launching a child.
+The plan marks the question as redacted and reports its byte length without
+echoing its content.
+
+The injected skill exposes the normalized URI and current `pchronicle`
+executable, then guides the Agent through bounded `status`, `analysis`, `find`,
+and read-only `query` calls. This is Agent guidance, not a filesystem or network
+sandbox: the child retains its existing tool permissions and credentials. Other
+environment variables are inherited, while `PCHRONICLE_DATASET_URI` and
+`PCHRONICLE_BIN` are set for the session. The normalized Dataset URI, current
+executable, analysis guidance, and `--ask` text are model-visible; pChronicle
+command results used during analysis also become model-visible. Do not populate
+`--ask` with unreviewed Dataset or ticket content.
+
+The Agent is instructed to treat Dataset content as untrusted evidence, default
+to small query budgets, and retain Snapshot and Source-local identity context in
+conclusions. The temporary skill or Claude plugin is removed after a normal
+Agent exit. Native Agent resume commands do not guarantee that this ephemeral
+injection remains available. A forcibly terminated Codex launcher can leave a
+generic `pchronicle-agent-*` skill directory under the Codex skill root; it can
+be removed once no matching session is running.
 
 File imports can also omit `--output`; the CLI derives a create-only Dataset
 subdirectory under the default Warehouse from the input file name:

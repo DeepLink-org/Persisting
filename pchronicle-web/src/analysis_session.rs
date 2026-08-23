@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use web_time::{SystemTime, UNIX_EPOCH};
 
@@ -145,7 +145,11 @@ pub struct AnalysisSpec {
     pub dimension: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<SpecFilter>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_ranking"
+    )]
     pub ranking: Option<Ranking>,
     pub output: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -169,6 +173,55 @@ pub struct Ranking {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n: Option<u32>,
+}
+
+fn deserialize_optional_ranking<'de, D>(deserializer: D) -> Result<Option<Ranking>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(value) = Option::<Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    ranking_from_json(value).map_err(serde::de::Error::custom)
+}
+
+fn ranking_from_json(value: Value) -> Result<Option<Ranking>, String> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Array(items) if items.is_empty() => Ok(None),
+        Value::Array(items) => {
+            let kind = items
+                .first()
+                .and_then(Value::as_str)
+                .ok_or_else(|| "ranking[0] must be a kind string".to_string())?;
+            if kind.trim().is_empty() {
+                return Ok(None);
+            }
+            let n = items.get(1).and_then(Value::as_u64).map(|n| n as u32);
+            Ok(Some(Ranking {
+                kind: kind.to_string(),
+                n,
+            }))
+        }
+        Value::String(kind) if kind.trim().is_empty() => Ok(None),
+        Value::String(kind) => Ok(Some(Ranking { kind, n: None })),
+        Value::Object(map) => {
+            let kind = map
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if kind.is_empty() {
+                return Ok(None);
+            }
+            let n = map.get("n").and_then(Value::as_u64).map(|n| n as u32);
+            Ok(Some(Ranking { kind, n }))
+        }
+        other => Err(format!(
+            "ranking must be an object, array, or string, got {other}"
+        )),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -480,6 +533,37 @@ impl AnalysisRevision {
         let sql = self
             .executable_sql()
             .ok_or_else(|| "Compiled SQL is required before running this analysis.".to_string())?;
+        self.execution = None;
+        self.evidence = None;
+        self.interpretation = None;
+        self.needs_rerun = false;
+        let operation_id = self.begin_operation();
+        self.state = RevisionState::Executing;
+        self.error = None;
+        self.pending_effect = Some(AnalysisEffect::ExecuteSql {
+            revision_id: self.id,
+            operation_id,
+            sql: sql.clone(),
+        });
+        self.start_trace_step(AnalyzeTraceKind::Execute, Some(&sql));
+        self.touch();
+        Ok(())
+    }
+
+    pub fn confirm_sql_run(&mut self) -> Result<(), String> {
+        if !matches!(
+            self.state,
+            RevisionState::PlanReady
+                | RevisionState::QueryError
+                | RevisionState::Complete
+                | RevisionState::InterpretationError
+                | RevisionState::Stale
+        ) {
+            return Err("SQL can only be run from a reviewed or completed revision.".into());
+        }
+        let sql = self
+            .executable_sql()
+            .ok_or_else(|| "SQL is required before running this analysis.".to_string())?;
         self.execution = None;
         self.evidence = None;
         self.interpretation = None;
@@ -1449,6 +1533,20 @@ mod tests {
             .unwrap();
         assert_eq!(revision.state, RevisionState::Complete);
         assert_eq!(effect, None);
+    }
+
+    #[test]
+    fn sql_tab_can_rerun_completed_sql() {
+        let (mut revision, query_operation) = executing_revision();
+        revision
+            .finish_query(1, query_operation, empty_evidence(), Vec::new())
+            .unwrap();
+        revision.confirm_sql_run().unwrap();
+        assert_eq!(revision.state, RevisionState::Executing);
+        assert!(matches!(
+            revision.pending_effect,
+            Some(AnalysisEffect::ExecuteSql { .. })
+        ));
     }
 
     #[test]

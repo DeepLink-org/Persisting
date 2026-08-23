@@ -195,48 +195,6 @@ pub struct AnswerRequest<'a> {
     pub on_step: Option<&'a dyn Fn(&str)>,
 }
 
-pub fn load_thread(run: &RunSummary) -> CopilotThread {
-    let Some(window) = web_sys::window() else {
-        return CopilotThread {
-            messages: Vec::new(),
-            updated_at: 0,
-            truncated: false,
-        };
-    };
-    let Some(storage) = window.local_storage().ok().flatten() else {
-        return CopilotThread {
-            messages: Vec::new(),
-            updated_at: 0,
-            truncated: false,
-        };
-    };
-    storage
-        .get_item(&thread_storage_key(run))
-        .ok()
-        .flatten()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or(CopilotThread {
-            messages: Vec::new(),
-            updated_at: 0,
-            truncated: false,
-        })
-}
-
-pub fn save_thread(run: &RunSummary, thread: &CopilotThread) {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let Some(storage) = window.local_storage().ok().flatten() else {
-        return;
-    };
-    let mut thread = thread.clone();
-    thread.updated_at = now_millis();
-    trim_thread(&mut thread);
-    if let Ok(raw) = serde_json::to_string(&thread) {
-        let _ = storage.set_item(&thread_storage_key(run), &raw);
-    }
-}
-
 fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

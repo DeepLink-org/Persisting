@@ -1,3 +1,4 @@
+mod agent;
 mod control;
 mod exchange;
 mod gateway_capture;
@@ -108,6 +109,8 @@ enum Command {
     Query(QueryArgs),
     /// Run a stable built-in analysis over normalized trajectory tables.
     Analysis(AnalysisArgs),
+    /// Start Codex or Claude with a pChronicle Dataset analysis skill.
+    Agent(agent::AgentArgs),
     /// Locate a Run, Trajectory, or Step by its Source-local ID.
     Find(FindArgs),
     /// Create a new Dataset from one or more trajectory Sources.
@@ -860,6 +863,14 @@ pub async fn run_with_stdio(
         Command::Analysis(args) => {
             run_analysis(args, settings, stdout_is_terminal, stdout, stderr).await
         }
+        Command::Agent(args) => agent::run(
+            args,
+            settings,
+            stdin_is_terminal,
+            stdout_is_terminal,
+            stdout,
+            stderr,
+        ),
         Command::Find(args) => run_find(args, settings, stdout_is_terminal, stdout, stderr).await,
         Command::Import(args) => run_import(args, settings, stdin, stdout, stderr).await,
         Command::Export(args) => run_export(args, settings, stdout, stderr).await,

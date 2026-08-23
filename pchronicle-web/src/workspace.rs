@@ -8,6 +8,12 @@ use crate::api;
 use crate::catalog::CatalogExplorer;
 use crate::chat_view::normalize_trace_view;
 use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView};
+use crate::copilot_sessions::{
+    can_start_new_chat, delete_session, empty_thread, load_index, load_session_thread,
+    new_session_id, now_millis, page_after_history_switch, persist_indexed_thread, relative_time,
+    restore_for_run, save_index, session_storage_key, title_from_thread, BrowserStore,
+    CopilotSessionMeta, KvStore,
+};
 use crate::llm;
 use crate::llm_settings::LlmSettings;
 use crate::model::{
@@ -437,10 +443,9 @@ pub fn App() -> Element {
             }
 
             if copilot_open() {
-                if let (Some(run), Some(value)) = (selected_run(), analysis()) {
                     CopilotPanel {
-                        run,
-                        analysis: value,
+                        run: selected_run(),
+                        analysis: analysis(),
                         turns: turns(),
                         selected: selected_turn(),
                         wide: copilot_wide(),
@@ -458,26 +463,27 @@ pub fn App() -> Element {
                                 page.set("detail".into());
                             }
                         },
-                    }
-                } else {
-                    aside { class: copilot_panel_class(copilot_wide()),
-                        div { class: "pc2-copilot-head",
-                            div { strong { "Trajectory Copilot" } }
-                            div {
-                                CopilotWideToggle {
-                                    wide: copilot_wide(),
-                                    on_toggle: move |_| {
-                                        let next = !copilot_wide();
-                                        copilot_wide.set(next);
-                                        save_copilot_wide(next);
-                                    },
+                        on_open_session: move |meta: CopilotSessionMeta| {
+                            let next_page = page_after_history_switch(&page());
+                            let changed = selected_run().as_ref().map(|run| run.query())
+                                != Some(meta.run.query());
+                            if changed {
+                                if page() == "tools" {
+                                    analysis_session_id.set(String::new());
+                                    analysis_seed_scope.set(None);
                                 }
-                                button { aria_label: "Close Copilot", onclick: move |_| copilot_open.set(false), "×" }
+                                selected_run.set(Some(meta.run.clone()));
+                                analysis.set(None);
+                                turns.set(Vec::new());
+                                selected_turn.set(None);
+                                expanded_turn_id.set(None);
+                                storyline.set(None);
                             }
-                        }
-                        div { class: "pc2-copilot-empty", "Open a trajectory before asking Copilot to analyze evidence." }
+                            if page() != next_page {
+                                page.set(next_page.to_string());
+                            }
+                        },
                     }
-                }
             }
 
         }
@@ -1338,29 +1344,56 @@ fn CopilotWideToggle(wide: bool, on_toggle: EventHandler<MouseEvent>) -> Element
 
 #[component]
 fn CopilotPanel(
-    run: RunSummary,
-    analysis: RunAnalysis,
+    run: Option<RunSummary>,
+    analysis: Option<RunAnalysis>,
     turns: Vec<TurnSummary>,
     selected: Option<TurnDetail>,
     wide: bool,
     on_toggle_wide: EventHandler<MouseEvent>,
     on_close: EventHandler<MouseEvent>,
     on_turn: EventHandler<i64>,
+    on_open_session: EventHandler<CopilotSessionMeta>,
 ) -> Element {
-    let initial_run = run.clone();
-    let mut thread = use_signal(move || agent::load_thread(&initial_run));
+    let mut index = use_signal(|| load_index(&BrowserStore));
+    let mut session_id = use_signal(|| None::<String>);
+    let mut bound_query = use_signal(|| None::<String>);
+    let mut thread = use_signal(empty_thread);
     let mut input = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut settings = use_signal(|| false);
+    let mut history_open = use_signal(|| false);
     let mut config = use_signal(llm::load_config);
     let mut step = use_signal(|| "Working…".to_string());
     let mut following = use_signal(|| true);
-    let submit_run = run.clone();
-    let submit_analysis = analysis.clone();
+    let run_for_effect = run.clone();
+    use_effect(move || {
+        let Some(current) = run_for_effect.clone() else {
+            return;
+        };
+        let query = current.query();
+        if Some(query.clone()) == bound_query() {
+            return;
+        }
+        bound_query.set(Some(query));
+        let now = now_millis();
+        let (next_index, id, next_thread) =
+            restore_for_run(&BrowserStore, &current, &new_session_id(now), now);
+        index.set(next_index);
+        session_id.set(id);
+        thread.set(next_thread);
+    });
     let focused_turn_id = selected.as_ref().map(|detail| detail.summary.id);
     let update_step = Callback::new(move |next: String| step.set(next));
+    let submit_run = run.clone();
+    let submit_analysis = analysis.clone();
     let submit_copilot = Callback::new(move |()| {
         let question = input().trim().to_string();
+        let Some(submit_run) = submit_run.clone() else {
+            return;
+        };
+        let Some(submit_analysis) = submit_analysis.clone() else {
+            return;
+        };
         if question.is_empty() || busy() {
             return;
         }
@@ -1384,7 +1417,6 @@ fn CopilotPanel(
                     truncated: false,
                     reasoning_content: None,
                 });
-                agent::save_thread(&submit_run, &next_thread);
                 thread.set(next_thread);
             }
             return;
@@ -1407,25 +1439,20 @@ fn CopilotPanel(
         step.set("Working…".into());
         following.set(true);
         busy.set(true);
-        let run_value = submit_run.clone();
-        let analysis_value = submit_analysis.clone();
         spawn(async move {
             let report_step = |next: &str| update_step.call(next.to_string());
             let result = agent::answer(agent::AnswerRequest {
                 config: &config_value,
                 user_message: &question,
-                run: &run_value,
-                analysis: &analysis_value,
+                run: &submit_run,
+                analysis: &submit_analysis,
                 focused_turn_id,
                 thread: prior_thread,
                 on_step: Some(&report_step),
             })
             .await;
-            match result {
-                Ok(answer) => {
-                    agent::save_thread(&run_value, &answer.thread);
-                    thread.set(answer.thread);
-                }
+            let finished = match result {
+                Ok(answer) => answer.thread,
                 Err(message) => {
                     pending_thread.messages.push(ThreadMessage {
                         role: ThreadRole::Assistant,
@@ -1437,10 +1464,23 @@ fn CopilotPanel(
                         truncated: false,
                         reasoning_content: None,
                     });
-                    agent::save_thread(&run_value, &pending_thread);
-                    thread.set(pending_thread);
+                    pending_thread
                 }
-            }
+            };
+            let now = now_millis();
+            let id = session_id().unwrap_or_else(|| new_session_id(now));
+            session_id.set(Some(id.clone()));
+            let mut next_index = index();
+            persist_indexed_thread(
+                &BrowserStore,
+                &mut next_index,
+                &id,
+                &submit_run,
+                &finished,
+                now,
+            );
+            index.set(next_index);
+            thread.set(finished);
             busy.set(false);
         });
     });
@@ -1452,9 +1492,103 @@ fn CopilotPanel(
             scroll_copilot_chat_to_bottom();
         }
     });
+    let title = title_from_thread(&thread());
+    let new_chat_enabled = can_start_new_chat(run.is_some(), &thread()) && !busy();
+    let context_line = match (&run, &analysis, selected.as_ref()) {
+        (None, _, _) => "Open a trajectory to start a chat.".to_string(),
+        (Some(_), None, _) => "Loading trajectory evidence…".to_string(),
+        (Some(_), Some(_), Some(detail)) => format!("Step {} in context", detail.summary.id),
+        (Some(_), Some(_), None) => "Current trajectory in context".to_string(),
+    };
+    let composer_enabled = run.is_some() && analysis.is_some() && !busy();
+    let sessions = index().sessions;
     rsx! { aside { class: copilot_panel_class(wide),
-        div { class: "pc2-copilot-head", div { strong { "Trajectory Copilot" } span { "Read-only · minimal evidence" } } div { button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" } CopilotWideToggle { wide, on_toggle: on_toggle_wide } button { aria_label: "Close Copilot", onclick: on_close, "×" } } }
-        div { class: "pc2-context-card", div { span { "Grounded in" } strong { "{short(&run.session_id, 30)}" } } div { span { "Evidence" } strong { "{analysis.turn_count} turns · {analysis.error_count} explicit errors" } } }
+        div { class: "pc2-copilot-head",
+            div { class: "pc2-copilot-head-title", strong { "{title}" } span { "Read-only · minimal evidence" } }
+            div { class: "pc2-copilot-actions",
+                button {
+                    aria_label: "New chat",
+                    title: "New chat",
+                    disabled: !new_chat_enabled,
+                    onclick: move |_| {
+                        if !new_chat_enabled { return; }
+                        session_id.set(None);
+                        thread.set(empty_thread());
+                        history_open.set(false);
+                    },
+                    "+"
+                }
+                button {
+                    aria_label: "Chat history",
+                    title: "Chat history",
+                    aria_pressed: history_open(),
+                    disabled: busy(),
+                    onclick: move |_| history_open.set(!history_open()),
+                    "◷"
+                }
+                button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" }
+                CopilotWideToggle { wide, on_toggle: on_toggle_wide }
+                button { aria_label: "Close Copilot", onclick: on_close, "×" }
+            }
+        }
+        if history_open() {
+            div { class: "pc2-copilot-history", role: "listbox", aria_label: "Copilot history",
+                if sessions.is_empty() {
+                    div { class: "pc2-copilot-history-empty", "No saved chats yet." }
+                }
+                for meta in sessions.iter().cloned() {
+                    {
+                        let active = session_id().as_deref() == Some(meta.id.as_str());
+                        let row = meta.clone();
+                        let delete_id = meta.id.clone();
+                        rsx! {
+                            div { class: if active { "pc2-copilot-history-row active" } else { "pc2-copilot-history-row" },
+                                button {
+                                    r#type: "button",
+                                    class: "pc2-copilot-history-open",
+                                    onclick: move |_| {
+                                        if busy() { return; }
+                                        let loaded = load_session_thread(&BrowserStore, &row.id);
+                                        session_id.set(Some(row.id.clone()));
+                                        thread.set(loaded);
+                                        bound_query.set(Some(row.run.query()));
+                                        history_open.set(false);
+                                        following.set(true);
+                                        on_open_session.call(row.clone());
+                                    },
+                                    strong { "{meta.title}" }
+                                    span { "{short(&meta.run.session_id, 18)} · {relative_time(now_millis(), meta.updated_at)}" }
+                                }
+                                button {
+                                    r#type: "button",
+                                    class: "pc2-copilot-history-delete",
+                                    aria_label: "Delete chat",
+                                    onclick: move |event| {
+                                        event.stop_propagation();
+                                        let mut next = index();
+                                        let fallback = delete_session(&mut next, &delete_id);
+                                        let store = BrowserStore;
+                                        store.remove(&session_storage_key(&delete_id));
+                                        save_index(&BrowserStore, &next);
+                                        index.set(next);
+                                        if session_id().as_deref() == Some(delete_id.as_str()) {
+                                            if let Some(id) = fallback {
+                                                session_id.set(Some(id.clone()));
+                                                thread.set(load_session_thread(&BrowserStore, &id));
+                                            } else {
+                                                session_id.set(None);
+                                                thread.set(empty_thread());
+                                            }
+                                        }
+                                    },
+                                    "×"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         div { class: "pc2-chat-wrap",
             div {
                 id: COPILOT_CHAT_ID,
@@ -1464,7 +1598,9 @@ fn CopilotPanel(
                 },
                 if thread().messages.is_empty() {
                     div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" }
-                        if config().is_configured() {
+                        if run.is_none() {
+                            p { "Open a trajectory, or pick a previous chat from history." }
+                        } else if config().is_configured() {
                             p { "Copilot can inspect this analysis, examine a turn, or run read-only SQL." }
                         } else {
                             p { "Configure an OpenAI-compatible model in Settings before asking Copilot." }
@@ -1507,14 +1643,21 @@ fn CopilotPanel(
                 }
             }
         }
-        form { class: "pc2-composer", onsubmit: move |event| { event.prevent_default(); submit_copilot.call(()); },
-            textarea { value: "{input}", rows: "3", placeholder: "Ask Copilot about this trajectory…", oninput: move |event| input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); submit_copilot.call(()); }, disabled: busy() }
-            button { class: "button primary", disabled: busy() || input().trim().is_empty(), "Ask Copilot" }
+        form { class: "pc2-composer pc2-composer-compact", onsubmit: move |event| { event.prevent_default(); submit_copilot.call(()); },
+            textarea {
+                value: "{input}",
+                rows: "2",
+                placeholder: if run.is_none() { "Open a trajectory to start a chat…" } else if analysis.is_none() { "Loading trajectory evidence…" } else { "Ask about this trajectory…" },
+                oninput: move |event| input.set(event.value()),
+                onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); submit_copilot.call(()); },
+                disabled: !composer_enabled
+            }
+            button { class: "button primary", disabled: !composer_enabled || input().trim().is_empty(), "Send" }
         }
+        div { class: "pc2-composer-context", "{context_line}" }
         if settings() { LlmSettings { config: config(), on_close: move |_| settings.set(false), on_save: move |value| { llm::save_config(&value); config.set(value); settings.set(false); } } }
     } }
 }
-
 #[component]
 fn ChatBubble(
     message: ThreadMessage,
@@ -1536,7 +1679,7 @@ fn ChatBubble(
             .unwrap_or_else(|| "tool".to_string());
         return rsx! {
             div { class: "pc2-message tool",
-                span { class: "pc2-action-label", "{action}" }
+                span { class: "pc2-action-label", "Running {action} ›" }
                 if !message.text.trim().is_empty() {
                     details { summary { "Tool evidence" } pre { "{message.text}" } }
                 }

@@ -19,6 +19,7 @@ blake3.workspace = true
 bytes.workspace = true
 clap = { workspace = true, features = ["derive"] }
 datafusion = { workspace = true, features = ["sql"] }
+dirs.workspace = true
 futures.workspace = true
 include_dir = "=0.7.4"
 libc.workspace = true

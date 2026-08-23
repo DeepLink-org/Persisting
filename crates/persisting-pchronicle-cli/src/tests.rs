@@ -213,8 +213,8 @@ fn command_tree_contains_the_product_commands() {
     assert_eq!(
         names,
         [
-            "onboard", "default", "ls", "status", "query", "analysis", "find", "import", "export",
-            "echo", "serve",
+            "onboard", "default", "ls", "status", "query", "analysis", "agent", "find", "import",
+            "export", "echo", "serve",
         ]
     );
     let ls = command
