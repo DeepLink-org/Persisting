@@ -319,7 +319,11 @@ pub fn compile(
             }
             RankingKind::Outlier => {
                 let MeasureKind::Column(column) = measure.kind else {
-                    unreachable!("outlier ranking is only allowed on column measures");
+                    return Err(CompileError::new(
+                        "invalid_ranking",
+                        Some("ranking"),
+                        "outlier ranking requires a numeric column measure",
+                    ));
                 };
                 let mut p95_predicates = scope_predicates(grain.alias, scope);
                 p95_predicates.push(format!("{}.{column} IS NOT NULL", grain.alias));
