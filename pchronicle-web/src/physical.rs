@@ -174,9 +174,9 @@ pub fn PhysicalWorkspace() -> Element {
         );
     });
 
-    let selected_source = sources().into_iter().find(|source| {
-        source.dataset == dataset() && source.file == file()
-    });
+    let selected_source = sources()
+        .into_iter()
+        .find(|source| source.dataset == dataset() && source.file == file());
     let file_size_label = file_layout()
         .as_ref()
         .map(|current| format_bytes(current.file_size_bytes))
