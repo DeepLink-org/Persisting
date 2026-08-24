@@ -38,7 +38,8 @@ pvisor replay \
   --agent claude-code \
   --trajectory /input/session.jsonl \
   --after-step 30 \
-  --agent-entrypoint /usr/bin/claude
+  --agent-entrypoint /usr/bin/claude \
+  --boundary-user-prompt 'Review the fresh observation before continuing.'
 ```
 
 The same request can be supplied as strict TOML:
@@ -50,11 +51,18 @@ trajectory = "/input/session.jsonl"
 after_step = 30
 agent_entrypoint = "/usr/bin/claude"
 disable_thinking = false
+boundary_user_prompt = "Review the fresh observation before continuing."
 ```
 
 `disable_thinking` is also available as `--disable-thinking`. It is applied by
 the Claude replay bridge when protocol translation is required; it does not
 enable Gateway capture.
+
+`boundary_user_prompt` is also available as `--boundary-user-prompt`. When
+configured, replay appends it once after the final fresh observation for the
+first live model request. It does not replace the original task and is not
+injected by prepare-only or replay-only execution. Omitting it preserves the
+original request boundary exactly.
 
 Runtime isolation is opt-in. Supplying `--safe`, `--executor`,
 `--overlayfs-base`, another replay runtime flag, or the corresponding

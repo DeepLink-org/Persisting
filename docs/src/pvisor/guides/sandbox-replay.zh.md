@@ -35,6 +35,19 @@ Agent 原生 system prompt + 工具定义 + 原始任务
 
 `O′N` 后不得添加“请继续”“Continue from where you left off”等额外消息。回放保证恢复流程和消息边界正确，但不保证 `A′(N+1)` 与 `A(N+1)` 逐字一致；文件状态、工具输出中的动态字段以及模型采样都可能改变下一动作。
 
+如果用户明确希望改变边界后的第一次推理，可以配置
+`boundary_user_prompt`：
+
+~~~text
+Agent 原生 system prompt + 工具定义 + 原始任务
+    + A1 → O′1 → ... → AN → O′N
+    + boundary_user_prompt → A′(N+1)
+~~~
+
+该提示词只在 `O′N` 之后、第一次实时模型推理之前注入一次，不替换原始任务。
+`prepare-only` 和 `replay-only` 不发起实时模型请求，因此不会注入。未配置时仍保持
+“请求准确结束在 `O′N`”的原有语义。
+
 ## 3. Agent 适配
 
 ### 3.1 Claude Code
@@ -62,7 +75,8 @@ pvisor replay \
   --agent claude-code \
   --trajectory /input/session.jsonl \
   --after-step 30 \
-  --agent-entrypoint /usr/bin/claude
+  --agent-entrypoint /usr/bin/claude \
+  --boundary-user-prompt '请检查新的 observation 后继续任务'
 ~~~
 
 等价的 TOML 配置为：
@@ -77,6 +91,7 @@ max_steps = 200
 session_id = "task-291-attempt-1"
 replay_only = false
 disable_thinking = true
+boundary_user_prompt = "请检查新的 observation 后继续任务"
 ~~~
 
 ### 4.1 执行模式与结果
@@ -91,6 +106,13 @@ disable_thinking = true
 结果协议为 `sandbox-playback.result/v3`：`phase` 为 `prepared`、`replayed`
 或 `continued`；`quality` 为 `verified` 或 `degraded`；`agent_status` 区分
 `not_started`、`completed`、`max_steps` 与 `failed`。失败结果会保留已经生成的日志和原生轨迹。即使 OpenHands 进程返回 0，只要控制器报告 fatal 状态，结果仍为失败。
+
+成功结果的 metadata 记录边界提示词是否请求和注入，以及字符长度和 SHA-256；
+replay journal 不记录提示词明文；Agent 原生的 prepared 或 continued trajectory
+可能包含这条 user 消息。对于 Claude Code，内存桥只把提示词加入第一次清理后的
+上游请求，不修改重建的原生 session。配置提示词后，
+`next-action-comparison.json` 的输入条件为 `boundary_user_prompt_appended`。
+此时文本相似度和工具一致性仅供观察，不能解释为相同输入下的 replay 一致性。
 
 迁移说明：旧版非 Claude 配置有时使用 `replay_only = true` 表示只构造前缀、不执行。现在应改为 `prepare_only = true`；v3 的 replay-only 一定会执行选中的前缀，因此需要精确版本的 runtime。无法重新生成的 Claude observation 默认失败，只有显式指定 `--allow-stale-observations` 才会复用并把质量标记为 `degraded`。
 

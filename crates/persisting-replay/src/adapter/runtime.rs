@@ -524,6 +524,7 @@ Loading global config from '/root/.config/mini-swe-agent/.env'";
             allow_stale_observations: false,
             run_id: None,
             disable_thinking: false,
+            boundary_user_prompt: None,
         };
 
         assert!(resolve_launch_spec(&request).unwrap().is_none());

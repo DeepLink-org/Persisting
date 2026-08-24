@@ -209,7 +209,7 @@ fn run_swe(
         )],
     )?;
     if context.request.mode == ReplayMode::PrepareOnly {
-        return Ok(prepared_outcome(path));
+        return Ok(prepared_outcome(path, context.request));
     }
     run_sdk_bridge(plan, context, journal, AgentKind::SweAgent)
 }

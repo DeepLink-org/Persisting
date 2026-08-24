@@ -183,6 +183,8 @@ mod tests {
                 "/input/session.jsonl",
                 "--after-step",
                 "30",
+                "--boundary-user-prompt",
+                "Review the fresh observation.",
                 "--agent-entrypoint",
                 "/usr/bin/claude",
                 "--safe",
@@ -256,6 +258,8 @@ mod tests {
         assert!(help.contains("--replay-only"));
         assert!(help.contains("stop before the next model request"));
         assert!(help.contains("--allow-stale-observations"));
+        assert!(help.contains("--boundary-user-prompt"));
+        assert!(help.contains("after the replayed boundary observation"));
         assert!(help.contains("including the replayed prefix and any live continuation"));
     }
 

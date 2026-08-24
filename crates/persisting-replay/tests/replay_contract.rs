@@ -135,6 +135,7 @@ fn openhands_request(root: &Path, mode: ReplayMode, max_steps: usize) -> Playbac
         allow_stale_observations: false,
         run_id: Some("contract".into()),
         disable_thinking: false,
+        boundary_user_prompt: None,
     }
 }
 
@@ -188,7 +189,8 @@ fn mini_replay_only_executes_prefix_without_live_model() {
             "after_step": 1,
             "max_steps": 1,
             "session_id": "session",
-            "mode": "replay_only"
+            "mode": "replay_only",
+            "boundary_user_prompt": "must not be injected"
         }))
         .unwrap(),
     )
@@ -207,8 +209,76 @@ fn mini_replay_only_executes_prefix_without_live_model() {
     assert_eq!(result["phase"], "replayed");
     assert_eq!(result["replayed_steps"], 1);
     assert_eq!(result["continued_steps"], 0);
+    assert_eq!(result["boundary_user_prompt_injected"], false);
     assert!(reconstructed.is_file());
     assert!(!continued.exists());
+}
+
+#[test]
+fn mini_boundary_prompt_is_persisted_after_the_fresh_observation() {
+    let temporary = tempfile::tempdir().unwrap();
+    let historical_marker = temporary.path().join("historical-marker");
+    let live_marker = temporary.path().join("live-marker");
+    let source = temporary.path().join("source.json");
+    fs::write(
+        &source,
+        serde_json::to_vec(&json!({
+            "info": {"config": {"model": {}, "environment": {}, "agent": {}}},
+            "messages": [
+                {"role": "system", "content": "system", "extra": {}},
+                {
+                    "role": "assistant",
+                    "content": "historical action",
+                    "extra": {
+                        "response": {},
+                        "actions": [{"tool_call_id": "call-1", "marker": historical_marker}]
+                    }
+                },
+                {"role": "tool", "content": "old observation", "extra": {}}
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let request_path = temporary.path().join("request.json");
+    let result_path = temporary.path().join("result.json");
+    let continued = temporary.path().join("continued.json");
+    fs::write(
+        &request_path,
+        serde_json::to_vec(&json!({
+            "source": source,
+            "reconstructed": temporary.path().join("reconstructed.json"),
+            "continued": continued,
+            "observations": temporary.path().join("observations.json"),
+            "result": result_path,
+            "workspace": temporary.path(),
+            "after_step": 1,
+            "max_steps": 2,
+            "session_id": "session",
+            "mode": "replay_and_continue",
+            "boundary_user_prompt": "review O-prime N"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    run_fake(
+        "mini",
+        "assets/mini_swe_agent_runner.py",
+        &request_path,
+        &live_marker,
+    );
+
+    let result: Value = serde_json::from_slice(&fs::read(result_path).unwrap()).unwrap();
+    let trajectory: Value = serde_json::from_slice(&fs::read(continued).unwrap()).unwrap();
+    let messages = trajectory["messages"].as_array().unwrap();
+    let prompt_index = messages
+        .iter()
+        .position(|message| message["content"] == "review O-prime N")
+        .unwrap();
+    assert_eq!(messages[prompt_index]["role"], "user");
+    assert_eq!(messages[prompt_index - 1]["content"], "fresh observation");
+    assert_eq!(result["boundary_user_prompt_injected"], true);
 }
 
 #[test]
@@ -250,7 +320,8 @@ fn swe_max_steps_caps_total_actions() {
             "output_dir": temporary.path().join("agent-output"),
             "after_step": 1,
             "max_steps": 3,
-            "mode": "replay_and_continue"
+            "mode": "replay_and_continue",
+            "boundary_user_prompt": "review O-prime N"
         }))
         .unwrap(),
     )
@@ -268,9 +339,16 @@ fn swe_max_steps_caps_total_actions() {
     assert_eq!(result["agent_status"], "max_steps");
     assert_eq!(result["replayed_steps"], 1);
     assert_eq!(result["continued_steps"], 2);
+    assert_eq!(result["boundary_user_prompt_injected"], true);
     assert_eq!(fs::read_to_string(live_marker).unwrap().lines().count(), 2);
     assert!(reconstructed.is_file());
     assert!(continued.is_file());
+    let trajectory: Value = serde_json::from_slice(&fs::read(continued).unwrap()).unwrap();
+    assert!(trajectory["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| { message["role"] == "user" && message["content"] == "review O-prime N" }));
 }
 
 #[cfg(unix)]
@@ -296,6 +374,41 @@ fn openhands_replay_only_stops_at_boundary() {
                 .path
                 .ends_with("native/reconstructed-trajectory.json")
     }));
+}
+
+#[cfg(unix)]
+#[test]
+fn openhands_boundary_prompt_is_queued_after_the_replay_prefix() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut request = openhands_request(temporary.path(), ReplayMode::ReplayAndContinue, 2);
+    request.boundary_user_prompt = Some("review O-prime N".into());
+
+    let report = execute(request).unwrap();
+
+    assert_eq!(report.exit_code, 0);
+    let prepared: Value = serde_json::from_slice(
+        &fs::read(
+            report
+                .result
+                .output_dir
+                .join("native/prepared-replay-events.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let last = prepared.as_array().unwrap().last().unwrap();
+    assert_eq!(last["source"], "user");
+    assert_eq!(last["action"], "message");
+    assert_eq!(last["args"]["content"], "review O-prime N");
+    assert_eq!(
+        report.result.metadata["boundary_user_prompt"]["injected"],
+        true
+    );
+    assert!(!report
+        .result
+        .metadata
+        .to_string()
+        .contains("review O-prime N"));
 }
 
 #[cfg(unix)]

@@ -40,6 +40,7 @@ pub struct ReplayConfig {
     pub allow_stale_observations: bool,
     #[serde(default)]
     pub disable_thinking: bool,
+    pub boundary_user_prompt: Option<String>,
     pub run_id: Option<String>,
     pub workspace: Option<PathBuf>,
     pub state_dir: Option<PathBuf>,
@@ -112,6 +113,7 @@ impl ReplayToml {
             allow_stale_observations: replay.allow_stale_observations,
             run_id: replay.run_id,
             disable_thinking: replay.disable_thinking,
+            boundary_user_prompt: replay.boundary_user_prompt,
         })
     }
 }
@@ -137,6 +139,7 @@ struct JsonRequest {
     allow_stale_observations: bool,
     #[serde(default)]
     disable_thinking: bool,
+    boundary_user_prompt: Option<String>,
     run_id: Option<String>,
 }
 
@@ -184,6 +187,7 @@ pub fn request_from_json(path: &Path) -> Result<PlaybackRequest, ReplayError> {
         allow_stale_observations: request.allow_stale_observations,
         run_id: request.run_id,
         disable_thinking: request.disable_thinking,
+        boundary_user_prompt: request.boundary_user_prompt,
     })
 }
 
@@ -291,6 +295,27 @@ disable_thinking = true
         let request = config.into_request(Path::new("/workspace")).unwrap();
 
         assert!(request.disable_thinking);
+    }
+
+    #[test]
+    fn toml_accepts_a_boundary_user_prompt() {
+        let config: ReplayToml = toml::from_str(
+            r#"
+[replay]
+agent = "claude-code"
+trajectory = "/input/session.jsonl"
+after_step = 30
+boundary_user_prompt = "Review the fresh observation before continuing."
+"#,
+        )
+        .unwrap();
+
+        let request = config.into_request(Path::new("/workspace")).unwrap();
+
+        assert_eq!(
+            request.boundary_user_prompt(),
+            Some("Review the fresh observation before continuing.")
+        );
     }
 
     #[test]
@@ -414,5 +439,30 @@ mode = "off"
         let request = request_from_json(&path).unwrap();
 
         assert!(request.disable_thinking);
+    }
+
+    #[test]
+    fn json_request_accepts_a_boundary_user_prompt() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("request.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": "sandbox-playback.request/v1",
+                "agent": {"type": "mini-swe-agent"},
+                "trajectory": "/input/trajectory.json",
+                "after_step": 1,
+                "workspace": "/workspace",
+                "state_dir": "/state",
+                "output_dir": "/output",
+                "boundary_user_prompt": "Inspect O-prime N."
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let request = request_from_json(&path).unwrap();
+
+        assert_eq!(request.boundary_user_prompt(), Some("Inspect O-prime N."));
     }
 }

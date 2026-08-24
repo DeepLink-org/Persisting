@@ -13,7 +13,7 @@ mod swe_agent;
 use serde_json::{json, Value};
 
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
-use crate::io::{atomic_write, atomic_write_json, read_regular_file};
+use crate::io::{atomic_write, atomic_write_json, read_regular_file, sha256};
 use crate::journal::Journal;
 use crate::model::{
     AdapterPlan, AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome,
@@ -65,15 +65,50 @@ fn check_boundary(after_step: usize, complete: usize) -> Result<(), ReplayError>
     Ok(())
 }
 
-fn prepared_outcome(path: PathBuf) -> ReplayOutcome {
+fn prepared_outcome(path: PathBuf, request: &PlaybackRequest) -> ReplayOutcome {
     ReplayOutcome {
         status: "prepared".into(),
         reconstructed_path: Some(path),
         continued_path: None,
         observations: Vec::new(),
         continued_steps: 0,
-        metadata: json!({"replay_only_execution": false}),
+        metadata: with_boundary_user_prompt_metadata(
+            json!({"replay_only_execution": false}),
+            request,
+            false,
+        ),
     }
+}
+
+pub(super) fn with_boundary_user_prompt_metadata(
+    mut metadata: Value,
+    request: &PlaybackRequest,
+    injected: bool,
+) -> Value {
+    let prompt = request.boundary_user_prompt();
+    let mut detail = json!({
+        "requested": prompt.is_some(),
+        "injected": injected,
+        "injection_count": usize::from(injected),
+    });
+    if let Some(prompt) = prompt {
+        detail["sha256"] = json!(sha256(prompt.as_bytes()));
+        detail["length"] = json!(prompt.chars().count());
+        if injected {
+            detail["position"] = json!("after_boundary_observation");
+        } else {
+            detail["reason"] = json!(match request.mode {
+                ReplayMode::PrepareOnly => "prepare_only",
+                ReplayMode::ReplayOnly => "replay_only",
+                ReplayMode::ReplayAndContinue => "not_injected",
+            });
+        }
+    }
+    metadata
+        .as_object_mut()
+        .expect("replay outcome metadata must be an object")
+        .insert("boundary_user_prompt".into(), detail);
+    metadata
 }
 
 fn run_sdk_bridge(
@@ -140,6 +175,7 @@ fn run_sdk_bridge(
                     "after_step": plan.after_step,
                     "max_steps": context.request.max_steps,
                     "session_id": context.session_id,
+                    "boundary_user_prompt": context.request.boundary_user_prompt(),
                 }),
                 reconstructed,
                 continued,
@@ -167,6 +203,7 @@ fn run_sdk_bridge(
                     "result": runner_result,
                     "workspace": context.request.workspace,
                     "output_dir": run_output,
+                    "boundary_user_prompt": context.request.boundary_user_prompt(),
                 }),
                 reconstructed,
                 continued,
@@ -268,6 +305,20 @@ fn run_sdk_bridge(
         .get("agent_status")
         .and_then(Value::as_str)
         .ok_or_else(|| ReplayError::continuation("SDK runner omitted agent_status"))?;
+    let prompt_injected = runner
+        .get("boundary_user_prompt_injected")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            ReplayError::continuation("SDK runner omitted boundary_user_prompt_injected")
+        })?;
+    let expected_prompt_injected = context.request.mode == ReplayMode::ReplayAndContinue
+        && context.request.boundary_user_prompt().is_some();
+    if prompt_injected != expected_prompt_injected {
+        return Err(ReplayError::continuation(format!(
+            "{} runner reported an invalid boundary user prompt injection state",
+            agent.as_str()
+        )));
+    }
     let status_is_valid = match context.request.mode {
         ReplayMode::ReplayOnly => {
             runner_agent_status == "not_started" && runner_continued_steps == 0
@@ -450,7 +501,11 @@ fn run_sdk_bridge(
             .then_some(continued),
         observations,
         continued_steps,
-        metadata: json!({"sdk_bridge": bridge_name}),
+        metadata: with_boundary_user_prompt_metadata(
+            json!({"sdk_bridge": bridge_name}),
+            context.request,
+            prompt_injected,
+        ),
     })
 }
 
@@ -488,9 +543,9 @@ fn environment_name_allowed(rendered: &str, strip_credentials: bool) -> bool {
             rendered,
             "CLAUDE_CODE_USE_BEDROCK" | "CLAUDE_CODE_USE_VERTEX" | "CLAUDE_CODE_USE_FOUNDRY"
         );
-    !(strip_credentials && credential)
-        && !claude_provider_override
-        && !matches!(rendered, "PYTHONHOME" | "PYTHONPATH" | "VIRTUAL_ENV")
+    !(claude_provider_override
+        || matches!(rendered, "PYTHONHOME" | "PYTHONPATH" | "VIRTUAL_ENV")
+        || strip_credentials && credential)
 }
 
 #[cfg(test)]

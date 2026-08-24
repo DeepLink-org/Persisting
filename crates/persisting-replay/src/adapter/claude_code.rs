@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use super::{
-    agent_command, check_boundary, sanitized_environment, RunContext, MAX_TOOL_OUTPUT_BYTES,
+    agent_command, check_boundary, sanitized_environment, with_boundary_user_prompt_metadata,
+    RunContext, MAX_TOOL_OUTPUT_BYTES,
 };
 use crate::claude_bridge::ClaudeBridgeHandle;
 use crate::claude_resume::ResumeTransportManifest;
@@ -789,7 +790,11 @@ fn run_claude(
             continued_path: None,
             observations: Vec::new(),
             continued_steps: 0,
-            metadata: json!({"native_session_id": session_id}),
+            metadata: with_boundary_user_prompt_metadata(
+                json!({"native_session_id": session_id}),
+                context.request,
+                false,
+            ),
         });
     }
     let mut replacements = BTreeMap::new();
@@ -860,7 +865,11 @@ fn run_claude(
             continued_path: None,
             observations,
             continued_steps: 0,
-            metadata: json!({"native_session_id": session_id}),
+            metadata: with_boundary_user_prompt_metadata(
+                json!({"native_session_id": session_id}),
+                context.request,
+                false,
+            ),
         });
     }
     let launch = context
@@ -912,6 +921,7 @@ fn run_claude(
         manifest,
         context.session_id,
         context.request.disable_thinking,
+        context.request.boundary_user_prompt(),
     )?;
     journal.append("continuation_started", std::iter::empty())?;
     let mut command = agent_command(&launch.entrypoint, context);
@@ -974,6 +984,8 @@ fn run_claude(
         return Err(process_error);
     }
     let validated_model_requests = bridge_result?;
+    let prompt_injected =
+        context.request.boundary_user_prompt().is_some() && validated_model_requests > 0;
     let raw_continued = String::from_utf8(read_regular_file(&native_path)?).replay_context(
         ReplayErrorKind::Continuation,
         "continued Claude session is not UTF-8",
@@ -991,6 +1003,10 @@ fn run_claude(
                 "validated_model_requests".into(),
                 json!(validated_model_requests),
             ),
+            (
+                "boundary_user_prompt_injected".into(),
+                json!(prompt_injected),
+            ),
         ],
     )?;
     Ok(ReplayOutcome {
@@ -999,11 +1015,15 @@ fn run_claude(
         continued_path: Some(continued),
         observations,
         continued_steps,
-        metadata: json!({
-            "native_session_id": session_id,
-            "validated_model_requests": validated_model_requests,
-            "model_transport": "sandbox-replay-claude-bridge",
-        }),
+        metadata: with_boundary_user_prompt_metadata(
+            json!({
+                "native_session_id": session_id,
+                "validated_model_requests": validated_model_requests,
+                "model_transport": "sandbox-replay-claude-bridge",
+            }),
+            context.request,
+            prompt_injected,
+        ),
     })
 }
 
@@ -2254,6 +2274,7 @@ mod tests {
             allow_stale_observations: false,
             run_id: Some("test".into()),
             disable_thinking: false,
+            boundary_user_prompt: None,
         };
         let plan = build_plan(&request).unwrap();
         let mut journal = Journal::open(&state).unwrap();
@@ -2355,6 +2376,7 @@ mod tests {
             allow_stale_observations: false,
             run_id: Some("test".into()),
             disable_thinking: false,
+            boundary_user_prompt: None,
         };
         if !request.trajectory.exists() {
             return;
@@ -2464,6 +2486,7 @@ mod tests {
             allow_stale_observations: false,
             run_id: Some("test".into()),
             disable_thinking: false,
+            boundary_user_prompt: None,
         };
         let AdapterPlan::ClaudeCode(plan) = build_plan(&request).unwrap() else {
             panic!("Claude fixture produced a non-Claude plan");

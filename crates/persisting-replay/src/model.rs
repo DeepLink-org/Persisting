@@ -89,6 +89,15 @@ pub struct PlaybackRequest {
     pub allow_stale_observations: bool,
     pub run_id: Option<String>,
     pub disable_thinking: bool,
+    pub boundary_user_prompt: Option<String>,
+}
+
+impl PlaybackRequest {
+    pub fn boundary_user_prompt(&self) -> Option<&str> {
+        self.boundary_user_prompt
+            .as_deref()
+            .filter(|prompt| !prompt.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
