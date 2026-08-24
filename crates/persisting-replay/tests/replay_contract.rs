@@ -448,3 +448,142 @@ fn openhands_zero_exit_fatal_status_is_a_failed_result_with_trajectory() {
         artifact.role == "continued_native_trajectory" && artifact.path.is_file()
     }));
 }
+
+#[cfg(unix)]
+fn write_fake_pi_runtime(root: &Path) -> PathBuf {
+    use std::os::unix::fs::symlink;
+
+    let bin = root.join("bin");
+    let node_bin = root.join("node/bin");
+    let package = root.join("npm-global/lib/node_modules/@earendil-works/pi-coding-agent");
+    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(&node_bin).unwrap();
+    fs::create_dir_all(&package).unwrap();
+    let entrypoint = bin.join("pi");
+    fs::write(&entrypoint, "#!/bin/sh\nprintf '0.83.0\\n'\n").unwrap();
+    let mut permissions = fs::metadata(&entrypoint).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&entrypoint, permissions).unwrap();
+    let node = Command::new("node")
+        .args(["-p", "process.execPath"])
+        .output()
+        .unwrap();
+    assert!(node.status.success());
+    let node = String::from_utf8(node.stdout).unwrap();
+    symlink(node.trim(), node_bin.join("node")).unwrap();
+    fs::write(
+        package.join("package.json"),
+        r#"{"name":"@earendil-works/pi-coding-agent","type":"module","exports":{".":{"import":"./dist/index.mjs"}}}"#,
+    )
+    .unwrap();
+    fs::create_dir(package.join("dist")).unwrap();
+    fs::write(
+        package.join("dist/index.mjs"),
+        r#"
+import fs from "node:fs";
+export function createCodingTools() {
+  return [{
+    name: "bash",
+    async execute(_id, args) {
+      fs.writeFileSync(args.marker, "fresh\n");
+      return {content: [{type: "text", text: "fresh observation"}], details: {exitCode: 0}};
+    },
+  }];
+}
+export const SessionManager = {
+  create() { return {appendMessage() {}}; },
+};
+"#,
+    )
+    .unwrap();
+    entrypoint
+}
+
+#[cfg(unix)]
+#[test]
+fn pi_replay_only_executes_native_tool_prefix_without_a_model_request() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let marker = workspace.join("pi-replayed");
+    let trajectory = temporary.path().join("pi-agent.events.jsonl");
+    let events = [
+        json!({
+            "type": "message_end",
+            "message": {"role": "user", "content": [{"type": "text", "text": "fix it"}], "timestamp": 1}
+        }),
+        json!({
+            "type": "turn_end",
+            "message": {
+                "role": "assistant",
+                "provider": "sweeval",
+                "model": "fake-model",
+                "api": "openai-completions",
+                "content": [{
+                    "type": "toolCall", "id": "call-1", "name": "bash",
+                    "arguments": {"marker": marker}
+                }],
+                "stopReason": "toolUse",
+                "usage": {"input": 1, "output": 1},
+                "timestamp": 2
+            },
+            "toolResults": [{
+                "role": "toolResult", "toolCallId": "call-1", "toolName": "bash",
+                "content": [{"type": "text", "text": "old observation"}],
+                "isError": false, "timestamp": 3
+            }]
+        }),
+        json!({
+            "type": "turn_end",
+            "message": {
+                "role": "assistant", "provider": "sweeval", "model": "fake-model",
+                "api": "openai-completions", "content": [{"type": "text", "text": "next"}],
+                "stopReason": "stop", "usage": {"input": 2, "output": 1}, "timestamp": 4
+            },
+            "toolResults": []
+        }),
+    ];
+    fs::write(
+        &trajectory,
+        events
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let entrypoint = write_fake_pi_runtime(&temporary.path().join("pi-runtime"));
+    let request = PlaybackRequest {
+        agent: AgentKind::PiAgent,
+        trajectory,
+        after_step: 1,
+        workspace,
+        state_dir: temporary.path().join("state"),
+        output_dir: temporary.path().join("output"),
+        agent_entrypoint: Some(entrypoint),
+        agent_runtime: None,
+        disallowed_tools: Vec::new(),
+        trajectory_assets: None,
+        session_id: Some("pi-contract".into()),
+        max_steps: Some(1),
+        mode: ReplayMode::ReplayOnly,
+        allow_stale_observations: false,
+        run_id: Some("pi-contract".into()),
+        disable_thinking: false,
+        boundary_user_prompt: None,
+    };
+
+    let report = execute(request).unwrap();
+
+    assert_eq!(report.exit_code, 0, "{:#?}", report.result);
+    assert_eq!(report.result.phase, ReplayPhase::Replayed);
+    assert_eq!(report.result.agent_status, AgentStatus::NotStarted);
+    assert_eq!(report.result.replayed_tool_calls, 1);
+    assert_eq!(fs::read_to_string(marker).unwrap(), "fresh\n");
+    assert!(report.result.artifacts.iter().any(|artifact| {
+        artifact.role == "reconstructed_native_trajectory"
+            && artifact.format == "pi-agent/native-events-jsonl-0.83.0"
+            && artifact.path.ends_with("native/reconstructed-events.jsonl")
+    }));
+}

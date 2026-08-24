@@ -7,6 +7,7 @@ use std::time::Duration;
 mod claude_code;
 mod mini_swe_agent;
 mod openhands;
+mod pi_agent;
 mod runtime;
 mod swe_agent;
 
@@ -20,7 +21,10 @@ use crate::model::{
     ReplayPlan,
 };
 use crate::process::{run_process, ProcessSpec};
-use runtime::{configure_mini_python_environment, mini_python_library_path, mini_python_runtime};
+use runtime::{
+    configure_mini_python_environment, mini_python_library_path, mini_python_runtime,
+    pi_node_runtime,
+};
 pub(crate) use runtime::{resolve_launch_spec, LaunchSpec};
 
 const MAX_TOOL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
@@ -39,6 +43,7 @@ pub fn build_plan(request: &PlaybackRequest) -> Result<AdapterPlan, ReplayError>
         AgentKind::ClaudeCode => claude_code::build(request),
         AgentKind::MiniSweAgent => mini_swe_agent::build(request),
         AgentKind::Openhands => openhands::build(request),
+        AgentKind::PiAgent => pi_agent::build(request),
         AgentKind::SweAgent => swe_agent::build(request),
     }
 }
@@ -52,6 +57,7 @@ pub fn run(
         AdapterPlan::ClaudeCode(plan) => claude_code::execute(plan, context, journal),
         AdapterPlan::MiniSweAgent(plan) => mini_swe_agent::execute(plan, context, journal),
         AdapterPlan::Openhands(plan) => openhands::execute(plan, context, journal),
+        AdapterPlan::PiAgent(plan) => pi_agent::execute(plan, context, journal),
         AdapterPlan::SweAgent(plan) => swe_agent::execute(plan, context, journal),
     }
 }
@@ -210,6 +216,40 @@ fn run_sdk_bridge(
                 None,
             )
         }
+        AgentKind::PiAgent => {
+            let source = context.state_dir.join("pi-source.json");
+            let reconstructed = native_dir.join("reconstructed-events.jsonl");
+            let continued = native_dir.join("continued-events.jsonl");
+            let observations = context.state_dir.join("pi-fresh-observations.json");
+            atomic_write_json(&source, &plan.native)?;
+            let runtime = pi_node_runtime(&launch.entrypoint)?;
+            (
+                runtime.node,
+                include_str!("../../assets/pi_agent_runner.mjs"),
+                "pi-agent-runner.mjs",
+                json!({
+                    "source": source,
+                    "reconstructed": reconstructed,
+                    "continued": continued,
+                    "observations": observations,
+                    "result": runner_result,
+                    "mode": mode,
+                    "workspace": context.request.workspace,
+                    "after_step": plan.after_step,
+                    "prefix_model_turns": plan.prefix_model_turns,
+                    "max_steps": context.request.max_steps,
+                    "session_id": context.session_id,
+                    "boundary_user_prompt": context.request.boundary_user_prompt(),
+                    "disable_thinking": context.request.disable_thinking,
+                    "package_json": runtime.package_json,
+                    "config_dir": context.state_dir.join("pi-config"),
+                    "session_dir": context.state_dir.join("pi-sessions"),
+                }),
+                reconstructed,
+                continued,
+                Some(observations),
+            )
+        }
         _ => {
             return Err(ReplayError::new(
                 ReplayErrorKind::Internal,
@@ -354,110 +394,124 @@ fn run_sdk_bridge(
         )));
     }
 
-    let (observations, continued_steps) = if agent == AgentKind::MiniSweAgent {
-        let raw_observations: Vec<Value> = serde_json::from_slice(&read_regular_file(
-            observations_path.as_ref().expect("mini observations path"),
-        )?)
-        .replay_context(
-            ReplayErrorKind::Trajectory,
-            "parse mini-swe-agent fresh observations",
-        )?;
-        if raw_observations.len() != plan.calls().count() {
-            return Err(ReplayError::trajectory(
-                "mini-swe-agent output lost replayed observations",
-            ));
-        }
-        let observations = plan
-            .calls()
-            .zip(raw_observations)
-            .map(|(call, value)| FreshObservation {
-                call_id: call.call_id.clone(),
-                content: value.get("content").cloned().unwrap_or(Value::Null),
-                is_error: value
-                    .get("is_error")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                return_code: value
-                    .get("return_code")
-                    .and_then(Value::as_i64)
-                    .map(|code| code as i32),
-                duration_ms: value
-                    .get("duration_ms")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default() as u128,
-                truncated: false,
-                metadata: BTreeMap::new(),
-            })
-            .collect::<Vec<_>>();
-        let continued_value: Value =
-            serde_json::from_slice(&read_regular_file(&runner_trajectory)?).replay_context(
-                ReplayErrorKind::Trajectory,
-                "parse continued mini-swe-agent trajectory",
-            )?;
-        let action_count = continued_value["messages"]
-            .as_array()
-            .map(|messages| {
-                messages
-                    .iter()
-                    .filter(|message| {
-                        message
-                            .get("extra")
-                            .and_then(|extra| extra.get("actions"))
-                            .and_then(Value::as_array)
-                            .is_some_and(|actions| !actions.is_empty())
-                    })
-                    .count()
-            })
-            .unwrap_or_default();
-        let measured = action_count.saturating_sub(plan.after_step);
-        if measured != runner_continued_steps {
-            return Err(ReplayError::trajectory(
-                "mini-swe-agent runner result disagrees with its trajectory",
-            ));
-        }
-        (observations, measured)
-    } else {
-        let replayed: Value = serde_json::from_slice(&read_regular_file(&runner_trajectory)?)
+    let (observations, continued_steps) =
+        if matches!(agent, AgentKind::MiniSweAgent | AgentKind::PiAgent) {
+            let raw_observations: Vec<Value> = serde_json::from_slice(&read_regular_file(
+                observations_path.as_ref().expect("SDK observations path"),
+            )?)
             .replay_context(
+                ReplayErrorKind::Trajectory,
+                format!("parse {} fresh observations", agent.as_str()),
+            )?;
+            if raw_observations.len() != plan.calls().count() {
+                return Err(ReplayError::trajectory(format!(
+                    "{} output lost replayed observations",
+                    agent.as_str()
+                )));
+            }
+            let observations = plan
+                .calls()
+                .zip(raw_observations)
+                .map(|(call, value)| FreshObservation {
+                    call_id: call.call_id.clone(),
+                    content: value.get("content").cloned().unwrap_or(Value::Null),
+                    is_error: value
+                        .get("is_error")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    return_code: value
+                        .get("return_code")
+                        .and_then(Value::as_i64)
+                        .map(|code| code as i32),
+                    duration_ms: value
+                        .get("duration_ms")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default() as u128,
+                    truncated: false,
+                    metadata: BTreeMap::new(),
+                })
+                .collect::<Vec<_>>();
+            let measured = if agent == AgentKind::MiniSweAgent {
+                let continued_value: Value =
+                    serde_json::from_slice(&read_regular_file(&runner_trajectory)?)
+                        .replay_context(
+                            ReplayErrorKind::Trajectory,
+                            "parse continued mini-swe-agent trajectory",
+                        )?;
+                continued_value["messages"]
+                    .as_array()
+                    .map(|messages| {
+                        messages
+                            .iter()
+                            .filter(|message| {
+                                message
+                                    .get("extra")
+                                    .and_then(|extra| extra.get("actions"))
+                                    .and_then(Value::as_array)
+                                    .is_some_and(|actions| !actions.is_empty())
+                            })
+                            .count()
+                    })
+                    .unwrap_or_default()
+                    .saturating_sub(plan.after_step)
+            } else {
+                let raw = read_regular_file(&runner_trajectory)?;
+                let turns = String::from_utf8_lossy(&raw)
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .filter(|event| event.get("type").and_then(Value::as_str) == Some("turn_end"))
+                    .count();
+                turns.saturating_sub(plan.prefix_model_turns)
+            };
+            if measured != runner_continued_steps {
+                return Err(ReplayError::trajectory(format!(
+                    "{} runner result disagrees with its trajectory",
+                    agent.as_str()
+                )));
+            }
+            (observations, measured)
+        } else {
+            let replayed: Value = serde_json::from_slice(&read_regular_file(&runner_trajectory)?)
+                .replay_context(
                 ReplayErrorKind::Trajectory,
                 "parse SWE-agent replay runner trajectory",
             )?;
-        let steps = replayed["trajectory"]
-            .as_array()
-            .ok_or_else(|| ReplayError::trajectory("continued SWE-agent trajectory is invalid"))?;
-        if steps.len() < plan.after_step {
-            return Err(ReplayError::trajectory(
-                "SWE-agent output lost replayed steps",
-            ));
-        }
-        let observations = plan
-            .calls()
-            .zip(steps.iter())
-            .map(|(call, step)| FreshObservation {
-                call_id: call.call_id.clone(),
-                content: step.get("observation").cloned().unwrap_or(Value::Null),
-                is_error: false,
-                return_code: None,
-                duration_ms: 0,
-                truncated: false,
-                metadata: BTreeMap::new(),
-            })
-            .collect::<Vec<_>>();
-        let continued_steps = steps[plan.after_step..]
-            .iter()
-            .filter(|step| {
-                step.get("action")
-                    .and_then(Value::as_str)
-                    .is_some_and(|action| !action.trim().is_empty())
-            })
-            .count();
-        if continued_steps != runner_continued_steps {
-            return Err(ReplayError::trajectory(
-                "SWE-agent runner result disagrees with its trajectory",
-            ));
-        }
-        (observations, continued_steps)
-    };
+            let steps = replayed["trajectory"].as_array().ok_or_else(|| {
+                ReplayError::trajectory("continued SWE-agent trajectory is invalid")
+            })?;
+            if steps.len() < plan.after_step {
+                return Err(ReplayError::trajectory(
+                    "SWE-agent output lost replayed steps",
+                ));
+            }
+            let observations = plan
+                .calls()
+                .zip(steps.iter())
+                .map(|(call, step)| FreshObservation {
+                    call_id: call.call_id.clone(),
+                    content: step.get("observation").cloned().unwrap_or(Value::Null),
+                    is_error: false,
+                    return_code: None,
+                    duration_ms: 0,
+                    truncated: false,
+                    metadata: BTreeMap::new(),
+                })
+                .collect::<Vec<_>>();
+            let continued_steps = steps[plan.after_step..]
+                .iter()
+                .filter(|step| {
+                    step.get("action")
+                        .and_then(Value::as_str)
+                        .is_some_and(|action| !action.trim().is_empty())
+                })
+                .count();
+            if continued_steps != runner_continued_steps {
+                return Err(ReplayError::trajectory(
+                    "SWE-agent runner result disagrees with its trajectory",
+                ));
+            }
+            (observations, continued_steps)
+        };
     if context.request.mode == ReplayMode::ReplayAndContinue && continued_steps == 0 {
         return Err(ReplayError::continuation(format!(
             "{} produced no actionable continuation step; see {}",

@@ -510,6 +510,7 @@ fn artifacts(
         AgentKind::ClaudeCode => "claude-code/native-jsonl-2.1.220",
         AgentKind::MiniSweAgent => "mini-swe-agent/native-json-2.4.6",
         AgentKind::Openhands => "openhands/native-json-0.53.0",
+        AgentKind::PiAgent => "pi-agent/native-events-jsonl-0.83.0",
         AgentKind::SweAgent => "swe-agent/native-traj-1.1.0",
     };
     let prepared_path = prepared_native_path(request.agent, output_dir);
@@ -601,6 +602,7 @@ fn existing_artifacts(request: &PlaybackRequest, output_dir: &Path) -> Vec<Artif
         AgentKind::ClaudeCode => "claude-code/native-jsonl-2.1.220",
         AgentKind::MiniSweAgent => "mini-swe-agent/native-json-2.4.6",
         AgentKind::Openhands => "openhands/native-json-0.53.0",
+        AgentKind::PiAgent => "pi-agent/native-events-jsonl-0.83.0",
         AgentKind::SweAgent => "swe-agent/native-traj-1.1.0",
     };
     let native_paths: &[(&str, &str)] = match request.agent {
@@ -640,6 +642,17 @@ fn existing_artifacts(request: &PlaybackRequest, output_dir: &Path) -> Vec<Artif
                 "native/continued-trajectory.json",
             ),
         ],
+        AgentKind::PiAgent => &[
+            ("prepared_native_prefix", "native/prepared-prefix.jsonl"),
+            (
+                "reconstructed_native_trajectory",
+                "native/reconstructed-events.jsonl",
+            ),
+            (
+                "continued_native_trajectory",
+                "native/continued-events.jsonl",
+            ),
+        ],
         AgentKind::SweAgent => &[
             ("prepared_native_prefix", "native/prepared-prefix.traj"),
             (
@@ -673,6 +686,7 @@ fn prepared_native_path(agent: AgentKind, output_dir: &Path) -> std::path::PathB
         AgentKind::ClaudeCode => "native/prepared-prefix.jsonl",
         AgentKind::MiniSweAgent => "native/prepared-prefix.json",
         AgentKind::Openhands => "native/prepared-replay-events.json",
+        AgentKind::PiAgent => "native/prepared-prefix.jsonl",
         AgentKind::SweAgent => "native/prepared-prefix.traj",
     })
 }

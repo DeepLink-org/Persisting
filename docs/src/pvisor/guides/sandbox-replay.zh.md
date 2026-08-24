@@ -66,6 +66,15 @@ OpenHands 使用原生 event trajectory 和 ReplayManager。SandboxReplay 提取
 
 mini-swe-agent 使用原生 `mini-swe-agent-1.1` messages。配套 runner 保留原始 system 和任务消息，在新沙箱中重放前 N 个 action，并使用原生 observation formatter 将结果加入 `agent.messages`，随后直接调用下一次 `agent.step()`。
 
+### 3.4 Pi agent
+
+Pi agent 适配固定支持 `@earendil-works/pi-coding-agent` `0.83.0`，输入为
+Pi 原生 RPC event JSONL。一个 replay step 对应一个完整的 `turn_end` 工具批次。
+SandboxReplay 使用 Pi 自身的工具实现重新执行 `read`、`bash`、`edit`、`write`，
+将新 observation 写入新建的 Pi v3 session，再通过 Pi SDK 从边界续跑。轨迹包含
+这四种工具之外的调用时会拒绝执行，避免静默改变工具语义。未配置边界提示词时调用
+Pi 的原生 `continue()`；配置后则在 `O′N` 后通过 `prompt()` 追加一次用户消息。
+
 ## 4. 使用方式
 
 SandboxReplay 默认假设用户已经创建了一个新沙箱，并在沙箱中直接运行：
@@ -77,6 +86,16 @@ pvisor replay \
   --after-step 30 \
   --agent-entrypoint /usr/bin/claude \
   --boundary-user-prompt '请检查新的 observation 后继续任务'
+~~~
+
+Pi agent 在 SweEval 默认 runtime 布局中的命令为：
+
+~~~bash
+pvisor replay \
+  --agent pi-agent \
+  --trajectory /input/pi-agent.events.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /opt/pi-agent/bin/pi
 ~~~
 
 等价的 TOML 配置为：

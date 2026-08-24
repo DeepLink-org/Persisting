@@ -24,8 +24,11 @@ implementation in detail.
 
 The default replay path assumes the caller already created a fresh sandbox.
 It reconstructs and continues the Agent directly in that sandbox. OpenHands,
-mini-swe-agent, and SWE-agent connect to the model endpoint already configured
-in their environment; replay does not start pVisor Gateway for them.
+mini-swe-agent, Pi agent, and SWE-agent connect to the model endpoint already
+configured in their environment; replay does not start pVisor Gateway for
+them. The Pi profile is pinned to `@earendil-works/pi-coding-agent` `0.83.0`,
+reads native RPC event JSONL, and supports Pi's core `read`, `bash`, `edit`, and
+`write` tools.
 
 Claude Code alone uses a temporary bridge owned by SandboxReplay. Before any
 upstream model request, the bridge validates and removes the exact Resume
@@ -40,6 +43,16 @@ pvisor replay \
   --after-step 30 \
   --agent-entrypoint /usr/bin/claude \
   --boundary-user-prompt 'Review the fresh observation before continuing.'
+```
+
+Pi uses the same surface:
+
+```bash
+pvisor replay \
+  --agent pi-agent \
+  --trajectory /input/pi-agent.events.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /opt/pi-agent/bin/pi
 ```
 
 The same request can be supplied as strict TOML:

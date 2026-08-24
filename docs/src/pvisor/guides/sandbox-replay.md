@@ -33,6 +33,16 @@ inference. It never replaces the original task and is not injected in
 prepare-only or replay-only mode. Without the option, the existing exact
 boundary behavior is unchanged.
 
+## Supported Agent profiles
+
+Replay profiles are version-pinned and fail closed when the installed runtime
+does not match. The Pi profile supports `@earendil-works/pi-coding-agent`
+`0.83.0` and consumes the native RPC event JSONL produced by Pi. A replay step
+is one complete `turn_end` tool batch. The profile reconstructs a fresh Pi v3
+session with new observations, then continues through Pi's SDK. Its initial
+tool surface is intentionally limited to Pi's `read`, `bash`, `edit`, and
+`write` tools; trajectories containing another tool fail validation.
+
 ## Run replay
 
 ```bash
@@ -57,6 +67,16 @@ session_id = "task-291-attempt-1"
 replay_only = false
 disable_thinking = true
 boundary_user_prompt = "Review the fresh observation before continuing."
+```
+
+For a Pi runtime installed at the SweEval default location, the CLI form is:
+
+```bash
+pvisor replay \
+  --agent pi-agent \
+  --trajectory /input/pi-agent.events.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /opt/pi-agent/bin/pi
 ```
 
 ### Execution modes and results
