@@ -46,8 +46,8 @@ fn help_exposes_the_supported_product_surface() -> Result<()> {
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout)?;
     for command in [
-        "onboard", "default", "ls", "status", "query", "analysis", "agent", "find", "import",
-        "export", "serve",
+        "onboard", "default", "alias", "ls", "status", "query", "analysis", "agent", "find",
+        "import", "export", "serve",
     ] {
         assert!(stdout.contains(command), "help omits {command}: {stdout}");
     }
@@ -68,7 +68,7 @@ fn agent_help_explains_startup_controls() -> Result<()> {
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout)?;
-    for option in ["--dataset", "--ask", "--no-overview", "--dry-run"] {
+    for option in ["--ask", "--ask-file", "--no-overview", "--dry-run"] {
         assert!(
             stdout.contains(option),
             "agent help omits {option}: {stdout}"
@@ -80,10 +80,10 @@ fn agent_help_explains_startup_controls() -> Result<()> {
         "{stdout}"
     );
     for example in [
-        "pchronicle agent --dataset ./dataset codex",
-        "pchronicle agent --dataset ./dataset --ask \"Which tools fail most often?\" claude",
-        "pchronicle agent --dataset ./dataset --ask \"Compare model latency\" --no-overview codex",
-        "pchronicle agent --dataset ./dataset --dry-run codex",
+        "pchronicle agent codex ./dataset",
+        "pchronicle agent claude @prod --ask \"Compare model latency\"",
+        "pchronicle agent codex ./dataset --ask-file question.txt --no-overview",
+        "pchronicle agent codex ./dataset --dry-run",
     ] {
         assert!(
             stdout.contains(example),
@@ -91,6 +91,44 @@ fn agent_help_explains_startup_controls() -> Result<()> {
         );
     }
     assert!(stdout.contains("question text redacted"), "{stdout}");
+    Ok(())
+}
+
+#[test]
+fn serve_help_exposes_only_the_canonical_dataset_surface() -> Result<()> {
+    let output = pchronicle(&["serve", "--help"])?;
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(
+        stdout.contains("Usage: pchronicle serve [OPTIONS] <[NAME=]DATASET>..."),
+        "{stdout}"
+    );
+    for option in [
+        "--listen",
+        "--control",
+        "--open",
+        "--gateway-config",
+        "--gateway-dataset",
+        "--gateway-state",
+        "--gateway-stream-markdown",
+        "--gateway-debug",
+    ] {
+        assert!(
+            stdout.contains(option),
+            "serve help omits {option}: {stdout}"
+        );
+    }
+    for legacy in [
+        "--warehouse-config",
+        "--storage",
+        "--gateway-object-store-manifest-mode",
+    ] {
+        assert!(
+            !stdout.contains(legacy),
+            "serve help exposes compatibility option {legacy}: {stdout}"
+        );
+    }
     Ok(())
 }
 
@@ -184,11 +222,11 @@ fn clap_errors_use_exit_code_two_and_do_not_write_stdout() -> Result<()> {
 }
 
 #[test]
-fn runtime_errors_use_exit_code_one_and_do_not_write_stdout() -> Result<()> {
+fn missing_dataset_uses_not_found_exit_code_and_does_not_write_stdout() -> Result<()> {
     let output = pchronicle(&["status", "/definitely/missing/pchronicle-dataset"])?;
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8(output.stderr)?.starts_with("error: "));
+    assert!(String::from_utf8(output.stderr)?.starts_with("error[not_found]: "));
     Ok(())
 }
 
@@ -701,7 +739,7 @@ fn agent_reports_a_missing_executable_without_writing_stdout() -> Result<()> {
         .arg(&missing_dataset)
         .args(["--dry-run", "codex"])
         .output()?;
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(3));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr)?;
     assert!(stderr.contains(&format!("{missing_dataset:?}")), "{stderr}");

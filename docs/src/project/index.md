@@ -1,7 +1,8 @@
 # Project
 
-This section records delivery state, durable decisions, contributor workflows,
-and systems outside the primary pVisor → pChronicle product path.
+Persisting's public positioning spans model state and Agent history. This
+section records delivery state, durable decisions, contributor workflows, and
+systems outside the current pVisor → pChronicle product path.
 
 ## Architecture
 

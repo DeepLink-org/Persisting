@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -29,10 +29,10 @@ const CLAUDE_PLUGIN_MANIFEST: &str = concat!(
 
 #[derive(Debug, Args)]
 #[command(after_long_help = "Examples:
-  pchronicle agent --dataset ./dataset codex
-  pchronicle agent --dataset ./dataset --ask \"Which tools fail most often?\" claude
-  pchronicle agent --dataset ./dataset --ask \"Compare model latency\" --no-overview codex
-  pchronicle agent --dataset ./dataset --dry-run codex
+  pchronicle agent codex ./dataset
+  pchronicle agent claude @prod --ask \"Compare model latency\"
+  pchronicle agent codex ./dataset --ask-file question.txt --no-overview
+  pchronicle agent codex ./dataset --dry-run
 
 By default, pChronicle instructs the Agent to run a bounded Dataset status check
 and compact overview, then ask what to investigate. Use --ask to supply that
@@ -44,14 +44,25 @@ stdin and stdout. pChronicle does not change the Agent's existing filesystem,
 network, or tool permissions; the injected read-only workflow is guidance, not
 a sandbox.")]
 pub(super) struct AgentArgs {
-    /// Local path or object-store URI. Uses the default Warehouse when omitted.
+    /// Interactive coding Agent to launch.
+    #[arg(value_enum, value_name = "AGENT")]
+    target: AgentTarget,
+
+    /// Dataset path, URI, or alias. Uses the default Dataset when omitted.
+    #[arg(value_name = "DATASET")]
+    dataset: Option<String>,
+
+    /// Compatibility option for the previous Agent syntax.
     #[arg(
-        long,
-        value_name = "DATASET_URI",
+        short = 'd',
+        long = "dataset",
+        value_name = "DATASET",
+        conflicts_with = "dataset",
+        hide = true,
         help_heading = "Agent options",
         display_order = 1
     )]
-    dataset: Option<String>,
+    legacy_dataset: Option<String>,
 
     /// Initial question (max 16 KiB); answered after overview by default.
     #[arg(
@@ -59,21 +70,28 @@ pub(super) struct AgentArgs {
         value_name = "QUESTION",
         value_parser = parse_analysis_question,
         help_heading = "Agent options",
-        display_order = 2
+        display_order = 2,
+        conflicts_with = "ask_file"
     )]
     ask: Option<String>,
 
+    /// Read the initial question from FILE, or from stdin with -.
+    #[arg(
+        long,
+        value_name = "FILE_OR_STDIN",
+        help_heading = "Agent options",
+        display_order = 3,
+        conflicts_with = "ask"
+    )]
+    ask_file: Option<String>,
+
     /// Ask the Agent to skip generic overview; status remains in the bootstrap.
-    #[arg(long, help_heading = "Agent options", display_order = 3)]
+    #[arg(long, help_heading = "Agent options", display_order = 4)]
     no_overview: bool,
 
     /// Print a JSON plan with question text redacted; do not stage or launch.
-    #[arg(long, help_heading = "Agent options", display_order = 4)]
+    #[arg(long, help_heading = "Agent options", display_order = 5)]
     dry_run: bool,
-
-    /// Interactive coding Agent to launch.
-    #[arg(value_enum, value_name = "AGENT")]
-    target: AgentTarget,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -227,16 +245,40 @@ pub(super) fn run(
     settings_override: Option<&Path>,
     stdin_is_terminal: bool,
     stdout_is_terminal: bool,
+    stdin: &mut dyn std::io::Read,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
     let AgentArgs {
         dataset,
-        ask,
+        legacy_dataset,
+        mut ask,
+        ask_file,
         no_overview,
         dry_run,
         target,
     } = args;
+    let dataset = match (dataset, legacy_dataset) {
+        (Some(dataset), None) | (None, Some(dataset)) => Some(dataset),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!("clap rejects duplicate Agent Datasets"),
+    };
+    if let Some(path) = ask_file {
+        let mut question = String::new();
+        if path == "-" {
+            stdin
+                .take((MAX_ANALYSIS_QUESTION_BYTES + 1) as u64)
+                .read_to_string(&mut question)
+                .context("read Agent question from stdin")?;
+        } else {
+            std::fs::File::open(&path)
+                .with_context(|| format!("open Agent question file {path}"))?
+                .take((MAX_ANALYSIS_QUESTION_BYTES + 1) as u64)
+                .read_to_string(&mut question)
+                .with_context(|| format!("read Agent question file {path}"))?;
+        }
+        ask = Some(parse_analysis_question(&question).map_err(anyhow::Error::msg)?);
+    }
     let dataset_uri = match dataset.as_deref() {
         Some(uri) if !uri.trim().contains("://") => {
             resolve_dataset_uri(Some(uri), settings_override).with_context(|| {
@@ -622,18 +664,18 @@ mod tests {
         let explicit = crate::Cli::try_parse_from([
             "pchronicle",
             "agent",
-            "--dataset",
+            "codex",
             "/tmp/example-dataset",
             "--ask",
             "Compare failed runs",
             "--no-overview",
             "--dry-run",
-            "codex",
         ])?;
         let crate::Command::Agent(args) = explicit.command else {
             panic!("expected agent command");
         };
         assert_eq!(args.dataset.as_deref(), Some("/tmp/example-dataset"));
+        assert!(args.legacy_dataset.is_none());
         assert_eq!(args.ask.as_deref(), Some("Compare failed runs"));
         assert!(args.no_overview);
         assert!(args.dry_run);
@@ -644,6 +686,7 @@ mod tests {
             panic!("expected agent command");
         };
         assert!(args.dataset.is_none());
+        assert!(args.legacy_dataset.is_none());
         assert!(args.ask.is_none());
         assert!(!args.no_overview);
         assert!(!args.dry_run);

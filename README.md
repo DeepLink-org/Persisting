@@ -1,36 +1,34 @@
 # Persisting
 
-**Governed Agent execution and durable trajectory Datasets.**
+**Persistent Infrastructure for the Agent Era.**
 
-Persisting has two connected product domains:
+*From model state to Agent history.*
 
-- pVisor virtualizes and governs Agent execution. pPilot extends the same Run
-  contract to many independent Runs.
-- pChronicle turns native and external trajectory Sources into durable,
-  queryable Datasets with preserved origin, normalized views, and lineage.
+Persisting connects durable model state—parameters and KV caches—with durable
+Agent history—trajectories and execution records. The positioning is broader
+than any single command; the current product provides two concrete
+workflows:
 
-The domains share stable Run identity where it is present. Today the configured
-pVisor-to-pChronicle path publishes Gateway trajectory events and pVisor
-lifecycle records, including the Evidence those records carry. The private Run
-Bundle, its Artifact references and lineage, staged Effects, and broader runtime
-Evidence remain local unless a separate adapter moves them.
+- `pvisor` runs one Agent in a controlled environment and lets you review its
+  effects before accepting them;
+- `pchronicle` browses, queries, exchanges, and serves trajectory Datasets.
 
-Gateway, OverlayFS, OverlayNet, and Control are pVisor runtime drivers. Queue,
-Search, and Tensor Memory are separate data capabilities; they are not
-dependencies of the Agent execution path.
+Use either workflow on its own. pChronicle can read external trajectory data
+without pVisor, and pVisor does not need pChronicle to complete its local
+run-review-apply loop. When connected, they preserve a path from execution to
+queryable history.
 
-![Persisting product domains and integration](docs/src/assets/diagrams/persisting/system-products.svg)
+![Current Persisting workflows and optional integration](docs/src/assets/diagrams/persisting/system-products.svg)
 
 ## Install
 
-The Python wheel installs the Python package and a matched set of three host
-commands:
+The Python wheel installs the Python package and its matched public command-line
+entry points:
 
 ```bash
 pip install persisting
 
 pvisor --version
-ppilot --version
 pchronicle --version
 ```
 
@@ -44,9 +42,9 @@ Source developers can install the same command set with `just install-cli`.
 See the [installation guide](https://deeplink-org.github.io/Persisting/installation/)
 for platform requirements and executor setup.
 
-## Choose a product path
+## Choose a workflow
 
-### Govern one Agent Run
+### Run one Agent and review its changes
 
 ```bash
 pvisor run --safe codex
@@ -55,40 +53,28 @@ pvisor apply last --all # or: pvisor drop last
 ```
 
 `--safe` stages workspace changes. The exact filesystem and network boundary
-is platform-dependent and is recorded in the Run Bundle; consult the
+is platform-dependent and is recorded with the Run; consult the
 [pVisor guide](https://deeplink-org.github.io/Persisting/pvisor/guides/execution/)
-before treating it as a security boundary. A useful Run Bundle is produced
-without requiring pChronicle at runtime.
+before treating it as a security boundary. This workflow does not require
+pChronicle.
 
-### Orchestrate many Runs
-
-Create a Python plan with `plan()` and `execute(item)`, then run it with bounded
-parallelism and a durable result journal:
-
-```bash
-ppilot run plan.py --workers 4 --per-worker 2 --sink ./results
-```
-
-For independent pVisor workspaces, use `ppilot produce`. Dataset queries and
-analysis belong to pChronicle.
-
-### Explore a trajectory Dataset
+### Query trajectory history
 
 ```bash
 pchronicle onboard
 pchronicle onboard query
-pchronicle agent --dataset ./trajectory-data \
-  --ask "Which tools fail most often?" codex
+pchronicle agent codex ./trajectory-data \
+  --ask "Which tools fail most often?"
 ```
 
-The installed-product onboarding flow creates temporary example Datasets and
-does not require a source checkout. External Sources can enter pChronicle
-without pVisor. `pchronicle import` accepts ATIF, ACTF, and OpenAI Messages;
-`pchronicle export` supports those formats plus Storyline JSON.
+The onboarding flow creates a temporary example Dataset and does not require a
+source checkout. A Dataset may be a local path, an object-store URI prefix, or
+a user alias such as `@prod`. `pchronicle import` accepts ATIF, ACTF, and OpenAI
+Messages; `pchronicle export` supports those formats plus Storyline JSON.
 `pchronicle agent` launches Codex or Claude with an ephemeral Dataset analysis
 skill. It instructs the Agent to use read-only pChronicle commands without
 changing the Agent's existing filesystem, network, or tool permissions.
-`pchronicle serve` starts the loopback-only, read-only Warehouse UI and API.
+`pchronicle serve` starts the loopback-only, read-only Dataset UI and API.
 
 ## pChronicle performance
 
@@ -105,7 +91,6 @@ No nightly benchmark has been published with the unified report format yet.
 | Command | Primary responsibility |
 |---|---|
 | `pvisor` | One Run, environments, review, checkpoints, apply/drop |
-| `ppilot` | Batch planning, bounded execution, recovery, and Run production |
 | `pchronicle` | Dataset catalog, SQL, built-in analysis, find, import/export, read-only serving |
 
 ## Current maturity
@@ -113,7 +98,6 @@ No nightly benchmark has been published with the unified report format yet.
 | Capability | Status |
 |---|---|
 | pVisor host execution, review, checkpoints, and transactional workspace | Implemented |
-| pPilot batch orchestration and durable recovery | Implemented |
 | pChronicle local/S3 catalog, bounded SQL, analysis, find, import/export | Implemented |
 | pChronicle loopback-only read API and embedded Web UI | Implemented |
 | Gateway capture and cooperative proxy policy | Implemented |
@@ -127,11 +111,10 @@ target architecture; RFCs preserve decisions and are not command references.
 
 ## Documentation
 
-- [Persisting overview](https://deeplink-org.github.io/Persisting/overview/)
+- [Choose a workflow](https://deeplink-org.github.io/Persisting/overview/)
 - [Run your first Agent](https://deeplink-org.github.io/Persisting/pvisor/get-started/)
 - [pVisor documentation](https://deeplink-org.github.io/Persisting/pvisor/)
 - [Review and selectively apply changes](https://deeplink-org.github.io/Persisting/pvisor/guides/review-apply/)
-- [Orchestrate many Runs](https://deeplink-org.github.io/Persisting/pvisor/guides/orchestrate/)
 - [pChronicle documentation](https://deeplink-org.github.io/Persisting/pchronicle/)
 - [Explore durable history](https://deeplink-org.github.io/Persisting/pchronicle/get-started/)
 - [Project architecture](https://deeplink-org.github.io/Persisting/system-design/)

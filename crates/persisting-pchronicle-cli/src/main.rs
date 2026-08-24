@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal};
 use std::process::ExitCode;
 
 use clap::Parser;
-use persisting_pchronicle_cli::{run_with_stdio, Cli};
+use persisting_pchronicle_cli::{error_code, error_exit_code, run_with_stdio, Cli};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -27,8 +27,14 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             use std::io::Write as _;
-            let _ = writeln!(stderr, "error: {}", render_error(&error, debug_errors));
-            ExitCode::FAILURE
+            let code = error_code(&error);
+            let rendered = render_error(&error, debug_errors);
+            let duplicated_prefix = format!("{code}: ");
+            let rendered = rendered
+                .strip_prefix(&duplicated_prefix)
+                .unwrap_or(&rendered);
+            let _ = writeln!(stderr, "error[{}]: {}", code, rendered);
+            ExitCode::from(error_exit_code(&error))
         }
     }
 }

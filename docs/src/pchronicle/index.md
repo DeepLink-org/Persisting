@@ -1,48 +1,65 @@
 # pChronicle
 
-**pChronicle is Persisting's structured trajectory and Dataset data layer.** It
-discovers native and supported external Sources on local storage or S3,
-preserves canonical event facts where present and keeps Source origin visible,
-exposes normalized Run views, and supports bounded query, analysis, revision
-lineage, and format exchange.
+**pChronicle lets you browse, query, exchange, and serve Agent trajectory
+Datasets.** Use it with trajectories produced by Persisting or with supported
+external formats; pChronicle does not require pVisor to run.
 
-![pChronicle product boundary](../assets/diagrams/persisting/pchronicle-product.svg)
+Within Persisting's model-state-to-Agent-history story, pChronicle is the
+durable, queryable Agent-history layer.
 
-## What pChronicle owns
+## The one object you work with
 
-- Dataset and Source discovery;
-- immutable Catalog Snapshot membership and source version descriptions;
-- canonical event storage and terminal Run facts;
-- normalized `runs`, `steps`, and `tool_calls` query views;
-- import boundaries for ATIF, ACTF, and OpenAI Messages;
-- export boundaries for those formats and Storyline JSON;
-- AgenticMD as a non-authoritative human-readable projection;
-- revision lineage for derived data.
+A **Dataset** is the single object operated on by pChronicle. It is a collection
+of Agent trajectory data that can be inspected, queried, analyzed, imported,
+exported, or served.
 
-pChronicle does not execute or schedule Agents. Its inputs include canonical
-runtime-event Sources and pinned local or S3 ATIF, ACTF, OpenAI Messages, and
-Storyline Sources. External Sources are normalized directly; they do not first
-become canonical runtime events.
+A Dataset can be:
 
-## Ask the first question
+- a local directory or file (`./local/path`);
+- an object-store URI prefix (`s3://bucket/prefix`);
+- a user alias that points to either location (`@alias-name`).
+
+pChronicle discovers and normalizes the supported data inside that location.
+You do not need to understand its internal files or storage layout before using
+the CLI.
+
+## Start here
+
+Try the built-in walkthrough without preparing any data:
 
 ```bash
 pchronicle onboard
-pchronicle onboard query
 ```
 
-These installed-product walkthroughs create temporary example Datasets and do
-not require a source checkout.
+Or inspect and query an existing Dataset:
 
-## Read pChronicle by purpose
+```bash
+pchronicle ls ./trajectory-data
+pchronicle analysis overview ./trajectory-data
+pchronicle query ./trajectory-data \
+  --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
+```
 
-| Goal | Section |
+## Choose a task
+
+| I want to... | Start with |
 | --- | --- |
-| Query the first Dataset | [Get Started](get-started.md) |
-| Understand Dataset, Source, events, and projections | [Concepts](concepts/index.md) |
-| Follow common trajectory data workflows | [Guides](guides/index.md) |
-| Inspect storage and catalog mechanisms | [Design](design/index.md) |
-| Look up commands, schemas, and formats | [Reference](reference/index.md) |
+| Inspect a Dataset | `pchronicle ls DATASET` or `pchronicle status DATASET` |
+| Run a common report | `pchronicle analysis overview DATASET` |
+| Ask a custom SQL question | `pchronicle query DATASET --sql SQL` |
+| Give a Dataset a short name | `pchronicle alias add NAME DATASET` |
+| Import or export trajectories | `pchronicle import` or `pchronicle export` |
+| Analyze with Codex or Claude | `pchronicle agent codex DATASET` |
+| Open the local read-only UI and API | `pchronicle serve DATASET` |
 
-For Persisting-governed capture through pVisor's configured Gateway and
-lifecycle-event path, begin with [pVisor](../pvisor/index.md).
+pChronicle reads and organizes trajectory data. It does not execute or schedule
+Agents. To run an Agent in a controlled workspace, start with
+[pVisor](../pvisor/index.md).
+
+## Keep reading
+
+- [Explore your first Dataset](get-started.md)
+- [Follow common workflows](guides/index.md)
+- [Look up the complete CLI](reference/cli.md)
+- [Understand the data model](concepts/index.md)
+- [Inspect storage and catalog design](design/index.md)

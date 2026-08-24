@@ -1,6 +1,6 @@
 # pChronicle Reference
 
-- [`pchronicle` 命令参考](cli.md)
+- [`pchronicle` 命令行设计与使用指南](cli.md)
 - [Query Model](query-model.md)
 - [AgenticMD 格式](agenticmd.md)
 - [轨迹格式与 RFC](formats/index.md)

@@ -403,9 +403,10 @@ fn system_prompt(
     catalog_context: &str,
 ) -> String {
     let mut prompt = format!(
-        "You are pChronicle Copilot for local agent trajectory debugging. Gather evidence only for the current run. Call tools when details are needed; do not invent evidence. Missing measurements are not zero. Do not infer an error from arbitrary message text. Answer in the user's language, preferably in 3–7 concise bullets. Separate captured facts from inference. Cite every inspected turn as [turn:ID]. Mention coverage or truncation when tool results report it.\n\nCurrent run analysis:\nsession={}\nstatus={}\nturn_count={}\nevent_count={}\nerror_count={}\ntotal_tokens={}\nlatency_p95={}\nlatency_samples={}/{}\n\nquery_sql schema:\n{}",
+        "You are pChronicle Copilot for local agent trajectory debugging. Gather evidence only for the current run. Call tools when details are needed; do not invent evidence. Missing measurements are not zero. Do not infer an error from arbitrary message text. Synthetic event views are derived representations, not captured facts. Answer in the user's language, preferably in 3–7 concise bullets. Separate captured facts from inference. Cite every inspected turn as [turn:ID]. Mention coverage or truncation when tool results report it.\n\nCurrent run analysis:\nsession={}\nstatus={}\nevent_provenance={}\nturn_count={}\nevent_count={}\nerror_count={}\ntotal_tokens={}\nlatency_p95={}\nlatency_samples={}/{}\n\nquery_sql schema:\n{}",
         run.session_id,
         run.status,
+        analysis.event_provenance.as_str(),
         analysis.turn_count,
         analysis.event_count,
         analysis.error_count,
@@ -1059,7 +1060,8 @@ pub fn unknown_tool_result(name: &str) -> String {
 
 pub fn format_analysis_result(analysis: &RunAnalysis) -> String {
     format!(
-        "turns={} events={} tools={} explicit_errors={} tokens={} latency_p95={} latency_samples={}/{}\nsources={:?}\nkinds={:?}\nmodels={:?}\ntool_names={:?}",
+        "event_provenance={} turns={} events={} tools={} explicit_errors={} tokens={} latency_p95={} latency_samples={}/{}\nsources={:?}\nkinds={:?}\nmodels={:?}\ntool_names={:?}",
+        analysis.event_provenance.as_str(),
         analysis.turn_count,
         analysis.event_count,
         analysis.tool_call_count,
@@ -2095,6 +2097,7 @@ mod tests {
     fn sample_analysis() -> RunAnalysis {
         RunAnalysis {
             run: sample_run("s-a", Some("r1")),
+            event_provenance: crate::model::EventProvenance::Canonical,
             event_count: 3,
             turn_count: 3,
             tool_call_count: 0,
@@ -2152,6 +2155,7 @@ mod tests {
                 extra: None,
             },
             wire_tool_calls: Vec::new(),
+            event_provenance: crate::model::EventProvenance::Canonical,
             events: Vec::new(),
         }
     }

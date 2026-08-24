@@ -1,7 +1,7 @@
 # Codex / Claude Code 会话接入 pChronicle
 
 日期：2026-08-23
-状态：待审
+状态：已实现；命令示例已同步到 canonical CLI
 范围：`persisting-pchronicle` 文档格式探测与解码、本地 JSONL 文件源、`pchronicle import` / `query` / `ls` / `analysis` / `status`
 非目标：Codex/Claude 回写、专用 CLI flag、默认 Warehouse、监听 `~/.codex`、把 subagent 合并进父 session、RFC 级往返契约
 
@@ -12,13 +12,13 @@ Codex 与 Claude Code 的本地 JSONL 会话，登记为 **decode-only** 的 `Do
 两条入口共用这一套解码器，地位相同：
 
 ```bash
-pchronicle query ~/.codex/sessions 'SELECT COUNT(*) AS runs FROM dataset.runs'
-pchronicle import --from ~/.codex/sessions --output ./codex-ds
+pchronicle query ~/.codex/sessions --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
+pchronicle import --from ~/.codex/sessions --to ./codex-ds
 ```
 
 ```bash
-pchronicle query ~/.claude/projects 'SELECT COUNT(*) AS runs FROM dataset.runs'
-pchronicle import --from ~/.claude/projects --output ./claude-ds
+pchronicle query ~/.claude/projects --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
+pchronicle import --from ~/.claude/projects --to ./claude-ds
 ```
 
 `ls` / `status` / `analysis` 对同一路径同样有效。不把其中一条标成主路径或降级路径。
@@ -29,8 +29,8 @@ pchronicle import --from ~/.claude/projects --output ./claude-ds
 
 - `DocumentFormat::Codex`（`codex`）
 - `DocumentFormat::ClaudeCode`（`claude-code`）
-- CLI `--format codex` / `--format claude-code`
-- `encode_json_storylines` 与 `export --format codex|claude-code` **拒绝**（fail closed）
+- CLI `--input-format codex` / `--input-format claude-code`
+- `encode_json_storylines` 与 `export --output-format codex|claude-code` **拒绝**（fail closed）
 - 未映射事件进 `unknown_fields`，不承诺以后能 roundtrip
 
 ## 2. 架构
@@ -198,16 +198,16 @@ Query 直开 `~/.codex/sessions` 时：strict 发现策略下，无法解码的�
 手工验收（实现者本机有会话时）：
 
 ```bash
-pchronicle query ~/.codex/sessions 'SELECT COUNT(*) AS runs FROM dataset.runs'
+pchronicle query ~/.codex/sessions --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
 pchronicle query ~/.codex/sessions \
-  'SELECT session_id, COUNT(*) AS tool_calls FROM dataset.tool_calls GROUP BY session_id LIMIT 5'
+  --sql 'SELECT session_id, COUNT(*) AS tool_calls FROM dataset.tool_calls GROUP BY session_id LIMIT 5'
 pchronicle ls ~/.codex/sessions
 pchronicle analysis overview ~/.codex/sessions
 
-pchronicle import --from ~/.codex/sessions --output ./codex-ds
-pchronicle query ./codex-ds 'SELECT COUNT(*) AS runs FROM dataset.runs'
+pchronicle import --from ~/.codex/sessions --to ./codex-ds
+pchronicle query ./codex-ds --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
 
-pchronicle export --from ./codex-ds --output /tmp/x.json --format codex
+pchronicle export --from ./codex-ds --to /tmp/x.json --output-format codex
 # 必须失败
 ```
 

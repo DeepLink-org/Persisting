@@ -1,7 +1,7 @@
 # Python API 参考
 
-Python wheel 提供持久化 Queue 和采样 API。pVisor、pPilot 和 pChronicle
-等 Agent 运行时能力由同一个平台 wheel 携带的原生 CLI 程序提供。
+Python wheel 提供持久化 Queue 和采样 API。当前 Agent 运行时与历史能力由同一个平台
+wheel 携带的原生 CLI 程序提供。
 
 | 模块 | 用途 | 状态 |
 |---|---|---|

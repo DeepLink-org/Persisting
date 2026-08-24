@@ -243,8 +243,8 @@ fn command_tree_contains_the_product_commands() {
     assert_eq!(
         names,
         [
-            "onboard", "default", "ls", "status", "query", "analysis", "agent", "find", "import",
-            "export", "echo", "serve",
+            "onboard", "default", "alias", "ls", "status", "query", "analysis", "agent", "find",
+            "import", "export", "echo", "dev", "serve",
         ]
     );
     let ls = command
@@ -266,6 +266,183 @@ fn command_tree_contains_the_product_commands() {
         .to_string()
         .contains("squash into one Storyline Lance Store at the Dataset root"));
     assert!(Cli::try_parse_from(["pchronicle", "project", "status"]).is_err());
+}
+
+#[test]
+fn canonical_parser_surface_matches_the_cli_guide() -> Result<()> {
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        "config.toml",
+        "--log-level",
+        "debug",
+        "query",
+        "./dataset",
+        "--sql",
+        "SELECT 1",
+        "--timeout",
+        "2m",
+        "--max-output-bytes",
+        "8MiB",
+    ])?;
+    assert_eq!(cli.config, Some(PathBuf::from("config.toml")));
+    assert_eq!(cli.log_level, LogLevel::Debug);
+    let Command::Query(query) = cli.command else {
+        panic!("expected query command")
+    };
+    assert_eq!(query.dataset_uri.as_deref(), Some("./dataset"));
+    assert_eq!(query.sql_option.as_deref(), Some("SELECT 1"));
+    assert_eq!(query.timeout_seconds, 120);
+    assert_eq!(query.max_output_bytes, 8 * 1024 * 1024);
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "query",
+        "--mount",
+        "live=./live",
+        "--mount",
+        "archive=@archive",
+        "--file",
+        "report.sql",
+    ])?;
+    let Command::Query(query) = cli.command else {
+        panic!("expected query command")
+    };
+    assert_eq!(query.datasets.len(), 2);
+    assert_eq!(query.file.as_deref(), Some("report.sql"));
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "-f",
+        "-",
+        "-t",
+        "./imported",
+        "-i",
+        "atif",
+        "-o",
+        "preserve",
+    ])?;
+    let Command::Import(import) = cli.command else {
+        panic!("expected import command")
+    };
+    assert_eq!(import.output.as_deref(), Some("./imported"));
+    assert_eq!(import.format, ExchangeFormat::Atif);
+    assert_eq!(import.output_format, Some(ImportOutputFormat::Preserve));
+
+    assert!(Cli::try_parse_from(["pchronicle", "export", "-t", "-", "-o", "storyline"]).is_err());
+    assert!(Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "--listen",
+        "127.0.0.1:8080",
+        "--gateway-config",
+        "gateway.toml",
+        "--gateway-dataset",
+        "evals",
+        "evals=./dataset"
+    ])
+    .is_ok());
+    Ok(())
+}
+
+#[tokio::test]
+async fn alias_lifecycle_resolves_dataset_references_without_moving_data() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let config = temporary.path().join("config.toml");
+    let config_arg = config.to_string_lossy().into_owned();
+    let first = temporary.path().join("first");
+    let second = temporary.path().join("second");
+    fs::create_dir_all(&first)?;
+    fs::create_dir_all(&second)?;
+    let first_arg = first.to_string_lossy().into_owned();
+    let second_arg = second.to_string_lossy().into_owned();
+
+    for arguments in [
+        vec!["-c", &config_arg, "alias", "add", "prod", &first_arg],
+        vec!["-c", &config_arg, "alias", "add", "archive", &second_arg],
+    ] {
+        let cli =
+            Cli::try_parse_from(std::iter::once("pchronicle").chain(arguments.iter().copied()))?;
+        run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+    }
+
+    assert_eq!(
+        resolve_dataset_uri(Some("@prod"), Some(&config))?,
+        fs::canonicalize(&first)?.to_string_lossy()
+    );
+    assert_eq!(
+        resolve_dataset_uri(Some("@archive"), Some(&config))?,
+        fs::canonicalize(&second)?.to_string_lossy()
+    );
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "list",
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let aliases: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(aliases["schema_version"], "pchronicle-aliases/v1");
+    assert_eq!(aliases["aliases"][0]["name"], "archive");
+    assert_eq!(aliases["aliases"][1]["name"], "prod");
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "rename",
+        "prod",
+        "production",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+    assert!(resolve_dataset_uri(Some("@prod"), Some(&config)).is_err());
+    assert!(resolve_dataset_uri(Some("@production/.."), Some(&config)).is_err());
+    assert!(first.is_dir());
+    Ok(())
+}
+
+#[tokio::test]
+async fn log_level_changes_diagnostics_without_changing_results() -> Result<()> {
+    let dataset = atif_fixture().to_string_lossy().into_owned();
+    let info = Cli::try_parse_from([
+        "pchronicle",
+        "status",
+        &dataset,
+        "--format",
+        "json",
+        "--log-level",
+        "info",
+    ])?;
+    let error = Cli::try_parse_from([
+        "pchronicle",
+        "status",
+        &dataset,
+        "--format",
+        "json",
+        "--log-level",
+        "error",
+    ])?;
+    let mut info_stdout = Vec::new();
+    let mut info_stderr = Vec::new();
+    run(info, false, &mut info_stdout, &mut info_stderr).await?;
+    let mut error_stdout = Vec::new();
+    let mut error_stderr = Vec::new();
+    run(error, false, &mut error_stdout, &mut error_stderr).await?;
+    let mut info_result: Value = serde_json::from_slice(&info_stdout)?;
+    let mut error_result: Value = serde_json::from_slice(&error_stdout)?;
+    info_result.as_object_mut().unwrap().remove("created_at");
+    error_result.as_object_mut().unwrap().remove("created_at");
+    assert_eq!(info_result, error_result);
+    assert!(!info_stderr.is_empty());
+    assert!(error_stderr.is_empty());
+    Ok(())
 }
 
 #[tokio::test]
@@ -747,14 +924,7 @@ async fn status_table_marks_counts_as_exact() -> Result<()> {
 
 #[tokio::test]
 async fn status_rejects_zero_timeout() -> Result<()> {
-    let cli = Cli::try_parse_from(["pchronicle", "status", ".", "--timeout-seconds", "0"])?;
-    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
-        .await
-        .unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "--timeout-seconds must be greater than zero"
-    );
+    assert!(Cli::try_parse_from(["pchronicle", "status", ".", "--timeout", "0s"]).is_err());
     Ok(())
 }
 
@@ -939,7 +1109,7 @@ async fn query_rejects_malformed_named_dataset_mounts() -> Result<()> {
     let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("NAME=URI"));
+    assert!(error.to_string().contains("NAME=DATASET"));
     Ok(())
 }
 
@@ -1756,6 +1926,81 @@ async fn import_storyline_output_writes_one_root_lance_store() -> Result<()> {
     assert!(output.join("objects.lance").is_dir());
     assert!(!output.join("session_steps.json").exists());
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_object_store_output_requires_storyline_format() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("one.json");
+    fs::write(
+        &input,
+        serde_json::to_vec(&atif_identity_document("document-one", "session-one"))?,
+    )?;
+
+    for extra in [vec![], vec!["--output-format", "preserve"]] {
+        let mut args = vec![
+            "pchronicle",
+            "import",
+            "--from",
+            input.to_str().unwrap(),
+            "--output",
+            "s3://my-bucket/prefix",
+        ];
+        args.extend(extra);
+        let cli = Cli::try_parse_from(args)?;
+        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("object-store import requires --output-format storyline"),
+            "unexpected import error: {message}"
+        );
+        assert!(
+            !message.contains("only local output paths"),
+            "object-store output still rejected as local-only: {message}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn import_output_normalizes_object_store_uri() -> Result<()> {
+    let location = DatasetLocation::parse("s3://my-bucket/prefix/")?.into_create_target()?;
+    assert!(location.is_object_store());
+    assert_eq!(location.as_str(), "s3://my-bucket/prefix");
+    let error = DatasetLocation::parse("s3://user:secret@my-bucket/prefix")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("must not contain embedded credentials"),
+        "{error}"
+    );
+    let error = DatasetLocation::parse("s3://dd/data/")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must be 3-63 characters"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_storyline_output_query_uses_squashed_source() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let output = temp.path().join("dataset");
+    let input = example_source("openai-messages");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+
     let cli = Cli::try_parse_from([
         "pchronicle",
         "query",
@@ -2466,7 +2711,7 @@ async fn export_rejects_decode_only_session_formats() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let output = temp.path().join("out.json");
     for format in ["codex", "claude-code"] {
-        let cli = Cli::try_parse_from([
+        assert!(Cli::try_parse_from([
             "pchronicle",
             "export",
             "--from",
@@ -2475,14 +2720,8 @@ async fn export_rejects_decode_only_session_formats() -> Result<()> {
             output.to_str().unwrap(),
             "--format",
             format,
-        ])?;
-        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
-            .await
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("decode-only"),
-            "format={format}: {error:#}"
-        );
+        ])
+        .is_err());
     }
     Ok(())
 }
@@ -2497,10 +2736,9 @@ async fn import_reads_a_bounded_explicit_stdin_stream() -> Result<()> {
         "import",
         "--from",
         "-",
-        "--stream",
-        "--format",
+        "--input-format",
         "atif",
-        "--output",
+        "--to",
         output.to_str().unwrap(),
         "--max-input-bytes",
         &input.len().to_string(),
@@ -2512,27 +2750,14 @@ async fn import_reads_a_bounded_explicit_stdin_stream() -> Result<()> {
     assert_eq!(response["trajectories"], 1);
     assert_eq!(fs::read(output.join("trajectories.atif.json"))?, input);
 
-    for args in [
-        vec![
-            "pchronicle",
-            "import",
-            "--from",
-            "-",
-            "--output",
-            temp.path().join("missing-stream").to_str().unwrap(),
-            "--format",
-            "atif",
-        ],
-        vec![
-            "pchronicle",
-            "import",
-            "--from",
-            "-",
-            "--stream",
-            "--output",
-            temp.path().join("missing-format").to_str().unwrap(),
-        ],
-    ] {
+    for args in [vec![
+        "pchronicle",
+        "import",
+        "--from",
+        "-",
+        "--to",
+        temp.path().join("missing-format").to_str().unwrap(),
+    ]] {
         let cli = Cli::try_parse_from(args)?;
         let mut stdin = input.as_slice();
         assert!(
@@ -2978,20 +3203,9 @@ async fn export_validates_stream_filters_and_strict_conversion() -> Result<()> {
             "export",
             "--from",
             example_dataset("atif").to_str().unwrap(),
-            "--output",
+            "--to",
             "-",
-            "--format",
-            "atif",
-        ],
-        vec![
-            "pchronicle",
-            "export",
-            "--from",
-            example_dataset("atif").to_str().unwrap(),
-            "--output",
-            "-",
-            "--stream",
-            "--format",
+            "--output-format",
             "storyline",
             "--strict",
         ],
@@ -3000,10 +3214,9 @@ async fn export_validates_stream_filters_and_strict_conversion() -> Result<()> {
             "export",
             "--from",
             example_dataset("atif").to_str().unwrap(),
-            "--output",
+            "--to",
             "-",
-            "--stream",
-            "--format",
+            "--output-format",
             "atif",
             "--where",
             "DELETE FROM dataset.runs",
@@ -3155,6 +3368,7 @@ fn serve_args_with_storage(storage: Vec<String>) -> ServeArgs {
     ServeArgs {
         config: None,
         storage,
+        positional_storage: Vec::new(),
         listen: None,
         control: None,
         open: false,
@@ -3483,13 +3697,13 @@ fn serve_cli_requires_one_dataset_source_and_an_explicit_service() -> Result<()>
             "serve",
             "--storage",
             "/tmp/data",
-            "--gateway",
+            "--gateway-config",
             "gateway.toml",
         ],
         vec![
             "pchronicle",
             "serve",
-            "--config",
+            "--warehouse-config",
             "warehouse.toml",
             "--listen",
             "127.0.0.1:0",
@@ -3505,7 +3719,36 @@ fn serve_cli_requires_one_dataset_source_and_an_explicit_service() -> Result<()>
             "127.0.0.1:0",
         ],
         vec!["pchronicle", "serve", "--storage", "/tmp/data"],
-        vec!["pchronicle", "serve", "--config", "warehouse.toml"],
+        vec![
+            "pchronicle",
+            "serve",
+            "--warehouse-config",
+            "warehouse.toml",
+        ],
+        vec!["pchronicle", "serve", "s3://my-bucket/prefix"],
+        vec![
+            "pchronicle",
+            "serve",
+            "s3://my-bucket/prefix",
+            "--listen",
+            "127.0.0.1:0",
+        ],
+        vec![
+            "pchronicle",
+            "serve",
+            "s3://my-bucket/prefix",
+            "--control",
+            "127.0.0.1:0",
+        ],
+        vec![
+            "pchronicle",
+            "serve",
+            "--storage",
+            "./tmp",
+            "s3://my-bucket/other",
+            "--listen",
+            "127.0.0.1:0",
+        ],
     ] {
         assert!(
             Cli::try_parse_from(arguments.clone()).is_ok(),
@@ -3519,7 +3762,7 @@ fn serve_cli_requires_one_dataset_source_and_an_explicit_service() -> Result<()>
             "serve",
             "--storage",
             "a",
-            "--config",
+            "--warehouse-config",
             "b",
             "--listen",
             "127.0.0.1:0",
@@ -3527,7 +3770,7 @@ fn serve_cli_requires_one_dataset_source_and_an_explicit_service() -> Result<()>
         vec![
             "pchronicle",
             "serve",
-            "--config",
+            "--warehouse-config",
             "warehouse.toml",
             "--control",
             "127.0.0.1:0",
@@ -3547,6 +3790,20 @@ fn serve_cli_requires_one_dataset_source_and_an_explicit_service() -> Result<()>
             "invalid serve arguments accepted: {arguments:?}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn serve_positional_uri_is_equivalent_to_storage() -> Result<()> {
+    let cli = Cli::try_parse_from(["pchronicle", "serve", "s3://my-bucket/prefix"])?;
+    let Command::Serve(args) = cli.command else {
+        unreachable!("serve command parsed as another variant")
+    };
+    let config = resolve_serve_config(&args)?;
+    assert_eq!(config.datasets.len(), 1);
+    assert_eq!(config.datasets[0].name, "default");
+    assert_eq!(config.datasets[0].uri, "s3://my-bucket/prefix");
+    assert_eq!(config.default_dataset.as_deref(), Some("default"));
     Ok(())
 }
 
@@ -3593,9 +3850,9 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
     let cli = Cli::try_parse_from([
         "pchronicle",
         "serve",
-        "--config",
+        "--warehouse-config",
         "warehouse.toml",
-        "--gateway",
+        "--gateway-config",
         "gateway.toml",
         "--gateway-dataset",
         "captures",
@@ -3604,7 +3861,7 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
         "--gateway-object-store-manifest-mode",
         "single-writer",
         "--gateway-stream-markdown",
-        "--debug",
+        "--gateway-debug",
     ])?;
     let Command::Serve(args) = cli.command else {
         unreachable!("serve command parsed as another variant")
@@ -3622,7 +3879,7 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
     assert!(Cli::try_parse_from([
         "pchronicle",
         "serve",
-        "--config",
+        "--warehouse-config",
         "warehouse.toml",
         "--gateway-dataset",
         "captures",
@@ -3631,16 +3888,16 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
     assert!(Cli::try_parse_from([
         "pchronicle",
         "serve",
-        "--config",
+        "--warehouse-config",
         "warehouse.toml",
-        "--debug",
+        "--gateway-debug",
     ])
     .is_err());
 
     let cli = Cli::try_parse_from([
         "pchronicle",
         "serve",
-        "--config",
+        "--warehouse-config",
         "warehouse.toml",
         "--gateway-config",
         "gateway.toml",

@@ -3,7 +3,7 @@
 Standalone command-line interface for onboarding, browsing, querying, importing,
 exporting, and serving pChronicle trajectory Datasets.
 
-The current implementation provides `onboard`, `default`, `ls`/`list`, `status`,
+The current implementation provides `onboard`, `default`, `alias`, `ls`/`list`, `status`,
 bounded read-only `query`, built-in `analysis`, assisted `agent` sessions,
 Source-local `find`, create-only `import`, complete-trajectory `export`, and
 loopback-only `serve`. Import and export support ATIF, OpenAI Messages, ACTF,
@@ -11,9 +11,9 @@ and Storyline JSON.
 
 ## Orchestrator control plane
 
-`pchronicle serve --storage URI --control 127.0.0.1:0` starts the write-capable
-storage control plane used by pPilot and pVisor. Repeat `--storage` to mount
-several read-only Datasets; `--control` still requires a Dataset named
+`pchronicle serve --control 127.0.0.1:0 URI` starts the write-capable
+storage control plane used by pPilot and pVisor. Pass multiple positional
+`[NAME=]DATASET` values to mount several read-only Datasets; `--control` still requires a Dataset named
 `default`. It owns Run lease acquisition
 and renewal, fencing, terminal commits, Attempt registry access, and trajectory
 append. The process publishes one structured readiness record through stdout,
@@ -50,31 +50,31 @@ stdout is redirected or piped, it emits the original Markdown without ANSI
 escapes. `NO_COLOR` and `TERM=dumb` disable ANSI styling. The built-in example
 uses temporary ATIF, ACTF, and OpenAI Messages Datasets. The Warehouse and
 import/export exercise uses isolated settings. All are removed when the command
-exits and do not read or modify the user's default Warehouse or settings.
+exits and do not read or modify the user's default Dataset or configuration.
 
-## Local Warehouse
+## Default Dataset
 
-Set one local directory as the default Warehouse once:
+Set one local directory as the default Dataset once:
 
 ```bash
-pchronicle default ./trajectory-data
-pchronicle default
+pchronicle default set ./trajectory-data
+pchronicle default show
 ```
 
 The first command creates the directory when needed, stores its normalized
-absolute path in the user settings, and prints it. The second command reports
+absolute path in the user config, and prints it. The second command reports
 the current value. Once configured, the path can be omitted from local read
 commands:
 
 ```bash
 pchronicle ls
 pchronicle status
-pchronicle query "SELECT * FROM dataset.runs"
+pchronicle query --sql "SELECT * FROM dataset.runs"
 pchronicle find --session-id session-42
-pchronicle export --output runs.json --format storyline
+pchronicle export --from ./trajectory-data --to runs.json --output-format storyline
 ```
 
-Built-in analyses use the same default Warehouse and normalized logical tables:
+Built-in analyses use the same default Dataset and normalized logical tables:
 
 ```bash
 pchronicle analysis overview
@@ -100,17 +100,17 @@ Launch an interactive coding Agent with a pChronicle analysis prompt and an
 ephemeral Dataset skill:
 
 ```bash
-pchronicle agent --dataset ./trajectory-data codex
-pchronicle agent --dataset s3://bucket/evals claude
-pchronicle agent --dataset ./trajectory-data \
-  --ask "Compare successful and failed tool calls" codex
-pchronicle agent --dataset ./trajectory-data \
-  --ask "Compare model latency" --no-overview claude
-pchronicle agent --dataset ./trajectory-data --dry-run codex
+pchronicle agent codex ./trajectory-data
+pchronicle agent claude s3://bucket/evals
+pchronicle agent codex ./trajectory-data \
+  --ask "Compare successful and failed tool calls"
+pchronicle agent claude ./trajectory-data \
+  --ask "Compare model latency" --no-overview
+pchronicle agent codex ./trajectory-data --dry-run
 pchronicle agent codex
 ```
 
-When `--dataset` is omitted, `agent` uses the configured default Warehouse.
+When the Dataset position is omitted, `agent` uses the configured default Dataset.
 Local paths are normalized before launch. The child process inherits the
 caller's working directory, terminal, authentication, and unrelated Agent
 settings; the Dataset is not made the working directory. Codex receives a
@@ -147,11 +147,10 @@ injection remains available. A forcibly terminated Codex launcher can leave a
 generic `pchronicle-agent-*` skill directory under the Codex skill root; it can
 be removed once no matching session is running.
 
-File imports can also omit `--output`; the CLI derives a create-only Dataset
-subdirectory under the default Warehouse from the input file name:
+Canonical imports name both ends explicitly:
 
 ```bash
-pchronicle import --from ./training.json
+pchronicle import --from ./training.json --to ./trajectory-data/training
 ```
 
 Directory inputs recursively import `.json`, `.jsonl`, and `.ndjson` Sources
@@ -170,35 +169,27 @@ object-store URIs, never mutates the source, and refuses an existing target.
 Its response reports `fact_rows` and omits `input_bytes`; explicit
 `--output-format preserve` is invalid for canonical events.
 
-`serve --storage URI` converges deterministic sibling Storyline projections
-before readiness and maintains them as canonical events are appended. Repeated
-`--storage` values each become a Dataset mount. Runtime
+`serve [NAME=]DATASET...` converges deterministic sibling Storyline projections
+before readiness and maintains them as canonical events are appended. Each
+positional Dataset becomes a mount. Runtime
 failures are retried without blocking durable writes. `status URI --format
 json` reports each projection's state and watermark.
 
 An explicit Dataset URI still takes precedence. This basic Warehouse is just a
 recursive local Dataset root: it has no server, authentication, background
-process, or hidden database. Use global `--settings FILE` or the
-`PCHRONICLE_SETTINGS` environment variable to isolate its settings in tests or
+process, or hidden database. Use global `--config FILE` or the
+`PCHRONICLE_CONFIG` environment variable to isolate its config in tests or
 automation.
 
-Runtime errors are concise by default. Pass the global `--debug-errors` flag
+Runtime errors are concise by default. Pass global `--log-level debug`
 to include the complete source chain for local diagnosis; successful list and
 status output always uses fixed source-status messages and never includes those
 diagnostics.
 
-The read-only server uses a separate static mount configuration:
-
-```toml
-[[datasets]]
-name = "evals"
-uri = "../data/atif"
-```
-
-Use `--listen 127.0.0.1:8080` to select the local address and `--open` to open
-the UI after the listener is ready. Public bind addresses are rejected because
-this local Warehouse surface does not provide authentication. Relative local
-Dataset paths are resolved from the directory containing `warehouse.toml`.
+Pass one or more positional `[NAME=]DATASET` mounts. Use
+`--listen 127.0.0.1:8080` to select the local address and `--open` to open the
+UI after the listener is ready. Public bind addresses are rejected because
+this local Warehouse surface does not provide authentication.
 
 ### Embedded Gateway
 
@@ -206,10 +197,11 @@ Pass an existing Gateway TOML file to make `serve` forward LLM requests and
 capture canonical request/response events into one statically mounted Dataset:
 
 ```bash
-pchronicle serve --config warehouse.toml \
+pchronicle serve \
   --listen 127.0.0.1:8080 \
-  --gateway gateway.toml \
-  --gateway-dataset evals
+  --gateway-config gateway.toml \
+  --gateway-dataset evals \
+  evals=../data/atif
 ```
 
 `gateway.toml` remains the single source for proxy/admin listeners, model
@@ -220,7 +212,7 @@ addresses. If the Warehouse has one Dataset, or declares `default_dataset`,
 optional projection; local Datasets use their own root by default.
 `--gateway-stream-markdown` also maintains AgenticMD. Canonical Lance events
 are always written directly to the selected Dataset, never through the
-read-only Warehouse API. Add `--debug` (alias `--gateway-debug`) to mirror
+read-only Warehouse API. Add `--gateway-debug` to mirror
 Gateway dispatch and capture diagnostics directly to stderr; these diagnostics
 can include bounded request and response bodies.
 

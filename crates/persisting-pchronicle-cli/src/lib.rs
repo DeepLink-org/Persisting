@@ -14,7 +14,7 @@ use exchange::{run_export, run_import};
 use output::*;
 use settings::*;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::CString;
 use std::fmt::Write as _;
 use std::io::{Error as IoError, Read, Write};
@@ -37,14 +37,13 @@ use persisting_pchronicle::query::ChronicleQueryEngine;
 use persisting_pchronicle::storage::{
     automatic_projection_inventory, build_storyline_projection,
     inspect_automatic_storyline_projection, probe_canonical_event_store,
-    storyline_projection_destination_exists, AutomaticProjectionInspection,
-    AutomaticProjectionState, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind,
-    CatalogSourceStatus, CatalogStorylineKey, DatasetCatalogSnapshot, DatasetMount,
-    DiscoveredSource, EventFactSnapshot, ObjectStoreManifestWriteMode, StorylineLanceStore,
-    StorylineProjectionBuildOutcome, DEFAULT_DATASET_NAME,
+    AutomaticProjectionInspection, AutomaticProjectionState, CatalogErrorPolicy,
+    CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
+    DatasetCatalogSnapshot, DatasetLocation, DatasetMount, DiscoveredSource, EventFactSnapshot,
+    ObjectStoreManifestWriteMode, StorylineLanceStore, StorylineProjectionBuildOutcome,
+    DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 use server::problem::BoundaryCode;
 
@@ -69,6 +68,27 @@ fn cli_boundary_error(code: BoundaryCode, message: impl Into<String>) -> anyhow:
     })
 }
 
+pub fn error_code(error: &anyhow::Error) -> &'static str {
+    error
+        .downcast_ref::<CliBoundaryError>()
+        .map(|error| error.code.as_str())
+        .unwrap_or("internal")
+}
+
+pub fn error_exit_code(error: &anyhow::Error) -> u8 {
+    match error
+        .downcast_ref::<CliBoundaryError>()
+        .map(|error| error.code)
+    {
+        Some(BoundaryCode::InvalidRequest | BoundaryCode::Unsupported) => 2,
+        Some(BoundaryCode::NotFound) => 3,
+        Some(BoundaryCode::Conflict) => 4,
+        Some(BoundaryCode::ResourceExhausted) => 5,
+        Some(BoundaryCode::Unavailable) => 6,
+        Some(BoundaryCode::Internal) | None => 1,
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "pchronicle",
@@ -76,12 +96,22 @@ fn cli_boundary_error(code: BoundaryCode, message: impl Into<String>) -> anyhow:
     about = "Learn, browse, query, and exchange Agent trajectory Datasets"
 )]
 pub struct Cli {
-    /// Override the pChronicle settings file (primarily for isolated environments).
-    #[arg(long, global = true, value_name = "FILE")]
-    settings: Option<PathBuf>,
+    /// Override the pChronicle user configuration file.
+    #[arg(
+        short = 'c',
+        long = "config",
+        global = true,
+        value_name = "FILE",
+        alias = "settings"
+    )]
+    config: Option<PathBuf>,
 
-    /// Show complete error source chains instead of concise errors.
-    #[arg(long, global = true)]
+    /// Control stderr diagnostics without changing command results.
+    #[arg(long, global = true, value_enum, default_value_t = LogLevel::Info)]
+    log_level: LogLevel,
+
+    /// Compatibility alias for --log-level debug.
+    #[arg(long, global = true, hide = true)]
     debug_errors: bool,
 
     #[command(subcommand)]
@@ -90,7 +120,69 @@ pub struct Cli {
 
 impl Cli {
     pub fn debug_errors(&self) -> bool {
-        self.debug_errors
+        self.debug_errors || self.log_level == LogLevel::Debug
+    }
+
+    pub fn log_level(&self) -> LogLevel {
+        self.log_level
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+}
+
+struct DiagnosticWriter<'a> {
+    level: LogLevel,
+    inner: &'a mut dyn Write,
+    pending: Vec<u8>,
+}
+
+impl<'a> DiagnosticWriter<'a> {
+    fn new(level: LogLevel, inner: &'a mut dyn Write) -> Self {
+        Self {
+            level,
+            inner,
+            pending: Vec::new(),
+        }
+    }
+
+    fn emit(&mut self, line: &[u8]) -> std::io::Result<()> {
+        let visible = match self.level {
+            LogLevel::Error => false,
+            LogLevel::Warn => {
+                let text = String::from_utf8_lossy(line).to_ascii_lowercase();
+                text.contains("warning") || text.starts_with("warn")
+            }
+            LogLevel::Info | LogLevel::Debug => true,
+        };
+        if visible {
+            self.inner.write_all(line)?;
+        }
+        Ok(())
+    }
+}
+
+impl Write for DiagnosticWriter<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.pending.extend_from_slice(buffer);
+        while let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
+            let line = self.pending.drain(..=end).collect::<Vec<_>>();
+            self.emit(&line)?;
+        }
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if !self.pending.is_empty() {
+            let line = std::mem::take(&mut self.pending);
+            self.emit(&line)?;
+        }
+        self.inner.flush()
     }
 }
 
@@ -98,8 +190,10 @@ impl Cli {
 enum Command {
     /// Learn the core pChronicle workflow with a guided Dataset walkthrough.
     Onboard(onboard::OnboardArgs),
-    /// Show or set the local default Warehouse directory.
+    /// Show, set, or clear the local default Dataset.
     Default(DefaultArgs),
+    /// Manage named Dataset aliases, similar to git remote.
+    Alias(AliasArgs),
     /// List trajectory Sources discovered under a Dataset URI.
     #[command(visible_alias = "list")]
     Ls(ListArgs),
@@ -118,14 +212,18 @@ enum Command {
     /// Export complete Trajectories to an exchange format.
     Export(ExportArgs),
     /// Run a deterministic local LLM upstream for Gateway testing.
+    #[command(hide = true)]
     Echo(EchoArgs),
+    /// Unstable developer tools.
+    #[command(hide = true)]
+    Dev(DevArgs),
     /// Run explicitly enabled Warehouse, Control, and Gateway services.
     Serve(ServeArgs),
 }
 
 #[derive(Debug, Args)]
 struct ListArgs {
-    /// Local path or object-store URI. Uses the default Warehouse when omitted.
+    /// Dataset path, URI, or alias. Uses the default Dataset when omitted.
     #[arg(value_name = "DATASET_URI")]
     dataset_uri: Option<String>,
 
@@ -151,15 +249,79 @@ struct ListArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
 struct DefaultArgs {
-    /// Local directory to use as the default Warehouse; created when absent.
-    #[arg(value_name = "DIRECTORY")]
-    directory: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<DefaultCommand>,
+
+    /// Compatibility form for `default set DIRECTORY`.
+    #[arg(value_name = "DIRECTORY", hide = true)]
+    legacy_directory: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+enum DefaultCommand {
+    /// Show the configured local default Dataset.
+    Show,
+    /// Set the local default Dataset, creating the directory when needed.
+    Set {
+        #[arg(value_name = "LOCAL_DATASET")]
+        dataset: String,
+    },
+    /// Clear the default without deleting Dataset data.
+    Clear,
+}
+
+#[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
+struct AliasArgs {
+    #[command(subcommand)]
+    command: Option<AliasCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+enum AliasCommand {
+    /// List configured aliases.
+    List {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
+        format: OutputFormat,
+    },
+    /// Add a new alias.
+    Add {
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(value_name = "DATASET")]
+        dataset: String,
+    },
+    /// Print an alias target.
+    GetUrl {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    /// Change an existing alias target.
+    SetUrl {
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(value_name = "DATASET")]
+        dataset: String,
+    },
+    /// Rename an existing alias.
+    Rename {
+        #[arg(value_name = "OLD")]
+        old: String,
+        #[arg(value_name = "NEW")]
+        new: String,
+    },
+    /// Remove an alias without deleting its Dataset.
+    Remove {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
 }
 
 #[derive(Debug, Args)]
 struct StatusArgs {
-    /// Local path or object-store URI. Uses the default Warehouse when omitted.
+    /// Dataset path, URI, or alias. Uses the default Dataset when omitted.
     #[arg(value_name = "DATASET_URI")]
     dataset_uri: Option<String>,
 
@@ -180,23 +342,31 @@ struct StatusArgs {
     max_entries: usize,
 
     /// Maximum time for trajectory count queries.
-    #[arg(long, default_value_t = 30)]
+    #[arg(long = "timeout", alias = "timeout-seconds", value_name = "DURATION", value_parser = parse_duration_seconds, default_value = "30s")]
     timeout_seconds: u64,
 }
 
 #[derive(Debug, Args)]
 struct QueryArgs {
-    /// Dataset URI, or SQL when using --dataset mounts.
-    #[arg(value_name = "DATASET_URI")]
+    /// Dataset to query. Uses the default Dataset when omitted.
+    #[arg(value_name = "DATASET")]
     dataset_uri: Option<String>,
 
-    /// Mount a named Dataset as NAME=URI. Repeat for cross-Dataset SQL.
-    #[arg(long = "dataset", value_name = "NAME=URI")]
+    /// Mount a named Dataset as NAME=DATASET. Repeat for cross-Dataset SQL.
+    #[arg(long = "mount", alias = "dataset", value_name = "NAME=DATASET")]
     datasets: Vec<String>,
 
-    /// One read-only SQL statement.
-    #[arg(value_name = "SQL")]
+    /// Compatibility positional SQL statement.
+    #[arg(value_name = "SQL", hide = true)]
     sql: Option<String>,
+
+    /// One read-only SQL statement.
+    #[arg(long = "sql", value_name = "SQL", conflicts_with_all = ["sql", "file"])]
+    sql_option: Option<String>,
+
+    /// Read one SQL statement from FILE, or from stdin with -.
+    #[arg(long, value_name = "FILE_OR_STDIN", conflicts_with_all = ["sql", "sql_option"])]
+    file: Option<String>,
 
     /// Output format. Auto uses a table on a terminal and JSONL when piped.
     #[arg(long, value_enum, default_value_t = QueryOutputFormat::Auto)]
@@ -206,16 +376,20 @@ struct QueryArgs {
     #[arg(short, long, value_name = "PATH_OR_STDOUT", default_value = "-")]
     output: String,
 
+    /// Replace an existing query output file atomically.
+    #[arg(long)]
+    overwrite: bool,
+
     /// Reject results containing more rows than this limit.
     #[arg(long, default_value_t = 100_000)]
     max_output_rows: u64,
 
     /// Reject intermediate or final encoded results larger than this many bytes.
-    #[arg(long, default_value_t = 64 * 1024 * 1024)]
+    #[arg(long, value_parser = parse_byte_size, default_value = "64MiB")]
     max_output_bytes: usize,
 
     /// Maximum time for SQL execution and result encoding.
-    #[arg(long, default_value_t = 30)]
+    #[arg(long = "timeout", alias = "timeout-seconds", value_name = "DURATION", value_parser = parse_duration_seconds, default_value = "30s")]
     timeout_seconds: u64,
 
     /// Maximum number of trajectory Sources to discover.
@@ -249,7 +423,7 @@ enum AnalysisCommand {
 
 #[derive(Debug, Args)]
 struct AnalysisOptions {
-    /// Local path or object-store URI. Uses the default Warehouse when omitted.
+    /// Dataset path, URI, or alias. Uses the default Dataset when omitted.
     #[arg(value_name = "DATASET_URI")]
     dataset_uri: Option<String>,
 
@@ -262,11 +436,11 @@ struct AnalysisOptions {
     limit: u64,
 
     /// Reject encoded results larger than this many bytes.
-    #[arg(long, default_value_t = 8 * 1024 * 1024)]
+    #[arg(long, value_parser = parse_byte_size, default_value = "8MiB")]
     max_output_bytes: usize,
 
     /// Maximum time for analysis execution and result encoding.
-    #[arg(long, default_value_t = 30)]
+    #[arg(long = "timeout", alias = "timeout-seconds", value_name = "DURATION", value_parser = parse_duration_seconds, default_value = "30s")]
     timeout_seconds: u64,
 
     /// Maximum number of trajectory Sources to discover.
@@ -286,7 +460,7 @@ struct AnalysisOptions {
         .args(["document_id", "run_id", "session_id"])
 ))]
 struct FindArgs {
-    /// Local path or object-store URI. Uses the default Warehouse when omitted.
+    /// Dataset path, URI, or alias. Uses the default Dataset when omitted.
     #[arg(value_name = "DATASET_URI")]
     dataset_uri: Option<String>,
 
@@ -319,11 +493,11 @@ struct FindArgs {
     max_results: usize,
 
     /// Reject intermediate or final encoded results larger than this many bytes.
-    #[arg(long, default_value_t = 8 * 1024 * 1024)]
+    #[arg(long, value_parser = parse_byte_size, default_value = "8MiB")]
     max_output_bytes: usize,
 
     /// Maximum time for the lookup query.
-    #[arg(long, default_value_t = 30)]
+    #[arg(long = "timeout", alias = "timeout-seconds", value_name = "DURATION", value_parser = parse_duration_seconds, default_value = "30s")]
     timeout_seconds: u64,
 
     /// Maximum number of trajectory Sources to discover.
@@ -369,6 +543,26 @@ impl std::fmt::Display for ExchangeFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ExportFormat {
+    Atif,
+    Actf,
+    #[value(name = "openai-messages")]
+    OpenaiMessages,
+    Storyline,
+}
+
+impl From<ExportFormat> for ExchangeFormat {
+    fn from(format: ExportFormat) -> Self {
+        match format {
+            ExportFormat::Atif => Self::Atif,
+            ExportFormat::Actf => Self::Actf,
+            ExportFormat::OpenaiMessages => Self::OpenaiMessages,
+            ExportFormat::Storyline => Self::Storyline,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ImportOutputFormat {
     /// Preserve each source document byte-for-byte.
     Preserve,
@@ -387,45 +581,50 @@ impl ImportOutputFormat {
 
 #[derive(Debug, Args)]
 struct ImportArgs {
-    /// Input trajectory file or directory, or - with --stream for stdin.
+    /// Input trajectory file or directory, or - for stdin.
     #[arg(short = 'f', long = "from", value_name = "PATH_OR_STDIN")]
     from: String,
 
-    /// New local Dataset directory. Defaults to a child of the default Warehouse.
-    #[arg(short, long, value_name = "NEW_DATASET_URI")]
+    /// New Dataset directory or object-store URI.
+    #[arg(short = 't', long = "to", alias = "output", value_name = "NEW_DATASET")]
     output: Option<String>,
 
     /// Input exchange format. Auto detects each regular file from name and content.
     /// Directory imports skip JSON that is not a known trajectory format.
-    #[arg(long, value_enum, default_value_t = ExchangeFormat::Auto)]
+    #[arg(short = 'i', long = "input-format", alias = "format", value_enum, default_value_t = ExchangeFormat::Auto)]
     format: ExchangeFormat,
 
     /// Physical Dataset output: preserve source files, or squash into one Storyline Lance Store at the Dataset root.
-    #[arg(long, value_enum)]
+    #[arg(short = 'o', long = "output-format", value_enum)]
     output_format: Option<ImportOutputFormat>,
 
-    /// Read a finite trajectory stream from stdin and publish only after EOF.
-    #[arg(long)]
+    /// Compatibility no-op; stdin is selected by --from -.
+    #[arg(long, hide = true)]
     stream: bool,
 
-    /// Optional per-Source byte limit. When omitted, input size is unbounded.
-    #[arg(long)]
+    /// Maximum bytes accepted from each Source, or from stdin in total.
+    #[arg(long, value_parser = parse_byte_size, default_value = "256MiB")]
     max_input_bytes: Option<usize>,
 }
 
 #[derive(Debug, Args)]
 struct ExportArgs {
-    /// Local path or object-store URI. Uses the default Warehouse when omitted.
-    #[arg(short = 'f', long = "from", value_name = "DATASET_URI")]
+    /// Dataset to export. This argument is always explicit.
+    #[arg(short = 'f', long = "from", value_name = "DATASET", required = true)]
     from: Option<String>,
 
-    /// New local file, or - for stdout.
-    #[arg(short, long, value_name = "PATH_OR_STDOUT")]
+    /// New local file, object-store URI, or - for stdout.
+    #[arg(
+        short = 't',
+        long = "to",
+        alias = "output",
+        value_name = "PATH_URI_OR_STDOUT"
+    )]
     output: String,
 
     /// Output exchange format.
-    #[arg(long, value_enum)]
-    format: ExchangeFormat,
+    #[arg(short = 'o', long = "output-format", alias = "format", value_enum)]
+    format: ExportFormat,
 
     /// Narrow export to one Dataset-relative Source.
     #[arg(long)]
@@ -451,12 +650,12 @@ struct ExportArgs {
     #[arg(long)]
     strict: bool,
 
-    /// Atomically replace an existing local output file.
+    /// Replace an existing output file or object.
     #[arg(long)]
     overwrite: bool,
 
     /// Write the finite export document to stdout; requires --output -.
-    #[arg(long)]
+    #[arg(long, hide = true)]
     stream: bool,
 
     /// Maximum number of complete Trajectories to export.
@@ -464,11 +663,11 @@ struct ExportArgs {
     max_trajectories: u64,
 
     /// Reject encoded output larger than this many bytes.
-    #[arg(long, default_value_t = 64 * 1024 * 1024)]
+    #[arg(long, value_parser = parse_byte_size, default_value = "64MiB")]
     max_output_bytes: usize,
 
     /// Maximum time for address selection and Storyline loading.
-    #[arg(long, default_value_t = 30)]
+    #[arg(long = "timeout", alias = "timeout-seconds", value_name = "DURATION", value_parser = parse_duration_seconds, default_value = "30s")]
     timeout_seconds: u64,
 
     /// Maximum number of trajectory Sources to discover.
@@ -482,10 +681,17 @@ struct ExportArgs {
 
 #[derive(Debug, Args)]
 #[command(
+    override_usage = "pchronicle serve [OPTIONS] <[NAME=]DATASET>...",
     group(
         ArgGroup::new("dataset_source")
             .required(true)
-            .args(["config", "storage"])
+            .multiple(true)
+            .args(["config", "storage", "positional_storage"])
+    ),
+    group(
+        ArgGroup::new("storage_source")
+            .multiple(true)
+            .args(["storage", "positional_storage"])
     ),
     group(
         ArgGroup::new("serve_component")
@@ -494,13 +700,22 @@ struct ExportArgs {
     )
 )]
 struct ServeArgs {
-    /// Static Warehouse configuration file.
-    #[arg(long, value_name = "FILE", conflicts_with = "storage")]
+    /// Compatibility: static Warehouse configuration file.
+    #[arg(
+        long = "warehouse-config",
+        value_name = "FILE",
+        hide = true,
+        conflicts_with_all = ["storage", "positional_storage"]
+    )]
     config: Option<PathBuf>,
 
-    /// Dataset URI and durable Control root. Repeatable; NAME=URI overrides the derived name.
-    #[arg(long, value_name = "URI", conflicts_with = "config")]
+    /// Compatibility: repeatable Dataset mount.
+    #[arg(long, value_name = "URI", conflicts_with = "config", hide = true)]
     storage: Vec<String>,
+
+    /// Dataset to serve; NAME=DATASET sets the mount name.
+    #[arg(value_name = "[NAME=]DATASET", conflicts_with = "config")]
+    positional_storage: Vec<String>,
 
     /// Loopback address for the read-only API and Web UI.
     /// Defaults to 127.0.0.1:0 when no other service is selected.
@@ -508,7 +723,7 @@ struct ServeArgs {
     listen: Option<SocketAddr>,
 
     /// Loopback address for the authenticated Control protocol.
-    #[arg(long, requires = "storage", conflicts_with = "config")]
+    #[arg(long, requires = "storage_source", conflicts_with = "config")]
     control: Option<SocketAddr>,
 
     /// Open the Web UI in the system browser after the listener is ready.
@@ -516,7 +731,7 @@ struct ServeArgs {
     open: bool,
 
     /// Enable the LLM Gateway with an existing Gateway TOML configuration.
-    #[arg(long, visible_alias = "gateway-config", value_name = "FILE")]
+    #[arg(long = "gateway-config", alias = "gateway", value_name = "FILE")]
     gateway: Option<PathBuf>,
 
     /// Mounted Dataset that receives Gateway capture events.
@@ -533,7 +748,8 @@ struct ServeArgs {
         value_enum,
         default_value_t,
         requires = "gateway",
-        value_name = "MODE"
+        value_name = "MODE",
+        hide = true
     )]
     gateway_object_store_manifest_mode: GatewayObjectStoreManifestMode,
 
@@ -542,7 +758,7 @@ struct ServeArgs {
     gateway_stream_markdown: bool,
 
     /// Print Gateway diagnostics, including bounded request/response bodies, to stderr.
-    #[arg(long, visible_alias = "gateway-debug", requires = "gateway")]
+    #[arg(long = "gateway-debug", alias = "debug", requires = "gateway")]
     debug: bool,
 }
 
@@ -555,6 +771,18 @@ struct EchoArgs {
     /// Encode echoed text directly or as Base64.
     #[arg(long, value_enum, default_value_t = EchoEncoding::Plain)]
     encoding: EchoEncoding,
+}
+
+#[derive(Debug, Args)]
+struct DevArgs {
+    #[command(subcommand)]
+    command: DevCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum DevCommand {
+    /// Run a deterministic local LLM upstream for Gateway tests.
+    Echo(EchoArgs),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
@@ -618,6 +846,59 @@ enum ErrorMode {
     Strict,
     #[default]
     Report,
+}
+
+fn parse_duration_seconds(value: &str) -> std::result::Result<u64, String> {
+    let value = value.trim();
+    let (number, multiplier) = if let Some(number) = value.strip_suffix("ms") {
+        let milliseconds = number
+            .parse::<u64>()
+            .map_err(|_| format!("invalid duration '{value}'"))?;
+        if milliseconds == 0 {
+            return Err("duration must be greater than zero".to_owned());
+        }
+        return Ok(milliseconds.div_ceil(1000));
+    } else if let Some(number) = value.strip_suffix('s') {
+        (number, 1)
+    } else if let Some(number) = value.strip_suffix('m') {
+        (number, 60)
+    } else if let Some(number) = value.strip_suffix('h') {
+        (number, 60 * 60)
+    } else {
+        // Compatibility for the deprecated --timeout-seconds spelling.
+        (value, 1)
+    };
+    let amount = number
+        .parse::<u64>()
+        .map_err(|_| format!("invalid duration '{value}'; use ms, s, m, or h"))?;
+    amount
+        .checked_mul(multiplier)
+        .filter(|seconds| *seconds > 0)
+        .ok_or_else(|| "duration must be greater than zero and fit in u64 seconds".to_owned())
+}
+
+fn parse_byte_size(value: &str) -> std::result::Result<usize, String> {
+    let value = value.trim();
+    let suffixes = [
+        ("KiB", 1024usize),
+        ("MiB", 1024usize * 1024),
+        ("GiB", 1024usize * 1024 * 1024),
+    ];
+    let (number, multiplier) = suffixes
+        .iter()
+        .find_map(|(suffix, multiplier)| {
+            value
+                .strip_suffix(suffix)
+                .map(|number| (number, *multiplier))
+        })
+        .unwrap_or((value, 1));
+    let amount = number
+        .parse::<usize>()
+        .map_err(|_| format!("invalid byte size '{value}'; use an integer or KiB, MiB, GiB"))?;
+    amount
+        .checked_mul(multiplier)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| "byte size must be greater than zero and fit in usize".to_owned())
 }
 
 impl From<ErrorMode> for CatalogErrorPolicy {
@@ -854,33 +1135,63 @@ pub async fn run_with_stdio(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
-    let settings = cli.settings.as_deref();
+    let config = cli.config.as_deref();
+    let mut diagnostics = DiagnosticWriter::new(cli.log_level, stderr);
     match cli.command {
         Command::Onboard(args) => {
-            onboard::run(args, stdin_is_terminal, stdout_is_terminal, stdin, stdout).await
+            onboard::run(
+                args,
+                config,
+                stdin_is_terminal,
+                stdout_is_terminal,
+                stdin,
+                stdout,
+            )
+            .await
         }
-        Command::Default(args) => run_default(args, settings, stdout, stderr),
-        Command::Ls(args) => run_list(args, settings, stdout_is_terminal, stdout, stderr).await,
+        Command::Default(args) => run_default(args, config, stdout, &mut diagnostics),
+        Command::Alias(args) => {
+            run_alias(args, config, stdout_is_terminal, stdout, &mut diagnostics)
+        }
+        Command::Ls(args) => {
+            run_list(args, config, stdout_is_terminal, stdout, &mut diagnostics).await
+        }
         Command::Status(args) => {
-            run_status(args, settings, stdout_is_terminal, stdout, stderr).await
+            run_status(args, config, stdout_is_terminal, stdout, &mut diagnostics).await
         }
-        Command::Query(args) => run_query(args, settings, stdout_is_terminal, stdout, stderr).await,
+        Command::Query(args) => {
+            run_query(
+                args,
+                config,
+                stdout_is_terminal,
+                stdin,
+                stdout,
+                &mut diagnostics,
+            )
+            .await
+        }
         Command::Analysis(args) => {
-            run_analysis(args, settings, stdout_is_terminal, stdout, stderr).await
+            run_analysis(args, config, stdout_is_terminal, stdout, &mut diagnostics).await
         }
         Command::Agent(args) => agent::run(
             args,
-            settings,
+            config,
             stdin_is_terminal,
             stdout_is_terminal,
+            stdin,
             stdout,
-            stderr,
+            &mut diagnostics,
         ),
-        Command::Find(args) => run_find(args, settings, stdout_is_terminal, stdout, stderr).await,
-        Command::Import(args) => run_import(args, settings, stdin, stdout, stderr).await,
-        Command::Export(args) => run_export(args, settings, stdout, stderr).await,
-        Command::Echo(args) => run_echo(args, stderr).await,
-        Command::Serve(args) => run_serve(args, stdout, stderr).await,
+        Command::Find(args) => {
+            run_find(args, config, stdout_is_terminal, stdout, &mut diagnostics).await
+        }
+        Command::Import(args) => run_import(args, config, stdin, stdout, &mut diagnostics).await,
+        Command::Export(args) => run_export(args, config, stdout, &mut diagnostics).await,
+        Command::Echo(args) => run_echo(args, &mut diagnostics).await,
+        Command::Dev(DevArgs {
+            command: DevCommand::Echo(args),
+        }) => run_echo(args, &mut diagnostics).await,
+        Command::Serve(args) => run_serve(args, config, stdout, &mut diagnostics).await,
     }
 }
 
@@ -920,18 +1231,9 @@ fn select_gateway_dataset(
 }
 
 fn local_dataset_path(uri: &str) -> Result<Option<PathBuf>> {
-    if !uri.contains("://") {
-        return Ok(Some(PathBuf::from(uri)));
-    }
-    let url = Url::parse(uri).context("parse Gateway capture Dataset URI")?;
-    match url.scheme() {
-        "file" => url
-            .to_file_path()
-            .map(Some)
-            .map_err(|_| anyhow!("convert file Dataset URI to a local path")),
-        "local" => Ok(Some(PathBuf::from(url.path()))),
-        _ => Ok(None),
-    }
+    Ok(DatasetLocation::parse(uri)?
+        .local_path()
+        .map(Path::to_path_buf))
 }
 
 fn parse_gateway_listener(value: &str, label: &str) -> Result<SocketAddr> {
@@ -1238,8 +1540,13 @@ fn warehouse_listen(args: &ServeArgs) -> Option<SocketAddr> {
     }
 }
 
-async fn run_serve(args: ServeArgs, stdout: &mut dyn Write, stderr: &mut dyn Write) -> Result<()> {
-    let config = resolve_serve_config(&args)?;
+async fn run_serve(
+    args: ServeArgs,
+    settings_override: Option<&Path>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    let config = resolve_serve_config_with_settings(&args, settings_override)?;
     let control_uri = args
         .control
         .is_some()
@@ -1275,7 +1582,7 @@ async fn run_serve(args: ServeArgs, stdout: &mut dyn Write, stderr: &mut dyn Wri
         Some(listen) => Some(
             control::PreparedControl::bind(
                 control_uri.as_deref().context(
-                    "pChronicle Control requires a Dataset named 'default'; pass --storage default=URI",
+                    "pChronicle Control requires a Dataset named 'default'; pass default=DATASET",
                 )?,
                 listen,
             )
@@ -1364,12 +1671,24 @@ async fn prepare_local_control_storage(uri: &str) -> Result<()> {
         .with_context(|| format!("create pChronicle Control storage root {}", path.display()))
 }
 
-fn resolve_serve_config(args: &ServeArgs) -> Result<server::ChronicleServerConfig> {
-    match (args.config.as_deref(), args.storage.as_slice()) {
-        (Some(config), []) => load_warehouse_config(config),
+fn serve_storage_uris(args: &ServeArgs) -> Vec<String> {
+    let mut storage = args.storage.clone();
+    storage.extend(args.positional_storage.iter().cloned());
+    storage
+}
+
+fn resolve_serve_config_with_settings(
+    args: &ServeArgs,
+    settings_override: Option<&Path>,
+) -> Result<server::ChronicleServerConfig> {
+    let storage = serve_storage_uris(args);
+    match (args.config.as_deref(), storage.as_slice()) {
+        (Some(config), []) => load_warehouse_config_with_user_config(config, settings_override),
         (None, storage) if !storage.is_empty() => {
-            let mut config =
-                server::ChronicleServerConfig::mounted(resolve_storage_mounts(storage)?)?;
+            let mut config = server::ChronicleServerConfig::mounted(resolve_storage_mounts(
+                storage,
+                settings_override,
+            )?)?;
             if config
                 .datasets
                 .iter()
@@ -1383,15 +1702,23 @@ fn resolve_serve_config(args: &ServeArgs) -> Result<server::ChronicleServerConfi
             config.catalog_options.error_policy = CatalogErrorPolicy::Report;
             Ok(config)
         }
-        _ => bail!("serve requires exactly one of --config or --storage"),
+        _ => bail!("serve requires at least one Dataset"),
     }
 }
 
-fn resolve_storage_mounts(storages: &[String]) -> Result<Vec<DatasetMount>> {
-    anyhow::ensure!(!storages.is_empty(), "serve requires --storage");
+#[cfg(test)]
+fn resolve_serve_config(args: &ServeArgs) -> Result<server::ChronicleServerConfig> {
+    resolve_serve_config_with_settings(args, None)
+}
+
+fn resolve_storage_mounts(
+    storages: &[String],
+    settings_override: Option<&Path>,
+) -> Result<Vec<DatasetMount>> {
+    anyhow::ensure!(!storages.is_empty(), "serve requires at least one Dataset");
     let parsed = storages
         .iter()
-        .map(|value| parse_storage_argument(value))
+        .map(|value| parse_storage_argument(value, settings_override))
         .collect::<Result<Vec<_>>>()?;
     if parsed.len() == 1 {
         let (name, uri) = &parsed[0];
@@ -1410,20 +1737,26 @@ fn resolve_storage_mounts(storages: &[String]) -> Result<Vec<DatasetMount>> {
         .collect()
 }
 
-fn parse_storage_argument(raw: &str) -> Result<(Option<String>, String)> {
+fn parse_storage_argument(
+    raw: &str,
+    settings_override: Option<&Path>,
+) -> Result<(Option<String>, String)> {
     let raw = raw.trim();
-    anyhow::ensure!(!raw.is_empty(), "--storage URI must not be empty");
+    anyhow::ensure!(!raw.is_empty(), "Dataset must not be empty");
     if let Some((name, uri)) = raw.split_once('=') {
         if looks_like_dataset_name(name) {
             let uri = uri.trim();
-            anyhow::ensure!(!uri.is_empty(), "--storage NAME=URI must include a URI");
+            anyhow::ensure!(!uri.is_empty(), "NAME=DATASET must include a Dataset");
             return Ok((
                 Some(DatasetMount::new(name, "validation")?.name),
-                expand_dataset_alias(uri)?,
+                expand_dataset_reference(uri, settings_override, false)?,
             ));
         }
     }
-    Ok((None, expand_dataset_alias(raw)?))
+    Ok((
+        None,
+        expand_dataset_reference(raw, settings_override, false)?,
+    ))
 }
 
 fn looks_like_dataset_name(name: &str) -> bool {
@@ -1432,32 +1765,31 @@ fn looks_like_dataset_name(name: &str) -> bool {
 
 fn derived_dataset_name(uri: &str) -> Result<String> {
     let basename = storage_basename(uri)?;
-    sanitize_derived_dataset_name(&basename).with_context(|| {
-        format!("cannot derive Dataset name from '{uri}'; pass --storage NAME=URI")
-    })
+    sanitize_derived_dataset_name(&basename)
+        .with_context(|| format!("cannot derive Dataset name from '{uri}'; pass NAME=DATASET"))
 }
 
 fn storage_basename(uri: &str) -> Result<String> {
-    if uri.contains("://") {
-        let url = Url::parse(uri).with_context(|| format!("parse --storage URI '{uri}'"))?;
-        if let Some(segment) = url
-            .path_segments()
-            .into_iter()
-            .flatten()
-            .rev()
-            .find(|segment| !segment.is_empty())
-        {
-            return Ok(segment.to_string());
-        }
-        if let Some(host) = url.host_str() {
-            return Ok(host.to_string());
-        }
-        bail!("cannot derive Dataset name from '{uri}'; pass --storage NAME=URI");
+    let location = DatasetLocation::parse(uri)?;
+    if let Some(path) = location.local_path() {
+        return match path.file_name().and_then(|name| name.to_str()) {
+            Some(name) if name != "." && name != ".." => Ok(name.to_string()),
+            _ => bail!("cannot derive Dataset name from '{uri}'; pass NAME=DATASET"),
+        };
     }
-    match Path::new(uri).file_name().and_then(|name| name.to_str()) {
-        Some(name) if name != "." && name != ".." => Ok(name.to_string()),
-        _ => bail!("cannot derive Dataset name from '{uri}'; pass --storage NAME=URI"),
+    let rest = location
+        .as_str()
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(location.as_str());
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    if let Some(segment) = path.split('/').rev().find(|segment| !segment.is_empty()) {
+        return Ok(segment.to_string());
     }
+    if !host.is_empty() {
+        return Ok(host.to_string());
+    }
+    bail!("cannot derive Dataset name from '{uri}'; pass NAME=DATASET")
 }
 
 fn sanitize_derived_dataset_name(raw: &str) -> Result<String> {
@@ -1471,9 +1803,7 @@ fn sanitize_derived_dataset_name(raw: &str) -> Result<String> {
     DatasetMount::new(&name, "validation")
         .map(|mount| mount.name)
         .with_context(|| {
-            format!(
-                "derived Dataset name from '{raw}' is not a valid SQL alias; pass --storage NAME=URI"
-            )
+            format!("derived Dataset name from '{raw}' is not a valid SQL alias; pass NAME=DATASET")
         })
 }
 
@@ -1483,9 +1813,7 @@ fn control_storage_uri(config: &server::ChronicleServerConfig) -> Result<&str> {
         .iter()
         .find(|dataset| dataset.name == SERVE_STORAGE_DATASET_NAME)
         .map(|dataset| dataset.uri.as_str())
-        .context(
-            "pChronicle Control requires a Dataset named 'default'; pass --storage default=URI",
-        )
+        .context("pChronicle Control requires a Dataset named 'default'; pass default=DATASET")
 }
 
 async fn run_echo(args: EchoArgs, stderr: &mut dyn Write) -> Result<()> {
@@ -1776,10 +2104,12 @@ async fn run_query(
     args: QueryArgs,
     settings_override: Option<&Path>,
     stdout_is_terminal: bool,
+    stdin: &mut dyn Read,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
-    let (dataset_uri, sql) = query_inputs(&args, settings_override)?;
+    let (dataset_uri, sql) = query_inputs(&args, settings_override, stdin)?;
+    let datasets = resolve_query_mounts(&args.datasets, settings_override)?;
     anyhow::ensure!(
         args.max_output_rows > 0,
         "--max-output-rows must be greater than zero"
@@ -1794,7 +2124,7 @@ async fn run_query(
     );
     let (dataset_label, _, snapshot) = discover_query_snapshot(
         dataset_uri.as_deref(),
-        &args.datasets,
+        &datasets,
         args.max_files,
         args.max_entries,
     )
@@ -1805,7 +2135,7 @@ async fn run_query(
     let mut buffer = LimitedBuffer::new(args.max_output_bytes);
     let query_result = tokio::time::timeout(
         Duration::from_secs(args.timeout_seconds),
-        engine.write_query_jsonl_bounded(sql, &mut buffer, Some(args.max_output_rows)),
+        engine.write_query_jsonl_bounded(&sql, &mut buffer, Some(args.max_output_rows)),
     )
     .await;
     let output = match query_result {
@@ -1853,7 +2183,7 @@ async fn run_query(
         QueryOutputFormat::Auto => unreachable!("auto output format was resolved"),
     };
     ensure_output_byte_budget(output.len(), args.max_output_bytes, "encoded SQL result")?;
-    write_query_output(&args.output, &output, stdout)?;
+    write_query_output(&args.output, &output, args.overwrite, stdout)?;
     writeln!(
         stderr,
         "snapshot_id={} datasets={} rows={} format={} output_bytes={}",
@@ -2341,29 +2671,80 @@ fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<(
     Ok(())
 }
 
-fn query_inputs<'a>(
-    args: &'a QueryArgs,
+fn query_inputs(
+    args: &QueryArgs,
     settings_override: Option<&Path>,
-) -> Result<(Option<String>, &'a str)> {
-    if args.datasets.is_empty() {
-        match (&args.dataset_uri, &args.sql) {
-            (Some(sql), None) => Ok((Some(resolve_default_warehouse(settings_override)?), sql)),
-            (Some(dataset_uri), Some(sql)) => Ok((Some(dataset_uri.clone()), sql)),
-            (None, _) => bail!(
-                "query requires SQL, optionally preceded by <DATASET_URI>, or --dataset NAME=URI"
-            ),
-        }
-    } else {
-        anyhow::ensure!(
-            args.sql.is_none(),
-            "named Dataset query accepts one SQL positional argument"
-        );
-        let sql = args
-            .dataset_uri
-            .as_deref()
-            .context("named Dataset query requires SQL")?;
-        Ok((None, sql))
+    stdin: &mut dyn Read,
+) -> Result<(Option<String>, String)> {
+    let canonical_sql = match (&args.sql_option, &args.file) {
+        (Some(sql), None) => Some(sql.clone()),
+        (None, Some(file)) => Some(read_sql_input(file, stdin)?),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!("clap rejects --sql with --file"),
+    };
+    if !args.datasets.is_empty() {
+        let sql = match (canonical_sql, &args.dataset_uri, &args.sql) {
+            (Some(sql), None, None) => sql,
+            (None, Some(legacy_sql), None) => legacy_sql.clone(),
+            _ => bail!("query with --mount requires exactly one of --sql or --file"),
+        };
+        return Ok((None, sql));
     }
+    match (canonical_sql, &args.dataset_uri, &args.sql) {
+        (Some(sql), dataset, None) => Ok((
+            Some(resolve_dataset_uri(dataset.as_deref(), settings_override)?),
+            sql,
+        )),
+        (None, Some(legacy_sql), None) => Ok((
+            Some(resolve_default_warehouse(settings_override)?),
+            legacy_sql.clone(),
+        )),
+        (None, Some(dataset), Some(legacy_sql)) => Ok((
+            Some(resolve_dataset_uri(Some(dataset), settings_override)?),
+            legacy_sql.clone(),
+        )),
+        _ => bail!("query requires exactly one of --sql or --file"),
+    }
+}
+
+fn read_sql_input(path: &str, stdin: &mut dyn Read) -> Result<String> {
+    const MAX_SQL_BYTES: u64 = 1024 * 1024;
+    let mut input = String::new();
+    if path == "-" {
+        stdin
+            .take(MAX_SQL_BYTES + 1)
+            .read_to_string(&mut input)
+            .context("read SQL from stdin")?;
+    } else {
+        std::fs::File::open(path)
+            .with_context(|| format!("open SQL file {path}"))?
+            .take(MAX_SQL_BYTES + 1)
+            .read_to_string(&mut input)
+            .with_context(|| format!("read SQL file {path}"))?;
+    }
+    anyhow::ensure!(
+        input.len() as u64 <= MAX_SQL_BYTES,
+        "SQL input exceeds the {MAX_SQL_BYTES}-byte limit"
+    );
+    anyhow::ensure!(!input.trim().is_empty(), "SQL statement must not be empty");
+    Ok(input)
+}
+
+fn resolve_query_mounts(
+    mounts: &[String],
+    settings_override: Option<&Path>,
+) -> Result<Vec<String>> {
+    mounts
+        .iter()
+        .map(|mount| {
+            let (name, dataset) = mount
+                .split_once('=')
+                .context("--mount must use NAME=DATASET")?;
+            anyhow::ensure!(!name.is_empty(), "--mount name must not be empty");
+            let dataset = expand_dataset_reference(dataset, settings_override, true)?;
+            Ok(format!("{name}={dataset}"))
+        })
+        .collect()
 }
 
 async fn discover_query_snapshot(
@@ -2383,8 +2764,8 @@ async fn discover_query_snapshot(
         for dataset in datasets {
             let (name, uri) = dataset
                 .split_once('=')
-                .context("--dataset must use NAME=URI")?;
-            anyhow::ensure!(!name.is_empty(), "--dataset name must not be empty");
+                .context("--mount must use NAME=DATASET")?;
+            anyhow::ensure!(!name.is_empty(), "--mount name must not be empty");
             let uri = normalize_and_validate_dataset_uri(uri)?;
             mounts.push(DatasetMount::new(name, uri)?);
         }

@@ -120,13 +120,13 @@ canonical events 快照。
 
 ### 4.1 CLI 形式
 
-`--dataset` 可以重复：
+`--mount NAME=DATASET` 可以重复：
 
 ```bash
 pchronicle query \
-  --dataset current=local:///srv/pchronicle/current \
-  --dataset archive=s3://trajectory-bucket/archive \
-  "SELECT * FROM current.runs"
+  --mount current=local:///srv/pchronicle/current \
+  --mount archive=s3://trajectory-bucket/archive \
+  --sql "SELECT * FROM current.runs"
 ```
 
 也可以从 TOML 读取：
@@ -138,12 +138,12 @@ archive = "s3://trajectory-bucket/archive"
 ```
 
 ```bash
-pchronicle query --dataset current=local:///srv/pchronicle/current \
-  --dataset archive=s3://trajectory-bucket/archive \
-  "SELECT table_schema, table_name FROM information_schema.tables"
+pchronicle query --mount current=local:///srv/pchronicle/current \
+  --mount archive=s3://trajectory-bucket/archive \
+  --sql "SELECT table_schema, table_name FROM information_schema.tables"
 ```
 
-位置参数、配置文件与重复 `--dataset` 可以同时使用。三者中出现规范化重名时整体失败，
+位置参数、配置文件与重复 `--mount` 可以同时使用。三者中出现规范化重名时整体失败，
 不会按参数顺序覆盖。
 
 ### 4.2 默认选择规则
@@ -157,15 +157,15 @@ pchronicle query --dataset current=local:///srv/pchronicle/current \
 位置参数形式如下：
 
 ```bash
-pchronicle query ./capture "SELECT * FROM dataset.runs"
+pchronicle query ./capture --sql "SELECT * FROM dataset.runs"
 ```
 
 等价于把 `./capture` 挂载为 `dataset`，并查询 `dataset.runs`。它还可以追加其他挂载：
 
 ```bash
 pchronicle query ./capture \
-  --dataset archive=s3://trajectory-bucket/archive \
-  "SELECT * FROM dataset.runs UNION ALL SELECT * FROM archive.runs"
+  --mount archive=s3://trajectory-bucket/archive \
+  --sql "SELECT * FROM dataset.runs UNION ALL SELECT * FROM archive.runs"
 ```
 
 ## 5. 层级发现
@@ -310,8 +310,8 @@ FROM current.runs c
 JOIN archive.runs a ON c.session_id = a.session_id;
 ```
 
-校验作用于 `runs`、`steps` 和 `tool_calls` 的内建联接；与用户通过 `--table` 注册的维表
-联接不受该规则影响。查询引擎只接受单条只读 `SELECT`、`VALUES`、`DESCRIBE` 或
+校验作用于 `runs`、`steps` 和 `tool_calls` 的内建联接。查询引擎只接受单条只读
+`SELECT`、`VALUES`、`DESCRIBE` 或
 `EXPLAIN`，拒绝 DDL、DML、`COPY` 和多语句。
 
 ## 7. 快照与一致性
@@ -381,7 +381,7 @@ CatalogTableProvider source pruning
 
 ## 8. 错误策略与资源边界
 
-`--dataset-errors` 提供两种策略：
+`ls` 和 `status` 通过 `--errors` 提供两种策略：
 
 | 策略 | 单个候选无法固定描述或通过初始校验 | Dataset 根不存在、listing/遍历失败或超过全局限制 |
 |---|---|---|
@@ -407,15 +407,10 @@ Catalog 复用直接文件查询的资源参数：
   canonical→Storyline fallback 的内存边界；
 - DataFusion memory pool、spill path、spill bytes、timeout 与输出行数：查询期边界。
 
-`--query-metrics` 只聚合已经解析的外围文件 source 的读取、裁剪、缓存和 buffer 指标；
-未命中 source 不会为了生成指标而解析。`sources` 表用于解释“发现了什么”，metrics 用于
-解释“实际扫描了什么”。
-
 ## 9. Server、刷新与 Web
 
-`pchronicle serve` 从静态 Warehouse 配置挂载命名 Dataset。使用 `--config` 时 Catalog 在
-第一个需要数据的请求到达时惰性构建；使用 `--storage` 与 `--listen` 时，启动流程先收敛
-canonical Storyline 投影，再构建初始 Catalog。随后由所有 REST 和 SQL 请求共享。
+`pchronicle serve` 通过一个或多个位置参数 `[NAME=]DATASET` 挂载 Dataset。启动流程先收敛
+canonical Storyline 投影，再构建初始 Catalog，随后由所有 REST 和 SQL 请求共享。
 
 | API | 语义 |
 |---|---|
@@ -427,7 +422,7 @@ canonical Storyline 投影，再构建初始 Catalog。随后由所有 REST 和 
 重试；正在处理的请求持有旧快照的 `Arc`，可以继续完成。
 Web Explorer 从 Catalog 获取 Dataset 列表，服务端过滤、URL 状态和 Storyline 列表
 均携带完整 `(dataset, _file_, session_id)`；`run_id` 作为物理 Run 分组信息
-单独返回。Catalog 是不可变快照；`POST /api/catalog` 仍可显式刷新，但 `serve --storage`
+单独返回。Catalog 是不可变快照；`POST /api/catalog` 仍可显式刷新，但位置 Dataset 形式的 `serve`
 维护的 canonical 更新会自动产生新快照。
 
 ### 9.1 Server source-routing 加速
@@ -540,7 +535,7 @@ basename 会受路径拼写、对象前缀和部署目录影响，不带 schema 
 ### 12.4 发现时统一导入 Lance
 
 外围 JSON 的自动导入会改变查询的延迟、容量和失败语义，还会制造新的持久状态，因此
-Catalog 对它只做虚拟规范化。canonical `events.lance` 是例外：`serve --storage` 在 Catalog
+Catalog 对它只做虚拟规范化。canonical `events.lance` 是例外：位置 Dataset 形式的 `serve` 在 Catalog
 之外维护确定的同级 Storyline 投影；查询仍按 lineage 和 freshness 选择投影或固定快照 fallback。
 
 ### 12.5 只使用 `run_id`

@@ -17,6 +17,7 @@
   background: #fff;
   overflow: hidden;
   box-shadow: 0 1px 2px #10182808;
+  position: relative;
 }
 .physical-tree > header,
 .physical-detail-head,
@@ -83,6 +84,10 @@
   margin-left: 12px;
   width: calc(100% - 12px);
 }
+.physical-tree-item.nested.deep {
+  margin-left: 24px;
+  width: calc(100% - 24px);
+}
 .physical-tree-item div,
 .physical-column-label,
 .physical-layout-meta,
@@ -140,6 +145,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.physical-chips {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
 .physical-chip {
   flex: none;
   padding: 4px 8px;
@@ -180,6 +192,17 @@
   gap: 4px;
   min-height: 44px;
 }
+.physical-fragment-strip {
+  overflow-x: auto;
+  min-height: 58px;
+}
+.physical-fragment-strip .physical-page {
+  min-width: 72px;
+  background: #eef4ff;
+}
+.physical-fragment-strip .physical-page.active {
+  background: #dbeafe;
+}
 .physical-page {
   min-width: 48px;
   flex-direction: column;
@@ -196,6 +219,7 @@
   font-weight: 700;
 }
 .physical-page small {
+  display: block;
   color: #98a2b3;
   font-size: 9px;
 }
@@ -259,6 +283,167 @@
 }
 .physical-empty strong {
   color: #475467;
+}
+.physical-column.selected {
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 8px;
+}
+.physical-column-head {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.physical-column-counts,
+.physical-column-stats {
+  color: #667085;
+  font-size: 10px;
+}
+.physical-column-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 2px 0 4px;
+}
+.physical-max-link,
+.physical-max-link {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #1d4ed8;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.physical-dist {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.physical-dist-label,
+.physical-dist-empty {
+  color: #98a2b3;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.physical-dist-strip {
+  display: flex;
+  gap: 2px;
+  min-height: 18px;
+}
+.physical-dist-bar {
+  overflow: hidden;
+  border-radius: 4px;
+  background: #e0eaff;
+  color: #3451b2;
+  font-size: 9px;
+  line-height: 18px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.physical-drawer-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  margin: 0;
+  border: 0;
+  background: #10182833;
+  cursor: pointer;
+}
+.physical-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  width: min(440px, 100%);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-left: 1px solid #dfe3e8;
+  box-shadow: -12px 0 24px #10182814;
+}
+.physical-drawer > header {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eceef1;
+  background: #f8fafc;
+}
+.physical-drawer > header div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.physical-drawer > header strong {
+  overflow: hidden;
+  color: #1d2939;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.physical-drawer > header span {
+  color: #98a2b3;
+  font-size: 10px;
+}
+.physical-drawer-close {
+  flex: none;
+  padding: 4px 8px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  background: #fff;
+  color: #344054;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.physical-max-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 12px 0;
+  padding: 8px 10px;
+  border: 1px solid #dbe7ff;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+.physical-max-card strong,
+.physical-max-card span {
+  color: #3451b2;
+  font-size: 10px;
+}
+.physical-max-card pre {
+  margin: 0;
+  overflow: auto;
+  color: #101828;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.physical-drawer .physical-preview {
+  min-height: 0;
+  flex: 1;
+  border-top: 0;
 }
 @media (max-width: 950px) {
   .physical-workspace {

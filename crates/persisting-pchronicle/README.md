@@ -129,17 +129,17 @@ projection 等调用方需要分支的状态使用所属模块的局部 Outcome�
 ```bash
 pchronicle ls ./dataset
 pchronicle status ./dataset
-pchronicle query ./dataset "SELECT * FROM dataset.runs"
-pchronicle import --from input.json --output ./imported --format atif
-pchronicle import --from ./corpus --output ./normalized --output-format storyline
-pchronicle import --from ./run/events.lance --output ./run/storyline
-pchronicle export --from ./imported --output output.json --format storyline
-pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
+pchronicle query ./dataset --sql "SELECT * FROM dataset.runs"
+pchronicle import --from input.json --to ./imported --input-format atif
+pchronicle import --from ./corpus --to ./normalized --output-format storyline
+pchronicle import --from ./run/events.lance --to ./run/storyline
+pchronicle export --from ./imported --to output.json --output-format storyline
+pchronicle serve --control 127.0.0.1:0 ./trajectory-data
 ```
 
 对经过 manifest 验证且非空的 canonical `events.lance`，`import` 会自动创建 Storyline Lance，
 不修改事实源且拒绝已有目标。`serve` 在 readiness 前收敛已有投影，并在运行期自动维护；
 `status` 可查看每个投影的 freshness 和事实水位。
 
-参见 [`pchronicle` 命令参考](../../docs/src/design/cli-pchronicle.md)和
+参见 [`pchronicle` 命令参考](../../docs/src/pchronicle/reference/cli.zh.md)和
 [RFC-0003](../../docs/src/rfcs/0003-pchronicle-ownership.md)。

@@ -1,7 +1,7 @@
 ---
 template: home.html
-title: Persisting — 治理 Agent 执行与持久轨迹 Dataset
-description: 治理 Agent Run，并将原生或外部轨迹转化为持久、可查询的 Dataset；保留明确的 Source identity、lineage，以及 Source 实际携带的 Evidence。
+title: Persisting — Agent 时代的持久化基础设施
+description: 从模型参数、KV Cache 到 Agent 轨迹，持久化模型状态与 Agent 历史。
 hide: toc
 ---
 

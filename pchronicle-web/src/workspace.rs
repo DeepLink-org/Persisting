@@ -17,9 +17,9 @@ use crate::copilot_sessions::{
 use crate::llm;
 use crate::llm_settings::LlmSettings;
 use crate::model::{
-    CatalogTree, DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary,
-    RunAnalysis, RunExplorerItem, RunPage, RunSummary, StorylineSnapshot, ToolAggregate,
-    TurnDetail, TurnSummary,
+    CatalogTree, DimensionAggregate, EventProvenance, HistogramBucket, QueryCatalog,
+    QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary, StorylineSnapshot,
+    ToolAggregate, TurnDetail, TurnSummary,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -846,7 +846,11 @@ fn RunDetailWorkspace(
                 div { class: "pc2-head-actions",
                     button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" }
                     button { class: "button", onclick: { let run = run.clone(); move |_| on_analyze.call(run.clone()) }, "Analyze this run" }
-                    a { class: "button", href: "/api/export/otlp?{run.query()}", "OTLP" }
+                    if analysis.event_provenance == EventProvenance::Canonical {
+                        a { class: "button", href: "/api/export/otlp?{run.query()}", "OTLP" }
+                    } else {
+                        button { class: "button", disabled: true, title: "OTLP export requires canonical events", "OTLP unavailable · synthetic" }
+                    }
                 }
             }
             MetricsStrip { analysis: analysis.clone() }
@@ -899,7 +903,7 @@ fn RunDetailWorkspace(
 #[component]
 fn MetricsStrip(analysis: RunAnalysis) -> Element {
     rsx! { div { class: "pc2-metrics",
-        Metric { label: "Turns", value: analysis.turn_count.to_string(), detail: format!("{} events", analysis.event_count) }
+        Metric { label: "Turns", value: analysis.turn_count.to_string(), detail: format!("{} {}", analysis.event_count, analysis.event_provenance.evidence_label()) }
         Metric { label: "Tools", value: analysis.tool_call_count.to_string(), detail: format!("{} tool names", analysis.tools.len()) }
         Metric { label: "Explicit errors", value: analysis.error_count.to_string(), detail: "Captured signals only" }
         Metric { label: "Tokens", value: analysis.total_tokens.map(|value| value.to_string()).unwrap_or_else(|| "—".into()), detail: format!("in {} · out {}", optional_u64(analysis.prompt_tokens), optional_u64(analysis.completion_tokens)) }
@@ -1053,7 +1057,7 @@ fn OverviewAnalysis(analysis: RunAnalysis, turns: Vec<TurnSummary>) -> Element {
             code { "{elapsed}" }
             div { class: "pc2-run-span-meta",
                 span { strong { "{analysis.models.len()}" } " models" }
-                span { strong { "{analysis.event_count}" } " events" }
+                span { strong { "{analysis.event_count}" } " {analysis.event_provenance.evidence_label()}" }
                 span { strong { "{analysis.error_count}" } " explicit-error turns" }
             }
         }

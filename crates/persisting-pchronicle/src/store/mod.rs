@@ -36,6 +36,8 @@ mod inspect;
 #[cfg(feature = "lance-store")]
 mod local_query_manifest;
 #[cfg(feature = "lance-store")]
+mod location;
+#[cfg(feature = "lance-store")]
 mod query_engine;
 #[cfg(feature = "lance-store")]
 mod root_write_lock;
@@ -55,12 +57,12 @@ pub use attempt_registry::{AttemptRecord, AttemptRecordState, AttemptRegistry};
 pub use cas_store::unix_now_ms as attempt_registry_now_ms;
 #[cfg(feature = "lance-store")]
 pub use catalog::{
-    CatalogDataset, CatalogErrorPolicy, CatalogNamespace, CatalogPage, CatalogProjectionStatus,
-    CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind, CatalogSourceRevision,
-    CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle, DatasetCatalogSnapshot,
-    DatasetMount, DiscoveredSource, NamespacePath, CATALOG_SOURCES_TABLE,
-    CATALOG_TRAJECTORIES_TABLE, DEFAULT_DATASET_NAME, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
-    DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+    CatalogDataset, CatalogErrorPolicy, CatalogEventProvenance, CatalogEventView, CatalogNamespace,
+    CatalogPage, CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceDescription,
+    CatalogSourceKind, CatalogSourceRevision, CatalogSourceStatus, CatalogStorylineKey,
+    CatalogTrajectoryBundle, DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, NamespacePath,
+    CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE, DEFAULT_DATASET_NAME,
+    DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS,
 };
 #[cfg(feature = "lance-store")]
 pub(crate) use document_source::{open_document_source, DocumentSourceImpl};
@@ -97,6 +99,8 @@ pub(crate) use local_query_manifest::{
 };
 #[cfg(feature = "lance-store")]
 pub use local_query_manifest::{DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES};
+#[cfg(feature = "lance-store")]
+pub use location::{DatasetLocation, DatasetLocationKind};
 #[cfg(feature = "lance-store")]
 pub use query_engine::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat, ExternalTableSpec,

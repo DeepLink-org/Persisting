@@ -21,7 +21,7 @@ health check below:
 ```bash
 "$PCHRONICLE_BIN" status "$PCHRONICLE_DATASET_URI" \
   --format json --errors report --max-files 10000 --max-entries 100000 \
-  --timeout-seconds 30
+  --timeout 30s
 ```
 
 When the bootstrap plan enables the generic overview, also run:
@@ -29,7 +29,7 @@ When the bootstrap plan enables the generic overview, also run:
 ```bash
 "$PCHRONICLE_BIN" analysis overview "$PCHRONICLE_DATASET_URI" \
   --format jsonl --limit 100 --max-output-bytes 1048576 \
-  --max-files 10000 --max-entries 100000 --timeout-seconds 30
+  --max-files 10000 --max-entries 100000 --timeout 30s
 ```
 
 When the bootstrap plan disables the generic overview, do not run it merely as
@@ -42,12 +42,12 @@ SQL `LIMIT`, and normally cap output at 100 rows and 1 MiB:
 
 ```bash
 "$PCHRONICLE_BIN" query "$PCHRONICLE_DATASET_URI" \
-  "DESCRIBE dataset.steps" --format table \
-  --max-files 10000 --max-entries 100000 --timeout-seconds 30
+  --sql "DESCRIBE dataset.steps" --format table \
+  --max-files 10000 --max-entries 100000 --timeout 30s
 "$PCHRONICLE_BIN" query "$PCHRONICLE_DATASET_URI" \
-  "SELECT _file_, session_id, step_id, source FROM dataset.steps LIMIT 100" \
+  --sql "SELECT _file_, session_id, step_id, source FROM dataset.steps LIMIT 100" \
   --format jsonl --max-output-rows 100 --max-output-bytes 1048576 \
-  --max-files 10000 --max-entries 100000 --timeout-seconds 30
+  --max-files 10000 --max-entries 100000 --timeout 30s
 ```
 
 Start with aggregates, then narrow by `_file_`, Session/document ID, and Step or

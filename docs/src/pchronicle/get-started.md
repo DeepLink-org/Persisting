@@ -1,49 +1,60 @@
 # Explore a trajectory Dataset
 
-`pChronicle` reads trajectory Datasets from local directories or S3, discovers
-supported source formats, and exposes normalized `runs`, `steps`, and
-`tool_calls` tables.
+pChronicle gives you one interface for Agent trajectories stored locally, in
+object storage, or behind a configured alias. Commands are read-only unless you
+explicitly run `import` or `export` with a destination.
 
-It is the data layer for captured runtime history and external trajectory
-files—not the runtime or scheduler. External files are pinned and normalized
-directly rather than converted into canonical runtime events.
-
-## Start with a known Dataset
-
-From a Persisting source checkout:
+## 1. Try pChronicle without preparing data
 
 ```bash
-pchronicle ls examples/data/atif
-pchronicle analysis overview examples/data/atif
+pchronicle onboard
 ```
 
-`ls` shows the discovered Sources. The overview reports the shape of the
-Dataset without requiring you to write SQL first.
-
-## Ask a specific question
+The walkthrough creates a temporary example Dataset and introduces the main
+commands. To jump directly to querying:
 
 ```bash
-pchronicle query examples/data/atif \
-  'SELECT source, COUNT(*) AS steps
-   FROM dataset.steps
-   GROUP BY source
-   ORDER BY source'
+pchronicle onboard query
 ```
 
-Queries are read-only. Format-specific data is normalized at the Dataset
-boundary so the same question can span ATIF, ACTF, OpenAI Messages, canonical
-events, and Storyline Sources where their semantics align.
+Neither command requires a source checkout or an existing Dataset.
+
+## 2. Inspect your own Dataset
+
+A Dataset may be a local path, an object-store URI prefix, or an alias such as
+`@prod`:
+
+```bash
+pchronicle ls ./trajectory-data
+pchronicle analysis overview ./trajectory-data
+```
+
+`ls` shows the trajectory data pChronicle can use. `analysis overview` gives a
+stable summary without requiring SQL.
+
+## 3. Ask a specific question
+
+```bash
+pchronicle query ./trajectory-data \
+  --sql 'SELECT source, COUNT(*) AS steps
+         FROM dataset.steps
+         GROUP BY source
+         ORDER BY source'
+```
+
+Queries are bounded and read-only. pChronicle normalizes supported trajectory
+formats into common `runs`, `steps`, and `tool_calls` tables where their
+semantics align.
 
 ## What you completed
 
-You discovered the logical Sources in one Dataset, created a Catalog Snapshot,
-ran a stable built-in summary, and queried a normalized relation. No Dataset
-content was modified.
+You opened one Dataset, ran a built-in summary, and queried a normalized table.
+The Dataset was not modified.
 
 Continue by task:
 
-- [Discover and query your own Dataset](guides/discover-and-query.md).
-- [Capture a new Run with pVisor](../pvisor/guides/capture.md).
-- [Import or export trajectories](guides/exchange.md).
-- [Understand Dataset identity and Snapshots](concepts/dataset-and-source.md).
-- Look up exact flags in the [`pchronicle` reference](reference/cli.md).
+- [Discover and query your own Dataset](guides/discover-and-query.md)
+- [Import or export trajectories](guides/exchange.md)
+- [Use aliases and the complete CLI](reference/cli.md)
+- [Capture a new Run with pVisor](../pvisor/guides/capture.md)
+- [Understand the Dataset interface](concepts/index.md)

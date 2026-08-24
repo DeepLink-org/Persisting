@@ -15,7 +15,7 @@ pChronicle 是 path-first 的 Agent 历史层。它发现本地目录和对象�
 | --- | --- | --- |
 | 直接 Dataset | 检查本地路径或 S3 prefix | Dataset 外无状态 |
 | 原生 Dataset | 接收 canonical event 或 create-only import | Dataset manifest 与 version |
-| 本地默认 Warehouse | 为一个本地 root 省略 Dataset 参数 | 用户设置中的规范化路径 |
+| 本地默认 Dataset | 为一个本地 root 省略 Dataset 参数 | 用户配置中的规范化路径 |
 | 只读 Warehouse | 为 Web/API review 静态挂载 Dataset | 配置与可重建 cache |
 
 pChronicle 不是 scheduler、Agent runtime、全局 Dataset 控制面、分布式 SQL 服务或时序数据库。
@@ -101,7 +101,7 @@ generation 绑定。
 Web 与 API 是同一读取模型的 consumer，不形成新事实源。未知 API route 保持 error，不进入
 SPA fallback；没有 authentication 时只接受 loopback listener。
 
-用户设置见 [Warehouse 指南](../guides/serve.md)，精确 route 与 Gateway 组合见
+用户配置见 [Warehouse 指南](../guides/serve.md)，精确 route 与 Gateway 组合见
 [`pchronicle` 参考](../reference/cli.md)。
 
 ## 保证与明确不保证

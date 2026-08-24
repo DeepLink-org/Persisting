@@ -19,7 +19,7 @@ It has four deployment shapes:
 | --- | --- | --- |
 | direct Dataset | inspect a local path or S3 prefix | none outside the Dataset |
 | native Dataset | receive canonical events or create-only import | Dataset manifests and versions |
-| default local Warehouse | omit the Dataset argument for one local root | normalized path in user settings |
+| default local Dataset | omit the Dataset argument for one local root | normalized path in user configuration |
 | read-only Warehouse | mount static Datasets for Web and API review | configuration and rebuildable cache |
 
 pChronicle is not a scheduler, Agent runtime, global Dataset control plane,

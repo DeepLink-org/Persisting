@@ -15,17 +15,19 @@ For example:
 
 ```bash
 pchronicle query examples/data/atif \
-  "SELECT session_id, COUNT(*) AS steps FROM dataset.steps GROUP BY session_id"
+  --sql "SELECT session_id, COUNT(*) AS steps FROM dataset.steps GROUP BY session_id"
 
 pchronicle import --from examples/data/atif/support-ticket.json \
-  --output /tmp/imported-support-ticket
+  --to /tmp/imported-support-ticket
 
 pchronicle export --from /tmp/imported-support-ticket \
-  --output /tmp/exported-support-ticket.json --format atif
+  --to /tmp/exported-support-ticket.json --output-format atif
 
-pchronicle serve --config examples/data/warehouse.toml \
-  --listen 127.0.0.1:8080 --open
+pchronicle serve \
+  --listen 127.0.0.1:8080 --open \
+  atif=examples/data/atif \
+  openai=examples/data/openai-messages \
+  actf=examples/data/actf
 ```
 
-`warehouse.toml` mounts all three examples. Its relative paths are resolved
-from the configuration file's directory.
+Each positional `NAME=DATASET` value becomes one Warehouse mount.

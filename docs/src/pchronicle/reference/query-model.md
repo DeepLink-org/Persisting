@@ -1,7 +1,7 @@
 # Query model reference
 
 Every mounted Dataset is a SQL schema. A positional Dataset is named `dataset`;
-`--dataset NAME=URI` creates a named schema. The schema exposes six stable
+`--mount NAME=DATASET` creates a named schema. The schema exposes six stable
 relations even when no compatible Source contributes rows.
 
 | Relation | One row represents | Available from |

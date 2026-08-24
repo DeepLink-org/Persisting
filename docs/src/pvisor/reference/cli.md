@@ -167,8 +167,8 @@ pvisor run \
   -- codex
 ```
 
-`--chronicle-mode spawn` starts `pchronicle serve --storage ... --control
-127.0.0.1:0`; pVisor sends shared `EventRecord` values and waits for durable
+`--chronicle-mode spawn` starts `pchronicle serve --control 127.0.0.1:0 DATASET`;
+pVisor sends shared `EventRecord` values and waits for durable
 acknowledgements instead of opening Lance itself. `lance` remains accepted as a
 compatibility alias for `spawn`. The binary can also be selected with
 `PERSISTING_PCHRONICLE_BIN`.

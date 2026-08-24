@@ -6,28 +6,28 @@
   <main class="persisting-home">
     <section class="persisting-hero">
       <div class="persisting-shell">
-        <p class="persisting-eyebrow">AGENT EXECUTION + TRAJECTORY DATASETS</p>
+        <p class="persisting-eyebrow">MODEL STATE · AGENT HISTORY</p>
         <h1>Persisting</h1>
         {% if config.theme.language == "zh" %}
+        <p class="persisting-hero-positioning">Agent 时代的持久化基础设施</p>
         <p class="persisting-hero-copy">
-          治理 Agent Run，并将原生或外部轨迹转化为持久、可查询的 Dataset，
-          保留明确的 Source identity、lineage，以及 Source 实际携带的 Evidence。
+          从模型参数、KV Cache 到 Agent 轨迹，持久化模型状态与 Agent 历史。
         </p>
         <div class="persisting-actions">
-          <a href="pvisor/get-started/" class="md-button md-button--primary">安全运行 Agent</a>
+          <a href="pvisor/get-started/" class="md-button md-button--primary">运行第一个 Agent</a>
           <a href="pchronicle/get-started/" class="md-button md-button--primary">查看轨迹 Dataset</a>
-          <a href="overview/" class="md-button">查看产品概览</a>
+          <a href="installation/" class="md-button">安装 Persisting</a>
         </div>
         {% else %}
+        <p class="persisting-hero-positioning">Persistent Infrastructure for the Agent Era</p>
         <p class="persisting-hero-copy">
-          Govern Agent Runs and turn native or external trajectories into
-          durable, queryable Datasets with explicit source identity and lineage,
-          preserving any Evidence a Source carries.
+          Persisting model state and Agent history—from model parameters and
+          KV caches to Agent trajectories.
         </p>
         <div class="persisting-actions">
-          <a href="pvisor/get-started/" class="md-button md-button--primary">Run an Agent safely</a>
-          <a href="pchronicle/get-started/" class="md-button md-button--primary">Explore a Dataset</a>
-          <a href="overview/" class="md-button">Product overview</a>
+          <a href="pvisor/get-started/" class="md-button md-button--primary">Run your first Agent</a>
+          <a href="pchronicle/get-started/" class="md-button md-button--primary">Explore a trajectory Dataset</a>
+          <a href="installation/" class="md-button">Install Persisting</a>
         </div>
         {% endif %}
       </div>
@@ -36,99 +36,74 @@
     <section class="persisting-section">
       <div class="persisting-shell">
         {% if config.theme.language == "zh" %}
-        <p class="persisting-kicker">产品域</p>
-        <h2>两个互联的产品域</h2>
-        <p class="persisting-lead">
-          从治理 Agent 执行或轨迹 Dataset 独立开始，也可以通过稳定契约连接两条路径。
-        </p>
+        <p class="persisting-kicker">当前工作流</p>
+        <h2>一条持久化主线，两个当前入口</h2>
+        <p class="persisting-lead">Persisting 的定位横跨模型状态与 Agent 历史；当前产品从可控执行和轨迹数据两个任务进入。</p>
         {% else %}
-        <p class="persisting-kicker">PRODUCT DOMAINS</p>
-        <h2>Two connected product domains</h2>
-        <p class="persisting-lead">
-          Start with governed Agent execution or a trajectory Dataset, or
-          connect the two paths through stable contracts.
-        </p>
+        <p class="persisting-kicker">CURRENT WORKFLOWS</p>
+        <h2>One persistence story, two ways to start</h2>
+        <p class="persisting-lead">Persisting spans model state and Agent history. The current product starts with controlled execution and trajectory data.</p>
         {% endif %}
 
-        <div class="persisting-capability-grid persisting-link-grid">
+        <div class="persisting-capability-grid">
           <article>
             <span>PVISOR</span>
             {% if config.theme.language == "zh" %}
-            <h3>pVisor — 治理执行</h3>
-            <p>Run 与 Attempt identity；capability；分阶段 Effect；Provider 特定的 Evidence。</p>
+            <h3>运行一个 Agent</h3>
+            <p>在受治理的执行环境中运行现有 Agent，把文件修改留在 stage 中，完成后再 review、apply 或 drop。</p>
+            <a href="pvisor/get-started/">完成第一个 Run →</a>
             {% else %}
-            <h3>pVisor — governed execution</h3>
-            <p>Run and Attempt identity; capabilities; staged Effects; provider-specific Evidence.</p>
+            <h3>Run one Agent</h3>
+            <p>Run an existing Agent in a governed environment, keep filesystem changes staged, then review, apply, or drop them.</p>
+            <a href="pvisor/get-started/">Complete the first Run →</a>
             {% endif %}
           </article>
           <article>
             <span>PCHRONICLE</span>
             {% if config.theme.language == "zh" %}
-            <h3>pChronicle — 轨迹 Dataset</h3>
-            <p>Source；canonical fact；Catalog Snapshot；规范化查询与交换视图；revision lineage。</p>
+            <h3>查询运行历史</h3>
+            <p>浏览、查询、分析、导入、导出或服务 Agent 轨迹 Dataset；数据可以来自 Persisting，也可以来自外部工具。</p>
+            <a href="pchronicle/get-started/">开始查询 Dataset →</a>
             {% else %}
-            <h3>pChronicle — trajectory Datasets</h3>
-            <p>Sources; canonical facts; Catalog Snapshots; normalized query and exchange views; revision lineage.</p>
-            {% endif %}
-          </article>
-          <article>
-            <span>INTEGRATION</span>
-            {% if config.theme.language == "zh" %}
-            <h3>集成路径</h3>
-            <p>pPilot 保存持久结果与 task-to-Run mapping。另一条单独配置的 pVisor capture 只发布 Gateway 轨迹 event、lifecycle record 及其携带的 Evidence。</p>
-            {% else %}
-            <h3>Integrated path</h3>
-            <p>pPilot persists results and task-to-Run mapping. Separately configured pVisor capture publishes Gateway trajectory events, lifecycle records, and their event-carried Evidence.</p>
+            <h3>Query Agent history</h3>
+            <p>Browse, query, analyze, import, export, or serve trajectory Datasets from Persisting or external tools.</p>
+            <a href="pchronicle/get-started/">Start querying a Dataset →</a>
             {% endif %}
           </article>
         </div>
-
-        <figure class="persisting-architecture-figure">
-          {% if config.theme.language == "zh" %}
-          <img src="assets/diagrams/persisting/system-products.svg" alt="Persisting 产品域与集成关系" />
-          {% else %}
-          <img src="assets/diagrams/persisting/system-products.svg" alt="Persisting product domains and integration" />
-          {% endif %}
-        </figure>
       </div>
     </section>
 
     <section class="persisting-section persisting-section--contrast">
       <div class="persisting-shell">
         {% if config.theme.language == "zh" %}
-        <p class="persisting-kicker">选择入口</p>
-        <h2>独立使用任一产品路径</h2>
+        <p class="persisting-kicker">五分钟上手</p>
+        <h2>两条独立起点</h2>
         {% else %}
-        <p class="persisting-kicker">CHOOSE AN ENTRY PATH</p>
-        <h2>Start with either product</h2>
+        <p class="persisting-kicker">FIRST FIVE MINUTES</p>
+        <h2>Two independent starting points</h2>
         {% endif %}
 
         <div class="persisting-first-run">
           <article>
             {% if config.theme.language == "zh" %}
-            <h3>安全运行 Agent</h3>
-            <p>在 Run 独占 stage 中工作，然后检查并选择性接受文件 Effect。</p>
-            <a href="pvisor/guides/review-apply/">理解多次、过滤式 apply →</a>
+            <h3>从执行开始</h3>
+            <p>Agent 在 stage 中工作；只有你选择的文件修改会进入基础工作区。</p>
             {% else %}
-            <h3>Run an Agent safely</h3>
-            <p>Work in a Run-owned stage, then inspect and selectively accept filesystem Effects.</p>
-            <a href="pvisor/guides/review-apply/">Understand repeatable, filtered apply →</a>
+            <h3>Start with execution</h3>
+            <p>The Agent works in a stage. Only the filesystem changes you select enter the base workspace.</p>
             {% endif %}
             <pre><code>pvisor run --safe codex
 pvisor review last
-pvisor apply last --path src
-pvisor apply last --include 'tests/**'
 pvisor apply last --all</code></pre>
           </article>
           <article>
             {% if config.theme.language == "zh" %}
-            <h3>查看轨迹 Dataset</h3>
-            <p>使用安装包自带的临时示例探索 Dataset；这条路径不要求源码 checkout 或先通过 pVisor 运行 Agent。</p>
-            <a href="pchronicle/get-started/">开始探索 Dataset →</a>
+            <h3>从数据开始</h3>
+            <p>内建 walkthrough 使用临时示例，不要求先运行 pVisor，也不要求源码 checkout。</p>
             {% else %}
-            <h3>Explore a trajectory Dataset</h3>
-            <p>Explore temporary examples included in the installed workflow; this path needs neither a source checkout nor a pVisor Run first.</p>
-            <a href="pchronicle/get-started/">Start exploring a Dataset →</a>
+            <h3>Start with data</h3>
+            <p>The built-in walkthrough uses temporary examples and requires neither a pVisor Run nor a source checkout.</p>
             {% endif %}
             <pre><code>pchronicle onboard
 pchronicle onboard query</code></pre>
@@ -140,31 +115,54 @@ pchronicle onboard query</code></pre>
     <section class="persisting-section">
       <div class="persisting-shell">
         {% if config.theme.language == "zh" %}
-        <p class="persisting-kicker">按任务阅读</p>
-        <h2>下一步只取决于你要完成什么</h2>
+        <p class="persisting-kicker">整体关系</p>
+        <h2>可以组合，但不是强制流水线</h2>
+        <p class="persisting-lead">
+          pVisor 负责执行路径，pChronicle 负责历史路径。配置 capture 后，部分运行事件可以进入
+          pChronicle；外部轨迹也可以直接成为 Dataset。
+        </p>
         {% else %}
-        <p class="persisting-kicker">CHOOSE BY TASK</p>
-        <h2>Choose what you need to do</h2>
+        <p class="persisting-kicker">HOW IT FITS TOGETHER</p>
+        <h2>Composable, not a mandatory pipeline</h2>
+        <p class="persisting-lead">
+          pVisor owns the execution path; pChronicle owns the history path.
+          Configured capture can connect selected runtime events to pChronicle,
+          while external trajectories can enter as Datasets directly.
+        </p>
+        {% endif %}
+
+        <figure class="persisting-architecture-figure">
+          {% if config.theme.language == "zh" %}
+          <img src="{{ base_url }}/assets/diagrams/persisting/system-products.svg" alt="Persisting 执行路径、历史路径与可选集成" />
+          {% else %}
+          <img src="{{ base_url }}/assets/diagrams/persisting/system-products.svg" alt="Persisting execution path, history path, and optional integration" />
+          {% endif %}
+        </figure>
+      </div>
+    </section>
+
+    <section class="persisting-section persisting-section--contrast">
+      <div class="persisting-shell">
+        {% if config.theme.language == "zh" %}
+        <p class="persisting-kicker">继续阅读</p>
+        <h2>需要时再进入细节</h2>
+        {% else %}
+        <p class="persisting-kicker">KEEP READING</p>
+        <h2>Go deeper when you need to</h2>
         {% endif %}
 
         <div class="persisting-link-grid">
-          <a href="pvisor/guides/execution/">
-            {% if config.theme.language == "zh" %}<strong>选择执行环境</strong><span>Host、Container、VM 与具体隔离边界</span>{% else %}<strong>Choose an execution environment</strong><span>Host, container, VM, and exact isolation boundaries</span>{% endif %}
+          <a href="overview/">
+            {% if config.theme.language == "zh" %}<strong>选择工作流</strong><span>理解两个产品入口和可选集成</span>{% else %}<strong>Choose a workflow</strong><span>Understand the two product entry points and optional integration</span>{% endif %}
           </a>
-          <a href="pvisor/guides/network/">
-            {% if config.theme.language == "zh" %}<strong>控制网络</strong><span>声明目标、策略和带宽限制</span>{% else %}<strong>Control network access</strong><span>Declare destinations, policy, and bandwidth limits</span>{% endif %}
+          <a href="pvisor/guides/review-apply/">
+            {% if config.theme.language == "zh" %}<strong>审查 Agent 修改</strong><span>理解 staged Effect 与选择性 apply</span>{% else %}<strong>Review Agent changes</strong><span>Understand staged Effects and selective apply</span>{% endif %}
           </a>
-          <a href="pvisor/guides/capture/">
-            {% if config.theme.language == "zh" %}<strong>捕获轨迹</strong><span>让模型调用进入 Run 证据链</span>{% else %}<strong>Capture trajectories</strong><span>Bring model calls into the Run evidence chain</span>{% endif %}
-          </a>
-          <a href="pvisor/guides/orchestrate/">
-            {% if config.theme.language == "zh" %}<strong>扩展到多个 Run</strong><span>有界并发、lease、恢复与结果</span>{% else %}<strong>Scale to many Runs</strong><span>Bounded concurrency, leases, recovery, and results</span>{% endif %}
-          </a>
-          <a href="pchronicle/get-started/">
-            {% if config.theme.language == "zh" %}<strong>查询历史</strong><span>发现 Dataset、运行分析并使用只读 SQL</span>{% else %}<strong>Query the history</strong><span>Discover Datasets, run analysis, and use read-only SQL</span>{% endif %}
+          <a href="pchronicle/reference/cli/">
+            {% if config.theme.language == "zh" %}<strong>查阅 pChronicle CLI</strong><span>Dataset、命令原型和常见例子</span>{% else %}<strong>Look up the pChronicle CLI</strong><span>Datasets, command prototypes, and common examples</span>{% endif %}
           </a>
           <a href="system-design/">
-            {% if config.theme.language == "zh" %}<strong>检查系统边界</strong><span>实现状态、架构决策与已知限制</span>{% else %}<strong>Inspect system boundaries</strong><span>Implementation status, decisions, and known limits</span>{% endif %}
+            {% if config.theme.language == "zh" %}<strong>检查系统边界</strong><span>架构、集成范围和保证边界</span>{% else %}<strong>Inspect system boundaries</strong><span>Architecture, integration scope, and guarantee boundaries</span>{% endif %}
           </a>
         </div>
       </div>
@@ -173,20 +171,11 @@ pchronicle onboard query</code></pre>
     <section class="persisting-section persisting-principle">
       <div class="persisting-shell">
         {% if config.theme.language == "zh" %}
-        <h2>保证取决于来源</h2>
-        <p>
-          pVisor 在 Run Bundle 中按维度报告实际机制与 Evidence；pChronicle 保留 Source
-          lineage，而 Dataset 能够提供的保证取决于各 Source 实际携带的事实、身份与 Evidence。
-        </p>
-        <a class="md-button md-button--primary" href="system-design/">查看架构与成熟度</a>
+        <h2>从模型状态到 Agent 历史</h2>
+        <p>Persisting 让需要复用的状态保持持久，让已经发生的运行保持可查询；它记录实际存在的数据与执行机制，不补造原始记录中不存在的控制或证据。</p>
         {% else %}
-        <h2>Guarantees remain source-specific</h2>
-        <p>
-          pVisor reports actual mechanisms and Evidence per dimension in the
-          Run Bundle. pChronicle preserves Source lineage, while Dataset
-          guarantees depend on the facts, identity, and Evidence each Source actually carries.
-        </p>
-        <a class="md-button md-button--primary" href="system-design/">Review architecture and maturity</a>
+        <h2>From model state to Agent history</h2>
+        <p>Persisting keeps reusable state durable and completed runs queryable. It records the data and execution mechanisms actually present without inventing controls or evidence absent from the original record.</p>
         {% endif %}
       </div>
     </section>

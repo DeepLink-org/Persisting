@@ -7,7 +7,7 @@ does not contain a PyO3 extension and does not use Maturin.
 Each platform wheel is tagged `py3-none-<platform>` and contains:
 
 - the Python `persisting` package;
-- native `pvisor`, `ppilot`, and `pchronicle` scripts;
+- native command-line scripts;
 - the bundled pChronicle Web assets;
 - the platform libkrun firmware payload required by pVisor.
 

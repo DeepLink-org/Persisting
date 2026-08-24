@@ -349,7 +349,7 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
         status: "completed".into(),
     };
 
-    let analysis = explorer::analyze(run, &turns, &events);
+    let analysis = explorer::analyze(run, &turns, &events, CatalogEventProvenance::Canonical);
     assert_eq!(analysis.prompt_tokens, Some(10));
     assert_eq!(analysis.completion_tokens, Some(4));
     assert_eq!(analysis.total_tokens, Some(14));
@@ -898,6 +898,7 @@ async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
         String::from_utf8_lossy(&analysis_body)
     );
     let analysis: Value = serde_json::from_slice(&analysis_body).unwrap();
+    assert_eq!(analysis["event_provenance"], "synthetic_from_storyline");
     assert_eq!(analysis["turn_count"], 2);
     assert_eq!(analysis["latency_histogram"].as_array().unwrap().len(), 6);
     assert_eq!(analysis["source_breakdown"].as_array().unwrap().len(), 2);
@@ -921,6 +922,7 @@ async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
     assert!(turns["records"][0].get("total_tokens").is_some());
 
     let detail = app
+        .clone()
         .oneshot(
             axum::http::Request::builder()
                 .uri(format!("/api/explorer/turn?{coordinates}&turn_id=1"))
@@ -940,6 +942,42 @@ async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
     let detail: Value = serde_json::from_slice(&detail_body).unwrap();
     assert_eq!(detail["summary"]["id"], 1);
     assert_eq!(detail["turn"]["src"], "user");
+    assert_eq!(detail["event_provenance"], "synthetic_from_storyline");
+
+    let events = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(format!("/api/events?{coordinates}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events.status(), StatusCode::OK);
+    let events = response_json(events).await;
+    assert_eq!(
+        events["provenance"],
+        json!({
+            "kind": "synthetic_from_storyline",
+            "transform": "storyline_to_events_v1"
+        })
+    );
+    assert!(!events["records"].as_array().unwrap().is_empty());
+
+    let otlp = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(format!("/api/export/otlp?{coordinates}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(otlp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let otlp = response_json(otlp).await;
+    assert_eq!(otlp["code"], "unsupported");
+    assert!(otlp["message"].as_str().unwrap().contains("synthetic"));
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1506,6 +1544,9 @@ async fn physical_api_inspects_storyline_lance_layout_file_and_page() {
         .find(|table| table["name"] == "runs")
         .expect("runs table");
     let fragment = &runs["fragments"][0];
+    assert_eq!(runs["fragments"].as_array().map(Vec::len), Some(1));
+    assert!(fragment["physical_rows"].as_u64().unwrap_or(0) >= 1);
+    assert!(fragment["size_bytes"].as_u64().unwrap_or(0) > 0);
     let fragment_id = fragment["id"].as_u64().expect("fragment id");
     let data_file = fragment["files"][0]["path"].as_str().expect("data file");
 

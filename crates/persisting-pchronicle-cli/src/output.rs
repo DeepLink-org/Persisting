@@ -168,9 +168,35 @@ pub(super) fn query_value(value: Option<&serde_json::Value>) -> String {
     }
 }
 
-pub(super) fn write_query_output(path: &str, output: &[u8], stdout: &mut dyn Write) -> Result<()> {
+pub(super) fn write_query_output(
+    path: &str,
+    output: &[u8],
+    overwrite: bool,
+    stdout: &mut dyn Write,
+) -> Result<()> {
     if path == "-" {
+        anyhow::ensure!(!overwrite, "--overwrite cannot be used with stdout");
         stdout.write_all(output).context("write query output")?;
+        return Ok(());
+    }
+    if overwrite {
+        let output_path = Path::new(path);
+        let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+        let mut staging = tempfile::Builder::new()
+            .prefix(".pchronicle-query-")
+            .tempfile_in(parent)
+            .with_context(|| format!("create query output staging file in {}", parent.display()))?;
+        staging
+            .write_all(output)
+            .with_context(|| format!("write query output staging file for {path}"))?;
+        staging
+            .as_file()
+            .sync_all()
+            .with_context(|| format!("sync query output staging file for {path}"))?;
+        staging
+            .persist(output_path)
+            .map_err(|error| error.error)
+            .with_context(|| format!("replace query output file {path}"))?;
         return Ok(());
     }
     let mut file = std::fs::OpenOptions::new()
@@ -344,56 +370,10 @@ fn alias_root(env_key: &str, home_subdir: &str, leaf: &str, label: &str) -> Resu
 
 pub(super) fn normalize_and_validate_dataset_uri(input: &str) -> Result<String> {
     let input = expand_dataset_alias(input)?;
-    anyhow::ensure!(!input.is_empty(), "Dataset URI must not be empty");
-    if !input.contains("://") {
-        return Ok(std::fs::canonicalize(input)
-            .with_context(|| "canonicalize local Dataset path")?
-            .to_string_lossy()
-            .into_owned());
-    }
-
-    let url = Url::parse(&input).context("parse Dataset URI")?;
-    anyhow::ensure!(
-        matches!(url.scheme(), "local" | "file" | "s3" | "az" | "gs"),
-        "unsupported Dataset URI scheme '{}'",
-        url.scheme()
-    );
-    anyhow::ensure!(
-        url.username().is_empty() && url.password().is_none(),
-        "Dataset URI must not contain embedded credentials"
-    );
-    anyhow::ensure!(
-        url.query().is_none(),
-        "Dataset URI must not contain a query string or signed credentials"
-    );
-    anyhow::ensure!(
-        url.fragment().is_none(),
-        "Dataset URI must not contain a fragment"
-    );
-    if matches!(url.scheme(), "s3" | "az" | "gs") {
-        anyhow::ensure!(
-            url.host_str().is_some(),
-            "object-store URI must name a bucket"
-        );
-    } else {
-        anyhow::ensure!(
-            url.host_str().is_none(),
-            "local Dataset URI must not contain a host"
-        );
-    }
-    let minimum_length = input.find("://").map_or(1, |index| {
-        index
-            + if matches!(url.scheme(), "local" | "file") {
-                4
-            } else {
-                3
-            }
-    });
-    let mut normalized = input.to_string();
-    while normalized.len() > minimum_length && normalized.ends_with('/') {
-        normalized.pop();
-    }
-    Ok(normalized)
+    Ok(DatasetLocation::parse(&input)?
+        .into_existing()?
+        .as_str()
+        .to_string())
 }
 
 pub(super) fn write_table(

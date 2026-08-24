@@ -1,38 +1,26 @@
 # `pchronicle serve` 的 Gateway 转发、改写与捕获
 
-`pchronicle serve` 可以启动本地 LLM Gateway，并可选择是否同时启动只读 Warehouse。Gateway 对每个请求
+`pchronicle serve` 可以启动本地 LLM Gateway，并可选择是否同时启动只读 Dataset 服务。Gateway 对每个请求
 选择 upstream，按需改写模型和 wire protocol，再以客户端协议返回响应，同时把 canonical
-capture events 追加到一个已挂载 Dataset。Warehouse Web UI 和 API 仍然保持只读。
+capture events 追加到一个已挂载 Dataset。Dataset Web UI 和 API 仍然保持只读。
 
 当 Agent 或 SDK 已经能够调用 OpenAI、Anthropic 或 Gemini 兼容的 base URL，而你希望不
 启动 pVisor Run 就捕获这些流量时，可以使用这个模式。如果 Gateway 需要与 Agent 执行共享
 生命周期和隔离边界，应改用 [pVisor 捕获](../../pvisor/guides/capture.md)。
 
-## 两份配置文件
+## 配置输入
 
-Gateway 模式刻意分离存储配置和转发配置：
+Gateway 模式刻意分离 Dataset 选择和转发配置：
 
 | 输入 | 负责的内容 |
 | --- | --- |
-| 传给 `--config` 的 `warehouse.toml` | 挂载 Dataset，以及默认捕获目标 |
-| 传给 `--gateway` 的 `gateway.toml` | Gateway listener、模型路由、凭据、捕获级别和网络策略 |
+| 位置参数 `[NAME=]DATASET` | 挂载 Dataset |
+| 传给 `--gateway-config` 的 `gateway.toml` | Gateway listener、模型路由、凭据、捕获级别和网络策略 |
 | CLI 参数 | 选择写入 Dataset、本地 Gateway 状态目录、实时 Markdown 和前台调试 |
 
-两份 TOML 中的未知字段都会被拒绝。Gateway 配置必须使用 TOML，不接受其他扩展名。
+Gateway TOML 中的未知字段会被拒绝。Gateway 配置必须使用 TOML，不接受其他扩展名。
 
 ## 最小配置
-
-创建 `warehouse.toml`：
-
-```toml
-default_dataset = "captures"
-
-[[datasets]]
-name = "captures"
-uri = "./data/captures"
-```
-
-相对 Dataset 路径以 `warehouse.toml` 所在目录为基准解析。
 
 创建 `gateway.toml`：
 
@@ -59,19 +47,20 @@ forward = "deepseek-chat"
 export DEEPSEEK_API_KEY=sk-...
 
 pchronicle serve \
-  --config warehouse.toml \
   --listen 127.0.0.1:8080 \
-  --gateway gateway.toml \
-  --gateway-stream-markdown
+  --gateway-config gateway.toml \
+  --gateway-dataset captures \
+  --gateway-stream-markdown \
+  captures=./data/captures
 ```
 
 该命令会启动三个 loopback listener：
 
-- `127.0.0.1:8080`：Warehouse Web UI 和只读 API；
+- `127.0.0.1:8080`：Dataset Web UI 和只读 API；
 - `127.0.0.1:8787`：LLM Gateway；
 - `127.0.0.1:8788`：Gateway 状态和 session API。
 
-省略 `--listen` 时只启动 Gateway listener 与 capture sink，不会创建 Warehouse HTTP
+省略 `--listen` 时只启动 Gateway listener 与 capture sink，不会创建 Dataset HTTP
 endpoint。
 
 将 Agent 或 SDK 的 base URL 指向 `http://127.0.0.1:8787/v1`。例如：
@@ -86,7 +75,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   }'
 ```
 
-可以独立于 Warehouse 检查 Gateway：
+可以独立于 Dataset 服务检查 Gateway：
 
 ```bash
 curl http://127.0.0.1:8788/admin/status
@@ -236,7 +225,7 @@ streaming 形式；最后一条用户文本决定 assistant 输出。
 just echo
 
 # 等价的已安装命令：
-pchronicle echo --listen 127.0.0.1:19080 --encoding plain
+pchronicle dev echo --listen 127.0.0.1:19080 --encoding plain
 ```
 
 将 Gateway route 指向 Echo server：
@@ -271,8 +260,8 @@ curl http://127.0.0.1:8787/v1/messages \
 
 这条 Messages 请求会被转换成 Chat Completions，模型改写成 `echo-upstream`，响应再转换回
 Messages，其中的文本是 `aGVsbG8=`。加入 `"stream": true` 可以通过 SSE 测试同一条路径。
-请求 header 接受 `plain` 或 `base64`；`--encoding` 设置服务器默认值。`pchronicle echo` 只允许
-loopback listener，用于确定性的本地 Gateway 测试。
+请求 header 接受 `plain` 或 `base64`；`--encoding` 设置服务器默认值。隐藏测试命令
+`pchronicle dev echo` 只允许 loopback listener，用于确定性的本地 Gateway 测试。
 
 ## 网络策略
 
@@ -303,10 +292,9 @@ allow。若策略必须成为 Agent 进程不可绕过的边界，应使用 pVis
 捕获目标按以下顺序选择：
 
 1. `--gateway-dataset NAME`；
-2. `warehouse.toml` 中的 `default_dataset`；
-3. 只挂载了一个 Dataset 时，选择该 Dataset。
+2. 只传入一个位置 Dataset 时，选择该 Dataset。
 
-如果无法得到唯一 Dataset，启动会失败。最终名称必须对应静态 `[[datasets]]` mount。
+如果无法得到唯一 Dataset，启动会失败。最终名称必须对应某个位置 `[NAME=]DATASET` mount。
 
 Canonical events 直接追加到目标 Dataset。Gateway runtime state 与其分离，其中包括 session
 index、debug log 和可选实时 AgenticMD projection：
@@ -319,31 +307,31 @@ index、debug log 和可选实时 AgenticMD projection：
 
 ```bash
 pchronicle serve \
-  --config warehouse.toml \
-  --gateway gateway.toml \
+  --gateway-config gateway.toml \
   --gateway-state ./.pchronicle-gateway \
-  --gateway-stream-markdown
+  --gateway-stream-markdown \
+  captures=./data/captures
 ```
 
 ## CLI 优先级与安全边界
 
-- `--listen` 只配置 Warehouse；Gateway listener 始终来自 `gateway.toml`；
-- `--debug`（也接受 `--gateway-debug`）即使在 `debug = false` 时也会开启 Gateway 调试；没有
+- `--listen` 只配置 Dataset 服务；Gateway listener 始终来自 `gateway.toml`；
+- `--gateway-debug` 即使在 `debug = false` 时也会开启 Gateway 调试；没有
   CLI 参数能够强制关闭配置中已开启的 debug；
 - `--gateway-dataset`、`--gateway-state` 和 `--gateway-stream-markdown` 是组合层配置，不是
   Gateway TOML 字段；
-- Warehouse、Gateway 和 admin listener 都必须是 loopback 地址；这些服务不提供
+- Dataset、Gateway 和 admin listener 都必须是 loopback 地址；这些服务不提供
   authentication 或 authorization 边界；
 - debug 和 `full` 捕获可能保留敏感的请求或响应内容，应相应保护状态目录和 Dataset。
 
 ## 查看新捕获
 
 Gateway writer 排空后，events 会持久写入目标 Dataset。`serve` 的 projection supervisor
-会发现 canonical 变化，更新确定的同级 Storyline Store，然后完整重建并原子切换 Warehouse
+会发现 canonical 变化，更新确定的同级 Storyline Store，然后完整重建并原子切换服务端 Dataset
 Catalog。projection 或 refresh 失败会有界重试并保留旧的可查询 Catalog；两者都不阻塞
 durable capture write。`POST /api/catalog` 仍可用于显式手工刷新，但新捕获可见性不再依赖它。
 收到 `SIGINT` 或 `SIGTERM` 时，
 `pchronicle serve` 会停止两个服务，并在退出前完成 Gateway capture writer。
 
 精确命令参数见 [`pchronicle` CLI 参考](../reference/cli.md)；刷新背后的存储模型见
-[Dataset、Source 与 Snapshot](../concepts/dataset-and-source.md)。
+[Dataset Catalog 设计](../design/catalog.md)。

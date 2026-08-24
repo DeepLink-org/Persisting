@@ -149,6 +149,38 @@ pub struct CatalogStorylineKey {
     pub session_id: String,
 }
 
+/// Epistemic origin of the records in a Catalog event view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogEventProvenance {
+    Canonical,
+    SyntheticFromStoryline,
+}
+
+impl CatalogEventProvenance {
+    pub const fn is_canonical(self) -> bool {
+        matches!(self, Self::Canonical)
+    }
+
+    pub const fn transform(self) -> Option<&'static str> {
+        match self {
+            Self::Canonical => None,
+            Self::SyntheticFromStoryline => Some("storyline_to_events_v1"),
+        }
+    }
+}
+
+/// Event-shaped records together with their epistemic origin.
+///
+/// The wrapper is intentionally not interchangeable with `EventsDocument`:
+/// callers must account for whether records were observed canonically or
+/// synthesized from a normalized Storyline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogEventView {
+    pub provenance: CatalogEventProvenance,
+    pub document: EventsDocument,
+}
+
 /// One source-consistent trajectory materialization for Web/API consumers.
 ///
 /// Non-event sources normalize the Storyline once and derive the event view
@@ -156,7 +188,7 @@ pub struct CatalogStorylineKey {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CatalogTrajectoryBundle {
     pub storyline: StorylineDocument,
-    pub events: EventsDocument,
+    pub event_view: CatalogEventView,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -409,31 +441,46 @@ impl DatasetCatalogSnapshot {
                 .context("canonical events resolved without a normalized Storyline")?;
             return Ok(Some(CatalogTrajectoryBundle {
                 storyline,
-                events: EventsDocument::new(records),
+                event_view: CatalogEventView {
+                    provenance: CatalogEventProvenance::Canonical,
+                    document: EventsDocument::new(records),
+                },
             }));
         }
 
         let Some(storyline) = load_storyline_from_source(source.as_ref(), key).await? else {
             return Ok(None);
         };
-        let events = storyline_to_events(&storyline)?;
-        Ok(Some(CatalogTrajectoryBundle { storyline, events }))
+        let document = storyline_to_events(&storyline)?;
+        Ok(Some(CatalogTrajectoryBundle {
+            storyline,
+            event_view: CatalogEventView {
+                provenance: CatalogEventProvenance::SyntheticFromStoryline,
+                document,
+            },
+        }))
     }
 
     /// Return canonical records when the source is events.lance, otherwise a
     /// deterministic synthetic event view of the normalized Storyline.
-    pub async fn load_events(&self, key: &CatalogStorylineKey) -> Result<Option<EventsDocument>> {
+    pub async fn load_events(&self, key: &CatalogStorylineKey) -> Result<Option<CatalogEventView>> {
         let source = self.lazy_source(key)?.resolve().await?;
         if let ResolvedSource::Events(source) = source.as_ref() {
             return Ok(source
                 .records_for_storyline(&key.session_id)
                 .await?
-                .map(EventsDocument::new));
+                .map(|records| CatalogEventView {
+                    provenance: CatalogEventProvenance::Canonical,
+                    document: EventsDocument::new(records),
+                }));
         }
         let Some(storyline) = load_storyline_from_source(source.as_ref(), key).await? else {
             return Ok(None);
         };
-        Ok(Some(storyline_to_events(&storyline)?))
+        Ok(Some(CatalogEventView {
+            provenance: CatalogEventProvenance::SyntheticFromStoryline,
+            document: storyline_to_events(&storyline)?,
+        }))
     }
 
     /// Physical canonical events URI for a Storyline source. Non-canonical sources

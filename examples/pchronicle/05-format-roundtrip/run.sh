@@ -11,9 +11,9 @@ pchronicle_example_init "$example_dir"
 run_dir="$PCHRONICLE_EXAMPLE_RUN_DIR"
 
 imported="$(pchronicle_capture 01-import "$pchronicle" import \
-  --from "$input" --output "$run_dir/atif" --format atif)"
+  --from "$input" --to "$run_dir/atif" --input-format atif)"
 pchronicle_capture 02-export "$pchronicle" export --from "$run_dir/atif" \
-  --output "$run_dir/restored.json" --format atif --strict >/dev/null
+  --to "$run_dir/restored.json" --output-format atif --strict >/dev/null
 
 jq --sort-keys . "$input" >"$run_dir/input.normalized.json"
 jq --sort-keys . "$run_dir/restored.json" >"$run_dir/restored.normalized.json"

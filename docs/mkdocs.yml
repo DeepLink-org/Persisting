@@ -1,5 +1,5 @@
 site_name: Persisting
-site_description: Agent execution virtualization, effect governance, orchestration, and durable history
+site_description: Persistent infrastructure for the Agent era—from model parameters and KV caches to Agent trajectories
 site_url: https://github.com/DeepLink-org/Persisting
 docs_dir: src
 
@@ -80,12 +80,13 @@ plugins:
             pChronicle: pChronicle
             Overview: 概览
             Concepts: 核心概念
+            Start here: 从这里开始
+            Choose a workflow: 选择工作流
             Get Started: 快速开始
             Guides: 指南
             Design: 设计
             Reference: 参考
             Project: 项目
-            Product overview: 产品概览
             Architecture: 架构
             System overview: 系统概览
             AgentVisor category: AgentVisor 品类
@@ -99,19 +100,16 @@ plugins:
             Network control: 网络控制
             Capture trajectories: 捕获轨迹
             Replay Agent trajectories: 回放 Agent 轨迹
-            Scale with pPilot: 使用 pPilot 扩展
             Isolation architecture: 隔离架构
             Gateway architecture: Gateway 架构
             OverlayNet architecture: OverlayNet 架构
-            pPilot orchestration: pPilot 编排
             pVisor CLI: pVisor CLI
-            pPilot CLI: pPilot CLI
-            Dataset and history concepts: Dataset 与历史概念
-            Dataset, Source, and Snapshot: Dataset、Source 与 Snapshot
-            Facts, projections, and revisions: 事实、Projection 与 Revision
+            Dataset interface: Dataset 接口
+            Dataset discovery and versioning: Dataset 发现与版本固定
+            Data contracts and revisions: 数据契约与 Revision
             Discover and query: 发现与查询
             Import and export: 导入与导出
-            Local read-only Warehouse: 本地只读 Warehouse
+            Local read-only Dataset server: 本地只读 Dataset 服务
             Gateway forwarding, rewriting, and capture: Gateway 转发、改写与捕获
             Product architecture: 产品架构
             Trajectory storage: 轨迹存储
@@ -163,8 +161,8 @@ plugins:
 
 nav:
   - Home:
-      - Overview: index.md
-      - Product overview: overview.md
+      - Start here: index.md
+      - Choose a workflow: overview.md
       - Installation: installation.md
   - pVisor:
       - Overview: pvisor/index.md
@@ -181,33 +179,30 @@ nav:
           - Network control: pvisor/guides/network.md
           - Capture trajectories: pvisor/guides/capture.md
           - Replay Agent trajectories: pvisor/guides/sandbox-replay.md
-          - Scale with pPilot: pvisor/guides/orchestrate.md
       - Design:
           - Design overview: pvisor/design/index.md
           - Isolation architecture: pvisor/design/isolation.md
           - OverlayNet architecture: pvisor/design/overlaynet.md
           - Gateway architecture: pvisor/design/gateway.md
-          - pPilot orchestration: pvisor/design/orchestration.md
       - Reference:
           - Reference overview: pvisor/reference/index.md
           - pVisor CLI: pvisor/reference/cli.md
-          - pPilot CLI: pvisor/reference/ppilot-cli.md
   - pChronicle:
       - Overview: pchronicle/index.md
       - Get Started: pchronicle/get-started.md
       - Concepts:
-          - Dataset and history concepts: pchronicle/concepts/index.md
-          - Dataset, Source, and Snapshot: pchronicle/concepts/dataset-and-source.md
-          - Facts, projections, and revisions: pchronicle/concepts/facts-and-projections.md
+          - Dataset interface: pchronicle/concepts/index.md
       - Guides:
           - Guides overview: pchronicle/guides/index.md
           - Discover and query: pchronicle/guides/discover-and-query.md
           - Import and export: pchronicle/guides/exchange.md
-          - Local read-only Warehouse: pchronicle/guides/serve.md
+          - Local read-only Dataset server: pchronicle/guides/serve.md
           - Gateway forwarding, rewriting, and capture: pchronicle/guides/serve-gateway.md
       - Design:
           - Design overview: pchronicle/design/index.md
           - Product architecture: pchronicle/design/architecture.md
+          - Dataset discovery and versioning: pchronicle/concepts/dataset-and-source.md
+          - Data contracts and revisions: pchronicle/concepts/facts-and-projections.md
           - Dataset Catalog: pchronicle/design/catalog.md
           - Trajectory storage: pchronicle/design/trajectory-storage.md
           - Storyline Lance projection: pchronicle/design/storyline-lance.md

@@ -3,9 +3,12 @@
 Persisting is distributed as a Python wheel containing both the Python package
 and its matched CLI component set:
 
+The public entry points documented here focus on controlled Agent execution and
+durable trajectory history.
+
 | Distribution | Contents | Use case |
 |---|---|---|
-| Host wheel | Python package plus `pchronicle`, `pvisor`, and `ppilot` | Python APIs and the complete host CLI component set |
+| Host wheel | Python package plus the `pvisor` and `pchronicle` entry points | Python APIs, controlled Agent execution, and trajectory data workflows |
 
 ## Requirements
 
@@ -36,8 +39,8 @@ pip install persisting[lance]
 pip install persisting
 ```
 
-Both installation commands install the matching `pchronicle`, `pvisor`, and `ppilot`
-binaries into the Python environment's scripts directory.
+Both installation commands install the matching `pvisor` and `pchronicle`
+entry points into the Python environment's scripts directory.
 
 ### Nightly wheel
 
@@ -58,9 +61,9 @@ pip install -e ".[lance]"
 
 ## CLI component set
 
-The wheel bundles a matched component set. Use `pvisor` for one Run and
-environments, `ppilot` for batch orchestration, and `pchronicle` for Dataset
-catalog, SQL, analysis, exchange, and read-only serving.
+The wheel bundles matched components. Use `pvisor` for one Run and its execution
+environment, and `pchronicle` for Dataset catalog, SQL, analysis, exchange, and
+read-only serving.
 
 ### Cargo installation from source
 
@@ -70,13 +73,12 @@ cd Persisting
 just install-cli
 ```
 
-This alternative installs matching builds of `pchronicle`, `pvisor`, and
-`ppilot` into the Cargo binary directory without installing the Python package.
+This alternative installs matching command-line components into the Cargo
+binary directory without installing the Python package.
 
 ### Component overrides
 
-Set `PERSISTING_PVISOR_BIN` or `PERSISTING_PPILOT_BIN` to select an explicit
-component binary.
+Set `PERSISTING_PVISOR_BIN` to select an explicit pVisor binary.
 
 ## Container and libkrun executors
 
@@ -105,7 +107,6 @@ print(persisting.__version__)
 
 ```bash
 pvisor --version
-ppilot --help
 pchronicle --help
 ```
 
@@ -120,5 +121,5 @@ pchronicle --help
 ## Next steps
 
 - [Run your first Agent](pvisor/get-started.md) — complete the run, review, and selective-apply loop
-- [Persisting, in one story](overview.md) — understand how one Run scales into orchestration and history
+- [Choose a workflow](overview.md) — start with pVisor or pChronicle
 - [Explore pVisor](pvisor/index.md) or [pChronicle](pchronicle/index.md) by product

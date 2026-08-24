@@ -1,11 +1,33 @@
-# pChronicle 核心概念
+# Dataset
 
-pChronicle 保留轨迹数据的物理来源，并把写入时事实与读取时 projection 分开。
+**Dataset 是 pChronicle 面向用户的唯一数据对象。** 它是一组可以被浏览、查询、分析、导入、
+导出或提供服务的 Agent 轨迹数据。
 
-| 问题 | 概念文章 |
-| --- | --- |
-| 轨迹数据如何寻址，并在一次操作中固定版本？ | [Dataset、Source 与 Snapshot](dataset-and-source.md) |
-| 事实、规范化视图、交换格式和 lineage 分别由哪一层拥有？ | [事实、Projection 与 Revision](facts-and-projections.md) |
+一个 Dataset 可以表现为：
 
-这些文章定义稳定心智模型。查询步骤属于[使用指南](../guides/index.md)，精确 schema 和格式
-属于[参考](../reference/index.md)，存储机制属于[设计](../design/index.md)。
+- 本地目录或文件（`./local/path`）；
+- 对象存储中的 URI 前缀（`s3://bucket/prefix`）；
+- 指向上述位置的用户 alias（`@alias-name`）。
+
+## Dataset 的写法
+
+裸字符串按路径或 URI 解释；`@` 前缀明确表示 alias：
+
+```text
+prod       本地相对路径 ./prod
+@prod      名为 prod 的 Dataset alias
+```
+
+因此，同名目录和 alias 不会让命令产生歧义。使用 `pchronicle alias` 创建和查看 alias；使用
+`pchronicle default` 选择省略参数时使用的本地 Dataset。
+
+## 命令看到什么
+
+pChronicle 会发现 Dataset 中受支持的轨迹数据，并把语义兼容的字段规范化为 `runs`、`steps`
+和 `tool_calls` 等查询表。每条读取命令使用一个内部一致的视图；即使底层位置在命令执行期间
+发生变化，已经开始的读取也不会随之漂移。
+
+这就是使用命令行所需的完整用户模型。存储发现、版本固定、事实、projection 和 revision 属于
+实现与数据契约细节；只有集成确实依赖这些边界时，才需要继续阅读[设计](../design/index.md)。
+
+接下来可以进入[常见工作流](../guides/index.md)或[命令行参考](../reference/cli.md)。

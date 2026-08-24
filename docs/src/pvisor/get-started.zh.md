@@ -5,7 +5,7 @@
 
 ## 1. 安装 CLI
 
-Wheel 会同时安装 `pvisor`、`ppilot` 与 `pchronicle`：
+Wheel 会同时安装 Persisting 当前的命令行入口：
 
 ```bash
 pip install persisting
@@ -27,7 +27,6 @@ brew install --cask macfuse
 
 ```bash
 pvisor --help
-ppilot --help
 pchronicle --help
 ```
 
@@ -89,5 +88,4 @@ Effect 可以进入真实项目。
 - [选择 host、Container 或 VM 运行方式](guides/execution.md)
 - [控制网络访问](guides/network.md)
 - [捕获 Agent 轨迹](guides/capture.md)
-- [编排多个 Run](guides/orchestrate.md)
 - [查询持久化历史](../pchronicle/get-started.md)

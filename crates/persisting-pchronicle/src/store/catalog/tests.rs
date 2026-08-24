@@ -554,7 +554,14 @@ async fn trajectory_bundle_derives_events_from_one_storyline_source_resolution()
         .context("trajectory bundle must exist")?;
 
     assert_eq!(bundle.storyline, expected);
-    assert_eq!(bundle.events, storyline_to_events(&bundle.storyline)?);
+    assert_eq!(
+        bundle.event_view.provenance,
+        CatalogEventProvenance::SyntheticFromStoryline
+    );
+    assert_eq!(
+        bundle.event_view.document,
+        storyline_to_events(&bundle.storyline)?
+    );
     assert_eq!(
         snapshot.prepared[0].sources[0]
             .resolution_count
@@ -834,7 +841,8 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
             })
             .await?
             .context("Catalog Storyline must resolve canonical events")?;
-        assert_eq!(events.events.len(), 1);
+        assert_eq!(events.provenance, CatalogEventProvenance::Canonical);
+        assert_eq!(events.document.events.len(), 1);
     }
     assert_eq!(events.normalization_count.load(Ordering::Relaxed), 0);
 

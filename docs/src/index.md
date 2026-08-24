@@ -1,7 +1,7 @@
 ---
 template: home.html
-title: Persisting — governed Agent execution and durable trajectory Datasets
-description: Govern Agent Runs and turn native or external trajectories into durable, queryable Datasets with explicit source identity and lineage, preserving any Evidence a Source carries.
+title: Persisting — Persistent Infrastructure for the Agent Era
+description: Persisting model state and Agent history—from model parameters and KV caches to Agent trajectories.
 hide: toc
 ---
 

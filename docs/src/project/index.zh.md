@@ -1,7 +1,7 @@
 # Project
 
-这一节记录交付状态、稳定决策、贡献者工作流，以及不在 pVisor → pChronicle 主路径中的
-独立系统。
+Persisting 的公共定位横跨模型状态与 Agent 历史。这一节记录交付状态、稳定决策、贡献者
+工作流，以及不在当前 pVisor → pChronicle 主路径中的独立系统。
 
 ## 架构
 

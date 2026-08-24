@@ -1,7 +1,7 @@
 # pChronicle 前端产品整体 review
 
 日期：2026-08-23
-范围：运行中的 Dioxus WASM 前端（`pchronicle serve --storage ./data`，26 runs 真实数据）+ 已收敛的产品方向（时间旅行调试器叙事 v2）
+范围：运行中的 Dioxus WASM 前端（当前命令为 `pchronicle serve ./data`，26 runs 真实数据）+ 已收敛的产品方向（时间旅行调试器叙事 v2）
 方法：agent-browser 逐页实测截图（8 张，存 `assets/2026-08-23-frontend/`）
 
 ![Catalog 页：单数据集 tile 拉伸撑满](assets/2026-08-23-frontend/pc-fe-1-catalog.png)

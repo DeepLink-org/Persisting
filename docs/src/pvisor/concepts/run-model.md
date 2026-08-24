@@ -23,8 +23,8 @@ Run
 └── Attempt 2 → terminal result
 ```
 
-This distinction lets pPilot retry infrastructure safely while keeping the
-history understandable.
+This distinction allows infrastructure retries while keeping the history
+understandable.
 
 ## Effect
 

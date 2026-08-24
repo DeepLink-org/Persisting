@@ -2,9 +2,11 @@
 
 Persisting 通过 Python wheel 发布，wheel 同时包含 Python 包和版本匹配的 CLI 组件集：
 
+本文记录的公开入口聚焦可控 Agent 执行与持久轨迹历史。
+
 | 安装物 | 内容 | 用途 |
 |---|---|---|
-| 宿主机 wheel | Python 包以及 `pchronicle`、`pvisor`、`ppilot` | Python API 和完整宿主机 CLI 组件集 |
+| 宿主机 wheel | Python 包以及 `pvisor`、`pchronicle` 入口 | Python API、可控 Agent 执行与轨迹数据工作流 |
 
 ## 环境要求
 
@@ -34,7 +36,7 @@ pip install persisting[lance]
 pip install persisting
 ```
 
-上面两种安装命令都会把版本匹配的 `pchronicle`、`pvisor`、`ppilot` 安装到 Python 环境的
+上面两种安装命令都会把版本匹配的 `pvisor` 与 `pchronicle` 入口安装到 Python 环境的
 scripts 目录。
 
 ### Nightly wheel
@@ -55,8 +57,8 @@ pip install -e ".[lance]"
 
 ## CLI 组件集
 
-wheel 内是一组版本匹配的 CLI 组件：单 Run 与环境使用 `pvisor`，批量编排使用
-`ppilot`，Dataset 目录、SQL、分析、格式交换与只读服务使用 `pchronicle`。
+wheel 内是一组版本匹配的组件：单 Run 与执行环境使用 `pvisor`，Dataset 目录、SQL、分析、
+格式交换与只读服务使用 `pchronicle`。
 
 ### 通过 Cargo 从源码安装
 
@@ -66,12 +68,11 @@ cd Persisting
 just install-cli
 ```
 
-这是不安装 Python 包的替代路径，会把版本匹配的 `pchronicle`、`pvisor` 和 `ppilot`
-安装到 Cargo bin 目录。
+这是不安装 Python 包的替代路径，会把版本匹配的命令行组件安装到 Cargo bin 目录。
 
 ### 组件覆盖
 
-`PERSISTING_PVISOR_BIN`、`PERSISTING_PPILOT_BIN` 可显式指定组件二进制路径。
+`PERSISTING_PVISOR_BIN` 可显式指定 pVisor 二进制路径。
 
 ## Container/libkrun executor
 
@@ -97,7 +98,6 @@ print(persisting.__version__)
 
 ```bash
 pvisor --version
-ppilot --help
 pchronicle --help
 ```
 
@@ -112,5 +112,5 @@ pchronicle --help
 ## 下一步
 
 - [运行第一个 Agent](pvisor/get-started.md) — 完成 run、review 与选择性 apply 闭环
-- [Persisting 的完整故事](overview.md) — 理解一个 Run 如何扩展到编排与历史
+- [选择工作流](overview.md) — 从 pVisor 或 pChronicle 开始
 - 按产品进入 [pVisor](pvisor/index.md) 或 [pChronicle](pchronicle/index.md)

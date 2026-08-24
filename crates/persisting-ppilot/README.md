@@ -29,7 +29,7 @@ one independent pVisor workspace per emitted Run, and writes a durable
 production report. Both commands invoke the standalone `pvisor` binary for
 each Run and embed a job-scoped Supervisor; there is no separate Supervisor
 service to deploy. For `run --sink`, pPilot starts one authenticated,
-loopback-only `pchronicle serve --storage ... --control 127.0.0.1:0` child and
+loopback-only `pchronicle serve --control 127.0.0.1:0 DATASET` child and
 uses its versioned client protocol
 as a storage/control implementation dependency. The child persists the selected
 coordination records. When pPilot is built with `traj-sink` and `--traj` is

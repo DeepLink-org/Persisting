@@ -1,14 +1,16 @@
 # System Design
 
-Persisting has two primary product domains:
+Persisting is persistent infrastructure for the Agent era, spanning model
+state—parameters and KV caches—and Agent history. This section focuses on the
+two current public product domains:
 
 - [pVisor](../pvisor/index.md) virtualizes and governs Agent execution;
 - [pChronicle](../pchronicle/index.md) organizes durable trajectory Sources into
   queryable Datasets.
 
-pPilot extends pVisor from one Run to many. Gateway, OverlayFS, and OverlayNet
-are pVisor runtime mechanisms. Where available, stable Run identity connects the
-domains, but each also has a standalone entry path.
+Gateway, OverlayFS, and OverlayNet are pVisor runtime mechanisms. Where
+available, stable Run identity connects the domains, but each also has a
+standalone entry path.
 
 ![Persisting product domains and integration](../assets/diagrams/persisting/system-products.svg)
 
@@ -37,7 +39,6 @@ not provide.
 | Concern | Owner |
 | --- | --- |
 | One Run's execution boundary | pVisor |
-| Planning and recovery of many Runs | pPilot |
 | Model, network, and filesystem runtime drivers | pVisor |
 | Canonical events, terminal facts, and Dataset history | pChronicle |
 | Query, exchange, and revision lineage | pChronicle |

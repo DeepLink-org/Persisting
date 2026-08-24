@@ -1,9 +1,12 @@
 //! Read-only physical inspection of Catalog Lance sources.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures::TryStreamExt;
+use lance::dataset::statistics::DatasetStatisticsExt;
 use lance::deps::arrow_array::{
     Array, BinaryArray, BooleanArray, Float64Array, Int32Array, Int64Array, LargeBinaryArray,
     LargeStringArray, StringArray, UInt64Array,
@@ -22,6 +25,19 @@ pub const DEFAULT_PHYSICAL_PAGE_LIMIT: usize = 32;
 pub const MAX_PHYSICAL_COLUMNS: usize = 64;
 pub const MAX_PHYSICAL_CELL_BYTES: usize = 4 * 1024;
 pub const MAX_PHYSICAL_PREVIEW_BYTES: usize = 64 * 1024;
+const MAX_PHYSICAL_STATS_ROWS: usize = 100_000;
+const MAX_VALUE_BUCKETS: usize = 8;
+const MAX_TRACKED_VALUES: usize = 64;
+const SIZE_BUCKET_LABELS: [&str; 8] = [
+    "0 B",
+    "1–8 B",
+    "9–64 B",
+    "65–256 B",
+    "257 B–1 KB",
+    "1–4 KB",
+    "4–16 KB",
+    ">16 KB",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PhysicalSource {
@@ -55,6 +71,7 @@ pub struct PhysicalTable {
 pub struct PhysicalFragment {
     pub id: u64,
     pub physical_rows: Option<u64>,
+    pub size_bytes: Option<u64>,
     pub deletion_file: Option<String>,
     pub files: Vec<PhysicalDataFile>,
 }
@@ -83,7 +100,39 @@ pub struct PhysicalFileLayout {
 pub struct PhysicalColumn {
     pub name: String,
     pub field_id: i32,
+    #[serde(default)]
+    pub data_type: String,
+    #[serde(default)]
+    pub row_count: u64,
+    #[serde(default)]
+    pub null_count: u64,
+    #[serde(default)]
+    pub non_null_count: u64,
+    #[serde(default)]
+    pub compressed_bytes: Option<u64>,
+    #[serde(default)]
+    pub uncompressed_bytes: Option<u64>,
+    #[serde(default)]
+    pub max_value: Option<PhysicalExtremeValue>,
+    #[serde(default)]
+    pub value_distribution: Vec<PhysicalBucket>,
+    #[serde(default)]
+    pub size_distribution: Vec<PhysicalBucket>,
     pub pages: Vec<PhysicalPage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PhysicalExtremeValue {
+    pub row_offset: u64,
+    pub size_bytes: u64,
+    pub preview: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PhysicalBucket {
+    pub label: String,
+    pub count: u64,
+    pub weight: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -169,7 +218,7 @@ pub async fn inspect_physical_file(
         .find(|candidate| candidate.path == data_file)
         .with_context(|| format!("physical data file not found: {data_file}"))?;
     let remaining_columns = data.field_names.len().saturating_sub(MAX_PHYSICAL_COLUMNS);
-    let columns = data
+    let mut columns = data
         .field_ids
         .iter()
         .zip(&data.field_names)
@@ -177,6 +226,15 @@ pub async fn inspect_physical_file(
         .map(|(field_id, name)| PhysicalColumn {
             name: name.clone(),
             field_id: *field_id,
+            data_type: String::new(),
+            row_count: fragment.physical_rows.unwrap_or(0),
+            null_count: 0,
+            non_null_count: 0,
+            compressed_bytes: None,
+            uncompressed_bytes: None,
+            max_value: None,
+            value_distribution: Vec::new(),
+            size_distribution: Vec::new(),
             pages: vec![PhysicalPage {
                 index: 0,
                 offset: 0,
@@ -185,7 +243,12 @@ pub async fn inspect_physical_file(
                 encoding: data.encoding.clone(),
             }],
         })
-        .collect();
+        .collect::<Vec<_>>();
+    if let Ok(uri) = table_uri(snapshot, dataset, file, table).await {
+        if let Ok(lance) = Dataset::open(&uri).await {
+            enrich_column_stats(&lance, fragment_id, &mut columns).await;
+        }
+    }
     Ok(PhysicalFileLayout {
         table: table.to_string(),
         fragment_id,
@@ -213,21 +276,29 @@ pub async fn inspect_physical_page(
     snapshot: &DatasetCatalogSnapshot,
     query: PhysicalPageQuery<'_>,
 ) -> Result<PhysicalPagePreview> {
-    let file_layout = inspect_physical_file(
-        snapshot,
-        query.dataset,
-        query.file,
-        query.table,
-        query.fragment_id,
-        query.data_file,
-    )
-    .await?;
+    let layout = inspect_physical_layout(snapshot, query.dataset, query.file).await?;
+    let table_layout = layout
+        .tables
+        .iter()
+        .find(|candidate| candidate.name == query.table)
+        .with_context(|| format!("physical table not found: {}", query.table))?;
+    let fragment = table_layout
+        .fragments
+        .iter()
+        .find(|candidate| candidate.id == query.fragment_id)
+        .with_context(|| format!("physical fragment not found: {}", query.fragment_id))?;
+    let data = fragment
+        .files
+        .iter()
+        .find(|candidate| candidate.path == query.data_file)
+        .with_context(|| format!("physical data file not found: {}", query.data_file))?;
     let columns = match query.column {
         Some(name) => vec![name.to_string()],
-        None => file_layout
-            .columns
+        None => data
+            .field_names
             .iter()
-            .map(|column| column.name.clone())
+            .take(MAX_PHYSICAL_COLUMNS)
+            .cloned()
             .collect(),
     };
     anyhow::ensure!(!columns.is_empty(), "physical data file has no columns");
@@ -347,32 +418,34 @@ async fn physical_table(name: &str, dataset: Dataset) -> Result<PhysicalTable> {
         .into_iter()
         .map(|fragment| {
             let meta = fragment.metadata();
+            let files = meta
+                .files
+                .iter()
+                .map(|file| PhysicalDataFile {
+                    path: file.path.clone(),
+                    field_ids: file.fields.to_vec(),
+                    field_names: file
+                        .fields
+                        .iter()
+                        .filter_map(|field_id| {
+                            schema
+                                .field_by_id(*field_id)
+                                .map(|field| field.name.clone())
+                        })
+                        .collect(),
+                    size_bytes: file.file_size_bytes.get().map(|value| value.get()),
+                    encoding: format!(
+                        "lance-{}.{}",
+                        file.file_major_version, file.file_minor_version
+                    ),
+                })
+                .collect::<Vec<_>>();
             PhysicalFragment {
                 id: meta.id,
                 physical_rows: meta.physical_rows.map(|rows| rows as u64),
+                size_bytes: sum_known_sizes(files.iter().map(|file| file.size_bytes)),
                 deletion_file: meta.deletion_file.as_ref().map(|file| format!("{file:?}")),
-                files: meta
-                    .files
-                    .iter()
-                    .map(|file| PhysicalDataFile {
-                        path: file.path.clone(),
-                        field_ids: file.fields.to_vec(),
-                        field_names: file
-                            .fields
-                            .iter()
-                            .filter_map(|field_id| {
-                                schema
-                                    .field_by_id(*field_id)
-                                    .map(|field| field.name.clone())
-                            })
-                            .collect(),
-                        size_bytes: file.file_size_bytes.get().map(|value| value.get()),
-                        encoding: format!(
-                            "lance-{}.{}",
-                            file.file_major_version, file.file_minor_version
-                        ),
-                    })
-                    .collect(),
+                files,
             }
         })
         .collect();
@@ -383,6 +456,248 @@ async fn physical_table(name: &str, dataset: Dataset) -> Result<PhysicalTable> {
         num_rows: dataset.count_rows(None).await? as u64,
         fragments,
     })
+}
+
+fn sum_known_sizes(sizes: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {
+    let sizes = sizes.into_iter().flatten().collect::<Vec<_>>();
+    (!sizes.is_empty()).then_some(sizes.into_iter().sum())
+}
+
+struct ColumnScratch {
+    data_type: String,
+    row_count: u64,
+    null_count: u64,
+    uncompressed_bytes: u64,
+    values: HashMap<String, u64>,
+    extra_values: u64,
+    size_counts: [u64; 8],
+    max_size: u64,
+    max_row: u64,
+    max_preview: String,
+}
+
+impl ColumnScratch {
+    fn new(data_type: impl Into<String>) -> Self {
+        Self {
+            data_type: data_type.into(),
+            row_count: 0,
+            null_count: 0,
+            uncompressed_bytes: 0,
+            values: HashMap::new(),
+            extra_values: 0,
+            size_counts: [0; 8],
+            max_size: 0,
+            max_row: 0,
+            max_preview: String::new(),
+        }
+    }
+
+    fn observe(&mut self, array: &dyn Array, row: usize, row_offset: u64) {
+        self.row_count += 1;
+        if array.is_null(row) {
+            self.null_count += 1;
+            self.size_counts[0] += 1;
+            return;
+        }
+        let size = cell_uncompressed_bytes(array, row);
+        self.uncompressed_bytes += size;
+        self.size_counts[size_bucket(size)] += 1;
+        let (preview, _) = format_cell(array, row);
+        if self.values.len() < MAX_TRACKED_VALUES || self.values.contains_key(&preview) {
+            *self.values.entry(preview.clone()).or_insert(0) += 1;
+        } else {
+            self.extra_values += 1;
+        }
+        if size > self.max_size {
+            self.max_size = size;
+            self.max_row = row_offset;
+            self.max_preview = preview;
+        }
+    }
+
+    fn finish(self, compressed_bytes: Option<u64>) -> FinishedColumnStats {
+        let mut values = self.values.into_iter().collect::<Vec<_>>();
+        values.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        let mut other = self.extra_values;
+        if values.len() > MAX_VALUE_BUCKETS {
+            other += values
+                .iter()
+                .skip(MAX_VALUE_BUCKETS)
+                .map(|item| item.1)
+                .sum::<u64>();
+            values.truncate(MAX_VALUE_BUCKETS);
+        }
+        let mut value_distribution = values
+            .into_iter()
+            .map(|(label, count)| PhysicalBucket {
+                label,
+                count,
+                weight: count,
+            })
+            .collect::<Vec<_>>();
+        if other > 0 {
+            value_distribution.push(PhysicalBucket {
+                label: "other".into(),
+                count: other,
+                weight: other,
+            });
+        }
+        let size_distribution = self
+            .size_counts
+            .into_iter()
+            .enumerate()
+            .filter(|(_, count)| *count > 0)
+            .map(|(index, count)| PhysicalBucket {
+                label: SIZE_BUCKET_LABELS[index].into(),
+                count,
+                weight: count,
+            })
+            .collect();
+        FinishedColumnStats {
+            data_type: self.data_type,
+            row_count: self.row_count,
+            null_count: self.null_count,
+            non_null_count: self.row_count.saturating_sub(self.null_count),
+            compressed_bytes,
+            uncompressed_bytes: Some(self.uncompressed_bytes),
+            max_value: (self.max_size > 0).then_some(PhysicalExtremeValue {
+                row_offset: self.max_row,
+                size_bytes: self.max_size,
+                preview: self.max_preview,
+            }),
+            value_distribution,
+            size_distribution,
+        }
+    }
+}
+
+struct FinishedColumnStats {
+    data_type: String,
+    row_count: u64,
+    null_count: u64,
+    non_null_count: u64,
+    compressed_bytes: Option<u64>,
+    uncompressed_bytes: Option<u64>,
+    max_value: Option<PhysicalExtremeValue>,
+    value_distribution: Vec<PhysicalBucket>,
+    size_distribution: Vec<PhysicalBucket>,
+}
+
+fn size_bucket(bytes: u64) -> usize {
+    match bytes {
+        0 => 0,
+        1..=8 => 1,
+        9..=64 => 2,
+        65..=256 => 3,
+        257..=1024 => 4,
+        1025..=4096 => 5,
+        4097..=16384 => 6,
+        _ => 7,
+    }
+}
+
+fn cell_uncompressed_bytes(array: &dyn Array, row: usize) -> u64 {
+    match array.data_type() {
+        DataType::Utf8 => array
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .map(|values| values.value(row).len() as u64)
+            .unwrap_or(0),
+        DataType::LargeUtf8 => array
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .map(|values| values.value(row).len() as u64)
+            .unwrap_or(0),
+        DataType::Binary => array
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .map(|values| values.value(row).len() as u64)
+            .unwrap_or(0),
+        DataType::LargeBinary => array
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .map(|values| values.value(row).len() as u64)
+            .unwrap_or(0),
+        DataType::Boolean => 1,
+        DataType::Int32 => 4,
+        DataType::Int64 | DataType::UInt64 | DataType::Float64 => 8,
+        _ => format_cell(array, row).0.len() as u64,
+    }
+}
+
+async fn compressed_bytes_by_field(dataset: &Dataset) -> HashMap<i32, u64> {
+    if dataset.get_fragments().len() != 1 {
+        return HashMap::new();
+    }
+    let Ok(stats) = Arc::new(dataset.clone()).calculate_data_stats().await else {
+        return HashMap::new();
+    };
+    stats
+        .fields
+        .into_iter()
+        .filter(|field| field.bytes_on_disk > 0)
+        .map(|field| (field.id as i32, field.bytes_on_disk))
+        .collect()
+}
+
+async fn enrich_column_stats(dataset: &Dataset, fragment_id: u64, columns: &mut [PhysicalColumn]) {
+    if columns.is_empty() {
+        return;
+    }
+    let compressed = compressed_bytes_by_field(dataset).await;
+    let names = columns
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<Vec<_>>();
+    let mut scan = dataset.scan();
+    if scan.project(&names).is_err() {
+        return;
+    }
+    if let Some(fragment) = dataset.get_fragment(fragment_id as usize) {
+        scan.with_fragments(vec![fragment.metadata().clone()]);
+    }
+    if scan
+        .limit(Some(MAX_PHYSICAL_STATS_ROWS as i64), None)
+        .is_err()
+    {
+        return;
+    }
+    let Ok(stream) = scan.try_into_stream().await else {
+        return;
+    };
+    let Ok(batches) = stream.try_collect::<Vec<_>>().await else {
+        return;
+    };
+    let mut scratches = columns
+        .iter()
+        .map(|column| ColumnScratch::new(column.data_type.clone()))
+        .collect::<Vec<_>>();
+    let mut row_offset = 0u64;
+    for batch in &batches {
+        for (index, scratch) in scratches.iter_mut().enumerate() {
+            if scratch.data_type.is_empty() {
+                scratch.data_type = batch.schema().field(index).data_type().to_string();
+            }
+        }
+        for row in 0..batch.num_rows() {
+            for (index, scratch) in scratches.iter_mut().enumerate() {
+                scratch.observe(batch.column(index).as_ref(), row, row_offset);
+            }
+            row_offset += 1;
+        }
+    }
+    for (column, scratch) in columns.iter_mut().zip(scratches) {
+        let stats = scratch.finish(compressed.get(&column.field_id).copied());
+        column.data_type = stats.data_type;
+        column.row_count = stats.row_count;
+        column.null_count = stats.null_count;
+        column.non_null_count = stats.non_null_count;
+        column.compressed_bytes = stats.compressed_bytes;
+        column.uncompressed_bytes = stats.uncompressed_bytes;
+        column.max_value = stats.max_value;
+        column.value_distribution = stats.value_distribution;
+        column.size_distribution = stats.size_distribution;
+    }
 }
 
 async fn preview_rows(
@@ -592,7 +907,10 @@ mod tests {
             .find(|table| table.name == "runs")
             .expect("runs table");
         assert!(runs.num_rows >= 1);
+        assert_eq!(runs.fragments.len(), 1);
         let fragment = runs.fragments.first().expect("fragment");
+        assert!(fragment.physical_rows.unwrap_or(0) >= 1);
+        assert!(fragment.size_bytes.unwrap_or(0) > 0);
         let data_file = fragment.files.first().expect("data file");
         assert!(!data_file.field_names.is_empty());
 
@@ -610,6 +928,20 @@ mod tests {
             data_file.field_names.len().min(MAX_PHYSICAL_COLUMNS)
         );
         assert_eq!(file.columns[0].pages.len(), 1);
+        let session_id = file
+            .columns
+            .iter()
+            .find(|column| column.name == "session_id")
+            .expect("session_id column");
+        assert!(session_id.row_count >= 1);
+        assert!(session_id.non_null_count >= 1);
+        assert!(session_id.uncompressed_bytes.unwrap_or(0) > 0);
+        assert!(!session_id.value_distribution.is_empty());
+        assert!(session_id
+            .value_distribution
+            .iter()
+            .any(|bucket| bucket.label.contains("session-a")));
+        assert!(session_id.max_value.is_some());
 
         let preview = inspect_physical_page(
             &snapshot,
@@ -655,5 +987,11 @@ mod tests {
             "{error:#}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn sum_known_sizes_ignores_unknown_and_returns_none_when_empty() {
+        assert_eq!(sum_known_sizes([None, None]), None);
+        assert_eq!(sum_known_sizes([Some(2), None, Some(3)]), Some(5));
     }
 }
