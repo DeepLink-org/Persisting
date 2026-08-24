@@ -33,6 +33,8 @@ pchronicle serve \
 ```
 
 Mount name 会成为 SQL schema 和 API 名称。需要稳定名称时使用 `NAME=DATASET`。
+挂载多个裸路径时，pChronicle 会从各路径末段生成名称；这些名称可能随路径变化，因此可复用的
+命令仍应显式指定 mount name。
 
 ## 启用 Control 或 Gateway 集成
 
@@ -58,3 +60,6 @@ readiness 记录；Control 凭据不会写入 stderr。
 Gateway 行为见 [Gateway 转发、改写与捕获](serve-gateway.md)，精确参数见
 [`pchronicle` 命令行参考](../reference/cli.md)。内部刷新和版本固定机制属于
 [Dataset Catalog 设计](../design/catalog.md)。
+
+要了解 Datasets、Runs、Analysis、Storage 和 Assistant 的实际操作，请继续阅读
+[本地 Web UI 使用指南](ui.md)。

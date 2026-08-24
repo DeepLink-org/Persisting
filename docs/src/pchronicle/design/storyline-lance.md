@@ -1,6 +1,6 @@
 # Storyline 三表 Lance 存储
 
-`StorylineLanceStore` 是 pChronicle 的 Storyline-native 规范化物理表示。它与
+`StorylineLanceStore` 是 pChronicle 的 Storyline-native 规范化存储表示。它与
 `events.lance` 原始事件日志并列存在，不替代后者。
 
 逻辑 wire schema 以 [RFC-0001 § Wire schema](../../rfcs/0001-storyline-format.md#wire-schema)
@@ -60,7 +60,7 @@ with the process. It remains outside the Gateway capture write path, so projecti
 refresh failures cannot block canonical event writes.
 
 本文只负责三表物理 schema、内容层、Snapshot 发布、查询接入和维护语义。事实源与
-projection ownership 见[轨迹存储](trajectory-storage.md)，用户查询流程见
+projection ownership 见[运行存储](trajectory-storage.md)，用户查询流程见
 [Dataset 查询指南](../guides/discover-and-query.md)。
 
 这是 pChronicle 唯一的规范化三表模型。旧的 ATIF

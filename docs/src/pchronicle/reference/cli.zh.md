@@ -3,8 +3,8 @@
 > 本文介绍 `pchronicle` 的公共命令行。当前安装版本的 `pchronicle --help` 是该版本可用参数的
 > 准确信息来源。
 
-`pchronicle` 用于浏览、查询、交换和服务 Agent trajectory Dataset。它既适合人在终端中探索，
-也适合 shell、CI 和 Agent 发起有界的只读分析。
+`pchronicle` 用于浏览、查询、交换和服务 Agent Run Dataset。它既适合人在终端中探索，
+也适合 shell、CI 和 Agent 发起受资源上限保护的只读分析。
 
 如果你第一次使用 pChronicle，可以从这里开始：
 
@@ -16,13 +16,13 @@ pchronicle onboard
 
 ### pChronicle
 
-`pchronicle` 围绕 Dataset 提供一组组合式命令。读取命令可以浏览、定位和分析轨迹；交换命令负责
+`pchronicle` 围绕 Dataset 提供一组组合式命令。读取命令可以浏览、定位和分析 Run；交换命令负责
 导入和导出；`agent` 与 `serve` 分别提供交互分析和本地服务入口。
 
 ### Dataset
 
 **Dataset 是 pChronicle 命令行操作的统一数据对象。** 它是一组可以被浏览、查询、分析、导入、
-导出或提供服务的 Agent trajectory 数据。
+导出或提供服务的 Agent Run 数据。
 
 一个 Dataset 可以表现为：
 
@@ -30,7 +30,7 @@ pchronicle onboard
 - 对象存储中的 URI 前缀（`s3://bucket/prefix`）；
 - 指向上述位置的用户 alias（`@alias-name`）。
 
-Dataset 内部可以保存一种或多种受支持的轨迹格式。pChronicle 负责发现和规范化这些数据；用户只需要
+Dataset 内部可以保存一种或多种受支持的运行数据格式。pChronicle 负责发现和规范化这些数据；用户只需要
 向命令提供 Dataset，不需要先理解内部文件、分片、投影或版本布局。
 
 每条读取命令都会使用一个内部一致的数据视图。命令开始后底层数据发生变化，不会改变该命令已经产生的结果。
@@ -145,8 +145,8 @@ pchronicle ls
 pchronicle ls @prod --physical --format json --errors strict
 ```
 
-`ls` 显示 Dataset 中可独立查询的轨迹数据项，而不是底层 Lance fragment。`--physical` 增加大小、
-修改时间和物理版本信息。还可以用 `--max-files` 和 `--max-entries` 限制发现范围。
+`ls` 显示 Dataset 中可独立查询的 Run 数据源，而不是底层 Lance fragment。`--physical` 增加大小、
+修改时间和存储版本信息。还可以用 `--max-files` 和 `--max-entries` 限制发现范围。
 `--errors report` 会报告坏数据项并继续；`strict` 遇到第一个坏数据项即失败。
 
 ### 2.5 `status`
@@ -219,9 +219,9 @@ pchronicle analysis tools @prod --format csv --limit 20
 
 | Analysis | 内容 |
 |---|---|
-| `overview` | 数据可用性，以及 trajectory、Step、Agent、Model、tool call 总览 |
+| `overview` | 数据可用性，以及 Run、Step、Agent、Model、tool call 总览 |
 | `agents` | 按 Agent identity 和 version 聚合 |
-| `models` | 区分声明的 trajectory model 和实际观察到的 Step model |
+| `models` | 区分 Run 声明的 model 和实际观察到的 Step model |
 | `tools` | 按 normalized function name 聚合，并报告 duration coverage |
 
 内建分析用于常见、稳定的报告。需要任意筛选、join 或聚合时使用 `query`。
@@ -380,7 +380,7 @@ pchronicle query \
          ORDER BY steps DESC'
 ```
 
-### 找到并严格导出一条 trajectory
+### 找到并严格导出一条 Run
 
 ```bash
 pchronicle find @prod --session-id session-42 --format json

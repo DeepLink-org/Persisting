@@ -453,7 +453,7 @@ async fn export_from_snapshot(
     }
     anyhow::ensure!(
         !args.strict,
-        "strict export requires an unfiltered Source already stored in the requested format"
+        "strict export requires an unfiltered source file already stored in the requested format"
     );
 
     let sql = export_address_sql(args)?;
@@ -490,13 +490,10 @@ async fn export_from_snapshot(
     let mut addresses = address_bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_slice(line).context("decode export Trajectory address"))
+        .map(|line| serde_json::from_slice(line).context("decode export run address"))
         .collect::<Result<Vec<ExportAddress>>>()?;
     ensure_export_trajectory_budget(addresses.len(), args.max_trajectories)?;
-    anyhow::ensure!(
-        !addresses.is_empty(),
-        "export selection matched no Trajectories"
-    );
+    anyhow::ensure!(!addresses.is_empty(), "export selection matched no runs");
     addresses.sort_by(|left, right| {
         (&left.source_path, &left.document_id, &left.session_id).cmp(&(
             &right.source_path,
@@ -518,23 +515,23 @@ async fn export_from_snapshot(
             .await
             .with_context(|| {
                 format!(
-                    "load export Trajectory {}/{}",
+                    "load export run {}/{}",
                     address.source_path, address.session_id
                 )
             })?
             .with_context(|| {
                 format!(
-                    "export Trajectory disappeared from snapshot: {}/{}",
+                    "export run disappeared from snapshot: {}/{}",
                     address.source_path, address.session_id
                 )
             })?;
         anyhow::ensure!(
             story.trajectory_id.as_deref().unwrap_or(&story.session_id) == address.document_id,
-            "export Trajectory document ID changed within the snapshot"
+            "export run document ID changed within the snapshot"
         );
         anyhow::ensure!(
             story.run_id == address.run_id,
-            "export Trajectory Run ID changed within the snapshot"
+            "export run runtime ID changed within the snapshot"
         );
         normalized_bytes = normalized_bytes.saturating_add(serde_json::to_vec(&story)?.len());
         ensure_output_byte_budget(normalized_bytes, args.max_output_bytes, "normalized export")?;

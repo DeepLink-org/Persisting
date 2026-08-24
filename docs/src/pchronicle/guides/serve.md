@@ -36,6 +36,9 @@ pchronicle serve \
 
 Mount names become SQL schema and API names. Use `NAME=DATASET` when a stable
 name matters.
+With several bare paths, pChronicle derives names from their last path
+components. Those names can change with the paths, so reusable commands should
+still set mount names explicitly.
 
 ## Enable Control or Gateway integration
 
@@ -65,3 +68,6 @@ For Gateway behavior, continue with
 [Gateway forwarding, rewriting, and capture](serve-gateway.md). For exact
 flags, see the [`pchronicle` CLI reference](../reference/cli.md). Internal
 refresh and versioning behavior belongs to [Dataset Catalog design](../design/catalog.md).
+
+Continue with the [local Web UI guide](ui.md) for task-oriented coverage of
+Datasets, Runs, Analysis, Storage, and Assistant.

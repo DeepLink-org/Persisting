@@ -288,10 +288,10 @@ pub enum AnalyzeTraceKind {
 impl AnalyzeTraceKind {
     pub fn title(self) -> &'static str {
         match self {
-            Self::GenerateSpec => "Write spec",
+            Self::GenerateSpec => "Create plan",
             Self::Compile => "Compile SQL",
-            Self::RepairSpec => "Repair spec",
-            Self::Execute => "Run evidence",
+            Self::RepairSpec => "Repair plan",
+            Self::Execute => "Run query",
             Self::Interpret => "Interpret results",
         }
     }
@@ -420,7 +420,10 @@ impl AnalysisRevision {
                 self.touch();
                 Ok(self.begin_operation())
             }
-            _ => Err("A spec can only be generated from a draft, error, or stale revision.".into()),
+            _ => Err(
+                "An analysis plan can only be generated from a draft, error, or stale version."
+                    .into(),
+            ),
         }
     }
 
@@ -435,7 +438,7 @@ impl AnalysisRevision {
             return Ok(None);
         }
         if self.state != RevisionState::GeneratingPlan {
-            return Err("This revision is not waiting for a compiled spec.".into());
+            return Err("This version is not waiting for a compiled analysis plan.".into());
         }
         self.spec = Some(spec.clone());
         self.compiled_sql = Some(sql.clone());
@@ -474,7 +477,7 @@ impl AnalysisRevision {
             return Ok(None);
         }
         if self.state != RevisionState::GeneratingPlan {
-            return Err("This revision is not waiting for a compiled spec.".into());
+            return Err("This version is not waiting for a compiled analysis plan.".into());
         }
         let error = error.into();
         self.fail_running_trace_step(&error);
@@ -506,7 +509,7 @@ impl AnalysisRevision {
             return Ok(None);
         }
         if self.state != RevisionState::GeneratingPlan {
-            return Err("This revision is not waiting for a generated plan.".into());
+            return Err("This version is not waiting for a generated analysis plan.".into());
         }
         self.plan = Some(plan);
         self.compiled_sql = self.plan.as_ref().map(|plan| plan.sql.clone());
@@ -522,13 +525,13 @@ impl AnalysisRevision {
 
     pub fn confirm_execution(&mut self) -> Result<(), String> {
         if self.state == RevisionState::QueryError && !self.manually_edited && !self.needs_rerun {
-            return Err("Revise the spec instead of replaying the failed SQL.".into());
+            return Err("Revise the analysis plan instead of replaying the failed SQL.".into());
         }
         if !matches!(
             self.state,
             RevisionState::PlanReady | RevisionState::QueryError
         ) {
-            return Err("Review a ready spec before running this analysis.".into());
+            return Err("Review a ready analysis plan before running this analysis.".into());
         }
         let sql = self
             .executable_sql()
@@ -559,7 +562,7 @@ impl AnalysisRevision {
                 | RevisionState::InterpretationError
                 | RevisionState::Stale
         ) {
-            return Err("SQL can only be run from a reviewed or completed revision.".into());
+            return Err("SQL can only be run from a reviewed or completed version.".into());
         }
         let sql = self
             .executable_sql()
@@ -592,7 +595,7 @@ impl AnalysisRevision {
             return Ok(None);
         }
         if self.state != RevisionState::Executing {
-            return Err("This revision is not waiting for query results.".into());
+            return Err("This version is not waiting for query results.".into());
         }
         let has_rows = !evidence.rows.is_empty();
         let summary = format!(
@@ -638,7 +641,7 @@ impl AnalysisRevision {
             return Ok(None);
         }
         if self.state != RevisionState::Interpreting {
-            return Err("This revision is not waiting for an interpretation.".into());
+            return Err("This version is not waiting for a result summary.".into());
         }
         self.interpretation = Some(interpretation.clone());
         self.state = RevisionState::Complete;
@@ -752,7 +755,7 @@ impl AnalysisRevision {
             return Ok(None);
         }
         if self.state != expected {
-            return Err("This revision is no longer waiting for that result.".into());
+            return Err("This version is no longer waiting for that result.".into());
         }
         self.state = failed;
         self.error = Some(error.into());
@@ -882,7 +885,7 @@ impl AnalysisSession {
             .iter()
             .find(|revision| revision.id == self.active_revision_id)
             .map(|revision| (revision.scope.clone(), revision.plan.clone()))
-            .ok_or_else(|| "The active analysis revision is unavailable.".to_string())?;
+            .ok_or_else(|| "The active analysis version is unavailable.".to_string())?;
         let revision = self.new_revision(question, scope);
         revision.prior_plan_context = prior_plan_context;
         Ok(revision)
@@ -941,7 +944,7 @@ impl AnalysisSession {
                     revision.plan.clone(),
                 )
             })
-            .ok_or_else(|| "The active analysis revision is unavailable.".to_string())?;
+            .ok_or_else(|| "The active analysis version is unavailable.".to_string())?;
 
         if matches!(
             &state,
@@ -965,12 +968,12 @@ impl AnalysisSession {
                     RevisionState::Draft
                 }
             }
-            _ => return Err("Analysis scope cannot change in this revision state.".into()),
+            _ => return Err("Analysis scope cannot change in this version state.".into()),
         };
 
         let revision = self
             .active_revision_mut()
-            .ok_or_else(|| "The active analysis revision is unavailable.".to_string())?;
+            .ok_or_else(|| "The active analysis version is unavailable.".to_string())?;
         revision.scope = next_scope;
         revision.state = next_state;
         revision.error = None;
@@ -1030,7 +1033,7 @@ impl AnalysisSession {
             .iter()
             .any(|revision| revision.id == revision_id)
         {
-            return Err("The selected analysis revision is unavailable.".into());
+            return Err("The selected analysis version is unavailable.".into());
         }
         self.active_revision_id = revision_id;
         self.updated_at_ms = now_millis();
@@ -1143,11 +1146,11 @@ pub fn scope_from_query(query: &str) -> Result<AnalysisScope, String> {
                 .filter(|(key, _)| *key == "analysis_scope")
                 .map(|(_, value)| value)
         })
-        .ok_or_else(|| "The Analyze link has no scope.".to_string())?;
+        .ok_or_else(|| "The Analysis link has no scope.".to_string())?;
     let decoded = urlencoding::decode(encoded)
-        .map_err(|_| "The Analyze link has an invalid scope.".to_string())?;
+        .map_err(|_| "The Analysis link has an invalid scope.".to_string())?;
     let scope: AnalysisScope = serde_json::from_str(&decoded)
-        .map_err(|_| "The Analyze link has an invalid scope.".to_string())?;
+        .map_err(|_| "The Analysis link has an invalid scope.".to_string())?;
     if scope.database.trim().is_empty()
         || scope.storage_path.trim().is_empty()
         || scope.items.is_empty()
@@ -1170,7 +1173,7 @@ pub fn scope_from_query(query: &str) -> Result<AnalysisScope, String> {
             }
         })
     {
-        return Err("The Analyze link has an incomplete scope.".into());
+        return Err("The Analysis link has an incomplete scope.".into());
     }
     Ok(scope)
 }
@@ -1245,7 +1248,8 @@ fn mark_legacy_sql_plan_stale(revision: &mut AnalysisRevision) {
     if has_legacy_sql {
         revision.state = RevisionState::Stale;
         revision.error = Some(
-            "This session stored a handwritten SQL plan. Analyze again to compile a spec.".into(),
+            "This session stored a handwritten SQL plan. Analyze again to create a compatible analysis plan."
+                .into(),
         );
         revision.compiled_sql = None;
         revision.pending_effect = None;

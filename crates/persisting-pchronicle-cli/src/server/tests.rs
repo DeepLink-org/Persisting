@@ -977,7 +977,10 @@ async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
     assert_eq!(otlp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let otlp = response_json(otlp).await;
     assert_eq!(otlp["code"], "unsupported");
-    assert!(otlp["message"].as_str().unwrap().contains("synthetic"));
+    assert!(otlp["message"]
+        .as_str()
+        .unwrap()
+        .contains("reconstructed events"));
     std::fs::remove_dir_all(root).unwrap();
 }
 

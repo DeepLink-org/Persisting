@@ -1,7 +1,7 @@
 # pChronicle
 
-**pChronicle lets you browse, query, exchange, and serve Agent trajectory
-Datasets.** Use it with trajectories produced by Persisting or with supported
+**pChronicle lets you browse, query, exchange, and serve Agent run
+Datasets.** Use it with runs produced by Persisting or with supported
 external formats; pChronicle does not require pVisor to run.
 
 Within Persisting's model-state-to-Agent-history story, pChronicle is the
@@ -10,7 +10,7 @@ durable, queryable Agent-history layer.
 ## The one object you work with
 
 A **Dataset** is the single object operated on by pChronicle. It is a collection
-of Agent trajectory data that can be inspected, queried, analyzed, imported,
+of Agent run data that can be inspected, queried, analyzed, imported,
 exported, or served.
 
 A Dataset can be:
@@ -48,11 +48,11 @@ pchronicle query ./trajectory-data \
 | Run a common report | `pchronicle analysis overview DATASET` |
 | Ask a custom SQL question | `pchronicle query DATASET --sql SQL` |
 | Give a Dataset a short name | `pchronicle alias add NAME DATASET` |
-| Import or export trajectories | `pchronicle import` or `pchronicle export` |
+| Import or export runs | `pchronicle import` or `pchronicle export` |
 | Analyze with Codex or Claude | `pchronicle agent codex DATASET` |
-| Open the local read-only UI and API | `pchronicle serve DATASET` |
+| Open the local read-only UI and API | [`pchronicle serve DATASET`](guides/ui.md) |
 
-pChronicle reads and organizes trajectory data. It does not execute or schedule
+pChronicle reads and organizes run history. It does not execute or schedule
 Agents. To run an Agent in a controlled workspace, start with
 [pVisor](../pvisor/index.md).
 
@@ -61,5 +61,6 @@ Agents. To run an Agent in a controlled workspace, start with
 - [Explore your first Dataset](get-started.md)
 - [Follow common workflows](guides/index.md)
 - [Look up the complete CLI](reference/cli.md)
+- [Use the shared product terminology](reference/terminology.md)
 - [Understand the data model](concepts/index.md)
 - [Inspect storage and catalog design](design/index.md)

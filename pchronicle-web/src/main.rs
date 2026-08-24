@@ -16,6 +16,7 @@ mod model;
 mod physical;
 mod result_explorer;
 mod result_profile;
+mod terminology;
 mod tools;
 mod workspace;
 

@@ -7,11 +7,11 @@ relations even when no compatible Source contributes rows.
 | Relation | One row represents | Available from |
 | --- | --- | --- |
 | `sources` | one discovered Source candidate | every Dataset |
-| `runs` | one normalized Storyline/session | every ready trajectory Source |
-| `steps` | one normalized turn | every ready trajectory Source |
-| `tool_calls` | one tool invocation and its linked result | every ready trajectory Source |
+| `runs` | one normalized Run/session | every ready run data source |
+| `steps` | one normalized Step | every ready run data source |
+| `tool_calls` | one tool invocation and its linked result | every ready run data source |
 | `events` | one canonical write-time fact | canonical event Sources only |
-| `trajectories` | one Run/session summary with ordered Step and tool aggregates | normalized trajectory Sources |
+| `trajectories` | one complete Run with ordered Step and tool aggregates | normalized run data sources |
 
 Use `DESCRIBE` for the exact columns exposed by the installed version:
 
@@ -30,7 +30,7 @@ Entity IDs are Source-local. `runs`, `steps`, `tool_calls`, and `events` retain
 `_file_`, the Dataset-relative `source_path`. A durable entity address includes
 the Dataset URI, `_file_`, entity kind, and original ID.
 
-When joining built-in trajectory relations inside one Dataset, include `_file_`
+When joining built-in Run relations inside one Dataset, include `_file_`
 alongside the entity key:
 
 ```sql

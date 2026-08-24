@@ -113,7 +113,7 @@ pub async fn generate_spec(request: PlanRequest) -> Result<AnalysisSpec, Analysi
 pub async fn generate_plan(request: PlanRequest) -> Result<AnalysisPlan, AnalysisAgentError> {
     let spec = generate_spec(request).await?;
     Err(AnalysisAgentError::new(format!(
-        "SQL plans are no longer generated; received spec intent {}",
+        "Legacy SQL plan generation is unavailable; received analysis intent {}",
         spec.intent
     )))
 }
@@ -212,7 +212,7 @@ pub fn ensure_truncation_limitation(
     }
     interpretation.limitations.insert(
         0,
-        "This interpretation covers only the bounded evidence sent to the model because the query result or evidence digest was truncated."
+        "This summary covers only the limited result rows sent to the model because the query result or analysis input was truncated."
             .into(),
     );
 }
@@ -390,14 +390,14 @@ fn parse_plan_content(
 fn parse_spec_content(raw: &str) -> Result<AnalysisSpec, AnalysisAgentError> {
     require_json_object(raw)?;
     let spec: AnalysisSpec = serde_json::from_str(raw)
-        .map_err(|error| AnalysisAgentError::new(format!("Invalid AnalysisSpec JSON: {error}")))?;
+        .map_err(|error| AnalysisAgentError::new(format!("Invalid analysis plan JSON: {error}")))?;
     require_text("intent", &spec.intent)?;
     require_text("grain", &spec.grain)?;
     require_text("measure", &spec.measure)?;
     require_text("output", &spec.output)?;
     if spec.intent.contains(';') || spec.measure.contains("SELECT") {
         return Err(AnalysisAgentError::new(
-            "AnalysisSpec fields cannot contain SQL.",
+            "Analysis plan fields cannot contain SQL.",
         ));
     }
     Ok(spec)
@@ -470,7 +470,7 @@ fn validate_interpretation(
     if (digest.query_truncated || digest.digest_truncated) && interpretation.limitations.is_empty()
     {
         return Err(AnalysisAgentError::new(
-            "AnalysisInterpretation must describe truncated evidence in limitations.",
+            "The result summary must describe incomplete data in limitations.",
         ));
     }
     for reference in &interpretation.references {
@@ -522,7 +522,7 @@ fn validate_reference(
         return Ok(());
     }
     Err(AnalysisAgentError::new(
-        "AnalysisInterpretation reference coordinates are not grounded in the evidence digest.",
+        "Result summary references do not match the supplied result rows.",
     ))
 }
 
@@ -1135,7 +1135,7 @@ mod tests {
         assert_eq!(
             interpretation.limitations,
             vec![
-                "This interpretation covers only the bounded evidence sent to the model because the query result or evidence digest was truncated.",
+                "This summary covers only the limited result rows sent to the model because the query result or analysis input was truncated.",
                 "Latency was not selected by this query.",
             ]
         );

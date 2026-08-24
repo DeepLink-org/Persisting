@@ -204,18 +204,18 @@ pub fn PhysicalWorkspace() -> Element {
         .unwrap_or(0);
 
     rsx! {
-        section { class: "physical-workspace", "aria-label": "Physical Lance inspector",
+        section { class: "physical-workspace", "aria-label": "Lance storage details",
             aside { class: "physical-tree",
                 header {
                     strong { "Lance sources" }
                     span { "{sources().len()}" }
                 }
                 if loading_sources() {
-                    div { class: "physical-empty", "Loading Catalog sources…" }
+                    div { class: "physical-empty", "Loading source files…" }
                 } else if sources().is_empty() {
                     div { class: "physical-empty",
                         strong { "No Lance sources" }
-                        span { "Physical inspects Catalog Lance datasets. JSON and other files stay in Data / Runs." }
+                        span { "Storage details are available for Lance datasets. Browse JSON and other files under Datasets or Runs." }
                     }
                 } else {
                     div { class: "physical-tree-list",
@@ -272,14 +272,14 @@ pub fn PhysicalWorkspace() -> Element {
                             }
                         }
                     } else if loading_layout() {
-                        div { class: "physical-empty", "Reading table fragments…" }
+                        div { class: "physical-empty", "Reading data groups…" }
                     }
                 }
             }
             div { class: "physical-detail",
                 header { class: "physical-detail-head",
                     div {
-                        p { class: "eyebrow", "Physical" }
+                        p { class: "eyebrow", "Storage" }
                         h1 {
                             if let Some(source) = selected_source.as_ref() {
                                 "{source.dataset}/{source.file}"
@@ -291,13 +291,13 @@ pub fn PhysicalWorkspace() -> Element {
                             if let Some(source) = selected_source.as_ref() {
                                 "{source.uri}"
                             } else {
-                                "Source → fragment → data file, then sample a column page."
+                                "Select a source, data group, file, and column to inspect stored values."
                             }
                         }
                     }
                     div { class: "physical-chips",
                         if fragment_count > 0 {
-                            span { class: "physical-chip", "{fragment_count} fragments" }
+                            span { class: "physical-chip", "{fragment_count} data groups" }
                         }
                         if let Some(current) = file_layout() {
                             span { class: "physical-chip", "{current.columns.len()} columns" }
@@ -326,7 +326,7 @@ pub fn PhysicalWorkspace() -> Element {
                 if let Some(current) = file_layout() {
                     div { class: "physical-layout",
                         div { class: "physical-layout-meta",
-                            strong { "{current.table} · fragment {current.fragment_id}" }
+                            strong { "{current.table} · data group {current.fragment_id}" }
                             span { "{current.data_file}" }
                             span { "{file_size_label} · {file_rows_label}" }
                         }
@@ -359,8 +359,8 @@ pub fn PhysicalWorkspace() -> Element {
                     div { class: "physical-empty", "No layout for this data file." }
                 } else if selected_table_layout.is_none() {
                     div { class: "physical-empty",
-                        strong { "Choose a fragment" }
-                        span { "The strip shows fragment count, size, and row distribution. Click a fragment or data file, then a column to inspect samples." }
+                        strong { "Choose a data group" }
+                        span { "The strip shows each data group's rows and size. Select a group or file, then select a column to inspect sample values." }
                     }
                 }
                 if drawer_open() {
@@ -583,7 +583,7 @@ fn PhysicalTableBranch(
                                 class: if selected { "physical-tree-item nested active" } else { "physical-tree-item nested" },
                                 onclick: move |_| on_file.call((table_name.clone(), fragment_id, first_path.clone())),
                                 div {
-                                    strong { "fragment {fragment.id}" }
+                                    strong { "data group {fragment.id}" }
                                     span { {fragment_meta_label(&fragment)} }
                                 }
                                 code { {format_bytes(fragment.size_bytes)} }
@@ -633,7 +633,7 @@ fn PhysicalFragmentStrip(
         div { class: "physical-layout",
             div { class: "physical-column",
                 div { class: "physical-column-label",
-                    strong { "Fragment distribution" }
+                    strong { "Data group distribution" }
                     span { {table_label(&table)} }
                 }
                 div { class: "physical-page-strip physical-fragment-strip",
@@ -649,7 +649,7 @@ fn PhysicalFragmentStrip(
                             let active = selected_fragment == Some(fragment.id);
                             let flex = ((fragment_weight(&fragment) * 100) / total).max(8);
                             let title = format!(
-                                "fragment {fragment_id} · {}",
+                                "data group {fragment_id} · {}",
                                 fragment_meta_label(&fragment)
                             );
                             rsx! {
@@ -658,7 +658,7 @@ fn PhysicalFragmentStrip(
                                     style: "flex: {flex} 1 72px",
                                     title: "{title}",
                                     onclick: move |_| on_file.call((table_name.clone(), fragment_id, first_path.clone())),
-                                    span { "f{fragment.id}" }
+                                    span { "g{fragment.id}" }
                                     small { "{fragment_rows_label(&fragment)}" }
                                     small { {format_bytes(fragment.size_bytes)} }
                                 }
@@ -667,7 +667,7 @@ fn PhysicalFragmentStrip(
                     }
                 }
                 p { class: "physical-note",
-                    "Bar width follows physical rows, then size if rows are unknown."
+                    "Bar width follows stored rows, or file size when the row count is unavailable."
                 }
             }
         }
@@ -687,7 +687,7 @@ fn table_size_bytes(table: &PhysicalTable) -> Option<u64> {
 
 fn table_label(table: &PhysicalTable) -> String {
     format!(
-        "{} fragments · {} rows · {} · v{}",
+        "{} data groups · {} rows · {} · v{}",
         table.fragments.len(),
         table.num_rows,
         format_bytes(table_size_bytes(table)),
@@ -870,7 +870,7 @@ mod tests {
     fn table_label_includes_fragment_count_size_and_version() {
         assert_eq!(
             table_label(&sample_table()),
-            "2 fragments · 100 rows · 600 B · v2"
+            "2 data groups · 100 rows · 600 B · v2"
         );
     }
 
