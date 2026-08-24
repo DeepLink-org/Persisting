@@ -2,3 +2,6 @@
 # libkrun embeds a Linux guest init. Native Linux builds use cc; macOS builds
 # cross-compile that init with Zig instead of accidentally using Apple clang.
 CC_LINUX = { value = "scripts/libkrun-linux-cc", relative = true }
+# Debug DataFusion/Lance projection uses more than the default 2MiB test-thread
+# stack, which overflowed canonical event import on Linux CI.
+RUST_MIN_STACK = "8388608"
