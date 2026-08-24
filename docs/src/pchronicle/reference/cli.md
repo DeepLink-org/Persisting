@@ -1,411 +1,172 @@
-# `pchronicle` command reference
+# pChronicle CLI
 
-`pchronicle` is the primary Dataset-oriented CLI for trajectory history. It
-discovers Sources under a local path or S3 prefix, normalizes supported formats
-into common SQL tables, and keeps result data on stdout while writing Snapshot
-metadata and diagnostics to stderr.
+This page is the English reference for the canonical `pchronicle` command
+line. New commands and scripts should use the syntax documented here.
 
-This page describes the current command implementation. For the surrounding
-product and storage boundary, see the [pChronicle product architecture](../design/architecture.md).
+## Dataset
 
-## Command status
+A Dataset is the single object operated on by pChronicle. It may be:
 
-| Command | Current behavior |
-|---|---|
-| `onboard` | Render a guided walkthrough over a temporary example or an explicit Dataset |
-| `default` | Get or set one local directory as the default Warehouse |
-| `ls` / `list` | Discover logical trajectory Sources |
-| `status` | Report Dataset health, aggregate counts, and automatic projection state |
-| `query` | Execute one bounded, read-only SQL statement |
-| `analysis` | Run a built-in `overview`, `agents`, `models`, or `tools` report |
-| `agent` | Launch Codex or Claude with a read-only Dataset analysis prompt and skill |
-| `find` | Locate Run, Session, or Step candidates by Source-local ID |
-| `import` | Create a new Dataset from exchange JSON or a canonical Event Store |
-| `export` | Export complete trajectories as ATIF, ACTF, OpenAI Messages, or Storyline JSON |
-| `echo` | Run a deterministic loopback-only LLM upstream for Gateway tests |
-| `serve` | Compose loopback Warehouse, Control, Gateway, and automatic projection services |
+- a local directory or file, such as `./local/path`;
+- an object-store URI prefix, such as `s3://bucket/prefix`;
+- a user alias that points to either location, such as `@prod`.
 
-The executable's `--help` is authoritative for individual flags and defaults.
+## Global syntax
 
-## Guided onboarding
+```text
+pchronicle [-c FILE] [--log-level error|warn|info|debug] <COMMAND> ...
+```
+
+`-c, --config` selects the user configuration file. `--log-level` controls
+stderr diagnostics without changing stdout results or exit status.
+
+## Commands
+
+### Onboard
+
+```text
+pchronicle onboard [SECTION] [DATASET] [--no-pause]
+```
 
 ```bash
 pchronicle onboard
-pchronicle onboard ./dataset
-pchronicle onboard query ./dataset
-pchronicle onboard exchange
+pchronicle onboard query @prod
 ```
 
-With no Dataset argument, the command creates deterministic temporary ATIF,
-ACTF, and OpenAI Messages Datasets and removes them on exit. An explicit Dataset
-is opened read-only. The default walkthrough executes every section; `all`,
-`concepts`, `inspect`, `analyze`, `query`, `formats`, `find`, `exchange`, and
-`serve` subcommands navigate directly to one section. Dataset-oriented sections
-accept an optional explicit Dataset URI.
+### Default Dataset
 
-The expanded guide executes catalog, status, built-in analysis, schema discovery,
-Step and tool-call SQL, cross-format SQL, Source-local lookup, isolated default
-Warehouse setup, create-only import, strict export, and server guidance. Executed
-operations use the same internal implementation as their product commands. The
-Warehouse and exchange section always uses an isolated settings file and temporary
-paths.
-
-The guide is authored as Markdown. Interactive terminals receive a styled
-rendering of the small supported subset; redirected stdout receives the original
-Markdown with no ANSI escapes. ANSI styling is also disabled by `NO_COLOR` or
-`TERM=dumb`. This presentation behavior is confined to `onboard` and does not
-change any existing command's stdout/stderr contract.
-
-## Local default Warehouse
-
-A default Warehouse is a local Dataset root, not a daemon or hidden database:
-
-```bash
-pchronicle default ./trajectory-data
-pchronicle default
+```text
+pchronicle default <show|set LOCAL_DATASET|clear>
 ```
 
-The first command creates the directory when absent and stores its normalized
-absolute path in the user settings. Once configured, local read commands may
-omit the Dataset URI:
-
 ```bash
-pchronicle ls
-pchronicle status
-pchronicle query "SELECT COUNT(*) AS runs FROM dataset.runs"
-pchronicle analysis overview
-pchronicle find --session-id session-42
-pchronicle export --output sessions.json --format storyline
+pchronicle default set ./trajectory-data
+pchronicle default show
 ```
 
-An explicit Dataset URI always takes precedence. Use global `--settings FILE`
-or `PCHRONICLE_SETTINGS` to isolate settings in automation.
+### Aliases
 
-## Catalog and status
-
-```bash
-pchronicle ls ./dataset
-pchronicle ls s3://bucket/prefix --format json
-pchronicle ls ./dataset --physical --errors strict
-pchronicle status ./dataset --format json
+```text
+pchronicle alias [list|add|remove|rename|get-url|set-url] [ARGUMENTS]
 ```
 
-`ls` lists logical Sources rather than every Lance fragment. `--physical` adds
-physical metadata. `status` aggregates the immutable Catalog Snapshot selected
-for that invocation. Both commands bound discovery with `--max-files` and
-`--max-entries`; `--errors report` keeps diagnosable Sources in the result,
-while `strict` fails the command.
-
-For every canonical `events.lance`, `status --format json` also reports the
-deterministic sibling projection path, `fresh`, `stale`, `missing`, or `error`
-state, source `fact_version`/`fact_rows`, and projection generation when one is
-published. Inspection is read-only and never creates or repairs a projection.
-
-## Read-only SQL
-
-With one positional Dataset, it is mounted as SQL schema `dataset`:
-
 ```bash
-pchronicle query ./dataset \
-  "SELECT session_id, COUNT(*) AS steps
-   FROM dataset.steps
-   GROUP BY session_id
-   ORDER BY session_id"
+pchronicle alias add prod s3://bucket/evals
+pchronicle alias set-url prod s3://new-bucket/evals
+pchronicle status @prod
 ```
 
-Named mounts support cross-Dataset SQL:
+Alias operations only update user configuration; they do not move or delete a
+Dataset.
+
+### Inspect and find
+
+```text
+pchronicle ls [DATASET] [OPTIONS]
+pchronicle status [DATASET] [OPTIONS]
+pchronicle find [DATASET] (--run-id ID|--document-id ID|--session-id ID) [OPTIONS]
+```
 
 ```bash
+pchronicle ls @prod --format json
+pchronicle find @prod --session-id session-42
+```
+
+### Query
+
+```text
+pchronicle query [DATASET|--mount NAME=DATASET ...] (--sql SQL|--file FILE_OR_STDIN) [OPTIONS]
+```
+
+```bash
+pchronicle query ./dataset --sql 'SELECT COUNT(*) FROM dataset.runs'
 pchronicle query \
-  --dataset live=./live \
-  --dataset archive=s3://bucket/archive \
-  "SELECT * FROM live.runs UNION ALL SELECT * FROM archive.runs"
+  --mount live=./live --mount archive=@archive \
+  --file report.sql
 ```
 
-The normalized schemas expose the relations available for each Source,
-including `sources`, `runs`, `steps`, `tool_calls`, `events`, and
-`trajectories`. Use `DESCRIBE dataset.steps` rather than relying on an exchange
-format's physical fields.
+Each invocation accepts one bounded, read-only statement. `--file -` reads SQL
+from stdin. Use `--format`, `--output`, `--max-output-rows`,
+`--max-output-bytes`, and `--timeout` to make pipeline behavior explicit.
 
-`--format table|jsonl|csv`, `--output`, row and byte limits, discovery limits,
-and a timeout bound result production. The output path is create-only. Only one
-read-only SQL statement is accepted; DDL, DML, and other mutating statements
-are rejected.
+### Built-in analysis
 
-## Built-in analysis
-
-Use built-in analysis for common, stable summaries:
-
-```bash
-pchronicle analysis overview [./dataset]
-pchronicle analysis agents [./dataset]
-pchronicle analysis models [./dataset]
-pchronicle analysis tools [./dataset]
-```
-
-- `overview` reports Source readiness and total trajectories, Steps, Agents,
-  Models, and tool calls;
-- `agents` groups activity by Agent identity and version;
-- `models` combines declared trajectory models with observed Step models;
-- `tools` groups calls by normalized function name and reports duration
-  coverage.
-
-All four accept `--format table|jsonl|csv`, `--limit`, byte and discovery
-limits, and a timeout. Use `query` for arbitrary SQL. There is no `users`
-report because the normalized schema does not define a stable user identity.
-
-## Codex and Claude analysis sessions
-
-```bash
-pchronicle agent --dataset ./dataset codex
-pchronicle agent --dataset s3://bucket/evals claude
-pchronicle agent --dataset ./dataset \
-  --ask "Compare successful and failed tool calls" codex
-pchronicle agent --dataset ./dataset \
-  --ask "Compare model latency" --no-overview claude
-pchronicle agent --dataset ./dataset --dry-run codex
-pchronicle agent codex
-```
-
-`agent` resolves and normalizes the explicit Dataset URI, or uses the default
-Warehouse when `--dataset` is omitted. It then launches the selected
-interactive CLI while preserving the caller's working directory, terminal,
-authentication, and unrelated Codex or Claude settings. The launch-specific
-injections described below apply only to the child session. Interactive launch
-requires terminal stdin and stdout; `--dry-run` remains available in pipes and
-CI without staging an injection.
-
-The startup modes are:
-
-- by default, instruct the Agent to run a bounded `status` check plus compact
-  `analysis overview`, then ask what to investigate;
-- with `--ask QUESTION`, instruct it to run the same bootstrap and then
-  investigate that question without asking the user to repeat it;
-- with `--no-overview`, instruct it to retain the bounded status check but skip
-  the automatic generic overview; targeted analysis can still run the commands
-  needed for the question, including an overview when the question explicitly
-  asks for one;
-- with `--dry-run`, print a versioned JSON launch plan and exit without staging
-  an injection, locating or authenticating the Agent, cataloging or reading
-  Dataset contents, or starting a child process. The plan reports question
-  presence, byte length, and redaction without echoing its contents.
-
-For Codex, pChronicle stages a uniquely named temporary skill under the
-Codex user skill root (`$CODEX_HOME/skills`, or `~/.codex/skills`) and enables
-that temporary skill for the child session with a session-only `skills.config`
-override containing compatible folder and `SKILL.md` selectors. It does not
-change persistent Codex configuration files. For Claude, pChronicle injects the
-same guidance as a temporary plugin through `--plugin-dir`, together with an
-appended system prompt and initial prompt. The staged files are removed after a
-normal child exit. If pChronicle is forcibly terminated, a generic
-`pchronicle-agent-*` directory can remain under the Codex skill root; it
-contains no Dataset URI and can be removed once no matching session is running.
-
-The target URI and current pChronicle executable are passed as
-`PCHRONICLE_DATASET_URI` and `PCHRONICLE_BIN`, with the same structured context
-embedded in the initial prompt as a fallback. Other environment variables are
-inherited, while these two session variables are set and replace values with the
-same names. The normalized Dataset URI, current executable, analysis guidance,
-and `--ask` text are pChronicle-supplied model context; pChronicle command
-results used during analysis also become model-visible. The target Agent can
-add its own model context from its configuration and working directory. Do not
-populate `--ask` with unreviewed Dataset messages, ticket bodies, or other
-untrusted text. The initial prompt is passed to the native Agent CLI as a
-process argument, so the question can also be visible to local
-process-inspection tools while the child runs; do not include credentials or
-other secrets.
-
-The Agent is instructed to use only `ls`, `status`, `analysis`, `find`, and
-read-only `query` for Dataset access. This is behavioral guidance, not a
-filesystem or network sandbox. pChronicle does not change the child Agent's
-existing tool permissions, credentials, or workspace access. The skill inspects
-live schemas with `DESCRIBE`, keeps drill-down queries bounded, preserves
-`_file_` in same-Dataset joins, and reports Snapshot changes, degraded Sources,
-and truncation.
-
-The injection is ephemeral. Native Codex or Claude resume commands do not
-guarantee that the temporary skill, plugin, or environment will still be
-available in a resumed session.
-
-The selected `codex` or `claude` executable must already be installed,
-available on `PATH`, and authenticated. A missing executable or non-zero child
-exit is reported as a pChronicle runtime error.
-
-## Find by Source-local ID
-
-```bash
-pchronicle find ./dataset --run-id run-42
-pchronicle find ./dataset --session-id session-42
-pchronicle find ./dataset --session-id session-42 --step-id 7
-pchronicle find ./dataset --source nested/source.json --session-id session-42
-```
-
-External IDs are preserved and are only Source-local. Without `--source`, the
-result can contain multiple candidates; use the returned `source_path` to make
-a subsequent lookup unambiguous.
-
-## Import and export
-
-Import creates a new local Dataset and refuses an existing target:
-
-```bash
-pchronicle import --from input.json --output ./imported --format atif
-pchronicle import --from input.json
-pchronicle import --from ./corpus --output ./normalized \
-  --output-format storyline
-cat input.json | pchronicle import --from - --stream \
-  --output ./imported --format openai-messages
-```
-
-Regular files can be auto-detected. A directory input recursively scans
-`.json`, `.jsonl`, and `.ndjson` regular files, detects each file independently
-when `--format` is omitted, skips JSON that is not a known trajectory format,
-skips symbolic links encountered during traversal, and keeps each Source's
-relative path in the default `--output-format preserve` output. An explicitly named symbolic link is
-accepted only when its target is a regular file. ATIF `.jsonl`/`.ndjson`
-Sources decode every non-empty record.
-
-`--output-format storyline` instead squashes every decoded input into one
-normalized Storyline Lance Store at the output root. Directory, regular-file,
-and stdin imports all produce root-level `CURRENT`, `generations`, and
-`objects.lance` entries. Catalog discovery exposes that Store as one physical
-Source named `.`, and `_file_` is `.` in all three normalized SQL tables. The
-original input paths remain available in import diagnostics but are not stored
-as query provenance.
-
-A squash preserves `run_id`, `document_id`, and `session_id` values without
-prefixing them. `document_id` and `session_id` must each be globally unique;
-collisions fail the complete import and report both input paths. Select
-`preserve` when Source-local duplicate identities or original Source boundaries
-must remain queryable. The output root is published only after every Source and
-the single Store snapshot succeed.
-
-Successful import JSON always includes `dataset_uri`, `output_format`,
-`sources`, `trajectories`, and `input_bytes`. `output_format` is exactly
-`preserve` or `storyline-lance`. Single-file and stdin imports also include
-`source_path` and `format`; directory imports omit those two source-specific
-fields. For a squash, `sources` still counts logical inputs even though the
-result has one physical Source. A single-file preserve import of ATIF JSON
-Lines uses the canonical `trajectories.atif.jsonl` or
-`trajectories.atif.ndjson` source name so later queries retain the
-line-delimited container semantics.
-
-That response shape has one contextual exception. A validated, non-empty
-canonical Event Store is detected before JSON scanning and always creates a
-Storyline Lance projection:
-
-```bash
-pchronicle import --from ./run/events.lance --output ./run/storyline
-```
-
-Canonical import accepts local and object-store URIs, does not mutate the
-source, and is create-only. It reports `source_path: "events.lance"`, `format:
-"events"`, `output_format: "storyline-lance"`, and `fact_rows`, while omitting
-`input_bytes`. It rejects a JSON exchange `--format` and explicit
-`--output-format preserve`.
-
-If `--output` is omitted, pChronicle derives a child name under the configured
-default Warehouse. Stdin requires `--stream`, an explicit input format, and a
-finite input ending at EOF. `--max-input-bytes` is optional and applies to each
-Source when set; omitting it leaves per-Source input size unbounded.
-
-Export selects complete trajectories from one Catalog Snapshot:
-
-```bash
-pchronicle export --from ./imported --output restored.json --format atif
-pchronicle export --from ./imported --output - --stream --format storyline
-pchronicle export --from ./imported --output one.json --format actf \
-  --source source.json --session-id session-42 --strict
-```
-
-Import supports `atif`, `actf`, `openai-messages`, and `storyline`. Export
-supports the same four exchange formats. Output files are create-only unless
-`--overwrite` is explicit. `--strict` refuses a conversion that cannot preserve
-the original exchange document.
-
-## Deterministic Echo upstream
-
-`echo` runs a loopback-only LLM upstream for Gateway integration tests. It
-supports Chat Completions, Messages, Responses, Gemini, streaming responses,
-and plain or Base64 output:
-
-```bash
-pchronicle echo
-pchronicle echo --listen 127.0.0.1:19080 --encoding base64
-```
-
-One request can override the server default with the
-`x-persisting-echo-encoding: plain|base64` header.
-
-## Read-only Warehouse server
-
-`serve` uses an explicit static configuration; it does not use the local
-default Warehouse setting:
-
-```toml
-[[datasets]]
-name = "evals"
-uri = "../data/atif"
+```text
+pchronicle analysis <overview|agents|models|tools> [DATASET] [OPTIONS]
 ```
 
 ```bash
-pchronicle serve --config warehouse.toml --listen 127.0.0.1:8081 --open
-pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
-pchronicle serve --storage ./tmp --storage ./data/evals --listen 127.0.0.1:9980
+pchronicle analysis overview
+pchronicle analysis tools @prod --format csv --limit 20
 ```
 
-Relative local Dataset paths are resolved from the configuration file's
-directory. At least one of `--listen`, `--control`, or `--gateway` is required.
-`--config` and `--storage` are mutually exclusive: configuration mounts named
-Datasets, while `--storage URI` mounts one Dataset named `default`. Repeat
-`--storage` to mount several Datasets named from each URI's last path
-component; `NAME=URI` overrides that name. `--listen` enables Warehouse HTTP;
-omitting it does not start Warehouse. `--control` requires `--storage` and
-uses the Dataset named `default` as the authenticated write/control root on a
-loopback listener. `--open` requires `--listen`.
+### Import
 
-Warehouse rejects non-loopback listeners because it has no authentication. Its
-Dataset mounts and API are read-only; import, export, maintenance, and arbitrary
-filesystem access are not exposed over HTTP.
-
-With `--storage`, `serve` discovers validated non-empty canonical Event Stores
-and converges their deterministic sibling `storyline` projections before it
-publishes readiness. It continues discovery at runtime, using bounded
-concurrency and retry for incremental sync or rebuild. Projection failures do
-not block canonical durable writes, and a destination without matching lineage
-is never overwritten. If `--listen` is enabled, each successful publication
-triggers a complete Catalog rebuild outside the reader lock and an atomic
-snapshot swap; a failed refresh retains the old queryable snapshot for retry.
-
-`serve` can also compose the existing Gateway on separate loopback listeners:
+```text
+pchronicle import -f|--from SOURCE -t|--to NEW_DATASET
+  [-i|--input-format FORMAT] [-o|--output-format preserve|storyline] [OPTIONS]
+```
 
 ```bash
-pchronicle serve --config warehouse.toml \
+pchronicle import -f input.json -t ./imported -i atif
+cat input.json | pchronicle import -f - -t ./imported -i openai-messages
+```
+
+`-` means stdin. Import is create-only and publishes the destination only after
+the selected operation succeeds.
+
+### Export
+
+```text
+pchronicle export -f|--from DATASET -t|--to TARGET -o|--output-format FORMAT [OPTIONS]
+```
+
+```bash
+pchronicle export -f ./imported -t restored.json -o atif
+pchronicle export -f @prod -t - -o actf --session-id session-42
+```
+
+`--to -` writes stdout. File and object-store destinations are create-only
+unless `--overwrite` is explicit.
+
+### Agent analysis
+
+```text
+pchronicle agent <codex|claude> [DATASET]
+  [--ask QUESTION|--ask-file FILE_OR_STDIN] [--no-overview] [--dry-run]
+```
+
+```bash
+pchronicle agent codex ./dataset
+pchronicle agent claude @prod --ask 'Compare model latency'
+```
+
+### Serve
+
+```text
+pchronicle serve
+  [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
+  [--gateway-config FILE] [--gateway-dataset NAME] [--gateway-state DIRECTORY]
+  [--gateway-stream-markdown] [--gateway-debug]
+  <[NAME=]DATASET> ...
+```
+
+```bash
+pchronicle serve ./trajectory-data
+pchronicle serve \
   --listen 127.0.0.1:8080 \
-  --gateway gateway.toml \
+  --gateway-config gateway.toml \
   --gateway-dataset evals \
-  --gateway-stream-markdown
+  evals=./trajectory-data
 ```
 
-`--gateway` points to the complete Gateway TOML, so model routes, upstream
-credentials, network policy, and proxy/admin listeners are not duplicated in
-the pChronicle CLI. Canonical events go through an in-process sink directly to
-the selected static Dataset while the Warehouse Web/API remains read-only. A
-multi-Dataset Warehouse without `default_dataset` requires
-`--gateway-dataset`; an object-store Dataset also requires a local
-`--gateway-state` directory. `--debug` (alias `--gateway-debug`) mirrors
-Gateway dispatch/capture diagnostics directly to stderr and may include
-bounded request and response bodies.
+Every listener must use a loopback address. A bare single Dataset is mounted as
+`default`; with several Datasets, use `NAME=DATASET` when a stable mount name is
+needed. Control requires a mount named `default`.
 
-The `pchronicle` executable is the public CLI for Dataset catalog, SQL,
-analysis, find, exchange, deterministic Gateway testing, and read-only
-Warehouse serving.
+## Output and exit status
 
-## Related workflows
-
-- [Discover and query a Dataset](../guides/discover-and-query.md).
-- [Import and export trajectories](../guides/exchange.md).
-- [Serve a local read-only Warehouse](../guides/serve.md).
-- [Configure Gateway forwarding, rewriting, and capture](../guides/serve-gateway.md).
-- [Dataset, Source, and Snapshot](../concepts/dataset-and-source.md) explains the
-  identity model behind the command arguments.
+stdout contains command results, exported content, or readiness JSON. stderr
+contains diagnostics. Stable boundary exit codes are: `0` success, `2` invalid
+input, `3` not found, `4` conflict, `5` resource limit, and `6` timeout or a
+temporarily unavailable dependency. Unclassified internal errors use `1`.

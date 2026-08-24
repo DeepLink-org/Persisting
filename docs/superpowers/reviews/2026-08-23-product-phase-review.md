@@ -26,7 +26,7 @@ pChronicle 当前的形态是「单二进制本地 Agent 轨迹仓库 + 分析�
 | L1 数据与存储 | dataset mounts、catalog treemap | ✅ 已暴露（Datasets 页） |
 | L1 | error sources | ⚠️ 部分暴露（红色横幅，无管理操作） |
 | L1 | `/revisions` 数据集快照 | ❌ 后端已有，无 UI |
-| L1 | 多 `--storage` 挂载 | ❌ spec 已批准（2026-08-23），未实现 |
+| L1 | 多 Dataset 挂载 | ❌ spec 已批准（2026-08-23），未实现 |
 | L2 查询引擎 | query console（tables + SQL） | ✅ 已暴露 |
 | L2 | evidence bounded 查询 | ✅ 已暴露（Analyze agent 消费） |
 | L2 | `/export/har`、`/export/otlp` | ❌ 后端已有，无 UI |

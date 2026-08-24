@@ -1,5 +1,13 @@
 //! ATIF ⇄ storyline.
 
+use std::io::{self, BufRead, Write};
+use std::path::Path;
+
+use anyhow::Context as _;
+use serde::Deserialize;
+use serde_json::{Map, Value};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
 use crate::atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
 use crate::format::DocumentFormat;
 use crate::formats::storyline::{
@@ -12,11 +20,200 @@ use crate::formats::unknown_fields::{
     restore_json_pointer, take_unknown_fields_envelope, validate_unknown_fields,
     write_foreign_unknown_fields_envelope, CarrierBinding, PointerWrite, UnknownFieldLimits,
 };
-use anyhow::Context as _;
-use serde_json::{Map, Value};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use crate::{InputIssue, InputResult, Result};
 
-use crate::Result;
+use super::codec::{
+    DecodeContext, DecodeReport, FormatCapabilities, ProbeConfidence, TrajectoryFormat,
+};
+use super::common::json_stream::{visit_json_stream, JsonRecordLocation, ScopedJsonObjectReader};
+
+pub struct AtifFormat;
+
+impl TrajectoryFormat for AtifFormat {
+    fn id(&self) -> DocumentFormat {
+        DocumentFormat::Atif
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["json", "jsonl", "ndjson"]
+    }
+
+    fn capabilities(&self) -> FormatCapabilities {
+        FormatCapabilities {
+            decode: true,
+            encode: true,
+            direct_query: true,
+            streaming_input: true,
+        }
+    }
+
+    fn probe(&self, _path: Option<&Path>, content: &[u8]) -> InputResult<ProbeConfidence> {
+        Ok(if content_has_atif_fingerprint(content) {
+            ProbeConfidence::ContentFingerprint
+        } else {
+            ProbeConfidence::None
+        })
+    }
+
+    fn decode(
+        &self,
+        reader: &mut dyn BufRead,
+        ctx: &DecodeContext<'_>,
+        emit: &mut dyn FnMut(StorylineDocument) -> InputResult<()>,
+    ) -> InputResult<DecodeReport> {
+        decode_atif(reader, ctx, emit)
+    }
+
+    fn encode(&self, stories: &[StorylineDocument], output: &mut dyn Write) -> InputResult<()> {
+        let documents =
+            storylines_to_atif(stories).map_err(|error| InputIssue::invalid(error.to_string()))?;
+        let value = if documents.len() == 1 {
+            serde_json::to_value(&documents[0])
+        } else {
+            serde_json::to_value(documents)
+        }
+        .map_err(|error| InputIssue::invalid(error.to_string()))?;
+        serde_json::to_writer(output, &value)
+            .map_err(|error| InputIssue::invalid(error.to_string()))
+    }
+}
+
+fn decode_atif(
+    reader: &mut dyn BufRead,
+    ctx: &DecodeContext<'_>,
+    emit: &mut dyn FnMut(StorylineDocument) -> InputResult<()>,
+) -> InputResult<DecodeReport> {
+    let path = Path::new(&ctx.source.relative_path);
+    let _ = ctx.max_file_bytes;
+    let mut state = AtifDecodeState { emit, documents: 0 };
+    let visit = visit_json_stream(
+        path,
+        reader,
+        ctx.max_record_bytes,
+        &mut state,
+        |reader, state| {
+            let mut scoped = ScopedJsonObjectReader::new(reader, ctx.max_record_bytes);
+            let mut deserializer = serde_json::Deserializer::from_reader(&mut scoped);
+            let value = Value::deserialize(&mut deserializer)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            deserializer
+                .end()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            if !scoped.is_finished() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "ATIF JSON object was not fully consumed",
+                ));
+            }
+            state.push(
+                atif_collection_to_storylines(value)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+            )
+        },
+        |record, location, state| {
+            let issue_location = match location {
+                JsonRecordLocation::NdjsonLine(line) => format!("line {line}"),
+                JsonRecordLocation::ArrayElement(ordinal) => format!("array element {ordinal}"),
+            };
+            let mut deserializer = serde_json::Deserializer::from_slice(record);
+            let value = Value::deserialize(&mut deserializer)
+                .and_then(|value| {
+                    deserializer.end()?;
+                    Ok(value)
+                })
+                .map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        InputIssue::invalid(error.to_string()).at(issue_location.clone()),
+                    )
+                })?;
+            state.push(atif_collection_to_storylines(value).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    InputIssue::invalid(error.to_string()).at(issue_location.clone()),
+                )
+            })?)
+        },
+    )
+    .map_err(input_issue_from_io)?;
+    if visit.record_count == 0 || state.documents == 0 {
+        return Err(InputIssue::unsupported("ATIF document cannot be empty"));
+    }
+    Ok(DecodeReport {
+        documents: state.documents,
+        peak_record_bytes: visit.peak_record_bytes,
+    })
+}
+
+struct AtifDecodeState<'a> {
+    emit: &'a mut dyn FnMut(StorylineDocument) -> InputResult<()>,
+    documents: usize,
+}
+
+impl AtifDecodeState<'_> {
+    fn push(&mut self, stories: Vec<StorylineDocument>) -> io::Result<()> {
+        self.documents += stories.len();
+        for story in stories {
+            (self.emit)(story)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        }
+        Ok(())
+    }
+}
+
+fn input_issue_from_io(error: io::Error) -> InputIssue {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<InputIssue>())
+        .cloned()
+        .unwrap_or_else(|| InputIssue::invalid(error.to_string()))
+}
+
+fn looks_like_atif_value(value: &Value) -> bool {
+    let candidate = value
+        .as_array()
+        .and_then(|values| values.first())
+        .unwrap_or(value);
+    value
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .is_some_and(|version| version.starts_with("ATIF"))
+        || candidate
+            .get("schema_version")
+            .and_then(Value::as_str)
+            .is_some_and(|version| version.starts_with("ATIF"))
+        || (value.get("steps").is_some() && value.get("agent").is_some())
+        || (candidate.get("steps").is_some() && candidate.get("agent").is_some())
+        || (candidate.get("session_id").is_some()
+            && candidate.get("step_id").is_some()
+            && candidate.get("agent_name").is_some())
+}
+
+fn content_has_atif_fingerprint(content: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(content) else {
+        return false;
+    };
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+            if looks_like_atif_value(&value) {
+                return true;
+            }
+        }
+        for line in trimmed
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .take(32)
+        {
+            if let Ok(value) = serde_json::from_str::<Value>(line) {
+                if looks_like_atif_value(&value) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
 
 fn timing_from_metrics(metrics: &Option<serde_json::Value>) -> (Option<i64>, Option<i64>) {
     let Some(m) = metrics.as_ref() else {

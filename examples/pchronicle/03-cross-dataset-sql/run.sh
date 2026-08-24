@@ -10,20 +10,20 @@ data="$repo_root/examples/data"
 pchronicle_example_init "$example_dir"
 
 mounts=(
-  --dataset "atif=$data/atif"
-  --dataset "actf=$data/actf"
-  --dataset "openai=$data/openai-messages"
+  --mount "atif=$data/atif"
+  --mount "actf=$data/actf"
+  --mount "openai=$data/openai-messages"
 )
 
 counts="$(pchronicle_capture 01-counts "$pchronicle" query "${mounts[@]}" \
-  'SELECT
+  --sql 'SELECT
      (SELECT COUNT(*) FROM atif.runs) AS atif_runs,
      (SELECT COUNT(*) FROM actf.runs) AS actf_runs,
      (SELECT COUNT(*) FROM openai.runs) AS openai_runs' \
   --format jsonl)"
 
 sessions="$(pchronicle_capture 02-sessions "$pchronicle" query "${mounts[@]}" \
-  "SELECT 'atif' AS dataset, session_id FROM atif.runs
+  --sql "SELECT 'atif' AS dataset, session_id FROM atif.runs
    UNION ALL
    SELECT 'actf' AS dataset, session_id FROM actf.runs
    UNION ALL

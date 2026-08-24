@@ -563,3 +563,73 @@ async fn projected_array_enforces_json_separators() -> Result<()> {
     assert!(format!("{error:#}").contains("element must be an object"));
     Ok(())
 }
+
+const CODEX_SESSION: &str = r#"{"timestamp":"2026-08-03T08:15:11.000Z","type":"session_meta","payload":{"id":"sess-query","cwd":"/tmp/demo"}}
+{"timestamp":"2026-08-03T08:15:12.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}
+{"timestamp":"2026-08-03T08:15:13.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}
+"#;
+
+const CLAUDE_SESSION: &str = r#"{"type":"user","sessionId":"claude-query","cwd":"/tmp/app","timestamp":"2026-08-03T08:00:00.000Z","message":{"role":"user","content":"hi"}}
+{"type":"assistant","sessionId":"claude-query","timestamp":"2026-08-03T08:00:01.000Z","message":{"content":[{"type":"text","text":"ok"}]}}
+"#;
+
+#[tokio::test]
+async fn queries_a_codex_session_directory() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let path = temp
+        .path()
+        .join("rollout-2026-08-03T08-15-11-sess-query.jsonl");
+    fs::write(&path, CODEX_SESSION)?;
+    assert_eq!(
+        detect_format(Some(&path), None)?,
+        Some(DocumentFormat::Codex)
+    );
+
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Codex,
+        temp.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    assert_eq!(
+        engine
+            .backend_info()
+            .expect("document backend info")
+            .source_count,
+        1
+    );
+    let rows = json_rows(
+        &engine
+            .query_jsonl("SELECT session_id, _file_ FROM runs")
+            .await?,
+    )?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["session_id"], "sess-query");
+    assert_eq!(
+        rows[0][SOURCE_FILE_COLUMN],
+        "rollout-2026-08-03T08-15-11-sess-query.jsonl"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn queries_a_claude_code_session_file() -> Result<()> {
+    let temp = tempfile::NamedTempFile::with_suffix(".jsonl")?;
+    fs::write(temp.path(), CLAUDE_SESSION)?;
+    let input = fs::read_to_string(temp.path())?;
+    assert_eq!(
+        detect_format(Some(temp.path()), Some(&input))?,
+        Some(DocumentFormat::ClaudeCode)
+    );
+
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::ClaudeCode,
+        temp.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let rows = json_rows(&engine.query_jsonl("SELECT session_id FROM runs").await?)?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["session_id"], "claude-query");
+    Ok(())
+}

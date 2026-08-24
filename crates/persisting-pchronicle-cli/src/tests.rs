@@ -34,9 +34,39 @@ async fn trajectory_append_uses_persisting_events_protocol_directly() -> Result<
 }
 use clap::CommandFactory;
 use serde_json::Value;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 
 static STATUS_REPORT_TRACING_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static DATASET_ALIAS_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 
 fn atif_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -213,8 +243,8 @@ fn command_tree_contains_the_product_commands() {
     assert_eq!(
         names,
         [
-            "onboard", "default", "ls", "status", "query", "analysis", "agent", "find", "import",
-            "export", "echo", "serve",
+            "onboard", "default", "alias", "ls", "status", "query", "analysis", "agent", "find",
+            "import", "export", "echo", "dev", "serve",
         ]
     );
     let ls = command
@@ -236,6 +266,183 @@ fn command_tree_contains_the_product_commands() {
         .to_string()
         .contains("squash into one Storyline Lance Store at the Dataset root"));
     assert!(Cli::try_parse_from(["pchronicle", "project", "status"]).is_err());
+}
+
+#[test]
+fn canonical_parser_surface_matches_the_cli_guide() -> Result<()> {
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        "config.toml",
+        "--log-level",
+        "debug",
+        "query",
+        "./dataset",
+        "--sql",
+        "SELECT 1",
+        "--timeout",
+        "2m",
+        "--max-output-bytes",
+        "8MiB",
+    ])?;
+    assert_eq!(cli.config, Some(PathBuf::from("config.toml")));
+    assert_eq!(cli.log_level, LogLevel::Debug);
+    let Command::Query(query) = cli.command else {
+        panic!("expected query command")
+    };
+    assert_eq!(query.dataset_uri.as_deref(), Some("./dataset"));
+    assert_eq!(query.sql_option.as_deref(), Some("SELECT 1"));
+    assert_eq!(query.timeout_seconds, 120);
+    assert_eq!(query.max_output_bytes, 8 * 1024 * 1024);
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "query",
+        "--mount",
+        "live=./live",
+        "--mount",
+        "archive=@archive",
+        "--file",
+        "report.sql",
+    ])?;
+    let Command::Query(query) = cli.command else {
+        panic!("expected query command")
+    };
+    assert_eq!(query.datasets.len(), 2);
+    assert_eq!(query.file.as_deref(), Some("report.sql"));
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "-f",
+        "-",
+        "-t",
+        "./imported",
+        "-i",
+        "atif",
+        "-o",
+        "preserve",
+    ])?;
+    let Command::Import(import) = cli.command else {
+        panic!("expected import command")
+    };
+    assert_eq!(import.output.as_deref(), Some("./imported"));
+    assert_eq!(import.format, ExchangeFormat::Atif);
+    assert_eq!(import.output_format, Some(ImportOutputFormat::Preserve));
+
+    assert!(Cli::try_parse_from(["pchronicle", "export", "-t", "-", "-o", "storyline"]).is_err());
+    assert!(Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "--listen",
+        "127.0.0.1:8080",
+        "--gateway-config",
+        "gateway.toml",
+        "--gateway-dataset",
+        "evals",
+        "evals=./dataset"
+    ])
+    .is_ok());
+    Ok(())
+}
+
+#[tokio::test]
+async fn alias_lifecycle_resolves_dataset_references_without_moving_data() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let config = temporary.path().join("config.toml");
+    let config_arg = config.to_string_lossy().into_owned();
+    let first = temporary.path().join("first");
+    let second = temporary.path().join("second");
+    fs::create_dir_all(&first)?;
+    fs::create_dir_all(&second)?;
+    let first_arg = first.to_string_lossy().into_owned();
+    let second_arg = second.to_string_lossy().into_owned();
+
+    for arguments in [
+        vec!["-c", &config_arg, "alias", "add", "prod", &first_arg],
+        vec!["-c", &config_arg, "alias", "add", "archive", &second_arg],
+    ] {
+        let cli =
+            Cli::try_parse_from(std::iter::once("pchronicle").chain(arguments.iter().copied()))?;
+        run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+    }
+
+    assert_eq!(
+        resolve_dataset_uri(Some("@prod"), Some(&config))?,
+        fs::canonicalize(&first)?.to_string_lossy()
+    );
+    assert_eq!(
+        resolve_dataset_uri(Some("@archive"), Some(&config))?,
+        fs::canonicalize(&second)?.to_string_lossy()
+    );
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "list",
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let aliases: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(aliases["schema_version"], "pchronicle-aliases/v1");
+    assert_eq!(aliases["aliases"][0]["name"], "archive");
+    assert_eq!(aliases["aliases"][1]["name"], "prod");
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "rename",
+        "prod",
+        "production",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+    assert!(resolve_dataset_uri(Some("@prod"), Some(&config)).is_err());
+    assert!(resolve_dataset_uri(Some("@production/.."), Some(&config)).is_err());
+    assert!(first.is_dir());
+    Ok(())
+}
+
+#[tokio::test]
+async fn log_level_changes_diagnostics_without_changing_results() -> Result<()> {
+    let dataset = atif_fixture().to_string_lossy().into_owned();
+    let info = Cli::try_parse_from([
+        "pchronicle",
+        "status",
+        &dataset,
+        "--format",
+        "json",
+        "--log-level",
+        "info",
+    ])?;
+    let error = Cli::try_parse_from([
+        "pchronicle",
+        "status",
+        &dataset,
+        "--format",
+        "json",
+        "--log-level",
+        "error",
+    ])?;
+    let mut info_stdout = Vec::new();
+    let mut info_stderr = Vec::new();
+    run(info, false, &mut info_stdout, &mut info_stderr).await?;
+    let mut error_stdout = Vec::new();
+    let mut error_stderr = Vec::new();
+    run(error, false, &mut error_stdout, &mut error_stderr).await?;
+    let mut info_result: Value = serde_json::from_slice(&info_stdout)?;
+    let mut error_result: Value = serde_json::from_slice(&error_stdout)?;
+    info_result.as_object_mut().unwrap().remove("created_at");
+    error_result.as_object_mut().unwrap().remove("created_at");
+    assert_eq!(info_result, error_result);
+    assert!(!info_stderr.is_empty());
+    assert!(error_stderr.is_empty());
+    Ok(())
 }
 
 #[tokio::test]
@@ -717,14 +924,7 @@ async fn status_table_marks_counts_as_exact() -> Result<()> {
 
 #[tokio::test]
 async fn status_rejects_zero_timeout() -> Result<()> {
-    let cli = Cli::try_parse_from(["pchronicle", "status", ".", "--timeout-seconds", "0"])?;
-    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
-        .await
-        .unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "--timeout-seconds must be greater than zero"
-    );
+    assert!(Cli::try_parse_from(["pchronicle", "status", ".", "--timeout", "0s"]).is_err());
     Ok(())
 }
 
@@ -909,7 +1109,7 @@ async fn query_rejects_malformed_named_dataset_mounts() -> Result<()> {
     let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("NAME=URI"));
+    assert!(error.to_string().contains("NAME=DATASET"));
     Ok(())
 }
 
@@ -1726,6 +1926,81 @@ async fn import_storyline_output_writes_one_root_lance_store() -> Result<()> {
     assert!(output.join("objects.lance").is_dir());
     assert!(!output.join("session_steps.json").exists());
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_object_store_output_requires_storyline_format() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("one.json");
+    fs::write(
+        &input,
+        serde_json::to_vec(&atif_identity_document("document-one", "session-one"))?,
+    )?;
+
+    for extra in [vec![], vec!["--output-format", "preserve"]] {
+        let mut args = vec![
+            "pchronicle",
+            "import",
+            "--from",
+            input.to_str().unwrap(),
+            "--output",
+            "s3://my-bucket/prefix",
+        ];
+        args.extend(extra);
+        let cli = Cli::try_parse_from(args)?;
+        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("object-store import requires --output-format storyline"),
+            "unexpected import error: {message}"
+        );
+        assert!(
+            !message.contains("only local output paths"),
+            "object-store output still rejected as local-only: {message}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn import_output_normalizes_object_store_uri() -> Result<()> {
+    let location = DatasetLocation::parse("s3://my-bucket/prefix/")?.into_create_target()?;
+    assert!(location.is_object_store());
+    assert_eq!(location.as_str(), "s3://my-bucket/prefix");
+    let error = DatasetLocation::parse("s3://user:secret@my-bucket/prefix")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("must not contain embedded credentials"),
+        "{error}"
+    );
+    let error = DatasetLocation::parse("s3://dd/data/")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must be 3-63 characters"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_storyline_output_query_uses_squashed_source() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let output = temp.path().join("dataset");
+    let input = example_source("openai-messages");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+
     let cli = Cli::try_parse_from([
         "pchronicle",
         "query",
@@ -2270,6 +2545,187 @@ async fn import_creates_queryable_lossless_datasets_for_all_example_formats() ->
     Ok(())
 }
 
+fn session_jsonl_fixture(kind: &str) -> &'static str {
+    match kind {
+        "codex" => {
+            r#"{"timestamp":"2026-08-03T08:15:11.000Z","type":"session_meta","payload":{"id":"sess-cli","cwd":"/tmp/demo"}}
+{"timestamp":"2026-08-03T08:15:12.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}
+{"timestamp":"2026-08-03T08:15:13.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}
+"#
+        }
+        "claude-code" => {
+            r#"{"type":"user","sessionId":"claude-cli","cwd":"/tmp/app","timestamp":"2026-08-03T08:00:00.000Z","message":{"role":"user","content":"hi"}}
+{"type":"assistant","sessionId":"claude-cli","timestamp":"2026-08-03T08:00:01.000Z","message":{"content":[{"type":"text","text":"ok"}]}}
+"#
+        }
+        other => panic!("unknown session fixture {other}"),
+    }
+}
+
+#[tokio::test]
+async fn import_and_query_codex_session_jsonl() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("rollout-sess-cli.jsonl");
+    fs::write(&input, session_jsonl_fixture("codex"))?;
+    let output = temp.path().join("imported");
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let response: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(response["format"], "codex");
+    assert_eq!(response["trajectories"], 1);
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "query",
+        output.to_str().unwrap(),
+        "SELECT COUNT(*) AS runs FROM dataset.runs",
+        "--format",
+        "jsonl",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let count: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(count["runs"], 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn query_reads_codex_and_claude_code_session_directories() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    for (kind, filename, expected_session) in [
+        ("codex", "rollout-direct.jsonl", "sess-cli"),
+        ("claude-code", "claude-direct.jsonl", "claude-cli"),
+    ] {
+        let dir = temp.path().join(kind);
+        fs::create_dir(&dir)?;
+        fs::write(dir.join(filename), session_jsonl_fixture(kind))?;
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "query",
+            dir.to_str().unwrap(),
+            "SELECT session_id FROM dataset.runs",
+            "--format",
+            "jsonl",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+        let row: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(row["session_id"], expected_session, "kind={kind}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn query_expands_codex_and_claude_dataset_aliases() -> Result<()> {
+    let _env_guard = DATASET_ALIAS_ENV_LOCK.lock().await;
+    let temp = tempfile::tempdir()?;
+    let codex_home = temp.path().join("codex-home");
+    let claude_config = temp.path().join("claude-config");
+    let codex_sessions = codex_home.join("sessions");
+    let claude_projects = claude_config.join("projects");
+    fs::create_dir_all(&codex_sessions)?;
+    fs::create_dir_all(&claude_projects)?;
+    fs::write(
+        codex_sessions.join("rollout-alias.jsonl"),
+        session_jsonl_fixture("codex"),
+    )?;
+    fs::write(
+        claude_projects.join("claude-alias.jsonl"),
+        session_jsonl_fixture("claude-code"),
+    )?;
+    let _codex_home = EnvGuard::set("CODEX_HOME", &codex_home);
+    let _claude_config = EnvGuard::set("CLAUDE_CONFIG_DIR", &claude_config);
+
+    for (alias, expected_session) in [("@codex", "sess-cli"), ("@claude", "claude-cli")] {
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "query",
+            alias,
+            "SELECT session_id FROM dataset.runs",
+            "--format",
+            "jsonl",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+        let row: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(row["session_id"], expected_session, "alias={alias}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_expands_codex_alias_from_path() -> Result<()> {
+    let _env_guard = DATASET_ALIAS_ENV_LOCK.lock().await;
+    let temp = tempfile::tempdir()?;
+    let codex_home = temp.path().join("codex-home");
+    let sessions = codex_home.join("sessions");
+    fs::create_dir_all(&sessions)?;
+    fs::write(
+        sessions.join("rollout-import-alias.jsonl"),
+        session_jsonl_fixture("codex"),
+    )?;
+    let output = temp.path().join("imported-alias");
+    let _codex_home = EnvGuard::set("CODEX_HOME", &codex_home);
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        "@codex",
+        "--output",
+        output.to_str().unwrap(),
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let response: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(response["sources"], 1);
+    assert_eq!(response["trajectories"], 1);
+    assert!(response.get("format").is_none());
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "query",
+        output.to_str().unwrap(),
+        "SELECT COUNT(*) AS runs FROM dataset.runs",
+        "--format",
+        "jsonl",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let count: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(count["runs"], 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn export_rejects_decode_only_session_formats() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let output = temp.path().join("out.json");
+    for format in ["codex", "claude-code"] {
+        assert!(Cli::try_parse_from([
+            "pchronicle",
+            "export",
+            "--from",
+            temp.path().to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--format",
+            format,
+        ])
+        .is_err());
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn import_reads_a_bounded_explicit_stdin_stream() -> Result<()> {
     let temp = tempfile::tempdir()?;
@@ -2280,10 +2736,9 @@ async fn import_reads_a_bounded_explicit_stdin_stream() -> Result<()> {
         "import",
         "--from",
         "-",
-        "--stream",
-        "--format",
+        "--input-format",
         "atif",
-        "--output",
+        "--to",
         output.to_str().unwrap(),
         "--max-input-bytes",
         &input.len().to_string(),
@@ -2295,27 +2750,14 @@ async fn import_reads_a_bounded_explicit_stdin_stream() -> Result<()> {
     assert_eq!(response["trajectories"], 1);
     assert_eq!(fs::read(output.join("trajectories.atif.json"))?, input);
 
-    for args in [
-        vec![
-            "pchronicle",
-            "import",
-            "--from",
-            "-",
-            "--output",
-            temp.path().join("missing-stream").to_str().unwrap(),
-            "--format",
-            "atif",
-        ],
-        vec![
-            "pchronicle",
-            "import",
-            "--from",
-            "-",
-            "--stream",
-            "--output",
-            temp.path().join("missing-format").to_str().unwrap(),
-        ],
-    ] {
+    for args in [vec![
+        "pchronicle",
+        "import",
+        "--from",
+        "-",
+        "--to",
+        temp.path().join("missing-format").to_str().unwrap(),
+    ]] {
         let cli = Cli::try_parse_from(args)?;
         let mut stdin = input.as_slice();
         assert!(
@@ -2761,20 +3203,9 @@ async fn export_validates_stream_filters_and_strict_conversion() -> Result<()> {
             "export",
             "--from",
             example_dataset("atif").to_str().unwrap(),
-            "--output",
+            "--to",
             "-",
-            "--format",
-            "atif",
-        ],
-        vec![
-            "pchronicle",
-            "export",
-            "--from",
-            example_dataset("atif").to_str().unwrap(),
-            "--output",
-            "-",
-            "--stream",
-            "--format",
+            "--output-format",
             "storyline",
             "--strict",
         ],
@@ -2783,10 +3214,9 @@ async fn export_validates_stream_filters_and_strict_conversion() -> Result<()> {
             "export",
             "--from",
             example_dataset("atif").to_str().unwrap(),
-            "--output",
+            "--to",
             "-",
-            "--stream",
-            "--format",
+            "--output-format",
             "atif",
             "--where",
             "DELETE FROM dataset.runs",
@@ -2819,10 +3249,126 @@ fn preserves_uri_roots_while_trimming_prefixes() {
     );
 }
 
+#[test]
+fn expand_dataset_alias_maps_vendor_roots_and_suffixes() {
+    let _env_guard = DATASET_ALIAS_ENV_LOCK.blocking_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = temp.path().join("codex-home");
+    let claude_config = temp.path().join("claude-config");
+    let home = temp.path().join("home");
+    let _codex_home = EnvGuard::set("CODEX_HOME", &codex_home);
+    let _claude_config = EnvGuard::set("CLAUDE_CONFIG_DIR", &claude_config);
+    let _home = EnvGuard::set("HOME", &home);
+
+    assert_eq!(
+        expand_dataset_alias("@codex").unwrap(),
+        codex_home.join("sessions").to_string_lossy()
+    );
+    assert_eq!(
+        expand_dataset_alias("@codex/").unwrap(),
+        codex_home.join("sessions").to_string_lossy()
+    );
+    assert_eq!(
+        expand_dataset_alias("@codex/2026/05/29").unwrap(),
+        codex_home
+            .join("sessions")
+            .join("2026")
+            .join("05")
+            .join("29")
+            .to_string_lossy()
+    );
+    assert_eq!(
+        expand_dataset_alias("@codex//etc").unwrap(),
+        codex_home.join("sessions").join("etc").to_string_lossy()
+    );
+    assert_eq!(
+        expand_dataset_alias("@claude").unwrap(),
+        claude_config.join("projects").to_string_lossy()
+    );
+    assert_eq!(
+        expand_dataset_alias("@claude-code").unwrap(),
+        claude_config.join("projects").to_string_lossy()
+    );
+}
+
+#[test]
+fn expand_dataset_alias_treats_empty_env_as_unset_and_joins_relative_env() {
+    let _env_guard = DATASET_ALIAS_ENV_LOCK.blocking_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let _home = EnvGuard::set("HOME", &home);
+    let _codex_home = EnvGuard::set("CODEX_HOME", "");
+    assert_eq!(
+        expand_dataset_alias("@codex").unwrap(),
+        home.join(".codex").join("sessions").to_string_lossy()
+    );
+    drop(_codex_home);
+    let _codex_home = EnvGuard::unset("CODEX_HOME");
+    assert_eq!(
+        expand_dataset_alias("@codex").unwrap(),
+        home.join(".codex").join("sessions").to_string_lossy()
+    );
+
+    let _codex_home = EnvGuard::set("CODEX_HOME", "relative-codex-home");
+    let expected = std::env::current_dir()
+        .unwrap()
+        .join("relative-codex-home")
+        .join("sessions");
+    assert_eq!(
+        expand_dataset_alias("@codex").unwrap(),
+        expected.to_string_lossy()
+    );
+}
+
+#[test]
+fn expand_dataset_alias_rejects_unknown_parent_and_scheme_forms() {
+    let error = expand_dataset_alias("@unknown").unwrap_err().to_string();
+    assert!(
+        error.contains("unknown dataset alias '@unknown'"),
+        "{error}"
+    );
+    assert!(error.contains("expected @codex or @claude"), "{error}");
+    assert!(expand_dataset_alias("@").is_err());
+    assert!(expand_dataset_alias("@codex/../.ssh").is_err());
+    assert!(expand_dataset_alias("@codex/foo/../bar").is_err());
+    assert!(expand_dataset_alias("@codex://sessions").is_err());
+}
+
+#[test]
+fn expand_dataset_alias_leaves_non_descriptor_paths_untouched() {
+    assert_eq!(expand_dataset_alias("./@codex").unwrap(), "./@codex");
+    assert_eq!(expand_dataset_alias("-").unwrap(), "-");
+    assert_eq!(
+        expand_dataset_alias("s3://bucket/@codex").unwrap(),
+        "s3://bucket/@codex"
+    );
+}
+
+#[test]
+fn normalize_and_validate_dataset_uri_expands_alias_and_rejects_unknown() {
+    let _env_guard = DATASET_ALIAS_ENV_LOCK.blocking_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    fs::create_dir(&sessions).unwrap();
+    let _codex_home = EnvGuard::set("CODEX_HOME", temp.path());
+
+    let normalized = normalize_and_validate_dataset_uri("@codex").unwrap();
+    assert_eq!(
+        normalized,
+        sessions.canonicalize().unwrap().to_string_lossy()
+    );
+
+    let error = normalize_and_validate_dataset_uri("@foo")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("unknown dataset alias '@foo'"), "{error}");
+}
+
 fn serve_args_with_storage(storage: Vec<String>) -> ServeArgs {
     ServeArgs {
         config: None,
         storage,
+        positional_storage: Vec::new(),
         listen: None,
         control: None,
         open: false,
@@ -2833,6 +3379,25 @@ fn serve_args_with_storage(storage: Vec<String>) -> ServeArgs {
         gateway_stream_markdown: false,
         debug: false,
     }
+}
+
+#[test]
+fn serve_storage_expands_dataset_aliases() -> Result<()> {
+    let _env_guard = DATASET_ALIAS_ENV_LOCK.blocking_lock();
+    let temp = tempfile::tempdir()?;
+    let sessions = temp.path().join("sessions");
+    fs::create_dir(&sessions)?;
+    let _codex_home = EnvGuard::set("CODEX_HOME", temp.path());
+
+    let config = resolve_serve_config(&serve_args_with_storage(vec!["@codex".into()]))?;
+    assert_eq!(config.datasets.len(), 1);
+    assert_eq!(config.datasets[0].name, "default");
+    assert_eq!(config.datasets[0].uri, sessions.to_string_lossy());
+
+    let named = resolve_serve_config(&serve_args_with_storage(vec!["vendor=@codex".into()]))?;
+    assert_eq!(named.datasets[0].name, "vendor");
+    assert_eq!(named.datasets[0].uri, sessions.to_string_lossy());
+    Ok(())
 }
 
 #[test]
@@ -3036,6 +3601,31 @@ uri = {second:?}
 }
 
 #[test]
+fn warehouse_config_expands_dataset_aliases() -> Result<()> {
+    let _env_guard = DATASET_ALIAS_ENV_LOCK.blocking_lock();
+    let temp = tempfile::tempdir()?;
+    let sessions = temp.path().join("sessions");
+    fs::create_dir(&sessions)?;
+    let _codex_home = EnvGuard::set("CODEX_HOME", temp.path());
+    let config_path = temp.path().join("warehouse.toml");
+    fs::write(
+        &config_path,
+        r#"
+[[datasets]]
+name = "vendor"
+uri = "@codex"
+"#,
+    )?;
+
+    let config = load_warehouse_config(&config_path)?;
+    assert_eq!(
+        config.datasets[0].uri,
+        fs::canonicalize(&sessions)?.to_string_lossy()
+    );
+    Ok(())
+}
+
+#[test]
 fn warehouse_config_rejects_unsafe_or_ambiguous_mounts() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let dataset = temp.path().join("dataset");
@@ -3107,13 +3697,13 @@ fn serve_cli_requires_one_dataset_source_and_an_explicit_service() -> Result<()>
             "serve",
             "--storage",
             "/tmp/data",
-            "--gateway",
+            "--gateway-config",
             "gateway.toml",
         ],
         vec![
             "pchronicle",
             "serve",
-            "--config",
+            "--warehouse-config",
             "warehouse.toml",
             "--listen",
             "127.0.0.1:0",
@@ -3128,6 +3718,37 @@ fn serve_cli_requires_one_dataset_source_and_an_explicit_service() -> Result<()>
             "--listen",
             "127.0.0.1:0",
         ],
+        vec!["pchronicle", "serve", "--storage", "/tmp/data"],
+        vec![
+            "pchronicle",
+            "serve",
+            "--warehouse-config",
+            "warehouse.toml",
+        ],
+        vec!["pchronicle", "serve", "s3://my-bucket/prefix"],
+        vec![
+            "pchronicle",
+            "serve",
+            "s3://my-bucket/prefix",
+            "--listen",
+            "127.0.0.1:0",
+        ],
+        vec![
+            "pchronicle",
+            "serve",
+            "s3://my-bucket/prefix",
+            "--control",
+            "127.0.0.1:0",
+        ],
+        vec![
+            "pchronicle",
+            "serve",
+            "--storage",
+            "./tmp",
+            "s3://my-bucket/other",
+            "--listen",
+            "127.0.0.1:0",
+        ],
     ] {
         assert!(
             Cli::try_parse_from(arguments.clone()).is_ok(),
@@ -3136,14 +3757,12 @@ fn serve_cli_requires_one_dataset_source_and_an_explicit_service() -> Result<()>
     }
 
     for arguments in [
-        vec!["pchronicle", "serve", "--storage", "/tmp/data"],
-        vec!["pchronicle", "serve", "--config", "warehouse.toml"],
         vec![
             "pchronicle",
             "serve",
             "--storage",
             "a",
-            "--config",
+            "--warehouse-config",
             "b",
             "--listen",
             "127.0.0.1:0",
@@ -3151,7 +3770,7 @@ fn serve_cli_requires_one_dataset_source_and_an_explicit_service() -> Result<()>
         vec![
             "pchronicle",
             "serve",
-            "--config",
+            "--warehouse-config",
             "warehouse.toml",
             "--control",
             "127.0.0.1:0",
@@ -3175,6 +3794,47 @@ fn serve_cli_requires_one_dataset_source_and_an_explicit_service() -> Result<()>
 }
 
 #[test]
+fn serve_positional_uri_is_equivalent_to_storage() -> Result<()> {
+    let cli = Cli::try_parse_from(["pchronicle", "serve", "s3://my-bucket/prefix"])?;
+    let Command::Serve(args) = cli.command else {
+        unreachable!("serve command parsed as another variant")
+    };
+    let config = resolve_serve_config(&args)?;
+    assert_eq!(config.datasets.len(), 1);
+    assert_eq!(config.datasets[0].name, "default");
+    assert_eq!(config.datasets[0].uri, "s3://my-bucket/prefix");
+    assert_eq!(config.default_dataset.as_deref(), Some("default"));
+    Ok(())
+}
+
+#[test]
+fn serve_without_listen_defaults_warehouse_to_loopback_ephemeral_port() -> Result<()> {
+    let cli = Cli::try_parse_from(["pchronicle", "serve", "--storage", "/tmp/data"])?;
+    let Command::Serve(args) = cli.command else {
+        unreachable!("serve command parsed as another variant")
+    };
+    assert_eq!(args.listen, None);
+    assert_eq!(
+        warehouse_listen(&args),
+        Some("127.0.0.1:0".parse::<SocketAddr>()?)
+    );
+
+    let control_only = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "--storage",
+        "/tmp/data",
+        "--control",
+        "127.0.0.1:0",
+    ])?;
+    let Command::Serve(control_only) = control_only.command else {
+        unreachable!("serve command parsed as another variant")
+    };
+    assert_eq!(warehouse_listen(&control_only), None);
+    Ok(())
+}
+
+#[test]
 fn echo_cli_uses_a_normal_loopback_default() -> Result<()> {
     let cli = Cli::try_parse_from(["pchronicle", "echo"])?;
     let Command::Echo(args) = cli.command else {
@@ -3190,9 +3850,9 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
     let cli = Cli::try_parse_from([
         "pchronicle",
         "serve",
-        "--config",
+        "--warehouse-config",
         "warehouse.toml",
-        "--gateway",
+        "--gateway-config",
         "gateway.toml",
         "--gateway-dataset",
         "captures",
@@ -3201,7 +3861,7 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
         "--gateway-object-store-manifest-mode",
         "single-writer",
         "--gateway-stream-markdown",
-        "--debug",
+        "--gateway-debug",
     ])?;
     let Command::Serve(args) = cli.command else {
         unreachable!("serve command parsed as another variant")
@@ -3219,7 +3879,7 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
     assert!(Cli::try_parse_from([
         "pchronicle",
         "serve",
-        "--config",
+        "--warehouse-config",
         "warehouse.toml",
         "--gateway-dataset",
         "captures",
@@ -3228,16 +3888,16 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
     assert!(Cli::try_parse_from([
         "pchronicle",
         "serve",
-        "--config",
+        "--warehouse-config",
         "warehouse.toml",
-        "--debug",
+        "--gateway-debug",
     ])
     .is_err());
 
     let cli = Cli::try_parse_from([
         "pchronicle",
         "serve",
-        "--config",
+        "--warehouse-config",
         "warehouse.toml",
         "--gateway-config",
         "gateway.toml",

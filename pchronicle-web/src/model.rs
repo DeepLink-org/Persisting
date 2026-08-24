@@ -139,6 +139,121 @@ pub struct QueryFieldSummary {
     pub description: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalSource {
+    pub dataset: String,
+    pub file: String,
+    pub format: String,
+    pub uri: String,
+    pub size_bytes: Option<u64>,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalLayout {
+    pub dataset: String,
+    pub file: String,
+    pub format: String,
+    pub tables: Vec<PhysicalTable>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalTable {
+    pub name: String,
+    pub uri: String,
+    pub version: u64,
+    pub num_rows: u64,
+    pub fragments: Vec<PhysicalFragment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalFragment {
+    pub id: u64,
+    pub physical_rows: Option<u64>,
+    pub size_bytes: Option<u64>,
+    pub deletion_file: Option<String>,
+    pub files: Vec<PhysicalDataFile>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalDataFile {
+    pub path: String,
+    pub field_ids: Vec<i32>,
+    pub field_names: Vec<String>,
+    pub size_bytes: Option<u64>,
+    pub encoding: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalFileLayout {
+    pub table: String,
+    pub fragment_id: u64,
+    pub data_file: String,
+    pub num_rows: Option<u64>,
+    pub file_size_bytes: Option<u64>,
+    pub remaining_columns: usize,
+    pub columns: Vec<PhysicalColumn>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalColumn {
+    pub name: String,
+    pub field_id: i32,
+    #[serde(default)]
+    pub data_type: String,
+    #[serde(default)]
+    pub row_count: u64,
+    #[serde(default)]
+    pub null_count: u64,
+    #[serde(default)]
+    pub non_null_count: u64,
+    #[serde(default)]
+    pub compressed_bytes: Option<u64>,
+    #[serde(default)]
+    pub uncompressed_bytes: Option<u64>,
+    #[serde(default)]
+    pub max_value: Option<PhysicalExtremeValue>,
+    #[serde(default)]
+    pub value_distribution: Vec<PhysicalBucket>,
+    #[serde(default)]
+    pub size_distribution: Vec<PhysicalBucket>,
+    pub pages: Vec<PhysicalPage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalExtremeValue {
+    pub row_offset: u64,
+    pub size_bytes: u64,
+    pub preview: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalBucket {
+    pub label: String,
+    pub count: u64,
+    pub weight: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PhysicalPage {
+    pub index: u32,
+    pub offset: u64,
+    pub size: u64,
+    pub num_rows: Option<u64>,
+    pub encoding: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct PhysicalPagePreview {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub offset: usize,
+    pub limit: usize,
+    pub truncated: bool,
+    pub truncated_cells: usize,
+}
+
 pub fn queryable_tables(catalog: &QueryCatalog) -> Vec<QueryTableSummary> {
     if catalog.tables.iter().any(|table| table.name.contains('.')) {
         return catalog.tables.clone();
@@ -298,6 +413,29 @@ pub struct EventRecord {
     pub rest: BTreeMap<String, Value>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventProvenance {
+    Canonical,
+    SyntheticFromStoryline,
+}
+
+impl EventProvenance {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Canonical => "canonical",
+            Self::SyntheticFromStoryline => "synthetic_from_storyline",
+        }
+    }
+
+    pub const fn evidence_label(self) -> &'static str {
+        match self {
+            Self::Canonical => "canonical events",
+            Self::SyntheticFromStoryline => "synthetic event views",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct MetricStats {
     pub sample_count: usize,
@@ -339,6 +477,7 @@ pub struct HistogramBucket {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct RunAnalysis {
     pub run: RunSummary,
+    pub event_provenance: EventProvenance,
     pub event_count: usize,
     pub turn_count: usize,
     pub tool_call_count: usize,
@@ -393,6 +532,7 @@ pub struct TurnDetail {
     pub summary: TurnSummary,
     pub turn: StorylineTurn,
     pub wire_tool_calls: Vec<WireToolCall>,
+    pub event_provenance: EventProvenance,
     pub events: Vec<EventRecord>,
 }
 

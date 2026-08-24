@@ -1,12 +1,13 @@
 use super::*;
 
 pub(super) async fn run_import(
-    args: ImportArgs,
+    mut args: ImportArgs,
     settings_override: Option<&Path>,
     stdin: &mut dyn Read,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
+    args.stream = args.from == "-" || args.stream;
     let max_input_bytes = match args.max_input_bytes {
         Some(0) => {
             return Err(anyhow!("--max-input-bytes must be greater than zero"));
@@ -15,25 +16,35 @@ pub(super) async fn run_import(
         None => usize::MAX,
     };
     anyhow::ensure!(
-        (args.from == "-") == args.stream,
-        "--stream requires --from -, and --from - requires --stream"
+        args.from == "-" || !args.stream,
+        "--stream requires --from -"
     );
     if args.stream {
         anyhow::ensure!(
             args.format != ExchangeFormat::Auto,
-            "stdin import requires an explicit --format"
+            "stdin import requires an explicit --input-format"
         );
     }
-    let canonical = if !args.stream && (args.from.contains("://") || Path::new(&args.from).is_dir())
-    {
-        probe_canonical_event_store(&args.from).await?
+    if args.from != "-" {
+        args.from = expand_dataset_reference(&args.from, settings_override, true)?;
+    }
+    let from_location = (!args.stream)
+        .then(|| DatasetLocation::parse(&args.from))
+        .transpose()?;
+    let canonical = if let Some(location) = &from_location {
+        let looks_like_store = location.is_object_store()
+            || location.local_path().is_some_and(std::path::Path::is_dir);
+        if looks_like_store {
+            probe_canonical_event_store(location.as_str()).await?
+        } else {
+            None
+        }
     } else {
         None
     };
     if let Some(snapshot) = canonical {
         return run_canonical_event_import(args, snapshot, settings_override, stdout, stderr).await;
     }
-    let output_format = args.output_format.unwrap_or(ImportOutputFormat::Preserve);
     let input_path = (!args.stream).then(|| Path::new(&args.from));
     let (directory_input, candidates) = if let Some(input_path) = input_path {
         collect_import_candidates(input_path)?
@@ -41,48 +52,69 @@ pub(super) async fn run_import(
         (false, Vec::new())
     };
     let output_arg = match args.output.as_deref() {
-        Some(output) => output.to_owned(),
+        Some(output) => expand_dataset_reference(output, settings_override, false)?,
         None => default_import_output(&args, settings_override)?,
     };
-    let output = validate_new_local_dataset_path(&output_arg)?;
-    let parent = output
-        .parent()
-        .context("import output must have a parent directory")?;
-    let staging = tempfile::Builder::new()
-        .prefix(".pchronicle-import-")
-        .tempdir_in(parent)
-        .with_context(|| format!("create import staging directory in {}", parent.display()))?;
-    let (imported_sources, unknown_field_warnings, skipped_warnings) = match output_format {
-        ImportOutputFormat::Preserve => {
-            let mut unknown_field_warnings =
-                persisting_pchronicle::model::UnknownFieldImportWarnings::default();
-            let mut imported_sources = Vec::new();
-            let mut skipped_warnings = Vec::new();
-            if args.stream {
-                let input = read_bounded(stdin, max_input_bytes, "stdin")?;
-                if let Some(source) = stage_preserved_import_source(
-                    args.format,
-                    None,
-                    None,
-                    None,
-                    &input,
-                    staging.path(),
-                    &mut unknown_field_warnings,
-                    &mut skipped_warnings,
-                )? {
-                    imported_sources.push(source);
-                }
-            } else {
-                for candidate in &candidates {
-                    let label = format!("import source {}", candidate.relative_path.display());
-                    let file = std::fs::File::open(&candidate.path)
-                        .with_context(|| format!("open {label}"))?;
-                    let input = read_bounded(file, max_input_bytes, &label)?;
+    let destination = DatasetLocation::parse(&output_arg)?.into_create_target()?;
+    if destination.is_object_store() && args.output_format != Some(ImportOutputFormat::Storyline) {
+        return Err(anyhow!(
+            "object-store import requires --output-format storyline"
+        ));
+    }
+    let output_format = args.output_format.unwrap_or(ImportOutputFormat::Preserve);
+    let (dataset_uri, imported_sources, unknown_field_warnings, skipped_warnings) = if destination
+        .is_object_store()
+    {
+        if destination.exists().await? {
+            return Err(cli_boundary_error(
+                BoundaryCode::Conflict,
+                "import output already exists",
+            ));
+        }
+        let store = StorylineLanceStore::open_uri(destination.as_str())
+            .await
+            .context("create squashed Storyline Lance Dataset")?;
+        let (imported_sources, unknown_field_warnings, skipped_warnings) =
+            squash_storyline_into_store(
+                &store,
+                &args,
+                max_input_bytes,
+                stdin,
+                directory_input,
+                &candidates,
+            )
+            .await?;
+        (
+            destination.as_str().to_string(),
+            imported_sources,
+            unknown_field_warnings,
+            skipped_warnings,
+        )
+    } else {
+        let output = destination
+            .local_path()
+            .context("local import output must be a filesystem path")?
+            .to_path_buf();
+        let parent = output
+            .parent()
+            .context("import output must have a parent directory")?;
+        let staging = tempfile::Builder::new()
+            .prefix(".pchronicle-import-")
+            .tempdir_in(parent)
+            .with_context(|| format!("create import staging directory in {}", parent.display()))?;
+        let (imported_sources, unknown_field_warnings, skipped_warnings) = match output_format {
+            ImportOutputFormat::Preserve => {
+                let mut unknown_field_warnings =
+                    persisting_pchronicle::model::UnknownFieldImportWarnings::default();
+                let mut imported_sources = Vec::new();
+                let mut skipped_warnings = Vec::new();
+                if args.stream {
+                    let input = read_bounded(stdin, max_input_bytes, "stdin")?;
                     if let Some(source) = stage_preserved_import_source(
                         args.format,
-                        Some(&candidate.path),
-                        Some(&candidate.relative_path),
-                        candidate.output_relative_path.as_deref(),
+                        None,
+                        None,
+                        None,
                         &input,
                         staging.path(),
                         &mut unknown_field_warnings,
@@ -90,41 +122,62 @@ pub(super) async fn run_import(
                     )? {
                         imported_sources.push(source);
                     }
+                } else {
+                    for candidate in &candidates {
+                        let label = format!("import source {}", candidate.relative_path.display());
+                        let file = std::fs::File::open(&candidate.path)
+                            .with_context(|| format!("open {label}"))?;
+                        let input = read_bounded(file, max_input_bytes, &label)?;
+                        if let Some(source) = stage_preserved_import_source(
+                            args.format,
+                            Some(&candidate.path),
+                            Some(&candidate.relative_path),
+                            candidate.output_relative_path.as_deref(),
+                            &input,
+                            staging.path(),
+                            &mut unknown_field_warnings,
+                            &mut skipped_warnings,
+                        )? {
+                            imported_sources.push(source);
+                        }
+                    }
                 }
+                (imported_sources, unknown_field_warnings, skipped_warnings)
             }
-            (imported_sources, unknown_field_warnings, skipped_warnings)
-        }
-        ImportOutputFormat::Storyline => {
-            let store = StorylineLanceStore::open(staging.path())
-                .await
-                .context("create squashed Storyline Lance Dataset")?;
-            let mut import = if args.stream {
-                StorylineImportIterator::stdin(args.format, max_input_bytes, stdin)
-            } else {
-                StorylineImportIterator::files(args.format, max_input_bytes, &candidates)
-            };
-            let report = store.replace_storyline_stream(&mut import).await?;
-            let (imported_sources, unknown_field_warnings, skipped_warnings) =
-                import.into_result_parts();
-            if imported_sources.is_empty() {
-                return Err(empty_auto_directory_import_error(directory_input));
+            ImportOutputFormat::Storyline => {
+                let store = StorylineLanceStore::open(staging.path())
+                    .await
+                    .context("create squashed Storyline Lance Dataset")?;
+                squash_storyline_into_store(
+                    &store,
+                    &args,
+                    max_input_bytes,
+                    stdin,
+                    directory_input,
+                    &candidates,
+                )
+                .await?
             }
-            anyhow::ensure!(
-                store.current_table_paths().await?.is_some(),
-                "squashed Storyline Lance Dataset has no committed snapshot"
-            );
-            let imported_trajectories =
-                imported_sources.iter().try_fold(0usize, |total, source| {
-                    total
-                        .checked_add(source.trajectories)
-                        .context("import trajectory count overflow")
-                })?;
-            anyhow::ensure!(
-                report.storylines == imported_trajectories,
-                "squashed Storyline import report does not match decoded trajectory count"
-            );
-            (imported_sources, unknown_field_warnings, skipped_warnings)
-        }
+        };
+        std::fs::File::open(staging.path())
+            .and_then(|directory| directory.sync_all())
+            .context("sync import staging directory")?;
+
+        let staging_path = staging.keep();
+        let mut cleanup = PublishedPathGuard::new(staging_path.clone());
+        rename_noreplace(&staging_path, &output)
+            .with_context(|| format!("publish new Dataset {}", output.display()))?;
+        cleanup.track(output.clone());
+        std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| format!("sync Dataset parent {}", parent.display()))?;
+        cleanup.disarm();
+        (
+            output.to_string_lossy().into_owned(),
+            imported_sources,
+            unknown_field_warnings,
+            skipped_warnings,
+        )
     };
     if imported_sources.is_empty() {
         return Err(empty_auto_directory_import_error(directory_input));
@@ -139,19 +192,6 @@ pub(super) async fn run_import(
             .checked_add(source.input_bytes)
             .context("import input byte count overflow")
     })?;
-    std::fs::File::open(staging.path())
-        .and_then(|directory| directory.sync_all())
-        .context("sync import staging directory")?;
-
-    let staging_path = staging.keep();
-    let mut cleanup = PublishedPathGuard::new(staging_path.clone());
-    rename_noreplace(&staging_path, &output)
-        .with_context(|| format!("publish new Dataset {}", output.display()))?;
-    cleanup.track(output.clone());
-    std::fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .with_context(|| format!("sync Dataset parent {}", parent.display()))?;
-    cleanup.disarm();
 
     let single_source = (!directory_input).then(|| {
         imported_sources
@@ -159,7 +199,7 @@ pub(super) async fn run_import(
             .expect("stdin and regular-file imports have one Source")
     });
     let response = ImportResponse {
-        dataset_uri: output.to_string_lossy().into_owned(),
+        dataset_uri,
         source_path: single_source.map(|source| source.source_path.clone()),
         format: single_source.map(|source| source.format.as_str().to_owned()),
         output_format: output_format.response_name().into(),
@@ -208,6 +248,44 @@ pub(super) async fn run_import(
     Ok(())
 }
 
+async fn squash_storyline_into_store(
+    store: &StorylineLanceStore,
+    args: &ImportArgs,
+    max_input_bytes: usize,
+    stdin: &mut dyn Read,
+    directory_input: bool,
+    candidates: &[ImportFileCandidate],
+) -> Result<(
+    Vec<ImportedSource>,
+    persisting_pchronicle::model::UnknownFieldImportWarnings,
+    Vec<String>,
+)> {
+    let mut import = if args.stream {
+        StorylineImportIterator::stdin(args.format, max_input_bytes, stdin)
+    } else {
+        StorylineImportIterator::files(args.format, max_input_bytes, candidates)
+    };
+    let report = store.replace_storyline_stream(&mut import).await?;
+    let (imported_sources, unknown_field_warnings, skipped_warnings) = import.into_result_parts();
+    if imported_sources.is_empty() {
+        return Err(empty_auto_directory_import_error(directory_input));
+    }
+    anyhow::ensure!(
+        store.current_table_paths().await?.is_some(),
+        "squashed Storyline Lance Dataset has no committed snapshot"
+    );
+    let imported_trajectories = imported_sources.iter().try_fold(0usize, |total, source| {
+        total
+            .checked_add(source.trajectories)
+            .context("import trajectory count overflow")
+    })?;
+    anyhow::ensure!(
+        report.storylines == imported_trajectories,
+        "squashed Storyline import report does not match decoded trajectory count"
+    );
+    Ok((imported_sources, unknown_field_warnings, skipped_warnings))
+}
+
 async fn run_canonical_event_import(
     args: ImportArgs,
     _snapshot: EventFactSnapshot,
@@ -224,34 +302,17 @@ async fn run_canonical_event_import(
         "canonical event import cannot preserve an existing canonical event Store"
     );
     let output_arg = match args.output.as_deref() {
-        Some(output) => output.to_owned(),
+        Some(output) => expand_dataset_reference(output, settings_override, false)?,
         None => default_import_output(&args, settings_override)?,
     };
-    let output_uri = if output_arg.contains("://") {
-        let output = output_arg.trim().trim_end_matches('/');
-        anyhow::ensure!(!output.is_empty(), "import output URI must not be empty");
-        output.to_string()
-    } else {
-        let output = Path::new(output_arg.trim());
-        anyhow::ensure!(
-            output.file_name().is_some(),
-            "import output must name a new Dataset"
-        );
-        let parent = output.parent().unwrap_or_else(|| Path::new("."));
-        let parent =
-            std::fs::canonicalize(parent).context("canonicalize import output parent directory")?;
-        anyhow::ensure!(parent.is_dir(), "import output parent is not a directory");
-        parent
-            .join(output.file_name().expect("checked output filename"))
-            .to_string_lossy()
-            .into_owned()
-    };
-    if storyline_projection_destination_exists(&output_uri).await? {
+    let destination = DatasetLocation::parse(&output_arg)?.into_create_target()?;
+    if destination.exists().await? {
         return Err(cli_boundary_error(
             BoundaryCode::Conflict,
             "import output already exists",
         ));
     }
+    let output_uri = destination.as_str().to_string();
 
     let report = match build_storyline_projection(&args.from, &output_uri, "events.lance").await? {
         StorylineProjectionBuildOutcome::Built(report) => report,
@@ -288,15 +349,11 @@ async fn run_canonical_event_import(
 }
 
 pub(super) async fn run_export(
-    args: ExportArgs,
+    mut args: ExportArgs,
     settings_override: Option<&Path>,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
-    anyhow::ensure!(
-        args.format != ExchangeFormat::Auto,
-        "export requires an explicit --format"
-    );
     anyhow::ensure!(
         args.max_trajectories > 0,
         "--max-trajectories must be greater than zero"
@@ -307,11 +364,12 @@ pub(super) async fn run_export(
     );
     anyhow::ensure!(
         args.timeout_seconds > 0,
-        "--timeout-seconds must be greater than zero"
+        "--timeout must be greater than zero"
     );
+    args.stream = args.output == "-" || args.stream;
     anyhow::ensure!(
-        (args.output == "-") == args.stream,
-        "--stream requires --output -, and --output - requires --stream"
+        args.output == "-" || !args.stream,
+        "--stream requires --to -"
     );
     anyhow::ensure!(
         !(args.output == "-" && args.overwrite),
@@ -337,8 +395,11 @@ pub(super) async fn run_export(
         );
     }
 
-    let format = export_format(args.format)?;
+    let format = ExchangeFormat::from(args.format);
     let dataset = resolve_dataset_uri(args.from.as_deref(), settings_override)?;
+    if args.output != "-" {
+        args.output = expand_dataset_reference(&args.output, settings_override, false)?;
+    }
     let (_, dataset_uris, snapshot) =
         discover_query_snapshot(Some(&dataset), &[], args.max_files, args.max_entries).await?;
     let dataset_uri = dataset_uris
@@ -361,7 +422,7 @@ pub(super) async fn run_export(
     })??;
     ensure_export_trajectory_budget(export.trajectories, args.max_trajectories)?;
     ensure_output_byte_budget(export.bytes.len(), args.max_output_bytes, "encoded export")?;
-    write_export_output(&args.output, &export.bytes, args.overwrite, stdout)?;
+    write_export_output(&args.output, &export.bytes, args.overwrite, stdout).await?;
     writeln!(
         stderr,
         "snapshot_id={} format={} trajectories={} output_bytes={} exact={}",
@@ -597,21 +658,14 @@ fn encode_export(format: ExchangeFormat, stories: &[StorylineDocument]) -> Resul
             encode_json_storylines(DocumentFormat::OpenaiMsg, stories)?
         }
         ExchangeFormat::Storyline => encode_json_storylines(DocumentFormat::Storyline, stories)?,
-        _ => unreachable!("exchange export format was validated"),
+        ExchangeFormat::Codex | ExchangeFormat::ClaudeCode => {
+            bail!("{format} is decode-only and cannot be exported")
+        }
+        ExchangeFormat::Auto => unreachable!("exchange export format was validated"),
     };
     let mut output = serde_json::to_vec_pretty(&value).context("encode export JSON")?;
     output.push(b'\n');
     Ok(output)
-}
-
-fn export_format(format: ExchangeFormat) -> Result<ExchangeFormat> {
-    Ok(match format {
-        ExchangeFormat::Auto => bail!("export requires an explicit --format"),
-        ExchangeFormat::Atif => ExchangeFormat::Atif,
-        ExchangeFormat::Actf => ExchangeFormat::Actf,
-        ExchangeFormat::OpenaiMessages => ExchangeFormat::OpenaiMessages,
-        ExchangeFormat::Storyline => ExchangeFormat::Storyline,
-    })
 }
 
 fn exchange_document_format(format: ExchangeFormat) -> Option<DocumentFormat> {
@@ -620,11 +674,13 @@ fn exchange_document_format(format: ExchangeFormat) -> Option<DocumentFormat> {
         ExchangeFormat::Actf => Some(DocumentFormat::Actf),
         ExchangeFormat::OpenaiMessages => Some(DocumentFormat::OpenaiMsg),
         ExchangeFormat::Storyline => Some(DocumentFormat::Storyline),
+        ExchangeFormat::Codex => Some(DocumentFormat::Codex),
+        ExchangeFormat::ClaudeCode => Some(DocumentFormat::ClaudeCode),
         ExchangeFormat::Auto => None,
     }
 }
 
-fn write_export_output(
+async fn write_export_output(
     output: &str,
     bytes: &[u8],
     overwrite: bool,
@@ -634,75 +690,9 @@ fn write_export_output(
         stdout.write_all(bytes).context("write export stream")?;
         return Ok(());
     }
-    anyhow::ensure!(
-        !output.contains("://"),
-        "export currently supports only local output files"
-    );
-    let output = Path::new(output);
-    let filename = output
-        .file_name()
-        .context("export output must name a file")?;
-    let parent = std::fs::canonicalize(output.parent().unwrap_or_else(|| Path::new(".")))
-        .context("canonicalize export output parent directory")?;
-    anyhow::ensure!(parent.is_dir(), "export output parent is not a directory");
-    let output = parent.join(filename);
-    if output.exists() {
-        anyhow::ensure!(overwrite, "export output already exists; pass --overwrite");
-        anyhow::ensure!(output.is_file(), "export output exists and is not a file");
-    }
-    let mut staging = tempfile::Builder::new()
-        .prefix(".pchronicle-export-")
-        .tempfile_in(&parent)
-        .context("create export staging file")?;
-    staging
-        .write_all(bytes)
-        .context("write export staging file")?;
-    staging
-        .as_file()
-        .sync_all()
-        .context("sync export staging file")?;
-    let staging_path = staging.into_temp_path().keep()?;
-    let mut cleanup = PublishedFileGuard::new(staging_path.clone());
-    if overwrite {
-        std::fs::rename(&staging_path, &output).context("replace export output atomically")?;
-        // The old file is no longer available after a successful atomic replace,
-        // so a later directory-sync error must not delete the newly published file.
-        cleanup.disarm();
-    } else {
-        rename_noreplace(&staging_path, &output).context("publish new export output")?;
-        cleanup.track(output);
-    }
-    std::fs::File::open(&parent)
-        .and_then(|directory| directory.sync_all())
-        .context("sync export output parent directory")?;
-    cleanup.disarm();
-    Ok(())
-}
-
-struct PublishedFileGuard {
-    path: Option<PathBuf>,
-}
-
-impl PublishedFileGuard {
-    fn new(path: PathBuf) -> Self {
-        Self { path: Some(path) }
-    }
-
-    fn track(&mut self, path: PathBuf) {
-        self.path = Some(path);
-    }
-
-    fn disarm(&mut self) {
-        self.path = None;
-    }
-}
-
-impl Drop for PublishedFileGuard {
-    fn drop(&mut self) {
-        if let Some(path) = &self.path {
-            let _ = std::fs::remove_file(path);
-        }
-    }
+    DatasetLocation::parse(output)?
+        .put_bytes(bytes, overwrite)
+        .await
 }
 
 fn local_file_snapshot_ref(path: &Path) -> String {
@@ -1213,6 +1203,8 @@ fn resolve_import_format(
             Some(DocumentFormat::Actf) => ExchangeFormat::Actf,
             Some(DocumentFormat::OpenaiMsg) => ExchangeFormat::OpenaiMessages,
             Some(DocumentFormat::Storyline) => ExchangeFormat::Storyline,
+            Some(DocumentFormat::Codex) => ExchangeFormat::Codex,
+            Some(DocumentFormat::ClaudeCode) => ExchangeFormat::ClaudeCode,
             Some(format) if allow_skip => {
                 return Ok(ImportFormatResolution::Skip(format!(
                     "detected import format '{format}' is not a queryable JSON format"
@@ -1240,6 +1232,8 @@ fn resolve_import_format(
         ExchangeFormat::Actf => ExchangeFormat::Actf,
         ExchangeFormat::OpenaiMessages => ExchangeFormat::OpenaiMessages,
         ExchangeFormat::Storyline => ExchangeFormat::Storyline,
+        ExchangeFormat::Codex => ExchangeFormat::Codex,
+        ExchangeFormat::ClaudeCode => ExchangeFormat::ClaudeCode,
     };
     if !matches!(
         format,
@@ -1247,6 +1241,8 @@ fn resolve_import_format(
             | ExchangeFormat::Actf
             | ExchangeFormat::OpenaiMessages
             | ExchangeFormat::Storyline
+            | ExchangeFormat::Codex
+            | ExchangeFormat::ClaudeCode
     ) {
         return Err(cli_boundary_error(
             BoundaryCode::Unsupported,
@@ -1296,6 +1292,8 @@ fn import_source_name(format: ExchangeFormat) -> &'static str {
         ExchangeFormat::Actf => "trajectories.actf.json",
         ExchangeFormat::OpenaiMessages => "session_steps.json",
         ExchangeFormat::Storyline => "trajectories.storyline.json",
+        ExchangeFormat::Codex => "session.codex.jsonl",
+        ExchangeFormat::ClaudeCode => "session.claude-code.jsonl",
         _ => unreachable!("unsupported import format was rejected"),
     }
 }
@@ -1351,29 +1349,6 @@ pub(super) async fn validate_import_source(format: ExchangeFormat, path: &Path) 
         })
         .await?;
     Ok(document_count)
-}
-
-fn validate_new_local_dataset_path(input: &str) -> Result<PathBuf> {
-    let input = input.trim();
-    anyhow::ensure!(!input.is_empty(), "import output path must not be empty");
-    anyhow::ensure!(
-        !input.contains("://"),
-        "import currently supports only local output paths"
-    );
-    let path = Path::new(input);
-    anyhow::ensure!(
-        path.file_name().is_some(),
-        "import output must name a new Dataset directory"
-    );
-    anyhow::ensure!(!path.exists(), "import output already exists");
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let parent = std::fs::canonicalize(parent)
-        .with_context(|| "canonicalize import output parent directory")?;
-    anyhow::ensure!(parent.is_dir(), "import output parent is not a directory");
-    let filename = path
-        .file_name()
-        .context("import output must name a Dataset directory")?;
-    Ok(parent.join(filename))
 }
 
 struct PublishedPathGuard {

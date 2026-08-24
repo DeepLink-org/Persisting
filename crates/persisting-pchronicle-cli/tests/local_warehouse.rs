@@ -131,6 +131,8 @@ async fn default_warehouse_exercises_catalog_query_find_and_export_without_a_ser
         "--settings",
         &settings,
         "export",
+        "--from",
+        &warehouse_arg,
         "--output",
         &export_arg,
         "--format",
@@ -226,14 +228,14 @@ async fn omitted_dataset_fails_closed_without_default_settings() -> Result<()> {
     let settings = settings_arg(&temp.path().join("missing.toml"));
 
     for args in [
-        vec!["--settings", &settings, "ls"],
-        vec!["--settings", &settings, "status"],
-        vec!["--settings", &settings, "query", "SELECT 1"],
+        vec!["--config", &settings, "ls"],
+        vec!["--config", &settings, "status"],
+        vec!["--config", &settings, "query", "--sql", "SELECT 1"],
     ] {
         let error = run_cli(args).await.unwrap_err();
         let message = format!("{error:#}");
         assert!(
-            message.contains("default Warehouse is not configured"),
+            message.contains("default Dataset is not configured"),
             "{message}"
         );
         assert!(message.contains("pchronicle default"), "{message}");
@@ -248,7 +250,7 @@ async fn invalid_or_stale_settings_fail_closed() -> Result<()> {
         ("not toml = [", "parse pChronicle settings"),
         (
             "default_warehouse = 's3://bucket/path'\n",
-            "configured default Warehouse must be a local directory",
+            "configured default Dataset must be a local directory",
         ),
     ] {
         let settings_path = temp.path().join(format!(
@@ -273,6 +275,6 @@ async fn invalid_or_stale_settings_fail_closed() -> Result<()> {
     let error = run_cli(["--settings", &settings, "status"])
         .await
         .unwrap_err();
-    assert!(format!("{error:#}").contains("configured default Warehouse"));
+    assert!(format!("{error:#}").contains("configured default Dataset"));
     Ok(())
 }

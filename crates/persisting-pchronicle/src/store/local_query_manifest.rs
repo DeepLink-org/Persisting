@@ -139,7 +139,11 @@ impl LocalQueryManifest {
     ) -> Result<Self> {
         let input = path.as_ref();
         validate_options(options)?;
-        let paths = input_files_with_extensions(input, &["json", "jsonl", "ndjson"], options)?;
+        let paths = input_files_matching(
+            input,
+            crate::formats::registry::is_direct_query_candidate,
+            options,
+        )?;
         let first = paths
             .first()
             .with_context(|| format!("query input contains no JSON files: {}", input.display()))?;
@@ -160,20 +164,20 @@ impl LocalQueryManifest {
         let input = path.as_ref();
         validate_options(options)?;
         validate_query_format(format, input)?;
-        let extensions: &[&str] = match format {
-            DocumentFormat::Atif => &["json", "jsonl", "ndjson"],
-            DocumentFormat::Storyline | DocumentFormat::OpenaiMsg | DocumentFormat::Actf => {
-                &["json"]
-            }
-            _ => {
-                anyhow::bail!(
-                    "unsupported direct query format '{}' in {}",
-                    format,
-                    input.display()
-                )
-            }
-        };
-        let paths = input_files_with_extensions(input, extensions, options)?;
+        let handler = crate::formats::registry::get(format).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unsupported direct query format '{}' in {}",
+                format,
+                input.display()
+            )
+        })?;
+        anyhow::ensure!(
+            handler.capabilities().direct_query,
+            "unsupported direct query format '{}' in {}",
+            format,
+            input.display()
+        );
+        let paths = input_files_matching(input, |path| handler.is_candidate(path), options)?;
         anyhow::ensure!(
             !paths.is_empty(),
             "{} query input contains no supported files: {}",
@@ -252,13 +256,7 @@ impl LocalQueryManifest {
 
 fn validate_query_format(format: DocumentFormat, path: &Path) -> Result<()> {
     anyhow::ensure!(
-        matches!(
-            format,
-            DocumentFormat::Storyline
-                | DocumentFormat::Atif
-                | DocumentFormat::OpenaiMsg
-                | DocumentFormat::Actf
-        ),
+        crate::formats::registry::supports_direct_query(format),
         "unsupported direct query format '{}' in {}",
         format,
         path.display()
@@ -267,37 +265,40 @@ fn validate_query_format(format: DocumentFormat, path: &Path) -> Result<()> {
 }
 
 fn detect_query_format(path: &Path, options: LocalQueryManifestOptions) -> Result<DocumentFormat> {
-    let format = if let Some(format) = detect_format(Some(path), None)? {
-        format
-    } else {
-        let detection_len = fs::metadata(path)
-            .with_context(|| {
-                format!(
-                    "inspect query input for format detection: {}",
-                    path.display()
-                )
-            })?
-            .len();
-        anyhow::ensure!(
-            detection_len <= options.max_detection_bytes,
-            "format detection input {} is {detection_len} bytes, exceeding max_detection_bytes {}",
-            path.display(),
-            options.max_detection_bytes
-        );
-        let content = fs::read_to_string(path).with_context(|| {
-            format!("read query input for format detection: {}", path.display())
-        })?;
-        let detection_content = if is_json_lines(path) {
-            content
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or(content.as_str())
-        } else {
+    let detection_len = fs::metadata(path)
+        .with_context(|| {
+            format!(
+                "inspect query input for format detection: {}",
+                path.display()
+            )
+        })?
+        .len();
+    anyhow::ensure!(
+        detection_len <= options.max_detection_bytes,
+        "format detection input {} is {detection_len} bytes, exceeding max_detection_bytes {}",
+        path.display(),
+        options.max_detection_bytes
+    );
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("read query input for format detection: {}", path.display()))?;
+    let jsonl_excerpt;
+    let detection_content = if is_json_lines(path) {
+        jsonl_excerpt = content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .take(32)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if jsonl_excerpt.is_empty() {
             content.as_str()
-        };
-        detect_format(None, Some(detection_content))?
-            .with_context(|| format!("cannot detect trajectory format: {}", path.display()))?
+        } else {
+            jsonl_excerpt.as_str()
+        }
+    } else {
+        content.as_str()
     };
+    let format = detect_format(Some(path), Some(detection_content))?
+        .with_context(|| format!("cannot detect trajectory format: {}", path.display()))?;
     validate_query_format(format, path)?;
     Ok(format)
 }
@@ -318,9 +319,9 @@ fn validate_options(options: LocalQueryManifestOptions) -> Result<()> {
     Ok(())
 }
 
-fn input_files_with_extensions(
+fn input_files_matching(
     path: &Path,
-    extensions: &[&str],
+    mut is_candidate: impl FnMut(&Path) -> bool,
     options: LocalQueryManifestOptions,
 ) -> Result<Vec<PathBuf>> {
     if path.is_file() {
@@ -332,14 +333,14 @@ fn input_files_with_extensions(
         path.display()
     );
     let mut files = Vec::new();
-    collect_input_files(path, extensions, options, &mut files)?;
+    collect_input_files(path, &mut is_candidate, options, &mut files)?;
     files.sort();
     Ok(files)
 }
 
 fn collect_input_files(
     path: &Path,
-    extensions: &[&str],
+    is_candidate: &mut impl FnMut(&Path) -> bool,
     options: LocalQueryManifestOptions,
     files: &mut Vec<PathBuf>,
 ) -> Result<()> {
@@ -360,14 +361,7 @@ fn collect_input_files(
             let path = entry.path();
             if file_type.is_dir() {
                 pending.push(path);
-            } else if file_type.is_file()
-                && path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| {
-                        extensions.contains(&extension.to_ascii_lowercase().as_str())
-                    })
-            {
+            } else if file_type.is_file() && is_candidate(&path) {
                 files.push(path);
                 anyhow::ensure!(
                     files.len() <= options.max_files,
@@ -504,6 +498,47 @@ mod tests {
         assert!(file
             .detect_format_with_options(LocalQueryManifestOptions::default())
             .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn jsonl_detection_skips_non_transcript_preamble() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("session.jsonl");
+        fs::write(
+            &path,
+            r#"{"type":"mode","mode":"normal","sessionId":"sess-1"}
+{"type":"user","sessionId":"sess-1","uuid":"u1","message":{"role":"user","content":"hi"}}
+"#,
+        )?;
+        let manifest = LocalQueryManifest::detect(&path)?;
+        assert_eq!(manifest.format(), DocumentFormat::ClaudeCode);
+        Ok(())
+    }
+
+    #[test]
+    fn claude_code_skips_meta_json_sidecars() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        fs::write(
+            temp.path().join(".meta.json"),
+            r#"{"agentId":"agent-a","sessionId":"parent"}"#,
+        )?;
+        // Real Claude Code sessions place per-agent sidecars under
+        // `<session>/subagents/agent-<id>.meta.json`; these must be skipped too.
+        let subagents = temp.path().join("session").join("subagents");
+        fs::create_dir_all(&subagents)?;
+        fs::write(
+            subagents.join("agent-a.meta.json"),
+            r#"{"agentType":"general-purpose","description":"finder","toolUseId":"call_1"}"#,
+        )?;
+        fs::write(
+            temp.path().join("session.jsonl"),
+            r#"{"type":"user","sessionId":"parent","uuid":"u1","message":{"role":"user","content":"hi"}}
+"#,
+        )?;
+        let manifest = LocalQueryManifest::for_format(temp.path(), DocumentFormat::ClaudeCode)?;
+        assert_eq!(manifest.files().len(), 1);
+        assert_eq!(manifest.files()[0].relative_path(), "session.jsonl");
         Ok(())
     }
 }

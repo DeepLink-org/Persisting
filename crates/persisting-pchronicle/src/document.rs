@@ -1,4 +1,6 @@
-//! pChronicle 六种物理文档格式的识别、转换与统一读取入口。
+//! pChronicle 物理文档格式的识别、转换与统一读取入口。
+//!
+//! Codex 与 Claude Code 会话 JSONL 只解码为 Storyline，不提供编码。
 
 use std::path::Path;
 
@@ -18,16 +20,8 @@ pub use crate::interop::{events_to_har, events_to_otlp_json, otlp_json_to_events
 
 pub type Result<T> = anyhow::Result<T>;
 
-use crate::convert::{atif_collection_to_storylines, storylines_to_actf, storylines_to_atif};
-use crate::formats::actf::ActfDocument;
-use crate::formats::unknown_fields::{
-    attach_carried_unknown_fields, take_unknown_fields_envelope, validate_unknown_fields,
-    CarrierBinding, UnknownFieldLimits,
-};
-use crate::formats::{
-    has_openai_provenance, parse_openai_msg_corpus_value, recover_openai_msg_files,
-    StorylineDocument,
-};
+use crate::formats::unknown_fields::{validate_unknown_fields, UnknownFieldLimits};
+use crate::formats::StorylineDocument;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DocumentCodecOptions {
@@ -64,125 +58,26 @@ pub fn decode_json_storylines_with_options(
 ) -> InputResult<Vec<StorylineDocument>> {
     options.unknown_fields.validate()?;
     let relative_path = relative_path.as_ref();
-    let stories = match format {
-        DocumentFormat::Storyline => {
-            let value: serde_json::Value = serde_json::from_str(input)
-                .map_err(|error| InputIssue::invalid(error.to_string()))?;
-            let values = match value {
-                serde_json::Value::Array(values) => values,
-                value => vec![value],
-            };
-            if values.is_empty() {
-                return Err(InputIssue::unsupported(
-                    "Storyline document cannot be empty",
-                ));
-            }
-            values
-                .into_iter()
-                .map(|value| {
-                    let story: StorylineDocument = serde_json::from_value(value)
-                        .map_err(|error| InputIssue::invalid(error.to_string()))?;
-                    story.validate()?;
-                    Ok(story)
-                })
-                .collect::<InputResult<Vec<_>>>()
+    if let Some(handler) = crate::formats::registry::get(format) {
+        let stories = crate::formats::codec::decode_all(
+            handler,
+            &mut std::io::Cursor::new(input.as_bytes()),
+            &crate::formats::codec::DocumentSource::new(
+                relative_path
+                    .to_str()
+                    .unwrap_or("session.jsonl")
+                    .replace('\\', "/"),
+            ),
+        )?;
+        for story in &stories {
+            story.validate()?;
+            validate_unknown_fields(&story.unknown_fields, options.unknown_fields)?;
         }
-        DocumentFormat::Atif => {
-            if is_json_lines_path(relative_path) {
-                let mut stories = Vec::new();
-                for (line_number, line) in input.lines().enumerate() {
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-                    let location = format!("line {}", line_number + 1);
-                    let value = serde_json::from_str(line).map_err(|error| {
-                        InputIssue::invalid(error.to_string()).at(location.clone())
-                    })?;
-                    stories
-                        .extend(atif_collection_to_storylines(value).map_err(|error| {
-                            InputIssue::invalid(error.to_string()).at(location)
-                        })?);
-                }
-                if stories.is_empty() {
-                    return Err(InputIssue::unsupported("ATIF document cannot be empty"));
-                }
-                Ok(stories)
-            } else {
-                let value: serde_json::Value = serde_json::from_str(input)
-                    .map_err(|error| InputIssue::invalid(error.to_string()))?;
-                let values = match value {
-                    serde_json::Value::Array(values) => values,
-                    value => vec![value],
-                };
-                if values.is_empty() {
-                    return Err(InputIssue::unsupported("ATIF document cannot be empty"));
-                }
-                let mut stories = Vec::new();
-                for value in values {
-                    stories.extend(
-                        atif_collection_to_storylines(value)
-                            .map_err(|error| InputIssue::invalid(error.to_string()))?,
-                    );
-                }
-                Ok(stories)
-            }
-        }
-        DocumentFormat::Actf => {
-            let mut value: serde_json::Value = serde_json::from_str(input)
-                .map_err(|error| InputIssue::invalid(error.to_string()))?;
-            let envelope = take_unknown_fields_envelope(&mut value)?;
-            let document: ActfDocument = serde_json::from_value(value)
-                .map_err(|error| InputIssue::invalid(error.to_string()))?;
-            document.validate()?;
-            let mut stories = crate::convert::actf_to_storylines(&document)
-                .map_err(|error| InputIssue::invalid(error.to_string()))?;
-            let carriers = stories
-                .iter()
-                .enumerate()
-                .map(|(story_index, story)| CarrierBinding {
-                    story_index,
-                    pointer: format!(
-                        "/attempts/{}",
-                        story
-                            .attempt_id
-                            .as_deref()
-                            .unwrap_or("1")
-                            .replace('~', "~0")
-                            .replace('/', "~1")
-                    ),
-                })
-                .collect::<Vec<_>>();
-            attach_carried_unknown_fields(
-                DocumentFormat::Actf,
-                envelope,
-                &carriers,
-                &mut stories,
-                options.unknown_fields,
-            )?;
-            Ok(stories)
-        }
-        DocumentFormat::OpenaiMsg => {
-            let value = serde_json::from_str(input)
-                .map_err(|error| InputIssue::invalid(error.to_string()))?;
-            parse_openai_msg_corpus_value(&value, relative_path)
-        }
-        unsupported => Err(InputIssue::unsupported(format!(
-            "'{unsupported}' is not a peripheral JSON document format"
-        ))),
-    }?;
-    for story in &stories {
-        story.validate()?;
-        validate_unknown_fields(&story.unknown_fields, options.unknown_fields)?;
+        return Ok(stories);
     }
-    Ok(stories)
-}
-
-fn is_json_lines_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(extension.to_ascii_lowercase().as_str(), "jsonl" | "ndjson")
-        })
+    Err(InputIssue::unsupported(format!(
+        "'{format}' is not a peripheral JSON document format"
+    )))
 }
 
 /// 将权威 Storyline 编码为一个外围 JSON 文档。
@@ -203,41 +98,17 @@ pub fn encode_json_storylines_with_options(
         story.validate().map_err(anyhow::Error::from)?;
         validate_unknown_fields(&story.unknown_fields, options.unknown_fields)?;
     }
-    match format {
-        DocumentFormat::Storyline => {
-            if stories.len() == 1 {
-                Ok(serde_json::to_value(&stories[0])?)
-            } else {
-                Ok(serde_json::to_value(stories)?)
-            }
+    if let Some(handler) = crate::formats::registry::get(format) {
+        if !handler.capabilities().encode {
+            anyhow::bail!("'{format}' is decode-only and cannot be encoded");
         }
-        DocumentFormat::Atif => {
-            let documents = storylines_to_atif(stories)?;
-            if documents.len() == 1 {
-                Ok(serde_json::to_value(&documents[0])?)
-            } else {
-                Ok(serde_json::to_value(documents)?)
-            }
-        }
-        DocumentFormat::Actf => Ok(serde_json::to_value(storylines_to_actf(stories)?)?),
-        DocumentFormat::OpenaiMsg => encode_openai_storylines(stories),
-        unsupported => anyhow::bail!("'{unsupported}' is not a peripheral JSON document format"),
+        let mut encoded = Vec::new();
+        handler
+            .encode(stories, &mut encoded)
+            .map_err(anyhow::Error::from)?;
+        return Ok(serde_json::from_slice(&encoded)?);
     }
-}
-
-fn encode_openai_storylines(stories: &[StorylineDocument]) -> Result<serde_json::Value> {
-    if stories.iter().any(has_openai_provenance) {
-        let mut files = recover_openai_msg_files(stories)?;
-        if files.len() != 1 {
-            anyhow::bail!(
-                "one JSON document cannot preserve {} OpenAI source files",
-                files.len()
-            );
-        }
-        Ok(files.remove(0).document)
-    } else {
-        crate::formats::openai_corpus::storylines_to_openai_value(stories)
-    }
+    anyhow::bail!("'{format}' is not a peripheral JSON document format")
 }
 
 /// 文档源声明的 filter pushdown 保证。
@@ -510,5 +381,17 @@ mod tests {
         let encode_error =
             encode_json_storylines_with_options(DocumentFormat::Atif, &[], options).unwrap_err();
         assert!(encode_error.to_string().contains("unknown field limit"));
+    }
+
+    #[test]
+    fn decode_only_session_formats_cannot_be_encoded() {
+        let stories = decode_json_storylines(DocumentFormat::Codex, "", "empty.jsonl").unwrap();
+        for format in [DocumentFormat::Codex, DocumentFormat::ClaudeCode] {
+            let error = encode_json_storylines(format, &stories).unwrap_err();
+            assert!(
+                error.to_string().contains("decode-only"),
+                "{format}: {error:#}"
+            );
+        }
     }
 }

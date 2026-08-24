@@ -1,72 +1,67 @@
-# Serve a local read-only Warehouse
+# Serve Datasets locally
 
-Use `serve` to inspect statically configured Datasets through the bundled Web
-interface and read API. It is a local review surface, not a multi-tenant data
+`pchronicle serve` mounts one or more Datasets in the bundled read-only Web UI
+and API. It is a local inspection surface, not a public or multi-tenant data
 service.
 
-## Configure mounts
+## Command shape
 
-```toml
-[[datasets]]
-name = "evals"
-uri = "../data/atif"
-
-[[datasets]]
-name = "archive"
-uri = "s3://example/archive"
+```text
+pchronicle serve
+  [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
+  [--gateway-config FILE] [--gateway-dataset NAME] [--gateway-state DIRECTORY]
+  [--gateway-stream-markdown] [--gateway-debug]
+  <[NAME=]DATASET> ...
 ```
 
-Relative local paths are resolved from the configuration file's directory.
-Mount names become SQL schemas; Dataset identity remains its normalized URI.
+Every listener must use a loopback address because the Web UI and read API do
+not provide a public authentication boundary.
 
-## Start the server
+## Open one Dataset
 
 ```bash
-pchronicle serve --config warehouse.toml \
-  --listen 127.0.0.1:8081 --open
+pchronicle serve --open ./trajectory-data
 ```
 
-The server accepts loopback listeners only because it has no authentication or
-authorization layer. Do not place it behind a public listener as a substitute
-for a production control plane.
+A single bare Dataset is mounted as `default`. If no listener option is given,
+the local Web UI uses an available loopback port.
 
-Mounted Datasets and API operations are read-only. Import, export, maintenance,
-and arbitrary filesystem access are not exposed over HTTP. A refresh constructs
-a complete new Catalog Snapshot outside the reader lock before atomically
-switching readers to it. A failed refresh retains the old queryable snapshot.
-
-To capture new LLM traffic in the same process, continue with
-[Gateway forwarding, rewriting, and capture](serve-gateway.md). For exact flags, see the
-[`pchronicle` command reference](../reference/cli.md). For Snapshot behavior,
-read the [Dataset Catalog design](../design/catalog.md).
-
-`serve` only starts the services named on the command line. Omitting
-`--listen` disables Warehouse HTTP. A storage URI can instead host the local
-authenticated Control protocol used by pPilot and pVisor:
+## Mount several Datasets
 
 ```bash
-pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
-pchronicle serve --storage ./tmp --storage ./data/evals --listen 127.0.0.1:9980
-pchronicle serve --storage default=./tmp --storage evals=./data --control 127.0.0.1:0
+pchronicle serve \
+  --listen 127.0.0.1:8081 \
+  evals=../data/atif archive=s3://example/archive
 ```
 
-`--config` and `--storage` are mutually exclusive, and `--control` requires
-`--storage`. One `--storage URI` mounts a Dataset named `default`. Repeat
-`--storage` to mount several Datasets; each default name is the URI's last
-path component, and `NAME=URI` overrides it. `--control` uses the mount named
-`default` (the implicit name for a single bare URI, or an explicit
-`default=URI` among several). The process writes one machine-readable
-readiness record to stdout; its Control token is never written to stderr.
+Mount names become SQL schema and API names. Use `NAME=DATASET` when a stable
+name matters.
 
-For `--storage`, `serve` first discovers validated non-empty canonical
-`events.lance` Stores and converges each deterministic sibling `storyline`;
-readiness is emitted only after all startup targets are fresh. It then keeps
-discovering and maintaining projections with bounded concurrency and retry.
-Projection failures remain outside the durable canonical write path, and
-foreign destinations without matching lineage are never overwritten. When
-`--listen` is also present, successful projection publication automatically
-rebuilds and swaps the Warehouse Catalog. Observe the state without mutation:
+## Enable Control or Gateway integration
 
 ```bash
-pchronicle status ./trajectory-data --format json
+pchronicle serve \
+  --control 127.0.0.1:0 \
+  default=./trajectory-data
+
+pchronicle serve \
+  --listen 127.0.0.1:8080 \
+  --gateway-config gateway.toml \
+  --gateway-dataset evals \
+  evals=./trajectory-data
 ```
+
+Control requires a mount named `default`. `--control` or `--gateway-config`
+without `--listen` starts the requested integration without also starting the
+Web UI. The process writes one machine-readable readiness record to stdout;
+Control credentials are not written to stderr.
+
+Mounted Datasets and HTTP operations are read-only. Import, export, maintenance,
+and arbitrary filesystem access are not exposed through the API. Refreshes
+replace the readable view only after the replacement is ready; a failed refresh
+keeps the previous view available.
+
+For Gateway behavior, continue with
+[Gateway forwarding, rewriting, and capture](serve-gateway.md). For exact
+flags, see the [`pchronicle` CLI reference](../reference/cli.md). Internal
+refresh and versioning behavior belongs to [Dataset Catalog design](../design/catalog.md).

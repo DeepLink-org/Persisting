@@ -1,44 +1,54 @@
 # 查看轨迹 Dataset
 
-`pChronicle` 从本地目录或 S3 读取轨迹 Dataset，发现支持的 Source 格式，并提供规范化的
-`runs`、`steps` 与 `tool_calls` 表。
+pChronicle 使用同一套接口读取本地、对象存储或用户 alias 指向的 Agent 轨迹。除非显式运行带
+目标位置的 `import` 或 `export`，命令不会修改 Dataset。
 
-它是 capture runtime 历史与外部轨迹文件的数据层，不是 runtime 或 scheduler。外部文件会被
-直接固定版本并规范化，而不是先转换为 canonical runtime event。
-
-## 从已知 Dataset 开始
-
-在 Persisting 源码目录中运行：
+## 1. 不准备数据，直接体验
 
 ```bash
-pchronicle ls examples/data/atif
-pchronicle analysis overview examples/data/atif
+pchronicle onboard
 ```
 
-`ls` 展示发现的 Source；overview 在无需先写 SQL 的情况下汇总 Dataset 结构。
-
-## 提出一个具体问题
+Walkthrough 会创建临时示例 Dataset，并依次介绍主要命令。也可以直接跳到查询：
 
 ```bash
-pchronicle query examples/data/atif \
-  'SELECT source, COUNT(*) AS steps
-   FROM dataset.steps
-   GROUP BY source
-   ORDER BY source'
+pchronicle onboard query
 ```
 
-查询是只读的。ATIF、ACTF、OpenAI Messages、canonical events 与 Storyline Source
-会在 Dataset 边界被规范化，因此语义对齐的部分可以使用同一条查询。
+两条命令都不要求源码 checkout，也不要求已有 Dataset。
+
+## 2. 浏览自己的 Dataset
+
+Dataset 可以是本地路径、对象存储 URI 前缀，或 `@prod` 这样的用户 alias：
+
+```bash
+pchronicle ls ./trajectory-data
+pchronicle analysis overview ./trajectory-data
+```
+
+`ls` 显示 pChronicle 可以使用的轨迹数据；`analysis overview` 无需编写 SQL，即可给出稳定汇总。
+
+## 3. 提出一个具体问题
+
+```bash
+pchronicle query ./trajectory-data \
+  --sql 'SELECT source, COUNT(*) AS steps
+         FROM dataset.steps
+         GROUP BY source
+         ORDER BY source'
+```
+
+查询是有界、只读的。pChronicle 会在语义对齐时，把支持的轨迹格式规范化为公共的 `runs`、
+`steps` 和 `tool_calls` 表。
 
 ## 你刚刚完成了什么
 
-你发现了一个 Dataset 中的逻辑 Source，构造了一次 Catalog Snapshot，运行了稳定的内置
-汇总，并查询了规范化关系。整个过程没有修改 Dataset 内容。
+你打开了一个 Dataset，运行了内建汇总，并查询了规范化表。整个过程没有修改 Dataset。
 
 按任务继续：
 
-- [发现并查询自己的 Dataset](guides/discover-and-query.md)。
-- [使用 pVisor 捕获新 Run](../pvisor/guides/capture.md)。
-- [导入或导出轨迹](guides/exchange.md)。
-- [理解 Dataset identity 与 Snapshot](concepts/dataset-and-source.md)。
-- 在 [`pchronicle` 参考](reference/cli.md)中查找精确参数。
+- [发现并查询自己的 Dataset](guides/discover-and-query.md)
+- [导入或导出轨迹](guides/exchange.md)
+- [使用 alias 并查阅完整命令行](reference/cli.md)
+- [使用 pVisor 采集新 Run](../pvisor/guides/capture.md)
+- [理解 Dataset 接口](concepts/index.md)

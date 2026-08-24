@@ -17,9 +17,9 @@ use crate::copilot_sessions::{
 use crate::llm;
 use crate::llm_settings::LlmSettings;
 use crate::model::{
-    CatalogTree, DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary,
-    RunAnalysis, RunExplorerItem, RunPage, RunSummary, StorylineSnapshot, ToolAggregate,
-    TurnDetail, TurnSummary,
+    CatalogTree, DimensionAggregate, EventProvenance, HistogramBucket, QueryCatalog,
+    QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary, StorylineSnapshot,
+    ToolAggregate, TurnDetail, TurnSummary,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +119,7 @@ pub fn App() -> Element {
         match url_param("page").as_deref() {
             Some("tools") => "tools",
             Some("runs") => "runs",
+            Some("physical") => "physical",
             _ => "catalog",
         }
     };
@@ -279,6 +280,7 @@ pub fn App() -> Element {
                 RailButton { active: page() == "catalog", icon: "▣", label: "Data", onclick: move |_| { catalog_dataset.set(String::new()); catalog_prefix.set(String::new()); page.set("catalog".into()); } }
                 RailButton { active: page() == "runs" || page() == "detail", icon: "◫", label: "Runs", onclick: move |_| page.set("runs".into()) }
                 RailButton { active: page() == "tools", icon: "⌁", label: "Analyze", onclick: move |_| page.set("tools".into()) }
+                RailButton { active: page() == "physical", icon: "▤", label: "Physical", onclick: move |_| page.set("physical".into()) }
                 div { class: "rail-spacer" }
                 button { class: if copilot_open() { "rail-button active" } else { "rail-button" }, aria_label: "Toggle trajectory Copilot", onclick: move |_| copilot_open.set(!copilot_open()), span { class: "rail-icon", "◇" } span { "Copilot" } }
                 div { class: "rail-status", span { class: "live-dot" } "Local" }
@@ -316,6 +318,7 @@ pub fn App() -> Element {
                             },
                         }
                     },
+                    "physical" => rsx! { crate::physical::PhysicalWorkspace {} },
                     "tools" => rsx! {
                         crate::analysis::AnalysisWorkspace {
                             catalog: catalog(),
@@ -843,7 +846,11 @@ fn RunDetailWorkspace(
                 div { class: "pc2-head-actions",
                     button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" }
                     button { class: "button", onclick: { let run = run.clone(); move |_| on_analyze.call(run.clone()) }, "Analyze this run" }
-                    a { class: "button", href: "/api/export/otlp?{run.query()}", "OTLP" }
+                    if analysis.event_provenance == EventProvenance::Canonical {
+                        a { class: "button", href: "/api/export/otlp?{run.query()}", "OTLP" }
+                    } else {
+                        button { class: "button", disabled: true, title: "OTLP export requires canonical events", "OTLP unavailable · synthetic" }
+                    }
                 }
             }
             MetricsStrip { analysis: analysis.clone() }
@@ -896,7 +903,7 @@ fn RunDetailWorkspace(
 #[component]
 fn MetricsStrip(analysis: RunAnalysis) -> Element {
     rsx! { div { class: "pc2-metrics",
-        Metric { label: "Turns", value: analysis.turn_count.to_string(), detail: format!("{} events", analysis.event_count) }
+        Metric { label: "Turns", value: analysis.turn_count.to_string(), detail: format!("{} {}", analysis.event_count, analysis.event_provenance.evidence_label()) }
         Metric { label: "Tools", value: analysis.tool_call_count.to_string(), detail: format!("{} tool names", analysis.tools.len()) }
         Metric { label: "Explicit errors", value: analysis.error_count.to_string(), detail: "Captured signals only" }
         Metric { label: "Tokens", value: analysis.total_tokens.map(|value| value.to_string()).unwrap_or_else(|| "—".into()), detail: format!("in {} · out {}", optional_u64(analysis.prompt_tokens), optional_u64(analysis.completion_tokens)) }
@@ -1050,7 +1057,7 @@ fn OverviewAnalysis(analysis: RunAnalysis, turns: Vec<TurnSummary>) -> Element {
             code { "{elapsed}" }
             div { class: "pc2-run-span-meta",
                 span { strong { "{analysis.models.len()}" } " models" }
-                span { strong { "{analysis.event_count}" } " events" }
+                span { strong { "{analysis.event_count}" } " {analysis.event_provenance.evidence_label()}" }
                 span { strong { "{analysis.error_count}" } " explicit-error turns" }
             }
         }
@@ -1953,6 +1960,9 @@ fn sync_workspace_url(
         let _ = window
             .history()
             .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&url)));
+        return;
+    }
+    if page == "physical" {
         return;
     }
     let mut params = vec![format!("page={}", urlencoding::encode(page))];

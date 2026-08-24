@@ -12,8 +12,10 @@ fn default_options_allow_records_above_legacy_64_mib_cap() {
         .chain(Cursor::new(br#""}"#));
     let mut reader = BufReader::new(input);
     let options = FileTrajectoryDataSourceOptions::default();
-    let mut object =
-        super::json_stream::ScopedJsonObjectReader::new(&mut reader, options.max_record_bytes);
+    let mut object = crate::formats::common::json_stream::ScopedJsonObjectReader::new(
+        &mut reader,
+        options.max_record_bytes,
+    );
 
     let copied = std::io::copy(&mut object, &mut std::io::sink())
         .expect("the default options must not impose a per-record byte limit");

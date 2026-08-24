@@ -12,25 +12,25 @@ run_dir="$PCHRONICLE_EXAMPLE_RUN_DIR"
 settings="$run_dir/settings.toml"
 warehouse="$run_dir/warehouse"
 
-pchronicle_capture 01-default "$pchronicle" --settings "$settings" \
-  default "$warehouse" >/dev/null
-imported="$(pchronicle_capture 02-import "$pchronicle" --settings "$settings" \
-  import --from "$input" --format atif)"
+pchronicle_capture 01-default "$pchronicle" --config "$settings" \
+  default set "$warehouse" >/dev/null
+imported="$(pchronicle_capture 02-import "$pchronicle" --config "$settings" \
+  import --from "$input" --to "$warehouse/imported" --input-format atif)"
 dataset_uri="$(jq -er '.dataset_uri' <<<"$imported")"
 
-sources="$(pchronicle_capture 03-ls "$pchronicle" --settings "$settings" \
+sources="$(pchronicle_capture 03-ls "$pchronicle" --config "$settings" \
   ls "$dataset_uri" --physical --format json)"
-status="$(pchronicle_capture 04-status "$pchronicle" --settings "$settings" \
+status="$(pchronicle_capture 04-status "$pchronicle" --config "$settings" \
   status "$dataset_uri" --format json)"
-query_result="$(pchronicle_capture 05-query "$pchronicle" --settings "$settings" query "$dataset_uri" \
-  'SELECT session_id, COUNT(*) AS steps FROM dataset.steps GROUP BY session_id' \
+query_result="$(pchronicle_capture 05-query "$pchronicle" --config "$settings" query "$dataset_uri" \
+  --sql 'SELECT session_id, COUNT(*) AS steps FROM dataset.steps GROUP BY session_id' \
   --format jsonl)"
-found="$(pchronicle_capture 06-find "$pchronicle" --settings "$settings" find "$dataset_uri" \
+found="$(pchronicle_capture 06-find "$pchronicle" --config "$settings" find "$dataset_uri" \
   --session-id support-001 --step-id 1 --format json)"
 
 restored="$run_dir/restored.atif.json"
-pchronicle_capture 07-export "$pchronicle" --settings "$settings" export \
-  --from "$dataset_uri" --output "$restored" --format atif --strict >/dev/null
+pchronicle_capture 07-export "$pchronicle" --config "$settings" export \
+  --from "$dataset_uri" --to "$restored" --output-format atif --strict >/dev/null
 
 jq -e '.sources | length == 1 and .[0].status == "ready"' \
   <<<"$sources" >/dev/null

@@ -1,44 +1,61 @@
 # pChronicle
 
-**pChronicle 是 Persisting 的结构化轨迹与 Dataset 数据层。** 它发现本地存储或 S3 上的
-原生及受支持外部 Source；它在存在 canonical event fact 时予以保留，并始终保留 Source
-来源。pChronicle 提供规范化 Run 视图，并支持有界查询、分析、revision lineage 与格式交换。
+**pChronicle 用于浏览、查询、交换和服务 Agent 轨迹 Dataset。** 它既可以读取
+Persisting 产生的轨迹，也可以直接读取受支持的外部格式；使用 pChronicle 不要求先运行
+pVisor。
 
-![pChronicle 产品边界](../assets/diagrams/persisting/pchronicle-product.svg)
+在 Persisting“从模型状态到 Agent 历史”的主线中，pChronicle 是持久、可查询的 Agent 历史层。
 
-## pChronicle 负责什么
+## 你只需要面对 Dataset
 
-- Dataset 与 Source discovery；
-- 不可变 Catalog Snapshot 的成员和 Source version 描述；
-- Canonical event 存储与 Run 终态事实；
-- 规范化的 `runs`、`steps` 与 `tool_calls` 查询视图；
-- ATIF、ACTF 与 OpenAI Messages 的 import 边界；
-- 上述格式与 Storyline JSON 的 export 边界；
-- AgenticMD 非权威人读 projection；
-- 派生数据的 revision lineage。
+**Dataset 是 pChronicle 操作的统一数据对象。** 它是一组可以被浏览、查询、分析、导入、
+导出或提供服务的 Agent 轨迹数据。
 
-pChronicle 不执行或调度 Agent。它的输入包括 canonical runtime-event Source，以及固定版本的
-本地或 S3 ATIF、ACTF、OpenAI Messages 与 Storyline Source。外部 Source 会被直接规范化，
-不会先变成 canonical runtime event。
+一个 Dataset 可以表现为：
 
-## 提出第一个问题
+- 本地目录或文件（`./local/path`）；
+- 对象存储中的 URI 前缀（`s3://bucket/prefix`）；
+- 指向上述位置的用户 alias（`@alias-name`）。
+
+pChronicle 会发现并规范化该位置中受支持的数据。开始使用命令行前，你不需要理解内部文件或
+存储布局。
+
+## 从这里开始
+
+不准备任何数据，直接运行内建引导：
 
 ```bash
 pchronicle onboard
-pchronicle onboard query
 ```
 
-这些安装后即可运行的 walkthrough 会创建临时示例 Dataset，不要求源码 checkout。
+或者浏览并查询已有 Dataset：
 
-## 按目的阅读 pChronicle
+```bash
+pchronicle ls ./trajectory-data
+pchronicle analysis overview ./trajectory-data
+pchronicle query ./trajectory-data \
+  --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
+```
 
-| 目标 | 文档 |
+## 按任务选择命令
+
+| 我想要…… | 从这里开始 |
 | --- | --- |
-| 查询第一个 Dataset | [Get Started](get-started.md) |
-| 理解 Dataset、Source、event 与 projection | [Concepts](concepts/index.md) |
-| 完成常见轨迹数据工作流 | [Guides](guides/index.md) |
-| 检查存储与 Catalog 机制 | [Design](design/index.md) |
-| 查找命令、schema 与格式 | [Reference](reference/index.md) |
+| 浏览 Dataset | `pchronicle ls DATASET` 或 `pchronicle status DATASET` |
+| 运行常用分析 | `pchronicle analysis overview DATASET` |
+| 用 SQL 提出自定义问题 | `pchronicle query DATASET --sql SQL` |
+| 给 Dataset 设置短名称 | `pchronicle alias add NAME DATASET` |
+| 导入或导出轨迹 | `pchronicle import` 或 `pchronicle export` |
+| 使用 Codex 或 Claude 分析 | `pchronicle agent codex DATASET` |
+| 打开本地只读 UI 和 API | `pchronicle serve DATASET` |
 
-要了解 Persisting 治理的 capture 如何通过 pVisor 配置后的 Gateway 与 lifecycle-event 路径
-进入 pChronicle，请从 [pVisor](../pvisor/index.md)开始。
+pChronicle 读取并组织轨迹数据，不执行或调度 Agent。要在受控工作区中运行 Agent，请从
+[pVisor](../pvisor/index.md)开始。
+
+## 继续阅读
+
+- [探索第一个 Dataset](get-started.md)
+- [完成常见工作流](guides/index.md)
+- [查看完整命令行手册](reference/cli.md)
+- [理解数据模型](concepts/index.md)
+- [了解存储与目录设计](design/index.md)

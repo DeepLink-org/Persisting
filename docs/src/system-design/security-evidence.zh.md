@@ -1,8 +1,8 @@
 # 安全与 Evidence 模型
 
 Persisting 不会把安全压缩成一个 `safe` 或 `sandboxed` 标签。每个 Run 都按 capability
-维度报告保证。pVisor 拥有 admission 与 runtime enforcement；pPilot 保存 authority 与
-lease generation；配置后的 pChronicle capture 保存 lifecycle fact，且只保存 Gateway 或
+维度报告保证。pVisor 拥有 admission 与 runtime enforcement；配置后的 pChronicle capture
+保存 lifecycle fact，且只保存 Gateway 或
 lifecycle event record 实际携带的 Evidence。完整 Run Bundle Evidence 清单仍留在本地，
 除非另行搬运。
 

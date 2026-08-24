@@ -2,8 +2,7 @@
 
 Persisting does not compress security into one `safe` or `sandboxed` label.
 Every Run reports guarantees by capability dimension. pVisor owns admission
-and runtime enforcement; pPilot preserves authority and lease generations;
-configured pChronicle capture preserves lifecycle facts and only the Evidence
+and runtime enforcement; configured pChronicle capture preserves lifecycle facts and only the Evidence
 carried by Gateway or lifecycle event records. The full Run Bundle evidence
 inventory remains local unless moved separately.
 

@@ -7,7 +7,8 @@ use serde_json::Value;
 use crate::chat_view::{chat_row_visible, group_chats, source_class, step_row_visible, TraceCard};
 use crate::json_value::{is_structured_json, JsonValue};
 use crate::model::{
-    extract_message_text, QueryEvidence, StorylineTurn, TurnDetail, TurnSummary, WireToolCall,
+    extract_message_text, EventProvenance, QueryEvidence, StorylineTurn, TurnDetail, TurnSummary,
+    WireToolCall,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -907,6 +908,10 @@ fn InlineTurnDetail(
     let wire_tool_calls_value =
         serde_json::to_value(&deduped_wire_calls).unwrap_or(Value::Array(Vec::new()));
     let events = serde_json::to_value(&value.events).unwrap_or(Value::Array(Vec::new()));
+    let event_block_title = match value.event_provenance {
+        EventProvenance::Canonical => "Raw canonical events",
+        EventProvenance::SyntheticFromStoryline => "Synthetic linked event view",
+    };
     let tool_block_title = if embedded_from_message.len() == 1 {
         "Tool call"
     } else {
@@ -935,7 +940,7 @@ fn InlineTurnDetail(
             EvidenceBlock { title: "Observation", JsonValue { value: observation } }
         }
         if !value.events.is_empty() {
-            EvidenceBlock { title: "Raw linked events", JsonValue { value: events } }
+            EvidenceBlock { title: event_block_title, JsonValue { value: events } }
         }
         if let Some(extra) = value.turn.extra.clone() {
             EvidenceBlock { title: "Extra", JsonValue { value: extra } }

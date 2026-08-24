@@ -6,7 +6,7 @@ It assumes macOS or Linux.
 
 ## 1. Install the CLI
 
-The wheel installs `pvisor`, `ppilot`, and `pchronicle` together:
+The wheel installs the current Persisting command-line entry points together:
 
 ```bash
 pip install persisting
@@ -28,7 +28,6 @@ Confirm the entry points:
 
 ```bash
 pvisor --help
-ppilot --help
 pchronicle --help
 ```
 
@@ -95,5 +94,4 @@ real project.
 - [Choose a host, container, or VM layout](guides/execution.md)
 - [Control network access](guides/network.md)
 - [Capture Agent trajectories](guides/capture.md)
-- [Orchestrate many Runs](guides/orchestrate.md)
 - [Explore durable history](../pchronicle/get-started.md)

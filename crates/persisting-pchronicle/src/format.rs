@@ -23,6 +23,10 @@ pub enum DocumentFormat {
     OpenaiMsg,
     /// ACTF JSON。
     Actf,
+    /// Codex CLI/TUI session JSONL (`~/.codex/sessions/**/rollout-*.jsonl`). Decode-only.
+    Codex,
+    /// Claude Code transcript JSONL (`~/.claude/projects/**/*.jsonl`). Decode-only.
+    ClaudeCode,
 }
 
 impl DocumentFormat {
@@ -34,6 +38,8 @@ impl DocumentFormat {
         Self::Atif,
         Self::OpenaiMsg,
         Self::Actf,
+        Self::Codex,
+        Self::ClaudeCode,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -45,6 +51,8 @@ impl DocumentFormat {
             Self::Atif => "atif",
             Self::OpenaiMsg => "openai-msg",
             Self::Actf => "actf",
+            Self::Codex => "codex",
+            Self::ClaudeCode => "claude-code",
         }
     }
 }
@@ -67,8 +75,10 @@ impl FromStr for DocumentFormat {
             "atif" => Ok(Self::Atif),
             "openai-msg" => Ok(Self::OpenaiMsg),
             "actf" => Ok(Self::Actf),
+            "codex" => Ok(Self::Codex),
+            "claude-code" => Ok(Self::ClaudeCode),
             other => Err(InputIssue::invalid(format!(
-                "unknown document format '{other}'; expected canonical-event|storyline|storyline-lance|agenticmd|atif|openai-msg|actf"
+                "unknown document format '{other}'; expected canonical-event|storyline|storyline-lance|agenticmd|atif|openai-msg|actf|codex|claude-code"
             ))),
         }
     }
@@ -89,6 +99,8 @@ mod tests {
             ("atif", DocumentFormat::Atif),
             ("openai-msg", DocumentFormat::OpenaiMsg),
             ("actf", DocumentFormat::Actf),
+            ("codex", DocumentFormat::Codex),
+            ("claude-code", DocumentFormat::ClaudeCode),
         ];
 
         for (name, expected) in cases {

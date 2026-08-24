@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use crate::format::DocumentFormat;
+use crate::formats::registry;
 use crate::Result;
 
 /// Detect format from a file path (extension / basename).
@@ -37,108 +38,39 @@ pub fn detect_format_from_path(path: impl AsRef<Path>) -> Option<DocumentFormat>
 ///
 /// Does **not** classify EventRecord-shaped JSON as `events` (Lance-only).
 pub fn detect_format_from_content(input: &str) -> Result<Option<DocumentFormat>> {
+    if let Some(format) = registry::detect(None, input.as_bytes())? {
+        return Ok(Some(format));
+    }
+    Ok(detect_unregistered_from_content(input))
+}
+
+fn detect_unregistered_from_content(input: &str) -> Option<DocumentFormat> {
     let trimmed = input.trim_start();
     if trimmed.starts_with("---")
         && trimmed
             .lines()
             .any(|line| line.trim() == "format: persisting")
     {
-        return Ok(Some(DocumentFormat::AgenticMd));
-    }
-    if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            return Ok(detect_json_format(&v));
-        }
-
-        // A JSONL/NDJSON corpus is not one JSON value. Inspect its first row
-        // structurally before looking for text markers that may legitimately
-        // occur inside a message payload.
-        if let Some(line) = trimmed.lines().find(|line| !line.trim().is_empty()) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                return Ok(detect_json_format(&v));
-            }
-        }
+        return Some(DocumentFormat::AgenticMd);
     }
     if trimmed.contains("<!-- persisting:block") {
-        return Ok(Some(DocumentFormat::AgenticMd));
-    }
-    Ok(None)
-}
-
-fn looks_like_actf_attempt(attempt: &serde_json::Value) -> bool {
-    match attempt.get("trajectory") {
-        Some(trajectory) if trajectory.is_array() => trajectory
-            .as_array()
-            .is_some_and(|events| events.iter().all(serde_json::Value::is_object)),
-        Some(trajectory) => trajectory
-            .get("schema_version")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|version| version.starts_with("ACTF_")),
-        None => false,
-    }
-}
-
-fn detect_json_format(v: &serde_json::Value) -> Option<DocumentFormat> {
-    let candidate = v.as_array().and_then(|values| values.first()).unwrap_or(v);
-    if candidate
-        .get("schema_version")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|version| version.starts_with("storyline/"))
-    {
-        return Some(DocumentFormat::Storyline);
-    }
-    let is_actf_document = v.get("task_id").is_some()
-        && v.get("attempts")
-            .and_then(serde_json::Value::as_object)
-            .is_some_and(|attempts| {
-                !attempts.is_empty() && attempts.values().all(looks_like_actf_attempt)
-            });
-    if is_actf_document {
-        return Some(DocumentFormat::Actf);
-    }
-    if candidate.get("session_id").is_some()
-        && candidate.get("step_id").is_some()
-        && ["messages", "messages_json", "response", "response_json"]
-            .iter()
-            .any(|field| candidate.get(*field).is_some())
-    {
-        return Some(DocumentFormat::OpenaiMsg);
-    }
-    if v.get("schema_version")
-        .and_then(|value| value.as_str())
-        .is_some_and(|value| value.starts_with("ATIF"))
-    {
-        return Some(DocumentFormat::Atif);
-    }
-    if v.get("session_steps").is_some() {
-        return Some(DocumentFormat::OpenaiMsg);
-    }
-    if v.get("steps").is_some() && v.get("agent").is_some() {
-        return Some(DocumentFormat::Atif);
-    }
-    if candidate
-        .get("schema_version")
-        .and_then(|value| value.as_str())
-        .is_some_and(|value| value.starts_with("ATIF"))
-        || (candidate.get("steps").is_some() && candidate.get("agent").is_some())
-        || (candidate.get("session_id").is_some()
-            && candidate.get("step_id").is_some()
-            && candidate.get("agent_name").is_some())
-    {
-        return Some(DocumentFormat::Atif);
+        return Some(DocumentFormat::AgenticMd);
     }
     None
 }
 
-/// Prefer path detection; fall back to content.
+/// Prefer content fingerprints. Path names only fill in when content is insufficient.
 pub fn detect_format(path: Option<&Path>, content: Option<&str>) -> Result<Option<DocumentFormat>> {
-    if let Some(p) = path {
-        if let Some(fmt) = detect_format_from_path(p) {
+    if let Some(fmt) = registry::detect(path, content.map(str::as_bytes).unwrap_or(b""))? {
+        return Ok(Some(fmt));
+    }
+    if let Some(c) = content {
+        if let Some(fmt) = detect_format_from_content(c)? {
             return Ok(Some(fmt));
         }
     }
-    if let Some(c) = content {
-        return detect_format_from_content(c);
+    if let Some(p) = path {
+        return Ok(detect_format_from_path(p));
     }
     Ok(None)
 }
@@ -183,6 +115,79 @@ mod tests {
         assert_eq!(
             detect_format_from_content(input).unwrap(),
             Some(DocumentFormat::Actf)
+        );
+    }
+
+    #[test]
+    fn detects_atif_json_by_schema_and_agent_steps() {
+        let versioned = r#"{"schema_version":"ATIF-v1.7","trajectory_id":"one","agent":{"name":"a","version":"1"},"steps":[]}"#;
+        assert_eq!(
+            detect_format_from_content(versioned).unwrap(),
+            Some(DocumentFormat::Atif)
+        );
+        let unversioned = r#"{"session_id":"s","agent":{"name":"a","version":"1"},"steps":[]}"#;
+        assert_eq!(
+            detect_format_from_content(unversioned).unwrap(),
+            Some(DocumentFormat::Atif)
+        );
+    }
+
+    #[test]
+    fn detects_codex_rollout_jsonl_by_name_and_first_line() {
+        let input = r#"{"timestamp":"2026-08-03T08:15:11.000Z","type":"session_meta","payload":{"id":"019fc6b0-ec64-79d3-b51e-2a9d14fff365"}}
+{"timestamp":"2026-08-03T08:15:12.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[]}}"#;
+        assert_eq!(
+            detect_format_from_content(input).unwrap(),
+            Some(DocumentFormat::Codex)
+        );
+        assert_eq!(
+            detect_format(
+                Some(Path::new(
+                    "2026/08/03/rollout-2026-08-03T16-15-11-019fc6b0-ec64-79d3-b51e-2a9d14fff365.jsonl"
+                )),
+                None
+            )
+            .unwrap(),
+            Some(DocumentFormat::Codex)
+        );
+    }
+
+    #[test]
+    fn content_fingerprint_overrides_rollout_path() {
+        let claude = r#"{"type":"user","sessionId":"sess-1","uuid":"u1","message":{"role":"user","content":"hi"}}"#;
+        assert_eq!(
+            detect_format(Some(Path::new("rollout-mismatch.jsonl")), Some(claude)).unwrap(),
+            Some(DocumentFormat::ClaudeCode)
+        );
+        assert_eq!(
+            detect_format(Some(Path::new("rollout-empty.jsonl")), Some("\n")).unwrap(),
+            Some(DocumentFormat::Codex)
+        );
+    }
+
+    #[test]
+    fn detects_claude_code_jsonl_and_does_not_steal_openai_rows() {
+        let claude = r#"{"type":"user","sessionId":"sess-1","uuid":"u1","message":{"role":"user","content":"hi"}}"#;
+        assert_eq!(
+            detect_format_from_content(claude).unwrap(),
+            Some(DocumentFormat::ClaudeCode)
+        );
+        let openai =
+            r#"{"session_id":"s","step_id":1,"messages":[{"role":"user","content":"hi"}]}"#;
+        assert_eq!(
+            detect_format_from_content(openai).unwrap(),
+            Some(DocumentFormat::OpenaiMsg)
+        );
+    }
+
+    #[test]
+    fn detects_claude_code_jsonl_after_non_transcript_preamble() {
+        let input = r#"{"type":"mode","mode":"normal","sessionId":"sess-1"}
+{"type":"file-history-snapshot","sessionId":"sess-1"}
+{"type":"user","sessionId":"sess-1","uuid":"u1","message":{"role":"user","content":"hi"}}"#;
+        assert_eq!(
+            detect_format_from_content(input).unwrap(),
+            Some(DocumentFormat::ClaudeCode)
         );
     }
 }

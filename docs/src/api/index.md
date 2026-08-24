@@ -1,8 +1,8 @@
 # Python API Reference
 
-The Python wheel provides the persistent Queue and sampling APIs. Agent-runtime
-capabilities such as pVisor, pPilot, and pChronicle are exposed by the native
-CLI programs bundled in the same platform wheel.
+The Python wheel provides the persistent Queue and sampling APIs. Current
+Agent-runtime and history capabilities are exposed by the native CLI programs
+bundled in the same platform wheel.
 
 | Module | Use for | Status |
 |--------|---------|--------|

@@ -1,9 +1,9 @@
 # Gateway forwarding, rewriting, and capture for `pchronicle serve`
 
-`pchronicle serve` can run a local LLM Gateway with or without the read-only Warehouse.
+`pchronicle serve` can run a local LLM Gateway with or without the read-only Dataset server.
 For each request, the Gateway selects an upstream, can rewrite the model and
 wire protocol, returns a response in the client's protocol, and appends
-canonical capture events to one mounted Dataset. The Warehouse Web UI and API
+canonical capture events to one mounted Dataset. The Dataset Web UI and API
 remain read-only.
 
 Use this mode when an Agent or SDK already knows how to call an OpenAI-,
@@ -12,33 +12,20 @@ without starting a pVisor Run. Use [pVisor capture](../../pvisor/guides/capture.
 instead when the Gateway must share the lifecycle and isolation boundary of an
 Agent execution.
 
-## The two configuration files
+## Configuration inputs
 
-Gateway mode deliberately keeps storage and forwarding configuration separate:
+Gateway mode deliberately keeps Dataset selection and forwarding configuration separate:
 
 | Input | Owns |
 | --- | --- |
-| `warehouse.toml` passed to `--config` | Mounted Datasets and the default capture destination |
-| `gateway.toml` passed to `--gateway` | Gateway listeners, model routes, credentials, capture level, and network policy |
-| CLI flags | Dataset selection, local Gateway state, live Markdown, and foreground debugging |
+| Positional `[NAME=]DATASET` values | Mounted Datasets |
+| `gateway.toml` passed to `--gateway-config` | Gateway listeners, model routes, credentials, capture level, and network policy |
+| CLI flags | Capture Dataset selection, local Gateway state, live Markdown, and foreground debugging |
 
-Unknown fields in either TOML file are rejected. The Gateway configuration must
-use TOML; other file extensions are not accepted.
+Unknown Gateway TOML fields are rejected. The Gateway configuration must use
+TOML; other file extensions are not accepted.
 
 ## Minimal configuration
-
-Create `warehouse.toml`:
-
-```toml
-default_dataset = "captures"
-
-[[datasets]]
-name = "captures"
-uri = "./data/captures"
-```
-
-Relative Dataset paths are resolved from the directory containing
-`warehouse.toml`.
 
 Create `gateway.toml`:
 
@@ -65,20 +52,21 @@ Export the credential and start both services:
 export DEEPSEEK_API_KEY=sk-...
 
 pchronicle serve \
-  --config warehouse.toml \
   --listen 127.0.0.1:8080 \
-  --gateway gateway.toml \
-  --gateway-stream-markdown
+  --gateway-config gateway.toml \
+  --gateway-dataset captures \
+  --gateway-stream-markdown \
+  captures=./data/captures
 ```
 
 This starts three loopback listeners:
 
-- `127.0.0.1:8080` — Warehouse Web UI and read API;
+- `127.0.0.1:8080` — Dataset Web UI and read API;
 - `127.0.0.1:8787` — LLM Gateway;
 - `127.0.0.1:8788` — Gateway status and session API.
 
 Omit `--listen` to run only the Gateway listeners and capture sink; no
-Warehouse HTTP endpoint is created.
+Dataset HTTP endpoint is created.
 
 Point the Agent or SDK at `http://127.0.0.1:8787/v1`. For example:
 
@@ -92,7 +80,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   }'
 ```
 
-Inspect the Gateway independently of the Warehouse:
+Inspect the Gateway independently of the Dataset server:
 
 ```bash
 curl http://127.0.0.1:8788/admin/status
@@ -256,7 +244,7 @@ Start it from a source checkout:
 just echo
 
 # Equivalent installed command:
-pchronicle echo --listen 127.0.0.1:19080 --encoding plain
+pchronicle dev echo --listen 127.0.0.1:19080 --encoding plain
 ```
 
 Point a route at it:
@@ -294,8 +282,8 @@ The Messages request is converted to Chat Completions, its model is rewritten
 to `echo-upstream`, and the response is converted back to Messages with
 `aGVsbG8=` as its text. Add `"stream": true` to exercise the same path with
 SSE. The request header accepts `plain` or `base64`; `--encoding` sets the
-server-wide default. `pchronicle echo` only binds to loopback and is intended
-for deterministic local Gateway tests.
+server-wide default. The hidden testing command `pchronicle dev echo` only
+binds to loopback and is intended for deterministic local Gateway tests.
 
 ## Network policy
 
@@ -328,11 +316,10 @@ traffic that the client sends through the Gateway.
 The capture destination is selected in this order:
 
 1. `--gateway-dataset NAME`;
-2. `default_dataset` from `warehouse.toml`;
-3. the only mounted Dataset, when exactly one exists.
+2. the only positional Dataset, when exactly one exists.
 
 If none of these yields one unambiguous Dataset, startup fails. The selected
-name must refer to a static `[[datasets]]` mount.
+name must refer to one of the positional `[NAME=]DATASET` mounts.
 
 Canonical events are appended directly to that Dataset. Gateway runtime state
 is separate and includes the session index, debug logs, and optional live
@@ -349,23 +336,23 @@ files out of a local Dataset:
 
 ```bash
 pchronicle serve \
-  --config warehouse.toml \
-  --gateway gateway.toml \
+  --gateway-config gateway.toml \
   --gateway-state ./.pchronicle-gateway \
-  --gateway-stream-markdown
+  --gateway-stream-markdown \
+  captures=./data/captures
 ```
 
 ## CLI precedence and safety
 
-- `--listen` configures the Warehouse only. Gateway listeners always come from
+- `--listen` configures the Dataset server only. Gateway listeners always come from
   `gateway.toml`.
-- `--debug` (also accepted as `--gateway-debug`) enables Gateway debugging even
+- `--gateway-debug` enables Gateway debugging even
   when `debug = false`; there is no CLI flag that forces configured debugging
   off.
 - `--gateway-dataset`, `--gateway-state`, and
   `--gateway-stream-markdown` are composition settings and are not Gateway TOML
   fields.
-- Warehouse, Gateway, and admin listeners must all be loopback addresses. The
+- Dataset, Gateway, and admin listeners must all be loopback addresses. The
   services do not provide an authentication or authorization boundary.
 - Debug and `full` capture can retain sensitive request or response content.
   Protect the state directory and capture Dataset accordingly.
@@ -375,7 +362,7 @@ pchronicle serve \
 Gateway events are durable after they have been flushed to the selected
 Dataset. The `serve` projection supervisor discovers the canonical change,
 updates its deterministic sibling Storyline Store, then completely rebuilds
-and atomically swaps the Warehouse Catalog. Projection or refresh failures use
+and atomically swaps the server's Dataset catalog. Projection or refresh failures use
 bounded retry and retain the old queryable Catalog; neither blocks durable
 capture writes. `POST /api/catalog` remains available for an explicit manual
 refresh, but it is not required for captured events to become visible. On
@@ -384,4 +371,4 @@ Gateway capture writer before exiting.
 
 For exact command flags, see the [`pchronicle` CLI reference](../reference/cli.md).
 For the storage model behind refresh, see
-[Dataset, Source, and Snapshot](../concepts/dataset-and-source.md).
+[Dataset Catalog design](../design/catalog.md).

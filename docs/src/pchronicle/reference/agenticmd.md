@@ -75,7 +75,7 @@ pChronicle 定义并序列化 frontmatter，常用字段包括：
 Lance events 负责保真、replay、stats 和结构化查询。内部 trajectory operation 可以从
 Lance 重建 AgenticMD，但当前公共 `pchronicle` CLI 不提供 AgenticMD materialize 或 import
 子命令。AgenticMD 不会自动 compact 或恢复 canonical event；公共交换使用
-[`pchronicle import/export`](cli.md#import-and-export) 支持的格式。
+[`pchronicle import/export`](cli.md) 支持的格式。
 
 ## 6. 示例与实现
 

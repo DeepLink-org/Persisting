@@ -6,12 +6,17 @@
 //! canonical Storyline representation.
 
 use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context as _;
 use serde_json::{json, Map, Value};
 
 use crate::format::DocumentFormat;
+use crate::formats::codec::{
+    emit_stories, DecodeContext, DecodeReport, FormatCapabilities, ProbeConfidence,
+    TrajectoryFormat,
+};
 use crate::formats::storyline::{
     StorylineAgent, StorylineDocument, StorylineEnv, StorylineOrigin, StorylineTask,
     StorylineToolCall, StorylineTurn, STORYLINE_SCHEMA_VERSION,
@@ -30,6 +35,122 @@ use crate::{InputIssue, InputResult, Result};
 pub struct RecoveredOpenaiMsgFile {
     pub relative_path: PathBuf,
     pub document: Value,
+}
+
+pub struct OpenaiMsgFormat;
+
+impl TrajectoryFormat for OpenaiMsgFormat {
+    fn id(&self) -> DocumentFormat {
+        DocumentFormat::OpenaiMsg
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["json"]
+    }
+
+    fn capabilities(&self) -> FormatCapabilities {
+        FormatCapabilities {
+            decode: true,
+            encode: true,
+            direct_query: true,
+            streaming_input: false,
+        }
+    }
+
+    fn probe(&self, path: Option<&Path>, content: &[u8]) -> InputResult<ProbeConfidence> {
+        if content_has_openai_fingerprint(content) {
+            return Ok(ProbeConfidence::ContentFingerprint);
+        }
+        if path_has_openai_hint(path) {
+            return Ok(ProbeConfidence::PathHint);
+        }
+        Ok(ProbeConfidence::None)
+    }
+
+    fn decode(
+        &self,
+        reader: &mut dyn BufRead,
+        ctx: &DecodeContext<'_>,
+        emit: &mut dyn FnMut(StorylineDocument) -> InputResult<()>,
+    ) -> InputResult<DecodeReport> {
+        let mut input = String::new();
+        reader
+            .read_to_string(&mut input)
+            .map_err(|error| InputIssue::invalid(error.to_string()))?;
+        let value: Value =
+            serde_json::from_str(&input).map_err(|error| InputIssue::invalid(error.to_string()))?;
+        emit_stories(
+            parse_openai_msg_corpus_value(&value, &ctx.source.relative_path)?,
+            emit,
+        )
+    }
+
+    fn encode(&self, stories: &[StorylineDocument], output: &mut dyn Write) -> InputResult<()> {
+        let value = encode_openai_storylines(stories)
+            .map_err(|error| InputIssue::invalid(error.to_string()))?;
+        serde_json::to_writer(output, &value)
+            .map_err(|error| InputIssue::invalid(error.to_string()))
+    }
+}
+
+fn path_has_openai_hint(path: Option<&Path>) -> bool {
+    path.and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("session_steps.json"))
+}
+
+fn looks_like_openai_value(value: &Value) -> bool {
+    let candidate = value
+        .as_array()
+        .and_then(|values| values.first())
+        .unwrap_or(value);
+    (candidate.get("session_id").is_some()
+        && candidate.get("step_id").is_some()
+        && ["messages", "messages_json", "response", "response_json"]
+            .iter()
+            .any(|field| candidate.get(*field).is_some()))
+        || value.get("session_steps").is_some()
+}
+
+fn content_has_openai_fingerprint(content: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(content) else {
+        return false;
+    };
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+            if looks_like_openai_value(&value) {
+                return true;
+            }
+        }
+        for line in trimmed
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .take(32)
+        {
+            if let Ok(value) = serde_json::from_str::<Value>(line) {
+                if looks_like_openai_value(&value) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+pub(crate) fn encode_openai_storylines(stories: &[StorylineDocument]) -> Result<Value> {
+    if stories.iter().any(has_openai_provenance) {
+        let mut files = recover_openai_msg_files(stories)?;
+        if files.len() != 1 {
+            anyhow::bail!(
+                "one JSON document cannot preserve {} OpenAI source files",
+                files.len()
+            );
+        }
+        Ok(files.remove(0).document)
+    } else {
+        storylines_to_openai_value(stories)
+    }
 }
 
 /// Parse one OpenAI corpus JSON value into one Storyline per session.

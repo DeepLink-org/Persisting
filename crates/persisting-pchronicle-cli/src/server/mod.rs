@@ -3,6 +3,7 @@
 mod acceleration;
 mod asset;
 mod explorer;
+mod physical;
 pub(crate) mod problem;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,8 +27,8 @@ use persisting_pchronicle::query::ChronicleQueryEngine;
 #[cfg(test)]
 use persisting_pchronicle::storage::StoryCoords;
 use persisting_pchronicle::storage::{
-    CatalogErrorPolicy, CatalogSnapshotOptions, CatalogStorylineKey, DatasetCatalogSnapshot,
-    DatasetMount, DEFAULT_DATASET_NAME,
+    CatalogErrorPolicy, CatalogEventProvenance, CatalogSnapshotOptions, CatalogStorylineKey,
+    DatasetCatalogSnapshot, DatasetMount, DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -197,6 +198,10 @@ fn api_routes() -> Router<AppState> {
         .route("/trajectory-view", get(trajectory_view))
         .route("/export/otlp", get(export_otlp))
         .route("/catalog", get(catalog).post(refresh_catalog))
+        .route("/physical/sources", get(physical::sources))
+        .route("/physical/layout", get(physical::layout))
+        .route("/physical/file", get(physical::file))
+        .route("/physical/page", get(physical::page))
         .route("/query/tables", get(query_tables))
         .route("/query/evidence", post(query_evidence))
         .route("/analysis/compile", post(compile_analysis))
@@ -594,7 +599,13 @@ fn event_uri_coords(uri: &str, run: &RunSummary) -> anyhow::Result<StoryCoords> 
     ))
 }
 
-async fn load_events(state: &AppState, query: &SessionQuery) -> Result<Vec<EventRecord>, ApiError> {
+#[derive(Clone)]
+struct LoadedEventView {
+    provenance: CatalogEventProvenance,
+    records: Vec<EventRecord>,
+}
+
+async fn load_events(state: &AppState, query: &SessionQuery) -> Result<LoadedEventView, ApiError> {
     let run = resolve_run_summary(state, query).await?;
     let runtime = current_catalog(state).await?;
     let document = runtime
@@ -603,12 +614,22 @@ async fn load_events(state: &AppState, query: &SessionQuery) -> Result<Vec<Event
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found("trajectory was not found"))?;
-    let offset = query.offset.unwrap_or(0).min(document.events.len());
+    let offset = query
+        .offset
+        .unwrap_or(0)
+        .min(document.document.events.len());
     let end = query
         .limit
-        .map(|limit| offset.saturating_add(limit).min(document.events.len()))
-        .unwrap_or(document.events.len());
-    Ok(document.events[offset..end].to_vec())
+        .map(|limit| {
+            offset
+                .saturating_add(limit)
+                .min(document.document.events.len())
+        })
+        .unwrap_or(document.document.events.len());
+    Ok(LoadedEventView {
+        provenance: document.provenance,
+        records: document.document.events[offset..end].to_vec(),
+    })
 }
 
 async fn events(
@@ -623,13 +644,17 @@ async fn events(
         limit: None,
         ..query.clone()
     };
-    let all_records = load_events(&state, &full_query).await?;
-    let total = all_records.len();
+    let event_view = load_events(&state, &full_query).await?;
+    let total = event_view.records.len();
     let start = offset.min(total);
     let end = start.saturating_add(requested_limit).min(total);
-    let records = all_records[start..end].to_vec();
+    let records = event_view.records[start..end].to_vec();
     let next_offset = offset + records.len();
     Ok(Json(json!({
+        "provenance": {
+            "kind": event_view.provenance,
+            "transform": event_view.provenance.transform()
+        },
         "snapshot": {
             "offset": offset,
             "next_offset": next_offset,
@@ -679,6 +704,7 @@ pub(crate) struct WireToolCall {
 #[derive(Debug, Serialize)]
 struct TrajectoryView {
     run: RunSummary,
+    event_provenance: CatalogEventProvenance,
     event_kind_counts: BTreeMap<String, usize>,
     tool_call_count: usize,
     turns: Vec<TrajectoryTurnView>,
@@ -778,6 +804,7 @@ fn event_seqs_for_turn(turn: &StorylineTurn, by_call: &BTreeMap<String, Vec<u64>
 #[derive(Clone)]
 struct LoadedTrajectory {
     run: RunSummary,
+    event_provenance: CatalogEventProvenance,
     records: Vec<EventRecord>,
     turns: Vec<TrajectoryTurnView>,
 }
@@ -811,7 +838,8 @@ async fn load_trajectory(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found("trajectory was not found"))?;
-    let records = bundle.events.events;
+    let event_provenance = bundle.event_view.provenance;
+    let records = bundle.event_view.document.events;
     let document = bundle.storyline;
     let mut by_call = BTreeMap::<String, Vec<u64>>::new();
     for event in &records {
@@ -850,6 +878,7 @@ async fn load_trajectory(
         .collect();
     let loaded = LoadedTrajectory {
         run,
+        event_provenance,
         records,
         turns,
     };
@@ -875,6 +904,7 @@ async fn trajectory_view(
         .sum();
     Ok(Json(TrajectoryView {
         run: loaded.run,
+        event_provenance: loaded.event_provenance,
         event_kind_counts,
         tool_call_count,
         turns: loaded.turns,
@@ -891,6 +921,7 @@ async fn explorer_run(
         loaded.run,
         &loaded.turns,
         &loaded.records,
+        loaded.event_provenance,
     )))
 }
 
@@ -972,7 +1003,11 @@ async fn explorer_turn(
         .iter()
         .find(|item| item.turn.id == query.turn_id)
         .ok_or_else(|| ApiError::not_found(format!("turn {} was not found", query.turn_id)))?;
-    Ok(Json(explorer::turn_detail(item, &loaded.records)))
+    Ok(Json(explorer::turn_detail(
+        item,
+        &loaded.records,
+        loaded.event_provenance,
+    )))
 }
 
 async fn export_otlp(
@@ -980,9 +1015,13 @@ async fn export_otlp(
     query: Result<Query<SessionQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let query = api_query(query)?;
-    Ok(Json(events_to_otlp_json(
-        &load_events(&state, &query).await?,
-    )))
+    let event_view = load_events(&state, &query).await?;
+    if !event_view.provenance.is_canonical() {
+        return Err(ApiError::unsupported(
+            "OTLP export requires canonical events; this trajectory only has a synthetic event view",
+        ));
+    }
+    Ok(Json(events_to_otlp_json(&event_view.records)))
 }
 
 #[derive(Debug, Serialize)]

@@ -5,13 +5,187 @@
 //! with the environment observations produced by those calls.
 
 use std::collections::{BTreeMap, HashSet};
+use std::io::{BufRead, Write};
+use std::path::Path;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
+use crate::format::DocumentFormat;
+use crate::formats::storyline::StorylineDocument;
+use crate::formats::unknown_fields::{
+    attach_carried_unknown_fields, take_unknown_fields_envelope, validate_unknown_fields,
+    CarrierBinding, UnknownFieldLimits,
+};
 use crate::{InputIssue, InputResult};
 
+use super::codec::{
+    DecodeContext, DecodeReport, FormatCapabilities, ProbeConfidence, TrajectoryFormat,
+};
+
+mod convert;
+pub(crate) use convert::{actf_to_storylines, storylines_to_actf};
+
 pub const ACTF_SCHEMA_VERSION: &str = "ACTF_v1.0";
+
+pub struct ActfFormat;
+
+impl TrajectoryFormat for ActfFormat {
+    fn id(&self) -> DocumentFormat {
+        DocumentFormat::Actf
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["json"]
+    }
+
+    fn capabilities(&self) -> FormatCapabilities {
+        FormatCapabilities {
+            decode: true,
+            encode: true,
+            direct_query: true,
+            streaming_input: true,
+        }
+    }
+
+    fn probe(&self, path: Option<&Path>, content: &[u8]) -> InputResult<ProbeConfidence> {
+        if content_has_actf_fingerprint(content) {
+            return Ok(ProbeConfidence::ContentFingerprint);
+        }
+        if path_has_actf_hint(path) {
+            return Ok(ProbeConfidence::PathHint);
+        }
+        Ok(ProbeConfidence::None)
+    }
+
+    fn decode(
+        &self,
+        reader: &mut dyn BufRead,
+        _ctx: &DecodeContext<'_>,
+        emit: &mut dyn FnMut(StorylineDocument) -> InputResult<()>,
+    ) -> InputResult<DecodeReport> {
+        let mut documents = 0;
+        decode_json(reader, &mut |story| {
+            documents += 1;
+            emit(story)
+        })?;
+        Ok(DecodeReport {
+            documents,
+            peak_record_bytes: 0,
+        })
+    }
+
+    fn encode(&self, stories: &[StorylineDocument], output: &mut dyn Write) -> InputResult<()> {
+        let document =
+            storylines_to_actf(stories).map_err(|error| InputIssue::invalid(error.to_string()))?;
+        serde_json::to_writer(output, &document)
+            .map_err(|error| InputIssue::invalid(error.to_string()))
+    }
+}
+
+fn path_has_actf_hint(path: Option<&Path>) -> bool {
+    path.and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".actf.json"))
+}
+
+fn looks_like_actf_attempt(attempt: &Value) -> bool {
+    match attempt.get("trajectory") {
+        Some(trajectory) if trajectory.is_array() => trajectory
+            .as_array()
+            .is_some_and(|events| events.iter().all(Value::is_object)),
+        Some(trajectory) => trajectory
+            .get("schema_version")
+            .and_then(Value::as_str)
+            .is_some_and(|version| version.starts_with("ACTF_")),
+        None => false,
+    }
+}
+
+fn looks_like_actf_value(value: &Value) -> bool {
+    value.get("task_id").is_some()
+        && value
+            .get("attempts")
+            .and_then(Value::as_object)
+            .is_some_and(|attempts| {
+                !attempts.is_empty() && attempts.values().all(looks_like_actf_attempt)
+            })
+}
+
+fn content_has_actf_fingerprint(content: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(content) else {
+        return false;
+    };
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+            if looks_like_actf_value(&value) {
+                return true;
+            }
+        }
+        for line in trimmed
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .take(32)
+        {
+            if let Ok(value) = serde_json::from_str::<Value>(line) {
+                if looks_like_actf_value(&value) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn decode_json(
+    reader: &mut dyn BufRead,
+    emit: &mut dyn FnMut(StorylineDocument) -> InputResult<()>,
+) -> InputResult<()> {
+    let mut input = String::new();
+    reader
+        .read_to_string(&mut input)
+        .map_err(|error| InputIssue::invalid(error.to_string()))?;
+    let mut value: Value =
+        serde_json::from_str(&input).map_err(|error| InputIssue::invalid(error.to_string()))?;
+    let envelope = take_unknown_fields_envelope(&mut value)?;
+    let document: ActfDocument =
+        serde_json::from_value(value).map_err(|error| InputIssue::invalid(error.to_string()))?;
+    document.validate()?;
+    let mut stories =
+        actf_to_storylines(&document).map_err(|error| InputIssue::invalid(error.to_string()))?;
+    let carriers = stories
+        .iter()
+        .enumerate()
+        .map(|(story_index, story)| CarrierBinding {
+            story_index,
+            pointer: format!(
+                "/attempts/{}",
+                story
+                    .attempt_id
+                    .as_deref()
+                    .unwrap_or("1")
+                    .replace('~', "~0")
+                    .replace('/', "~1")
+            ),
+        })
+        .collect::<Vec<_>>();
+    attach_carried_unknown_fields(
+        DocumentFormat::Actf,
+        envelope,
+        &carriers,
+        &mut stories,
+        UnknownFieldLimits::default(),
+    )?;
+    for story in &mut stories {
+        story.unknown_key_counts =
+            validate_unknown_fields(&story.unknown_fields, UnknownFieldLimits::default())?;
+    }
+    for story in stories {
+        emit(story)?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActfDocument {

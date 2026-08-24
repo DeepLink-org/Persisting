@@ -1,6 +1,6 @@
 # 3. 跨 Dataset SQL
 
-这个示例用重复的 `--dataset NAME=URI` 参数同时挂载三种交换格式：
+这个示例用重复的 `--mount NAME=DATASET` 参数同时挂载三种交换格式：
 
 - `atif=examples/data/atif`
 - `actf=examples/data/actf`

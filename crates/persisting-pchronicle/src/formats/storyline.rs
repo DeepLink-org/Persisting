@@ -5,12 +5,18 @@
 //! (`latency_ms` / `ttft_ms` / `duration_ms`) lift common metrics.
 
 use std::collections::BTreeMap;
+use std::io::{BufRead, Write};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use super::codec::{
+    DecodeContext, DecodeReport, FormatCapabilities, ProbeConfidence, TrajectoryFormat,
+};
 use super::timestamp::StorylineTimestamp;
 use super::unknown_fields::{compute_unknown_key_counts, StorylineUnknownFields, UnknownKeyCounts};
+use crate::format::DocumentFormat;
 use crate::{InputIssue, InputResult, Result};
 
 pub const STORYLINE_SCHEMA_VERSION: &str = "storyline/v1";
@@ -665,6 +671,136 @@ impl StorylineDocument {
     pub fn effective_prompt<'a>(&'a self, turn: &'a StorylineTurn) -> Option<&'a StorylinePrompt> {
         turn.prompt.as_ref().or(self.prompt.as_ref())
     }
+}
+
+pub struct StorylineFormat;
+
+impl TrajectoryFormat for StorylineFormat {
+    fn id(&self) -> DocumentFormat {
+        DocumentFormat::Storyline
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["json"]
+    }
+
+    fn capabilities(&self) -> FormatCapabilities {
+        FormatCapabilities {
+            decode: true,
+            encode: true,
+            direct_query: true,
+            streaming_input: false,
+        }
+    }
+
+    fn probe(&self, path: Option<&Path>, content: &[u8]) -> InputResult<ProbeConfidence> {
+        if content_has_storyline_fingerprint(content) {
+            return Ok(ProbeConfidence::ContentFingerprint);
+        }
+        if path_has_storyline_hint(path) {
+            return Ok(ProbeConfidence::PathHint);
+        }
+        Ok(ProbeConfidence::None)
+    }
+
+    fn decode(
+        &self,
+        reader: &mut dyn BufRead,
+        _ctx: &DecodeContext<'_>,
+        emit: &mut dyn FnMut(StorylineDocument) -> InputResult<()>,
+    ) -> InputResult<DecodeReport> {
+        let mut documents = 0;
+        decode_json(reader, &mut |story| {
+            documents += 1;
+            emit(story)
+        })?;
+        Ok(DecodeReport {
+            documents,
+            peak_record_bytes: 0,
+        })
+    }
+
+    fn encode(&self, stories: &[StorylineDocument], output: &mut dyn Write) -> InputResult<()> {
+        let value = if stories.len() == 1 {
+            serde_json::to_value(&stories[0])
+        } else {
+            serde_json::to_value(stories)
+        }
+        .map_err(|error| InputIssue::invalid(error.to_string()))?;
+        serde_json::to_writer(output, &value)
+            .map_err(|error| InputIssue::invalid(error.to_string()))
+    }
+}
+
+fn path_has_storyline_hint(path: Option<&Path>) -> bool {
+    path.and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".storyline.json"))
+}
+
+fn looks_like_storyline_value(value: &Value) -> bool {
+    let candidate = value
+        .as_array()
+        .and_then(|values| values.first())
+        .unwrap_or(value);
+    candidate
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .is_some_and(|version| version.starts_with("storyline/"))
+}
+
+fn content_has_storyline_fingerprint(content: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(content) else {
+        return false;
+    };
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+            if looks_like_storyline_value(&value) {
+                return true;
+            }
+        }
+        for line in trimmed
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .take(32)
+        {
+            if let Ok(value) = serde_json::from_str::<Value>(line) {
+                if looks_like_storyline_value(&value) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn decode_json(
+    reader: &mut dyn BufRead,
+    emit: &mut dyn FnMut(StorylineDocument) -> InputResult<()>,
+) -> InputResult<()> {
+    let mut input = String::new();
+    reader
+        .read_to_string(&mut input)
+        .map_err(|error| InputIssue::invalid(error.to_string()))?;
+    let value: Value =
+        serde_json::from_str(&input).map_err(|error| InputIssue::invalid(error.to_string()))?;
+    let values = match value {
+        Value::Array(values) => values,
+        value => vec![value],
+    };
+    if values.is_empty() {
+        return Err(InputIssue::unsupported(
+            "Storyline document cannot be empty",
+        ));
+    }
+    for value in values {
+        let story: StorylineDocument = serde_json::from_value(value)
+            .map_err(|error| InputIssue::invalid(error.to_string()))?;
+        story.validate()?;
+        emit(story)?;
+    }
+    Ok(())
 }
 
 #[cfg(all(test, feature = "lance-store"))]

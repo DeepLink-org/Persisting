@@ -1,23 +1,19 @@
 # pVisor
 
-**pVisor is the AgentVisor implementation in Persisting.** It virtualizes Agent
-execution: shared host, container, VM, and future fleet resources are presented
-to each Run as an isolated Agent virtual execution environment.
+**pVisor runs an existing Agent command inside a controlled execution
+environment.** It gives each Run its own workspace boundary, records the
+controls that were actually installed, and lets you review filesystem changes
+before they reach the project.
 
-![pVisor architecture](../assets/diagrams/pvisor/agentvisor-architecture.svg)
+Within Persisting's model-state-to-Agent-history story, pVisor owns the
+execution boundary and the reviewable record of one Run.
 
-## What pVisor owns
+pVisor does not replace the Agent's reasoning loop. You can keep using Agent
+CLIs, scripts, and frameworks you already have.
 
-- a stable Run identity independent of the physical process or provider;
-- creation, admission, cancellation, recovery, checkpoint, and terminal state;
-- workspace, network, tool, model, credential, and compute capabilities;
-- containment and review of effects where the medium supports it;
-- evidence describing the controls that were actually installed.
+## Run, review, decide
 
-pVisor does not define the Agent reasoning loop. It runs existing Agent CLIs,
-scripts, and frameworks inside a governed execution boundary.
-
-## Begin with one Run
+From a project directory:
 
 ```bash
 pvisor run --safe codex
@@ -25,34 +21,38 @@ pvisor review last
 pvisor apply last --path src
 ```
 
-The Agent can edit freely inside its stage. The user decides which filesystem
-effects enter the base project, and can apply independent batches more than
-once.
+With `--safe`, the Agent writes to a staged view of the project. After the Run,
+you can apply all changes, accept selected paths in several batches, or discard
+the stage:
 
-The standalone pVisor product loop is:
-
-```text
-RunSpec -> admission -> Attempt
-  -> terminal RunResult + private Run Bundle + staged Effects
-  -> later review/apply/drop
+```bash
+pvisor apply last --all
+# or
+pvisor drop last
 ```
 
-Attempt finalization writes the terminal RunResult and private, versioned Run
-Bundle while leaving filesystem Effects staged. Later `review`, `apply`, or
-`drop` operations read the Bundle and operate on the stage. pChronicle is not a
-runtime prerequisite for this loop.
+The exact filesystem and network boundary depends on the platform and chosen
+executor. pVisor records the effective controls so that a Run is not described
+as more isolated than it was.
 
-## Read pVisor by purpose
+## Choose a task
 
-| Goal | Section |
+| I want to... | Start with |
 | --- | --- |
-| Complete the first local Run | [Get Started](get-started.md) |
-| Understand the category and object model | [Concepts](concepts/index.md) |
-| Choose an executor or govern effects | [Guides](guides/index.md) |
-| Inspect isolation and runtime mechanisms | [Design](design/index.md) |
-| Look up exact command syntax | [Reference](reference/index.md) |
+| Complete one staged Agent Run | [Run your first Agent](get-started.md) |
+| Review and selectively accept changes | [Review and apply](guides/review-apply.md) |
+| Choose host, container, or VM execution | [Execution layouts](guides/execution.md) |
+| Control network access | [Network policy](guides/network.md) |
+| Capture trajectory data | [Capture trajectories](guides/capture.md) |
+| Look up exact command syntax | [CLI reference](reference/cli.md) |
 
-To query configured Gateway trajectory events and pVisor lifecycle records as
-a durable Dataset, continue to [pChronicle](../pchronicle/index.md). The current
-handoff does not publish the full Run Bundle or its Artifact, lineage, Effect,
-and broader Evidence inventory.
+pVisor's local run-review-apply loop works on its own. pChronicle is optional:
+use it when you want to retain and query trajectory Datasets after a Run.
+
+## Keep reading
+
+- [Run your first Agent](get-started.md)
+- [Learn the pVisor concepts](concepts/index.md)
+- [Follow practical guides](guides/index.md)
+- [Inspect runtime and isolation design](design/index.md)
+- [Explore trajectory history with pChronicle](../pchronicle/index.md)

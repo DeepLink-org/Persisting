@@ -2,16 +2,24 @@ use super::*;
 
 const MAX_WAREHOUSE_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_WAREHOUSE_DATASETS: usize = 128;
-const SETTINGS_ENV: &str = "PCHRONICLE_SETTINGS";
+const CONFIG_ENV: &str = "PCHRONICLE_CONFIG";
+const LEGACY_SETTINGS_ENV: &str = "PCHRONICLE_SETTINGS";
+const RESERVED_ALIASES: [&str; 3] = ["codex", "claude", "claude-code"];
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct LocalSettings {
-    default_warehouse: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_warehouse: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    aliases: BTreeMap<String, String>,
 }
 
 pub(super) fn default_settings_path() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os(SETTINGS_ENV).filter(|value| !value.is_empty()) {
+    if let Some(path) = std::env::var_os(CONFIG_ENV).filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    if let Some(path) = std::env::var_os(LEGACY_SETTINGS_ENV).filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(path));
     }
     #[cfg(target_os = "windows")]
@@ -21,8 +29,8 @@ pub(super) fn default_settings_path() -> Result<PathBuf> {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
-    base.map(|base| base.join("pchronicle/settings.toml"))
-        .context("cannot locate the user configuration directory; pass --settings <FILE>")
+    base.map(|base| base.join("pchronicle/config.toml"))
+        .context("cannot locate the user configuration directory; pass --config <FILE>")
 }
 
 pub(super) fn settings_path(override_path: Option<&Path>) -> Result<PathBuf> {
@@ -51,19 +59,40 @@ fn load_local_settings(path: &Path) -> Result<LocalSettings> {
     Ok(settings)
 }
 
+fn load_local_settings_or_default(path: &Path) -> Result<LocalSettings> {
+    if path.exists() {
+        load_local_settings(path)
+    } else {
+        Ok(LocalSettings::default())
+    }
+}
+
 pub(super) fn resolve_default_warehouse(settings_override: Option<&Path>) -> Result<String> {
     let path = settings_path(settings_override)?;
-    anyhow::ensure!(
-        path.exists(),
-        "default Warehouse is not configured; run `pchronicle default <DIRECTORY>` (settings: {})",
-        path.display()
-    );
+    if !path.exists() {
+        return Err(cli_boundary_error(
+            BoundaryCode::NotFound,
+            format!(
+                "default Dataset is not configured; run `pchronicle default set <LOCAL_DATASET>` (config: {})",
+                path.display()
+            ),
+        ));
+    }
     let settings = load_local_settings(&path)?;
-    let warehouse = normalize_and_validate_dataset_uri(&settings.default_warehouse)
-        .context("validate configured default Warehouse")?;
+    let configured = settings.default_warehouse.as_deref().ok_or_else(|| {
+        cli_boundary_error(
+            BoundaryCode::NotFound,
+            format!(
+                "default Dataset is not configured; run `pchronicle default set <LOCAL_DATASET>` (config: {})",
+                path.display()
+            ),
+        )
+    })?;
+    let warehouse = normalize_and_validate_dataset_uri(configured)
+        .context("validate configured default Dataset")?;
     anyhow::ensure!(
         !warehouse.contains("://") && Path::new(&warehouse).is_dir(),
-        "configured default Warehouse must be a local directory"
+        "configured default Dataset must be a local directory"
     );
     Ok(warehouse)
 }
@@ -114,31 +143,299 @@ pub(super) fn run_default(
     stderr: &mut dyn Write,
 ) -> Result<()> {
     let path = settings_path(settings_override)?;
-    let warehouse = if let Some(directory) = args.directory {
-        if !directory.exists() {
-            std::fs::create_dir_all(&directory).with_context(|| {
-                format!("create default Warehouse directory {}", directory.display())
-            })?;
-        }
-        anyhow::ensure!(directory.is_dir(), "default Warehouse must be a directory");
-        let warehouse = std::fs::canonicalize(&directory)
-            .context("canonicalize default Warehouse directory")?
-            .to_string_lossy()
-            .into_owned();
-        write_local_settings(
-            &path,
-            &LocalSettings {
-                default_warehouse: warehouse.clone(),
-            },
-        )?;
-        writeln!(stderr, "settings={} updated=true", path.display())
-            .context("write pChronicle default metadata")?;
-        warehouse
-    } else {
-        resolve_default_warehouse(settings_override)?
+    let command = match (args.command, args.legacy_directory) {
+        (Some(command), None) => command,
+        (None, Some(directory)) => DefaultCommand::Set {
+            dataset: directory.to_string_lossy().into_owned(),
+        },
+        (None, None) => DefaultCommand::Show,
+        (Some(_), Some(_)) => unreachable!("clap rejects mixed default forms"),
     };
-    writeln!(stdout, "{warehouse}").context("write default Warehouse")?;
+    match command {
+        DefaultCommand::Show => {
+            let warehouse = resolve_default_warehouse(settings_override)?;
+            writeln!(stdout, "{warehouse}").context("write default Dataset")
+        }
+        DefaultCommand::Set { dataset } => {
+            let expanded = expand_dataset_reference(&dataset, settings_override, false)?;
+            let location = DatasetLocation::parse(&expanded)?;
+            let directory = location
+                .local_path()
+                .context("default Dataset must be a local directory")?;
+            if !directory.exists() {
+                std::fs::create_dir_all(directory).with_context(|| {
+                    format!("create default Dataset directory {}", directory.display())
+                })?;
+            }
+            anyhow::ensure!(directory.is_dir(), "default Dataset must be a directory");
+            let warehouse = std::fs::canonicalize(directory)
+                .context("canonicalize default Dataset directory")?
+                .to_string_lossy()
+                .into_owned();
+            let mut settings = load_local_settings_or_default(&path)?;
+            settings.default_warehouse = Some(warehouse.clone());
+            write_local_settings(&path, &settings)?;
+            writeln!(stderr, "config={} updated=true", path.display())
+                .context("write pChronicle default metadata")?;
+            writeln!(stdout, "{warehouse}").context("write default Dataset")
+        }
+        DefaultCommand::Clear => {
+            let mut settings = load_local_settings_or_default(&path)?;
+            settings.default_warehouse = None;
+            write_local_settings(&path, &settings)?;
+            writeln!(stderr, "config={} updated=true", path.display())
+                .context("write pChronicle default metadata")?;
+            writeln!(stdout, "cleared").context("write default clear result")
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct AliasListResponse<'a> {
+    schema_version: &'static str,
+    aliases: Vec<AliasResponse<'a>>,
+}
+
+#[derive(Serialize)]
+struct AliasResponse<'a> {
+    name: &'a str,
+    dataset: &'a str,
+}
+
+pub(super) fn run_alias(
+    args: AliasArgs,
+    settings_override: Option<&Path>,
+    stdout_is_terminal: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    let path = settings_path(settings_override)?;
+    let mut settings = load_local_settings_or_default(&path)?;
+    match args.command.unwrap_or(AliasCommand::List {
+        format: OutputFormat::Auto,
+    }) {
+        AliasCommand::List { format } => {
+            let format = match format {
+                OutputFormat::Auto if stdout_is_terminal => OutputFormat::Table,
+                OutputFormat::Auto => OutputFormat::Json,
+                explicit => explicit,
+            };
+            match format {
+                OutputFormat::Table => {
+                    writeln!(stdout, "NAME\tDATASET")?;
+                    for (name, dataset) in &settings.aliases {
+                        writeln!(stdout, "{name}\t{dataset}")?;
+                    }
+                }
+                OutputFormat::Json => {
+                    let response = AliasListResponse {
+                        schema_version: "pchronicle-aliases/v1",
+                        aliases: settings
+                            .aliases
+                            .iter()
+                            .map(|(name, dataset)| AliasResponse { name, dataset })
+                            .collect(),
+                    };
+                    serde_json::to_writer_pretty(&mut *stdout, &response)?;
+                    writeln!(stdout)?;
+                }
+                OutputFormat::Auto => unreachable!(),
+            }
+            Ok(())
+        }
+        AliasCommand::Add { name, dataset } => {
+            validate_alias_name(&name)?;
+            if settings.aliases.contains_key(&name) {
+                return Err(cli_boundary_error(
+                    BoundaryCode::Conflict,
+                    format!("alias '{name}' already exists"),
+                ));
+            }
+            let dataset = normalize_alias_target(&dataset)?;
+            settings.aliases.insert(name.clone(), dataset.clone());
+            write_local_settings(&path, &settings)?;
+            writeln!(stderr, "config={} updated=true", path.display())?;
+            writeln!(stdout, "{name}\t{dataset}")?;
+            Ok(())
+        }
+        AliasCommand::GetUrl { name } => {
+            validate_alias_name(&name)?;
+            let dataset = settings.aliases.get(&name).ok_or_else(|| {
+                cli_boundary_error(
+                    BoundaryCode::NotFound,
+                    format!("alias '{name}' does not exist"),
+                )
+            })?;
+            writeln!(stdout, "{dataset}")?;
+            Ok(())
+        }
+        AliasCommand::SetUrl { name, dataset } => {
+            validate_alias_name(&name)?;
+            if !settings.aliases.contains_key(&name) {
+                return Err(cli_boundary_error(
+                    BoundaryCode::NotFound,
+                    format!("alias '{name}' does not exist"),
+                ));
+            }
+            let dataset = normalize_alias_target(&dataset)?;
+            settings.aliases.insert(name.clone(), dataset.clone());
+            write_local_settings(&path, &settings)?;
+            writeln!(stderr, "config={} updated=true", path.display())?;
+            writeln!(stdout, "{name}\t{dataset}")?;
+            Ok(())
+        }
+        AliasCommand::Rename { old, new } => {
+            validate_alias_name(&old)?;
+            validate_alias_name(&new)?;
+            if settings.aliases.contains_key(&new) {
+                return Err(cli_boundary_error(
+                    BoundaryCode::Conflict,
+                    format!("alias '{new}' already exists"),
+                ));
+            }
+            let dataset = settings.aliases.remove(&old).ok_or_else(|| {
+                cli_boundary_error(
+                    BoundaryCode::NotFound,
+                    format!("alias '{old}' does not exist"),
+                )
+            })?;
+            settings.aliases.insert(new.clone(), dataset);
+            write_local_settings(&path, &settings)?;
+            writeln!(stderr, "config={} updated=true", path.display())?;
+            writeln!(stdout, "{new}")?;
+            Ok(())
+        }
+        AliasCommand::Remove { name } => {
+            validate_alias_name(&name)?;
+            if settings.aliases.remove(&name).is_none() {
+                return Err(cli_boundary_error(
+                    BoundaryCode::NotFound,
+                    format!("alias '{name}' does not exist"),
+                ));
+            }
+            write_local_settings(&path, &settings)?;
+            writeln!(stderr, "config={} updated=true", path.display())?;
+            writeln!(stdout, "{name}")?;
+            Ok(())
+        }
+    }
+}
+
+fn validate_alias_name(name: &str) -> Result<()> {
+    let mut chars = name.chars();
+    let first = chars.next();
+    let valid = name.len() <= 64
+        && first.is_some_and(|character| character.is_ascii_lowercase())
+        && chars.all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '.' | '_' | '-')
+        });
+    if !valid {
+        return Err(cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            "alias name must match [a-z][a-z0-9._-]{0,63}",
+        ));
+    }
+    if RESERVED_ALIASES.contains(&name) {
+        return Err(cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            format!("alias name '{name}' is reserved"),
+        ));
+    }
     Ok(())
+}
+
+fn normalize_alias_target(dataset: &str) -> Result<String> {
+    let dataset = dataset.trim();
+    anyhow::ensure!(
+        !dataset.starts_with('@'),
+        "an alias cannot point to another alias"
+    );
+    let location = DatasetLocation::parse(dataset)?;
+    if location.is_object_store() || dataset.contains("://") {
+        return Ok(location.as_str().to_owned());
+    }
+    let path = location
+        .local_path()
+        .context("local alias target has no path")?;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("locate current directory for alias target")?
+            .join(path)
+    };
+    Ok(absolute.to_string_lossy().into_owned())
+}
+
+pub(super) fn expand_dataset_reference(
+    input: &str,
+    settings_override: Option<&Path>,
+    require_existing: bool,
+) -> Result<String> {
+    let input = input.trim();
+    let expanded = if !input.starts_with('@') {
+        input.to_owned()
+    } else {
+        let rest = &input[1..];
+        let (name, suffix) = rest.split_once('/').unwrap_or((rest, ""));
+        validate_alias_suffix(suffix)?;
+        if RESERVED_ALIASES.contains(&name) {
+            expand_dataset_alias(input)?
+        } else {
+            validate_alias_name(name)?;
+            let path = settings_path(settings_override)?;
+            let settings = load_local_settings_or_default(&path)?;
+            let root = settings.aliases.get(name).ok_or_else(|| {
+                cli_boundary_error(
+                    BoundaryCode::NotFound,
+                    format!("unknown Dataset alias '@{name}'"),
+                )
+            })?;
+            join_alias_target(root, suffix)?
+        }
+    };
+    let location = DatasetLocation::parse(&expanded)?;
+    if require_existing {
+        if location.local_path().is_some_and(|path| !path.exists()) {
+            return Err(cli_boundary_error(
+                BoundaryCode::NotFound,
+                format!("Dataset does not exist: {}", location.as_str()),
+            ));
+        }
+        Ok(location.into_existing()?.as_str().to_owned())
+    } else {
+        Ok(location.as_str().to_owned())
+    }
+}
+
+fn validate_alias_suffix(suffix: &str) -> Result<()> {
+    if suffix.is_empty() {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        !suffix.contains(['\\', '\0']),
+        "alias suffix contains an invalid character"
+    );
+    for component in suffix.split('/') {
+        anyhow::ensure!(
+            !component.is_empty() && component != "." && component != "..",
+            "alias suffix must not contain empty, '.', or '..' segments"
+        );
+    }
+    Ok(())
+}
+
+fn join_alias_target(root: &str, suffix: &str) -> Result<String> {
+    if suffix.is_empty() {
+        return Ok(root.to_owned());
+    }
+    let location = DatasetLocation::parse(root)?;
+    match location.local_path() {
+        Some(path) => Ok(path.join(suffix).to_string_lossy().into_owned()),
+        None => Ok(format!("{}/{}", root.trim_end_matches('/'), suffix)),
+    }
 }
 
 pub(super) fn resolve_dataset_uri(
@@ -146,7 +443,7 @@ pub(super) fn resolve_dataset_uri(
     settings_override: Option<&Path>,
 ) -> Result<String> {
     match explicit {
-        Some(uri) => normalize_and_validate_dataset_uri(uri),
+        Some(uri) => expand_dataset_reference(uri, settings_override, true),
         None => resolve_default_warehouse(settings_override),
     }
 }
@@ -190,7 +487,10 @@ pub(super) fn default_import_output(
         .into_owned())
 }
 
-pub(super) fn load_warehouse_config(path: &Path) -> Result<server::ChronicleServerConfig> {
+pub(super) fn load_warehouse_config_with_user_config(
+    path: &Path,
+    settings_override: Option<&Path>,
+) -> Result<server::ChronicleServerConfig> {
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("read Warehouse config metadata {}", path.display()))?;
     anyhow::ensure!(
@@ -225,12 +525,14 @@ pub(super) fn load_warehouse_config(path: &Path) -> Result<server::ChronicleServ
     let mut mounts = Vec::with_capacity(file.datasets.len());
     let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
     for dataset in file.datasets {
-        let input = if !dataset.uri.contains("://") && Path::new(&dataset.uri).is_relative() {
+        let input = if dataset.uri.trim_start().starts_with('@') {
+            dataset.uri
+        } else if !dataset.uri.contains("://") && Path::new(&dataset.uri).is_relative() {
             config_dir.join(&dataset.uri).to_string_lossy().into_owned()
         } else {
             dataset.uri
         };
-        let uri = normalize_and_validate_dataset_uri(&input)
+        let uri = expand_dataset_reference(&input, settings_override, true)
             .with_context(|| format!("validate Dataset '{}'", dataset.name))?;
         let mount = DatasetMount::new(dataset.name, uri)?;
         anyhow::ensure!(
@@ -252,4 +554,9 @@ pub(super) fn load_warehouse_config(path: &Path) -> Result<server::ChronicleServ
     }
     config.catalog_options.error_policy = CatalogErrorPolicy::Report;
     Ok(config)
+}
+
+#[cfg(test)]
+pub(super) fn load_warehouse_config(path: &Path) -> Result<server::ChronicleServerConfig> {
+    load_warehouse_config_with_user_config(path, None)
 }

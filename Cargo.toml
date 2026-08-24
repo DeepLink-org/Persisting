@@ -62,19 +62,20 @@ codegen-units = 256
 strip = "none"
 
 [profile.release]
-# Keep production builds compact without serializing code generation behind
-# whole-program optimization. Use `--profile release-compact` when maximum
-# size reduction is worth the substantially longer link step.
-opt-level = "s"
-lto = false
+# Release artifacts are distributed binaries, so optimize their installed and
+# download size by default. Thin LTO retains most cross-crate size wins without
+# imposing the full link-time cost of Fat LTO.
+opt-level = "z"
+lto = "thin"
 strip = "symbols"
-codegen-units = 16
+codegen-units = 1
+panic = "abort"
 
 [profile.release-compact]
 inherits = "release"
-opt-level = "z"
-lto = "thin"
-codegen-units = 1
+# Keep the existing profile as the maximum-size-optimization option and as a
+# compatibility surface for release scripts that already select it.
+lto = "fat"
 
 [workspace.dependencies]
 anyhow = "1"

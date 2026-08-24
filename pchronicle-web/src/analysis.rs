@@ -1018,55 +1018,23 @@ pub fn AnalysisWorkspace(
         .iter()
         .find(|table| table.name == selected_table_name)
         .cloned();
+    let page_title = session()
+        .as_ref()
+        .map(session_label)
+        .unwrap_or_else(|| "New analysis".into());
+    let table_count = schema_tables.len();
 
     rsx! {
         section { class: "analyze-workspace", aria_label: "Question-driven analysis workspace",
-            div { class: "analyze-body",
-                header { class: "analyze-header",
-                    div { class: "analyze-header-bar",
-                        p { class: "analyze-eyebrow", "pChronicle / Analyze" }
-                        div { class: "analyze-header-actions",
-                            if !recent_sessions().is_empty() {
-                                label { class: "analyze-recent-select",
-                                    span { "Recent analysis" }
-                                    select {
-                                        value: "{current_session_id}",
-                                        onchange: move |event| select_recent_session.call(event.value()),
-                                        for saved in recent_sessions() {
-                                            option { value: "{saved.id}", "{session_label(&saved)}" }
-                                        }
-                                    }
-                                }
-                            }
-                            if clear_confirmation() {
-                                div { class: "analyze-clear-confirmation", role: "group", aria_label: "Confirm clearing analysis history",
-                                    span { "Clear this catalog's analysis history?" }
-                                    button { class: "button", r#type: "button", onclick: clear_history, "Clear" }
-                                    button { class: "analyze-link-button", r#type: "button", onclick: move |_| clear_confirmation.set(false), "Cancel" }
-                                }
-                            } else {
-                                button { class: "analyze-link-button", r#type: "button", onclick: move |_| clear_confirmation.set(true), "Clear analysis history" }
-                            }
-                            button { class: "button analyze-settings-button", r#type: "button", onclick: move |_| settings_open.set(true),
-                                span { aria_hidden: "true", "⚙" }
-                                "Model settings"
-                            }
-                        }
-                    }
+            nav { class: "analyze-schema", aria_label: "Catalog schema",
+                header {
+                    strong { "SQL tables" }
+                    span { "{table_count}" }
                 }
-                if let Some(message) = storage_notice() {
-                    p { class: "analyze-storage-notice analyze-storage-notice-inline", role: "status", "{message}" }
-                }
-                div { class: "analyze-layout",
-                    nav { class: "analyze-schema", aria_label: "Catalog schema",
-                    div { class: "analyze-schema-heading",
-                        p { class: "analyze-eyebrow", "Catalog" }
-                        h2 { "SQL tables" }
-                        p { "Names you can use in FROM. Click a table, then a field to insert it at the SQL cursor." }
-                    }
-                    if schema_tables.is_empty() {
-                        p { class: "analyze-schema-empty", "Catalog is still loading." }
-                    } else {
+                if schema_tables.is_empty() {
+                    p { class: "analyze-schema-empty", "Catalog is still loading." }
+                } else {
+                    div { class: "analyze-schema-list",
                         ul { class: "analyze-schema-tables",
                             for table in schema_tables.iter() {
                                 {
@@ -1087,47 +1055,47 @@ pub fn AnalysisWorkspace(
                                 }
                             }
                         }
-                        if let Some(table) = selected_schema_table.as_ref() {
-                            div { class: "analyze-schema-fields",
-                                h3 { "{table.name} fields" }
-                                if !table.description.is_empty() {
-                                    p { class: "analyze-schema-table-copy", "{table.description}" }
-                                }
-                                ul {
-                                    for field in table.fields.iter() {
-                                        {
-                                            let token = field_sql_token(&table.name, &field.name);
-                                            let locked = sql_locked;
-                                            let data_type = field.data_type.clone();
-                                            let description = field.description.clone();
-                                            rsx! {
-                                                li {
-                                                    button {
-                                                        class: "analyze-schema-field",
-                                                        r#type: "button",
-                                                        disabled: locked,
-                                                        title: if description.is_empty() { data_type.clone() } else { format!("{data_type} · {description}") },
-                                                        onclick: move |_| {
-                                                            let Some(scope) = scope() else { return; };
-                                                            let mut current = session().unwrap_or_else(|| {
-                                                                AnalysisSession::with_revision(AnalysisRevision::draft(
-                                                                    1,
-                                                                    question(),
-                                                                    scope.clone(),
-                                                                ))
-                                                            });
-                                                            let Some(active) = current.active_revision_mut() else { return; };
-                                                            let Ok(caret) = apply_inserted_token(active, &token, sql_textarea_cursor()) else { return; };
-                                                            persist_session(&current, &mut recent_sessions, &mut storage_notice);
-                                                            session.set(Some(current));
-                                                            composer_tab.set(composer_tab_after_catalog_insert());
-                                                            sql_caret.set(Some(caret));
-                                                        },
-                                                        code { "{field.name}" }
-                                                        small { "{field.data_type}" }
-                                                        if !field.description.is_empty() {
-                                                            span { "{field.description}" }
-                                                        }
+                    }
+                    if let Some(table) = selected_schema_table.as_ref() {
+                        div { class: "analyze-schema-list nested",
+                            p { class: "analyze-schema-fields-label", "{table.name} fields" }
+                            if !table.description.is_empty() {
+                                p { class: "analyze-schema-table-copy", "{table.description}" }
+                            }
+                            ul {
+                                for field in table.fields.iter() {
+                                    {
+                                        let token = field_sql_token(&table.name, &field.name);
+                                        let locked = sql_locked;
+                                        let data_type = field.data_type.clone();
+                                        let description = field.description.clone();
+                                        rsx! {
+                                            li {
+                                                button {
+                                                    class: "analyze-schema-field",
+                                                    r#type: "button",
+                                                    disabled: locked,
+                                                    title: if description.is_empty() { data_type.clone() } else { format!("{data_type} · {description}") },
+                                                    onclick: move |_| {
+                                                        let Some(scope) = scope() else { return; };
+                                                        let mut current = session().unwrap_or_else(|| {
+                                                            AnalysisSession::with_revision(AnalysisRevision::draft(
+                                                                1,
+                                                                question(),
+                                                                scope.clone(),
+                                                            ))
+                                                        });
+                                                        let Some(active) = current.active_revision_mut() else { return; };
+                                                        let Ok(caret) = apply_inserted_token(active, &token, sql_textarea_cursor()) else { return; };
+                                                        persist_session(&current, &mut recent_sessions, &mut storage_notice);
+                                                        session.set(Some(current));
+                                                        composer_tab.set(composer_tab_after_catalog_insert());
+                                                        sql_caret.set(Some(caret));
+                                                    },
+                                                    code { "{field.name}" }
+                                                    small { "{field.data_type}" }
+                                                    if !field.description.is_empty() {
+                                                        span { "{field.description}" }
                                                     }
                                                 }
                                             }
@@ -1138,26 +1106,53 @@ pub fn AnalysisWorkspace(
                         }
                     }
                 }
-                div { class: "analyze-main",
-                    div { class: "analyze-main-intro",
-                        h1 { "Ask a question. Or write SQL." }
-                        p { class: "analyze-header-lede",
+            }
+            div { class: "analyze-detail",
+                header { class: "analyze-detail-head",
+                    div {
+                        p { class: "eyebrow", "Analyze" }
+                        h1 { "{page_title}" }
+                        p {
                             if composer_tab() == ComposerTab::Ask {
-                                "Analyze compiles a spec, then runs bounded evidence."
+                                "Ask in plain language, or write SQL. Analyze compiles a spec, then runs bounded evidence."
                             } else {
                                 "Run executes this query. Editing skips spec repair."
                             }
                         }
                     }
-                    section { class: "analyze-question-card", aria_label: "Analysis composer",
-                        div { class: "analyze-section-heading",
-                            div { span { "01" } div { h2 { "Compose the query" } p { "Ask in plain language, or write the SQL Analyze will run." } } }
-                            span { class: "analyze-step-state",
-                                if generating { { analyze_progress_label(active_revision.as_ref()) } }
-                                else if composer.show_spec_summary == false && active_revision.as_ref().is_some_and(|revision| revision.manually_edited) { "Manually edited" }
-                                else { "Draft" }
+                    div { class: "analyze-header-actions",
+                        if !recent_sessions().is_empty() {
+                            label { class: "analyze-recent-select",
+                                span { "Recent" }
+                                select {
+                                    value: "{current_session_id}",
+                                    onchange: move |event| select_recent_session.call(event.value()),
+                                    for saved in recent_sessions() {
+                                        option { value: "{saved.id}", "{session_label(&saved)}" }
+                                    }
+                                }
                             }
                         }
+                        if clear_confirmation() {
+                            div { class: "analyze-clear-confirmation", role: "group", aria_label: "Confirm clearing analysis history",
+                                span { "Clear this catalog's analysis history?" }
+                                button { class: "button", r#type: "button", onclick: clear_history, "Clear" }
+                                button { class: "analyze-link-button", r#type: "button", onclick: move |_| clear_confirmation.set(false), "Cancel" }
+                            }
+                        } else {
+                            button { class: "analyze-link-button", r#type: "button", onclick: move |_| clear_confirmation.set(true), "Clear history" }
+                        }
+                        button { class: "button analyze-settings-button", r#type: "button", onclick: move |_| settings_open.set(true),
+                            span { aria_hidden: "true", "⚙" }
+                            "Model settings"
+                        }
+                    }
+                }
+                if let Some(message) = storage_notice() {
+                    p { class: "analyze-storage-notice analyze-storage-notice-inline", role: "status", "{message}" }
+                }
+                section { class: "analyze-composer", aria_label: "Analysis composer",
+                    div { class: "analyze-composer-toolbar",
                         div { class: "analyze-composer-tabs", role: "tablist", aria_label: "Analysis input mode",
                             button {
                                 class: if composer_tab() == ComposerTab::Ask { "active" } else { "" },
@@ -1175,6 +1170,11 @@ pub fn AnalysisWorkspace(
                                 onclick: move |_| composer_tab.set(ComposerTab::Sql),
                                 "Write SQL"
                             }
+                        }
+                        span { class: "analyze-step-state",
+                            if generating { { analyze_progress_label(active_revision.as_ref()) } }
+                            else if !composer.show_spec_summary && active_revision.as_ref().is_some_and(|revision| revision.manually_edited) { "Manually edited" }
+                            else { "Draft" }
                         }
                         div { class: "analyze-context-row", aria_label: "Analysis context",
                             span { class: if catalog.is_some() { "analyze-status ready" } else { "analyze-status" },
@@ -1223,7 +1223,7 @@ pub fn AnalysisWorkspace(
                             textarea {
                                 id: "analysis-question",
                                 class: "analyze-question-input",
-                                rows: "5",
+                                rows: "4",
                                 value: "{question}",
                                 placeholder: "Ask about runs, errors, latency, tool use, or model behavior…",
                                 disabled: generating,
@@ -1275,7 +1275,7 @@ pub fn AnalysisWorkspace(
                             textarea {
                                 id: "analysis-sql",
                                 class: "analyze-sql-editor",
-                                rows: "10",
+                                rows: "6",
                                 value: "{sql_text}",
                                 placeholder: "SELECT …",
                                 disabled: sql_locked,
@@ -1320,6 +1320,7 @@ pub fn AnalysisWorkspace(
                         }
                     }
 
+                    div { class: "analyze-stage",
                     details {
                         class: "analyze-sql-card",
                         aria_label: "How Analyze ran",
@@ -1332,7 +1333,7 @@ pub fn AnalysisWorkspace(
                                 }
                             },
                             div { class: "analyze-section-heading",
-                                div { span { "02" } div { h2 { "How Analyze ran" } p { "Spec, compile, evidence, and interpretation as a trajectory. Open a step to see the prompt or result." } } }
+                                div { h2 { "How Analyze ran" } p { "Spec, compile, evidence, and interpretation as a trajectory." } }
                             }
                         }
                         if let Some(revision) = active_revision.as_ref() {
@@ -1368,7 +1369,7 @@ pub fn AnalysisWorkspace(
                             if let Some(spec) = revision.spec.as_ref() {
                             section { class: "analyze-plan-card", aria_label: "Analysis spec",
                                 div { class: "analyze-section-heading",
-                                    div { span { "Spec" } div { h2 { "Compiled analysis spec" } p { "SQL is a compilation artifact. The spec is what Analyze repairs." } } }
+                                    div { h2 { "Compiled analysis spec" } p { "SQL is a compilation artifact. The spec is what Analyze repairs." } }
                                 }
                                 dl { class: "analyze-plan-summary",
                                     div { dt { "Intent" } dd { "{spec.intent}" } }
@@ -1388,7 +1389,7 @@ pub fn AnalysisWorkspace(
                             if !revision.manually_edited && shows_plan_summary(plan) {
                             section { class: "analyze-plan-card", aria_label: "Proposed analysis plan",
                                 div { class: "analyze-section-heading",
-                                    div { span { "Plan" } div { h2 { "Review the analysis plan" } p { "This saved SQL plan is stale. Analyze again to compile a spec." } } }
+                                    div { h2 { "Review the analysis plan" } p { "This saved SQL plan is stale. Analyze again to compile a spec." } }
                                 }
                                 dl { class: "analyze-plan-summary",
                                     div { dt { "Intent" } dd { "{plan.intent_summary}" } }
@@ -1403,7 +1404,7 @@ pub fn AnalysisWorkspace(
 
                         if let Some(evidence) = revision.evidence.clone() {
                             section { class: "analyze-result-card", aria_label: "Analysis result",
-                                div { class: "analyze-section-heading", div { span { "04" } div { h2 { "Analysis result" } p { "Bounded evidence returned by the confirmed query." } } } }
+                                div { class: "analyze-section-heading", div { h2 { "Analysis result" } p { "Bounded evidence returned by the confirmed query." } } }
                                 if evidence.rows.is_empty() {
                                     div { class: "analyze-empty-result",
                                         div {
@@ -1459,7 +1460,7 @@ pub fn AnalysisWorkspace(
                             }
                         } else if let Some(interpretation) = revision.interpretation.clone() {
                             section { class: "analyze-result-card", aria_label: "Saved analysis interpretation",
-                                div { class: "analyze-section-heading", div { span { "04" } div { h2 { "Saved interpretation" } p { "The summary was restored from this analysis session." } } } }
+                                div { class: "analyze-section-heading", div { h2 { "Saved interpretation" } p { "The summary was restored from this analysis session." } } }
                                 div { class: "analyze-saved-interpretation-note", role: "note",
                                     strong { "Returned rows are not stored in the browser" }
                                     p { "This saved interpretation remains available. Rerun to restore rows in Result Explorer." }
@@ -1478,8 +1479,8 @@ pub fn AnalysisWorkspace(
                             }
                         }
                     }
+                    }
                 }
-            }
             }
         }
         if settings_open() {

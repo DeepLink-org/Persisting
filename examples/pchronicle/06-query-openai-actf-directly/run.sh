@@ -10,11 +10,11 @@ data="$repo_root/examples/data"
 pchronicle_example_init "$example_dir"
 
 openai="$(pchronicle_capture 01-openai "$pchronicle" query "$data/openai-messages" \
-  "SELECT session_id, COUNT(*) AS steps FROM dataset.steps GROUP BY session_id ORDER BY session_id" \
+  --sql "SELECT session_id, COUNT(*) AS steps FROM dataset.steps GROUP BY session_id ORDER BY session_id" \
   --format jsonl)"
 
 actf="$(pchronicle_capture 02-actf "$pchronicle" query "$data/actf" \
-  "SELECT session_id, agent_id FROM dataset.runs ORDER BY session_id" \
+  --sql "SELECT session_id, agent_id FROM dataset.runs ORDER BY session_id" \
   --format jsonl)"
 
 jq -s -e '. == [

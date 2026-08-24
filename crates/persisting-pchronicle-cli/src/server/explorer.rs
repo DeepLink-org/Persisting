@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use persisting_pchronicle::model::EventRecord;
+use persisting_pchronicle::storage::CatalogEventProvenance;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -285,6 +286,7 @@ pub(crate) struct HistogramBucket {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct RunAnalysis {
     pub(crate) run: RunSummary,
+    pub(crate) event_provenance: CatalogEventProvenance,
     pub(crate) event_count: usize,
     pub(crate) turn_count: usize,
     pub(crate) tool_call_count: usize,
@@ -330,6 +332,7 @@ pub(crate) struct TurnDetail {
     pub(crate) summary: TurnSummary,
     pub(crate) turn: persisting_pchronicle::model::StorylineTurn,
     pub(crate) wire_tool_calls: Vec<WireToolCall>,
+    pub(crate) event_provenance: CatalogEventProvenance,
     pub(crate) events: Vec<EventRecord>,
 }
 
@@ -441,6 +444,7 @@ pub(crate) fn analyze(
     run: RunSummary,
     turns: &[TrajectoryTurnView],
     events: &[EventRecord],
+    event_provenance: CatalogEventProvenance,
 ) -> RunAnalysis {
     let mut latencies = Vec::new();
     let mut ttfts = Vec::new();
@@ -583,6 +587,7 @@ pub(crate) fn analyze(
     let latency_histogram = latency_histogram(&latencies);
 
     RunAnalysis {
+        event_provenance,
         event_count: events.len(),
         turn_count: turns.len(),
         tool_call_count: turns
@@ -636,7 +641,11 @@ pub(crate) fn turn_page(
     paginate(records, offset, limit.clamp(1, 500))
 }
 
-pub(crate) fn turn_detail(item: &TrajectoryTurnView, events: &[EventRecord]) -> TurnDetail {
+pub(crate) fn turn_detail(
+    item: &TrajectoryTurnView,
+    events: &[EventRecord],
+    event_provenance: CatalogEventProvenance,
+) -> TurnDetail {
     let linked = events
         .iter()
         .filter(|event| item.event_seqs.contains(&event.seq))
@@ -646,6 +655,7 @@ pub(crate) fn turn_detail(item: &TrajectoryTurnView, events: &[EventRecord]) -> 
         summary: turn_summary(item, events),
         turn: item.turn.clone(),
         wire_tool_calls: item.wire_tool_calls.clone(),
+        event_provenance,
         events: linked,
     }
 }

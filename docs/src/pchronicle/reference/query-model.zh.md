@@ -1,7 +1,7 @@
 # Query Model 参考
 
 每个挂载的 Dataset 都是一个 SQL schema。位置 Dataset 命名为 `dataset`；
-`--dataset NAME=URI` 创建命名 schema。即使没有兼容 Source 提供数据，也稳定暴露六个关系。
+`--mount NAME=DATASET` 创建命名 schema。即使没有兼容数据提供关系，也稳定暴露六个关系。
 
 | 关系 | 一行表示什么 | 来源 |
 | --- | --- | --- |

@@ -1,30 +1,31 @@
 # Discover and query a Dataset
 
-Use this workflow when you have a local directory or S3 prefix and need to
-understand its contents before writing analysis.
+Use this workflow when you have a local path, object-store URI, or alias and
+want to understand its trajectory data before writing a report.
 
-## 1. Discover logical Sources
+## 1. Inspect the Dataset
 
 ```bash
 pchronicle ls ./dataset
 pchronicle status ./dataset
 ```
 
-`ls` reports logical Sources. `status` summarizes the immutable Catalog
-Snapshot selected for the command. Use JSON output in automation:
+`ls` shows the independently queryable trajectory items pChronicle found.
+`status` summarizes Dataset readiness and available data. Use JSON in
+automation:
 
 ```bash
 pchronicle ls ./dataset --format json
 ```
 
-If a Dataset may contain malformed Sources, choose the error policy explicitly:
+If the Dataset may contain malformed entries, choose the error policy:
 
 ```bash
 pchronicle ls ./dataset --errors report
 pchronicle ls ./dataset --errors strict
 ```
 
-## 2. Start with a stable analysis
+## 2. Start with a built-in analysis
 
 ```bash
 pchronicle analysis overview ./dataset
@@ -33,37 +34,35 @@ pchronicle analysis models ./dataset
 pchronicle analysis tools ./dataset
 ```
 
-Built-in analysis is useful for common summaries. Move to SQL when the question
-needs a custom projection.
+Built-in analysis covers common summaries. Move to SQL when you need custom
+filtering, joins, or aggregation.
 
-## 3. Inspect the logical schema
-
-Do not assume that physical exchange fields are SQL columns:
+## 3. Inspect the query schema
 
 ```bash
-pchronicle query ./dataset "DESCRIBE dataset.steps"
+pchronicle query ./dataset --sql "DESCRIBE dataset.steps"
 ```
 
-Common logical relations include `sources`, `runs`, `steps`, `tool_calls`,
-`events`, and `trajectories`. Availability is reported per Source.
+Common relations include `sources`, `runs`, `steps`, `tool_calls`, `events`,
+and `trajectories`. The relations available depend on the Dataset contents.
 
 ## 4. Ask a bounded question
 
 ```bash
 pchronicle query ./dataset \
-  "SELECT session_id, COUNT(*) AS steps
-   FROM dataset.steps
-   GROUP BY session_id
-   ORDER BY steps DESC"
+  --sql "SELECT session_id, COUNT(*) AS steps
+         FROM dataset.steps
+         GROUP BY session_id
+         ORDER BY steps DESC"
 ```
 
-Use `--format jsonl|csv` and `--output` for pipelines. Queries are read-only and
+Use `--format jsonl|csv` and `--output` in pipelines. Queries are read-only and
 bounded by row, byte, discovery, and timeout limits.
 
-## 5. Disambiguate external IDs
+## 5. Disambiguate repeated external IDs
 
-IDs are Source-local. Locate candidates first, then retain `source_path` in any
-durable reference:
+The same external ID may occur in more than one file. Locate candidates first,
+then retain `source_path` when you need a durable reference:
 
 ```bash
 pchronicle find ./dataset --session-id session-42
@@ -71,6 +70,7 @@ pchronicle find ./dataset --source nested/source.json \
   --session-id session-42
 ```
 
-For exact flags, see the [`pchronicle` reference](../reference/cli.md). For why
-Sources and Snapshots behave this way, read
-[Dataset, Source, and Snapshot](../concepts/dataset-and-source.md).
+For exact flags, see the [`pchronicle` CLI reference](../reference/cli.md).
+For table fields and join rules, see the [query model](../reference/query-model.md).
+Internal discovery and versioning behavior belongs to
+[Dataset Catalog design](../design/catalog.md).

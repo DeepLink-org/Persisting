@@ -39,7 +39,7 @@ length; violating any of these proof obligations fails closed instead of silentl
 Operational commands:
 
 ```bash
-pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
+pchronicle serve --control 127.0.0.1:0 ./trajectory-data
 pchronicle status ./trajectory-data --format json
 ```
 
@@ -415,15 +415,15 @@ CLI 使用相同引擎，输出稳定的 JSONL：
 
 ```bash
 pchronicle query ./trajectories.ndjson \
-  'SELECT source, COUNT(*) AS steps FROM dataset.steps GROUP BY source ORDER BY source'
+  --sql 'SELECT source, COUNT(*) AS steps FROM dataset.steps GROUP BY source ORDER BY source'
 
 # 含 CURRENT 的三表 store 根目录会被 auto 识别为 Lance
 pchronicle query ./storyline-store \
-  'SELECT step_id, source FROM dataset.steps WHERE session_id = '\''s-1'\'' ORDER BY step_id'
+  --sql 'SELECT step_id, source FROM dataset.steps WHERE session_id = '\''s-1'\'' ORDER BY step_id'
 
 # OpenAI/ACTF 目录直接查询；_file_ 为查询期相对路径列，不写入 Lance
 pchronicle query ./openai-data \
-  "SELECT _file_, COUNT(*) FROM dataset.steps WHERE _file_ LIKE 'batch/%' GROUP BY _file_"
+  --sql "SELECT _file_, COUNT(*) FROM dataset.steps WHERE _file_ LIKE 'batch/%' GROUP BY _file_"
 ```
 
 查询是只读的；SQL 可以使用 SELECT、CTE、JOIN、聚合和 DataFusion 内置函数，但不通过

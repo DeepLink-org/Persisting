@@ -1,11 +1,12 @@
+use std::fmt;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputIssueKind {
     Invalid,
     Unsupported,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{message}")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputIssue {
     kind: InputIssueKind,
     message: String,
@@ -47,4 +48,33 @@ impl InputIssue {
     }
 }
 
+impl fmt::Display for InputIssue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)?;
+        if let Some(location) = &self.location {
+            write!(f, " ({location})")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for InputIssue {}
+
 pub type InputResult<T> = std::result::Result<T, InputIssue>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_includes_location_when_present() {
+        let issue = InputIssue::invalid("missing field `schema_version`").at("line 1");
+        assert_eq!(issue.to_string(), "missing field `schema_version` (line 1)");
+        assert_eq!(issue.message(), "missing field `schema_version`");
+        assert_eq!(issue.location(), Some("line 1"));
+        assert_eq!(
+            InputIssue::invalid("invalid JSON").to_string(),
+            "invalid JSON"
+        );
+    }
+}

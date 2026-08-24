@@ -7,9 +7,9 @@ use clap::{Args, Subcommand};
 
 use super::{
     run_analysis, run_default, run_export, run_find, run_import, run_list, run_query, run_status,
-    AnalysisArgs, AnalysisCommand, AnalysisOptions, DefaultArgs, ErrorMode, ExchangeFormat,
-    ExportArgs, FindArgs, ImportArgs, ImportOutputFormat, ListArgs, OutputFormat, QueryArgs,
-    QueryOutputFormat, StatusArgs,
+    AnalysisArgs, AnalysisCommand, AnalysisOptions, DefaultArgs, DefaultCommand, ErrorMode,
+    ExchangeFormat, ExportArgs, ExportFormat, FindArgs, ImportArgs, ImportOutputFormat, ListArgs,
+    OutputFormat, QueryArgs, QueryOutputFormat, StatusArgs,
 };
 
 const DEMO_ATIF: &str = include_str!("../assets/onboard/support-ticket.json");
@@ -118,6 +118,7 @@ impl OnboardArgs {
 
 pub(crate) async fn run(
     args: OnboardArgs,
+    settings_override: Option<&Path>,
     stdin_is_terminal: bool,
     stdout_is_terminal: bool,
     stdin: &mut dyn Read,
@@ -130,10 +131,10 @@ pub(crate) async fn run(
         && stdout_is_terminal
         && !no_pause;
     let demo = DemoWorkspace::create()?;
-    let selected_dataset = selection
-        .dataset_uri()
-        .map(str::to_owned)
-        .unwrap_or_else(|| demo.atif_uri());
+    let selected_dataset = match selection.dataset_uri() {
+        Some(dataset) => super::resolve_dataset_uri(Some(dataset), settings_override)?,
+        None => demo.atif_uri(),
+    };
     let mut renderer =
         WalkthroughRenderer::for_output(stdout, stdout_is_terminal, interactive.then_some(stdin));
 
@@ -376,7 +377,7 @@ async fn render_query(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &str)
     renderer.render(&command_section(
         "Query · 先看 Schema",
         "不要猜交换格式的物理字段；先查看统一表当前公开的列。",
-        &format!("pchronicle query {dataset} 'DESCRIBE dataset.steps' --format table"),
+        &format!("pchronicle query {dataset} --sql 'DESCRIBE dataset.steps' --format table"),
         &schema,
     ))?;
     renderer.pause()?;
@@ -393,7 +394,7 @@ async fn render_query(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &str)
         "Query · 查看 Step",
         "`message_json` 保留消息值，Agent、Model 和时间字段则可直接参与 SQL。",
         &format!(
-            "pchronicle query {dataset} {} --format table",
+            "pchronicle query {dataset} --sql {} --format table",
             shell_quote(STEP_SAMPLE_SQL)
         ),
         &steps,
@@ -412,7 +413,7 @@ async fn render_query(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &str)
         "Query · 查看工具调用",
         "工具调用在独立的统一表中，通过 Session 和 Step 坐标与轨迹关联。",
         &format!(
-            "pchronicle query {dataset} {} --format table",
+            "pchronicle query {dataset} --sql {} --format table",
             shell_quote(TOOL_SAMPLE_SQL)
         ),
         &tools,
@@ -432,7 +433,7 @@ async fn render_formats(
 ) -> Result<()> {
     let output = capture_named_query(demo).await?;
     let command = format!(
-        "pchronicle query --dataset atif=./atif --dataset actf=./actf --dataset openai=./openai-messages {} --format table",
+        "pchronicle query --mount atif=./atif --mount actf=./actf --mount openai=./openai-messages --sql {} --format table",
         shell_quote(CROSS_FORMAT_SQL)
     );
     renderer.render(&command_section(
@@ -471,13 +472,13 @@ async fn render_exchange(
     demo: &DemoWorkspace,
 ) -> Result<()> {
     renderer.render(
-        "## Exchange · 本地 Warehouse\n\n默认 Warehouse 只是一个递归的本地 Dataset 根目录，不是守护进程或隐藏数据库。下面的真实演练使用隔离 settings 和临时目录，不修改用户配置。\n\n",
+        "## Exchange · 本地 Dataset\n\n默认 Dataset 只是用户配置，不是守护进程或隐藏数据库。下面的真实演练使用隔离 config 和临时目录，不修改用户配置。\n\n",
     )?;
     let exchange = capture_exchange(demo).await?;
     renderer.render(&command_section(
         "Exchange · 设置默认 Warehouse",
         "设置后，本地读命令可以省略 Dataset URI。",
-        "pchronicle default ./trajectory-data",
+        "pchronicle default set ./trajectory-data",
         &exchange.default_output,
     ))?;
     renderer.pause()?;
@@ -486,8 +487,8 @@ async fn render_exchange(
     }
     renderer.render(&command_section(
         "Exchange · 导入",
-        "导入是 create-only；省略 `--output` 时，会在默认 Warehouse 下派生子目录名。",
-        "pchronicle import --from ./support-ticket.json --format atif",
+        "导入是 create-only，来源和目标都显式写在命令中。",
+        "pchronicle import --from ./support-ticket.json --to ./trajectory-data/support-ticket --input-format atif",
         &exchange.import_output,
     ))?;
     renderer.pause()?;
@@ -497,7 +498,7 @@ async fn render_exchange(
     renderer.render(&command_section(
         "Exchange · 严格导出",
         "`--strict` 拒绝无法保留原交换文档的转换。本例导出的 JSON 与输入语义相等。",
-        "pchronicle export --from ./trajectory-data/support-ticket --output ./restored.json --format atif --strict",
+        "pchronicle export --from ./trajectory-data/support-ticket --to ./restored.json --output-format atif --strict",
         &exchange.export_output,
     ))?;
     renderer.pause()
@@ -507,18 +508,10 @@ fn render_serve(renderer: &mut WalkthroughRenderer<'_>) -> Result<()> {
     renderer.render(
         r#"## Serve · 只读 Web/API
 
-`serve` 使用显式静态挂载，不读取默认 Warehouse。相对路径从配置文件所在目录解析。
-
-```toml
-default_dataset = "evals"
-
-[[datasets]]
-name = "evals"
-uri = "../data/atif"
-```
+`serve` 使用一个或多个位置参数 `[NAME=]DATASET` 显式挂载，不读取默认 Dataset。
 
 ```console
-pchronicle serve --config warehouse.toml --listen 127.0.0.1:8080 --open
+pchronicle serve --listen 127.0.0.1:8080 --open evals=../data/atif
 ```
 
 服务只允许 loopback 地址，因为这个本地表面不提供认证；Dataset API 和 Web UI 都是只读的。
@@ -633,8 +626,11 @@ async fn capture_query(
             dataset_uri: Some(dataset_uri),
             datasets: Vec::new(),
             sql: Some(sql.to_owned()),
+            sql_option: None,
+            file: None,
             format,
             output: "-".to_owned(),
+            overwrite: false,
             max_output_rows: 100_000,
             max_output_bytes: 64 * 1024 * 1024,
             timeout_seconds: 30,
@@ -643,6 +639,7 @@ async fn capture_query(
         },
         None,
         true,
+        &mut std::io::empty(),
         &mut stdout,
         &mut stderr,
     )
@@ -662,8 +659,11 @@ async fn capture_named_query(demo: &DemoWorkspace) -> Result<String> {
                 format!("openai={}", demo.dataset("openai-messages").display()),
             ],
             sql: None,
+            sql_option: None,
+            file: None,
             format: QueryOutputFormat::Table,
             output: "-".to_owned(),
+            overwrite: false,
             max_output_rows: 100_000,
             max_output_bytes: 64 * 1024 * 1024,
             timeout_seconds: 30,
@@ -672,6 +672,7 @@ async fn capture_named_query(demo: &DemoWorkspace) -> Result<String> {
         },
         None,
         true,
+        &mut std::io::empty(),
         &mut stdout,
         &mut stderr,
     )
@@ -736,7 +737,10 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
     let mut default_stderr = Vec::new();
     run_default(
         DefaultArgs {
-            directory: Some(warehouse),
+            command: Some(DefaultCommand::Set {
+                dataset: warehouse.to_string_lossy().into_owned(),
+            }),
+            legacy_directory: None,
         },
         Some(&settings),
         &mut default_stdout,
@@ -749,7 +753,12 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
     run_import(
         ImportArgs {
             from: demo.atif_source().to_string_lossy().into_owned(),
-            output: None,
+            output: Some(
+                warehouse
+                    .join("support-ticket")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
             format: ExchangeFormat::Atif,
             output_format: Some(ImportOutputFormat::Preserve),
             stream: false,
@@ -773,7 +782,7 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
         ExportArgs {
             from: Some(imported_dataset.to_owned()),
             output: exported.to_string_lossy().into_owned(),
-            format: ExchangeFormat::Atif,
+            format: ExportFormat::Atif,
             source: None,
             document_id: None,
             run_id: None,

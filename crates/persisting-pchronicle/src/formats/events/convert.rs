@@ -5,9 +5,8 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{json, Value};
 
-use crate::convert::message_text;
+use super::{ChronicleEventRecordExt, EventIdentity, EventRecord, EventsDocument};
 use crate::format::DocumentFormat;
-use crate::formats::events::{ChronicleEventRecordExt, EventIdentity, EventRecord, EventsDocument};
 use crate::formats::llm::LlmContentPart;
 use crate::formats::storyline::{
     StoryLink, StorylineAgent, StorylineDocument, StorylineOrigin, StorylineToolCall,
@@ -724,6 +723,24 @@ fn extract_assistant(payload: &serde_json::Value) -> Option<String> {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
         })
+}
+
+fn message_text(message: &Value) -> Option<String> {
+    match message {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(parts) => {
+            let texts: Vec<_> = parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect();
+            if texts.is_empty() {
+                None
+            } else {
+                Some(texts.join(""))
+            }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

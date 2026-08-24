@@ -1,12 +1,13 @@
 # System Design
 
-Persisting 有两个主要产品域：
+Persisting 是横跨模型状态——参数与 KV Cache——以及 Agent 历史的持久化基础设施。本节聚焦
+当前两个公开产品域：
 
 - [pVisor](../pvisor/index.md) 虚拟化并治理 Agent 执行；
 - [pChronicle](../pchronicle/index.md) 把持久轨迹 Source 组织为可查询 Dataset。
 
-pPilot 把 pVisor 从一个 Run 扩展到多个 Run。Gateway、OverlayFS 与 OverlayNet 是 pVisor
-运行时机制。存在稳定 Run identity 时，它会连接两个产品域，但二者也各有独立入口。
+Gateway、OverlayFS 与 OverlayNet 是 pVisor 运行时机制。存在稳定 Run identity 时，它会连接
+两个产品域，但二者也各有独立入口。
 
 ![Persisting 产品域与集成关系](../assets/diagrams/persisting/system-products.svg)
 
@@ -33,7 +34,6 @@ Evidence。
 | 关注点 | Owner |
 | --- | --- |
 | 单个 Run 的执行边界 | pVisor |
-| 多个 Run 的 planning 与恢复 | pPilot |
 | 模型、网络与文件系统 runtime driver | pVisor |
 | Canonical event、终态事实与 Dataset 历史 | pChronicle |
 | 查询、交换与 revision lineage | pChronicle |

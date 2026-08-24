@@ -1,8 +1,8 @@
-use super::json_stream::{visit_json_stream, BoundedCountingReader};
 use super::projected_steps::{
     canonical_json_text, emit_projected_step_batch, projected_timing_from_metrics, ProjectedStepRow,
 };
 use super::*;
+use crate::formats::common::json_stream::{visit_json_stream, BoundedCountingReader};
 use serde::Deserialize;
 use std::io::{self, BufRead};
 
