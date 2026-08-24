@@ -1,6 +1,6 @@
-# Explore a trajectory Dataset
+# Explore a Run Dataset
 
-pChronicle gives you one interface for Agent trajectories stored locally, in
+pChronicle gives you one interface for Agent runs stored locally, in
 object storage, or behind a configured alias. Commands are read-only unless you
 explicitly run `import` or `export` with a destination.
 
@@ -29,7 +29,7 @@ pchronicle ls ./trajectory-data
 pchronicle analysis overview ./trajectory-data
 ```
 
-`ls` shows the trajectory data pChronicle can use. `analysis overview` gives a
+`ls` shows the run data pChronicle can use. `analysis overview` gives a
 stable summary without requiring SQL.
 
 ## 3. Ask a specific question
@@ -42,8 +42,8 @@ pchronicle query ./trajectory-data \
          ORDER BY source'
 ```
 
-Queries are bounded and read-only. pChronicle normalizes supported trajectory
-formats into common `runs`, `steps`, and `tool_calls` tables where their
+Queries are read-only and limited by explicit resource budgets. pChronicle
+normalizes supported run data formats into common `runs`, `steps`, and `tool_calls` tables where their
 semantics align.
 
 ## What you completed
@@ -54,7 +54,8 @@ The Dataset was not modified.
 Continue by task:
 
 - [Discover and query your own Dataset](guides/discover-and-query.md)
-- [Import or export trajectories](guides/exchange.md)
+- [Import or export runs](guides/exchange.md)
+- [Review the product terminology](reference/terminology.md)
 - [Use aliases and the complete CLI](reference/cli.md)
 - [Capture a new Run with pVisor](../pvisor/guides/capture.md)
 - [Understand the Dataset interface](concepts/index.md)

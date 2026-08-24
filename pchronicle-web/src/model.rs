@@ -428,10 +428,11 @@ impl EventProvenance {
         }
     }
 
-    pub const fn evidence_label(self) -> &'static str {
+    /// Plain-language label for user-facing summaries.
+    pub const fn display_label(self) -> &'static str {
         match self {
-            Self::Canonical => "canonical events",
-            Self::SyntheticFromStoryline => "synthetic event views",
+            Self::Canonical => crate::terminology::RECORDED_EVENTS,
+            Self::SyntheticFromStoryline => crate::terminology::RECONSTRUCTED_EVENTS,
         }
     }
 }
@@ -702,7 +703,7 @@ mod tests {
                 QueryTableSummary {
                     name: "runs".into(),
                     description: "trajectories".into(),
-                    grain: "trajectory".into(),
+                    grain: "run".into(),
                     fields: Vec::new(),
                 },
                 QueryTableSummary {

@@ -159,7 +159,7 @@ pub fn ResultExplorer(
                                                     if let Some(identity) = identity_href(row) {
                                                         div { class: "result-identity-links",
                                                             a { href: "{identity.run_href}", "Run" }
-                                                            if let Some(turn_href) = identity.turn_href { a { href: "{turn_href}", "Turn" } }
+                                                            if let Some(turn_href) = identity.turn_href { a { href: "{turn_href}", "Step" } }
                                                         }
                                                     }
                                                 }
@@ -180,7 +180,7 @@ pub fn ResultExplorer(
                             }
                             div { class: "result-refinement-actions",
                                 button { class: "analyze-link-button", r#type: "button", onclick: move |_| staged_intent.set(None), "Cancel" }
-                                button { class: "button primary", r#type: "button", disabled: !refinement_enabled, onclick: move |_| on_prepare_refinement.call(AnalysisRefinement::Filter { intent: intent.clone() }), "Apply through Copilot" }
+                                button { class: "button primary", r#type: "button", disabled: !refinement_enabled, onclick: move |_| on_prepare_refinement.call(AnalysisRefinement::Filter { intent: intent.clone() }), "Apply through Assistant" }
                             }
                         }
                     }
@@ -203,7 +203,7 @@ pub fn ResultExplorer(
                 }
             }
             footer { class: "result-explorer-footer",
-                span { "Server budget · {evidence.max_rows} rows / {byte_budget}" }
+                span { "Result limit · {evidence.max_rows} rows / {byte_budget}" }
                 if hidden_columns > 0 { span { "+{hidden_columns} columns hidden" } }
                 if evidence.truncated { span { "Returned rows only; the server truncated this result." } }
             }
@@ -310,7 +310,7 @@ fn ProfilePanel(
             }
             button { class: "button result-full-profile", r#type: "button", disabled: !refinement_enabled, onclick: move |_| on_prepare_refinement.call(full_profile.clone()), "Create full-distribution query" }
             if refinement_enabled {
-                small { "Copilot will draft an aggregate plan for review. It will not run automatically." }
+                small { "Assistant will draft an aggregate plan for review. It will not run automatically." }
             } else {
                 small { "Regenerate or restore the reviewed question before preparing this query." }
             }

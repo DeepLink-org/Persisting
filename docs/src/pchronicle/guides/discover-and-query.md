@@ -1,7 +1,7 @@
 # Discover and query a Dataset
 
 Use this workflow when you have a local path, object-store URI, or alias and
-want to understand its trajectory data before writing a report.
+want to understand its run data before writing a report.
 
 ## 1. Inspect the Dataset
 
@@ -10,7 +10,7 @@ pchronicle ls ./dataset
 pchronicle status ./dataset
 ```
 
-`ls` shows the independently queryable trajectory items pChronicle found.
+`ls` shows the independently queryable run data sources pChronicle found.
 `status` summarizes Dataset readiness and available data. Use JSON in
 automation:
 
@@ -46,7 +46,7 @@ pchronicle query ./dataset --sql "DESCRIBE dataset.steps"
 Common relations include `sources`, `runs`, `steps`, `tool_calls`, `events`,
 and `trajectories`. The relations available depend on the Dataset contents.
 
-## 4. Ask a bounded question
+## 4. Ask a resource-limited question
 
 ```bash
 pchronicle query ./dataset \
@@ -57,7 +57,7 @@ pchronicle query ./dataset \
 ```
 
 Use `--format jsonl|csv` and `--output` in pipelines. Queries are read-only and
-bounded by row, byte, discovery, and timeout limits.
+limited by explicit row, byte, discovery, and timeout budgets.
 
 ## 5. Disambiguate repeated external IDs
 

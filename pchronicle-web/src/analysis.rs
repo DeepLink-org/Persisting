@@ -180,7 +180,7 @@ fn apply_manual_sql(revision: &mut AnalysisRevision, sql: String) -> Result<(), 
             | RevisionState::Complete
             | RevisionState::InterpretationError
     ) {
-        return Err("SQL can only be edited on a draft or reviewed revision.".into());
+        return Err("SQL can only be edited in a draft or reviewed version.".into());
     }
     if let Some(plan) = revision.plan.as_mut() {
         plan.sql = sql;
@@ -238,14 +238,13 @@ fn finish_query_for_interpretation(
     else {
         return Ok(None);
     };
-    let plan = revision
-        .plan
-        .as_ref()
-        .ok_or_else(|| "A plan is required before interpreting query evidence.".to_string())?;
+    let plan = revision.plan.as_ref().ok_or_else(|| {
+        "An analysis plan is required before summarizing query results.".to_string()
+    })?;
     let evidence = revision
         .evidence
         .as_ref()
-        .ok_or_else(|| "Query evidence is required before interpretation.".to_string())?;
+        .ok_or_else(|| "Query results are required before creating a summary.".to_string())?;
     let profiles = revision
         .execution
         .as_ref()
@@ -275,9 +274,10 @@ fn retry_interpretation_from_evidence(
         .plan
         .as_ref()
         .ok_or_else(|| "The reviewed plan is unavailable for interpretation.".to_string())?;
-    let evidence = revision.evidence.as_ref().ok_or_else(|| {
-        "The query evidence is unavailable; rerun the analysis first.".to_string()
-    })?;
+    let evidence = revision
+        .evidence
+        .as_ref()
+        .ok_or_else(|| "Query results are unavailable; rerun the analysis first.".to_string())?;
     let profiles = revision
         .execution
         .as_ref()
@@ -969,7 +969,7 @@ pub fn AnalysisWorkspace(
                 session.set(None);
                 question.set(String::new());
                 clear_confirmation.set(false);
-                storage_notice.set(Some("Analysis history cleared for this catalog.".into()));
+                storage_notice.set(Some("Analysis history cleared for these datasets.".into()));
                 on_session_change.call(String::new());
             }
             Err(message) => storage_notice.set(Some(message)),
@@ -1026,13 +1026,13 @@ pub fn AnalysisWorkspace(
 
     rsx! {
         section { class: "analyze-workspace", aria_label: "Question-driven analysis workspace",
-            nav { class: "analyze-schema", aria_label: "Catalog schema",
+            nav { class: "analyze-schema", aria_label: "Dataset fields",
                 header {
                     strong { "SQL tables" }
                     span { "{table_count}" }
                 }
                 if schema_tables.is_empty() {
-                    p { class: "analyze-schema-empty", "Catalog is still loading." }
+                    p { class: "analyze-schema-empty", "Datasets are still loading." }
                 } else {
                     div { class: "analyze-schema-list",
                         ul { class: "analyze-schema-tables",
@@ -1110,13 +1110,13 @@ pub fn AnalysisWorkspace(
             div { class: "analyze-detail",
                 header { class: "analyze-detail-head",
                     div {
-                        p { class: "eyebrow", "Analyze" }
+                        p { class: "eyebrow", "Analysis" }
                         h1 { "{page_title}" }
                         p {
                             if composer_tab() == ComposerTab::Ask {
-                                "Ask in plain language, or write SQL. Analyze compiles a spec, then runs bounded evidence."
+                                "Ask in plain language, or write SQL. Analysis creates a plan, generates a read-only query, and returns limited results."
                             } else {
-                                "Run executes this query. Editing skips spec repair."
+                                "Run executes this query. Manual SQL is not repaired automatically."
                             }
                         }
                     }
@@ -1135,7 +1135,7 @@ pub fn AnalysisWorkspace(
                         }
                         if clear_confirmation() {
                             div { class: "analyze-clear-confirmation", role: "group", aria_label: "Confirm clearing analysis history",
-                                span { "Clear this catalog's analysis history?" }
+                                span { "Clear analysis history for these datasets?" }
                                 button { class: "button", r#type: "button", onclick: clear_history, "Clear" }
                                 button { class: "analyze-link-button", r#type: "button", onclick: move |_| clear_confirmation.set(false), "Cancel" }
                             }
@@ -1179,7 +1179,7 @@ pub fn AnalysisWorkspace(
                         div { class: "analyze-context-row", aria_label: "Analysis context",
                             span { class: if catalog.is_some() { "analyze-status ready" } else { "analyze-status" },
                                 span { aria_hidden: "true" }
-                                if catalog.is_some() { "Catalog ready" } else { "Loading catalog…" }
+                                if catalog.is_some() { "Datasets ready" } else { "Loading datasets…" }
                             }
                             span { class: "analyze-chip lock", "Read-only" }
                             if let Some(scope) = scope() {
@@ -1207,8 +1207,8 @@ pub fn AnalysisWorkspace(
                                                     class: "analyze-chip-remove",
                                                     r#type: "button",
                                                     disabled: !removal_enabled,
-                                                    aria_label: if removal_enabled { "Remove {label} from analysis scope" } else if blocked_by_operation { "Analysis scope cannot change while an operation is running" } else if single_dataset { "The dataset analysis scope cannot be removed" } else { "The catalog is required before this scope can be removed" },
-                                                    title: if removal_enabled { "Remove scope" } else if blocked_by_operation { "Wait for the current plan or query operation to finish" } else if single_dataset { "At least one explicit scope is required" } else { "Wait for the catalog to load" },
+                                                    aria_label: if removal_enabled { "Remove {label} from analysis scope" } else if blocked_by_operation { "Analysis scope cannot change while an operation is running" } else if single_dataset { "The dataset analysis scope cannot be removed" } else { "The datasets must load before this scope can be removed" },
+                                                    title: if removal_enabled { "Remove scope" } else if blocked_by_operation { "Wait for the current plan or query operation to finish" } else if single_dataset { "At least one explicit scope is required" } else { "Wait for the datasets to load" },
                                                     onclick: move |_| remove_scope_item.call(index),
                                                     "×"
                                                 }
@@ -1239,16 +1239,16 @@ pub fn AnalysisWorkspace(
                             }
                             if !config().is_configured() {
                                 div { class: "analyze-config-callout", role: "status",
-                                    div { strong { "Connect a model to Analyze" } p { "Your draft stays here while you configure the endpoint." } }
+                                    div { strong { "Connect a model for Analysis" } p { "Your draft stays here while you configure the endpoint." } }
                                     button { class: "button", r#type: "button", onclick: move |_| settings_open.set(true), "Open model settings" }
                                 }
                             }
                             if let Some(revision) = active_revision.as_ref() {
                                 if revision.state == RevisionState::PlanError {
                                     div { class: "analyze-error", role: "alert",
-                                        strong { "The spec could not be compiled" }
+                                        strong { "The analysis plan could not be created" }
                                         if let Some(message) = revision.error.as_ref() { p { "{message}" } }
-                                        else { p { "The model did not return a valid AnalysisSpec." } }
+                                        else { p { "The model did not return a valid analysis plan." } }
                                         p { "Your question is unchanged. Adjust it or Analyze again." }
                                     }
                                 }
@@ -1256,13 +1256,13 @@ pub fn AnalysisWorkspace(
                             if view_model.as_ref().is_some_and(|model| model.question_out_of_date) {
                                 div { class: "analyze-config-callout", role: "status",
                                     div {
-                                        strong { "This spec is for the previous question" }
+                                        strong { "This plan is for the previous question" }
                                         p { "Analyze again for the current question, or restore the reviewed question." }
                                     }
                                 }
                             }
                             div { class: "analyze-question-actions",
-                                p { "Analyze compiles a spec, then runs bounded evidence." }
+                                p { "Analysis creates a plan, generates a read-only query, and returns limited results." }
                                 button { class: "button primary", r#type: "button", disabled: !composer.primary_enabled, onclick: generate_plan,
                                     if generating {
                                         span { class: "analyze-spinner", aria_hidden: "true" }
@@ -1309,7 +1309,7 @@ pub fn AnalysisWorkspace(
                                 }
                             }
                             div { class: "analyze-question-actions",
-                                p { "Run executes this query. Editing skips spec repair." }
+                                p { "Run executes this query. Manual SQL is not repaired automatically." }
                                 button { class: "button primary", r#type: "button", disabled: !composer.primary_enabled, onclick: run_sql,
                                     if generating {
                                         span { class: "analyze-spinner", aria_hidden: "true" }
@@ -1323,7 +1323,7 @@ pub fn AnalysisWorkspace(
                     div { class: "analyze-stage",
                     details {
                         class: "analyze-sql-card",
-                        aria_label: "How Analyze ran",
+                        aria_label: "Analysis process",
                         open: generating || analyze_trace_open(),
                         summary {
                             onclick: move |event| {
@@ -1333,22 +1333,22 @@ pub fn AnalysisWorkspace(
                                 }
                             },
                             div { class: "analyze-section-heading",
-                                div { h2 { "How Analyze ran" } p { "Spec, compile, evidence, and interpretation as a trajectory." } }
+                                div { h2 { "Analysis process" } p { "Plan, generated SQL, query execution, and summary." } }
                             }
                         }
                         if let Some(revision) = active_revision.as_ref() {
                             if revision.trace.is_empty() {
-                                p { class: "analyze-trace-empty", "Analyze or Run to watch compilation and evidence." }
+                                p { class: "analyze-trace-empty", "Analyze or Run to view each processing step." }
                             } else {
                                 AnalyzeTraceView { steps: revision.trace.clone() }
                             }
                         } else {
-                            p { class: "analyze-trace-empty", "Analyze or Run to watch compilation and evidence." }
+                            p { class: "analyze-trace-empty", "Analyze or Run to view each processing step." }
                         }
                     }
 
                     if !revision_history.is_empty() {
-                        nav { class: "analyze-revision-timeline", aria_label: "Analysis revision history",
+                        nav { class: "analyze-revision-timeline", aria_label: "Analysis version history",
                             for revision in revision_history {
                                 button {
                                     class: if revision.id == current_revision_id { "analyze-revision active" } else { "analyze-revision" },
@@ -1367,16 +1367,16 @@ pub fn AnalysisWorkspace(
                     if let Some(revision) = active_revision.as_ref() {
                         if composer.show_spec_summary {
                             if let Some(spec) = revision.spec.as_ref() {
-                            section { class: "analyze-plan-card", aria_label: "Analysis spec",
+                            section { class: "analyze-plan-card", aria_label: "Analysis plan",
                                 div { class: "analyze-section-heading",
-                                    div { h2 { "Compiled analysis spec" } p { "SQL is a compilation artifact. The spec is what Analyze repairs." } }
+                                    div { h2 { "Analysis plan" } p { "The generated SQL comes from this plan. Analyze repairs the plan when needed." } }
                                 }
                                 dl { class: "analyze-plan-summary",
                                     div { dt { "Intent" } dd { "{spec.intent}" } }
-                                    div { dt { "Grain" } dd { "{spec.grain}" } }
+                                    div { dt { "One row per" } dd { "{spec.grain}" } }
                                     div { dt { "Measure" } dd { "{spec.measure}" } }
                                     if let Some(dimension) = spec.dimension.as_ref() {
-                                        div { dt { "Dimension" } dd { "{dimension}" } }
+                                        div { dt { "Group by" } dd { "{dimension}" } }
                                     }
                                     div { dt { "Output" } dd { "{spec.output}" } }
                                 }
@@ -1389,7 +1389,7 @@ pub fn AnalysisWorkspace(
                             if !revision.manually_edited && shows_plan_summary(plan) {
                             section { class: "analyze-plan-card", aria_label: "Proposed analysis plan",
                                 div { class: "analyze-section-heading",
-                                    div { h2 { "Review the analysis plan" } p { "This saved SQL plan is stale. Analyze again to compile a spec." } }
+                                    div { h2 { "Review the analysis plan" } p { "This saved SQL is out of date. Analyze again to create a new plan." } }
                                 }
                                 dl { class: "analyze-plan-summary",
                                     div { dt { "Intent" } dd { "{plan.intent_summary}" } }
@@ -1404,7 +1404,7 @@ pub fn AnalysisWorkspace(
 
                         if let Some(evidence) = revision.evidence.clone() {
                             section { class: "analyze-result-card", aria_label: "Analysis result",
-                                div { class: "analyze-section-heading", div { h2 { "Analysis result" } p { "Bounded evidence returned by the confirmed query." } } }
+                                div { class: "analyze-section-heading", div { h2 { "Analysis results" } p { "Limited results returned by the confirmed query." } } }
                                 if evidence.rows.is_empty() {
                                     div { class: "analyze-empty-result",
                                         div {
@@ -1430,13 +1430,13 @@ pub fn AnalysisWorkspace(
                                     if revision.state == RevisionState::Interpreting {
                                         div { class: "analyze-interpretation-status", role: "status",
                                             span { class: "analyze-spinner", aria_hidden: "true" }
-                                            div { strong { "Interpreting the returned evidence…" } p { "The Result Explorer remains available while the model prepares a grounded summary." } }
+                                            div { strong { "Summarizing the returned results…" } p { "Results remain available while the model prepares a summary tied to the returned rows." } }
                                         }
                                     }
                                     if revision.state == RevisionState::InterpretationError {
                                         div { class: "analyze-interpretation-error", role: "alert",
                                             div {
-                                                strong { "The evidence could not be interpreted" }
+                                                strong { "The results could not be summarized" }
                                                 if let Some(message) = revision.error.as_ref() { p { "{message}" } }
                                                 p { "Returned rows and profiles are preserved. Retrying does not rerun SQL." }
                                             }
@@ -1813,12 +1813,12 @@ fn set_sql_textarea_cursor(index: usize) {
 fn revision_state_label(state: &RevisionState) -> &'static str {
     match state {
         RevisionState::Draft => "Draft",
-        RevisionState::GeneratingPlan => "Writing spec",
-        RevisionState::PlanReady => "Spec ready",
+        RevisionState::GeneratingPlan => "Creating plan",
+        RevisionState::PlanReady => "Plan ready",
         RevisionState::Executing => "Executing",
         RevisionState::Interpreting => "Interpreting",
         RevisionState::Complete => "Complete",
-        RevisionState::PlanError => "Spec error",
+        RevisionState::PlanError => "Plan error",
         RevisionState::QueryError => "Rerun required",
         RevisionState::InterpretationError => "Interpretation error",
         RevisionState::Stale => "Stale",
@@ -1834,8 +1834,8 @@ fn analyze_progress_label(revision: Option<&AnalysisRevision>) -> &'static str {
             .find(|step| step.status == AnalyzeTraceStatus::Running)
     }) {
         return match step.kind {
-            AnalyzeTraceKind::GenerateSpec => "Writing spec…",
-            AnalyzeTraceKind::RepairSpec => "Repairing spec…",
+            AnalyzeTraceKind::GenerateSpec => "Creating plan…",
+            AnalyzeTraceKind::RepairSpec => "Repairing plan…",
             AnalyzeTraceKind::Compile => "Compiling SQL…",
             AnalyzeTraceKind::Execute => "Executing…",
             AnalyzeTraceKind::Interpret => "Interpreting…",
@@ -1845,9 +1845,9 @@ fn analyze_progress_label(revision: Option<&AnalysisRevision>) -> &'static str {
         Some(RevisionState::GeneratingPlan)
             if revision.is_some_and(|revision| revision.repair_count > 0) =>
         {
-            "Repairing spec…"
+            "Repairing plan…"
         }
-        Some(RevisionState::GeneratingPlan) => "Writing spec…",
+        Some(RevisionState::GeneratingPlan) => "Creating plan…",
         Some(RevisionState::Executing) => "Executing…",
         Some(RevisionState::Interpreting) => "Interpreting…",
         _ => "Analyzing…",
@@ -2038,7 +2038,7 @@ fn InterpretationPanel(
     on_edit_follow_up: EventHandler<String>,
 ) -> Element {
     rsx! {
-        section { class: "analyze-interpretation", aria_label: "Evidence interpretation",
+        section { class: "analyze-interpretation", aria_label: "Result summary",
             div { class: "analyze-interpretation-grid",
                 section { class: "analyze-interpretation-block observed",
                     h3 { "Observed in this result" }
@@ -2048,13 +2048,13 @@ fn InterpretationPanel(
                         ul { for observation in &interpretation.observations { li { "{observation}" } } }
                     }
                     if !interpretation.references.is_empty() {
-                        div { class: "analyze-interpretation-references", aria_label: "Grounded evidence references",
+                        div { class: "analyze-interpretation-references", aria_label: "Supporting result rows",
                             for reference in &interpretation.references {
                                 if let Some(identity) = interpretation_reference_identity(reference) {
                                     span { class: "analyze-interpretation-reference linked",
                                         span { "{reference.label}" }
                                         a { href: "{identity.run_href}", "Run" }
-                                        if let Some(turn_href) = identity.turn_href { a { href: "{turn_href}", "Turn" } }
+                                        if let Some(turn_href) = identity.turn_href { a { href: "{turn_href}", "Step" } }
                                     }
                                 } else {
                                     span { class: "analyze-interpretation-reference", "{reference.label}" }
@@ -2066,7 +2066,7 @@ fn InterpretationPanel(
                 section { class: "analyze-interpretation-block inferred",
                     h3 { "Possible explanation" }
                     if interpretation.inferences.is_empty() {
-                        p { class: "analyze-none", "No inference was offered from this evidence." }
+                        p { class: "analyze-none", "No inference was offered from these results." }
                     } else {
                         ul { for inference in &interpretation.inferences { li { "{inference}" } } }
                     }
@@ -2283,8 +2283,8 @@ mod tests {
         let model = AnalysisViewModel::from_revision(&revision, &revision.question);
         assert!(model.trace_open);
         assert!(model.query_in_flight);
-        assert_eq!(analyze_progress_label(Some(&revision)), "Writing spec…");
-        assert_eq!(revision.trace[0].kind.title(), "Write spec");
+        assert_eq!(analyze_progress_label(Some(&revision)), "Creating plan…");
+        assert_eq!(revision.trace[0].kind.title(), "Create plan");
     }
 
     #[test]
@@ -2400,7 +2400,7 @@ mod tests {
         assert_eq!(session_label(&empty), "New analysis");
         assert_eq!(
             revision_state_label(&session.active_revision().unwrap().state),
-            "Spec ready"
+            "Plan ready"
         );
         assert_eq!(
             revision_row_label(session.active_revision().unwrap()),

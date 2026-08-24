@@ -44,7 +44,7 @@ pub struct ThreadMessage {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CopilotThread {
+pub struct AssistantThread {
     pub messages: Vec<ThreadMessage>,
     pub updated_at: i64,
     #[serde(default)]
@@ -97,7 +97,7 @@ pub fn apply_model_turn(
             }
             _ => DriveResult::Failed {
                 message:
-                    "The model did not produce a final answer because the available evidence was insufficient."
+                    "The model did not produce a final answer because the available run data was insufficient."
                         .into(),
             },
         };
@@ -178,7 +178,7 @@ pub fn apply_model_turn(
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentAnswer {
-    pub thread: CopilotThread,
+    pub thread: AssistantThread,
     pub text: String,
     pub sql: Option<String>,
     pub truncated: bool,
@@ -191,7 +191,7 @@ pub struct AnswerRequest<'a> {
     pub run: &'a RunSummary,
     pub analysis: &'a RunAnalysis,
     pub focused_turn_id: Option<i64>,
-    pub thread: CopilotThread,
+    pub thread: AssistantThread,
     pub on_step: Option<&'a dyn Fn(&str)>,
 }
 
@@ -207,7 +207,7 @@ pub fn thread_storage_key(run: &RunSummary) -> String {
     format!("pchronicle_copilot:{}", run.query())
 }
 
-pub fn thread_byte_size(thread: &CopilotThread) -> usize {
+pub fn thread_byte_size(thread: &AssistantThread) -> usize {
     serde_json::to_string(thread)
         .map(|raw| raw.len())
         .unwrap_or(0)
@@ -225,7 +225,7 @@ fn shrink_tool_text(text: &str) -> String {
     format!("{}\n[… truncated …]", &text[..end])
 }
 
-pub fn trim_thread(thread: &mut CopilotThread) {
+pub fn trim_thread(thread: &mut AssistantThread) {
     while thread_byte_size(thread) > THREAD_BYTE_LIMIT {
         let Some(index) = thread
             .messages
@@ -262,7 +262,7 @@ pub fn compress_messages_for_llm(messages: &[ThreadMessage]) -> Vec<ThreadMessag
 pub async fn answer(request: AnswerRequest<'_>) -> Result<AgentAnswer, String> {
     if !request.config.is_configured() {
         return Err(
-            "Configure an OpenAI-compatible model in Settings before asking Copilot.".into(),
+            "Configure an OpenAI-compatible model in Settings before using Assistant.".into(),
         );
     }
 
@@ -403,7 +403,7 @@ fn system_prompt(
     catalog_context: &str,
 ) -> String {
     let mut prompt = format!(
-        "You are pChronicle Copilot for local agent trajectory debugging. Gather evidence only for the current run. Call tools when details are needed; do not invent evidence. Missing measurements are not zero. Do not infer an error from arbitrary message text. Synthetic event views are derived representations, not captured facts. Answer in the user's language, preferably in 3–7 concise bullets. Separate captured facts from inference. Cite every inspected turn as [turn:ID]. Mention coverage or truncation when tool results report it.\n\nCurrent run analysis:\nsession={}\nstatus={}\nevent_provenance={}\nturn_count={}\nevent_count={}\nerror_count={}\ntotal_tokens={}\nlatency_p95={}\nlatency_samples={}/{}\n\nquery_sql schema:\n{}",
+        "You are pChronicle Assistant for local Agent run debugging. Use only data from the current run. Call tools when details are needed; do not invent facts. Missing measurements are not zero. Do not infer an error from arbitrary message text. Reconstructed events are derived from imported run data, not directly recorded events. Answer in the user's language, preferably in 3–7 concise bullets. Separate recorded facts from inference. Cite every inspected step with the internal marker [turn:ID]. Mention coverage or truncation when tool results report it.\n\nCurrent run analysis:\nsession={}\nstatus={}\nevent_origin={}\nstep_count={}\nevent_count={}\nerror_count={}\ntotal_tokens={}\nlatency_p95={}\nlatency_samples={}/{}\n\nquery_sql schema:\n{}",
         run.session_id,
         run.status,
         analysis.event_provenance.as_str(),
@@ -425,7 +425,7 @@ fn system_prompt(
     );
     if let Some(turn_id) = focused_turn_id {
         prompt.push_str(&format!(
-            "\nThe user is currently viewing turn #{turn_id}. Do not assume its body; call get_turn if needed."
+            "\nThe user is currently viewing step #{turn_id}. Do not assume its body; call get_turn if needed."
         ));
     }
     prompt
@@ -459,7 +459,7 @@ fn mode_system_prompt(base: &str, json_mode: bool, force_final: bool) -> String 
         );
     }
     if force_final {
-        prompt.push_str("\nAnswer now from evidence already gathered. Do not call tools.");
+        prompt.push_str("\nAnswer now from the run data already gathered. Do not call tools.");
     }
     prompt
 }
@@ -581,7 +581,7 @@ fn tools_payload() -> Value {
             "type": "function",
             "function": {
                 "name": TOOL_NAMES[1],
-                "description": "Fetch one turn in the current run.",
+                "description": "Fetch one step in the current run.",
                 "parameters": {
                     "type": "object",
                     "properties": {"turn_id": {"type": "integer"}},
@@ -719,7 +719,7 @@ fn tool_step(call: &ParsedToolCall) -> String {
 }
 
 fn finish_answer(
-    mut thread: CopilotThread,
+    mut thread: AssistantThread,
     state: LoopState,
     mut text: String,
     sql: Option<String>,
@@ -1273,7 +1273,7 @@ mod tests {
         match result {
             DriveResult::Failed { message } => {
                 assert!(message.contains("final answer"));
-                assert!(message.contains("evidence"));
+                assert!(message.contains("run data"));
             }
             other => panic!("{other:?}"),
         }
@@ -1350,7 +1350,7 @@ mod tests {
             |call| match call.id.as_str() {
                 "number" | "duplicate" => "[turn:4] evidence".into(),
                 "string" => "[turn:5] evidence".into(),
-                _ => "Turn evidence could not be loaded".into(),
+                _ => "Step details could not be loaded".into(),
             },
         );
         assert_eq!(state.fetched_turn_ids, vec![4, 5]);
@@ -1457,7 +1457,7 @@ mod tests {
 
     #[test]
     fn trim_thread_shrinks_oldest_tool_results_first() {
-        let mut thread = CopilotThread {
+        let mut thread = AssistantThread {
             messages: vec![
                 ThreadMessage {
                     role: ThreadRole::User,

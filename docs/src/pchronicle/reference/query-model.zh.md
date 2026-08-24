@@ -6,11 +6,11 @@
 | 关系 | 一行表示什么 | 来源 |
 | --- | --- | --- |
 | `sources` | 一个发现候选 Source | 每个 Dataset |
-| `runs` | 一个规范化 Storyline/session | 每个 ready trajectory Source |
-| `steps` | 一个规范化 turn | 每个 ready trajectory Source |
-| `tool_calls` | 一次工具调用及关联结果 | 每个 ready trajectory Source |
+| `runs` | 一个规范化 Run/session | 每个就绪的 Run 数据源 |
+| `steps` | 一个规范化 Step | 每个就绪的 Run 数据源 |
+| `tool_calls` | 一次工具调用及关联结果 | 每个就绪的 Run 数据源 |
 | `events` | 一条 canonical 写入时事实 | 仅 canonical event Source |
-| `trajectories` | 一个带有序 Step 与 tool aggregate 的 Run/session 汇总 | 规范化 trajectory Source |
+| `trajectories` | 一个带有序 Step 与工具汇总的完整 Run | 规范化 Run 数据源 |
 
 使用 `DESCRIBE` 查询已安装版本的精确 column：
 

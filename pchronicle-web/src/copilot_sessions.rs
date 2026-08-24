@@ -1,4 +1,4 @@
-use crate::agent::{thread_storage_key, CopilotThread, ThreadRole};
+use crate::agent::{thread_storage_key, AssistantThread, ThreadRole};
 use crate::model::RunSummary;
 
 pub const SESSION_INDEX_KEY: &str = "pchronicle_copilot_index";
@@ -16,7 +16,7 @@ pub trait KvStore {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct CopilotSessionMeta {
+pub struct AssistantSessionMeta {
     pub id: String,
     pub run: RunSummary,
     pub title: String,
@@ -24,29 +24,29 @@ pub struct CopilotSessionMeta {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct CopilotSessionIndex {
+pub struct AssistantSessionIndex {
     #[serde(default)]
-    pub sessions: Vec<CopilotSessionMeta>,
+    pub sessions: Vec<AssistantSessionMeta>,
     #[serde(default)]
     pub active_id: Option<String>,
 }
 
-pub fn empty_thread() -> CopilotThread {
-    CopilotThread {
+pub fn empty_thread() -> AssistantThread {
+    AssistantThread {
         messages: Vec::new(),
         updated_at: 0,
         truncated: false,
     }
 }
 
-pub fn has_user_message(thread: &CopilotThread) -> bool {
+pub fn has_user_message(thread: &AssistantThread) -> bool {
     thread
         .messages
         .iter()
         .any(|message| message.role == ThreadRole::User && !message.text.trim().is_empty())
 }
 
-pub fn title_from_thread(thread: &CopilotThread) -> String {
+pub fn title_from_thread(thread: &AssistantThread) -> String {
     thread
         .messages
         .iter()
@@ -55,7 +55,7 @@ pub fn title_from_thread(thread: &CopilotThread) -> String {
         .unwrap_or_else(|| "New chat".into())
 }
 
-pub fn can_start_new_chat(run_selected: bool, thread: &CopilotThread) -> bool {
+pub fn can_start_new_chat(run_selected: bool, thread: &AssistantThread) -> bool {
     run_selected && has_user_message(thread)
 }
 
@@ -67,7 +67,10 @@ pub fn page_after_history_switch(current_page: &str) -> &'static str {
     }
 }
 
-pub fn upsert_session(index: &mut CopilotSessionIndex, meta: CopilotSessionMeta) -> Vec<String> {
+pub fn upsert_session(
+    index: &mut AssistantSessionIndex,
+    meta: AssistantSessionMeta,
+) -> Vec<String> {
     index.sessions.retain(|item| item.id != meta.id);
     index.active_id = Some(meta.id.clone());
     index.sessions.insert(0, meta);
@@ -80,7 +83,7 @@ pub fn upsert_session(index: &mut CopilotSessionIndex, meta: CopilotSessionMeta)
     evicted
 }
 
-pub fn delete_session(index: &mut CopilotSessionIndex, id: &str) -> Option<String> {
+pub fn delete_session(index: &mut AssistantSessionIndex, id: &str) -> Option<String> {
     let run_query = index
         .sessions
         .iter()
@@ -100,9 +103,9 @@ pub fn delete_session(index: &mut CopilotSessionIndex, id: &str) -> Option<Strin
 }
 
 pub fn migrate_legacy_thread(
-    index: &mut CopilotSessionIndex,
+    index: &mut AssistantSessionIndex,
     run: &RunSummary,
-    thread: &CopilotThread,
+    thread: &AssistantThread,
     new_id: String,
     now: i64,
 ) -> bool {
@@ -111,7 +114,7 @@ pub fn migrate_legacy_thread(
     }
     upsert_session(
         index,
-        CopilotSessionMeta {
+        AssistantSessionMeta {
             id: new_id,
             run: run.clone(),
             title: title_from_thread(thread),
@@ -122,9 +125,9 @@ pub fn migrate_legacy_thread(
 }
 
 pub fn latest_session_for_run<'a>(
-    index: &'a CopilotSessionIndex,
+    index: &'a AssistantSessionIndex,
     run: &RunSummary,
-) -> Option<&'a CopilotSessionMeta> {
+) -> Option<&'a AssistantSessionMeta> {
     index
         .sessions
         .iter()
@@ -157,27 +160,27 @@ fn truncate_title(text: &str) -> String {
     out
 }
 
-pub fn load_index(store: &impl KvStore) -> CopilotSessionIndex {
+pub fn load_index(store: &impl KvStore) -> AssistantSessionIndex {
     store
         .get(SESSION_INDEX_KEY)
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default()
 }
 
-pub fn save_index(store: &impl KvStore, index: &CopilotSessionIndex) {
+pub fn save_index(store: &impl KvStore, index: &AssistantSessionIndex) {
     if let Ok(raw) = serde_json::to_string(index) {
         store.set(SESSION_INDEX_KEY, &raw);
     }
 }
 
-pub fn load_session_thread(store: &impl KvStore, id: &str) -> CopilotThread {
+pub fn load_session_thread(store: &impl KvStore, id: &str) -> AssistantThread {
     store
         .get(&session_storage_key(id))
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_else(empty_thread)
 }
 
-pub fn save_session_thread(store: &impl KvStore, id: &str, thread: &CopilotThread) {
+pub fn save_session_thread(store: &impl KvStore, id: &str, thread: &AssistantThread) {
     if let Ok(raw) = serde_json::to_string(thread) {
         store.set(&session_storage_key(id), &raw);
     }
@@ -185,10 +188,10 @@ pub fn save_session_thread(store: &impl KvStore, id: &str, thread: &CopilotThrea
 
 pub fn persist_indexed_thread(
     store: &impl KvStore,
-    index: &mut CopilotSessionIndex,
+    index: &mut AssistantSessionIndex,
     session_id: &str,
     run: &RunSummary,
-    thread: &CopilotThread,
+    thread: &AssistantThread,
     now: i64,
 ) {
     save_session_thread(store, session_id, thread);
@@ -197,7 +200,7 @@ pub fn persist_indexed_thread(
     }
     let evicted = upsert_session(
         index,
-        CopilotSessionMeta {
+        AssistantSessionMeta {
             id: session_id.to_string(),
             run: run.clone(),
             title: title_from_thread(thread),
@@ -215,7 +218,7 @@ pub fn restore_for_run(
     run: &RunSummary,
     new_id: &str,
     now: i64,
-) -> (CopilotSessionIndex, Option<String>, CopilotThread) {
+) -> (AssistantSessionIndex, Option<String>, AssistantThread) {
     let mut index = load_index(store);
     if let Some(meta) = latest_session_for_run(&index, run).cloned() {
         let thread = load_session_thread(store, &meta.id);
@@ -317,16 +320,16 @@ mod tests {
         }
     }
 
-    fn thread(messages: Vec<ThreadMessage>) -> CopilotThread {
-        CopilotThread {
+    fn thread(messages: Vec<ThreadMessage>) -> AssistantThread {
+        AssistantThread {
             messages,
             updated_at: 1,
             truncated: false,
         }
     }
 
-    fn meta(id: &str, session: &str, title: &str, updated_at: i64) -> CopilotSessionMeta {
-        CopilotSessionMeta {
+    fn meta(id: &str, session: &str, title: &str, updated_at: i64) -> AssistantSessionMeta {
+        AssistantSessionMeta {
             id: id.into(),
             run: sample_run(session),
             title: title.into(),
@@ -378,7 +381,7 @@ mod tests {
 
     #[test]
     fn upsert_moves_to_front_and_evicts_past_cap() {
-        let mut index = CopilotSessionIndex::default();
+        let mut index = AssistantSessionIndex::default();
         let mut evicted = Vec::new();
         for i in 0..(SESSION_CAP + 2) {
             evicted.extend(upsert_session(
@@ -399,7 +402,7 @@ mod tests {
 
     #[test]
     fn migrate_wraps_legacy_thread_once_per_run() {
-        let mut index = CopilotSessionIndex::default();
+        let mut index = AssistantSessionIndex::default();
         let run_a = sample_run("sess-a");
         let chat = thread(vec![user("explain turn 3")]);
         assert!(migrate_legacy_thread(
@@ -430,7 +433,7 @@ mod tests {
 
     #[test]
     fn deleting_active_session_falls_back_to_same_run() {
-        let mut index = CopilotSessionIndex {
+        let mut index = AssistantSessionIndex {
             sessions: vec![
                 meta("keep", "run-a", "older", 1),
                 meta("gone", "run-a", "newer", 2),
@@ -447,7 +450,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["keep", "other"]
         );
-        let mut index = CopilotSessionIndex {
+        let mut index = AssistantSessionIndex {
             sessions: vec![meta("only", "run-a", "solo", 1)],
             active_id: Some("only".into()),
         };
@@ -457,7 +460,7 @@ mod tests {
 
     #[test]
     fn latest_session_prefers_the_first_matching_run() {
-        let index = CopilotSessionIndex {
+        let index = AssistantSessionIndex {
             sessions: vec![
                 meta("b1", "run-b", "b", 3),
                 meta("a2", "run-a", "newer a", 2),

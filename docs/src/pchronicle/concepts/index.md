@@ -1,7 +1,7 @@
 # Dataset
 
 **Dataset is the single user-facing object in pChronicle.** It is a collection
-of Agent trajectory data that can be browsed, queried, analyzed, imported,
+of Agent run data that can be browsed, queried, analyzed, imported,
 exported, or served.
 
 A Dataset can be:
@@ -25,7 +25,7 @@ Dataset used when an argument is omitted with `pchronicle default`.
 
 ## What commands expose
 
-pChronicle discovers the supported trajectory data inside the Dataset and
+pChronicle discovers the supported run data inside the Dataset and
 normalizes compatible fields into query tables such as `runs`, `steps`, and
 `tool_calls`. Each read command uses an internally consistent view, even if the
 underlying location changes while the command is running.
@@ -35,5 +35,6 @@ version pinning, facts, projections, and revisions are implementation and data
 contract details; consult [Design](../design/index.md) only when those boundaries
 matter to your integration.
 
-Continue with [common workflows](../guides/index.md) or the
+Continue with [common workflows](../guides/index.md), the
+[product terminology](../reference/terminology.md), or the
 [CLI reference](../reference/cli.md).

@@ -188,7 +188,7 @@ pub fn DataTable(
             }
         }
         footer {
-            span { "Bounded at {evidence.max_rows} rows / {byte_budget}" }
+            span { "Limited to {evidence.max_rows} rows / {byte_budget}" }
             if hidden_columns > 0 { span { "+{hidden_columns} columns hidden" } }
             if evidence.truncated { span { "The server truncated this result before rendering." } }
         }
@@ -351,7 +351,7 @@ fn format_char_count(count: u64) -> String {
 
 fn kind_label(kind: &str) -> &'static str {
     match kind {
-        "chat" => "Chat",
+        "chat" => "Conversation",
         "system" => "System",
         "user" => "User",
         _ => "Agent",
@@ -379,9 +379,9 @@ fn group_diagnostic(entries: &[TurnSummary]) -> String {
         .sum::<f64>();
     let mut parts = vec![
         if turns == 1 {
-            "1 turn".into()
+            "1 step".into()
         } else {
-            format!("{turns} turns")
+            format!("{turns} steps")
         },
         composition_label(entries),
     ];
@@ -487,7 +487,7 @@ fn chat_overview(entries: &[TurnSummary]) -> String {
         .iter()
         .find(|turn| turn.source == "user")
         .map(|turn| compact_preview(&turn.preview, 180))
-        .unwrap_or_else(|| "No user turn".into())
+        .unwrap_or_else(|| "No user step".into())
 }
 
 fn step_overview(turn: &TurnSummary) -> String {
@@ -562,7 +562,7 @@ fn chat_span_groups(turns: &[TurnSummary]) -> Vec<CompactSpanGroup> {
                     let overview = chat_overview(&entries);
                     span_from_entries(
                         format!("chat-{index}"),
-                        format!("Chat {}", index + 1),
+                        format!("Conversation {}", index + 1),
                         overview,
                         entries,
                         fallback,
@@ -658,7 +658,11 @@ pub fn TrajectoryView(
             .filter(|group| chat_row_visible(&group.entries, &source, &query))
             .collect::<Vec<_>>()
     };
-    let noun = if view == "steps" { "steps" } else { "chats" };
+    let noun = if view == "steps" {
+        "steps"
+    } else {
+        "conversations"
+    };
     let session_index = session_index_map(&turns);
     let axis_len = session_axis_len(&turns);
     let root_bars = seq_bars(&turns, &session_index, axis_len);
@@ -706,10 +710,10 @@ pub fn TrajectoryView(
     let root_caption = sequence_caption(0, axis_len.saturating_sub(1) as u64);
     rsx! { div { class,
         div { class: "span-summary", span { strong { "{groups.len()} {noun}" } " · {total_refs} event references" } span { "Sequence window 0 — {axis_len.saturating_sub(1)}" } }
-        div { class: "{table_class}", role: "tree", aria_label: "Trajectory span hierarchy",
+        div { class: "{table_class}", role: "tree", aria_label: "Run step hierarchy",
             div { class: "span-sticky-chrome",
-                div { class: "span-table-head", div { "Structure" } div { "Overview" } div { class: "span-axis-head", span { "Sequence / occupancy" } div { class: "span-axis-ticks", span { "0" } span { "25%" } span { "50%" } span { "75%" } span { "{axis_len.saturating_sub(1)}" } } } div { "Evidence" } }
-                div { class: "trace-root-summary", div { class: "span-structure root", div { div { class: "span-structure-title", strong { "trajectory" } span { "{groups.len()} {noun}" } } div { class: "span-structure-chips", for modality in root_modalities { span { class: "modality-chip {modality}", "{modality}" } } } span { "{root_meta}" } } } div { class: "span-row-copy root-copy" } OccupancyTrack { bars: root_bars.clone(), expose_range, focus_left, caption: root_caption, title: "Session occupancy · {turns.len()} turns", exposed_ids: exposed_ids.clone(), expanded_turn_id, hovered_ids: hover_ids.clone() } div { class: "span-evidence-count", strong { "{total_refs} ev" } span { "{total_tools} tools" } } }
+                div { class: "span-table-head", div { "Structure" } div { "Overview" } div { class: "span-axis-head", span { "Sequence / coverage" } div { class: "span-axis-ticks", span { "0" } span { "25%" } span { "50%" } span { "75%" } span { "{axis_len.saturating_sub(1)}" } } } div { "Details" } }
+                div { class: "trace-root-summary", div { class: "span-structure root", div { div { class: "span-structure-title", strong { "run" } span { "{groups.len()} {noun}" } } div { class: "span-structure-chips", for modality in root_modalities { span { class: "modality-chip {modality}", "{modality}" } } } span { "{root_meta}" } } } div { class: "span-row-copy root-copy" } OccupancyTrack { bars: root_bars.clone(), expose_range, focus_left, caption: root_caption, title: "Run coverage · {turns.len()} steps", exposed_ids: exposed_ids.clone(), expanded_turn_id, hovered_ids: hover_ids.clone() } div { class: "span-evidence-count", strong { "{total_refs} events" } span { "{total_tools} tools" } } }
             }
             div { class: "span-children", for group in groups {
                     CompactSpanRow {
@@ -804,7 +808,7 @@ fn CompactSpanRow(
                 }
             }
             OccupancyTrack { bars, expose_range, focus_left, caption: caption.clone(), title: "{caption} · {meta}", exposed_ids, expanded_turn_id, hovered_ids }
-            div { class: "span-evidence-count", strong { "{event_refs} ev" } span { "{group.tool_calls} tools" } }
+            div { class: "span-evidence-count", strong { "{event_refs} events" } span { "{group.tool_calls} tools" } }
         }
         if row_open {
             div { class: "span-detail", for turn in group.entries { CompactTurnRow { key: "turn-{turn.id}", turn: turn.clone(), expanded: expanded_turn_id == Some(turn.id), detail: detail.clone(), loading, embedded, context: context.clone(), on_turn } } }
@@ -831,14 +835,14 @@ fn OccupancyTrack(
                     div {
                         class: "span-expose-band",
                         style: "left:{range.left:.4}%;width:{range.width:.4}%",
-                        title: "Turns visible in the current list viewport",
+                        title: "Steps visible in the current list",
                     }
                 }
                 for bar in bars {
                     div { class: "span-bar {bar.source} {bar_emphasis(bar.turn_id, &exposed_ids, expanded_turn_id, &hovered_ids)}", style: "left:{bar.left:.4}%;width:{bar.width:.4}%" }
                 }
                 if let Some(left) = focus_left {
-                    div { class: "span-focus-line", style: "left:{left:.4}%", title: "Expanded turn" }
+                    div { class: "span-focus-line", style: "left:{left:.4}%", title: "Expanded step" }
                     div { class: "span-focus-dot", style: "left:{left:.4}%" }
                 }
             }
@@ -871,18 +875,18 @@ fn CompactTurnRow(
     on_turn: EventHandler<i64>,
 ) -> Element {
     let id = turn.id;
-    let kind = turn.kind.clone().unwrap_or_else(|| "turn".into());
+    let kind = turn.kind.clone().unwrap_or_else(|| "step".into());
     let preview = compact_preview(&turn.preview, 180);
     let collapsed_meta = turn_collapsed_meta(&turn);
     let expanded_facts = turn_expanded_facts(&turn);
     let tool_count = turn.tool_names.len();
     let event_count = turn.event_seqs.len();
     if embedded {
-        return rsx! { button { class: "compact-turn pc2-embedded-turn", onclick: move |_| on_turn.call(id), span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", "{preview}" } span { class: "compact-turn-stats", if tool_count > 0 { span { "{tool_count} tools" } } span { "{event_count} ev" } } } };
+        return rsx! { button { class: "compact-turn pc2-embedded-turn", onclick: move |_| on_turn.call(id), span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", "{preview}" } span { class: "compact-turn-stats", if tool_count > 0 { span { "{tool_count} tools" } } span { "{event_count} events" } } } };
     }
     rsx! { details { class: if expanded { "compact-turn selected" } else { "compact-turn" }, open: expanded,
-        summary { aria_label: "Expand {turn.source} turn {id}", onclick: move |event| { event.prevent_default(); on_turn.call(id); }, span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } if expanded { span { class: "compact-kind", "{expanded_facts}" } } else { span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", "{preview}" } span { class: "compact-turn-stats", if !collapsed_meta.is_empty() { span { "{collapsed_meta}" } } if tool_count > 0 { span { "{tool_count} tools" } } span { "{event_count} ev" } } } }
-        if expanded { div { class: "compact-turn-body pc2-inline-detail", if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Loading full turn…" } } else if let Some(value) = detail.filter(|value| value.summary.id == id) { InlineTurnDetail { value, context: context.clone() } } else { div { class: "pc2-inline-unavailable", "Full evidence is unavailable for this turn." } } } }
+        summary { aria_label: "Expand {turn.source} step {id}", onclick: move |event| { event.prevent_default(); on_turn.call(id); }, span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } if expanded { span { class: "compact-kind", "{expanded_facts}" } } else { span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", "{preview}" } span { class: "compact-turn-stats", if !collapsed_meta.is_empty() { span { "{collapsed_meta}" } } if tool_count > 0 { span { "{tool_count} tools" } } span { "{event_count} events" } } } }
+        if expanded { div { class: "compact-turn-body pc2-inline-detail", if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Loading full step…" } } else if let Some(value) = detail.filter(|value| value.summary.id == id) { InlineTurnDetail { value, context: context.clone() } } else { div { class: "pc2-inline-unavailable", "Details are unavailable for this step." } } } }
     } }
 }
 
@@ -909,8 +913,8 @@ fn InlineTurnDetail(
         serde_json::to_value(&deduped_wire_calls).unwrap_or(Value::Array(Vec::new()));
     let events = serde_json::to_value(&value.events).unwrap_or(Value::Array(Vec::new()));
     let event_block_title = match value.event_provenance {
-        EventProvenance::Canonical => "Raw canonical events",
-        EventProvenance::SyntheticFromStoryline => "Synthetic linked event view",
+        EventProvenance::Canonical => crate::terminology::RECORDED_EVENTS,
+        EventProvenance::SyntheticFromStoryline => crate::terminology::RECONSTRUCTED_EVENTS,
     };
     let tool_block_title = if embedded_from_message.len() == 1 {
         "Tool call"
@@ -922,7 +926,7 @@ fn InlineTurnDetail(
         if let Some(turns) = context {
             ContextRebuild { turns, focus_id }
         }
-        div { class: "pc2-inspector-facts", Fact { label: "Turn", value: format!("#{}", value.summary.id) } Fact { label: "Source", value: value.summary.source.clone() } Fact { label: "Kind", value: value.summary.kind.clone().unwrap_or_else(|| "unavailable".into()) } Fact { label: "Model", value: value.summary.model_name.clone().unwrap_or_else(|| "unavailable".into()) } Fact { label: "Latency", value: value.summary.latency_ms.map(format_ms).unwrap_or_else(|| "unavailable".into()) } Fact { label: "TTFT", value: value.summary.ttft_ms.map(format_ms).unwrap_or_else(|| "unavailable".into()) } Fact { label: "Tokens", value: value.summary.total_tokens.map(|tokens| tokens.to_string()).unwrap_or_else(|| "unavailable".into()) } Fact { label: "Token split", value: format!("{} in · {} out", optional_u64(value.summary.prompt_tokens), optional_u64(value.summary.completion_tokens)) } Fact { label: "Events", value: value.events.len().to_string() } }
+        div { class: "pc2-inspector-facts", Fact { label: "Step", value: format!("#{}", value.summary.id) } Fact { label: "Role", value: value.summary.source.clone() } Fact { label: "Type", value: value.summary.kind.clone().unwrap_or_else(|| "unavailable".into()) } Fact { label: "Model", value: value.summary.model_name.clone().unwrap_or_else(|| "unavailable".into()) } Fact { label: "Latency", value: value.summary.latency_ms.map(format_ms).unwrap_or_else(|| "unavailable".into()) } Fact { label: "TTFT", value: value.summary.ttft_ms.map(format_ms).unwrap_or_else(|| "unavailable".into()) } Fact { label: "Tokens", value: value.summary.total_tokens.map(|tokens| tokens.to_string()).unwrap_or_else(|| "unavailable".into()) } Fact { label: "Token split", value: format!("{} in · {} out", optional_u64(value.summary.prompt_tokens), optional_u64(value.summary.completion_tokens)) } Fact { label: "Events", value: value.events.len().to_string() } }
         if !embedded_from_message.is_empty() {
             EvidenceBlock { title: tool_block_title, open: true, ToolCallCards { calls: embedded_from_message } }
         } else if structured_message && !message_is_text_bearing {
@@ -980,18 +984,18 @@ fn ContextRebuild(turns: Vec<StorylineTurn>, focus_id: i64) -> Element {
         section { class: "pc2-context-rebuild",
             div { class: "pc2-context-head",
                 strong { "Context at this step" }
-                span { "what the model saw before turn #{focus_id}" }
+                span { "what the model saw before step #{focus_id}" }
                 span { class: "pc2-context-stats", "{context.len()} messages · {format_char_count(total_chars)}" }
             }
             if context.is_empty() {
-                p { class: "pc2-context-empty", "No earlier messages — this turn starts the session." }
+                p { class: "pc2-context-empty", "No earlier messages — this step starts the run." }
             } else {
                 div { class: "pc2-context-list",
                     for turn in context.iter() {
                         ContextMessage { key: "ctx-{turn.id}", turn: turn.clone() }
                     }
                 }
-                div { class: "pc2-context-boundary", span { "turn #{focus_id} decided with the context above ↓" } }
+                div { class: "pc2-context-boundary", span { "step #{focus_id} used the context above ↓" } }
             }
         }
     }
@@ -1275,7 +1279,7 @@ mod tests {
         ];
         let groups = chat_span_groups(&turns);
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].label, "Chat 1");
+        assert_eq!(groups[0].label, "Conversation 1");
         assert_eq!(groups[0].overview, "user-1");
         assert_eq!(
             groups[0]
@@ -1333,7 +1337,7 @@ mod tests {
         agent.char_count = 12;
         let groups = chat_span_groups(&[agent]);
         assert_eq!(groups[0].kind_chip, "chat");
-        assert_eq!(groups[0].overview, "No user turn");
+        assert_eq!(groups[0].overview, "No user step");
         assert_eq!(row_char_count(&groups[0].entries, true), 0);
     }
 
@@ -1358,7 +1362,7 @@ mod tests {
         agent.total_tokens = Some(400);
         agent.tool_names = vec!["execute_bash".into()];
         let diagnostic = group_diagnostic(&[user.clone(), agent.clone()]);
-        assert!(diagnostic.contains("2 turns"));
+        assert!(diagnostic.contains("2 steps"));
         assert!(diagnostic.contains("1 user + 1 agent · 1 tool"));
         assert!(diagnostic.contains("500 tokens"));
         assert!(diagnostic.contains("2.02s"));

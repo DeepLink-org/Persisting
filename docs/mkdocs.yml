@@ -106,17 +106,19 @@ plugins:
             pVisor CLI: pVisor CLI
             Dataset interface: Dataset 接口
             Dataset discovery and versioning: Dataset 发现与版本固定
-            Data contracts and revisions: 数据契约与 Revision
+            Recorded data, views, and versions: 记录数据、视图与版本
             Discover and query: 发现与查询
             Import and export: 导入与导出
             Local read-only Dataset server: 本地只读 Dataset 服务
+            Local Dataset Web UI: 本地 Dataset Web UI
             Gateway forwarding, rewriting, and capture: Gateway 转发、改写与捕获
             Product architecture: 产品架构
-            Trajectory storage: 轨迹存储
+            Run storage: 运行存储
             Storyline Lance projection: Storyline Lance 投影
             pChronicle reference: pChronicle 参考
+            Product terminology: 产品术语
             AgenticMD format: AgenticMD 格式
-            Trajectory formats: 轨迹格式
+            Run data formats: 运行数据格式
             End-to-end architecture: 端到端架构
             Local to fleet: 从本地到集群
             Security and evidence: 安全与 Evidence
@@ -197,21 +199,23 @@ nav:
           - Discover and query: pchronicle/guides/discover-and-query.md
           - Import and export: pchronicle/guides/exchange.md
           - Local read-only Dataset server: pchronicle/guides/serve.md
+          - Local Dataset Web UI: pchronicle/guides/ui.md
           - Gateway forwarding, rewriting, and capture: pchronicle/guides/serve-gateway.md
       - Design:
           - Design overview: pchronicle/design/index.md
           - Product architecture: pchronicle/design/architecture.md
           - Dataset discovery and versioning: pchronicle/concepts/dataset-and-source.md
-          - Data contracts and revisions: pchronicle/concepts/facts-and-projections.md
+          - Recorded data, views, and versions: pchronicle/concepts/facts-and-projections.md
           - Dataset Catalog: pchronicle/design/catalog.md
-          - Trajectory storage: pchronicle/design/trajectory-storage.md
+          - Run storage: pchronicle/design/trajectory-storage.md
           - Storyline Lance projection: pchronicle/design/storyline-lance.md
       - Reference:
           - pChronicle reference: pchronicle/reference/index.md
+          - Product terminology: pchronicle/reference/terminology.md
           - pChronicle CLI: pchronicle/reference/cli.md
           - Query model: pchronicle/reference/query-model.md
           - AgenticMD format: pchronicle/reference/agenticmd.md
-          - Trajectory formats: pchronicle/reference/formats/index.md
+          - Run data formats: pchronicle/reference/formats/index.md
   - Project:
       - Overview: project/index.md
       - Architecture:

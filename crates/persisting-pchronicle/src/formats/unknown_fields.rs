@@ -555,6 +555,7 @@ fn normalize_unknown_pointer(source: &str, pointer: &str) -> InputResult<String>
         "actf" => normalize_actf_pointer(source, pointer),
         "openai-msg" => normalize_openai_pointer(source, pointer),
         "agenticmd" => normalize_agenticmd_unknown_pointer(source, pointer),
+        "codex" | "claude-code" => normalize_jsonl_event_pointer(pointer),
         _ => {
             validate_json_pointer(pointer)?;
             Ok(pointer.to_owned())
@@ -657,6 +658,23 @@ pub(crate) fn normalize_openai_pointer(source: &str, pointer: &str) -> InputResu
                 .is_some_and(|token| token.parse::<usize>().is_ok())
         {
             tokens[4] = "*".into();
+        }
+    }
+    Ok(encode_json_pointer(&tokens))
+}
+
+/// Collapse JSONL event-row indexes used by Codex and Claude Code adapters.
+/// Stored pointers stay exact (`/events/12`); warning and count keys use `*`.
+fn normalize_jsonl_event_pointer(pointer: &str) -> InputResult<String> {
+    let mut tokens = decode_json_pointer(pointer)?;
+    if tokens.first().map(String::as_str) == Some("events")
+        && tokens.get(1).is_some_and(|token| is_array_index(token))
+    {
+        tokens[1] = "*".into();
+        if tokens.get(2).map(String::as_str) == Some("content")
+            && tokens.get(3).is_some_and(|token| is_array_index(token))
+        {
+            tokens[3] = "*".into();
         }
     }
     Ok(encode_json_pointer(&tokens))
@@ -949,6 +967,54 @@ mod tests {
             warnings.warning_lines(),
             ["warning: unknown field source=actf key=/vendor_root occurrences=2"]
         );
+    }
+
+    #[test]
+    fn import_warnings_collapse_jsonl_event_indexes() {
+        let mut story = StorylineDocument::new("sess", "codex");
+        story
+            .unknown_fields
+            .insert(
+                "codex",
+                "rollout.jsonl",
+                "/events/999",
+                json!({"type": "world_state"}),
+            )
+            .unwrap();
+        story
+            .unknown_fields
+            .insert(
+                "codex",
+                "rollout.jsonl",
+                "/events/9989",
+                json!({"type": "world_state"}),
+            )
+            .unwrap();
+        story
+            .unknown_fields
+            .insert(
+                "codex",
+                "rollout.jsonl",
+                "/events/2/content/1",
+                json!({"type": "input_image"}),
+            )
+            .unwrap();
+        story.refresh_unknown_key_counts().unwrap();
+
+        let mut warnings = UnknownFieldImportWarnings::default();
+        warnings.observe_storylines([&story]).unwrap();
+        assert_eq!(
+            warnings.warning_lines(),
+            [
+                "warning: unknown field source=codex key=/events/* occurrences=2",
+                "warning: unknown field source=codex key=/events/*/content/* occurrences=1",
+            ]
+        );
+        assert_eq!(story.unknown_key_counts["codex"]["/events/*"], 2);
+        assert_eq!(story.unknown_key_counts["codex"]["/events/*/content/*"], 1);
+        assert!(story.unknown_fields.sources["codex"]
+            .fields
+            .contains_key("/events/9989"));
     }
 
     #[test]

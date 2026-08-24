@@ -85,7 +85,7 @@ pchronicle query \
   --file report.sql
 ```
 
-Each invocation accepts one bounded, read-only statement. `--file -` reads SQL
+Each invocation accepts one read-only statement with explicit resource limits. `--file -` reads SQL
 from stdin. Use `--format`, `--output`, `--max-output-rows`,
 `--max-output-bytes`, and `--timeout` to make pipeline behavior explicit.
 

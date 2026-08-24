@@ -1,6 +1,6 @@
 # pChronicle 架构
 
-本文解释 pChronicle 如何把轨迹 Source 变成持久、可查询的历史。用户工作流属于
+本文解释 pChronicle 如何把运行数据源变成持久、可查询的历史。用户工作流属于
 [Guides](../guides/index.md)，精确命令属于[Reference](../reference/cli.md)，跨产品 ownership
 属于 [System Design](../../system-design/architecture.md)。
 
@@ -9,7 +9,7 @@
 ## 产品边界
 
 pChronicle 是 path-first 的 Agent 历史层。它发现本地目录和对象存储 prefix，固定一次操作
-使用的 Source version，规范化支持的表示，并提供有界读取面。
+使用的 Source version，规范化支持的表示，并提供有资源限制的读取接口。
 
 | 形态 | 用途 | 持久状态 |
 | --- | --- | --- |
@@ -56,11 +56,11 @@ Warehouse mount name 只是 SQL alias。移动到新 URI 后就是不同 Dataset
 
 ```text
 Dataset URI or static mount
-  → bounded discovery
+  → resource-limited discovery
   → immutable Catalog Snapshot
   → Source pruning and lazy open
   → normalized DataFusion relations
-  → bounded CLI, API, or Web result
+  → resource-limited CLI, API, or Web result
 ```
 
 一次操作固定每个 Source 的 version reference。本地文件使用 identity 与 fingerprint，Lance
@@ -89,7 +89,7 @@ validate event
 Writer 并发由具体 store contract 定义。Snapshot compare-and-swap 本身不意味着 merge-and-retry。
 未发布 version 与不可达 object 需要显式维护路径。
 
-Canonical/projection 边界见[轨迹存储](trajectory-storage.md)，Storyline 实现见
+Canonical/projection 边界见[运行存储](trajectory-storage.md)，Storyline 实现见
 [Storyline Lance](storyline-lance.md)。
 
 ## 只读 Warehouse
@@ -111,14 +111,14 @@ SPA fallback；没有 authentication 时只接受 loopback listener。
 | identity | Dataset URI + Source path + original ID 保持可见 | 外部 ID 全局唯一 |
 | 读取一致性 | 一次操作内固定 Source reference | 跨 Source 全局事务 |
 | 发布 | 新发布成功前旧 Snapshot 保持可读 | 所有 writer 自动 merge retry |
-| 查询 | 有界、只读执行 | 任意 mutation 或无界服务查询 |
+| 查询 | 有资源限制的只读执行 | 任意 mutation 或无限制服务查询 |
 | projection | 声明范围内的 lineage 与可重建性 | 没有 generation 记录的 freshness |
 | 服务 | loopback-only 静态读取面 | 带认证的多租户 Warehouse |
 
 ## 相关设计
 
 - [Dataset Catalog](catalog.md)：discovery、Snapshot 构造、惰性 Source resolve 与裁剪。
-- [轨迹存储](trajectory-storage.md)：canonical fact、物理表示与写入 ownership。
+- [运行存储](trajectory-storage.md)：canonical fact、存储布局与写入 ownership。
 - [Storyline Lance](storyline-lance.md)：三表 projection、内容层、发布与维护。
-- [事实、Projection 与 Revision](../concepts/facts-and-projections.md)：这些层次的用户心智模型。
+- [记录数据、视图与版本](../concepts/facts-and-projections.md)：这些层次的用户心智模型。
 - [pChronicle Reference](../reference/index.md)：精确 CLI 与格式契约。

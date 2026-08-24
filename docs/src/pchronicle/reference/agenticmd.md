@@ -1,4 +1,4 @@
-# AgenticMD 轨迹格式
+# AgenticMD 运行数据格式
 
 AgenticMD 是 pChronicle 的人读与调试视图：普通 Markdown 正文可以附带机器定位的块头。
 它不是存储协议或事实源；系统生成的文件使用 `{session_id}.md`，读取器对人工编辑、
@@ -82,5 +82,5 @@ Lance 重建 AgenticMD，但当前公共 `pchronicle` CLI 不提供 AgenticMD ma
 - Gateway 端到端定量示例：`examples/pvisor/04-gateway-llm-control/`
 - Lance/ATIF 存储与分析示例：`examples/pchronicle/`
 - 格式与视图实现：`crates/persisting-pchronicle/src/formats/`、`src/projection/`
-- [pChronicle 轨迹存储](../design/trajectory-storage.md)
-- [轨迹格式与交换边界](formats/index.md)
+- [pChronicle 运行存储](../design/trajectory-storage.md)
+- [运行数据格式与交换边界](formats/index.md)

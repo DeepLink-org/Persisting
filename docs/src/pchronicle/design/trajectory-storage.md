@@ -1,4 +1,4 @@
-# pChronicle 轨迹存储
+# pChronicle 运行存储
 
 > 当前实现说明。规范性所有权见 [RFC-0003](../../rfcs/0003-pchronicle-ownership.md)与
 > [RFC-0007](../../rfcs/0007-events-contract-pchronicle-sidecar.md)，
@@ -11,7 +11,7 @@
 
 ## 1. 定位
 
-`persisting-pchronicle` 是 Agent 轨迹的结构化存储层，统一拥有：
+`persisting-pchronicle` 是 Agent 运行数据的结构化存储层，统一拥有：
 
 - 公共 `persisting-events::EventRecord` 到 Lance `EventRow` 的映射与物理 schema；
 - Run / Story 坐标、目录布局和发现规则；
@@ -22,7 +22,7 @@
 
 `persisting-events` 拥有存储无关的逻辑事件信封。Gateway 与 pVisor 负责产出事件；CLI
 可以在进程内调用 pChronicle，pVisor 也可以通过 `pchronicle serve` 的 Control 服务提交。
-这些 producer 都不定义第二套轨迹落盘格式。
+这些 producer 都不定义第二套运行数据落盘格式。
 
 ## 2. 逻辑坐标
 
@@ -46,7 +46,7 @@ Run
 有 `root_session_id` 时，多个 Story 共用一个 Run 级 `events.lance`；没有时，
 `session_id` 自身就是目录边界。
 
-## 3. 物理表示
+## 3. 存储布局
 
 ### Lance events
 
@@ -79,15 +79,15 @@ events；旧值 `lance` 是相同行为的兼容别名，pVisor 本身不打开 
 
 ### Storyline 三表 Lance
 
-`StorylineLanceStore` 提供面向分析和 ATIF 互操作的规范化物理表示：
+`StorylineLanceStore` 提供面向分析和 ATIF 互操作的规范化存储表示：
 `runs.lance`、`steps.lance`、`tool_calls.lance`。它按 `source_call_id` 将 observation
 result 归并到 tool call 行，并通过 `CURRENT` 中的三表版本元组保证原子切换。超过阈值的
-UTF-8/JSON cell 以 BLAKE3 内容地址外置到共享 `objects.lance`，跨轨迹复用；公开 schema
+UTF-8/JSON cell 以 BLAKE3 内容地址外置到共享 `objects.lance`，跨运行复用；公开 schema
 和 SQL 结果保持不变，查询只在真正引用内容列时延迟恢复 Blob。
 
 ATIF object、array、pretty JSON 与 JSONL/NDJSON，以及 ACTF object/array 的 `steps` 临时查询还支持
 projection-aware 快路径：DataFusion 先传递所需列和安全谓词，reader 通过 seeded visitor
-跳过未引用大字段并直接构造窄 Arrow batch；JSONL/NDJSON 逐记录有界读取，array 通过
+跳过未引用大字段并直接构造窄 Arrow batch；JSONL/NDJSON 按资源限制逐记录读取，array 通过
 结构扫描器逐 element 提取并使用 slice decoder，单 object 从 reader 流式解码。
 `SELECT *`、其他表和 OpenAI-message 回退到完整 Storyline 规范化。详细协议、发布顺序和执行边界见
 [Storyline 三表 Lance 存储](storyline-lance.md)。
@@ -169,7 +169,7 @@ OpenAI msg ┘
 |---|---|---|
 | Gateway | 协议解析、调用生命周期、采集顺序、live projection 策略 | 通用 store、格式 schema、离线转换 |
 | pChronicle | 格式、路径、落盘、读取、转换与 revision lineage | 网络转发、Agent 生命周期 |
-| pVisor | Run 生命周期及 Gateway/OverlayNet/OverlayFS 装配 | 长期轨迹 schema |
+| pVisor | Run 生命周期及 Gateway/OverlayNet/OverlayFS 装配 | 长期运行数据 schema |
 
 ## 8. 相关文档
 

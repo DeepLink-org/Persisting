@@ -555,11 +555,11 @@ async fn resolve_run_summary(
         }
     }
     if matches.is_empty() {
-        return Err(ApiError::not_found("trajectory was not found"));
+        return Err(ApiError::not_found("run was not found"));
     }
     if matches.len() > 1 {
         return Err(ApiError::conflict(
-            "trajectory selector is ambiguous; include dataset, _file_, and session_id",
+            "run selector is ambiguous; include dataset, source file, and session_id",
         ));
     }
     Ok(matches.into_iter().next().expect("one matching run"))
@@ -613,7 +613,7 @@ async fn load_events(state: &AppState, query: &SessionQuery) -> Result<LoadedEve
         .load_events(&catalog_storyline_key(&run))
         .await
         .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found("trajectory was not found"))?;
+        .ok_or_else(|| ApiError::not_found("run was not found"))?;
     let offset = query
         .offset
         .unwrap_or(0)
@@ -678,7 +678,7 @@ async fn storyline(
         .load_storyline(&catalog_storyline_key(&run))
         .await
         .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found("trajectory was not found"))?;
+        .ok_or_else(|| ApiError::not_found("run was not found"))?;
     Ok(Json(
         serde_json::to_value(document)
             .map_err(anyhow::Error::from)
@@ -837,7 +837,7 @@ async fn load_trajectory(
         .load_trajectory_bundle(&key)
         .await
         .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found("trajectory was not found"))?;
+        .ok_or_else(|| ApiError::not_found("run was not found"))?;
     let event_provenance = bundle.event_view.provenance;
     let records = bundle.event_view.document.events;
     let document = bundle.storyline;
@@ -1018,7 +1018,7 @@ async fn export_otlp(
     let event_view = load_events(&state, &query).await?;
     if !event_view.provenance.is_canonical() {
         return Err(ApiError::unsupported(
-            "OTLP export requires canonical events; this trajectory only has a synthetic event view",
+            "OTLP export requires recorded events; this run only has reconstructed events",
         ));
     }
     Ok(Json(events_to_otlp_json(&event_view.records)))
@@ -1080,7 +1080,7 @@ fn run_query_fields() -> Vec<QueryFieldSummary> {
         field(
             "run_id",
             "TEXT",
-            "Run grouping identifier; not the Storyline primary key",
+            "Optional grouping identifier; the session ID identifies the stored run record",
         ),
         field(
             "run_id_explicit",
@@ -1090,7 +1090,7 @@ fn run_query_fields() -> Vec<QueryFieldSummary> {
         field(
             "session_id",
             "TEXT",
-            "Storyline identifier within one Catalog source",
+            "Run/session identifier within one source file",
         ),
         field("agent_id", "TEXT", "Agent identifier"),
         field("agent_name", "TEXT?", "Agent display name"),
@@ -1106,13 +1106,13 @@ fn run_query_fields() -> Vec<QueryFieldSummary> {
             "JSON?",
             "Source-specific agent metadata",
         ),
-        field("parent_json", "JSON?", "Parent trajectory reference"),
+        field("parent_json", "JSON?", "Parent run reference"),
         field(
             "child_session_ids_json",
             "JSON?",
             "Child session identifiers",
         ),
-        field("notes", "TEXT?", "Trajectory notes"),
+        field("notes", "TEXT?", "Run notes"),
         field("final_metrics_json", "JSON?", "Final evaluation metrics"),
         field(
             "continued_trajectory_ref",
@@ -1131,7 +1131,7 @@ fn step_query_fields() -> Vec<QueryFieldSummary> {
             "Relative source path; supports = and LIKE",
         ),
         field("run_id", "TEXT", "Owning Run grouping identifier"),
-        field("session_id", "TEXT", "Owning Storyline identifier"),
+        field("session_id", "TEXT", "Owning run/session identifier"),
         field("step_id", "BIGINT", "Ordered step number"),
         field("kind", "TEXT?", "Captured step kind"),
         field("effective_kind", "TEXT", "Normalized step kind"),
@@ -1175,7 +1175,7 @@ fn tool_call_query_fields() -> Vec<QueryFieldSummary> {
             "Relative source path; supports = and LIKE",
         ),
         field("run_id", "TEXT", "Owning Run grouping identifier"),
-        field("session_id", "TEXT", "Owning Storyline identifier"),
+        field("session_id", "TEXT", "Owning run/session identifier"),
         field("step_id", "BIGINT", "Owning step number"),
         field("call_index", "BIGINT", "Tool-call order within the step"),
         field("tool_call_id", "TEXT", "Tool-call identifier"),
@@ -1190,7 +1190,7 @@ fn tool_call_query_fields() -> Vec<QueryFieldSummary> {
 fn trajectory_query_fields() -> Vec<QueryFieldSummary> {
     let mut fields = run_query_fields();
     fields.extend([
-        field("step_count", "BIGINT", "Number of steps in the trajectory"),
+        field("step_count", "BIGINT", "Number of steps in the run"),
         field("step_ids", "BIGINT[]", "Ordered step identifiers"),
         field(
             "step_sources",
@@ -1209,7 +1209,7 @@ fn trajectory_query_fields() -> Vec<QueryFieldSummary> {
 fn source_query_fields() -> Vec<QueryFieldSummary> {
     vec![
         field("_file_", "TEXT", "Dataset-relative logical source path"),
-        field("format", "TEXT?", "Detected trajectory format"),
+        field("format", "TEXT?", "Detected run data format"),
         field("kind", "TEXT", "file or composite store"),
         field(
             "snapshot_ref",
@@ -1225,7 +1225,7 @@ fn source_query_fields() -> Vec<QueryFieldSummary> {
 
 fn event_query_fields() -> Vec<QueryFieldSummary> {
     vec![
-        field("_file_", "TEXT", "Dataset-relative canonical events source"),
+        field("_file_", "TEXT", "Dataset-relative recorded event source"),
         field("seq", "BIGINT", "Canonical append sequence"),
         field("event_id", "TEXT?", "Producer event identifier"),
         field("timestamp", "TEXT?", "Captured timestamp"),
@@ -1280,37 +1280,37 @@ async fn query_tables(State(state): State<AppState>) -> Result<Json<QueryCatalog
         tables: vec![
             QueryTableSummary {
                 name: "sources",
-                description: "One row per discovered logical trajectory source",
+                description: "One row per discovered run data source",
                 grain: "source",
                 fields: source_query_fields(),
             },
             QueryTableSummary {
                 name: "runs",
-                description: "One row per trajectory across the complete data path",
-                grain: "trajectory",
+                description: "One row per run across the complete data path",
+                grain: "run",
                 fields: run_query_fields(),
             },
             QueryTableSummary {
                 name: "steps",
-                description: "Ordered user, agent, and system steps for every trajectory",
+                description: "Ordered user, agent, and system steps for every run",
                 grain: "step",
                 fields: step_query_fields(),
             },
             QueryTableSummary {
                 name: "tool_calls",
-                description: "Structured tool calls joined to their trajectory and step",
+                description: "Structured tool calls joined to their run and step",
                 grain: "tool call",
                 fields: tool_call_query_fields(),
             },
             QueryTableSummary {
                 name: "trajectories",
-                description: "One complete trajectory with ordered step and tool-call arrays",
-                grain: "complete trajectory",
+                description: "One complete run with ordered step and tool-call arrays",
+                grain: "complete run",
                 fields: trajectory_query_fields(),
             },
             QueryTableSummary {
                 name: "events",
-                description: "Raw canonical events; empty for non-events sources",
+                description: "Recorded events; empty for sources without recorded events",
                 grain: "event",
                 fields: event_query_fields(),
             },
@@ -1550,7 +1550,7 @@ async fn query_evidence(
         QueryEvidenceWriteOutcome::Complete(bytes) => bytes,
         QueryEvidenceWriteOutcome::LimitExceeded => {
             return Err(ApiError::resource_exhausted(
-                "query evidence exceeds max_bytes limit",
+                "query result exceeds max_bytes limit",
             ));
         }
     };

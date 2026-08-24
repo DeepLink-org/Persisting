@@ -264,7 +264,7 @@ fn command_tree_contains_the_product_commands() {
         .get_help()
         .unwrap()
         .to_string()
-        .contains("squash into one Storyline Lance Store at the Dataset root"));
+        .contains("combine them into one Storyline Lance Store at the Dataset root"));
     assert!(Cli::try_parse_from(["pchronicle", "project", "status"]).is_err());
 }
 
@@ -3527,7 +3527,10 @@ fn serve_storage_rejects_underivable_basename() {
     let error = resolve_serve_config(&serve_args_with_storage(vec!["./tmp".into(), ".".into()]))
         .unwrap_err();
     let message = format!("{error:#}");
-    assert!(message.contains("NAME=URI"), "unexpected error: {message}");
+    assert!(
+        message.contains("NAME=DATASET"),
+        "unexpected error: {message}"
+    );
 }
 
 #[test]
@@ -3550,7 +3553,7 @@ fn serve_control_storage_requires_default_mount() {
     let error = control_storage_uri(&config).unwrap_err();
     let message = format!("{error:#}");
     assert!(
-        message.contains("default=URI"),
+        message.contains("default=DATASET"),
         "unexpected error: {message}"
     );
 }

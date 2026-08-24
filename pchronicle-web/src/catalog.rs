@@ -104,11 +104,11 @@ pub fn CatalogExplorer(
                 if loading && tree.is_none() {
                     div { class: "pc-catalog-empty", span { class: "spinner" } "Loading datasets…" }
                 } else if tree.as_ref().is_none_or(|tree| tree.children.is_empty() && tree.run_count == 0) {
-                    div { class: "pc-catalog-empty", strong { "No datasets" } span { "Mount a Dataset and refresh the local store." } }
+                    div { class: "pc-catalog-empty", strong { "No datasets" } span { "Add a dataset, then refresh this page." } }
                 } else if tree.as_ref().is_some_and(|tree| tree.children.is_empty()) {
                     div { class: "pc-catalog-empty",
-                        strong { "Source" }
-                        span { "This prefix is a single source. Open it in Runs to inspect trajectories." }
+                        strong { "Source file" }
+                        span { "This path contains one source file. Open it in Runs to inspect its runs." }
                     }
                 } else {
                     CatalogMosaic {
@@ -202,7 +202,7 @@ fn CatalogStats(tree: Option<CatalogTree>) -> Element {
             div { span { "Tokens" } strong { "{format_tokens(tree.total_tokens)}" } }
         }
         if errors > 0 {
-            p { class: "pc-catalog-errors", "{errors} sources failed to project" }
+            p { class: "pc-catalog-errors", "{errors} source files could not be loaded" }
         }
     }
 }
@@ -328,12 +328,12 @@ fn other_child(tree: &CatalogTree) -> Option<&CatalogTreeChild> {
 
 fn catalog_subtitle(tree: Option<&CatalogTree>) -> String {
     let Some(tree) = tree else {
-        return "Browse Datasets by captured run volume.".into();
+        return "Browse datasets by run count.".into();
     };
     if tree.dataset.is_none() {
         format!("{} datasets · {} runs", tree.children.len(), tree.run_count)
     } else if tree.prefix.is_empty() {
-        "Folders follow Dataset _file_ paths.".into()
+        "Folders follow source file paths.".into()
     } else {
         format!("Prefix {} · {} runs", tree.prefix, tree.run_count)
     }

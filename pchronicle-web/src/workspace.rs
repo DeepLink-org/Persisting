@@ -11,8 +11,8 @@ use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView}
 use crate::copilot_sessions::{
     can_start_new_chat, delete_session, empty_thread, load_index, load_session_thread,
     new_session_id, now_millis, page_after_history_switch, persist_indexed_thread, relative_time,
-    restore_for_run, save_index, session_storage_key, title_from_thread, BrowserStore,
-    CopilotSessionMeta, KvStore,
+    restore_for_run, save_index, session_storage_key, title_from_thread, AssistantSessionMeta,
+    BrowserStore, KvStore,
 };
 use crate::llm;
 use crate::llm_settings::LlmSettings;
@@ -21,6 +21,7 @@ use crate::model::{
     QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary, StorylineSnapshot,
     ToolAggregate, TurnDetail, TurnSummary,
 };
+use crate::terminology::{ANALYSIS, ASSISTANT, DATASETS, RUNS, STEPS, STORAGE, TIMELINE};
 
 #[derive(Clone, Debug, PartialEq)]
 struct WorkspaceNotice {
@@ -45,8 +46,8 @@ fn workspace_notice(detail: String) -> WorkspaceNotice {
 
 fn evidence_notice(turn_id: i64, detail: &str) -> WorkspaceNotice {
     WorkspaceNotice {
-        title: "Turn evidence could not be decoded".into(),
-        summary: format!("Turn #{turn_id} · {}", type_mismatch_summary(detail)),
+        title: "Step details could not be decoded".into(),
+        summary: format!("Step #{turn_id} · {}", type_mismatch_summary(detail)),
         detail: detail.to_string(),
         turn_id: Some(turn_id),
     }
@@ -65,7 +66,7 @@ fn type_mismatch_summary(detail: &str) -> String {
         .map(|value| value.trim_end_matches(['.', ',']));
     match (expected, received) {
         (Some(expected), Some(received)) => format!("Expected {expected}, received {received}"),
-        _ => "The turn payload did not match the explorer schema".into(),
+        _ => "The step data did not match the expected format".into(),
     }
 }
 
@@ -274,15 +275,15 @@ pub fn App() -> Element {
 
     rsx! {
         div { class: "pc2-shell", tabindex: "-1", onkeydown: root_keydown,
-            a { class: "skip-link", href: "#pc2-main", "Skip to trajectory workspace" }
-            nav { class: "rail", aria_label: "pChronicle workspace",
+            a { class: "skip-link", href: "#pc2-main", "Skip to main content" }
+            nav { class: "rail", aria_label: "pChronicle navigation",
                 div { class: "brand-mark", title: "pChronicle", "pC" }
-                RailButton { active: page() == "catalog", icon: "▣", label: "Data", onclick: move |_| { catalog_dataset.set(String::new()); catalog_prefix.set(String::new()); page.set("catalog".into()); } }
-                RailButton { active: page() == "runs" || page() == "detail", icon: "◫", label: "Runs", onclick: move |_| page.set("runs".into()) }
-                RailButton { active: page() == "tools", icon: "⌁", label: "Analyze", onclick: move |_| page.set("tools".into()) }
-                RailButton { active: page() == "physical", icon: "▤", label: "Physical", onclick: move |_| page.set("physical".into()) }
+                RailButton { active: page() == "catalog", icon: "▣", label: DATASETS, onclick: move |_| { catalog_dataset.set(String::new()); catalog_prefix.set(String::new()); page.set("catalog".into()); } }
+                RailButton { active: page() == "runs" || page() == "detail", icon: "◫", label: RUNS, onclick: move |_| page.set("runs".into()) }
+                RailButton { active: page() == "tools", icon: "⌁", label: ANALYSIS, onclick: move |_| page.set("tools".into()) }
+                RailButton { active: page() == "physical", icon: "▤", label: STORAGE, onclick: move |_| page.set("physical".into()) }
                 div { class: "rail-spacer" }
-                button { class: if copilot_open() { "rail-button active" } else { "rail-button" }, aria_label: "Toggle trajectory Copilot", onclick: move |_| copilot_open.set(!copilot_open()), span { class: "rail-icon", "◇" } span { "Copilot" } }
+                button { class: if copilot_open() { "rail-button active" } else { "rail-button" }, aria_label: "Toggle Assistant", onclick: move |_| copilot_open.set(!copilot_open()), span { class: "rail-icon", "◇" } span { {ASSISTANT} } }
                 div { class: "rail-status", span { class: "live-dot" } "Local" }
             }
 
@@ -378,7 +379,7 @@ pub fn App() -> Element {
                                         page.set("tools".into());
                                     },
                                 }
-                            } else { LoadingWorkspace { label: "Building trajectory evidence…" } }
+                            } else { LoadingWorkspace { label: "Loading run details…" } }
                         } }
                     }
                     _ => {
@@ -446,7 +447,7 @@ pub fn App() -> Element {
             }
 
             if copilot_open() {
-                    CopilotPanel {
+                    AssistantPanel {
                         run: selected_run(),
                         analysis: analysis(),
                         turns: turns(),
@@ -466,7 +467,7 @@ pub fn App() -> Element {
                                 page.set("detail".into());
                             }
                         },
-                        on_open_session: move |meta: CopilotSessionMeta| {
+                        on_open_session: move |meta: AssistantSessionMeta| {
                             let next_page = page_after_history_switch(&page());
                             let changed = selected_run().as_ref().map(|run| run.query())
                                 != Some(meta.run.query());
@@ -665,7 +666,7 @@ fn PathExplorer(
 ) -> Element {
     let tree = build_path_tree(&runs);
     rsx! { aside { class: "pc2-path-explorer",
-        header { div { strong { "Run paths" } span { "Browse trajectories by captured hierarchy" } } span { "{runs.len()}" } }
+        header { div { strong { "Run paths" } span { "Browse runs by source hierarchy" } } span { "{runs.len()}" } }
         div { class: "pc2-path-tree",
             button { class: if selected_path.is_empty() { "pc2-path-all active" } else { "pc2-path-all" }, onclick: move |_| on_path.call(String::new()), span { class: "pc2-path-icon root", "⌂" } strong { "All runs" } code { "{runs.len()}" } }
             if loading && runs.is_empty() { div { class: "pc2-path-loading", span { class: "spinner" } "Loading paths…" } }
@@ -738,11 +739,11 @@ fn RunsExplorer(
     rsx! {
         section { class: "pc2-page",
             header { class: "pc2-page-head",
-                div { p { class: "eyebrow", "pChronicle" } h1 { "Trajectory runs" } p { "Inspect agent execution, captured latency, and explicit failures." } }
+                div { p { class: "eyebrow", "pChronicle" } h1 { "Runs" } p { "Inspect agent execution, latency, tool use, and failures." } }
                 button { class: "button", onclick: on_refresh, "↻ Refresh" }
             }
             div { class: "pc2-filterbar",
-                label { class: "pc2-filter-search", span { "⌕" } input { value: "{query}", placeholder: "Agent, session, root, or status", aria_label: "Search trajectory runs", oninput: move |event| on_query.call(event.value()) } }
+                label { class: "pc2-filter-search", span { "⌕" } input { value: "{query}", placeholder: "Agent, session, root, or status", aria_label: "Search runs", oninput: move |event| on_query.call(event.value()) } }
                 select { value: "{dataset}", aria_label: "Filter by Dataset", onchange: move |event| on_dataset.call(event.value()),
                     option { value: "all", "All Datasets" }
                     for mounted in datasets { option { value: "{mounted.name}", "{mounted.name}" } }
@@ -761,7 +762,7 @@ fn RunsExplorer(
                         if loading && page.is_none() {
                             for _ in 0..6 { tr { class: "pc2-table-skeleton", td { colspan: "5" } } }
                         } else if page.as_ref().is_none_or(|page| page.records.is_empty()) {
-                            tr { td { colspan: "5", div { class: "pc2-empty", strong { "No matching trajectories" } span { "Adjust the filters or refresh the local store." } } } }
+                            tr { td { colspan: "5", div { class: "pc2-empty", strong { "No matching runs" } span { "Adjust the filters or refresh the datasets." } } } }
                         } else {
                             for item in page.as_ref().unwrap().records.iter() {
                                 RunTableRow { key: "{item.run.dataset}/{item.run.file}/{item.run.session_id}", item: item.clone(), on_select }
@@ -844,12 +845,12 @@ fn RunDetailWorkspace(
             header { class: "pc2-detail-head",
                 div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, "← Runs" } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
                 div { class: "pc2-head-actions",
-                    button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" }
+                    button { class: "button primary", onclick: on_open_copilot, "◇ Ask Assistant" }
                     button { class: "button", onclick: { let run = run.clone(); move |_| on_analyze.call(run.clone()) }, "Analyze this run" }
                     if analysis.event_provenance == EventProvenance::Canonical {
                         a { class: "button", href: "/api/export/otlp?{run.query()}", "OTLP" }
                     } else {
-                        button { class: "button", disabled: true, title: "OTLP export requires canonical events", "OTLP unavailable · synthetic" }
+                        button { class: "button", disabled: true, title: "OTLP export requires recorded events", "OTLP unavailable · Reconstructed events" }
                     }
                 }
             }
@@ -861,10 +862,10 @@ fn RunDetailWorkspace(
                     on_open_analysis: move |_| on_detail_mode.call("analysis".into()),
                 }
             }
-            nav { class: "pc2-detail-tabs", aria_label: "Trajectory detail view",
-                button { class: if detail_mode == "trace" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("trace".into()), "Trace" }
+            nav { class: "pc2-detail-tabs", aria_label: "Run detail view",
+                button { class: if detail_mode == "trace" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("trace".into()), {TIMELINE} }
                 button { class: if detail_mode == "analysis" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("analysis".into()), "Analysis" }
-                span { "{turns.len()} of {analysis.turn_count} turns loaded for interactive charts" }
+                span { "{turns.len()} of {analysis.turn_count} steps loaded for interactive charts" }
             }
             if detail_mode == "analysis" {
                 AnalysisWorkspace {
@@ -878,20 +879,20 @@ fn RunDetailWorkspace(
             } else {
                 section { class: "pc2-trace-surface pc2-inline-trace",
                     div { class: "pc2-trace-toolbar",
-                        div { strong { if steps_active { "Steps" } else { "Chats" } } span { "Bars sit at each turn's place in the session · colored by type · sequence is not wall-clock time · expand a row for evidence" } }
+                        div { strong { if steps_active { "Steps" } else { "Conversations" } } span { "Bars show each step's place in the run · colors show type · sequence is not wall-clock time · expand a row for details" } }
                         div { class: "pc2-toolbar-controls",
-                            div { class: "pc2-view-toggle", role: "group", aria_label: "Trace layout",
-                                button { class: if chats_active { "active" } else { "" }, onclick: move |_| on_view.call("chats".to_string()), "Chats" }
-                                button { class: if steps_active { "active" } else { "" }, onclick: move |_| on_view.call("steps".to_string()), "Steps" }
+                            div { class: "pc2-view-toggle", role: "group", aria_label: "Timeline layout",
+                                button { class: if chats_active { "active" } else { "" }, onclick: move |_| on_view.call("chats".to_string()), "Conversations" }
+                                button { class: if steps_active { "active" } else { "" }, onclick: move |_| on_view.call("steps".to_string()), {STEPS} }
                             }
-                            select { value: "{source}", aria_label: "Filter turns by source", onchange: move |event| on_source.call(event.value()), option { value: "all", "All sources" } option { value: "user", "User" } option { value: "agent", "Agent" } option { value: "system", "System" } }
-                            input { value: "{query}", placeholder: "Filter loaded evidence", aria_label: "Filter turns", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| if event.key() == Key::Enter { on_apply_filter.call(()) } }
-                            button { class: "pc2-icon", aria_label: "Apply turn filter", onclick: move |_| on_apply_filter.call(()), "⌕" }
+                            select { value: "{source}", aria_label: "Filter steps by role", onchange: move |event| on_source.call(event.value()), option { value: "all", "All roles" } option { value: "user", "User" } option { value: "agent", "Agent" } option { value: "system", "System" } }
+                            input { value: "{query}", placeholder: "Filter loaded steps", aria_label: "Filter steps", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| if event.key() == Key::Enter { on_apply_filter.call(()) } }
+                            button { class: "pc2-icon", aria_label: "Apply step filter", onclick: move |_| on_apply_filter.call(()), "⌕" }
                         }
                     }
                     div { class: "pc2-turn-list pc2-span-scroll",
-                        if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing evidence…" } }
-                        if turns.is_empty() { div { class: "pc2-empty", strong { "No visible turns" } span { "No compact turn evidence matches this filter." } } }
+                        if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing run details…" } }
+                        if turns.is_empty() { div { class: "pc2-empty", strong { "No visible steps" } span { "No loaded steps match this filter." } } }
                         else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, context: storyline.map(|snapshot| snapshot.turns), view: view_for_list, source: source_for_list, query: query_for_list, on_turn } }
                     }
                 }
@@ -903,7 +904,7 @@ fn RunDetailWorkspace(
 #[component]
 fn MetricsStrip(analysis: RunAnalysis) -> Element {
     rsx! { div { class: "pc2-metrics",
-        Metric { label: "Turns", value: analysis.turn_count.to_string(), detail: format!("{} {}", analysis.event_count, analysis.event_provenance.evidence_label()) }
+        Metric { label: "Steps", value: analysis.turn_count.to_string(), detail: format!("{} {}", analysis.event_count, analysis.event_provenance.display_label().to_ascii_lowercase()) }
         Metric { label: "Tools", value: analysis.tool_call_count.to_string(), detail: format!("{} tool names", analysis.tools.len()) }
         Metric { label: "Explicit errors", value: analysis.error_count.to_string(), detail: "Captured signals only" }
         Metric { label: "Tokens", value: analysis.total_tokens.map(|value| value.to_string()).unwrap_or_else(|| "—".into()), detail: format!("in {} · out {}", optional_u64(analysis.prompt_tokens), optional_u64(analysis.completion_tokens)) }
@@ -999,7 +1000,7 @@ fn AnalysisWorkspace(
     let mut tab = use_signal(|| "overview".to_string());
     let active = tab();
     rsx! { section { class: "pc2-analysis-workspace",
-        nav { class: "pc2-analysis-tabs", aria_label: "Analysis dimension",
+        nav { class: "pc2-analysis-tabs", aria_label: "Analysis view",
             AnalysisTab { value: "overview", label: "Overview", active: active.clone(), on_select: move |value| tab.set(value) }
             AnalysisTab { value: "performance", label: "Performance", active: active.clone(), on_select: move |value| tab.set(value) }
             AnalysisTab { value: "tokens", label: "Tokens", active: active.clone(), on_select: move |value| tab.set(value) }
@@ -1035,16 +1036,16 @@ fn OverviewAnalysis(analysis: RunAnalysis, turns: Vec<TurnSummary>) -> Element {
         _ => "No captured timestamps".into(),
     };
     rsx! { div { class: "pc2-analysis-grid overview",
-        AnalysisCard { title: "Execution composition", subtitle: "Turns grouped by captured source",
+        AnalysisCard { title: "Execution composition", subtitle: "Steps grouped by recorded role",
             DimensionBars { items: analysis.source_breakdown.clone(), tone: "blue" }
         }
-        AnalysisCard { title: "Behavior mix", subtitle: "Effective trajectory turn kinds",
+        AnalysisCard { title: "Behavior mix", subtitle: "Recorded step types",
             DimensionBars { items: analysis.kind_breakdown.clone(), tone: "violet" }
         }
-        AnalysisCard { title: "Model mix", subtitle: "Per-turn model attribution and coverage",
+        AnalysisCard { title: "Model mix", subtitle: "Model usage and coverage by step",
             DimensionBars { items: analysis.model_breakdown.clone(), tone: "green" }
         }
-        AnalysisCard { title: "Evidence coverage", subtitle: "What can be measured without inference",
+        AnalysisCard { title: "Data coverage", subtitle: "Available measurements and missing values",
             div { class: "pc2-coverage-list",
                 CoverageRow { label: "Latency", observed: analysis.latency_ms.sample_count, total: analysis.latency_ms.total_count }
                 CoverageRow { label: "TTFT", observed: analysis.ttft_ms.sample_count, total: analysis.ttft_ms.total_count }
@@ -1057,8 +1058,8 @@ fn OverviewAnalysis(analysis: RunAnalysis, turns: Vec<TurnSummary>) -> Element {
             code { "{elapsed}" }
             div { class: "pc2-run-span-meta",
                 span { strong { "{analysis.models.len()}" } " models" }
-                span { strong { "{analysis.event_count}" } " {analysis.event_provenance.evidence_label()}" }
-                span { strong { "{analysis.error_count}" } " explicit-error turns" }
+                span { strong { "{analysis.event_count}" } " {analysis.event_provenance.display_label().to_ascii_lowercase()}" }
+                span { strong { "{analysis.error_count}" } " steps with explicit errors" }
             }
         }
     } }
@@ -1089,17 +1090,17 @@ fn PerformanceAnalysis(
             }
         }
         article { class: "pc2-analysis-card wide",
-            header { div { h3 { "Latency by turn" } p { "Chronological, normalized to the slowest loaded turn · click a bar for evidence" } } }
+            header { div { h3 { "Latency by step" } p { "Ordered by sequence and normalized to the slowest loaded step · select a bar for details" } } }
             TurnMetricChart { turns: turns.clone(), metric: "latency", on_turn }
         }
         article { class: "pc2-analysis-card wide",
-            header { div { h3 { "Slowest turns" } p { "Highest observed end-to-end latency in the loaded interactive set" } } }
+            header { div { h3 { "Slowest steps" } p { "Highest observed end-to-end latency among the loaded steps" } } }
             div { class: "pc2-ranked-list",
-                if slowest.is_empty() { EmptyAnalysis { label: "No per-turn latency samples" } }
+                if slowest.is_empty() { EmptyAnalysis { label: "No latency samples by step" } }
                 for (index, (turn, latency)) in slowest.into_iter().enumerate() {
                     button { onclick: move |_| on_turn.call(turn.id),
                         span { class: "pc2-rank", "{index + 1}" }
-                        span { class: "pc2-ranked-copy", strong { "Turn #{turn.id} · {turn.source}" } small { "{short(&turn.preview, 100)}" } }
+                        span { class: "pc2-ranked-copy", strong { "Step #{turn.id} · {turn.source}" } small { "{short(&turn.preview, 100)}" } }
                         code { "{format_ms(latency)}" }
                     }
                 }
@@ -1132,7 +1133,7 @@ fn TokenAnalysis(
             div { class: "pc2-token-legend", span { i { class: "prompt" } "Prompt {prompt}" } span { i { class: "completion" } "Completion {completion}" } }
         }
         article { class: "pc2-analysis-card wide",
-            header { div { h3 { "Tokens by turn" } p { "Prompt + completion stacks · click a bar for full evidence" } } }
+            header { div { h3 { "Tokens by step" } p { "Prompt and completion tokens · select a bar for details" } } }
             TurnMetricChart { turns: turns.clone(), metric: "tokens", on_turn }
         }
         AnalysisCard { title: "Tokens by source", subtitle: "Full-run aggregate by captured source",
@@ -1151,7 +1152,7 @@ fn ToolAnalysis(tools: Vec<ToolAggregate>) -> Element {
     let max_count = tools.iter().map(|tool| tool.count).max().unwrap_or(0);
     rsx! { div { class: "pc2-analysis-grid tools",
         article { class: "pc2-analysis-card wide",
-            header { div { h3 { "Tool performance" } p { "Frequency, observed duration, and association with explicit-error turns" } } span { "{tools.len()} tools" } }
+            header { div { h3 { "Tool performance" } p { "Frequency, observed duration, and association with steps that reported errors" } } span { "{tools.len()} tools" } }
             div { class: "pc2-tool-table",
                 div { class: "pc2-tool-head", span { "Tool" } span { "Calls" } span { "Observed duration" } span { "Average" } span { "Max" } span { "Error-linked" } }
                 if tools.is_empty() { EmptyAnalysis { label: "No tool calls captured" } }
@@ -1179,7 +1180,7 @@ fn AnalysisCard(title: &'static str, subtitle: &'static str, children: Element) 
 fn DimensionBars(items: Vec<DimensionAggregate>, tone: &'static str) -> Element {
     let max = items.iter().map(|item| item.turn_count).max().unwrap_or(0);
     rsx! { div { class: "pc2-dimension-list {tone}",
-        if items.is_empty() { EmptyAnalysis { label: "No dimension values captured" } }
+        if items.is_empty() { EmptyAnalysis { label: "No values captured" } }
         for item in items {
             div { class: "pc2-dimension-row",
                 div { span { title: "{item.name}", "{item.name}" } code { "{item.turn_count}" } }
@@ -1203,7 +1204,7 @@ fn TokenDimensionBars(items: Vec<DimensionAggregate>) -> Element {
             div { class: "pc2-dimension-row",
                 div { span { title: "{item.name}", "{item.name}" } code { {item.total_tokens.unwrap_or_default().to_string()} } }
                 span { class: "pc2-dimension-track", i { style: format!("width:{}%", percent(item.total_tokens.unwrap_or_default() as f64, max as f64)) } }
-                small { "Across {item.turn_count} turns" }
+                small { "Across {item.turn_count} steps" }
             }
         }
     } }
@@ -1248,17 +1249,17 @@ fn TurnMetricChart(
         .fold(0.0f64, f64::max);
     rsx! { div { class: "pc2-turn-chart",
         if max <= 0.0 {
-            if metric == "tokens" { EmptyAnalysis { label: "No per-turn token samples" } }
-            else { EmptyAnalysis { label: "No per-turn latency samples" } }
+            if metric == "tokens" { EmptyAnalysis { label: "No token samples by step" } }
+            else { EmptyAnalysis { label: "No latency samples by step" } }
         }
         else { div { class: "pc2-turn-bars",
             for turn in visible {
-                button { aria_label: "Open turn {turn.id}", title: format!("Turn #{} · {} · {}", turn.id, turn.source, metric_value(&turn, metric)), onclick: move |_| on_turn.call(turn.id),
+                button { aria_label: "Open step {turn.id}", title: format!("Step #{} · {} · {}", turn.id, turn.source, metric_value(&turn, metric)), onclick: move |_| on_turn.call(turn.id),
                     i { class: "{turn.source}", style: format!("height:{}%", percent(turn_metric(&turn, metric).unwrap_or_default(), max)) }
                 }
             }
         } }
-        if turns.len() > 120 { p { class: "pc2-chart-note", "Evenly sampled 120 of {turns.len()} loaded turns" } }
+        if turns.len() > 120 { p { class: "pc2-chart-note", "Showing an even sample of 120 from {turns.len()} loaded steps" } }
     } }
 }
 
@@ -1267,12 +1268,13 @@ fn EmptyAnalysis(label: &'static str) -> Element {
     rsx! { div { class: "pc2-analysis-empty", "{label}" } }
 }
 
-const COPILOT_WIDE_KEY: &str = "pchronicle_copilot_wide";
+// Keep the legacy key so existing browser preferences survive the UI rename.
+const ASSISTANT_WIDE_KEY: &str = "pchronicle_copilot_wide";
 
 fn load_copilot_wide() -> bool {
     web_sys::window()
         .and_then(|window| window.local_storage().ok().flatten())
-        .and_then(|storage| storage.get_item(COPILOT_WIDE_KEY).ok().flatten())
+        .and_then(|storage| storage.get_item(ASSISTANT_WIDE_KEY).ok().flatten())
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }
@@ -1284,10 +1286,10 @@ fn save_copilot_wide(wide: bool) {
     let Some(storage) = window.local_storage().ok().flatten() else {
         return;
     };
-    let _ = storage.set_item(COPILOT_WIDE_KEY, if wide { "1" } else { "0" });
+    let _ = storage.set_item(ASSISTANT_WIDE_KEY, if wide { "1" } else { "0" });
 }
 
-fn copilot_panel_class(wide: bool) -> &'static str {
+fn assistant_panel_class(wide: bool) -> &'static str {
     if wide {
         "pc2-copilot wide"
     } else {
@@ -1295,7 +1297,7 @@ fn copilot_panel_class(wide: bool) -> &'static str {
     }
 }
 
-const COPILOT_CHAT_ID: &str = "pc2-copilot-chat";
+const ASSISTANT_CHAT_ID: &str = "pc2-copilot-chat";
 const COPILOT_FOLLOW_THRESHOLD: f64 = 48.0;
 
 fn copilot_distance_from_bottom(scroll_top: f64, client_height: f64, scroll_height: f64) -> f64 {
@@ -1314,7 +1316,7 @@ fn copilot_following_after_scroll(following: bool, near_bottom: bool) -> bool {
 fn copilot_chat_element() -> Option<web_sys::Element> {
     web_sys::window()?
         .document()?
-        .get_element_by_id(COPILOT_CHAT_ID)
+        .get_element_by_id(ASSISTANT_CHAT_ID)
 }
 
 fn copilot_chat_is_near_bottom() -> bool {
@@ -1336,12 +1338,12 @@ fn scroll_copilot_chat_to_bottom() {
 }
 
 #[component]
-fn CopilotWideToggle(wide: bool, on_toggle: EventHandler<MouseEvent>) -> Element {
+fn AssistantWideToggle(wide: bool, on_toggle: EventHandler<MouseEvent>) -> Element {
     rsx! {
         button {
             class: "pc2-copilot-wide-toggle",
-            aria_label: if wide { "Restore Copilot width" } else { "Expand Copilot to two-thirds width" },
-            title: if wide { "Restore Copilot width" } else { "Expand Copilot to two-thirds of the screen" },
+            aria_label: if wide { "Restore Assistant width" } else { "Expand Assistant to two-thirds width" },
+            title: if wide { "Restore Assistant width" } else { "Expand Assistant to two-thirds of the screen" },
             aria_pressed: wide,
             onclick: on_toggle,
             if wide { "⤡" } else { "⤢" }
@@ -1350,7 +1352,7 @@ fn CopilotWideToggle(wide: bool, on_toggle: EventHandler<MouseEvent>) -> Element
 }
 
 #[component]
-fn CopilotPanel(
+fn AssistantPanel(
     run: Option<RunSummary>,
     analysis: Option<RunAnalysis>,
     turns: Vec<TurnSummary>,
@@ -1359,7 +1361,7 @@ fn CopilotPanel(
     on_toggle_wide: EventHandler<MouseEvent>,
     on_close: EventHandler<MouseEvent>,
     on_turn: EventHandler<i64>,
-    on_open_session: EventHandler<CopilotSessionMeta>,
+    on_open_session: EventHandler<AssistantSessionMeta>,
 ) -> Element {
     let mut index = use_signal(|| load_index(&BrowserStore));
     let mut session_id = use_signal(|| None::<String>);
@@ -1407,7 +1409,7 @@ fn CopilotPanel(
         let config_value = config();
         if !config_value.is_configured() {
             const CONFIGURE_MESSAGE: &str =
-                "Configure an OpenAI-compatible model in Settings before asking Copilot.";
+                "Configure an OpenAI-compatible model in Settings before asking Assistant.";
             settings.set(true);
             let mut next_thread = thread();
             let already_shown = next_thread.messages.last().is_some_and(|message| {
@@ -1502,16 +1504,16 @@ fn CopilotPanel(
     let title = title_from_thread(&thread());
     let new_chat_enabled = can_start_new_chat(run.is_some(), &thread()) && !busy();
     let context_line = match (&run, &analysis, selected.as_ref()) {
-        (None, _, _) => "Open a trajectory to start a chat.".to_string(),
-        (Some(_), None, _) => "Loading trajectory evidence…".to_string(),
+        (None, _, _) => "Open a run to start a chat.".to_string(),
+        (Some(_), None, _) => "Loading run details…".to_string(),
         (Some(_), Some(_), Some(detail)) => format!("Step {} in context", detail.summary.id),
-        (Some(_), Some(_), None) => "Current trajectory in context".to_string(),
+        (Some(_), Some(_), None) => "Current run in context".to_string(),
     };
     let composer_enabled = run.is_some() && analysis.is_some() && !busy();
     let sessions = index().sessions;
-    rsx! { aside { class: copilot_panel_class(wide),
+    rsx! { aside { class: assistant_panel_class(wide),
         div { class: "pc2-copilot-head",
-            div { class: "pc2-copilot-head-title", strong { "{title}" } span { "Read-only · minimal evidence" } }
+            div { class: "pc2-copilot-head-title", strong { "{title}" } span { "Read-only · selected run data" } }
             div { class: "pc2-copilot-actions",
                 button {
                     aria_label: "New chat",
@@ -1534,12 +1536,12 @@ fn CopilotPanel(
                     "◷"
                 }
                 button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" }
-                CopilotWideToggle { wide, on_toggle: on_toggle_wide }
-                button { aria_label: "Close Copilot", onclick: on_close, "×" }
+                AssistantWideToggle { wide, on_toggle: on_toggle_wide }
+                button { aria_label: "Close Assistant", onclick: on_close, "×" }
             }
         }
         if history_open() {
-            div { class: "pc2-copilot-history", role: "listbox", aria_label: "Copilot history",
+            div { class: "pc2-copilot-history", role: "listbox", aria_label: "Assistant history",
                 if sessions.is_empty() {
                     div { class: "pc2-copilot-history-empty", "No saved chats yet." }
                 }
@@ -1598,19 +1600,19 @@ fn CopilotPanel(
         }
         div { class: "pc2-chat-wrap",
             div {
-                id: COPILOT_CHAT_ID,
+                id: ASSISTANT_CHAT_ID,
                 class: "pc2-chat",
                 onscroll: move |_| {
                     following.set(copilot_following_after_scroll(following(), copilot_chat_is_near_bottom()));
                 },
                 if thread().messages.is_empty() {
-                    div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" }
+                    div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Assistant" }
                         if run.is_none() {
-                            p { "Open a trajectory, or pick a previous chat from history." }
+                            p { "Open a run, or select a previous chat from history." }
                         } else if config().is_configured() {
-                            p { "Copilot can inspect this analysis, examine a turn, or run read-only SQL." }
+                            p { "Assistant can inspect this analysis, examine a step, or run read-only SQL." }
                         } else {
-                            p { "Configure an OpenAI-compatible model in Settings before asking Copilot." }
+                            p { "Configure an OpenAI-compatible model in Settings before asking Assistant." }
                         }
                     }
                 }
@@ -1654,7 +1656,7 @@ fn CopilotPanel(
             textarea {
                 value: "{input}",
                 rows: "2",
-                placeholder: if run.is_none() { "Open a trajectory to start a chat…" } else if analysis.is_none() { "Loading trajectory evidence…" } else { "Ask about this trajectory…" },
+                placeholder: if run.is_none() { "Open a run to start a chat…" } else if analysis.is_none() { "Loading run details…" } else { "Ask about this run…" },
                 oninput: move |event| input.set(event.value()),
                 onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); submit_copilot.call(()); },
                 disabled: !composer_enabled
@@ -1688,7 +1690,7 @@ fn ChatBubble(
             div { class: "pc2-message tool",
                 span { class: "pc2-action-label", "Running {action} ›" }
                 if !message.text.trim().is_empty() {
-                    details { summary { "Tool evidence" } pre { "{message.text}" } }
+                    details { summary { "Tool output" } pre { "{message.text}" } }
                 }
             }
         };
@@ -1704,15 +1706,15 @@ fn ChatBubble(
                     let visible = turns.iter().filter(|turn| trajectory.turn_ids.contains(&turn.id)).cloned().collect::<Vec<_>>();
                     rsx! { div { key: "trajectory-{index}", class: "pc2-chat-component",
                         if let Some(title) = trajectory.title { strong { class: "pc2-chat-component-title", "{title}" } }
-                        if visible.is_empty() { div { class: "pc2-data-empty", "Referenced turns are outside the loaded evidence window." } }
+                        if visible.is_empty() { div { class: "pc2-data-empty", "Referenced steps are outside the loaded data window." } }
                         else { TrajectoryView { turns: visible, expanded_turn_id: None, detail: None, loading: false, embedded: true, view: "steps".to_string(), on_turn } }
                     } }
                 },
             }
         }
         if let Some(sql) = &message.sql { details { class: "pc2-message-sql", summary { "Executed read-only SQL" } pre { "{sql}" } } }
-        if message.truncated { div { class: "pc2-truncated", "Evidence was bounded or truncated; conclusions may be incomplete." } }
-        if !refs.is_empty() { div { class: "pc2-citations", for id in refs { button { onclick: move |_| on_turn.call(id), "Turn #{id}" } } } }
+        if message.truncated { div { class: "pc2-truncated", "The available data was limited or truncated; conclusions may be incomplete." } }
+        if !refs.is_empty() { div { class: "pc2-citations", for id in refs { button { onclick: move |_| on_turn.call(id), "Step #{id}" } } } }
     } }
 }
 
@@ -2036,9 +2038,9 @@ mod tests {
     }
 
     #[test]
-    fn copilot_panel_class_marks_expanded_width() {
-        assert_eq!(copilot_panel_class(false), "pc2-copilot");
-        assert_eq!(copilot_panel_class(true), "pc2-copilot wide");
+    fn assistant_panel_class_marks_expanded_width() {
+        assert_eq!(assistant_panel_class(false), "pc2-copilot");
+        assert_eq!(assistant_panel_class(true), "pc2-copilot wide");
     }
 
     #[test]
@@ -2194,10 +2196,10 @@ mod tests {
             85,
             "invalid type: integer `1785310111`, expected a string at line 1 column 561",
         );
-        assert_eq!(notice.title, "Turn evidence could not be decoded");
+        assert_eq!(notice.title, "Step details could not be decoded");
         assert_eq!(
             notice.summary,
-            "Turn #85 · Expected string, received integer"
+            "Step #85 · Expected string, received integer"
         );
         assert!(notice.detail.contains("1785310111"));
         assert_eq!(notice.turn_id, Some(85));

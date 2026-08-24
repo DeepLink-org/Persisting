@@ -77,6 +77,7 @@ jobs:
         # from that exact namespace setup boundary; other failures remain fatal.
         env:
           PERSISTING_TEST_ALLOW_NO_USERNS: "1"
+          RUST_MIN_STACK: "8388608"
         run: cargo test --workspace --locked
 
       - name: Test shared event control contract

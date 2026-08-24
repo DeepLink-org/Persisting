@@ -1,6 +1,6 @@
 # pChronicle architecture
 
-This document explains how pChronicle turns trajectory Sources into durable,
+This document explains how pChronicle turns run data sources into durable,
 queryable history. User workflows belong to [Guides](../guides/index.md), exact
 commands to [Reference](../reference/cli.md), and cross-product ownership to
 [System Design](../../system-design/architecture.md).
@@ -11,7 +11,7 @@ commands to [Reference](../reference/cli.md), and cross-product ownership to
 
 pChronicle is a path-first Agent history layer. It discovers local directories
 and object-store prefixes, fixes the Source versions used by an operation,
-normalizes supported representations, and exposes bounded read surfaces.
+normalizes supported representations, and exposes resource-limited read surfaces.
 
 It has four deployment shapes:
 
@@ -64,11 +64,11 @@ a different Dataset identity. Credentials must not be embedded in Dataset URIs.
 
 ```text
 Dataset URI or static mount
-  → bounded discovery
+  → resource-limited discovery
   → immutable Catalog Snapshot
   → Source pruning and lazy open
   → normalized DataFusion relations
-  → bounded CLI, API, or Web result
+  → resource-limited CLI, API, or Web result
 ```
 
 One operation fixes each Source's version reference. Local files use identity
@@ -103,7 +103,7 @@ and-swap alone does not imply merge-and-retry behavior. Unpublished versions and
 unreachable objects require an explicit maintenance path.
 
 The canonical/projection boundary is detailed in
-[Trajectory storage](trajectory-storage.md); the Storyline implementation is
+[Run storage](trajectory-storage.md); the Storyline implementation is
 documented in [Storyline Lance](storyline-lance.md).
 
 ## Read-only Warehouse
@@ -128,7 +128,7 @@ Gateway composition belong to the [`pchronicle` reference](../reference/cli.md).
 | identity | Dataset URI + Source path + original ID remains visible | global uniqueness of external IDs |
 | read consistency | fixed Source references within one operation | global transaction across Sources |
 | publication | previous Snapshot remains readable until new publication succeeds | automatic merge retry for every writer |
-| query | bounded, read-only execution | arbitrary mutation or unbounded service query |
+| query | resource-limited, read-only execution | arbitrary mutation or unlimited service query |
 | projection | lineage and rebuildability where declared | projection freshness without a recorded generation |
 | service | loopback-only static read surface | authenticated multi-tenant Warehouse |
 
@@ -136,10 +136,10 @@ Gateway composition belong to the [`pchronicle` reference](../reference/cli.md).
 
 - [Dataset Catalog](catalog.md): discovery, Snapshot construction, lazy Source
   resolution, and pruning.
-- [Trajectory storage](trajectory-storage.md): canonical facts, physical
-  representations, and write ownership.
+- [Run storage](trajectory-storage.md): canonical facts, storage layouts, and
+  write ownership.
 - [Storyline Lance](storyline-lance.md): three-table projection, content layer,
   publication, and maintenance.
-- [Facts, projections, and revisions](../concepts/facts-and-projections.md): the
+- [Recorded data, views, and versions](../concepts/facts-and-projections.md): the
   user-facing mental model behind these layers.
 - [pChronicle Reference](../reference/index.md): exact CLI and format contracts.

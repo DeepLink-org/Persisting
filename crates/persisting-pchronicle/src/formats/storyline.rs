@@ -891,6 +891,8 @@ mod tests {
             ("openai-msg", "openai-doc", "/session_steps/0/messages/0/0"),
             ("agenticmd", "agenticmd-doc", "/frontmatter/0"),
             ("agenticmd", "agenticmd-doc", "/blocks/0/header/0"),
+            ("codex", "codex-doc", "/events/12"),
+            ("claude-code", "claude-doc", "/events/5"),
             ("future-format", "future-doc", "/items/0/0"),
         ] {
             story
@@ -915,6 +917,8 @@ mod tests {
             story.unknown_key_counts["agenticmd"]["/blocks/*/header/0"],
             1
         );
+        assert_eq!(story.unknown_key_counts["codex"]["/events/*"], 1);
+        assert_eq!(story.unknown_key_counts["claude-code"]["/events/*"], 1);
         assert_eq!(story.unknown_key_counts["future-format"]["/items/0/0"], 1);
         story.validate().unwrap();
     }

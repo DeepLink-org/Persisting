@@ -1,7 +1,7 @@
 # pChronicle Dataset Catalog 设计
 
 > 当前实现说明。Dataset 命令参数见 [`pchronicle` 命令参考](../reference/cli.md)；轨迹物理格式见
-> [pChronicle 轨迹存储](trajectory-storage.md) 与
+> [pChronicle 运行存储](trajectory-storage.md) 与
 > [Storyline 三表 Lance](storyline-lance.md)。
 
 格式 wire contract 与逐字段转换以 [RFC-0001 § Wire schema](../../rfcs/0001-storyline-format.md#wire-schema)、

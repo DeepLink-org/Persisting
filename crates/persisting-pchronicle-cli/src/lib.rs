@@ -194,20 +194,20 @@ enum Command {
     Default(DefaultArgs),
     /// Manage named Dataset aliases, similar to git remote.
     Alias(AliasArgs),
-    /// List trajectory Sources discovered under a Dataset URI.
+    /// List run data sources discovered under a Dataset URI.
     #[command(visible_alias = "list")]
     Ls(ListArgs),
     /// Show Dataset health and aggregate statistics.
     Status(StatusArgs),
     /// Execute read-only SQL over one or more Datasets.
     Query(QueryArgs),
-    /// Run a stable built-in analysis over normalized trajectory tables.
+    /// Run a stable built-in analysis over normalized run tables.
     Analysis(AnalysisArgs),
     /// Start Codex or Claude with a pChronicle Dataset analysis skill.
     Agent(agent::AgentArgs),
-    /// Locate a Run, Trajectory, or Step by its Source-local ID.
+    /// Locate a Run or Step by its source-local ID.
     Find(FindArgs),
-    /// Create a new Dataset from one or more trajectory Sources.
+    /// Create a new Dataset from one or more run data sources.
     Import(ImportArgs),
     /// Export complete Trajectories to an exchange format.
     Export(ExportArgs),
@@ -227,7 +227,7 @@ struct ListArgs {
     #[arg(value_name = "DATASET_URI")]
     dataset_uri: Option<String>,
 
-    /// Include physical size, modification time, and version columns.
+    /// Include storage size, modification time, and version columns.
     #[arg(long)]
     physical: bool,
 
@@ -239,7 +239,7 @@ struct ListArgs {
     #[arg(long, value_enum, default_value_t = ErrorMode::Report)]
     errors: ErrorMode,
 
-    /// Maximum number of trajectory Sources to discover.
+    /// Maximum number of run data sources to discover.
     #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
@@ -333,7 +333,7 @@ struct StatusArgs {
     #[arg(long, value_enum, default_value_t = ErrorMode::Report)]
     errors: ErrorMode,
 
-    /// Maximum number of trajectory Sources to discover.
+    /// Maximum number of run data sources to discover.
     #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
@@ -341,7 +341,7 @@ struct StatusArgs {
     #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
 
-    /// Maximum time for trajectory count queries.
+    /// Maximum time for run count queries.
     #[arg(long = "timeout", alias = "timeout-seconds", value_name = "DURATION", value_parser = parse_duration_seconds, default_value = "30s")]
     timeout_seconds: u64,
 }
@@ -392,7 +392,7 @@ struct QueryArgs {
     #[arg(long = "timeout", alias = "timeout-seconds", value_name = "DURATION", value_parser = parse_duration_seconds, default_value = "30s")]
     timeout_seconds: u64,
 
-    /// Maximum number of trajectory Sources to discover.
+    /// Maximum number of run data sources to discover.
     #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
@@ -412,7 +412,7 @@ enum AnalysisCommand {
     /// Summarize Sources, trajectories, Steps, Agents, Models, and tools.
     #[command(visible_alias = "summary")]
     Overview(AnalysisOptions),
-    /// Aggregate trajectory activity by Agent identity and version.
+    /// Aggregate run activity by Agent identity and version.
     Agents(AnalysisOptions),
     /// Aggregate declared and observed Model usage.
     Models(AnalysisOptions),
@@ -443,7 +443,7 @@ struct AnalysisOptions {
     #[arg(long = "timeout", alias = "timeout-seconds", value_name = "DURATION", value_parser = parse_duration_seconds, default_value = "30s")]
     timeout_seconds: u64,
 
-    /// Maximum number of trajectory Sources to discover.
+    /// Maximum number of run data sources to discover.
     #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
@@ -468,15 +468,15 @@ struct FindArgs {
     #[arg(long)]
     source: Option<String>,
 
-    /// Find Run or Trajectory candidates by Source-local Run ID.
+    /// Find candidates by source-local Run ID.
     #[arg(long)]
     run_id: Option<String>,
 
-    /// Find one trajectory by its stable Source-local document ID.
+    /// Find one run record by its stable source-local document ID.
     #[arg(long)]
     document_id: Option<String>,
 
-    /// Find Trajectory or Step candidates by Source-local Session ID.
+    /// Find Run or Step candidates by source-local Session ID.
     #[arg(long)]
     session_id: Option<String>,
 
@@ -500,7 +500,7 @@ struct FindArgs {
     #[arg(long = "timeout", alias = "timeout-seconds", value_name = "DURATION", value_parser = parse_duration_seconds, default_value = "30s")]
     timeout_seconds: u64,
 
-    /// Maximum number of trajectory Sources to discover.
+    /// Maximum number of run data sources to discover.
     #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
@@ -581,7 +581,7 @@ impl ImportOutputFormat {
 
 #[derive(Debug, Args)]
 struct ImportArgs {
-    /// Input trajectory file or directory, or - for stdin.
+    /// Input run data file or directory, or - for stdin.
     #[arg(short = 'f', long = "from", value_name = "PATH_OR_STDIN")]
     from: String,
 
@@ -590,11 +590,11 @@ struct ImportArgs {
     output: Option<String>,
 
     /// Input exchange format. Auto detects each regular file from name and content.
-    /// Directory imports skip JSON that is not a known trajectory format.
+    /// Directory imports skip JSON that is not a supported run data format.
     #[arg(short = 'i', long = "input-format", alias = "format", value_enum, default_value_t = ExchangeFormat::Auto)]
     format: ExchangeFormat,
 
-    /// Physical Dataset output: preserve source files, or squash into one Storyline Lance Store at the Dataset root.
+    /// Dataset layout: preserve source files, or combine them into one Storyline Lance Store at the Dataset root.
     #[arg(short = 'o', long = "output-format", value_enum)]
     output_format: Option<ImportOutputFormat>,
 
@@ -666,11 +666,11 @@ struct ExportArgs {
     #[arg(long, value_parser = parse_byte_size, default_value = "64MiB")]
     max_output_bytes: usize,
 
-    /// Maximum time for address selection and Storyline loading.
+    /// Maximum time for address selection and run loading.
     #[arg(long = "timeout", alias = "timeout-seconds", value_name = "DURATION", value_parser = parse_duration_seconds, default_value = "30s")]
     timeout_seconds: u64,
 
-    /// Maximum number of trajectory Sources to discover.
+    /// Maximum number of run data sources to discover.
     #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
@@ -757,7 +757,7 @@ struct ServeArgs {
     #[arg(long, requires = "gateway")]
     gateway_stream_markdown: bool,
 
-    /// Print Gateway diagnostics, including bounded request/response bodies, to stderr.
+    /// Print Gateway diagnostics, including size-limited request/response bodies, to stderr.
     #[arg(long = "gateway-debug", alias = "debug", requires = "gateway")]
     debug: bool,
 }

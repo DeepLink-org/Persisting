@@ -1,6 +1,6 @@
-# 查看轨迹 Dataset
+# 查看 Run Dataset
 
-pChronicle 使用同一套接口读取本地、对象存储或用户 alias 指向的 Agent 轨迹。除非显式运行带
+pChronicle 使用同一套接口读取本地、对象存储或用户 alias 指向的 Agent 运行记录。除非显式运行带
 目标位置的 `import` 或 `export`，命令不会修改 Dataset。
 
 ## 1. 不准备数据，直接体验
@@ -26,7 +26,7 @@ pchronicle ls ./trajectory-data
 pchronicle analysis overview ./trajectory-data
 ```
 
-`ls` 显示 pChronicle 可以使用的轨迹数据；`analysis overview` 无需编写 SQL，即可给出稳定汇总。
+`ls` 显示 pChronicle 可以使用的 Run 数据；`analysis overview` 无需编写 SQL，即可给出稳定汇总。
 
 ## 3. 提出一个具体问题
 
@@ -38,7 +38,7 @@ pchronicle query ./trajectory-data \
          ORDER BY source'
 ```
 
-查询是有界、只读的。pChronicle 会在语义对齐时，把支持的轨迹格式规范化为公共的 `runs`、
+查询只读，并受明确的资源上限约束。pChronicle 会在语义对齐时，把支持的运行数据格式规范化为公共的 `runs`、
 `steps` 和 `tool_calls` 表。
 
 ## 你刚刚完成了什么
@@ -48,7 +48,8 @@ pchronicle query ./trajectory-data \
 按任务继续：
 
 - [发现并查询自己的 Dataset](guides/discover-and-query.md)
-- [导入或导出轨迹](guides/exchange.md)
+- [导入或导出 Run](guides/exchange.md)
+- [查看统一产品术语](reference/terminology.zh.md)
 - [使用 alias 并查阅完整命令行](reference/cli.md)
 - [使用 pVisor 采集新 Run](../pvisor/guides/capture.md)
 - [理解 Dataset 接口](concepts/index.md)

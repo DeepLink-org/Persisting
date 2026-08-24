@@ -1,6 +1,6 @@
 # 发现并查询 Dataset
 
-当你已有本地路径、对象存储 URI 或 alias，希望先理解其中的轨迹数据再编写报告时，使用这个
+当你已有本地路径、对象存储 URI 或 alias，希望先理解其中的 Run 数据再编写报告时，使用这个
 工作流。
 
 ## 1. 检查 Dataset
@@ -10,7 +10,7 @@ pchronicle ls ./dataset
 pchronicle status ./dataset
 ```
 
-`ls` 显示 pChronicle 发现的、可以独立查询的轨迹数据项；`status` 汇总 Dataset 是否可用以及
+`ls` 显示 pChronicle 发现的、可以独立查询的 Run 数据源；`status` 汇总 Dataset 是否可用以及
 包含哪些数据。自动化中使用 JSON 输出：
 
 ```bash
@@ -44,7 +44,7 @@ pchronicle query ./dataset --sql "DESCRIBE dataset.steps"
 常见关系包括 `sources`、`runs`、`steps`、`tool_calls`、`events` 和 `trajectories`；实际可用
 关系取决于 Dataset 内容。
 
-## 4. 提出有界问题
+## 4. 提出受资源上限保护的问题
 
 ```bash
 pchronicle query ./dataset \

@@ -1,7 +1,7 @@
-# Import and export trajectories
+# Import and export Runs
 
 Use import and export at the interoperability boundary. Import creates a new
-Dataset; export reads complete trajectories from an existing Dataset.
+Dataset; export reads complete Runs from an existing Dataset.
 Import and export accept ATIF, ACTF, OpenAI Messages, and Storyline JSON.
 Import also accepts decode-only Codex (`codex`) and Claude Code (`claude-code`)
 session JSONL. Export refuses those two formats.
@@ -18,7 +18,7 @@ silently appending or replacing it. Regular files can be auto-detected. A
 directory recursively imports `.json`, `.jsonl`, and `.ndjson` files while
 preserving their relative paths in the default output. When `--input-format` is
 omitted, each file is detected independently; JSON that is not a known
-trajectory format is skipped with a warning:
+run data format is skipped with a warning:
 
 ```bash
 pchronicle import --from ./corpus --to ./imported
@@ -57,13 +57,13 @@ pchronicle query ./normalized \
 
 `document_id` and `session_id` must be globally unique across the inputs. A
 collision fails the complete import and names both original paths. Successful
-Storyline output does not retain those paths as query provenance; use the
+Storyline output does not retain those paths as queryable source information; use the
 default preserve output when file boundaries matter.
 
 ATIF `.jsonl` and `.ndjson` inputs decode every non-empty record. Symbolic
 links found while walking a directory are skipped; an explicitly named link to
 a regular file retains single-file behavior. The directory is published
-atomically only after every input and the selected physical output succeed.
+atomically only after every input and the selected storage output succeed.
 Stdin must be finite and explicit:
 
 ```bash
@@ -78,7 +78,7 @@ pchronicle status ./imported
 pchronicle analysis overview ./imported
 ```
 
-## Export complete trajectories
+## Export complete Runs
 
 ```bash
 pchronicle export --from ./imported \
@@ -96,6 +96,6 @@ pchronicle export --from ./imported --to one.json --output-format actf \
 document. Output files are create-only unless overwrite is requested explicitly.
 
 Import/export is not a storage migration protocol and arbitrary SQL rows are
-not exportable trajectories. See [Trajectory formats](../reference/formats/index.md)
+not exportable Runs. See [Run data formats](../reference/formats/index.md)
 for contracts and [data contracts and revisions](../concepts/facts-and-projections.md)
 for the internal layer boundary.
