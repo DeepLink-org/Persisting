@@ -121,7 +121,13 @@ class SessionBase:
         raise NotImplementedError
 
     def create_scalar_index(
-        self, table_name: str, column: str, *, partition=None, index_type: str = "BTREE"
+        self,
+        table_name: str,
+        column: str,
+        *,
+        partition=None,
+        index_type: str = "BTREE",
+        wait_timeout: Optional[timedelta] = None,
     ):
         raise NotImplementedError
 
@@ -167,6 +173,8 @@ class SessionBase:
         retrain: bool = False,
         batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
         max_source_fragments: Optional[int] = None,
+        max_unindexed_rows: Optional[int] = None,
+        max_unindexed_ratio: Optional[float] = None,
     ):
         raise NotImplementedError
 
@@ -178,6 +186,8 @@ class SessionBase:
         retrain: bool = False,
         num_indices_to_merge: Optional[int] = None,
         index_names: Optional[List[str]] = None,
+        max_unindexed_rows: Optional[int] = None,
+        max_unindexed_ratio: Optional[float] = None,
     ) -> None:
         raise NotImplementedError
 
@@ -432,10 +442,18 @@ class LanceSession(SessionBase):
         )
 
     def create_scalar_index(
-        self, table_name: str, column: str, *, partition=None, index_type: str = "BTREE"
+        self,
+        table_name: str,
+        column: str,
+        *,
+        partition=None,
+        index_type: str = "BTREE",
+        wait_timeout: Optional[timedelta] = None,
     ):
         table = self._get_table(table_name, partition)
-        return table.create_scalar_index(column, partition, index_type)
+        return table.create_scalar_index(
+            column, partition, index_type, wait_timeout=wait_timeout
+        )
 
     def list_indices(self, table_name: str, partition=None) -> list[IndexConfig]:
         table = self._get_table(table_name, partition)
@@ -492,6 +510,8 @@ class LanceSession(SessionBase):
         retrain: bool = False,
         batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
         max_source_fragments: Optional[int] = None,
+        max_unindexed_rows: Optional[int] = None,
+        max_unindexed_ratio: Optional[float] = None,
     ):
         table = self._get_table(table_name, partition)
         return table.optimize(
@@ -501,6 +521,8 @@ class LanceSession(SessionBase):
             retrain=retrain,
             batch_size=batch_size,
             max_source_fragments=max_source_fragments,
+            max_unindexed_rows=max_unindexed_rows,
+            max_unindexed_ratio=max_unindexed_ratio,
         )
 
     def optimize_indices(
@@ -511,6 +533,8 @@ class LanceSession(SessionBase):
         retrain: bool = False,
         num_indices_to_merge: Optional[int] = None,
         index_names: Optional[List[str]] = None,
+        max_unindexed_rows: Optional[int] = None,
+        max_unindexed_ratio: Optional[float] = None,
     ) -> None:
         table = self._get_table(table_name, partition)
         return table.optimize_indices(
@@ -518,6 +542,8 @@ class LanceSession(SessionBase):
             retrain=retrain,
             num_indices_to_merge=num_indices_to_merge,
             index_names=index_names,
+            max_unindexed_rows=max_unindexed_rows,
+            max_unindexed_ratio=max_unindexed_ratio,
         )
 
     def drop_table(self, table_name: str, partition=None):

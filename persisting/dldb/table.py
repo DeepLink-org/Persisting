@@ -9,6 +9,7 @@ import pyarrow as pa
 from dldb.utils import filter_values, schema_from_string, schema_to_string, stable_hash
 from lancedb import LanceDBConnection
 from lancedb.index import IndexConfig
+from loguru import logger
 
 
 DEFAULT_COMPACT_BATCH_SIZE = 64
@@ -23,6 +24,93 @@ class IndexCoverage:
     num_indexed_rows: Optional[int]
     num_unindexed_rows: Optional[int]
     fully_indexed: bool
+
+
+def _unindexed_ratio(coverage: IndexCoverage) -> Optional[float]:
+    indexed = coverage.num_indexed_rows or 0
+    unindexed = coverage.num_unindexed_rows or 0
+    denom = indexed + unindexed
+    if denom == 0:
+        return 0.0
+    return unindexed / denom
+
+
+def _worst_index_coverage(rows: List[IndexCoverage]) -> Optional[IndexCoverage]:
+    if not rows:
+        return None
+
+    def sort_key(row: IndexCoverage):
+        return (row.num_unindexed_rows or 0, _unindexed_ratio(row) or 0.0)
+
+    return max(rows, key=sort_key)
+
+
+def _partition_coverage_failure(
+    rows: List[IndexCoverage],
+    *,
+    max_unindexed_rows: Optional[int],
+    max_unindexed_ratio: Optional[float],
+) -> Optional[IndexCoverage]:
+    if max_unindexed_rows is None and max_unindexed_ratio is None:
+        return None
+    worst = _worst_index_coverage(rows)
+    if worst is None:
+        return None
+    rows_ok = (
+        max_unindexed_rows is None
+        or (worst.num_unindexed_rows or 0) <= max_unindexed_rows
+    )
+    ratio = _unindexed_ratio(worst)
+    ratio_ok = max_unindexed_ratio is None or (
+        ratio is not None and ratio <= max_unindexed_ratio
+    )
+    if rows_ok and ratio_ok:
+        return None
+    return worst
+
+
+def _raise_if_coverage_failures(failures: List[IndexCoverage]) -> None:
+    if failures:
+        raise IndexCoverageExceededError(failures)
+
+
+def _run_partitions_with_coverage(
+    table,
+    partitions,
+    body,
+    *,
+    max_unindexed_rows: Optional[int],
+    max_unindexed_ratio: Optional[float],
+):
+    failures: List[IndexCoverage] = []
+    result = None
+    for partition in partitions:
+        result = body(partition)
+        failure = _partition_coverage_failure(
+            table.list_index_coverage(partition=partition),
+            max_unindexed_rows=max_unindexed_rows,
+            max_unindexed_ratio=max_unindexed_ratio,
+        )
+        if failure is not None:
+            failures.append(failure)
+    _raise_if_coverage_failures(failures)
+    return result
+
+
+class IndexCoverageExceededError(Exception):
+    """Raised when a partition's worst index exceeds coverage thresholds."""
+
+    def __init__(self, failures: List[IndexCoverage]):
+        self.failures = list(failures)
+        details = []
+        for failure in self.failures:
+            ratio = _unindexed_ratio(failure)
+            ratio_txt = "n/a" if ratio is None else f"{ratio:.4f}"
+            details.append(
+                f"partition={failure.partition!r} index={failure.index_name} "
+                f"unindexed={failure.num_unindexed_rows} ratio={ratio_txt}"
+            )
+        super().__init__("index coverage exceeded: " + "; ".join(details))
 
 
 def _read_index_row_stats(lance_table, index_cfg) -> tuple[Optional[int], Optional[int]]:
@@ -63,6 +151,59 @@ def _coverage_for_lance_table(
             )
         )
     return out
+
+
+def _lance_index_names(lance_table) -> set[str]:
+    return {idx.name for idx in lance_table.list_indices()}
+
+
+def _is_index_wait_timeout(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "timed out" in text or "timeout" in text
+
+
+def _complete_scalar_index_create(
+    lance_table,
+    index_name: str,
+    wait_timeout: Optional[timedelta] = None,
+) -> None:
+    """Finish create_scalar_index without treating unindexed tails as failure.
+
+    LanceDB's wait_for_index waits until num_unindexed_rows == 0. That does
+    not stabilize on tables that keep appending, even after the index exists.
+    OSS native create_scalar_index is already synchronous, so the default is
+    to confirm the index name is listed and return.
+
+    If wait_timeout is set, wait_for_index is called. A timeout is ignored
+    when the index already exists (unindexed rows remain queryable via scan).
+    """
+    if wait_timeout is None:
+        if index_name not in _lance_index_names(lance_table):
+            raise RuntimeError(
+                f"index {index_name!r} was not present after create_scalar_index"
+            )
+        return
+
+    wait_kwargs = {}
+    wait_fn = lance_table.wait_for_index
+    try:
+        params = inspect.signature(wait_fn).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "timeout" in params:
+        wait_kwargs["timeout"] = wait_timeout
+    try:
+        wait_fn([index_name], **wait_kwargs)
+    except Exception as exc:
+        if _is_index_wait_timeout(exc) and index_name in _lance_index_names(lance_table):
+            logger.warning(
+                "wait_for_index timed out for {} after {}; index exists, "
+                "unindexed rows remain",
+                index_name,
+                wait_timeout,
+            )
+            return
+        raise
 
 
 class InformationSchemaRecord:
@@ -327,7 +468,13 @@ class BaseTable:
     ) -> pd.DataFrame:
         raise NotImplementedError
 
-    def create_scalar_index(self, column: str, partition=None, index_type: str = "BTREE"):
+    def create_scalar_index(
+        self,
+        column: str,
+        partition=None,
+        index_type: str = "BTREE",
+        wait_timeout: Optional[timedelta] = None,
+    ):
         raise NotImplementedError
 
     def list_indices(self, partition=None) -> list[IndexConfig]:
@@ -357,6 +504,8 @@ class BaseTable:
         retrain: bool = False,
         batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
         max_source_fragments: Optional[int] = None,
+        max_unindexed_rows: Optional[int] = None,
+        max_unindexed_ratio: Optional[float] = None,
     ):
         raise NotImplementedError
 
@@ -367,6 +516,8 @@ class BaseTable:
         retrain: bool = False,
         num_indices_to_merge: Optional[int] = None,
         index_names: Optional[List[str]] = None,
+        max_unindexed_rows: Optional[int] = None,
+        max_unindexed_ratio: Optional[float] = None,
     ) -> None:
         raise NotImplementedError
 
@@ -470,13 +621,23 @@ class SimpleTable(BaseTable):
             query_stat = query_stat.offset(offset)
         return query_stat.to_pandas()
 
-    def create_scalar_index(self, column: str, partition=None, index_type: str = "BTREE"):
+    def create_scalar_index(
+        self,
+        column: str,
+        partition=None,
+        index_type: str = "BTREE",
+        wait_timeout: Optional[timedelta] = None,
+    ):
         assert partition is None, "Partitioning not supported for SimpleTable"
         if self.table is None:
             self.open_table()
+        _compact_files_on_lance_table(
+            self.table,
+            batch_size=DEFAULT_COMPACT_BATCH_SIZE,
+        )
         self.table.create_scalar_index(column, index_type=index_type)
         index_name = f"{column}_idx"
-        self.table.wait_for_index([index_name])
+        _complete_scalar_index_create(self.table, index_name, wait_timeout=wait_timeout)
 
     def list_indices(self, partition=None) -> list[IndexConfig]:
         assert partition is None, "Partitioning not supported for SimpleTable"
@@ -521,11 +682,13 @@ class SimpleTable(BaseTable):
         retrain: bool = False,
         batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
         max_source_fragments: Optional[int] = None,
+        max_unindexed_rows: Optional[int] = None,
+        max_unindexed_ratio: Optional[float] = None,
     ):
         assert partition is None, "Partitioning not supported for SimpleTable"
         if self.table is None:
             self.open_table()
-        return _full_optimize_on_lance_table(
+        stats = _full_optimize_on_lance_table(
             self.table,
             cleanup_older_than=cleanup_older_than,
             delete_unverified=delete_unverified,
@@ -533,6 +696,16 @@ class SimpleTable(BaseTable):
             batch_size=batch_size,
             max_source_fragments=max_source_fragments,
         )
+        failures = []
+        failure = _partition_coverage_failure(
+            self.list_index_coverage(),
+            max_unindexed_rows=max_unindexed_rows,
+            max_unindexed_ratio=max_unindexed_ratio,
+        )
+        if failure is not None:
+            failures.append(failure)
+        _raise_if_coverage_failures(failures)
+        return stats
 
     def optimize_indices(
         self,
@@ -541,6 +714,8 @@ class SimpleTable(BaseTable):
         retrain: bool = False,
         num_indices_to_merge: Optional[int] = None,
         index_names: Optional[List[str]] = None,
+        max_unindexed_rows: Optional[int] = None,
+        max_unindexed_ratio: Optional[float] = None,
     ) -> None:
         assert partition is None, "Partitioning not supported for SimpleTable"
         if self.table is None:
@@ -551,6 +726,15 @@ class SimpleTable(BaseTable):
             num_indices_to_merge=num_indices_to_merge,
             index_names=index_names,
         )
+        failures = []
+        failure = _partition_coverage_failure(
+            self.list_index_coverage(),
+            max_unindexed_rows=max_unindexed_rows,
+            max_unindexed_ratio=max_unindexed_ratio,
+        )
+        if failure is not None:
+            failures.append(failure)
+        _raise_if_coverage_failures(failures)
 
     def to_pandas(self, partition=None) -> pd.DataFrame:
         assert partition is None, "Partitioning not supported for SimpleTable"
@@ -686,7 +870,13 @@ class ValuePartitionTable(BaseTable):
                 return True
         return False
 
-    def create_scalar_index(self, column: str, partition=None, index_type: str = "BTREE"):
+    def create_scalar_index(
+        self,
+        column: str,
+        partition=None,
+        index_type: str = "BTREE",
+        wait_timeout: Optional[timedelta] = None,
+    ):
         if partition is not None:
             partitions = [partition]
         else:
@@ -695,8 +885,14 @@ class ValuePartitionTable(BaseTable):
         self.open_table(partitions)
         for partition in partitions:
             index_name = f"{column}_idx"
+            _compact_files_on_lance_table(
+                self.tables[partition],
+                batch_size=DEFAULT_COMPACT_BATCH_SIZE,
+            )
             self.tables[partition].create_scalar_index(column, index_type=index_type)
-            self.tables[partition].wait_for_index([index_name])
+            _complete_scalar_index_create(
+                self.tables[partition], index_name, wait_timeout=wait_timeout
+            )
 
     def list_indices(self, partition) -> list[IndexConfig]:
         assert partition is not None, (
@@ -752,6 +948,8 @@ class ValuePartitionTable(BaseTable):
         retrain: bool = False,
         batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
         max_source_fragments: Optional[int] = None,
+        max_unindexed_rows: Optional[int] = None,
+        max_unindexed_ratio: Optional[float] = None,
     ):
         if partition is not None:
             partitions = [partition]
@@ -759,9 +957,9 @@ class ValuePartitionTable(BaseTable):
             partitions = self.list_partitions()
 
         self.open_table(partitions)
-        stats = None
-        for p in partitions:
-            stats = _full_optimize_on_lance_table(
+
+        def _body(p):
+            return _full_optimize_on_lance_table(
                 self.tables[p],
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
@@ -769,7 +967,14 @@ class ValuePartitionTable(BaseTable):
                 batch_size=batch_size,
                 max_source_fragments=max_source_fragments,
             )
-        return stats
+
+        return _run_partitions_with_coverage(
+            self,
+            partitions,
+            _body,
+            max_unindexed_rows=max_unindexed_rows,
+            max_unindexed_ratio=max_unindexed_ratio,
+        )
 
     def optimize_indices(
         self,
@@ -778,6 +983,8 @@ class ValuePartitionTable(BaseTable):
         retrain: bool = False,
         num_indices_to_merge: Optional[int] = None,
         index_names: Optional[List[str]] = None,
+        max_unindexed_rows: Optional[int] = None,
+        max_unindexed_ratio: Optional[float] = None,
     ) -> None:
         if partition is not None:
             partitions = [partition]
@@ -785,13 +992,23 @@ class ValuePartitionTable(BaseTable):
             partitions = self.list_partitions()
 
         self.open_table(partitions)
-        for p in partitions:
+
+        def _body(p):
             _optimize_indices_on_lance_table(
                 self.tables[p],
                 retrain=retrain,
                 num_indices_to_merge=num_indices_to_merge,
                 index_names=index_names,
             )
+            return None
+
+        _run_partitions_with_coverage(
+            self,
+            partitions,
+            _body,
+            max_unindexed_rows=max_unindexed_rows,
+            max_unindexed_ratio=max_unindexed_ratio,
+        )
 
     def drop_table(self, partition=None):
         if partition is not None:
@@ -1055,7 +1272,13 @@ class HashPartitionTable(BaseTable):
                 return True
         return False
 
-    def create_scalar_index(self, column: str, partition=None, index_type: str = "BTREE"):
+    def create_scalar_index(
+        self,
+        column: str,
+        partition=None,
+        index_type: str = "BTREE",
+        wait_timeout: Optional[timedelta] = None,
+    ):
         if partition is not None:
             partitions = [partition]
         else:
@@ -1064,8 +1287,14 @@ class HashPartitionTable(BaseTable):
         self.open_table(partitions)
         for partition in partitions:
             index_name = f"{column}_idx"
+            _compact_files_on_lance_table(
+                self.tables[partition],
+                batch_size=DEFAULT_COMPACT_BATCH_SIZE,
+            )
             self.tables[partition].create_scalar_index(column, index_type=index_type)
-            self.tables[partition].wait_for_index([index_name])
+            _complete_scalar_index_create(
+                self.tables[partition], index_name, wait_timeout=wait_timeout
+            )
 
     def list_indices(self, partition) -> list[IndexConfig]:
         assert partition is not None, (
@@ -1125,6 +1354,8 @@ class HashPartitionTable(BaseTable):
         retrain: bool = False,
         batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
         max_source_fragments: Optional[int] = None,
+        max_unindexed_rows: Optional[int] = None,
+        max_unindexed_ratio: Optional[float] = None,
     ):
         if partition is not None:
             partitions = [partition]
@@ -1132,9 +1363,9 @@ class HashPartitionTable(BaseTable):
             partitions = self.list_partitions()
 
         self.open_table(partitions)
-        stats = None
-        for p in partitions:
-            stats = _full_optimize_on_lance_table(
+
+        def _body(p):
+            return _full_optimize_on_lance_table(
                 self.tables[p],
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
@@ -1142,7 +1373,14 @@ class HashPartitionTable(BaseTable):
                 batch_size=batch_size,
                 max_source_fragments=max_source_fragments,
             )
-        return stats
+
+        return _run_partitions_with_coverage(
+            self,
+            partitions,
+            _body,
+            max_unindexed_rows=max_unindexed_rows,
+            max_unindexed_ratio=max_unindexed_ratio,
+        )
 
     def optimize_indices(
         self,
@@ -1151,6 +1389,8 @@ class HashPartitionTable(BaseTable):
         retrain: bool = False,
         num_indices_to_merge: Optional[int] = None,
         index_names: Optional[List[str]] = None,
+        max_unindexed_rows: Optional[int] = None,
+        max_unindexed_ratio: Optional[float] = None,
     ) -> None:
         if partition is not None:
             partitions = [partition]
@@ -1158,13 +1398,23 @@ class HashPartitionTable(BaseTable):
             partitions = self.list_partitions()
 
         self.open_table(partitions)
-        for p in partitions:
+
+        def _body(p):
             _optimize_indices_on_lance_table(
                 self.tables[p],
                 retrain=retrain,
                 num_indices_to_merge=num_indices_to_merge,
                 index_names=index_names,
             )
+            return None
+
+        _run_partitions_with_coverage(
+            self,
+            partitions,
+            _body,
+            max_unindexed_rows=max_unindexed_rows,
+            max_unindexed_ratio=max_unindexed_ratio,
+        )
 
     def drop_table(self, partition=None):
         if partition is not None:

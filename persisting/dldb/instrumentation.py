@@ -101,11 +101,12 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
         _ApiSpec(
             method="create_scalar_index",
             api="create_scalar_index",
-            meta_fn=lambda self, table_name, column, *, partition=None, index_type="BTREE": {
+            meta_fn=lambda self, table_name, column, *, partition=None, index_type="BTREE", wait_timeout=None: {
                 "table_name": table_name,
                 "column": column,
                 "partition": partition,
                 "index_type": index_type,
+                "wait_timeout": str(wait_timeout) if wait_timeout is not None else None,
             },
         ),
         _ApiSpec(
@@ -129,13 +130,15 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
         _ApiSpec(
             method="optimize",
             api="optimize",
-            meta_fn=lambda self, table_name, *, partition=None, cleanup_older_than=None, delete_unverified=False, retrain=False, batch_size=None, max_source_fragments=None: {
+            meta_fn=lambda self, table_name, *, partition=None, cleanup_older_than=None, delete_unverified=False, retrain=False, batch_size=None, max_source_fragments=None, max_unindexed_rows=None, max_unindexed_ratio=None: {
                 "table_name": table_name,
                 "partition": partition,
                 "cleanup_older_than": cleanup_older_than,
                 "delete_unverified": delete_unverified,
                 "batch_size": batch_size,
                 "max_source_fragments": max_source_fragments,
+                "max_unindexed_rows": max_unindexed_rows,
+                "max_unindexed_ratio": max_unindexed_ratio,
             },
         ),
         _ApiSpec(
