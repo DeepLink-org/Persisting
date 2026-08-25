@@ -9,6 +9,7 @@ import pyarrow as pa
 from dldb.utils import filter_values, schema_from_string, schema_to_string, stable_hash
 from lancedb import LanceDBConnection
 from lancedb.index import IndexConfig
+from lancedb.table import FragmentStatistics, FragmentSummaryStats, TableStatistics
 from loguru import logger
 
 
@@ -24,6 +25,17 @@ class IndexCoverage:
     num_indexed_rows: Optional[int]
     num_unindexed_rows: Optional[int]
     fully_indexed: bool
+
+
+@dataclass(frozen=True)
+class PartitionStatus:
+    table_name: str
+    partition: int
+    partitions: int
+    materialized: bool
+    version: Optional[int]
+    stats: Optional[TableStatistics]
+    coverage: List[IndexCoverage]
 
 
 def _unindexed_ratio(coverage: IndexCoverage) -> Optional[float]:
@@ -151,6 +163,27 @@ def _coverage_for_lance_table(
             )
         )
     return out
+
+
+def _coerce_table_statistics(stats) -> TableStatistics:
+    if isinstance(stats, TableStatistics):
+        return stats
+    fragment = stats["fragment_stats"]
+    if not isinstance(fragment, FragmentStatistics):
+        lengths = fragment["lengths"]
+        if not isinstance(lengths, FragmentSummaryStats):
+            lengths = FragmentSummaryStats(**lengths)
+        fragment = FragmentStatistics(
+            num_fragments=fragment["num_fragments"],
+            num_small_fragments=fragment["num_small_fragments"],
+            lengths=lengths,
+        )
+    return TableStatistics(
+        total_bytes=stats["total_bytes"],
+        num_rows=stats["num_rows"],
+        num_indices=stats["num_indices"],
+        fragment_stats=fragment,
+    )
 
 
 def _lance_index_names(lance_table) -> set[str]:
@@ -483,6 +516,9 @@ class BaseTable:
     def list_index_coverage(
         self, partition=None, index_name: Optional[str] = None
     ) -> List[IndexCoverage]:
+        raise NotImplementedError
+
+    def partition_status(self, partition=None) -> PartitionStatus:
         raise NotImplementedError
 
     def compact_files(
@@ -1323,6 +1359,44 @@ class HashPartitionTable(BaseTable):
             self.raw_table_name,
             partition,
             index_name=index_name,
+        )
+
+    def partition_status(self, partition=None) -> PartitionStatus:
+        assert partition is not None, (
+            "partition cannot be None when hash partition table reporting status"
+        )
+        assert isinstance(partition, int), "partition must be an integer"
+        assert 0 <= partition < self.partitions, (
+            f"partition must be in range [0, {self.partitions})"
+        )
+        physical_name = self.get_table_name(partition)
+        if partition not in self.tables:
+            table_names = set(self.db_conn.list_tables().tables)
+            if physical_name not in table_names:
+                return PartitionStatus(
+                    table_name=self.raw_table_name,
+                    partition=partition,
+                    partitions=self.partitions,
+                    materialized=False,
+                    version=None,
+                    stats=None,
+                    coverage=[],
+                )
+        self.open_table([partition], create_when_missing=False)
+        lance_table = self.tables[partition]
+        lance_table.checkout_latest()
+        return PartitionStatus(
+            table_name=self.raw_table_name,
+            partition=partition,
+            partitions=self.partitions,
+            materialized=True,
+            version=lance_table.version,
+            stats=_coerce_table_statistics(lance_table.stats()),
+            coverage=_coverage_for_lance_table(
+                lance_table,
+                self.raw_table_name,
+                partition,
+            ),
         )
 
     def compact_files(

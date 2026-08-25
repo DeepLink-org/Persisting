@@ -12,6 +12,7 @@ from dldb.table import (
     DEFAULT_COMPACT_BATCH_SIZE,
     IndexCoverage,
     InformationSchemaTable,
+    PartitionStatus,
     create_table,
     open_table_by_partition_type,
 )
@@ -149,6 +150,9 @@ class SessionBase:
         partition=None,
         index_name: Optional[str] = None,
     ) -> bool:
+        raise NotImplementedError
+
+    def partition_status(self, table_name: str, *, partition=None) -> PartitionStatus:
         raise NotImplementedError
 
     def compact_files(
@@ -470,6 +474,17 @@ class LanceSession(SessionBase):
         if not coverage:
             return False
         return any(not c.fully_indexed for c in coverage)
+
+    def partition_status(self, table_name: str, *, partition=None) -> PartitionStatus:
+        record = self.schema_table.get(table_name)
+        assert record, f"{table_name} not exist"
+        if record.partition_type != "HASH":
+            raise TypeError(
+                "partition_status is only supported for HASH tables, "
+                f"got {record.partition_type!r}"
+            )
+        table = self._get_table(table_name, None)
+        return table.partition_status(partition)
 
     def compact_files(
         self,
