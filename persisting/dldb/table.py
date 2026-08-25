@@ -814,13 +814,15 @@ class ValuePartitionTable(BaseTable):
         return table_name[len(self.table_name_prefix) :]
 
     def open_table(self, partitions, create_when_missing=False):
-        table_names = set(self.db_conn.list_tables().tables)
         for partition in partitions:
             assert partition, "partition can not be None"
             assert isinstance(partition, str), "partition must be a string"
-            if partition in self.tables:
-                continue
+        missing = [partition for partition in partitions if partition not in self.tables]
+        if not missing:
+            return
 
+        table_names = set(self.db_conn.list_tables().tables)
+        for partition in missing:
             table_name = self.get_table_name(partition)
             if table_name in table_names:
                 table = self.db_conn.open_table(table_name)
@@ -1196,16 +1198,18 @@ class HashPartitionTable(BaseTable):
         return int(table_name[len(self.table_name_prefix) :])
 
     def open_table(self, partitions: List[int], create_when_missing=False):
-        table_names = set(self.db_conn.list_tables().tables)
         for partition in partitions:
             assert partition is not None, "partition can not be None"
             assert isinstance(partition, int), "partition must be an integer"
             assert 0 <= partition < self.partitions, (
                 f"partition must be in range [0, {self.partitions})"
             )
-            if partition in self.tables:
-                continue
+        missing = [partition for partition in partitions if partition not in self.tables]
+        if not missing:
+            return
 
+        table_names = set(self.db_conn.list_tables().tables)
+        for partition in missing:
             table_name = self.get_table_name(partition)
             if table_name in table_names:
                 table = self.db_conn.open_table(table_name)
@@ -1457,8 +1461,12 @@ class HashPartitionTable(BaseTable):
                 )
             if offset is not None:
                 assert len(partitions) == 1, "offset is not supported for multiple partitions"
-            materialized = set(self.list_partitions())
-            partitions = [partition for partition in partitions if partition in materialized]
+            cached = [partition for partition in partitions if partition in self.tables]
+            uncached = [partition for partition in partitions if partition not in self.tables]
+            if uncached:
+                materialized = set(self.list_partitions())
+                uncached = [partition for partition in uncached if partition in materialized]
+            partitions = cached + uncached
         partitions = sorted(partitions)
 
         result = pd.DataFrame()
@@ -1601,22 +1609,6 @@ def create_table(
         )
     else:
         raise ValueError(f"Partition type must be either 'HASH' or 'VALUE', got '{partition_type}'")
-
-
-def open_table(
-    db_conn: LanceDBConnection,
-    schema_table: InformationSchemaTable,
-    table_name: str,
-    full_table_name: str,
-    partition=None,
-) -> BaseTable:
-    if "_type_VALUE_" in full_table_name:
-        return ValuePartitionTable.from_table_name(db_conn, schema_table, table_name, partition)
-    if "_type_HASH_" in full_table_name:
-        return HashPartitionTable.from_table_name(db_conn, schema_table, table_name, partition)
-
-    assert table_name == full_table_name
-    return SimpleTable.from_table_name(db_conn, schema_table, table_name)
 
 
 def open_table_by_partition_type(

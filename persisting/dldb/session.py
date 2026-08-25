@@ -13,7 +13,6 @@ from dldb.table import (
     IndexCoverage,
     InformationSchemaTable,
     create_table,
-    open_table,
     open_table_by_partition_type,
 )
 from lancedb.index import IndexConfig
@@ -355,27 +354,16 @@ class LanceSession(SessionBase):
             )
             self.memory_tables[memory_table.raw_table_name] = memory_table
 
-    def _open_disk_table(self, table_name: str, partition=None):
-        table_names = self.db_conn.list_tables().tables
-        for full_table_name in table_names:
-            if full_table_name.startswith(table_name):
-                return open_table(
-                    self.db_conn, self.schema_table, table_name, full_table_name, partition
-                )
-        return None
-
     def _get_table(self, table_name: str, partition=None):
         table = self.tables.get(table_name, None)
         if table is not None:
             return table
 
-        table = self._open_disk_table(table_name, partition)
-        if table is None and self.schema_table.exist(table_name):
-            record = self.schema_table.get(table_name)
-            table = open_table_by_partition_type(
-                self.db_conn, self.schema_table, table_name, record.partition_type, partition
-            )
-        assert table, f"{table_name} not exist"
+        record = self.schema_table.get(table_name)
+        assert record, f"{table_name} not exist"
+        table = open_table_by_partition_type(
+            self.db_conn, self.schema_table, table_name, record.partition_type, partition
+        )
         self.tables[table_name] = table
         return table
 
