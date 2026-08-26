@@ -7,7 +7,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::{
-    agent_command, check_boundary, prepared_outcome, LaunchSpec, RunContext, MAX_TOOL_OUTPUT_BYTES,
+    agent_command, check_boundary, prepared_outcome, with_boundary_user_prompt_metadata,
+    LaunchSpec, RunContext, MAX_TOOL_OUTPUT_BYTES,
 };
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write_json, canonicalize, read_regular_file, sha256};
@@ -360,19 +361,37 @@ fn run_openhands(
             prepared_events.push(reconstructed);
         }
     }
+    let prompt_injected = if context.request.mode == ReplayMode::ReplayAndContinue {
+        if let Some(prompt) = context.request.boundary_user_prompt() {
+            prepared_events.push(openhands_boundary_user_prompt_event(
+                &initial, events, prompt,
+            )?);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     let prepared = context
         .output_dir
         .join("native/prepared-replay-events.json");
     atomic_write_json(&prepared, &prepared_events)?;
     journal.append(
         "session_rebuilt",
-        [(
-            "prepared_only".into(),
-            json!(context.request.mode == ReplayMode::PrepareOnly),
-        )],
+        [
+            (
+                "prepared_only".into(),
+                json!(context.request.mode == ReplayMode::PrepareOnly),
+            ),
+            (
+                "boundary_user_prompt_injected".into(),
+                json!(prompt_injected),
+            ),
+        ],
     )?;
     if context.request.mode == ReplayMode::PrepareOnly {
-        return Ok(prepared_outcome(prepared));
+        return Ok(prepared_outcome(prepared, context.request));
     }
     let launch = context
         .launch
@@ -553,8 +572,35 @@ fn run_openhands(
             .then_some(replayed_trajectory),
         observations,
         continued_steps,
-        metadata: json!({}),
+        metadata: with_boundary_user_prompt_metadata(json!({}), context.request, prompt_injected),
     })
+}
+
+fn openhands_boundary_user_prompt_event(
+    initial: &Value,
+    events: &[Value],
+    prompt: &str,
+) -> Result<Value, ReplayError> {
+    let next_id = events
+        .iter()
+        .map(event_id)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .max()
+        .unwrap_or_default()
+        .checked_add(1)
+        .ok_or_else(|| ReplayError::trajectory("OpenHands event IDs are exhausted"))?;
+    let mut event = initial.clone();
+    let object = event
+        .as_object_mut()
+        .ok_or_else(|| ReplayError::trajectory("OpenHands initial user event is not an object"))?;
+    object.insert("id".into(), json!(next_id));
+    object.insert("source".into(), json!("user"));
+    object.insert("action".into(), json!("message"));
+    object.insert("args".into(), json!({"content": prompt}));
+    object.remove("cause");
+    object.remove("observation");
+    Ok(event)
 }
 
 fn openhands_fatal_controller_marker(output: &str) -> Option<&'static str> {
@@ -658,10 +704,36 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        openhands_action_signature, openhands_complete_batches, openhands_fatal_controller_marker,
+        openhands_action_signature, openhands_boundary_user_prompt_event,
+        openhands_complete_batches, openhands_fatal_controller_marker,
         openhands_observation_content, openhands_reconstructed_tool_metadata,
         prepend_openhands_runtime_tools, LaunchSpec,
     };
+
+    #[test]
+    fn openhands_boundary_prompt_is_a_unique_native_user_message() {
+        let initial = json!({
+            "id": 0,
+            "source": "user",
+            "action": "message",
+            "args": {"content": "original task"},
+            "timestamp": "source timestamp"
+        });
+        let events = vec![
+            initial.clone(),
+            json!({"id": 7, "source": "agent", "action": "run", "args": {"command": "pwd"}}),
+            json!({"id": 8, "source": "environment", "observation": "run", "cause": 7}),
+        ];
+
+        let prompt =
+            openhands_boundary_user_prompt_event(&initial, &events, "review O-prime N").unwrap();
+
+        assert_eq!(prompt["id"], 9);
+        assert_eq!(prompt["source"], "user");
+        assert_eq!(prompt["action"], "message");
+        assert_eq!(prompt["args"]["content"], "review O-prime N");
+        assert_eq!(prompt["timestamp"], "source timestamp");
+    }
 
     #[test]
     fn openhands_reconstructs_legacy_native_tool_metadata() {

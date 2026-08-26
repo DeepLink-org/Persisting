@@ -24,8 +24,11 @@ implementation in detail.
 
 The default replay path assumes the caller already created a fresh sandbox.
 It reconstructs and continues the Agent directly in that sandbox. OpenHands,
-mini-swe-agent, and SWE-agent connect to the model endpoint already configured
-in their environment; replay does not start pVisor Gateway for them.
+mini-swe-agent, Pi agent, and SWE-agent connect to the model endpoint already
+configured in their environment; replay does not start pVisor Gateway for
+them. The Pi profile is pinned to `@earendil-works/pi-coding-agent` `0.83.0`,
+reads native RPC event JSONL, and supports Pi's core `read`, `bash`, `edit`, and
+`write` tools.
 
 Claude Code alone uses a temporary bridge owned by SandboxReplay. Before any
 upstream model request, the bridge validates and removes the exact Resume
@@ -38,7 +41,18 @@ pvisor replay \
   --agent claude-code \
   --trajectory /input/session.jsonl \
   --after-step 30 \
-  --agent-entrypoint /usr/bin/claude
+  --agent-entrypoint /usr/bin/claude \
+  --boundary-user-prompt 'Review the fresh observation before continuing.'
+```
+
+Pi uses the same surface:
+
+```bash
+pvisor replay \
+  --agent pi-agent \
+  --trajectory /input/pi-agent.events.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /opt/pi-agent/bin/pi
 ```
 
 The same request can be supplied as strict TOML:
@@ -50,11 +64,18 @@ trajectory = "/input/session.jsonl"
 after_step = 30
 agent_entrypoint = "/usr/bin/claude"
 disable_thinking = false
+boundary_user_prompt = "Review the fresh observation before continuing."
 ```
 
 `disable_thinking` is also available as `--disable-thinking`. It is applied by
 the Claude replay bridge when protocol translation is required; it does not
 enable Gateway capture.
+
+`boundary_user_prompt` is also available as `--boundary-user-prompt`. When
+configured, replay appends it once after the final fresh observation for the
+first live model request. It does not replace the original task and is not
+injected by prepare-only or replay-only execution. Omitting it preserves the
+original request boundary exactly.
 
 Runtime isolation is opt-in. Supplying `--safe`, `--executor`,
 `--overlayfs-base`, another replay runtime flag, or the corresponding

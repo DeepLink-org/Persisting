@@ -15,9 +15,16 @@ from swerex.deployment.config import get_deployment
 
 
 class ReplayThenLiveModel:
-    def __init__(self, prefix: list[dict[str, Any]], live_model: Any) -> None:
+    def __init__(
+        self,
+        prefix: list[dict[str, Any]],
+        live_model: Any,
+        boundary_user_prompt: str | None,
+    ) -> None:
         self.prefix = prefix
         self.live_model = live_model
+        self.boundary_user_prompt = boundary_user_prompt
+        self.boundary_user_prompt_injected = False
         self.index = 0
         self.live_calls = 0
 
@@ -39,6 +46,9 @@ class ReplayThenLiveModel:
             if value.get("thinking_blocks") is not None:
                 result["thinking_blocks"] = value["thinking_blocks"]
             return result
+        if self.boundary_user_prompt and not self.boundary_user_prompt_injected:
+            history.append({"role": "user", "content": self.boundary_user_prompt})
+            self.boundary_user_prompt_injected = True
         self.live_calls += 1
         return self.live_model.query(history, **kwargs)
 
@@ -88,7 +98,11 @@ def main() -> int:
 
     agent = DefaultAgent.from_config(config.agent)
     live_model = agent.model
-    agent.model = ReplayThenLiveModel(prefix, live_model)
+    agent.model = ReplayThenLiveModel(
+        prefix,
+        live_model,
+        request.get("boundary_user_prompt"),
+    )
     agent.replay_config = config
     environment = SWEEnv(
         deployment=get_deployment(config.env.deployment),
@@ -147,6 +161,7 @@ def main() -> int:
                 "trajectory": str(trajectory_path),
                 "reconstructed": str(request["reconstructed"]),
                 "trajectory_steps": len(data["trajectory"]),
+                "boundary_user_prompt_injected": agent.model.boundary_user_prompt_injected,
             },
             indent=2,
         )

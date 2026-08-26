@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use crate::adapter::{build_plan, resolve_launch_spec, run, LaunchSpec, RunContext};
 use crate::comparison::write_next_action;
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
-use crate::io::{atomic_write_json, canonicalize};
+use crate::io::{atomic_write_json, canonicalize, sha256};
 use crate::journal::Journal;
 use crate::model::{
     AdapterPlan, AgentKind, AgentResult, AgentStatus, Artifact, ExecutionReport, PlaybackRequest,
@@ -109,6 +109,16 @@ fn execute_allocated(
             ("agent".into(), json!(request.agent.as_str())),
             ("source_sha256".into(), json!(plan.source_sha256())),
             ("after_step".into(), json!(plan.after_step())),
+            (
+                "boundary_user_prompt_requested".into(),
+                json!(request.boundary_user_prompt().is_some()),
+            ),
+            (
+                "boundary_user_prompt_sha256".into(),
+                json!(request
+                    .boundary_user_prompt()
+                    .map(|prompt| sha256(prompt.as_bytes()))),
+            ),
         ],
     )?;
     journal.append(
@@ -160,6 +170,7 @@ fn execute_allocated(
             "comparison_is_gating": false,
             "continuation_status": outcome.status,
             "continued_steps": outcome.continued_steps,
+            "boundary_user_prompt": outcome.metadata.get("boundary_user_prompt"),
         }),
     )?;
 
@@ -320,6 +331,11 @@ fn write_next_action_comparison(
         &output_dir.join("next-action-comparison.json"),
         original,
         replayed,
+        outcome
+            .metadata
+            .pointer("/boundary_user_prompt/injected")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     )
 }
 
@@ -331,6 +347,15 @@ fn validate(request: &PlaybackRequest) -> Result<(), ReplayError> {
     }
     if request.max_steps == Some(0) {
         return Err(ReplayError::configuration("max_steps must be positive"));
+    }
+    if request
+        .boundary_user_prompt
+        .as_deref()
+        .is_some_and(|prompt| !prompt.is_empty() && prompt.trim().is_empty())
+    {
+        return Err(ReplayError::configuration(
+            "boundary_user_prompt must contain a non-whitespace character",
+        ));
     }
     if !request.workspace.is_dir() {
         return Err(ReplayError::new(
@@ -485,6 +510,7 @@ fn artifacts(
         AgentKind::ClaudeCode => "claude-code/native-jsonl-2.1.220",
         AgentKind::MiniSweAgent => "mini-swe-agent/native-json-2.4.6",
         AgentKind::Openhands => "openhands/native-json-0.53.0",
+        AgentKind::PiAgent => "pi-agent/native-events-jsonl-0.83.0",
         AgentKind::SweAgent => "swe-agent/native-traj-1.1.0",
     };
     let prepared_path = prepared_native_path(request.agent, output_dir);
@@ -576,6 +602,7 @@ fn existing_artifacts(request: &PlaybackRequest, output_dir: &Path) -> Vec<Artif
         AgentKind::ClaudeCode => "claude-code/native-jsonl-2.1.220",
         AgentKind::MiniSweAgent => "mini-swe-agent/native-json-2.4.6",
         AgentKind::Openhands => "openhands/native-json-0.53.0",
+        AgentKind::PiAgent => "pi-agent/native-events-jsonl-0.83.0",
         AgentKind::SweAgent => "swe-agent/native-traj-1.1.0",
     };
     let native_paths: &[(&str, &str)] = match request.agent {
@@ -615,6 +642,17 @@ fn existing_artifacts(request: &PlaybackRequest, output_dir: &Path) -> Vec<Artif
                 "native/continued-trajectory.json",
             ),
         ],
+        AgentKind::PiAgent => &[
+            ("prepared_native_prefix", "native/prepared-prefix.jsonl"),
+            (
+                "reconstructed_native_trajectory",
+                "native/reconstructed-events.jsonl",
+            ),
+            (
+                "continued_native_trajectory",
+                "native/continued-events.jsonl",
+            ),
+        ],
         AgentKind::SweAgent => &[
             ("prepared_native_prefix", "native/prepared-prefix.traj"),
             (
@@ -648,6 +686,7 @@ fn prepared_native_path(agent: AgentKind, output_dir: &Path) -> std::path::PathB
         AgentKind::ClaudeCode => "native/prepared-prefix.jsonl",
         AgentKind::MiniSweAgent => "native/prepared-prefix.json",
         AgentKind::Openhands => "native/prepared-replay-events.json",
+        AgentKind::PiAgent => "native/prepared-prefix.jsonl",
         AgentKind::SweAgent => "native/prepared-prefix.traj",
     })
 }
@@ -684,6 +723,7 @@ mod tests {
             allow_stale_observations: false,
             run_id: Some("replay-1".into()),
             disable_thinking: false,
+            boundary_user_prompt: None,
         };
 
         let error = execute(request).unwrap_err();
@@ -691,6 +731,35 @@ mod tests {
         assert_eq!(run_id, "replay-1");
         assert_eq!(state_dir, Path::new("/state/replay-1"));
         assert_eq!(output_dir, Path::new("/output/replay-1"));
+    }
+
+    #[test]
+    fn validation_rejects_a_whitespace_only_boundary_prompt() {
+        let request = PlaybackRequest {
+            agent: AgentKind::ClaudeCode,
+            trajectory: std::path::PathBuf::from("/missing/trajectory.jsonl"),
+            after_step: 1,
+            workspace: std::path::PathBuf::from("/missing/workspace"),
+            state_dir: std::path::PathBuf::from("/state"),
+            output_dir: std::path::PathBuf::from("/output"),
+            agent_entrypoint: None,
+            agent_runtime: None,
+            disallowed_tools: Vec::new(),
+            trajectory_assets: None,
+            session_id: None,
+            max_steps: None,
+            mode: ReplayMode::ReplayAndContinue,
+            allow_stale_observations: false,
+            run_id: Some("prompt-validation".into()),
+            disable_thinking: false,
+            boundary_user_prompt: Some(" \n\t".into()),
+        };
+
+        let error = execute(request).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("boundary_user_prompt must contain a non-whitespace character"));
     }
 
     #[test]
@@ -718,6 +787,7 @@ mod tests {
             allow_stale_observations: false,
             run_id: Some("reserved-run".into()),
             disable_thinking: false,
+            boundary_user_prompt: None,
         };
 
         let error = execute(request).unwrap_err();

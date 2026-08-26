@@ -20,6 +20,29 @@ and issues the first continued model request immediately after `O'N`. No
 "continue" message is appended. This preserves the replay boundary but does
 not guarantee that `A'(N+1)` is byte-identical to `A(N+1)`.
 
+An explicit boundary user prompt can instead make the first live request:
+
+```text
+system + tools + task + A1 -> O'1 -> ... -> AN -> O'N
+    + boundary_user_prompt -> A'(N+1)
+```
+
+Use `--boundary-user-prompt TEXT` only when this changed input is intentional.
+SandboxReplay injects it once, after `O'N` and before the first live model
+inference. It never replaces the original task and is not injected in
+prepare-only or replay-only mode. Without the option, the existing exact
+boundary behavior is unchanged.
+
+## Supported Agent profiles
+
+Replay profiles are version-pinned and fail closed when the installed runtime
+does not match. The Pi profile supports `@earendil-works/pi-coding-agent`
+`0.83.0` and consumes the native RPC event JSONL produced by Pi. A replay step
+is one complete `turn_end` tool batch. The profile reconstructs a fresh Pi v3
+session with new observations, then continues through Pi's SDK. Its initial
+tool surface is intentionally limited to Pi's `read`, `bash`, `edit`, and
+`write` tools; trajectories containing another tool fail validation.
+
 ## Run replay
 
 ```bash
@@ -27,7 +50,8 @@ pvisor replay \
   --agent claude-code \
   --trajectory /input/session.jsonl \
   --after-step 30 \
-  --agent-entrypoint /usr/bin/claude
+  --agent-entrypoint /usr/bin/claude \
+  --boundary-user-prompt 'Review the fresh observation before continuing.'
 ```
 
 The equivalent TOML is:
@@ -42,6 +66,17 @@ max_steps = 200
 session_id = "task-291-attempt-1"
 replay_only = false
 disable_thinking = true
+boundary_user_prompt = "Review the fresh observation before continuing."
+```
+
+For a Pi runtime installed at the SweEval default location, the CLI form is:
+
+```bash
+pvisor replay \
+  --agent pi-agent \
+  --trajectory /input/pi-agent.events.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /opt/pi-agent/bin/pi
 ```
 
 ### Execution modes and results
@@ -61,6 +96,16 @@ or `continued`; `quality` is `verified` or `degraded`; and `agent_status`
 distinguishes `not_started`, `completed`, `max_steps`, and `failed`. Failures
 retain available logs and native trajectories. OpenHands controller fatal states
 are failures even when its process exits with status zero.
+
+Successful result metadata records whether the boundary prompt was requested
+and injected, plus its character length and SHA-256 digest; replay journals do
+not store the prompt text. Agent-native prepared or continued trajectories may
+contain the user message. For Claude Code, the in-memory bridge adds the message
+only to the first cleaned upstream request and leaves the reconstructed native
+session unchanged. When it is injected,
+`next-action-comparison.json` uses the input condition
+`boundary_user_prompt_appended`. Its similarity and tool metrics remain
+descriptive and must not be interpreted as same-input replay fidelity.
 
 Migration: older non-Claude configurations sometimes used `replay_only = true`
 to construct a prefix without executing it. Use `prepare_only = true` for that

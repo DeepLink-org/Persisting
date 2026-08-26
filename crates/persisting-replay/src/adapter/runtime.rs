@@ -162,7 +162,7 @@ fn probe_version(agent: AgentKind, entrypoint: &Path) -> Result<String, ReplayEr
     let expected = agent.supported_version();
     let mut command = Command::new(entrypoint);
     match agent {
-        AgentKind::ClaudeCode | AgentKind::MiniSweAgent => {
+        AgentKind::ClaudeCode | AgentKind::MiniSweAgent | AgentKind::PiAgent => {
             command.arg("--version");
         }
         AgentKind::Openhands => {
@@ -237,10 +237,39 @@ fn parse_version(agent: AgentKind, rendered: &str) -> Option<&'static str> {
             let version = versions.next()?;
             (versions.next().is_none() && version == expected).then_some(expected)
         }
-        AgentKind::Openhands | AgentKind::SweAgent => {
+        AgentKind::Openhands | AgentKind::PiAgent | AgentKind::SweAgent => {
             (rendered.trim() == expected).then_some(expected)
         }
     }
+}
+
+#[derive(Debug)]
+pub(super) struct PiNodeRuntime {
+    pub node: PathBuf,
+    pub package_json: PathBuf,
+}
+
+pub(super) fn pi_node_runtime(entrypoint: &Path) -> Result<PiNodeRuntime, ReplayError> {
+    let runtime_root = entrypoint
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| ReplayError::continuation("Pi entrypoint has no runtime root"))?;
+    let node = runtime_root.join("node/bin/node");
+    let package_json = runtime_root
+        .join("npm-global/lib/node_modules/@earendil-works/pi-coding-agent/package.json");
+    if !node.is_file() {
+        return Err(ReplayError::continuation(format!(
+            "Pi runtime Node executable does not exist: {}",
+            node.display()
+        )));
+    }
+    if !package_json.is_file() {
+        return Err(ReplayError::continuation(format!(
+            "Pi runtime package manifest does not exist: {}",
+            package_json.display()
+        )));
+    }
+    Ok(PiNodeRuntime { node, package_json })
 }
 
 #[derive(Debug)]
@@ -524,6 +553,7 @@ Loading global config from '/root/.config/mini-swe-agent/.env'";
             allow_stale_observations: false,
             run_id: None,
             disable_thinking: false,
+            boundary_user_prompt: None,
         };
 
         assert!(resolve_launch_spec(&request).unwrap().is_none());

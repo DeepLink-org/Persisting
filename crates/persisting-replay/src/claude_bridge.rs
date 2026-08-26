@@ -46,6 +46,7 @@ struct BridgeShared {
     routing_session_id: String,
     bridge_api_key: String,
     disable_thinking: bool,
+    boundary_user_prompt: Option<String>,
     max_output_tokens: usize,
     model_context_tokens: usize,
     context_safety_tokens: usize,
@@ -119,6 +120,7 @@ impl ClaudeBridgeHandle {
         manifest: ResumeTransportManifest,
         routing_session_id: &str,
         disable_thinking: bool,
+        boundary_user_prompt: Option<&str>,
     ) -> Result<Self, ReplayError> {
         let upstream_base = first_nonempty_env(&[
             "OPENAI_BASE_URL",
@@ -183,6 +185,7 @@ impl ClaudeBridgeHandle {
             routing_session_id: routing_session_id.to_owned(),
             bridge_api_key: bridge_api_key.clone(),
             disable_thinking,
+            boundary_user_prompt: boundary_user_prompt.map(str::to_owned),
             max_output_tokens: integer_environment(
                 "SANDBOX_PLAYBACK_BRIDGE_MAX_OUTPUT_TOKENS",
                 DEFAULT_MAX_OUTPUT_TOKENS,
@@ -438,7 +441,7 @@ async fn messages(
         Ok(payload) => payload,
         Err(error) => return invalid_request(StatusCode::BAD_REQUEST, error),
     };
-    let (cleaned, sequence) = {
+    let (mut cleaned, sequence) = {
         let mut resume = match shared.resume.lock() {
             Ok(resume) => resume,
             Err(_) => {
@@ -455,6 +458,17 @@ async fn messages(
             }
         }
     };
+    if let Err(error) = inject_boundary_user_prompt(
+        &mut cleaned,
+        shared.boundary_user_prompt.as_deref(),
+        sequence,
+    ) {
+        fail_resume(
+            &shared,
+            format!("boundary user prompt injection failed: {error}"),
+        );
+        return invalid_request(StatusCode::UNPROCESSABLE_ENTITY, error.to_string());
+    }
     let request = match openai_request(
         &cleaned,
         &shared.model_name,
@@ -528,6 +542,25 @@ async fn messages(
     } else {
         json_response(StatusCode::OK, message)
     }
+}
+
+fn inject_boundary_user_prompt(
+    payload: &mut Value,
+    prompt: Option<&str>,
+    request_sequence: usize,
+) -> anyhow::Result<bool> {
+    let Some(prompt) = prompt.filter(|prompt| !prompt.is_empty()) else {
+        return Ok(false);
+    };
+    if request_sequence != 1 {
+        return Ok(false);
+    }
+    let messages = payload
+        .get_mut("messages")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| anyhow::anyhow!("cleaned payload.messages must be an array"))?;
+    messages.push(json!({"role": "user", "content": prompt}));
+    Ok(true)
 }
 
 async fn not_found() -> Response {
@@ -1342,6 +1375,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn boundary_user_prompt_is_injected_once_after_the_clean_prefix() {
+        let mut first = json!({
+            "messages": [
+                {"role": "user", "content": "task"},
+                {"role": "tool", "tool_call_id": "call-1", "content": "O-prime N"}
+            ]
+        });
+        assert!(inject_boundary_user_prompt(&mut first, Some("review it"), 1).unwrap());
+        assert_eq!(first["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            first["messages"][2],
+            json!({"role": "user", "content": "review it"})
+        );
+
+        let mut later = first.clone();
+        assert!(!inject_boundary_user_prompt(&mut later, Some("review it"), 2).unwrap());
+        assert_eq!(later, first);
+
+        let mut disabled = json!({"messages": []});
+        assert!(!inject_boundary_user_prompt(&mut disabled, None, 1).unwrap());
+        assert!(disabled["messages"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn openai_projection_matches_python_bridge_contract() {
         let payload = json!({
             "model": "claude",
@@ -1507,6 +1564,7 @@ mod tests {
                 routing_session_id: "trial-session".into(),
                 bridge_api_key: "local-key".into(),
                 disable_thinking: true,
+                boundary_user_prompt: None,
                 max_output_tokens: 8192,
                 model_context_tokens: 200_000,
                 context_safety_tokens: 1024,
@@ -1665,6 +1723,7 @@ mod tests {
             routing_session_id: "trial-session".into(),
             bridge_api_key: "local-key".into(),
             disable_thinking: false,
+            boundary_user_prompt: None,
             max_output_tokens: 8192,
             model_context_tokens: 200_000,
             context_safety_tokens: 1024,

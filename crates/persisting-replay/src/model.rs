@@ -15,6 +15,7 @@ pub enum AgentKind {
     ClaudeCode,
     MiniSweAgent,
     Openhands,
+    PiAgent,
     SweAgent,
 }
 
@@ -24,6 +25,7 @@ impl AgentKind {
             Self::ClaudeCode => "claude-code",
             Self::MiniSweAgent => "mini-swe-agent",
             Self::Openhands => "openhands",
+            Self::PiAgent => "pi-agent",
             Self::SweAgent => "swe-agent",
         }
     }
@@ -33,6 +35,7 @@ impl AgentKind {
             Self::ClaudeCode => "2.1.220",
             Self::MiniSweAgent => "2.4.6",
             Self::Openhands => "0.53.0",
+            Self::PiAgent => "0.83.0",
             Self::SweAgent => "1.1.0",
         }
     }
@@ -42,6 +45,7 @@ impl AgentKind {
             Self::ClaudeCode => "claude-code/2.1.220/native-resume-v1",
             Self::MiniSweAgent => "mini-swe-agent/2.4.6/native-messages-v1",
             Self::Openhands => "openhands/0.53.0/native-replay-v1",
+            Self::PiAgent => "pi-agent/0.83.0/native-rpc-events-v1",
             Self::SweAgent => "swe-agent/1.1.0/replay-then-live-v1",
         }
     }
@@ -55,9 +59,10 @@ impl FromStr for AgentKind {
             "claude-code" => Ok(Self::ClaudeCode),
             "mini-swe-agent" => Ok(Self::MiniSweAgent),
             "openhands" => Ok(Self::Openhands),
+            "pi-agent" => Ok(Self::PiAgent),
             "swe-agent" => Ok(Self::SweAgent),
             other => Err(format!(
-                "unsupported agent {other:?}; expected claude-code, mini-swe-agent, openhands, or swe-agent"
+                "unsupported agent {other:?}; expected claude-code, mini-swe-agent, openhands, pi-agent, or swe-agent"
             )),
         }
     }
@@ -89,6 +94,15 @@ pub struct PlaybackRequest {
     pub allow_stale_observations: bool,
     pub run_id: Option<String>,
     pub disable_thinking: bool,
+    pub boundary_user_prompt: Option<String>,
+}
+
+impl PlaybackRequest {
+    pub fn boundary_user_prompt(&self) -> Option<&str> {
+        self.boundary_user_prompt
+            .as_deref()
+            .filter(|prompt| !prompt.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -163,6 +177,7 @@ pub(crate) enum AdapterPlan {
     ClaudeCode(ReplayPlan),
     MiniSweAgent(ReplayPlan),
     Openhands(ReplayPlan),
+    PiAgent(ReplayPlan),
     SweAgent(ReplayPlan),
 }
 
@@ -200,6 +215,7 @@ impl AdapterPlan {
             Self::ClaudeCode(plan)
             | Self::MiniSweAgent(plan)
             | Self::Openhands(plan)
+            | Self::PiAgent(plan)
             | Self::SweAgent(plan) => plan,
         }
     }
@@ -329,6 +345,7 @@ mod tests {
             AdapterPlan::ClaudeCode(replay_plan(AgentKind::ClaudeCode, "claude")),
             AdapterPlan::MiniSweAgent(replay_plan(AgentKind::MiniSweAgent, "mini")),
             AdapterPlan::Openhands(replay_plan(AgentKind::Openhands, "openhands")),
+            AdapterPlan::PiAgent(replay_plan(AgentKind::PiAgent, "pi")),
             AdapterPlan::SweAgent(replay_plan(AgentKind::SweAgent, "swe")),
         ];
 

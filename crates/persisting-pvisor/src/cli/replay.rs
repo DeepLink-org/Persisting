@@ -91,6 +91,10 @@ pub struct ReplayArgs {
     #[arg(long)]
     disable_thinking: bool,
 
+    /// Append one user message after the replayed boundary observation for the first live model request.
+    #[arg(long, value_name = "TEXT")]
+    boundary_user_prompt: Option<String>,
+
     #[arg(long)]
     run_id: Option<String>,
 
@@ -246,6 +250,7 @@ fn direct_managed_config(args: &ReplayArgs) -> Result<ReplayToml, ReplayError> {
             prepare_only: args.prepare_only,
             allow_stale_observations: args.allow_stale_observations,
             disable_thinking: args.disable_thinking,
+            boundary_user_prompt: args.boundary_user_prompt.clone(),
             run_id: args.run_id.clone(),
             workspace: args.workspace.clone(),
             state_dir: args.state_dir.clone(),
@@ -453,6 +458,9 @@ fn inner_replay_command(
     if replay.disable_thinking {
         command.push("--disable-thinking".into());
     }
+    if let Some(prompt) = &replay.boundary_user_prompt {
+        command.extend(["--boundary-user-prompt".into(), prompt.clone()]);
+    }
     if let Some(run_id) = &replay.run_id {
         command.extend(["--run-id".into(), run_id.clone()]);
     }
@@ -514,6 +522,7 @@ fn normalize(args: ReplayArgs) -> Result<PlaybackRequest, ReplayError> {
         allow_stale_observations: args.allow_stale_observations,
         run_id: args.run_id,
         disable_thinking: args.disable_thinking,
+        boundary_user_prompt: args.boundary_user_prompt,
     })
 }
 
@@ -534,6 +543,7 @@ fn reject_direct(args: &ReplayArgs) -> Result<(), ReplayError> {
         || args.replay_only
         || args.allow_stale_observations
         || args.disable_thinking
+        || args.boundary_user_prompt.is_some()
         || args.run_id.is_some()
         || args.safe
         || args.executor.is_some()
@@ -600,6 +610,7 @@ max_steps = 200
 session_id = "task-291-attempt-1"
 disallowed_tools = []
 disable_thinking = true
+boundary_user_prompt = "Review the fresh boundary observation."
 
 [run]
 safe = true
@@ -637,6 +648,12 @@ policy = "allowlist"
         assert!(command
             .iter()
             .any(|argument| argument == "--disable-thinking"));
+        assert!(command.windows(2).any(|pair| {
+            pair == [
+                "--boundary-user-prompt",
+                "Review the fresh boundary observation.",
+            ]
+        }));
     }
 
     #[test]

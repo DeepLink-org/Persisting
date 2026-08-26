@@ -94,11 +94,14 @@ pvisor replay \
   --agent claude-code \
   --trajectory /input/session.jsonl \
   --after-step 30 \
-  --agent-entrypoint /usr/bin/claude
+  --agent-entrypoint /usr/bin/claude \
+  --boundary-user-prompt 'Review the fresh observation before continuing.'
 ```
 
-OpenHands, mini-swe-agent, and SWE-agent use the model endpoint and credentials
-already present in their environment. Claude Code uses a temporary bridge owned
+OpenHands, mini-swe-agent, Pi agent, and SWE-agent use the model endpoint and
+credentials already present in their environment. Pi requires its exact
+`0.83.0` runtime and accepts native RPC event JSONL containing the core
+`read`, `bash`, `edit`, and `write` tools. Claude Code uses a temporary bridge owned
 by SandboxReplay because its native resume transport inserts wake-up messages.
 The bridge validates and removes that exact Resume Transport envelope before
 forwarding the model request. It does not enable pVisor Gateway, capture model
@@ -116,6 +119,17 @@ max_steps = 200
 session_id = "task-291-attempt-1"
 replay_only = false
 disable_thinking = true
+boundary_user_prompt = "Review the fresh observation before continuing."
+```
+
+Pi uses the same CLI/TOML surface. Its default SweEval entrypoint is
+`/opt/pi-agent/bin/pi`, for example:
+
+```bash
+pvisor replay --agent pi-agent \
+  --trajectory /input/pi-agent.events.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /opt/pi-agent/bin/pi
 ```
 
 Replay has three modes. The default replays the prefix and continues;
@@ -124,6 +138,14 @@ Replay has three modes. The default replays the prefix and continues;
 runtime. `--max-steps` is the total action budget, including replayed actions.
 `--allow-stale-observations` is an explicit Claude-only escape hatch that marks
 the v3 result `degraded`.
+
+`--boundary-user-prompt TEXT` appends one user message after the final fresh
+observation and before the first live model inference. The TOML spelling is
+`replay.boundary_user_prompt`. It is ignored for inference in prepare-only and
+replay-only modes, and an omitted option preserves the unmodified replay
+boundary. Structured results and replay journals store only injection state,
+length, and a digest; Agent-native prepared or continued trajectories may
+contain the user message.
 
 The result schema is `sandbox-playback.result/v3`, with typed `phase`, `quality`,
 and `agent_status` fields plus state/output locations, artifacts, and an optional

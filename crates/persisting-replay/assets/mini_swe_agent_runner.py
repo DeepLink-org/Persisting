@@ -201,12 +201,17 @@ def run(request: dict[str, Any]) -> None:
     reconstructed_path = Path(request["reconstructed"])
     continued_path = Path(request["continued"])
     agent.save(reconstructed_path)
+    boundary_user_prompt_injected = False
     if mode == "replay_only":
         phase = "replayed"
         agent_status = "not_started"
         continued_steps = 0
         trajectory_path = reconstructed_path
     else:
+        boundary_user_prompt = request.get("boundary_user_prompt")
+        if boundary_user_prompt:
+            agent.add_messages({"role": "user", "content": str(boundary_user_prompt)})
+            boundary_user_prompt_injected = True
         _continue(agent, continued_path)
         phase = "continued"
         continued_steps = max(0, int(agent.n_calls) - int(prefix_calls))
@@ -228,6 +233,7 @@ def run(request: dict[str, Any]) -> None:
                 "continued_steps": continued_steps,
                 "trajectory": str(trajectory_path),
                 "reconstructed": str(reconstructed_path),
+                "boundary_user_prompt_injected": boundary_user_prompt_injected,
             },
             ensure_ascii=False,
             indent=2,

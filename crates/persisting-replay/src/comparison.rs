@@ -9,6 +9,7 @@ pub fn write_next_action(
     path: &Path,
     original: &Value,
     replayed: &Value,
+    boundary_user_prompt_injected: bool,
 ) -> Result<(), ReplayError> {
     atomic_write_json(
         path,
@@ -18,6 +19,12 @@ pub fn write_next_action(
             "replayed": replayed,
             "metrics": metrics(original, replayed),
             "gating": false,
+            "input_condition": if boundary_user_prompt_injected {
+                "boundary_user_prompt_appended"
+            } else {
+                "replayed_boundary_only"
+            },
+            "boundary_user_prompt_injected": boundary_user_prompt_injected,
         }),
     )
 }
