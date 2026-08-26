@@ -77,6 +77,46 @@ Pi 的原生 `continue()`；配置后则在 `O′N` 后通过 `prompt()` 追加�
 
 ## 4. 使用方式
 
+### 4.1 安装 pVisor
+
+pVisor CLI 随 Persisting wheel 发布。沙箱内有 Python 3.10 或更高版本时，推荐直接
+安装发布版：
+
+~~~bash
+python -m pip install persisting
+
+command -v pvisor
+pvisor --version
+pvisor replay --help
+~~~
+
+如果需要测试尚未发布的 SandboxReplay 代码，可以在目标沙箱中从源码只安装 pVisor：
+
+~~~bash
+git clone https://github.com/DeepLink-org/Persisting.git
+cd Persisting
+cargo install --locked \
+  --path crates/persisting-pvisor \
+  --bin pvisor
+
+export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+pvisor replay --help
+~~~
+
+开发时也可以不安装，直接构建并使用仓库内二进制：
+
+~~~bash
+cargo build --release -p persisting-pvisor --bin pvisor
+./target/release/pvisor replay --help
+~~~
+
+`pvisor replay` 通常直接运行在用户已经创建的新沙箱中，因此 pVisor 必须安装在该
+沙箱内，或者以只读方式挂载到沙箱的 `PATH`。如果在沙箱外构建后复制二进制，构建机
+与目标沙箱的操作系统、CPU 架构和动态链接运行时必须兼容。Agent runtime 也必须与
+所选 replay profile 的固定版本一致。
+
+### 4.2 CLI 与 TOML
+
 SandboxReplay 默认假设用户已经创建了一个新沙箱，并在沙箱中直接运行：
 
 ~~~bash
@@ -88,7 +128,7 @@ pvisor replay \
   --boundary-user-prompt '请检查新的 observation 后继续任务'
 ~~~
 
-Pi agent 在 SweEval 默认 runtime 布局中的命令为：
+Pi agent runtime 安装在 `/opt/pi-agent` 时，命令为：
 
 ~~~bash
 pvisor replay \
@@ -98,7 +138,19 @@ pvisor replay \
   --agent-entrypoint /opt/pi-agent/bin/pi
 ~~~
 
-等价的 TOML 配置为：
+Pi agent 等价的 pVisor TOML 配置为：
+
+~~~toml
+[replay]
+agent = "pi-agent"
+trajectory = "/input/pi-agent.events.jsonl"
+after_step = 30
+agent_entrypoint = "/opt/pi-agent/bin/pi"
+max_steps = 200
+disable_thinking = true
+~~~
+
+Claude Code 等价的 pVisor TOML 配置为：
 
 ~~~toml
 [replay]
@@ -113,7 +165,7 @@ disable_thinking = true
 boundary_user_prompt = "请检查新的 observation 后继续任务"
 ~~~
 
-### 4.1 执行模式与结果
+### 4.3 执行模式与结果
 
 - 默认模式会执行选中的前缀，然后启动 Agent 继续运行；
 - `--replay-only` 会执行前缀，但在下一次模型请求前停止；
@@ -146,10 +198,11 @@ replay journal 不记录提示词明文；Agent 原生的 prepared 或 continued
 - 模型：`Qwen3.6-35B-A3B`；
 - reasoning/thinking：关闭；
 - 题目：NodeBB（291）、Vuls（666）、qutebrowser（667）；
-- Agent：Claude Code、OpenHands、mini-swe-agent；
+- Agent：Claude Code、OpenHands、mini-swe-agent、Pi agent；
 - 每个 Agent 先在新沙箱中生成原始轨迹，再创建另一个新沙箱，仅使用 pVisor SandboxReplay 续跑；
 - 每个沙箱资源：2 CPU、7 GiB 内存、70 GiB 存储；
-- 步数统一按 Rust 解析器识别出的原生工具批次数统计；
+- `N` 按 Rust 解析器识别出的完整原生工具批次序号统计；原始和续跑总步数按相应
+  Agent 原生轨迹中的 turn/action 数统计；
 - 文本相似度只比较归一化后的可见文本，不包含 reasoning；
 - “工具完全一致”要求工具数量、顺序、名称和 JSON 参数均一致。
 
@@ -166,8 +219,15 @@ replay journal 不记录提示词明文；Agent 原生的 prepared 或 continued
 | mini-swe-agent | NodeBB（291） | 48 | 104 | 115 | 1 | 1 | 否 | 1.00 |
 | mini-swe-agent | Vuls（666） | 39 | 94 | 91 | 1 | 1 | 是 | 1.00 |
 | mini-swe-agent | qutebrowser（667） | 31 | 115 | 65 | 1 | 1 | 否 | 0.77 |
+| Pi agent | NodeBB（291） | 54 | 111 | 92 | 1 | 1 | 是 | N/A |
+| Pi agent | Vuls（666） | 38 | 77 | 62 | 1 | 1 | 否 | 1.00 |
+| Pi agent | qutebrowser（667） | 37 | 71 | 91 | 1 | 1 | 否 | 0.39 |
 
 Claude Code / NodeBB 使用 `N=1`，以避开异步子 Agent 完成后的 Resume Transport canonical-prefix 歧义。边界后的原始可见文本非空，且 `A′(N+1)` 成功复现同一个 `TaskOutput` 调用。
+
+Pi agent 三题分别在新的任务沙箱中并发执行完成，均未发生模型请求重试，三次
+verifier Reward 均为 1。NodeBB 边界两侧的下一动作可见文本均为空，因此文本相似度
+按当前指标语义记为 N/A，而不是把两个空字符串报告为 1.00。
 
 ### 5.3 A(N+1) 与 A′(N+1)
 
@@ -435,3 +495,74 @@ bash:
 ~~~
 
 区别：都读取同一测试文件附近的内容，但分别使用 `grep -A 20` 和 `sed -n 100,140p`。文本相似度为 0.77。
+
+#### Pi agent
+
+##### NodeBB（291）
+
+`A(N+1)`：
+
+~~~text
+[可见文本为空]
+
+bash:
+  command="cd /app && node test-bulk-increment.js 2>&1"
+~~~
+
+`A′(N+1)`：
+
+~~~text
+[可见文本为空]
+
+bash:
+  command="cd /app && node test-bulk-increment.js 2>&1"
+~~~
+
+区别：工具及参数完全一致；双方可见文本均为空，因此文本相似度为 N/A。
+
+##### Vuls（666）
+
+`A(N+1)`：
+
+~~~text
+**4. Fix "Unmarshall" typo in report/cve_client.go:**
+
+bash:
+  command="grep -n \"Unmarshall\" /app/report/cve_client.go"
+~~~
+
+`A′(N+1)`：
+
+~~~text
+**4. Fix "Unmarshall" typo in report/cve_client.go:**
+
+bash:
+  command="sed -i 's/Failed to Unmarshall/Failed to Unmarshal/g' /app/report/cve_client.go"
+~~~
+
+区别：可见文本完全一致，工具名称均为 `bash`，但命令参数不同。文本相似度为 1.00。
+
+##### qutebrowser（667）
+
+`A(N+1)`：
+
+~~~text
+Let me update the test file to call the module-level function instead of the
+static method on the class. This is necessary for my implementation:
+
+edit:
+  path="/app/tests/unit/browser/webengine/test_webview.py"
+  changes="调用模块级 extra_suffixes_workaround；调整 chooseFiles 测试参数和 expected 集合合并"
+~~~
+
+`A′(N+1)`：
+
+~~~text
+Let me look at the test more carefully and understand what's expected:
+
+read:
+  path="/app/tests/unit/browser/webengine/test_webview.py"
+  offset=115
+~~~
+
+区别：原轨迹直接编辑测试文件，续跑先读取测试文件；工具和参数均不同。文本相似度为 0.39。
