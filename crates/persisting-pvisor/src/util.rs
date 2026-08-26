@@ -14,6 +14,11 @@ pub fn unix_now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+pub fn now_rfc3339_and_unix_ms() -> (String, u64) {
+    let now = chrono::Utc::now();
+    (now.to_rfc3339(), now.timestamp_millis().max(0) as u64)
+}
+
 pub(crate) fn sync_directory(path: &Path) -> anyhow::Result<()> {
     fs::File::open(path)?
         .sync_all()

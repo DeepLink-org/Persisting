@@ -417,9 +417,12 @@ canonical Storyline 投影，再构建初始 Catalog，随后由所有 REST 和 
 | `GET /api/catalog` | 返回当前 `snapshot_id`、创建时间、默认 Dataset、错误策略和 source 列表 |
 | `POST /api/catalog` | 在锁外完整构建新快照，成功后原子替换，并清空轨迹缓存 |
 
-投影 supervisor 在运行期发现 canonical Store 新增或发布后，会标记 Catalog dirty，随后在
-锁外完整重建并原子切换。刷新失败不会清空或部分更新旧 Catalog，而会保留 dirty 状态并有界
-重试；正在处理的请求持有旧快照的 `Arc`，可以继续完成。
+投影 supervisor 在运行期发现新的 canonical Store 或 projection 发布后，会标记 Catalog
+dirty，随后在锁外完整重建并原子切换。已经发现的 `events.lance` 继续追加时只推进 source
+watermark，不触发全局 Catalog 重建。Gateway 配套的单 trace 查询会先由 Catalog 定位 source，
+再重新打开最新 canonical manifest，因此 Storyline projection 等待 idle 窗口时，正在进行的
+trace 仍然可见。刷新失败不会清空或部分更新旧 Catalog，而会保留 dirty 状态并有界重试；正在
+处理的请求持有旧快照的 `Arc`，可以继续完成。
 Web Explorer 从 Catalog 获取 Dataset 列表，服务端过滤、URL 状态和 Storyline 列表
 均携带完整 `(dataset, _file_, session_id)`；`run_id` 作为物理 Run 分组信息
 单独返回。Catalog 是不可变快照；`POST /api/catalog` 仍可显式刷新，但位置 Dataset 形式的 `serve`

@@ -8,9 +8,11 @@
 ```text
 pchronicle serve
   [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
-  [--gateway-config FILE] [--gateway-dataset NAME] [--gateway-state DIRECTORY]
+  [--gateway ADDRESS --gateway-dataset DATASET [--gateway-split TEMPLATE]
+   [--gateway-split-idle DURATION]]
+  [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
   [--gateway-stream-markdown] [--gateway-debug]
-  <[NAME=]DATASET> ...
+  [<[NAME=]DATASET> ...]
 ```
 
 所有 listener 都必须使用 loopback 地址，因为 Web UI 和只读 API 不提供公开网络所需的认证边界。
@@ -44,13 +46,24 @@ pchronicle serve \
   default=./trajectory-data
 
 pchronicle serve \
-  --listen 127.0.0.1:8080 \
-  --gateway-config gateway.toml \
-  --gateway-dataset evals \
-  evals=./trajectory-data
+  --gateway auto \
+  --gateway-dataset ./trajectory-data \
+  --gateway-split '{user}/{date}/{hour}'
 ```
 
-Control 要求存在名为 `default` 的挂载。只提供 `--control` 或 `--gateway-config`、不提供
+`--gateway` 启动无需配置文件的 canonical event HTTP 入库端点。它接受
+`POST /v1/events`，从 `x-persisting-user-id` 取得 `{user}`，并自动挂载输出 Dataset。
+`{date}` 和 `{hour}` 使用 UTC；同一个 run/session 会固定到首次选择的分区，避免流式响应或
+长会话被拆成多个 event source。`auto` 等价于 `127.0.0.1:0`。
+已有 canonical source 默认在最后一条事件后等待 30 分钟才执行 Storyline projection；可用
+`--gateway-split-idle DURATION` 覆盖。
+
+启用 Warehouse listener 后，Gateway 模式的单 trace 查询会重新打开最新 canonical event
+manifest。向已有 source 追加事件不需要等待 Catalog 刷新或 Storyline projection；只有新建
+source 文件和 projection 发布才需要更新全局 Catalog。
+
+Control 要求存在名为 `default` 的挂载。只提供 `--control`、`--gateway` 或
+`--gateway-config`、不提供
 `--listen` 时，只启动所请求的集成，不同时启动 Web UI。进程向 stdout 写一条机器可读的
 readiness 记录；Control 凭据不会写入 stderr。
 

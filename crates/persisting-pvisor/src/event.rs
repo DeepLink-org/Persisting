@@ -115,19 +115,20 @@ impl RunEventPublisher {
         let following_seq = seq.checked_add(1).ok_or_else(|| {
             anyhow::anyhow!("event sequence exhausted for Attempt {}", self.attempt_id)
         })?;
+        let (timestamp, timestamp_unix_ms) = crate::util::now_rfc3339_and_unix_ms();
         let event = EventRecord {
             identity: EventIdentity {
                 event_id: Some(format!("event-{}", uuid::Uuid::new_v4())),
                 run_id: Some(self.run_id.to_string()),
                 attempt_id: Some(self.attempt_id.to_string()),
-                timestamp_unix_ms: Some(crate::util::unix_now_ms()),
+                timestamp_unix_ms: Some(timestamp_unix_ms),
                 producer: Some(self.producer.clone()),
                 ..EventIdentity::default()
             },
             seq,
             kind: kind.into(),
             source: source.into(),
-            timestamp: None,
+            timestamp: Some(timestamp),
             session_id: None,
             agent_id: None,
             parent_uuid: None,

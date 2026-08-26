@@ -48,8 +48,8 @@ pub use config::{
     ChronicleMode, ChronicleSettings, ContainerMount, ContainerNetwork, ContainerPlatform,
     ContainerSettings, GatewayDriverConfig, GatewayMode, GatewaySettings, NetworkDriverConfig,
     OverlayFsBackend, OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy,
-    OverlayNetSettings, PVisorConfig, RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio,
-    VmSettings,
+    OverlayNetSettings, PVisorConfig, RecordFormat, RecordSettings, RunConfig, RunExecutorKind,
+    RunPolicy, RunSettings, RunStdio, VmSettings,
 };
 pub use container::ContainerExecutor;
 pub use control::{

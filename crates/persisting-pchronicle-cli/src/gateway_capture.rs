@@ -12,6 +12,7 @@ use persisting_pchronicle::storage::{
     RawEventAppendOutcome, RawEventAppendSender, RawEventAppendWorker, StoryCoords,
 };
 
+use crate::gateway_partition::{GatewayPartitionRouter, GatewaySplitTemplate};
 use crate::{cli_boundary_error, server::problem::BoundaryCode};
 
 pub(crate) struct GatewayCaptureWriter {
@@ -29,15 +30,16 @@ pub(crate) fn gateway_capture_sink(
     dataset_uri: &str,
     default_agent_id: &str,
 ) -> anyhow::Result<(Arc<dyn CaptureEventSink>, GatewayCaptureWriter)> {
-    gateway_capture_sink_with_factory(dataset_uri, default_agent_id, raw_event_append_queue)
+    gateway_capture_sink_with_factory(dataset_uri, default_agent_id, None, raw_event_append_queue)
 }
 
 pub(crate) fn gateway_capture_sink_with_manifest_write_mode(
     dataset_uri: &str,
     default_agent_id: &str,
+    split: Option<GatewaySplitTemplate>,
     manifest_write_mode: ObjectStoreManifestWriteMode,
 ) -> anyhow::Result<(Arc<dyn CaptureEventSink>, GatewayCaptureWriter)> {
-    gateway_capture_sink_with_factory(dataset_uri, default_agent_id, move || {
+    gateway_capture_sink_with_factory(dataset_uri, default_agent_id, split, move || {
         raw_event_append_queue_with_manifest_write_mode(manifest_write_mode)
     })
 }
@@ -45,21 +47,28 @@ pub(crate) fn gateway_capture_sink_with_manifest_write_mode(
 fn gateway_capture_sink_with_factory<F>(
     dataset_uri: &str,
     default_agent_id: &str,
+    split: Option<GatewaySplitTemplate>,
     queue_factory: F,
 ) -> anyhow::Result<(Arc<dyn CaptureEventSink>, GatewayCaptureWriter)>
 where
     F: FnOnce() -> anyhow::Result<(RawEventAppendSender, RawEventAppendWorker)>,
 {
-    let dataset_uri = dataset_uri.to_string();
+    let partitions = GatewayPartitionRouter::new(dataset_uri, split)?;
     let (tx, worker) = queue_factory()?;
 
     let callback_tx = tx.clone();
     let callback = CallbackSink::new(
         default_agent_id,
         move |route: &CaptureRoute, agent_id, record: EventRecord| {
+            let user = record
+                .payload
+                .get("headers")
+                .and_then(|headers| headers.get("x-persisting-user-id"))
+                .and_then(|value| value.as_str());
+            let dataset_uri = partitions.route(&route.seq_key(), user);
             let outcome = callback_tx.append_durable(
                 StoryCoords::new(
-                    dataset_uri.clone(),
+                    dataset_uri,
                     agent_id,
                     route.storage_session_id.clone(),
                     route.append_root_session(),
@@ -196,7 +205,7 @@ mod tests {
 
     #[test]
     fn gateway_queue_start_failure_preserves_source_chain() {
-        let result = gateway_capture_sink_with_factory("memory://capture", "agent", || {
+        let result = gateway_capture_sink_with_factory("memory://capture", "agent", None, || {
             Err(
                 anyhow::Error::new(std::io::Error::other("spawn-failure-sentinel"))
                     .context("start injected append worker"),

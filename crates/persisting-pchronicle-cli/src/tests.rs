@@ -7,6 +7,7 @@ async fn trajectory_append_uses_persisting_events_protocol_directly() -> Result<
         storage: temporary.path().to_string_lossy().into_owned(),
         agent_id: "agent".into(),
         session_id: "session".into(),
+        format: Default::default(),
         root_session_id: None,
         records: vec![persisting_events::EventRecord {
             identity: persisting_events::EventIdentity::default(),
@@ -30,6 +31,43 @@ async fn trajectory_append_uses_persisting_events_protocol_directly() -> Result<
         crate::control::append_trajectory(request).await?;
     assert_eq!(response.accepted_records, 1);
     assert_eq!(response.status, "ok");
+    Ok(())
+}
+
+#[tokio::test]
+async fn trajectory_append_can_persist_json_in_the_warehouse() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let request = persisting_events::TrajectoryAppendRequest {
+        storage: temporary.path().to_string_lossy().into_owned(),
+        agent_id: "agent".into(),
+        session_id: "json-session".into(),
+        format: persisting_events::TrajectoryFormat::Json,
+        root_session_id: None,
+        records: vec![persisting_events::EventRecord {
+            identity: persisting_events::EventIdentity::default(),
+            seq: 7,
+            source: "gateway".into(),
+            kind: "llm.request".into(),
+            timestamp: None,
+            session_id: Some("json-session".into()),
+            agent_id: Some("agent".into()),
+            parent_uuid: None,
+            trace_id: None,
+            call_id: None,
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: serde_json::json!({"http": {"request_body": {"raw": true}}}),
+        }],
+    };
+    let response = crate::control::append_trajectory(request).await?;
+    assert_eq!(response.status, "ok");
+    let path = temporary
+        .path()
+        .join("json/agent/json-session/events.jsonl");
+    let contents = std::fs::read_to_string(path)?;
+    assert!(contents.contains("\"request_body\""));
     Ok(())
 }
 use clap::CommandFactory;
@@ -3373,7 +3411,10 @@ fn serve_args_with_storage(storage: Vec<String>) -> ServeArgs {
         control: None,
         open: false,
         gateway: None,
+        gateway_config: None,
         gateway_dataset: None,
+        gateway_split: None,
+        gateway_split_idle_seconds: 1800,
         gateway_state: None,
         gateway_object_store_manifest_mode: GatewayObjectStoreManifestMode::default(),
         gateway_stream_markdown: false,
@@ -3702,6 +3743,8 @@ fn serve_cli_requires_one_dataset_source_and_an_explicit_service() -> Result<()>
             "/tmp/data",
             "--gateway-config",
             "gateway.toml",
+            "--gateway-dataset",
+            "/tmp/data",
         ],
         vec![
             "pchronicle",
@@ -3850,6 +3893,42 @@ fn echo_cli_uses_a_normal_loopback_default() -> Result<()> {
 
 #[test]
 fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
+    let ingest = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "--gateway",
+        "auto",
+        "--gateway-dataset",
+        "/tmp/captures",
+        "--gateway-split",
+        "{user}/{date}/{hour}",
+    ])?;
+    let Command::Serve(ingest) = ingest.command else {
+        unreachable!("serve command parsed as another variant")
+    };
+    assert_eq!(ingest.gateway, Some("127.0.0.1:0".parse::<SocketAddr>()?));
+    assert_eq!(ingest.gateway_config, None);
+    assert_eq!(
+        ingest.gateway_split.as_deref(),
+        Some("{user}/{date}/{hour}")
+    );
+    assert_eq!(ingest.gateway_split_idle_seconds, 30 * 60);
+
+    let idle_override = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "--gateway",
+        "auto",
+        "--gateway-dataset",
+        "/tmp/captures",
+        "--gateway-split-idle",
+        "45s",
+    ])?;
+    let Command::Serve(idle_override) = idle_override.command else {
+        unreachable!("serve command parsed as another variant")
+    };
+    assert_eq!(idle_override.gateway_split_idle_seconds, 45);
+
     let cli = Cli::try_parse_from([
         "pchronicle",
         "serve",
@@ -3858,7 +3937,7 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
         "--gateway-config",
         "gateway.toml",
         "--gateway-dataset",
-        "captures",
+        "s3://capture-bucket/events",
         "--gateway-state",
         ".gateway-state",
         "--gateway-object-store-manifest-mode",
@@ -3869,8 +3948,12 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
     let Command::Serve(args) = cli.command else {
         unreachable!("serve command parsed as another variant")
     };
-    assert_eq!(args.gateway, Some(PathBuf::from("gateway.toml")));
-    assert_eq!(args.gateway_dataset.as_deref(), Some("captures"));
+    assert_eq!(args.gateway, None);
+    assert_eq!(args.gateway_config, Some(PathBuf::from("gateway.toml")));
+    assert_eq!(
+        args.gateway_dataset.as_deref(),
+        Some("s3://capture-bucket/events")
+    );
     assert_eq!(args.gateway_state, Some(PathBuf::from(".gateway-state")));
     assert_eq!(
         args.gateway_object_store_manifest_mode,
@@ -3904,6 +3987,8 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
         "warehouse.toml",
         "--gateway-config",
         "gateway.toml",
+        "--gateway-dataset",
+        "/tmp/captures",
         "--gateway-debug",
     ])?;
     let Command::Serve(args) = cli.command else {
@@ -3914,25 +3999,15 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
 }
 
 #[test]
-fn gateway_dataset_selection_uses_only_static_mounts() -> Result<()> {
-    let captures = DatasetMount::new("captures", "/tmp/captures")?;
-    let evals = DatasetMount::new("evals", "/tmp/evals")?;
-    let mut config = server::ChronicleServerConfig::mounted(vec![captures, evals])?;
-    assert!(select_gateway_dataset(&config, None)
-        .unwrap_err()
-        .to_string()
-        .contains("ambiguous"));
-    assert_eq!(
-        select_gateway_dataset(&config, Some("captures"))?.name,
-        "captures"
-    );
-    assert!(select_gateway_dataset(&config, Some("missing"))
-        .unwrap_err()
-        .to_string()
-        .contains("not mounted"));
-
-    config.default_dataset = Some("evals".into());
-    assert_eq!(select_gateway_dataset(&config, None)?.name, "evals");
+fn gateway_dataset_uri_is_auto_mounted_and_deduplicated() -> Result<()> {
+    let mut config =
+        server::ChronicleServerConfig::mounted(vec![DatasetMount::new("evals", "/tmp/evals")?])?;
+    ensure_gateway_mount(&mut config, "/tmp/captures".into())?;
+    assert_eq!(config.datasets.len(), 2);
+    assert_eq!(config.datasets[1].name, "gateway");
+    assert_eq!(config.datasets[1].uri, "/tmp/captures");
+    ensure_gateway_mount(&mut config, "/tmp/captures".into())?;
+    assert_eq!(config.datasets.len(), 2);
     Ok(())
 }
 
@@ -3941,6 +4016,11 @@ fn embedded_gateway_rejects_public_listeners() {
     let error = parse_gateway_listener("0.0.0.0:8787", "Gateway").unwrap_err();
     assert!(error.to_string().contains("loopback"));
     assert!(parse_gateway_listener("127.0.0.1:0", "Gateway").is_ok());
+    assert!(parse_gateway_bind("0.0.0.0:0").is_err());
+    assert_eq!(
+        parse_gateway_bind("auto").unwrap(),
+        "127.0.0.1:0".parse::<SocketAddr>().unwrap()
+    );
 }
 
 #[tokio::test]
@@ -3996,16 +4076,17 @@ upstream = "http://{upstream_addr}/v1"
     let warehouse_config = server::ChronicleServerConfig::mounted(vec![DatasetMount::default(
         dataset.path().to_string_lossy(),
     )?])?;
-    let prepared_gateway = PreparedGateway {
+    let prepared_gateway = PreparedGateway::Proxy(Box::new(PreparedProxyGateway {
         config,
         state_dir: state.path().to_path_buf(),
-        dataset_name: DEFAULT_DATASET_NAME.into(),
+        dataset_uri: dataset.path().to_string_lossy().into_owned(),
+        split: None,
         stream_markdown: false,
         listener,
         admin_listener,
         sink,
         writer,
-    };
+    }));
     let (serve_stop_tx, serve_stop_rx) = tokio::sync::oneshot::channel::<()>();
     let serve = tokio::spawn(async move {
         serve_warehouse_and_gateway(

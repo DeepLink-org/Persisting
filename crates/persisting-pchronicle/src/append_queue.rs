@@ -87,6 +87,38 @@ impl RawEventAppendSender {
         }
     }
 
+    /// Enqueue a batch before waiting for durability. This preserves the
+    /// worker's micro-batching behavior for high-volume OTLP requests; calling
+    /// `append_durable` once per record would serialize every Lance commit.
+    ///
+    /// Admission remains bounded and non-blocking. If the queue fills midway,
+    /// already-admitted records are drained to completion before `Full` is
+    /// returned, so callers never acknowledge an unfinished prefix.
+    pub fn append_durable_batch(
+        &self,
+        entries: Vec<(StoryCoords, EventRecord)>,
+    ) -> anyhow::Result<RawEventAppendOutcome> {
+        let mut completions = Vec::with_capacity(entries.len());
+        for (coords, record) in entries {
+            let (completion_tx, completion_rx) = mpsc::sync_channel(1);
+            match self.enqueue(coords, record, Some(completion_tx)) {
+                RawEventAppendOutcome::Accepted => completions.push(completion_rx),
+                rejection => {
+                    for completion in completions {
+                        let _ = completion.recv();
+                    }
+                    return Ok(rejection);
+                }
+            }
+        }
+        for completion in completions {
+            completion
+                .recv()
+                .context("await raw event batch append completion")??;
+        }
+        Ok(RawEventAppendOutcome::Accepted)
+    }
+
     fn enqueue(
         &self,
         coords: StoryCoords,

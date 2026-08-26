@@ -1,6 +1,6 @@
 use std::{net::TcpListener, process::Command};
 
-use persisting_pvisor::{ChronicleMode, RunBundle, RunConfig};
+use persisting_pvisor::{RecordFormat, RunBundle, RunConfig};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -188,16 +188,16 @@ fn current_directory_selects_the_host_process_working_directory() {
 }
 
 #[test]
-fn chronicle_object_store_uri_survives_toml_round_trip() {
+fn record_destination_survives_toml_round_trip() {
     let mut config = RunConfig::default();
-    config.chronicle.mode = ChronicleMode::Lance;
-    config.chronicle.dir = Some("s3://trajectory-bucket/pvisor/轨迹".into());
+    config.record.format = RecordFormat::Lance;
+    config.record.destination = Some("s3://trajectory-bucket/pvisor/轨迹".into());
 
     let encoded = toml::to_string_pretty(&config).expect("serialize RunConfig");
     let decoded: RunConfig = toml::from_str(&encoded).expect("deserialize RunConfig");
-    assert_eq!(decoded.chronicle.mode, ChronicleMode::Lance);
+    assert_eq!(decoded.record.format, RecordFormat::Lance);
     assert_eq!(
-        decoded.chronicle.dir.as_deref(),
+        decoded.record.destination.as_deref(),
         Some(std::path::Path::new("s3://trajectory-bucket/pvisor/轨迹"))
     );
 }
@@ -219,7 +219,7 @@ fn run_accepts_portable_object_store_chronicle_sink() {
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--chronicle-mode", "lance", "--chronicle-dir"])
+        .args(["run", "--record-format", "lance", "--record-destination"])
         .arg(&uri)
         .args(["--", "/usr/bin/true"])
         .current_dir(&workspace)

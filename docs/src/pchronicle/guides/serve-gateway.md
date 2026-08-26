@@ -1,9 +1,69 @@
-# Gateway forwarding, rewriting, and capture for `pchronicle serve`
+# Gateway ingestion, forwarding, and capture for `pchronicle serve`
+
+`pchronicle serve` has two mutually exclusive Gateway modes:
+
+- `--gateway ADDRESS` starts a config-free HTTP ingestion endpoint for
+  canonical trajectory events;
+- `--gateway-config FILE` keeps the compatibility LLM forwarding, protocol
+  rewriting, and capture mode described later in this guide.
+
+The config-free form controls storage entirely from the command line:
+
+```bash
+pchronicle serve \
+  --gateway auto \
+  --gateway-dataset ./data/captures \
+  --gateway-split '{user}/{date}/{hour}'
+```
+
+Send a batch to `POST /v1/events` with `agent_id`, `session_id`, optional
+`root_session_id`, and `records`. The records use the shared canonical
+`EventRecord` schema. `x-persisting-user-id` supplies `{user}`; missing users
+use `_unknown`. A successful response means every accepted record is durably
+visible. Canonical `/v1/events` requests accept at most 256 records and the
+body limit is 8 MiB. Langfuse OTLP batches may contain more spans; the Gateway
+splits those batches internally while keeping the client-facing request
+boundary unchanged. Event IDs derived from `traceId` and `spanId` remain stable
+across retries, which gives downstream compaction/deduplication a deterministic
+key.
+
+Split templates are relative, contain at most 16 segments, and accept only
+safe literal segments plus the exact placeholders `{user}`, `{date}`, and
+`{hour}`. Time fields use UTC. A logical run/session is pinned to its first
+partition for the life of the process. `--gateway-split-idle` controls how long
+an existing canonical source must stay quiet before its Storyline projection is
+refreshed; it defaults to `30m`. Newly discovered sources are still projected
+immediately. This is a projection idle window, not a change to the physical
+split path.
+
+The remaining sections describe the forwarding compatibility mode.
+
+## Langfuse OTLP pressure benchmark
+
+The repository includes a black-box pressure test. It starts a real
+`pchronicle serve --gateway` child process, sends synthetic spans concurrently
+through the Langfuse OTLP HTTP path, and queries the Dataset after shutdown. It
+is ignored by default so regular CI stays bounded:
+
+```bash
+PCHRONICLE_LANGFUSE_STRESS_REQUESTS=32 \
+PCHRONICLE_LANGFUSE_STRESS_SPANS_PER_REQUEST=512 \
+PCHRONICLE_LANGFUSE_STRESS_CONCURRENCY=8 \
+cargo test -p persisting-pchronicle-cli --test langfuse_gateway_stress \
+  langfuse_gateway_pressure --offline -- --ignored --nocapture
+```
+
+The test checks HTTP 200 and the full-success OTLP response, internal chunking
+for batches larger than 256 spans, durable event counts, trace/span/parent
+relationships, and event-ID uniqueness. It prints requests/sec, spans/sec, and
+p50/p95/p99 latency. Tune the three environment variables for the target
+hardware; compare throughput only with fixed disk, filesystem, and concurrency,
+and do not treat it as a cross-machine SLA.
 
 `pchronicle serve` can run a local LLM Gateway with or without the read-only Dataset server.
 For each request, the Gateway selects an upstream, can rewrite the model and
 wire protocol, returns a response in the client's protocol, and appends
-canonical capture events to one mounted Dataset. The Dataset Web UI and API
+canonical capture events to the CLI-selected output Dataset. The Dataset Web UI and API
 remain read-only.
 
 Use this mode when an Agent or SDK already knows how to call an OpenAI-,
@@ -18,9 +78,9 @@ Gateway mode deliberately keeps Dataset selection and forwarding configuration s
 
 | Input | Owns |
 | --- | --- |
-| Positional `[NAME=]DATASET` values | Mounted Datasets |
+| `--gateway-dataset DATASET` | Output Dataset URI, mounted automatically |
 | `gateway.toml` passed to `--gateway-config` | Gateway listeners, model routes, credentials, capture level, and network policy |
-| CLI flags | Capture Dataset selection, local Gateway state, live Markdown, and foreground debugging |
+| Other CLI flags | Physical split, local Gateway state, live Markdown, and foreground debugging |
 
 Unknown Gateway TOML fields are rejected. The Gateway configuration must use
 TOML; other file extensions are not accepted.
@@ -54,9 +114,8 @@ export DEEPSEEK_API_KEY=sk-...
 pchronicle serve \
   --listen 127.0.0.1:8080 \
   --gateway-config gateway.toml \
-  --gateway-dataset captures \
-  --gateway-stream-markdown \
-  captures=./data/captures
+  --gateway-dataset ./data/captures \
+  --gateway-stream-markdown
 ```
 
 This starts three loopback listeners:
@@ -313,13 +372,9 @@ traffic that the client sends through the Gateway.
 
 ## Dataset and state selection
 
-The capture destination is selected in this order:
-
-1. `--gateway-dataset NAME`;
-2. the only positional Dataset, when exactly one exists.
-
-If none of these yields one unambiguous Dataset, startup fails. The selected
-name must refer to one of the positional `[NAME=]DATASET` mounts.
+`--gateway-dataset DATASET` is required and directly names the local path or
+object-store URI receiving captures. pChronicle mounts it automatically. If
+the same URI is already mounted positionally it is deduplicated.
 
 Canonical events are appended directly to that Dataset. Gateway runtime state
 is separate and includes the session index, debug logs, and optional live
@@ -337,9 +392,9 @@ files out of a local Dataset:
 ```bash
 pchronicle serve \
   --gateway-config gateway.toml \
+  --gateway-dataset ./data/captures \
   --gateway-state ./.pchronicle-gateway \
-  --gateway-stream-markdown \
-  captures=./data/captures
+  --gateway-stream-markdown
 ```
 
 ## CLI precedence and safety
@@ -349,7 +404,7 @@ pchronicle serve \
 - `--gateway-debug` enables Gateway debugging even
   when `debug = false`; there is no CLI flag that forces configured debugging
   off.
-- `--gateway-dataset`, `--gateway-state`, and
+- `--gateway-dataset`, `--gateway-split`, `--gateway-state`, and
   `--gateway-stream-markdown` are composition settings and are not Gateway TOML
   fields.
 - Dataset, Gateway, and admin listeners must all be loopback addresses. The
@@ -360,12 +415,14 @@ pchronicle serve \
 ## Observe new captures
 
 Gateway events are durable after they have been flushed to the selected
-Dataset. The `serve` projection supervisor discovers the canonical change,
-updates its deterministic sibling Storyline Store, then completely rebuilds
-and atomically swaps the server's Dataset catalog. Projection or refresh failures use
-bounded retry and retain the old queryable Catalog; neither blocks durable
-capture writes. `POST /api/catalog` remains available for an explicit manual
-refresh, but it is not required for captured events to become visible. On
+Dataset. Appending to an existing `events.lance` source does not rebuild the
+global Catalog. Single-trace `/api/events`, `/api/storyline`, and
+`/api/trajectory-view` requests reopen that source's latest manifest, so an
+active trace can be observed in real time. The global Catalog is refreshed when
+a new canonical source (for example, a new split file) appears or a Storyline
+projection is published. Projection or refresh failures use bounded retry and
+retain the old queryable Catalog; neither blocks durable capture writes.
+`POST /api/catalog` remains available for an explicit manual refresh. On
 `SIGINT` or `SIGTERM`, `pchronicle serve` stops both services and finishes the
 Gateway capture writer before exiting.
 

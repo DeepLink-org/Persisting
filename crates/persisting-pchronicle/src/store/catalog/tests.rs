@@ -803,10 +803,27 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
             }],
         )
         .await?;
+    let live_key = CatalogStorylineKey {
+        dataset: DEFAULT_DATASET_NAME.into(),
+        file: "agent/run-1/events.lance".into(),
+        document_id: "root".into(),
+        session_id: "root".into(),
+    };
+    let live_events = snapshot
+        .load_live_events(&live_key)
+        .await?
+        .context("live canonical events must resolve after append")?;
+    assert_eq!(live_events.provenance, CatalogEventProvenance::Canonical);
+    assert_eq!(live_events.document.events.len(), 2);
+    let live_storyline = snapshot
+        .load_live_storyline(&live_key)
+        .await?
+        .context("live canonical Storyline must resolve after append")?;
+    assert_eq!(live_storyline.turns.len(), 2);
     let lazy = &snapshot.prepared[0].sources[0];
-    assert_eq!(lazy.resolution_count.load(Ordering::Relaxed), 0);
+    assert_eq!(lazy.resolution_count.load(Ordering::Relaxed), 1);
     let engine = snapshot.clone().query_engine(Default::default()).await?;
-    assert_eq!(lazy.resolution_count.load(Ordering::Relaxed), 0);
+    assert_eq!(lazy.resolution_count.load(Ordering::Relaxed), 1);
     let event_count = engine
         .query_jsonl(
             "SELECT COUNT(*) AS rows FROM dataset.events \

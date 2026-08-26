@@ -184,16 +184,21 @@ pvisor run \
   --gateway-level dialogue \
   --gateway-route \
     'name="openai", provider="openai", upstream="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"' \
-  --chronicle-mode spawn \
-  --pchronicle-binary pchronicle \
+  --record-format lance \
+  --record-destination ./warehouse \
   -- codex
 ```
 
-`--chronicle-mode spawn` starts `pchronicle serve --control 127.0.0.1:0 DATASET`;
+`--record-format lance` starts `pchronicle serve --control 127.0.0.1:0 DATASET`;
 pVisor sends shared `EventRecord` values and waits for durable
-acknowledgements instead of opening Lance itself. `lance` remains accepted as a
-compatibility alias for `spawn`. The binary can also be selected with
-`PERSISTING_PCHRONICLE_BIN`.
+acknowledgements. Use `--record-format json` for local JSONL or a JSON warehouse
+archive.
+
+All newly persisted records contain both `timestamp` (RFC3339 UTC) and
+`timestamp_unix_ms` (Unix milliseconds). They describe the same observation
+time and must agree within one millisecond. Record ordering remains defined by
+`source + seq`; timestamps are correlation metadata rather than the ordering
+source of truth.
 
 The equivalent TOML is:
 

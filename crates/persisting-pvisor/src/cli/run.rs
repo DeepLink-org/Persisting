@@ -5,18 +5,18 @@ use std::sync::Arc;
 use anyhow::{bail, Context};
 use clap::{Args, ValueEnum};
 use persisting_agentctl::{PolicyMode, RunInvocation, RunSpec, RunState, StdioMode};
+use persisting_events::TrajectoryFormat;
 use persisting_gateway::config::{
     CaptureLevel, ModelRoute, NetworkConfig, NetworkMode, OverlayBackend, OverlayConfig,
     ProxyConfig,
 };
-use persisting_gateway::sink::SeqOnlySink;
 use persisting_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
 use serde::Deserialize;
 
 use crate::config::{
-    ChronicleMode, ContainerMount, ContainerNetwork, ContainerPlatform, GatewayMode,
-    OverlayFsBackend, OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy,
-    OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy, RunStdio,
+    ContainerMount, ContainerNetwork, ContainerPlatform, GatewayMode, OverlayFsBackend,
+    OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings,
+    RecordFormat, RunConfig, RunExecutorKind, RunPolicy, RunStdio,
 };
 use crate::runtime::{default_run_home, resolve_run, RunLineage};
 use crate::{
@@ -25,7 +25,9 @@ use crate::{
     RunExecutor, TrajectoryEventSink, VmExecutor,
 };
 
-use super::trajectory::{chronicle_sink, ChronicleWriter};
+use super::trajectory::{
+    chronicle_sink, jsonl_capture_sink, ChronicleWriter, JsonlEventSink, JsonlWriter,
+};
 
 type ChronicleSinks = (
     Arc<dyn TrajectoryEventSink>,
@@ -116,8 +118,8 @@ pub struct RunArgs {
     overlaynet: OverlayNetOverrides,
     #[command(flatten, next_help_heading = "Gateway options")]
     gateway: GatewayOverrides,
-    #[command(flatten, next_help_heading = "pChronicle options")]
-    chronicle: ChronicleOverrides,
+    #[command(flatten, next_help_heading = "Recording options")]
+    record: RecordOverrides,
 
     /// Agent command; replaces `run.command` from the config file.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -461,15 +463,14 @@ struct GatewayOverrides {
 }
 
 #[derive(Debug, Clone, Default, Args)]
-struct ChronicleOverrides {
-    #[arg(long, value_enum)]
-    chronicle_mode: Option<ChronicleMode>,
-    /// Canonical pChronicle storage root; accepts a local directory or s3:// URI.
-    #[arg(long, value_name = "PATH|S3_URI")]
-    chronicle_dir: Option<PathBuf>,
-    /// Standalone pChronicle executable used by the sidecar control client.
-    #[arg(long, env = "PERSISTING_PCHRONICLE_BIN", value_name = "PATH")]
-    pchronicle_binary: Option<PathBuf>,
+struct RecordOverrides {
+    /// Durable event format. `json` is the lightweight local JSONL path;
+    /// `lance` starts the full pChronicle warehouse path.
+    #[arg(long, value_enum, value_name = "FORMAT")]
+    record_format: Option<RecordFormat>,
+    /// Directory or file for JSONL, or warehouse URI/directory for Lance.
+    #[arg(long, value_name = "PATH|URI")]
+    record_destination: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -568,8 +569,8 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             "--run-spec does not accept OverlayFS overrides"
         );
         anyhow::ensure!(
-            config.chronicle.mode == ChronicleMode::Off,
-            "--run-spec does not accept Chronicle overrides"
+            config.record.destination.is_none() && config.record.format == RecordFormat::Json,
+            "--run-spec does not accept recording overrides"
         );
         let storage = resolve_run_storage(&run_home.join(spec.run_id.as_str()))?;
         let proxy = resolve_proxy(&config)?;
@@ -855,25 +856,54 @@ async fn execute_config(
         persisting_gateway::runtime::debug::enable_debug(&storage)?;
     }
 
-    let chronicle_dir = config
-        .chronicle
-        .dir
-        .clone()
-        .or_else(|| Some(storage.join("chronicle")));
-    let (sink, event_sink, writer, chronicle_control): ChronicleSinks = match config.chronicle.mode
-    {
-        ChronicleMode::Off => (
-            Arc::new(SeqOnlySink::new()),
+    let remote_json = config.record.format == RecordFormat::Json
+        && config
+            .record
+            .destination
+            .as_ref()
+            .is_some_and(|path| path.to_string_lossy().contains("://"));
+    let use_chronicle = config.record.format == RecordFormat::Lance || remote_json;
+    let mut json_writer = None;
+    let (sink, event_sink, writer, chronicle_control): ChronicleSinks = if use_chronicle {
+        let dir = config
+            .record
+            .destination
+            .clone()
+            .unwrap_or_else(|| storage.join("warehouse"));
+        let chronicle_format = if config.record.format == RecordFormat::Json {
+            TrajectoryFormat::Json
+        } else {
+            TrajectoryFormat::Lance
+        };
+        let (sink, event_sink, writer, control) = chronicle_sink(
+            &dir,
+            &config.run.agent,
+            &run_id,
+            &config.chronicle.binary,
+            chronicle_format,
+        )
+        .await?;
+        (sink, event_sink, Some(writer), Some(control))
+    } else if config.gateway.mode == GatewayMode::Capture || config.record.destination.is_some() {
+        let destination = config
+            .record
+            .destination
+            .clone()
+            .unwrap_or_else(|| storage.join(".capture"));
+        let writer = JsonlWriter::open(&destination).with_context(|| {
+            format!("open JSONL recording destination {}", destination.display())
+        })?;
+        let sink = jsonl_capture_sink(&writer, &config.run.agent);
+        let event_sink = Arc::new(JsonlEventSink::new(writer.clone())) as Arc<dyn crate::EventSink>;
+        json_writer = Some(writer);
+        (sink, event_sink, None, None)
+    } else {
+        (
+            Arc::new(persisting_gateway::sink::SeqOnlySink::new()),
             Arc::new(crate::NoopEventSink),
             None,
             None,
-        ),
-        ChronicleMode::Spawn | ChronicleMode::Lance => {
-            let dir = chronicle_dir.context("pChronicle requires a storage location")?;
-            let (sink, event_sink, writer, control) =
-                chronicle_sink(&dir, &config.run.agent, &run_id, &config.chronicle.binary).await?;
-            (sink, event_sink, Some(writer), Some(control))
-        }
+        )
     };
 
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
@@ -1070,6 +1100,9 @@ async fn execute_config(
         }
     };
     drop(pvisor);
+    if let Some(writer) = json_writer {
+        writer.finish()?;
+    }
     if let Some(writer) = writer {
         writer.finish()?;
     }
@@ -1433,15 +1466,13 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
             .collect();
     }
 
-    if let Some(value) = args.chronicle.chronicle_mode {
-        config.chronicle.mode = value;
+    if let Some(value) = args.record.record_format {
+        config.record.format = value;
     }
-    if let Some(value) = args.chronicle.chronicle_dir {
-        config.chronicle.dir = Some(value);
+    if let Some(value) = args.record.record_destination {
+        config.record.destination = Some(value);
     }
-    if let Some(value) = args.chronicle.pchronicle_binary {
-        config.chronicle.binary = value;
-    }
+
     Ok(())
 }
 
@@ -1825,16 +1856,40 @@ mod tests {
             "capture",
             "--gateway-route",
             r#"name="openai", upstream="https://api.openai.com/v1""#,
-            "--chronicle-mode",
-            "spawn",
-            "--chronicle-dir",
+            "--record-format",
+            "lance",
+            "--record-destination",
             "s3://trajectory-bucket/pvisor-runs",
-            "--pchronicle-binary",
-            "/opt/persisting/bin/pchronicle",
             "--",
             "codex",
         ])
         .expect("complete command line should parse");
+    }
+
+    #[test]
+    fn cli_record_options_are_the_only_persistence_selection() {
+        let _ = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--record-format",
+            "json",
+            "--record-destination",
+            "/tmp/events",
+            "--",
+            "codex",
+        ])
+        .unwrap();
+        let _ = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--record-format",
+            "lance",
+            "--record-destination",
+            "s3://warehouse/runs",
+            "--",
+            "codex",
+        ])
+        .unwrap();
     }
 
     #[test]

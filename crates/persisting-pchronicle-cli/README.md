@@ -191,7 +191,26 @@ Pass one or more positional `[NAME=]DATASET` mounts. Use
 UI after the listener is ready. Public bind addresses are rejected because
 this local Warehouse surface does not provide authentication.
 
-### Embedded Gateway
+### Config-free ingest Gateway
+
+Use `--gateway` with an address and an output Dataset URI. The Dataset is
+mounted automatically, so it does not need to be repeated positionally:
+
+```bash
+pchronicle serve \
+  --gateway auto \
+  --gateway-dataset ../data/captures \
+  --gateway-split '{user}/{date}/{hour}'
+```
+
+The endpoint accepts canonical trajectory batches at `POST /v1/events`.
+`x-persisting-user-id` supplies `{user}`; missing users use `_unknown`.
+`{date}` and `{hour}` are UTC and a run/session stays pinned to its first
+partition. Only safe relative templates are accepted. `auto` selects
+`127.0.0.1` and an ephemeral port. Readiness JSON version 2 includes the
+resolved Gateway Dataset and split template.
+
+### Forwarding Gateway compatibility
 
 Pass an existing Gateway TOML file to make `serve` forward LLM requests and
 capture canonical request/response events into one statically mounted Dataset:
@@ -200,14 +219,13 @@ capture canonical request/response events into one statically mounted Dataset:
 pchronicle serve \
   --listen 127.0.0.1:8080 \
   --gateway-config gateway.toml \
-  --gateway-dataset evals \
-  evals=../data/atif
+  --gateway-dataset ../data/atif
 ```
 
 `gateway.toml` remains the single source for proxy/admin listeners, model
 routes, credentials, and network policy. Both listeners must use loopback
-addresses. If the Warehouse has one Dataset, or declares `default_dataset`,
-`--gateway-dataset` may be omitted. For an S3/Azure/GCS Dataset, add
+addresses. `--gateway-dataset` is the output Dataset URI and is auto-mounted.
+For an S3/Azure/GCS Dataset, add
 `--gateway-state ./gateway-state` for Gateway's local session index, WAL, and
 optional projection; local Datasets use their own root by default.
 `--gateway-stream-markdown` also maintains AgenticMD. Canonical Lance events

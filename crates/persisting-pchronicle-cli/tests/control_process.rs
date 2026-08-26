@@ -175,27 +175,17 @@ async fn serve_control_only_advertises_no_warehouse_and_accepts_ping() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn serve_gateway_only_advertises_no_warehouse_or_control() -> Result<()> {
+async fn serve_ingest_gateway_only_advertises_no_warehouse_or_control() -> Result<()> {
     let root = tempfile::tempdir()?;
-    let gateway_config = root.path().join("gateway.toml");
-    std::fs::write(
-        &gateway_config,
-        r#"
-listen = "127.0.0.1:0"
-admin_listen = "127.0.0.1:0"
-agent_id = "gateway-only"
-
-[[models]]
-name = "*"
-upstream = "http://127.0.0.1:9/v1"
-"#,
-    )?;
+    let dataset = root.path().join("captures");
     let mut child = Command::new(env!("CARGO_BIN_EXE_pchronicle"))
         .arg("serve")
-        .arg("--storage")
-        .arg(root.path())
         .arg("--gateway")
-        .arg(&gateway_config)
+        .arg("auto")
+        .arg("--gateway-dataset")
+        .arg(&dataset)
+        .arg("--gateway-split")
+        .arg("{user}/{date}/{hour}")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -209,7 +199,7 @@ upstream = "http://127.0.0.1:9/v1"
     assert!(ready.warehouse_endpoint.is_none());
     assert!(ready.control.is_none());
     assert!(ready.gateway_endpoint.is_some());
-    assert!(ready.gateway_admin_endpoint.is_some());
+    assert!(ready.gateway_admin_endpoint.is_none());
 
     child.kill().await?;
     Ok(())
@@ -310,6 +300,7 @@ async fn control_process_owns_run_state_and_trajectory_append() -> Result<()> {
             storage: root.path().join("traj").display().to_string(),
             agent_id: "ppilot".into(),
             session_id: "session-1".into(),
+            format: Default::default(),
             root_session_id: None,
             records: Vec::new(),
         })
@@ -354,6 +345,7 @@ async fn serve_readiness_waits_for_projection_and_runtime_discovers_control_appe
         storage: root.path().to_string_lossy().into_owned(),
         agent_id: "agent".into(),
         session_id: "runtime".into(),
+        format: Default::default(),
         root_session_id: Some("runtime".into()),
         records: vec![persisting_events::EventRecord {
             identity: Default::default(),
@@ -523,6 +515,7 @@ async fn runtime_projection_failure_does_not_stop_control() -> Result<()> {
         storage: root.path().to_string_lossy().into_owned(),
         agent_id: "agent".into(),
         session_id: run_id.into(),
+        format: Default::default(),
         root_session_id: Some(run_id.into()),
         records: vec![persisting_events::EventRecord {
             identity: Default::default(),
@@ -634,6 +627,7 @@ async fn warehouse_catalog_refreshes_after_control_append_projection() -> Result
         storage: root.path().to_string_lossy().into_owned(),
         agent_id: "agent".into(),
         session_id: "runtime".into(),
+        format: Default::default(),
         root_session_id: Some("runtime".into()),
         records: vec![persisting_events::EventRecord {
             identity: Default::default(),

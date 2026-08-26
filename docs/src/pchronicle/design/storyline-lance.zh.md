@@ -52,6 +52,11 @@ sidecar 并回退到固定 events snapshot 的确定性投影。`projection_gene
 generation，便于监控与诊断。Catalog 不会把无血缘的 Storyline 文档库自动认作 canonical
 events 的 projection。
 
+Gateway 配套的 Warehouse 为单 trace 观测提供显式 live-read 路径：Catalog 定位已经发现的
+canonical source 后，`/api/events`、`/api/storyline` 和 `/api/trajectory-view` 会重新打开该
+source 最新可见的 events manifest。这不改变全局 SQL 查询的不可变快照语义，也不会让派生的
+Storyline sidecar 变成权威事实源。
+
 投影 supervisor 已内置于 `serve`，使用有界并发和重试，并随进程一起关闭。它不进入
 Gateway 捕获写入热路径，因此 projection 或 Catalog refresh 故障不会阻塞 canonical
 events 写入。

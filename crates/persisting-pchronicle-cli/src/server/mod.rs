@@ -46,6 +46,9 @@ struct AppState {
     catalog_refresh: Arc<tokio::sync::Mutex<()>>,
     catalog_refresh_interval: Duration,
     trajectory_cache: Arc<tokio::sync::RwLock<Option<(String, LoadedTrajectory)>>>,
+    /// Gateway-backed Warehouses read canonical events from the latest
+    /// manifest for single-trace observation, independent of projection idle.
+    live_reads: bool,
 }
 
 const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -133,6 +136,7 @@ fn app_state_with_catalog_refresh_interval(
         catalog_refresh: Arc::new(tokio::sync::Mutex::new(())),
         catalog_refresh_interval,
         trajectory_cache: Arc::new(tokio::sync::RwLock::new(None)),
+        live_reads: false,
     }
 }
 
@@ -146,6 +150,17 @@ impl PreparedWarehouse {
         let warehouse = Self {
             state: app_state(config),
         };
+        let runtime = build_catalog_runtime(&warehouse.state.config).await?;
+        warehouse.install_catalog_runtime(runtime).await;
+        Ok(warehouse)
+    }
+
+    /// Prepare a Warehouse paired with a Gateway. Single-trace reads bypass
+    /// the pinned event snapshot and reopen the latest canonical manifest.
+    pub(crate) async fn prepare_live(config: ChronicleServerConfig) -> anyhow::Result<Self> {
+        let mut state = app_state(config);
+        state.live_reads = true;
+        let warehouse = Self { state };
         let runtime = build_catalog_runtime(&warehouse.state.config).await?;
         warehouse.install_catalog_runtime(runtime).await;
         Ok(warehouse)
@@ -608,12 +623,14 @@ struct LoadedEventView {
 async fn load_events(state: &AppState, query: &SessionQuery) -> Result<LoadedEventView, ApiError> {
     let run = resolve_run_summary(state, query).await?;
     let runtime = current_catalog(state).await?;
-    let document = runtime
-        .snapshot
-        .load_events(&catalog_storyline_key(&run))
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found("run was not found"))?;
+    let key = catalog_storyline_key(&run);
+    let document = if state.live_reads {
+        runtime.snapshot.load_live_events(&key).await
+    } else {
+        runtime.snapshot.load_events(&key).await
+    }
+    .map_err(ApiError::internal)?
+    .ok_or_else(|| ApiError::not_found("run was not found"))?;
     let offset = query
         .offset
         .unwrap_or(0)
@@ -673,12 +690,14 @@ async fn storyline(
     let query = api_query(query)?;
     let run = resolve_run_summary(&state, &query).await?;
     let runtime = current_catalog(&state).await?;
-    let document = runtime
-        .snapshot
-        .load_storyline(&catalog_storyline_key(&run))
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found("run was not found"))?;
+    let key = catalog_storyline_key(&run);
+    let document = if state.live_reads {
+        runtime.snapshot.load_live_storyline(&key).await
+    } else {
+        runtime.snapshot.load_storyline(&key).await
+    }
+    .map_err(ApiError::internal)?
+    .ok_or_else(|| ApiError::not_found("run was not found"))?;
     Ok(Json(
         serde_json::to_value(document)
             .map_err(anyhow::Error::from)
@@ -822,22 +841,25 @@ async fn load_trajectory(
         run.file,
         run.session_id
     );
-    if let Some((_, loaded)) = state
-        .trajectory_cache
-        .read()
-        .await
-        .as_ref()
-        .filter(|(key, _)| key == &cache_key)
-    {
-        return Ok(loaded.clone());
+    if !state.live_reads {
+        if let Some((_, loaded)) = state
+            .trajectory_cache
+            .read()
+            .await
+            .as_ref()
+            .filter(|(key, _)| key == &cache_key)
+        {
+            return Ok(loaded.clone());
+        }
     }
     let key = catalog_storyline_key(&run);
-    let bundle = runtime
-        .snapshot
-        .load_trajectory_bundle(&key)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found("run was not found"))?;
+    let bundle = if state.live_reads {
+        runtime.snapshot.load_live_trajectory_bundle(&key).await
+    } else {
+        runtime.snapshot.load_trajectory_bundle(&key).await
+    }
+    .map_err(ApiError::internal)?
+    .ok_or_else(|| ApiError::not_found("run was not found"))?;
     let event_provenance = bundle.event_view.provenance;
     let records = bundle.event_view.document.events;
     let document = bundle.storyline;
@@ -882,7 +904,9 @@ async fn load_trajectory(
         records,
         turns,
     };
-    *state.trajectory_cache.write().await = Some((cache_key, loaded.clone()));
+    if !state.live_reads {
+        *state.trajectory_cache.write().await = Some((cache_key, loaded.clone()));
+    }
     Ok(loaded)
 }
 

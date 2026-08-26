@@ -24,6 +24,9 @@ pub struct RunConfig {
     pub overlayfs: Option<OverlayFsSettings>,
     pub overlaynet: OverlayNetSettings,
     pub gateway: GatewaySettings,
+    /// Simplified durable recording selection. JSON is the lightweight local
+    /// pVisor format; Lance is delegated to the full pChronicle warehouse path.
+    pub record: RecordSettings,
     pub chronicle: ChronicleSettings,
 }
 
@@ -365,6 +368,35 @@ pub struct ChronicleSettings {
     pub binary: PathBuf,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RecordSettings {
+    pub format: RecordFormat,
+    /// Local directory/file for JSON, or a warehouse URI/directory for Lance.
+    pub destination: Option<PathBuf>,
+}
+
+impl Default for RecordSettings {
+    fn default() -> Self {
+        Self {
+            format: RecordFormat::Json,
+            destination: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecordFormat {
+    /// Full EventRecord JSONL written directly by pVisor.
+    #[default]
+    #[serde(alias = "jsonl")]
+    #[value(alias = "jsonl")]
+    Json,
+    /// Full pChronicle warehouse path (canonical Lance storage).
+    Lance,
+}
+
 impl Default for ChronicleSettings {
     fn default() -> Self {
         Self {
@@ -508,6 +540,10 @@ bytes_per_second = 1250000
 [gateway]
 mode = "capture"
 
+[record]
+format = "json"
+destination = "/tmp/events"
+
 [[gateway.routes]]
 name = "openai"
 upstream = "https://api.openai.com/v1"
@@ -531,6 +567,11 @@ upstream = "https://api.openai.com/v1"
         assert_eq!(config.overlaynet.deny.len(), 1);
         assert_eq!(config.overlaynet.limits[0].bytes_per_second, 1_250_000);
         assert_eq!(config.gateway.routes.len(), 1);
+        assert_eq!(config.record.format, RecordFormat::Json);
+        assert_eq!(
+            config.record.destination.as_deref(),
+            Some(Path::new("/tmp/events"))
+        );
         assert_eq!(config.run.command, ["codex"]);
     }
 

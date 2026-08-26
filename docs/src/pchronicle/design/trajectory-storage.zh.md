@@ -58,9 +58,10 @@ Gateway 的 durable 微批写入每累计 8 个小 fragment 就 seal 一个 L0 s
 `sealed` 元数据，只替换精确匹配的连续 segment 区间，active tail 永不参与。由此 visible
 segment 数按层级增长而不是随事件线性增长；旧 version/file 仍按 maintenance 的保留期
 vacuum，避免破坏已经固定旧快照的 reader。
-物理 schema 把 `event_id` 提升为独立业务列，并把非空 `timestamp` 规范化为 UTC
-`Timestamp(Millisecond)`。其值来自 `timestamp_unix_ms`；缺失时由 admission 根据 RFC3339
-`timestamp` 或接收时间补齐；两者同时存在时必须在毫秒级一致。Storyline 投影也从
+物理 schema 把 `event_id` 提升为独立业务列，并把 `timestamp` 规范化为 UTC
+`Timestamp(Millisecond)`。新写入的 Gateway 与 pVisor `EventRecord` 会同时提供 RFC3339
+`timestamp` 和 `timestamp_unix_ms`；两者必须在毫秒级一致。admission 仍会为旧 producer
+或兼容导入根据 RFC3339 `timestamp` 或接收时间补齐缺失值。Storyline 投影也从
 `timestamp_unix_ms` 生成 UTC 毫秒文本，输入文本时间戳保存在 `payload_json`。事实层不检查
 `event_id` 唯一性，也不为它维护索引；
 重复 ID 和重试行是合法事实。完整 `EventRecord` 仍保存在 `payload_json`，因此回放不丢字段。
@@ -72,8 +73,8 @@ AgenticMD 是面向人的 Markdown 调试视图。它保存可见对话块和会
 代码审阅与人工分析。它会省略协议噪声，字段也允许缺失或扩展，因此不是存储格式或
 原始 HTTP 事件的无损替代。
 
-`pvisor run --chronicle-mode spawn` 启动 pChronicle sidecar，由 sidecar 写 canonical Lance
-events；旧值 `lance` 是相同行为的兼容别名，pVisor 本身不打开 Lance。
+`pvisor run --record-format lance --record-destination WAREHOUSE` 启动 pChronicle sidecar，
+由 sidecar 写 canonical Lance events；pVisor 本身不打开 Lance。
 `--gateway-stream-markdown` 可同时维护 live AgenticMD。Markdown 是诊断投影，Dataset
 消费统一使用 pChronicle API 和 `pchronicle` 命令。
 
