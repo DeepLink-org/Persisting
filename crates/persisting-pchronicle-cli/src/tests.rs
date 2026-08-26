@@ -4076,7 +4076,7 @@ upstream = "http://{upstream_addr}/v1"
     let warehouse_config = server::ChronicleServerConfig::mounted(vec![DatasetMount::default(
         dataset.path().to_string_lossy(),
     )?])?;
-    let prepared_gateway = PreparedGateway::Proxy(PreparedProxyGateway {
+    let prepared_gateway = PreparedGateway::Proxy(Box::new(PreparedProxyGateway {
         config,
         state_dir: state.path().to_path_buf(),
         dataset_uri: dataset.path().to_string_lossy().into_owned(),
@@ -4086,7 +4086,7 @@ upstream = "http://{upstream_addr}/v1"
         admin_listener,
         sink,
         writer,
-    });
+    }));
     let (serve_stop_tx, serve_stop_rx) = tokio::sync::oneshot::channel::<()>();
     let serve = tokio::spawn(async move {
         serve_warehouse_and_gateway(

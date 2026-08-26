@@ -1254,7 +1254,7 @@ struct PreparedProxyGateway {
 
 enum PreparedGateway {
     Ingest(gateway_ingest::PreparedIngestGateway),
-    Proxy(PreparedProxyGateway),
+    Proxy(Box<PreparedProxyGateway>),
 }
 
 impl PreparedGateway {
@@ -1378,17 +1378,19 @@ async fn prepare_gateway(
         split.clone(),
         args.gateway_object_store_manifest_mode.into(),
     )?;
-    Ok(Some(PreparedGateway::Proxy(PreparedProxyGateway {
-        config,
-        state_dir,
-        dataset_uri: dataset_uri.to_string(),
-        split: split.map(|template| template.source().to_string()),
-        stream_markdown: args.gateway_stream_markdown,
-        listener,
-        admin_listener,
-        sink,
-        writer,
-    })))
+    Ok(Some(PreparedGateway::Proxy(Box::new(
+        PreparedProxyGateway {
+            config,
+            state_dir,
+            dataset_uri: dataset_uri.to_string(),
+            split: split.map(|template| template.source().to_string()),
+            stream_markdown: args.gateway_stream_markdown,
+            listener,
+            admin_listener,
+            sink,
+            writer,
+        },
+    ))))
 }
 
 async fn wait_for_stop(mut receiver: tokio::sync::watch::Receiver<bool>) {
@@ -1452,16 +1454,17 @@ async fn serve_gateway_component(
 ) -> Result<()> {
     match gateway {
         PreparedGateway::Ingest(gateway) => gateway.serve(shutdown).await,
-        PreparedGateway::Proxy(PreparedProxyGateway {
-            config,
-            state_dir,
-            listener,
-            admin_listener,
-            sink,
-            writer,
-            stream_markdown,
-            ..
-        }) => {
+        PreparedGateway::Proxy(gateway) => {
+            let PreparedProxyGateway {
+                config,
+                state_dir,
+                listener,
+                admin_listener,
+                sink,
+                writer,
+                stream_markdown,
+                ..
+            } = *gateway;
             let mut gateway_server =
                 Box::pin(persisting_gateway::serve_with_listeners_and_shutdown(
                     config,
@@ -1649,11 +1652,11 @@ async fn run_serve(
         prepare_local_control_storage(uri).await?;
     }
     let (diagnostic_tx, diagnostic_rx) = tokio::sync::mpsc::channel(256);
-    let projection_idle = args
-        .gateway
-        .is_some()
-        .then(|| Duration::from_secs(args.gateway_split_idle_seconds))
-        .unwrap_or_default();
+    let projection_idle = if args.gateway.is_some() {
+        Duration::from_secs(args.gateway_split_idle_seconds)
+    } else {
+        Duration::default()
+    };
     let mut projections = projection_supervisor::ProjectionSupervisor::with_projection_idle(
         config.clone(),
         None,

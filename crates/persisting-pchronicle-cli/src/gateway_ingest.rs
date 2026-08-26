@@ -272,12 +272,14 @@ struct ProtoReader<'a> {
     offset: usize,
 }
 
+type ProtoField<'a> = (u32, u8, &'a [u8]);
+
 impl<'a> ProtoReader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
     }
 
-    fn next(&mut self) -> Result<Option<(u32, u8, &'a [u8])>, String> {
+    fn next(&mut self) -> Result<Option<ProtoField<'a>>, String> {
         if self.offset == self.bytes.len() {
             return Ok(None);
         }
