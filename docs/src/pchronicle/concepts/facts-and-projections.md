@@ -21,6 +21,11 @@ database and does not replace the canonical event path.
 AgenticMD is a non-authoritative human-readable projection. A missing or stale
 Markdown view does not change the canonical event result.
 
+For Gateway-backed point observation, the Warehouse may reopen the latest
+canonical event manifest for an already resolved source. This keeps active
+traces current without requiring the materialized Storyline projection to be
+published on every append.
+
 A derived version, called a Revision in the storage API, points to its parent
 and the transform that produced it. Cleaning, redaction, and augmentation therefore create a new history branch rather than
 rewriting history without a trace.

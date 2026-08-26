@@ -1,13 +1,15 @@
-//! `events` — Capture HTTP-first SoT, **Lance-only** as a first-class format.
+//! `events` — Capture HTTP-first SoT, with Lance as the canonical query format.
 //!
 //! Production storage is `{run}/events.lance/` (Lance dataset). pChronicle does
-//! **not** treat JSON / JSONL as a supported events wire format.
+//! The pChronicle control path may additionally archive complete EventRecords
+//! as JSON in a warehouse prefix; conversion/query APIs below still operate on
+//! Lance rows.
 //!
 //! What this module provides:
 //! - [`EventRecord`] / [`EventsDocument`]: in-memory shape aligned with EventRecord
 //! - [`events_to_storyline`] / [`storyline_to_events`] (programmatic, after you
 //!   already loaded rows from Lance)
-//! - [`export_events_jsonl`]: **test/debug export only**
+//! - [`export_events_jsonl`]: test/debug export from canonical Lance rows
 //!
 //! Use the pChronicle APIs to extract Lance events for inspection.
 

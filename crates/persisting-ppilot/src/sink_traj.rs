@@ -105,6 +105,7 @@ impl LanceResultSink {
                 storage: self.storage.clone(),
                 agent_id: self.agent_id.clone(),
                 session_id: self.session_id.clone(),
+                format: Default::default(),
                 root_session_id: None,
                 records: vec![rec],
             };

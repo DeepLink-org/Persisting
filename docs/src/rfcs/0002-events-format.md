@@ -137,12 +137,12 @@ Gateway、pVisor 与 pChronicle 直接使用同一类型。pChronicle 独占由�
 | `run_id` | string | Required for new writes | 事件所属逻辑 Run；旧 capture row 读取时可缺省 |
 | `attempt_id` | string | Optional | 生命周期事件所属 Attempt |
 | `storyline_id` / `turn_id` | string | Optional | narrative 维度，与 Attempt 正交 |
-| `timestamp_unix_ms` | integer | Required for new writes | 机器可比较的观测时间 |
+| `timestamp_unix_ms` | integer | Required for new writes | 机器可比较的观测时间；与 `timestamp` 表示同一时刻 |
 | `producer` | string | Required for new writes | 产生该记录的组件 |
 | `seq` | integer | Required | dataset / 会话内单调序号 |
 | `source` | string | Required | 如 `persisting-proxy`、`persisting-gateway` |
 | `kind` | string | Required | 见 kind 节；HTTP 方向优先 |
-| `timestamp` | string | Optional | RFC3339（事件观测时间） |
+| `timestamp` | string | Required for new writes | RFC3339 UTC（事件观测时间；与 `timestamp_unix_ms` 毫秒级一致） |
 | `session_id` | string | Optional | ≈ Storyline `story_id` |
 | `agent_id` | string | Optional | |
 | `call_id` | string | Optional | 一次调用关联键（request/response 配对） |
@@ -152,6 +152,10 @@ Gateway、pVisor 与 pChronicle 直接使用同一类型。pChronicle 独占由�
 | `subagent_id` / `parent_agent_id` / `branch` | string | Optional | 子代理 / 分支 |
 
 顶栏 **SHOULD NOT** 承载完整对话文本；正文在 `payload` 的 wire 字段中。
+
+新写入事件必须同时提供 `timestamp` 与 `timestamp_unix_ms`。Gateway capture sink 和
+pVisor runtime 是 producer 侧的共同兜底；admission 仅为旧记录或兼容导入补齐缺失值。
+事件顺序仍由 `source + seq` 定义，时间戳用于关联和展示。
 
 ### `payload`：HTTP-first wire 对象
 

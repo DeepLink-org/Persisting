@@ -761,6 +761,57 @@ async fn prepared_catalog_installs_refreshes_and_retains_the_last_good_runtime(
 }
 
 #[tokio::test]
+async fn live_warehouse_reads_new_events_without_catalog_refresh() -> anyhow::Result<()> {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let temp = tempfile::tempdir()?;
+    let coords = StoryCoords::new(temp.path().to_string_lossy(), "agent", "session", None);
+    let event = |seq| EventRecord {
+        identity: persisting_pchronicle::model::EventIdentity::default(),
+        seq,
+        source: "test".into(),
+        kind: "note".into(),
+        timestamp: None,
+        session_id: Some("session".into()),
+        agent_id: Some("agent".into()),
+        parent_uuid: None,
+        trace_id: None,
+        call_id: None,
+        subagent_id: None,
+        parent_agent_id: None,
+        branch: None,
+        parent_call_id: None,
+        payload: json!({"seq": seq}),
+    };
+    persisting_pchronicle::storage::RawEventLanceStore
+        .append_events(&coords, &[event(0)])
+        .await?;
+    let config = ChronicleServerConfig::mounted(vec![DatasetMount::default(
+        temp.path().to_string_lossy().to_string(),
+    )?])?;
+    let prepared = PreparedWarehouse::prepare_live(config).await?;
+
+    // Append after the Warehouse has pinned its initial Catalog snapshot.
+    persisting_pchronicle::storage::RawEventLanceStore
+        .append_events(&coords, &[event(1)])
+        .await?;
+    let response = prepared
+        .router()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/events?agent_id=agent&session_id=session")
+                .body(axum::body::Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+    assert_eq!(body["snapshot"]["total"], 2);
+    assert_eq!(body["records"].as_array().map(Vec::len), Some(2));
+    Ok(())
+}
+
+#[tokio::test]
 async fn warehouse_keeps_api_v1_aliases_for_embedded_web_ui() {
     use http_body_util::BodyExt;
     use tower::ServiceExt;

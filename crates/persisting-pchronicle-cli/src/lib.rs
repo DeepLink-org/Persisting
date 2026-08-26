@@ -2,6 +2,8 @@ mod agent;
 mod control;
 mod exchange;
 mod gateway_capture;
+mod gateway_ingest;
+mod gateway_partition;
 mod onboard;
 mod output;
 mod projection_supervisor;
@@ -686,7 +688,7 @@ struct ExportArgs {
         ArgGroup::new("dataset_source")
             .required(true)
             .multiple(true)
-            .args(["config", "storage", "positional_storage"])
+            .args(["config", "storage", "positional_storage", "gateway_dataset"])
     ),
     group(
         ArgGroup::new("storage_source")
@@ -696,7 +698,12 @@ struct ExportArgs {
     group(
         ArgGroup::new("serve_component")
             .multiple(true)
-            .args(["listen", "control", "gateway"])
+            .args(["listen", "control", "gateway", "gateway_config"])
+    ),
+    group(
+        ArgGroup::new("gateway_mode")
+            .multiple(false)
+            .args(["gateway", "gateway_config"])
     )
 )]
 struct ServeArgs {
@@ -730,16 +737,41 @@ struct ServeArgs {
     #[arg(long, requires = "listen")]
     open: bool,
 
-    /// Enable the LLM Gateway with an existing Gateway TOML configuration.
-    #[arg(long = "gateway-config", alias = "gateway", value_name = "FILE")]
-    gateway: Option<PathBuf>,
+    /// Start the config-free canonical event ingest Gateway.
+    /// `auto` selects loopback and an ephemeral port.
+    #[arg(
+        long,
+        value_name = "ADDRESS",
+        value_parser = parse_gateway_bind,
+        requires = "gateway_dataset"
+    )]
+    gateway: Option<SocketAddr>,
 
-    /// Mounted Dataset that receives Gateway capture events.
-    #[arg(long, value_name = "NAME", requires = "gateway")]
+    /// Compatibility: start the forwarding LLM Gateway from a TOML file.
+    #[arg(long, value_name = "FILE", requires = "gateway_dataset")]
+    gateway_config: Option<PathBuf>,
+
+    /// Dataset path or object-store URI that receives Gateway events.
+    #[arg(long, value_name = "DATASET", requires = "gateway_mode")]
     gateway_dataset: Option<String>,
 
+    /// Relative physical partition template using {user}, {date}, and {hour}.
+    #[arg(long, value_name = "TEMPLATE", requires = "gateway_mode")]
+    gateway_split: Option<String>,
+
+    /// Wait for this long without new Gateway events before refreshing an
+    /// existing Storyline projection. New sources are projected immediately.
+    #[arg(
+        long = "gateway-split-idle",
+        value_name = "DURATION",
+        value_parser = parse_duration_seconds,
+        default_value = "30m",
+        requires = "gateway"
+    )]
+    gateway_split_idle_seconds: u64,
+
     /// Local Gateway state directory; required for an object-store Dataset.
-    #[arg(long, value_name = "DIRECTORY", requires = "gateway")]
+    #[arg(long, value_name = "DIRECTORY", requires = "gateway_config")]
     gateway_state: Option<PathBuf>,
 
     /// Object-store manifest publication contract used by Gateway capture.
@@ -747,19 +779,32 @@ struct ServeArgs {
         long,
         value_enum,
         default_value_t,
-        requires = "gateway",
+        requires = "gateway_mode",
         value_name = "MODE",
         hide = true
     )]
     gateway_object_store_manifest_mode: GatewayObjectStoreManifestMode,
 
     /// Also maintain Gateway's live AgenticMD projection.
-    #[arg(long, requires = "gateway")]
+    #[arg(long, requires = "gateway_config")]
     gateway_stream_markdown: bool,
 
     /// Print Gateway diagnostics, including size-limited request/response bodies, to stderr.
-    #[arg(long = "gateway-debug", alias = "debug", requires = "gateway")]
+    #[arg(long = "gateway-debug", alias = "debug", requires = "gateway_config")]
     debug: bool,
+}
+
+fn parse_gateway_bind(value: &str) -> std::result::Result<SocketAddr, String> {
+    if value.eq_ignore_ascii_case("auto") {
+        return Ok(SocketAddr::from(([127, 0, 0, 1], 0)));
+    }
+    let address = value
+        .parse::<SocketAddr>()
+        .map_err(|error| format!("invalid Gateway address '{value}': {error}"))?;
+    if !address.ip().is_loopback() {
+        return Err("the embedded Gateway is loopback-only; use 127.0.0.1:PORT or 'auto'".into());
+    }
+    Ok(address)
 }
 
 #[derive(Debug, Args)]
@@ -1195,10 +1240,11 @@ pub async fn run_with_stdio(
     }
 }
 
-struct PreparedGateway {
+struct PreparedProxyGateway {
     config: persisting_gateway::config::ProxyConfig,
     state_dir: PathBuf,
-    dataset_name: String,
+    dataset_uri: String,
+    split: Option<String>,
     stream_markdown: bool,
     listener: tokio::net::TcpListener,
     admin_listener: tokio::net::TcpListener,
@@ -1206,29 +1252,42 @@ struct PreparedGateway {
     writer: gateway_capture::GatewayCaptureWriter,
 }
 
-const SERVE_STORAGE_DATASET_NAME: &str = "default";
-
-fn select_gateway_dataset(
-    config: &server::ChronicleServerConfig,
-    requested: Option<&str>,
-) -> Result<DatasetMount> {
-    let name = match requested {
-        Some(name) => DatasetMount::new(name, "validation")?.name,
-        None => config
-            .default_dataset
-            .clone()
-            .or_else(|| (config.datasets.len() == 1).then(|| config.datasets[0].name.clone()))
-            .context(
-                "Gateway capture Dataset is ambiguous; use --gateway-dataset or set default_dataset",
-            )?,
-    };
-    config
-        .datasets
-        .iter()
-        .find(|dataset| dataset.name == name)
-        .cloned()
-        .with_context(|| format!("Gateway capture Dataset '{name}' is not mounted"))
+enum PreparedGateway {
+    Ingest(gateway_ingest::PreparedIngestGateway),
+    Proxy(PreparedProxyGateway),
 }
+
+impl PreparedGateway {
+    fn endpoint(&self) -> &str {
+        match self {
+            Self::Ingest(gateway) => gateway.endpoint(),
+            Self::Proxy(gateway) => &gateway.config.listen,
+        }
+    }
+
+    fn admin_endpoint(&self) -> Option<&str> {
+        match self {
+            Self::Ingest(_) => None,
+            Self::Proxy(gateway) => Some(&gateway.config.admin_listen),
+        }
+    }
+
+    fn dataset_uri(&self) -> &str {
+        match self {
+            Self::Ingest(gateway) => gateway.dataset_uri(),
+            Self::Proxy(gateway) => &gateway.dataset_uri,
+        }
+    }
+
+    fn split_source(&self) -> Option<&str> {
+        match self {
+            Self::Ingest(gateway) => gateway.split_source(),
+            Self::Proxy(gateway) => gateway.split.as_deref(),
+        }
+    }
+}
+
+const SERVE_STORAGE_DATASET_NAME: &str = "default";
 
 fn local_dataset_path(uri: &str) -> Result<Option<PathBuf>> {
     Ok(DatasetLocation::parse(uri)?
@@ -1249,34 +1308,54 @@ fn parse_gateway_listener(value: &str, label: &str) -> Result<SocketAddr> {
 
 async fn prepare_gateway(
     args: &ServeArgs,
-    warehouse: &server::ChronicleServerConfig,
+    dataset_uri: Option<&str>,
 ) -> Result<Option<PreparedGateway>> {
-    let Some(config_path) = args.gateway.as_deref() else {
+    if args.gateway.is_none() && args.gateway_config.is_none() {
         return Ok(None);
-    };
-    let mut config = persisting_gateway::config::ProxyConfig::from_file(config_path)
-        .with_context(|| format!("load Gateway config {}", config_path.display()))?;
-    if args.debug {
-        config.debug = true;
-        persisting_gateway::runtime::debug::enable_debug_stderr();
     }
-    let dataset = select_gateway_dataset(warehouse, args.gateway_dataset.as_deref())?;
-    let local_dataset = local_dataset_path(&dataset.uri)?;
-    let state_dir = match args.gateway_state.clone() {
-        Some(path) => path,
-        None => local_dataset.clone().with_context(|| {
-            format!(
-                "Gateway capture Dataset '{}' uses object storage; provide --gateway-state DIRECTORY",
-                dataset.name
-            )
-        })?,
-    };
+    let dataset_uri = dataset_uri.context("Gateway requires --gateway-dataset DATASET")?;
+    let split = args
+        .gateway_split
+        .as_deref()
+        .map(gateway_partition::GatewaySplitTemplate::parse)
+        .transpose()?;
+    let local_dataset = local_dataset_path(dataset_uri)?;
     if args.gateway_object_store_manifest_mode == GatewayObjectStoreManifestMode::SingleWriter {
         anyhow::ensure!(
             local_dataset.is_none(),
             "--gateway-object-store-manifest-mode single-writer requires an object-store Dataset"
         );
     }
+
+    if let Some(listen) = args.gateway {
+        let gateway = gateway_ingest::PreparedIngestGateway::bind(
+            listen,
+            dataset_uri.to_string(),
+            split,
+            args.gateway_object_store_manifest_mode.into(),
+        )
+        .await?;
+        return Ok(Some(PreparedGateway::Ingest(gateway)));
+    }
+
+    let config_path = args
+        .gateway_config
+        .as_deref()
+        .context("missing Gateway config path")?;
+    let mut config = persisting_gateway::config::ProxyConfig::from_file(config_path)
+        .with_context(|| format!("load Gateway config {}", config_path.display()))?;
+    if args.debug {
+        config.debug = true;
+        persisting_gateway::runtime::debug::enable_debug_stderr();
+    }
+    let state_dir = match args.gateway_state.clone() {
+        Some(path) => path,
+        None => local_dataset.clone().with_context(|| {
+            format!(
+                "Gateway capture Dataset '{dataset_uri}' uses object storage; provide --gateway-state DIRECTORY"
+            )
+        })?,
+    };
     let listen = parse_gateway_listener(&config.listen, "Gateway")?;
     let admin_listen = parse_gateway_listener(&config.admin_listen, "Gateway admin")?;
     let listener = tokio::net::TcpListener::bind(listen)
@@ -1294,20 +1373,22 @@ async fn prepare_gateway(
         .context("read pChronicle Gateway admin listen address")?
         .to_string();
     let (sink, writer) = gateway_capture::gateway_capture_sink_with_manifest_write_mode(
-        &dataset.uri,
+        dataset_uri,
         &config.agent_id,
+        split.clone(),
         args.gateway_object_store_manifest_mode.into(),
     )?;
-    Ok(Some(PreparedGateway {
+    Ok(Some(PreparedGateway::Proxy(PreparedProxyGateway {
         config,
         state_dir,
-        dataset_name: dataset.name,
+        dataset_uri: dataset_uri.to_string(),
+        split: split.map(|template| template.source().to_string()),
         stream_markdown: args.gateway_stream_markdown,
         listener,
         admin_listener,
         sink,
         writer,
-    }))
+    })))
 }
 
 async fn wait_for_stop(mut receiver: tokio::sync::watch::Receiver<bool>) {
@@ -1369,31 +1450,36 @@ async fn serve_gateway_component(
     gateway: PreparedGateway,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    let PreparedGateway {
-        config,
-        state_dir,
-        listener,
-        admin_listener,
-        sink,
-        writer,
-        stream_markdown,
-        ..
-    } = gateway;
-    let mut gateway_server = Box::pin(persisting_gateway::serve_with_listeners_and_shutdown(
-        config,
-        state_dir,
-        sink,
-        stream_markdown,
-        listener,
-        admin_listener,
-        shutdown,
-    ));
-    let result = (&mut gateway_server).await;
-    drop(gateway_server);
-    writer
-        .finish()
-        .context("finish pChronicle Gateway capture")?;
-    result
+    match gateway {
+        PreparedGateway::Ingest(gateway) => gateway.serve(shutdown).await,
+        PreparedGateway::Proxy(PreparedProxyGateway {
+            config,
+            state_dir,
+            listener,
+            admin_listener,
+            sink,
+            writer,
+            stream_markdown,
+            ..
+        }) => {
+            let mut gateway_server =
+                Box::pin(persisting_gateway::serve_with_listeners_and_shutdown(
+                    config,
+                    state_dir,
+                    sink,
+                    stream_markdown,
+                    listener,
+                    admin_listener,
+                    shutdown,
+                ));
+            let result = (&mut gateway_server).await;
+            drop(gateway_server);
+            writer
+                .finish()
+                .context("finish pChronicle Gateway capture")?;
+            result
+        }
+    }
 }
 
 async fn serve_components<W: Write + ?Sized>(
@@ -1533,7 +1619,10 @@ fn write_projection_diagnostic<W: Write + ?Sized>(
 fn warehouse_listen(args: &ServeArgs) -> Option<SocketAddr> {
     match args.listen {
         Some(listen) => Some(listen),
-        None if args.control.is_none() && args.gateway.is_none() => {
+        None if args.control.is_none()
+            && args.gateway.is_none()
+            && args.gateway_config.is_none() =>
+        {
             Some(SocketAddr::from(([127, 0, 0, 1], 0)))
         }
         None => None,
@@ -1546,6 +1635,10 @@ async fn run_serve(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
+    let gateway_dataset_uri = resolve_gateway_dataset_uri(&args, settings_override)?;
+    if let Some(uri) = gateway_dataset_uri.as_deref() {
+        prepare_local_gateway_dataset(uri).await?;
+    }
     let config = resolve_serve_config_with_settings(&args, settings_override)?;
     let control_uri = args
         .control
@@ -1556,8 +1649,17 @@ async fn run_serve(
         prepare_local_control_storage(uri).await?;
     }
     let (diagnostic_tx, diagnostic_rx) = tokio::sync::mpsc::channel(256);
-    let mut projections =
-        projection_supervisor::ProjectionSupervisor::new(config.clone(), None, diagnostic_tx);
+    let projection_idle = args
+        .gateway
+        .is_some()
+        .then(|| Duration::from_secs(args.gateway_split_idle_seconds))
+        .unwrap_or_default();
+    let mut projections = projection_supervisor::ProjectionSupervisor::with_projection_idle(
+        config.clone(),
+        None,
+        projection_idle,
+        diagnostic_tx,
+    );
     projections.converge_before_readiness().await?;
     let warehouse = match warehouse_listen(&args) {
         Some(listen) => {
@@ -1568,7 +1670,11 @@ async fn run_serve(
             let listener = tokio::net::TcpListener::bind(listen)
                 .await
                 .with_context(|| format!("bind pChronicle Warehouse to {listen}"))?;
-            let warehouse = server::PreparedWarehouse::prepare(config.clone()).await?;
+            let warehouse = if args.gateway.is_some() {
+                server::PreparedWarehouse::prepare_live(config.clone()).await?
+            } else {
+                server::PreparedWarehouse::prepare(config.clone()).await?
+            };
             Some((warehouse, listener))
         }
         None => None,
@@ -1590,7 +1696,7 @@ async fn run_serve(
         ),
         None => None,
     };
-    let gateway = prepare_gateway(&args, &config).await?;
+    let gateway = prepare_gateway(&args, gateway_dataset_uri.as_deref()).await?;
 
     let warehouse_endpoint = warehouse
         .as_ref()
@@ -1600,16 +1706,24 @@ async fn run_serve(
     let control_ready = control.as_ref().map(control::PreparedControl::ready);
     let gateway_endpoint = gateway
         .as_ref()
-        .map(|gateway| gateway.config.listen.clone());
+        .map(|gateway| gateway.endpoint().to_string());
     let gateway_admin_endpoint = gateway
         .as_ref()
-        .map(|gateway| gateway.config.admin_listen.clone());
+        .and_then(|gateway| gateway.admin_endpoint().map(str::to_string));
+    let gateway_dataset = gateway
+        .as_ref()
+        .map(|gateway| gateway.dataset_uri().to_string());
+    let gateway_split = gateway
+        .as_ref()
+        .and_then(|gateway| gateway.split_source().map(str::to_string));
     let ready = ChronicleServeReady {
         version: CHRONICLE_SERVE_READY_VERSION,
         warehouse_endpoint: warehouse_endpoint.clone(),
         control: control_ready,
         gateway_endpoint,
         gateway_admin_endpoint,
+        gateway_dataset,
+        gateway_split,
     };
     serde_json::to_writer(&mut *stdout, &ready).context("encode pChronicle serve readiness")?;
     writeln!(stdout).context("write pChronicle serve readiness")?;
@@ -1627,15 +1741,18 @@ async fn run_serve(
         writeln!(
             stderr,
             "pChronicle Gateway: http://{}/ dataset={}",
-            gateway.config.listen, gateway.dataset_name
+            gateway.endpoint(),
+            gateway.dataset_uri()
         )
         .context("write pChronicle Gateway address")?;
-        writeln!(
-            stderr,
-            "pChronicle Gateway admin: http://{}/",
-            gateway.config.admin_listen
-        )
-        .context("write pChronicle Gateway admin address")?;
+        if let Some(split) = gateway.split_source() {
+            writeln!(stderr, "pChronicle Gateway split: {split}")
+                .context("write pChronicle Gateway split")?;
+        }
+        if let Some(admin) = gateway.admin_endpoint() {
+            writeln!(stderr, "pChronicle Gateway admin: http://{admin}/")
+                .context("write pChronicle Gateway admin address")?;
+        }
         if args.debug {
             writeln!(
                 stderr,
@@ -1671,6 +1788,25 @@ async fn prepare_local_control_storage(uri: &str) -> Result<()> {
         .with_context(|| format!("create pChronicle Control storage root {}", path.display()))
 }
 
+async fn prepare_local_gateway_dataset(uri: &str) -> Result<()> {
+    let Some(path) = local_dataset_path(uri)? else {
+        return Ok(());
+    };
+    tokio::fs::create_dir_all(&path)
+        .await
+        .with_context(|| format!("create pChronicle Gateway Dataset {}", path.display()))
+}
+
+fn resolve_gateway_dataset_uri(
+    args: &ServeArgs,
+    settings_override: Option<&Path>,
+) -> Result<Option<String>> {
+    args.gateway_dataset
+        .as_deref()
+        .map(|uri| expand_dataset_reference(uri, settings_override, false))
+        .transpose()
+}
+
 fn serve_storage_uris(args: &ServeArgs) -> Vec<String> {
     let mut storage = args.storage.clone();
     storage.extend(args.positional_storage.iter().cloned());
@@ -1682,8 +1818,9 @@ fn resolve_serve_config_with_settings(
     settings_override: Option<&Path>,
 ) -> Result<server::ChronicleServerConfig> {
     let storage = serve_storage_uris(args);
-    match (args.config.as_deref(), storage.as_slice()) {
-        (Some(config), []) => load_warehouse_config_with_user_config(config, settings_override),
+    let gateway_dataset = resolve_gateway_dataset_uri(args, settings_override)?;
+    let mut config = match (args.config.as_deref(), storage.as_slice()) {
+        (Some(config), []) => load_warehouse_config_with_user_config(config, settings_override)?,
         (None, storage) if !storage.is_empty() => {
             let mut config = server::ChronicleServerConfig::mounted(resolve_storage_mounts(
                 storage,
@@ -1700,10 +1837,41 @@ fn resolve_serve_config_with_settings(
             // exceeds max_file_bytes) must degrade to an error source instead
             // of preventing the Warehouse from serving the remaining data.
             config.catalog_options.error_policy = CatalogErrorPolicy::Report;
-            Ok(config)
+            config
+        }
+        (None, []) if gateway_dataset.is_some() => {
+            server::ChronicleServerConfig::mounted(vec![DatasetMount::new(
+                SERVE_STORAGE_DATASET_NAME,
+                gateway_dataset.as_deref().context("Gateway Dataset")?,
+            )?])?
         }
         _ => bail!("serve requires at least one Dataset"),
+    };
+    if let Some(uri) = gateway_dataset {
+        ensure_gateway_mount(&mut config, uri)?;
     }
+    Ok(config)
+}
+
+fn ensure_gateway_mount(config: &mut server::ChronicleServerConfig, uri: String) -> Result<()> {
+    if config.datasets.iter().any(|dataset| dataset.uri == uri) {
+        return Ok(());
+    }
+    let name = if config.datasets.is_empty() {
+        SERVE_STORAGE_DATASET_NAME
+    } else {
+        "gateway"
+    };
+    anyhow::ensure!(
+        !config.datasets.iter().any(|dataset| dataset.name == name),
+        "cannot auto-mount Gateway Dataset as '{name}'; that name is already mounted"
+    );
+    config.datasets.push(DatasetMount::new(name, uri)?);
+    if config.default_dataset.is_none() && config.datasets.len() == 1 {
+        config.default_dataset = Some(name.to_string());
+    }
+    config.catalog_options.error_policy = CatalogErrorPolicy::Report;
+    Ok(())
 }
 
 #[cfg(test)]

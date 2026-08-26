@@ -18,6 +18,10 @@ Storyline 是会话导向的 projection。它的三表 Lance 布局为完整文�
 
 AgenticMD 是非权威的人读 projection。Markdown 视图缺失或过期不会改变 canonical event 结果。
 
+对于 Gateway 配套的单 trace 观测，Warehouse 可以在 Catalog 已经定位 source 后重新打开最新的
+canonical event manifest。这样正在进行中的 trace 可以保持最新，而不要求每次追加事件都发布
+物化 Storyline projection。
+
 存储 API 把派生版本称为 Revision。它指向 parent 和生成它的 transform。清洗、脱敏和增广因此创建新的历史分支，
 而不是无痕改写历史。
 

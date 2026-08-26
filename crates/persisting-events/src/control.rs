@@ -77,9 +77,26 @@ pub struct TrajectoryAppendRequest {
     pub storage: String,
     pub agent_id: String,
     pub session_id: String,
+    /// Physical warehouse representation. Older callers default to Lance.
+    #[serde(default, skip_serializing_if = "TrajectoryFormat::is_default")]
+    pub format: TrajectoryFormat,
     #[serde(default)]
     pub root_session_id: Option<String>,
     pub records: Vec<EventRecord>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrajectoryFormat {
+    Json,
+    #[default]
+    Lance,
+}
+
+impl TrajectoryFormat {
+    fn is_default(value: &Self) -> bool {
+        *value == Self::Lance
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,7 +181,7 @@ pub struct ChronicleControlResponseEnvelope {
     pub response: ChronicleControlResponse,
 }
 
-pub const CHRONICLE_SERVE_READY_VERSION: u32 = 1;
+pub const CHRONICLE_SERVE_READY_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -185,6 +202,10 @@ pub struct ChronicleServeReady {
     pub gateway_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway_admin_endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_dataset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_split: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1047,18 +1068,22 @@ mod tests {
             }),
             gateway_endpoint: None,
             gateway_admin_endpoint: None,
+            gateway_dataset: None,
+            gateway_split: None,
         };
 
         let value = serde_json::to_value(ready).unwrap();
-        assert_eq!(value["version"], 1);
+        assert_eq!(value["version"], 2);
         assert_eq!(value["control"]["endpoint"], "127.0.0.1:4000");
         assert_eq!(value["control"]["auth_token"], "secret");
         assert!(value.get("warehouse_endpoint").is_none());
         assert!(value.get("gateway_endpoint").is_none());
         assert!(value.get("gateway_admin_endpoint").is_none());
+        assert!(value.get("gateway_dataset").is_none());
+        assert!(value.get("gateway_split").is_none());
 
         let malformed = serde_json::json!({
-            "version": 1,
+            "version": 2,
             "control": {
                 "endpoint": "127.0.0.1:4000",
                 "auth_token": "secret"

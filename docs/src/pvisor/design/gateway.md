@@ -302,6 +302,17 @@ Gateway 在**配置语义与路由模型**上借鉴 agentgateway 子集，并可
 
 存储记录类型（`http.request` / `llm.request`、`llm.response.stream`、`session.*` 等）属于 **events 词汇**，由 Proxy emit；handler 再折叠为 storyline，不必与 HTTP 帧一一对应到对话轮。
 
+#### 6.2.1 时间戳与顺序
+
+每条进入 durable capture 的 `EventRecord` 都带有两种一致的观测时间：
+`timestamp`（RFC3339 UTC）和 `timestamp_unix_ms`（Unix 毫秒）。请求事件使用请求被
+接受的时刻，响应事件使用响应被捕获的时刻；Gateway sink 是最后的共同写入边界，会为
+缺少时间字段的旧 producer 记录补齐这两个值。pVisor 产生的 runtime lifecycle event
+也会同时写入这两种格式，两者必须在毫秒级一致。
+
+事件顺序仍由 `source + seq` 定义；时间戳只用于墙上时钟关联、耗时展示和跨组件对齐，
+不能替代 sequence ordering。不同 source 可以拥有各自独立的 `seq` 空间。
+
 ### 6.3 流式与人读视图
 
 ```text
@@ -431,9 +442,9 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 
 ### 9.4 单 run dataset 多 `session_id`（Claude run bucket）
 
-一次 `pvisor run --chronicle-mode spawn` 的 pChronicle sidecar 通常在 run 目录写一个
-`events.lance/` dataset，但行内 `session_id` **可能混存多个值**。旧值 `lance` 是
-`spawn` 的兼容别名，pVisor 不直接打开 Lance：
+一次 `pvisor run --record-format lance --record-destination WAREHOUSE` 的 pChronicle sidecar 通常在 run 目录写一个
+`events.lance/` dataset，但行内 `session_id` **可能混存多个值**。pVisor 不直接打开
+Lance：
 
 | 典型来源 | `session_id` 取值 |
 |----------|-------------------|
@@ -477,7 +488,7 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 | 形态 | 适用场景 |
 |------|----------|
 | **`pvisor run`** | 包装一次 Agent 命令（如 `claude`、`codex`）；注入代理环境变量并管理内嵌 Gateway |
-| **pChronicle sidecar / 补 Markdown** | `--chronicle-mode spawn` 由 sidecar 落盘到 `events.lance/`；需要 live md 时同时启用 `--gateway-stream-markdown` |
+| **pChronicle sidecar / 补 Markdown** | `--record-format lance` 由 sidecar 落盘到 `events.lance/`；需要 live md 时同时启用 `--gateway-stream-markdown` |
 | **Dead letter** | 保留在 Run storage 中供 pChronicle API 诊断 |
 
 配置示例（节选）：

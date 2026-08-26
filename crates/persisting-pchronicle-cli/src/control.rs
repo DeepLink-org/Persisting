@@ -8,13 +8,15 @@ use persisting_events::{
     AttemptRecord as ProtocolAttemptRecord, AttemptRecordState as ProtocolAttemptRecordState,
     ChronicleControlEnvelope, ChronicleControlRequest, ChronicleControlResponse,
     ChronicleControlResponseEnvelope, ChronicleServeControlReady, CommitRunOutcome,
-    LeaseAcquireOutcome, TrajectoryAppendRequest, TrajectoryAppendResponse,
+    LeaseAcquireOutcome, TrajectoryAppendRequest, TrajectoryAppendResponse, TrajectoryFormat,
     CHRONICLE_CONTROL_MAX_FRAME_BYTES, CHRONICLE_CONTROL_VERSION,
 };
 use persisting_pchronicle::storage::{
-    AttemptRecord, AttemptRecordState, AttemptRegistry, RawEventLanceStore, RunControlStore,
-    StoryCoords,
+    AttemptRecord, AttemptRecordState, AttemptRegistry, DatasetLocation, RawEventLanceStore,
+    RunControlStore, StoryCoords,
 };
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -299,6 +301,9 @@ fn map_attempt_record(value: AttemptRecord) -> ProtocolAttemptRecord {
 pub(crate) async fn append_trajectory(
     request: TrajectoryAppendRequest,
 ) -> Result<TrajectoryAppendResponse> {
+    if request.format == TrajectoryFormat::Json {
+        return append_json_trajectory(request).await;
+    }
     let session = StoryCoords::new(
         &request.storage,
         &request.agent_id,
@@ -322,6 +327,69 @@ pub(crate) async fn append_trajectory(
         status: "ok".into(),
         note,
     })
+}
+
+async fn append_json_trajectory(
+    request: TrajectoryAppendRequest,
+) -> Result<TrajectoryAppendResponse> {
+    let base = format!(
+        "{}/json/{}/{}",
+        request.storage.trim_end_matches('/'),
+        safe_segment(&request.agent_id),
+        safe_segment(&request.session_id)
+    );
+    let location = DatasetLocation::parse(&base)?;
+    if let Some(path) = location.local_path() {
+        std::fs::create_dir_all(path)?;
+        let file_path = path.join("events.jsonl");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file_path)?;
+        for record in &request.records {
+            serde_json::to_writer(&mut file, record)?;
+            file.write_all(b"\n")?;
+        }
+        file.flush()?;
+    } else {
+        // Object stores do not provide an atomic append primitive. Keep each
+        // event immutable and independently recoverable under the warehouse
+        // prefix; the control worker serializes these writes.
+        for record in &request.records {
+            let uri = format!("{base}/events/{:020}.json", record.seq);
+            let location = DatasetLocation::parse(&uri)?;
+            location
+                .put_bytes(&serde_json::to_vec(record)?, false)
+                .await?;
+        }
+    }
+    Ok(TrajectoryAppendResponse {
+        dataset: base,
+        storage: request.storage,
+        agent_id: request.agent_id,
+        session_id: request.session_id,
+        accepted_records: request.records.len(),
+        status: "ok".into(),
+        note: "JSON EventRecord warehouse log".into(),
+    })
+}
+
+fn safe_segment(value: &str) -> String {
+    let mut result = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if result.is_empty() || result == "." || result == ".." {
+        result = "_unknown".into();
+    }
+    result.truncate(128);
+    result
 }
 
 #[cfg(test)]

@@ -183,6 +183,34 @@ and available event-carried Evidence. Artifact references, lineage, staged
 filesystem Effects, AgentCtl/network/resource Evidence, and the full Run Bundle
 remain local unless a separate adapter moves them.
 
+Recording is selected with two user-facing options only:
+
+```bash
+# Lightweight pVisor capture: complete EventRecord JSONL, no Chronicle process.
+pvisor run --gateway-mode capture --record-format json \
+  --record-destination ./capture -- codex
+
+# Full Chronicle path: canonical Lance data in a local warehouse or object store.
+pvisor run --gateway-mode capture --record-format lance \
+  --record-destination s3://trajectory-bucket/persisting/runs -- codex
+
+# Chronicle JSON warehouse path (one immutable JSON object per event remotely).
+pvisor run --gateway-mode capture --record-format json \
+  --record-destination s3://trajectory-bucket/persisting/raw-json -- codex
+```
+
+For a local destination, JSON is an append-only JSONL file (`events.jsonl`)
+written directly by pVisor. For a warehouse URI, pVisor starts pChronicle and
+the sidecar writes immutable JSON event objects under the warehouse prefix.
+Both preserve the complete event payload, including Gateway `http.request_body`
+and `http.response_body`. Lance also starts the pChronicle sidecar.
+
+Every newly persisted event contains both `timestamp` (RFC3339 UTC) and
+`timestamp_unix_ms` (Unix milliseconds) for the same observation time. Gateway
+capture backfills these fields at the final sink boundary; pVisor lifecycle
+events generate them together. Use `source + seq` for ordering and timestamps
+for wall-clock correlation.
+
 The logical Run id survives placement and retry decisions. Each physical
 execution receives a distinct Attempt id and, when pPilot owns it, a fenced
 lease epoch. The Run id is also the Gateway root-session id. A Run becomes
@@ -330,10 +358,9 @@ mode = "capture"
 name = "openai"
 upstream = "https://api.openai.com/v1"
 
-[chronicle]
-mode = "spawn"
-dir = "s3://trajectory-bucket/persisting/runs"
-binary = "pchronicle"
+[record]
+format = "lance"
+destination = "s3://trajectory-bucket/persisting/runs"
 ```
 
 Library callers select the same network boundary with
@@ -343,14 +370,14 @@ attaches `vm-smoltcp` to a `VmExecutor`, `Off` leaves that guest offline, and
 the same builder shares the Attempt controller, metrics, and bandwidth
 registry with VM egress.
 
-`chronicle.dir` accepts either a local directory or an S3 URI. The equivalent
-CLI form keeps the reusable project workspace local while offloading the canonical event log:
+The equivalent CLI form keeps the reusable project workspace local while
+offloading the canonical event log:
 
 ```bash
 AWS_REGION=us-east-1 pvisor run \
   --overlayfs-base /path/to/project \
-  --chronicle-mode spawn \
-  --chronicle-dir s3://trajectory-bucket/persisting/runs \
+  --record-format lance \
+  --record-destination s3://trajectory-bucket/persisting/runs \
   -- codex
 ```
 

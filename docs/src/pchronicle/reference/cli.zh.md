@@ -301,25 +301,31 @@ Agent 注入是行为引导，不是 filesystem、network 或 tool permission �
 ```text
 pchronicle serve
   [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
-  [--gateway-config FILE] [--gateway-dataset NAME] [--gateway-state DIRECTORY]
+  [--gateway ADDRESS --gateway-dataset DATASET [--gateway-split TEMPLATE]
+   [--gateway-split-idle DURATION]]
+  [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
   [--gateway-stream-markdown] [--gateway-debug]
-  <[NAME=]DATASET> ...
+  [<[NAME=]DATASET> ...]
 ```
 
 ```bash
 pchronicle serve ./trajectory-data
 pchronicle serve \
-  --listen 127.0.0.1:8080 \
-  --gateway-config gateway.toml \
-  --gateway-dataset evals \
-  --gateway-stream-markdown \
-  evals=./trajectory-data
+  --gateway auto \
+  --gateway-dataset ./trajectory-data \
+  --gateway-split '{user}/{date}/{hour}'
 ```
 
 未指定服务 flag 时，只读 Web/API 默认监听 `127.0.0.1:0`。多个 Dataset 使用
-`NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。Gateway 选项包括
-`--gateway-config`、`--gateway-dataset`、`--gateway-state`、`--gateway-stream-markdown` 和
-`--gateway-debug`，对象存储 capture 必须提供本地 `--gateway-state`。所有 listener 只允许
+`NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。无需配置的 `--gateway`
+在 `POST /v1/events` 接收 canonical trajectory events；`--gateway-dataset` 是自动挂载的
+输出 URI，不再是 mount name。`--gateway-split` 支持 `{user}`、`{date}`、`{hour}`。
+已有 canonical source 默认在最后一条事件后空闲 30 分钟才自动刷新 Storyline projection；
+可用 `--gateway-split-idle DURATION` 覆盖。
+Gateway 模式启用 Warehouse 后，单 trace 的事件、Storyline 和 trajectory 接口会读取已经发现
+source 的最新 canonical manifest，正在进行中的 trace 不需要等待 projection 或全局 Catalog 刷新。
+旧式转发 Gateway 仍可使用 `--gateway-config`，对象存储 capture 必须提供本地
+`--gateway-state`。所有 listener 只允许
 loopback；服务准备完成后，stdout 输出一行版本化 readiness JSON，endpoint 和诊断写 stderr。
 
 ### 公共输出与退出状态

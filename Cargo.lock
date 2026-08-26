@@ -6992,6 +6992,7 @@ dependencies = [
  "axum",
  "blake3",
  "bytes",
+ "chrono",
  "clap",
  "datafusion",
  "dirs",
@@ -7046,6 +7047,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "clap",
  "dirs",
  "flate2",

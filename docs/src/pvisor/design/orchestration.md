@@ -39,8 +39,9 @@ link Lance or DataFusion. When durable publication is configured, pVisor starts
 the Control component of `pchronicle serve` and publishes Attempt state plus
 lifecycle/Gateway events through the shared `persisting-events` control contract. pPilot uses the same
 contract for lease/CAS and result-journal coordination; each command owns the
-sidecar process it starts. `--pchronicle-binary` or
-`PERSISTING_PCHRONICLE_BIN` selects the executable.
+sidecar process it starts. The executable is selected by the pVisor installation
+or Run configuration; recording is selected with `--record-format` and
+`--record-destination`.
 
 The local control protocol is versioned, request-correlated, authenticated with
 a per-process token, and bound to loopback. It is a process boundary rather

@@ -9,9 +9,11 @@ service.
 ```text
 pchronicle serve
   [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
-  [--gateway-config FILE] [--gateway-dataset NAME] [--gateway-state DIRECTORY]
+  [--gateway ADDRESS --gateway-dataset DATASET [--gateway-split TEMPLATE]
+   [--gateway-split-idle DURATION]]
+  [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
   [--gateway-stream-markdown] [--gateway-debug]
-  <[NAME=]DATASET> ...
+  [<[NAME=]DATASET> ...]
 ```
 
 Every listener must use a loopback address because the Web UI and read API do
@@ -48,13 +50,25 @@ pchronicle serve \
   default=./trajectory-data
 
 pchronicle serve \
-  --listen 127.0.0.1:8080 \
-  --gateway-config gateway.toml \
-  --gateway-dataset evals \
-  evals=./trajectory-data
+  --gateway auto \
+  --gateway-dataset ./trajectory-data \
+  --gateway-split '{user}/{date}/{hour}'
 ```
 
-Control requires a mount named `default`. `--control` or `--gateway-config`
+`--gateway` starts a config-free canonical event ingest endpoint. It accepts
+`POST /v1/events`, uses `x-persisting-user-id` for `{user}`, and automatically
+mounts the output Dataset. `{date}` and `{hour}` use UTC; one run/session is
+pinned to its first partition so a streaming or long-lived trajectory is not
+split across event sources. `auto` means `127.0.0.1:0`. Existing canonical
+sources wait 30 minutes by default after their last event before Storyline
+projection; override this with `--gateway-split-idle DURATION`.
+
+When a Warehouse listener is enabled, single-trace Gateway reads reopen the
+latest canonical event manifest. Appending to an existing source therefore does
+not wait for Catalog refresh or Storyline projection; only new source files and
+published projections require a global Catalog update.
+
+Control requires a mount named `default`. `--control`, `--gateway`, or `--gateway-config`
 without `--listen` starts the requested integration without also starting the
 Web UI. The process writes one machine-readable readiness record to stdout;
 Control credentials are not written to stderr.

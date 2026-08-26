@@ -11,6 +11,9 @@ pub(crate) struct ProjectionSupervisorOptions {
     pub(crate) interval: Duration,
     pub(crate) max_backoff: Duration,
     pub(crate) max_concurrent: usize,
+    /// Delay runtime refreshes after an existing canonical source changes.
+    /// Startup projections and newly discovered sources are not delayed.
+    pub(crate) projection_idle: Duration,
 }
 
 impl Default for ProjectionSupervisorOptions {
@@ -19,6 +22,7 @@ impl Default for ProjectionSupervisorOptions {
             interval: Duration::from_secs(1),
             max_backoff: Duration::from_secs(60),
             max_concurrent: 16,
+            projection_idle: Duration::ZERO,
         }
     }
 }
@@ -51,6 +55,8 @@ pub(crate) struct ProjectionSupervisor {
     options: ProjectionSupervisorOptions,
     diagnostics: tokio::sync::mpsc::Sender<ProjectionDiagnostic>,
     retries: BTreeMap<String, RetryState>,
+    source_watermarks: BTreeMap<String, (u64, u64, u64)>,
+    source_idle_since: BTreeMap<String, tokio::time::Instant>,
     catalog_retry: Option<RetryState>,
     observed_snapshot_id: Option<String>,
     catalog_dirty: bool,
@@ -68,10 +74,23 @@ impl ProjectionSupervisor {
             options: ProjectionSupervisorOptions::default(),
             diagnostics,
             retries: BTreeMap::new(),
+            source_watermarks: BTreeMap::new(),
+            source_idle_since: BTreeMap::new(),
             catalog_retry: None,
             observed_snapshot_id: None,
             catalog_dirty: false,
         }
+    }
+
+    pub(crate) fn with_projection_idle(
+        config: server::ChronicleServerConfig,
+        warehouse: Option<server::PreparedWarehouse>,
+        projection_idle: Duration,
+        diagnostics: tokio::sync::mpsc::Sender<ProjectionDiagnostic>,
+    ) -> Self {
+        let mut supervisor = Self::new(config, warehouse, diagnostics);
+        supervisor.options.projection_idle = projection_idle;
+        supervisor
     }
 
     pub(crate) fn set_warehouse(&mut self, warehouse: Option<server::PreparedWarehouse>) {
@@ -94,6 +113,20 @@ impl ProjectionSupervisor {
     pub(crate) async fn converge_before_readiness(&mut self) -> Result<()> {
         let snapshot = self.discover().await?;
         let inventory = automatic_projection_inventory(&snapshot)?;
+        let initial_watermarks = inventory
+            .targets
+            .iter()
+            .map(|target| {
+                (
+                    target.source_uri.clone(),
+                    (
+                        target.source_snapshot.fact_version,
+                        target.source_snapshot.fact_rows,
+                        target.source_snapshot.layout_revision,
+                    ),
+                )
+            })
+            .collect();
         let mut failures = inventory.errors.len();
         let outcomes = stream::iter(inventory.targets)
             .map(|target| async move {
@@ -112,6 +145,8 @@ impl ProjectionSupervisor {
         );
 
         let converged = self.discover().await?;
+        self.source_watermarks = initial_watermarks;
+        self.source_idle_since.clear();
         self.observed_snapshot_id = Some(converged.snapshot_id().to_string());
         self.catalog_dirty = false;
         Ok(())
@@ -132,7 +167,6 @@ impl ProjectionSupervisor {
         };
         if self.observed_snapshot_id.as_deref() != Some(snapshot.snapshot_id()) {
             self.observed_snapshot_id = Some(snapshot.snapshot_id().to_string());
-            self.catalog_dirty = true;
         }
         let inventory = match automatic_projection_inventory(&snapshot) {
             Ok(inventory) => inventory,
@@ -155,7 +189,33 @@ impl ProjectionSupervisor {
         let due = inventory
             .targets
             .into_iter()
-            .filter(|target| self.retry_is_due(&target.source_uri, now))
+            .filter(|target| {
+                let key = target.source_uri.clone();
+                let watermark = (
+                    target.source_snapshot.fact_version,
+                    target.source_snapshot.fact_rows,
+                    target.source_snapshot.layout_revision,
+                );
+                let previous = self.source_watermarks.insert(key.clone(), watermark);
+                if let Some(previous) = previous {
+                    if previous != watermark {
+                        self.source_idle_since.entry(key.clone()).or_insert(now);
+                    }
+                } else {
+                    // A new canonical events.lance source is a structural
+                    // Catalog change. Existing sources only update their
+                    // watermark and remain queryable through live reads.
+                    self.catalog_dirty = true;
+                }
+                let idle_elapsed = self
+                    .source_idle_since
+                    .get(&key)
+                    .map(|since| now.saturating_duration_since(*since))
+                    .unwrap_or(self.options.projection_idle);
+                let idle_ready = self.options.projection_idle.is_zero()
+                    || idle_elapsed >= self.options.projection_idle;
+                idle_ready && self.retry_is_due(&key, now)
+            })
             .collect::<Vec<_>>();
         let outcomes = stream::iter(due)
             .map(|target| async move {
@@ -169,6 +229,7 @@ impl ProjectionSupervisor {
             match outcome {
                 Ok(maintenance) => {
                     self.retries.remove(&target.source_uri);
+                    self.source_idle_since.remove(&target.source_uri);
                     report.succeeded = report.succeeded.saturating_add(1);
                     if maintenance.published() {
                         report.publications = report.publications.saturating_add(1);
@@ -451,6 +512,42 @@ mod tests {
         let report = supervisor.run_iteration(tokio::time::Instant::now()).await;
         assert_eq!(report.publications, 1);
         assert_eq!(report.catalog_refreshes, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn projection_idle_defers_existing_source_until_quiet_window() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("dataset");
+        std::fs::create_dir(&root)?;
+        let config = config(&root)?;
+        let (diagnostics, _receiver) = tokio::sync::mpsc::channel(16);
+        let mut supervisor = ProjectionSupervisor::with_projection_idle(
+            config,
+            None,
+            Duration::from_secs(30 * 60),
+            diagnostics,
+        );
+        supervisor.converge_before_readiness().await?;
+
+        append_note(&root, "run", 0).await?;
+        let initial = supervisor.run_iteration(tokio::time::Instant::now()).await;
+        assert_eq!(initial.publications, 1);
+
+        append_note(&root, "run", 1).await?;
+        let changed_at = tokio::time::Instant::now();
+        let deferred = supervisor.run_iteration(changed_at).await;
+        assert_eq!(deferred.publications, 0);
+
+        let before_idle = supervisor
+            .run_iteration(changed_at + Duration::from_secs(30 * 60 - 1))
+            .await;
+        assert_eq!(before_idle.publications, 0);
+
+        let refreshed = supervisor
+            .run_iteration(changed_at + Duration::from_secs(30 * 60))
+            .await;
+        assert_eq!(refreshed.publications, 1);
         Ok(())
     }
 

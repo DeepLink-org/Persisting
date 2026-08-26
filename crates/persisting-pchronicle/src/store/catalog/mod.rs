@@ -58,7 +58,7 @@ use crate::formats::events::EventsDocument;
 use crate::formats::{EventRecord, StorylineDocument};
 use crate::projection::projection_lineage_is_fresh;
 
-use super::events::datafusion::{RawEventDataSourceOptions, RawEventSnapshot};
+use super::events::datafusion::{RawEventDataSource, RawEventDataSourceOptions, RawEventSnapshot};
 use super::files::matches_file_filter;
 use super::{
     raw_event_arrow_schema, reconstruct_storyline, split_storyline, story_runs_arrow_schema,
@@ -66,9 +66,8 @@ use super::{
     story_steps_to_batch, story_tool_calls_arrow_schema, story_tool_calls_from_batch,
     story_tool_calls_to_batch, FileTrajectoryDataSource, FileTrajectoryDataSourceOptions,
     FileTrajectoryQueryMetrics, LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
-    ProjectionSourceSnapshot, RawEventDataSource, StoryRunRow, StoryStepRow, StoryToolCallRow,
-    StorylineDataSource, StorylineDataSourceOptions, StorylineTableKind, StorylineTablePaths,
-    SOURCE_FILE_COLUMN,
+    ProjectionSourceSnapshot, StoryRunRow, StoryStepRow, StoryToolCallRow, StorylineDataSource,
+    StorylineDataSourceOptions, StorylineTableKind, StorylineTablePaths, SOURCE_FILE_COLUMN,
 };
 
 pub const DEFAULT_DATASET_NAME: &str = "dataset";
@@ -425,6 +424,36 @@ impl DatasetCatalogSnapshot {
         load_storyline_from_source(source.as_ref(), key).await
     }
 
+    /// Resolve one canonical Storyline from the latest visible events
+    /// manifest. This intentionally bypasses the immutable Catalog snapshot
+    /// for live Gateway observation while retaining the Catalog's source
+    /// identity and path resolution.
+    pub async fn load_live_storyline(
+        &self,
+        key: &CatalogStorylineKey,
+    ) -> Result<Option<StorylineDocument>> {
+        let source = self.lazy_source(key)?.resolve().await?;
+        let ResolvedSource::Events(events) = source.as_ref() else {
+            return load_storyline_from_source(source.as_ref(), key).await;
+        };
+        let uri = self
+            .lazy_source(key)?
+            .canonical_event_uri()
+            .context("live Storyline source is not canonical events")?;
+        let latest = RawEventDataSource::open_uri(uri).await?;
+        let session_ids = BTreeSet::from([key.session_id.clone()]);
+        let records = latest
+            .read_records_for_storylines_bounded(
+                &session_ids,
+                events.max_fallback_rows,
+                events.max_fallback_bytes,
+            )
+            .await?;
+        Ok((!records.is_empty())
+            .then(|| project_event_records(&records))
+            .transpose()?)
+    }
+
     /// Resolve the normalized Storyline and event view without normalizing a
     /// non-event source twice.
     pub async fn load_trajectory_bundle(
@@ -461,6 +490,42 @@ impl DatasetCatalogSnapshot {
         }))
     }
 
+    /// Resolve a live Gateway trajectory bundle from the latest canonical
+    /// events manifest. Projection freshness does not gate this read path.
+    pub async fn load_live_trajectory_bundle(
+        &self,
+        key: &CatalogStorylineKey,
+    ) -> Result<Option<CatalogTrajectoryBundle>> {
+        let source = self.lazy_source(key)?.resolve().await?;
+        let ResolvedSource::Events(events) = source.as_ref() else {
+            return self.load_trajectory_bundle(key).await;
+        };
+        let uri = self
+            .lazy_source(key)?
+            .canonical_event_uri()
+            .context("live trajectory source is not canonical events")?;
+        let latest = RawEventDataSource::open_uri(uri).await?;
+        let session_ids = BTreeSet::from([key.session_id.clone()]);
+        let records = latest
+            .read_records_for_storylines_bounded(
+                &session_ids,
+                events.max_fallback_rows,
+                events.max_fallback_bytes,
+            )
+            .await?;
+        if records.is_empty() {
+            return Ok(None);
+        }
+        let storyline = project_event_records(&records)?;
+        Ok(Some(CatalogTrajectoryBundle {
+            storyline,
+            event_view: CatalogEventView {
+                provenance: CatalogEventProvenance::Canonical,
+                document: EventsDocument::new(records),
+            },
+        }))
+    }
+
     /// Return canonical records when the source is events.lance, otherwise a
     /// deterministic synthetic event view of the normalized Storyline.
     pub async fn load_events(&self, key: &CatalogStorylineKey) -> Result<Option<CatalogEventView>> {
@@ -480,6 +545,34 @@ impl DatasetCatalogSnapshot {
         Ok(Some(CatalogEventView {
             provenance: CatalogEventProvenance::SyntheticFromStoryline,
             document: storyline_to_events(&storyline)?,
+        }))
+    }
+
+    /// Read the latest canonical events for live Gateway observation.
+    pub async fn load_live_events(
+        &self,
+        key: &CatalogStorylineKey,
+    ) -> Result<Option<CatalogEventView>> {
+        let source = self.lazy_source(key)?.resolve().await?;
+        let ResolvedSource::Events(events) = source.as_ref() else {
+            return self.load_events(key).await;
+        };
+        let uri = self
+            .lazy_source(key)?
+            .canonical_event_uri()
+            .context("live event source is not canonical events")?;
+        let latest = RawEventDataSource::open_uri(uri).await?;
+        let session_ids = BTreeSet::from([key.session_id.clone()]);
+        let records = latest
+            .read_records_for_storylines_bounded(
+                &session_ids,
+                events.max_fallback_rows,
+                events.max_fallback_bytes,
+            )
+            .await?;
+        Ok((!records.is_empty()).then_some(CatalogEventView {
+            provenance: CatalogEventProvenance::Canonical,
+            document: EventsDocument::new(records),
         }))
     }
 

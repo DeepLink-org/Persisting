@@ -67,17 +67,18 @@ RFC-0003 中“pChronicle 拥有轨迹格式”的约束仍适用于物理 schem
 
 ### 3. pVisor 通过 sidecar 持久化
 
-pVisor 的 Chronicle 模式为：
+pVisor 只暴露两个面向用户的落盘选择：格式和目标位置。
 
-| 模式 | 行为 |
+| 选择 | 行为 |
 |---|---|
-| `off` | 不启动 pChronicle；生命周期 sink 为 no-op，Gateway 仍可按自身配置提供实时能力 |
-| `spawn` | 启动 `pchronicle serve --control 127.0.0.1:0 <root>`，通过 control 协议提交轨迹和 Attempt 状态 |
-| `lance` | 兼容旧配置的别名；行为与 `spawn` 相同，不再表示 pVisor 内嵌 Lance |
+| `--record-format json` + 本地目录 | pVisor 直接追加完整 `events.jsonl`，不启动 pChronicle |
+| `--record-format json` + warehouse URI | 启动 pChronicle，由 sidecar 将 JSON 事件写入 warehouse |
+| `--record-format lance` | 启动 `pchronicle serve --control 127.0.0.1:0 <root>`，通过 control 协议写 canonical Lance |
 
-sidecar executable 由 `chronicle.binary`、`--pchronicle-binary` 或
-`PERSISTING_PCHRONICLE_BIN` 指定。pVisor 管理自己启动的 child 生命周期；child 退出、
-握手失败或协议版本不兼容都会显式使持久化路径失败。
+旧的 `--chronicle-mode`、`--chronicle-dir` 和 `--pchronicle-binary` 不再是 pVisor
+CLI 参数。pVisor 库/配置仍可通过 `chronicle.binary` 选择 sidecar executable；pPilot
+自己的 `--pchronicle-binary` 不属于 pVisor CLI。pVisor 管理自己启动的 child 生命周期；
+child 退出、握手失败或协议版本不兼容都会显式使持久化路径失败。
 
 pVisor 与 Gateway producer 只构造 `EventRecord`。它们 MUST NOT 选择 Lance row、执行
 DataFusion query，或根据 storage URI 加载对象存储 SDK。
@@ -135,7 +136,7 @@ pChronicle 的间接依赖，不改变本 RFC 的 ownership，但 SHOULD 在后�
 
 - `EventRecord` 的 JSON 顶层字段保持扁平，移动 crate 不改变既有 wire 形状；
 - pChronicle 对外 re-export 公共事件类型，允许调用方渐进迁移 import；
-- `--chronicle-mode lance` 暂时保留为 `spawn` alias，文档和新配置统一使用 `spawn`；
+- pVisor 调用方应迁移到 `--record-format {json,lance}` 与 `--record-destination PATH|URI`；旧 Chronicle CLI 参数不再接受；
 - `persisting-pchronicle-client` 被删除，使用者改为
   `persisting-events = { features = ["control"] }`；
 - pChronicle 的既有 Lance dataset、目录布局和 replay 语义不因这次 crate 拆分而变化。

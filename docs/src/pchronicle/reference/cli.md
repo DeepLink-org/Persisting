@@ -146,23 +146,33 @@ pchronicle agent claude @prod --ask 'Compare model latency'
 ```text
 pchronicle serve
   [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
-  [--gateway-config FILE] [--gateway-dataset NAME] [--gateway-state DIRECTORY]
+  [--gateway ADDRESS --gateway-dataset DATASET [--gateway-split TEMPLATE]
+   [--gateway-split-idle DURATION]]
+  [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
   [--gateway-stream-markdown] [--gateway-debug]
-  <[NAME=]DATASET> ...
+  [<[NAME=]DATASET> ...]
 ```
 
 ```bash
 pchronicle serve ./trajectory-data
 pchronicle serve \
-  --listen 127.0.0.1:8080 \
-  --gateway-config gateway.toml \
-  --gateway-dataset evals \
-  evals=./trajectory-data
+  --gateway auto \
+  --gateway-dataset ./trajectory-data \
+  --gateway-split '{user}/{date}/{hour}'
 ```
 
 Every listener must use a loopback address. A bare single Dataset is mounted as
 `default`; with several Datasets, use `NAME=DATASET` when a stable mount name is
 needed. Control requires a mount named `default`.
+The config-free Gateway accepts canonical trajectory events at
+`POST /v1/events`. `--gateway-dataset` is an output URI and is auto-mounted;
+it is no longer a mounted Dataset name. Split templates accept the exact
+placeholders `{user}`, `{date}`, and `{hour}`. Existing canonical sources wait
+30 minutes by default after their last event before automatic Storyline
+projection; override this with `--gateway-split-idle DURATION`.
+In Gateway mode, the Warehouse's single-trace event, Storyline, and trajectory
+endpoints read the latest canonical manifest for an already discovered source,
+so active traces do not wait for projection or a global Catalog refresh.
 
 ## Output and exit status
 

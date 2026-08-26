@@ -8,6 +8,37 @@ use crate::protocol::ProtocolKind;
 
 pub use persisting_events::EventRecord;
 
+/// Current wall-clock time as Unix milliseconds.
+pub fn unix_now_ms() -> u64 {
+    chrono::Utc::now().timestamp_millis().max(0) as u64
+}
+
+/// Parse an RFC3339 event timestamp into Unix milliseconds.
+pub fn unix_ms_from_rfc3339(timestamp: &str) -> Option<u64> {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|value| value.timestamp_millis().max(0) as u64)
+}
+
+/// Make the shared wall-clock fields complete before an event is persisted.
+///
+/// Gateway producers historically populated the RFC3339 `timestamp` field but
+/// left the canonical `timestamp_unix_ms` identity field empty.  The sink is
+/// the last common boundary for all Gateway records, so it is the right place
+/// to backfill both fields without changing event ordering (`seq`).
+pub(crate) fn ensure_timestamp(record: &mut EventRecord) {
+    if record.timestamp.is_none() {
+        record.timestamp = Some(now_rfc3339());
+    }
+    if record.identity.timestamp_unix_ms.is_none() {
+        record.identity.timestamp_unix_ms = record
+            .timestamp
+            .as_deref()
+            .and_then(unix_ms_from_rfc3339)
+            .or_else(|| Some(unix_now_ms()));
+    }
+}
+
 /// Capture-only interpretation of raw proxy payloads.
 ///
 /// The record schema belongs to the shared events contract; SSE and provider
@@ -142,6 +173,45 @@ fn llm_inner_body(payload: &Value) -> Option<&Value> {
 
 pub fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use serde_json::Value;
+
+    use super::{ensure_timestamp, unix_ms_from_rfc3339, EventRecord};
+
+    #[test]
+    fn parses_rfc3339_to_unix_milliseconds() {
+        assert_eq!(
+            unix_ms_from_rfc3339("2026-01-01T00:00:00Z"),
+            Some(1_767_225_600_000)
+        );
+    }
+
+    #[test]
+    fn ensure_timestamp_backfills_both_wire_fields() {
+        let mut record = EventRecord {
+            identity: Default::default(),
+            seq: 0,
+            source: "persisting-proxy".into(),
+            kind: "llm.request".into(),
+            timestamp: None,
+            session_id: None,
+            agent_id: None,
+            parent_uuid: None,
+            trace_id: None,
+            call_id: None,
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: Value::Null,
+        };
+        ensure_timestamp(&mut record);
+        assert!(record.timestamp.is_some());
+        assert!(record.identity.timestamp_unix_ms.is_some());
+    }
 }
 
 #[cfg(test)]

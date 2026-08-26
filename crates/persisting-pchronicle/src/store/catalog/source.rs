@@ -332,8 +332,8 @@ pub(super) enum ResolvedSource {
 pub(super) struct ResolvedEventSource {
     source: RawEventDataSource,
     projection: Option<StorylineDataSource>,
-    max_fallback_rows: usize,
-    max_fallback_bytes: usize,
+    pub(super) max_fallback_rows: usize,
+    pub(super) max_fallback_bytes: usize,
     pub(super) normalization_count: AtomicUsize,
 }
 

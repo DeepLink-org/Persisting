@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use serde_json::Value;
 
-use super::record::{now_rfc3339, EventRecord};
+use super::record::{ensure_timestamp, now_rfc3339, EventRecord};
 use crate::config::CaptureLevel;
 use crate::projection::markdown_pipeline::stamp_request_payload;
 use crate::session::storage::CaptureRoute;
@@ -64,6 +64,7 @@ impl CaptureEventSink for SeqOnlySink {
         _agent_id: &str,
         record: &mut EventRecord,
     ) -> Result<()> {
+        ensure_timestamp(record);
         self.assign_seq(route, record);
         Ok(())
     }
@@ -103,6 +104,7 @@ impl CallbackSink {
 
 impl CaptureEventSink for CallbackSink {
     fn append(&self, route: &CaptureRoute, agent_id: &str, record: &mut EventRecord) -> Result<()> {
+        ensure_timestamp(record);
         let sequence = {
             let mut guard = self.next_seq.lock().unwrap();
             Arc::clone(

@@ -55,6 +55,12 @@ Catalog hides the sidecar and falls back to a deterministic projection of the pi
 snapshot. `projection_generation` exposes the generation actually selected. A Storyline document
 store without lineage is never inferred to be a projection of canonical events.
 
+The Gateway-backed Warehouse has an explicit live-read path for point trace observation: after the
+Catalog resolves an already discovered canonical source, `/api/events`, `/api/storyline`, and
+`/api/trajectory-view` reopen its latest visible events manifest. This does not change the immutable
+snapshot semantics of broad SQL queries, and it does not make the derived Storyline sidecar
+authoritative.
+
 The projection supervisor is part of `serve`, applies bounded concurrency and retry, and shuts down
 with the process. It remains outside the Gateway capture write path, so projection or Catalog
 refresh failures cannot block canonical event writes.
