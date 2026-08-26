@@ -449,9 +449,9 @@ impl DatasetCatalogSnapshot {
                 events.max_fallback_bytes,
             )
             .await?;
-        Ok((!records.is_empty())
+        (!records.is_empty())
             .then(|| project_event_records(&records))
-            .transpose()?)
+            .transpose()
     }
 
     /// Resolve the normalized Storyline and event view without normalizing a
