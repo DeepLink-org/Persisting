@@ -346,7 +346,10 @@ pub struct AgentCtlServer {
 impl AgentCtlServer {
     /// Create and start one Run-scoped AgentCtl server.
     pub fn start(run_id: &RunId, attempt_id: &AttemptId) -> anyhow::Result<Self> {
-        let socket_path = std::env::temp_dir().join(format!(
+        // macOS `sockaddr_un` paths are capped at SUN_LEN (~104 bytes), so bind in
+        // the fixed, short `/tmp` directory rather than `std::env::temp_dir()`,
+        // which can point at a deep per-user path (e.g. `/var/folders/.../T/`).
+        let socket_path = Path::new("/tmp").join(format!(
             "pvisor-agent-{}.sock",
             uuid::Uuid::new_v4().simple()
         ));

@@ -220,10 +220,11 @@ impl RunControlServer {
         if locator_path.exists() || locator_path.is_symlink() {
             fs::remove_file(&locator_path)?;
         }
-        // macOS sockaddr_un paths are short. Bind in the system temporary
-        // directory and expose a stable stage-local symlink for discovery.
+        // macOS sockaddr_un paths are short. Bind in the fixed, short `/tmp`
+        // directory rather than `std::env::temp_dir()` (which can point at a deep
+        // per-user path) and expose a stable stage-local symlink for discovery.
         let socket_path =
-            std::env::temp_dir().join(format!("pvisor-{}.sock", uuid::Uuid::new_v4().simple()));
+            Path::new("/tmp").join(format!("pvisor-{}.sock", uuid::Uuid::new_v4().simple()));
         let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
         std::os::unix::fs::symlink(&socket_path, &locator_path)?;
