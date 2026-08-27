@@ -323,33 +323,32 @@ pub(super) fn mini_python_runtime(entrypoint: &Path) -> Result<MiniPythonRuntime
     }
 
     let prefix = read_regular_file(entrypoint)?;
-    if let Some(first) = prefix.split(|byte| *byte == b'\n').next() {
-        if let Some(shebang) = first.strip_prefix(b"#!") {
-            let rendered = String::from_utf8_lossy(shebang);
-            let words: Vec<_> = rendered.split_whitespace().collect();
-            if words.first() == Some(&"/usr/bin/env") {
-                if let Some(program) = words.get(1) {
-                    if program.contains("python") {
-                        return Ok(MiniPythonRuntime {
-                            python: PathBuf::from(program),
-                            loader: None,
-                            python_home: None,
-                            virtual_env: None,
-                            library_paths: Vec::new(),
-                        });
-                    }
-                }
-            } else if let Some(program) = words.first() {
-                if program.contains("python") {
-                    return Ok(MiniPythonRuntime {
-                        python: PathBuf::from(program),
-                        loader: None,
-                        python_home: None,
-                        virtual_env: None,
-                        library_paths: Vec::new(),
-                    });
-                }
-            }
+    if let Some(first) = prefix.split(|byte| *byte == b'\n').next()
+        && let Some(shebang) = first.strip_prefix(b"#!")
+    {
+        let rendered = String::from_utf8_lossy(shebang);
+        let words: Vec<_> = rendered.split_whitespace().collect();
+        if words.first() == Some(&"/usr/bin/env")
+            && let Some(program) = words.get(1)
+            && program.contains("python")
+        {
+            return Ok(MiniPythonRuntime {
+                python: PathBuf::from(program),
+                loader: None,
+                python_home: None,
+                virtual_env: None,
+                library_paths: Vec::new(),
+            });
+        } else if let Some(program) = words.first()
+            && program.contains("python")
+        {
+            return Ok(MiniPythonRuntime {
+                python: PathBuf::from(program),
+                loader: None,
+                python_home: None,
+                virtual_env: None,
+                library_paths: Vec::new(),
+            });
         }
     }
     for name in ["python3", "python"] {

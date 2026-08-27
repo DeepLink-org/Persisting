@@ -1,11 +1,11 @@
 //! Compile-time guard for pChronicle's four intentional public entrypoints.
 
+use persisting_pchronicle::Result;
 use persisting_pchronicle::document::{
-    decode_json_storylines, encode_json_storylines, DocumentFormat, InputIssue, InputIssueKind,
-    InputResult,
+    DocumentFormat, InputIssue, InputIssueKind, InputResult, decode_json_storylines,
+    encode_json_storylines,
 };
 use persisting_pchronicle::model::{EventRecord, StorylineDocument};
-use persisting_pchronicle::Result;
 
 #[cfg(feature = "lance-store")]
 use persisting_pchronicle::query::{ChronicleQueryEngine, QueryCapabilities};

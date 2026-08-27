@@ -19,19 +19,19 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use persisting_pchronicle::analysis_compile::{
-    compile, AnalysisSpec, CompileError, CompileScope, CompiledQuery, TableSchema,
+    AnalysisSpec, CompileError, CompileScope, CompiledQuery, TableSchema, compile,
 };
-use persisting_pchronicle::document::{events_to_otlp_json, InputIssue};
+use persisting_pchronicle::document::{InputIssue, events_to_otlp_json};
 use persisting_pchronicle::model::{EventRecord, StorylineTurn};
 use persisting_pchronicle::query::ChronicleQueryEngine;
 #[cfg(test)]
 use persisting_pchronicle::storage::StoryCoords;
 use persisting_pchronicle::storage::{
     CatalogErrorPolicy, CatalogEventProvenance, CatalogSnapshotOptions, CatalogStorylineKey,
-    DatasetCatalogSnapshot, DatasetMount, DEFAULT_DATASET_NAME,
+    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use acceleration::{AccelerationStatus, ServerAcceleration};
 use problem::ApiError;
@@ -456,11 +456,11 @@ async fn explorer_tree(
     let mut tree = explorer::catalog_tree(&summaries, dataset, prefix, explorer::MAX_TREE_CHILDREN);
     if let Some(name) = tree.dataset.clone() {
         let runtime = current_catalog(&state).await?;
-        if tree.prefix.is_empty() {
-            if let Some(dataset) = runtime.snapshot.dataset(&name) {
-                tree.ready_sources = Some(dataset.ready_source_count());
-                tree.error_sources = Some(dataset.error_source_count());
-            }
+        if tree.prefix.is_empty()
+            && let Some(dataset) = runtime.snapshot.dataset(&name)
+        {
+            tree.ready_sources = Some(dataset.ready_source_count());
+            tree.error_sources = Some(dataset.error_source_count());
         }
         let (duration_ms, total_tokens) = tree_prefix_metrics(&runtime, &name, &tree.prefix).await;
         tree.duration_ms = duration_ms;
@@ -564,10 +564,10 @@ async fn resolve_run_summary(
     // root_session_id coordinate as an ambiguity breaker, not as a required
     // identity field: direct JSON sources may not preserve that field in the
     // normalized run row.
-    if matches.len() > 1 {
-        if let Some(root) = &query.root_session_id {
-            matches.retain(|run| run.root_session_id.as_ref() == Some(root));
-        }
+    if matches.len() > 1
+        && let Some(root) = &query.root_session_id
+    {
+        matches.retain(|run| run.root_session_id.as_ref() == Some(root));
     }
     if matches.is_empty() {
         return Err(ApiError::not_found("run was not found"));
@@ -778,10 +778,9 @@ fn collect_wire_tool_calls(value: &Value, out: &mut Vec<WireToolCall>) {
             if matches!(
                 map.get("type").and_then(Value::as_str),
                 Some("tool_use" | "function_call" | "custom_tool_call" | "local_shell_call")
-            ) {
-                if let Some(call) = parse_wire_tool_call(value) {
-                    out.push(call);
-                }
+            ) && let Some(call) = parse_wire_tool_call(value)
+            {
+                out.push(call);
             }
             for (key, child) in map {
                 if key != "tool_calls" {
@@ -841,16 +840,15 @@ async fn load_trajectory(
         run.file,
         run.session_id
     );
-    if !state.live_reads {
-        if let Some((_, loaded)) = state
+    if !state.live_reads
+        && let Some((_, loaded)) = state
             .trajectory_cache
             .read()
             .await
             .as_ref()
             .filter(|(key, _)| key == &cache_key)
-        {
-            return Ok(loaded.clone());
-        }
+    {
+        return Ok(loaded.clone());
     }
     let key = catalog_storyline_key(&run);
     let bundle = if state.live_reads {

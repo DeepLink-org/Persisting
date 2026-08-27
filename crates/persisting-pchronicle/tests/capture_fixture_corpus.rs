@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use persisting_pchronicle::model::{EventIdentity, EventRecord};
 use persisting_pchronicle::storage::{RawEventLanceStore, StoryCoords};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn capture_fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../persisting-gateway/tests/fixtures")

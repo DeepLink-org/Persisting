@@ -50,15 +50,15 @@ pub fn rebuild_session_story(
 pub fn story_call_ids(story: &Story) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
     for turn in &story.turns {
-        if let Some(user) = &turn.user {
-            if let Some(call_id) = &user.call_id {
-                ids.insert(call_id.as_str().to_string());
-            }
+        if let Some(user) = &turn.user
+            && let Some(call_id) = &user.call_id
+        {
+            ids.insert(call_id.as_str().to_string());
         }
-        if let Some(assistant) = &turn.assistant {
-            if let Some(call_id) = &assistant.call_id {
-                ids.insert(call_id.as_str().to_string());
-            }
+        if let Some(assistant) = &turn.assistant
+            && let Some(call_id) = &assistant.call_id
+        {
+            ids.insert(call_id.as_str().to_string());
         }
         for call in &turn.calls {
             ids.insert(call.call_id.as_str().to_string());
@@ -115,9 +115,9 @@ pub fn load_story_snapshots(storage: &Path) -> Result<HashMap<String, Story>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Call;
     use crate::config::CaptureLevel;
     use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
-    use crate::Call;
 
     fn sample_call(id: &str) -> Call {
         Call {

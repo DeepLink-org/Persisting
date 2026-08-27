@@ -351,10 +351,10 @@ mod tests {
 
     impl ControlController for PerAddressController {
         fn authorize(&self, request: ControlRequest<'_>) -> ControlTransition {
-            if let ControlRequest::Network { request, .. } = &request {
-                if request.resolved_ip == Some("93.184.216.34".parse().unwrap()) {
-                    return ControlTransition::denied(ControlReason::ExplicitlyDenied);
-                }
+            if let ControlRequest::Network { request, .. } = &request
+                && request.resolved_ip == Some("93.184.216.34".parse().unwrap())
+            {
+                return ControlTransition::denied(ControlReason::ExplicitlyDenied);
             }
             PolicyControlController.authorize(request)
         }
@@ -378,10 +378,10 @@ mod tests {
 
     impl ControlController for DenyHostController {
         fn authorize(&self, request: ControlRequest<'_>) -> ControlTransition {
-            if let ControlRequest::Network { request, .. } = request {
-                if request.host == "controller-denied.invalid" {
-                    return ControlTransition::denied(ControlReason::ExplicitlyDenied);
-                }
+            if let ControlRequest::Network { request, .. } = request
+                && request.host == "controller-denied.invalid"
+            {
+                return ControlTransition::denied(ControlReason::ExplicitlyDenied);
             }
             ControlTransition::allowed(ControlReason::AmbientNetwork)
         }

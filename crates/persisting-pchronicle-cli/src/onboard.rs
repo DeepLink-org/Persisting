@@ -6,10 +6,10 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 
 use super::{
-    run_analysis, run_default, run_export, run_find, run_import, run_list, run_query, run_status,
     AnalysisArgs, AnalysisCommand, AnalysisOptions, DefaultArgs, DefaultCommand, ErrorMode,
     ExchangeFormat, ExportArgs, ExportFormat, FindArgs, ImportArgs, ImportOutputFormat, ListArgs,
-    OutputFormat, QueryArgs, QueryOutputFormat, StatusArgs,
+    OutputFormat, QueryArgs, QueryOutputFormat, StatusArgs, run_analysis, run_default, run_export,
+    run_find, run_import, run_list, run_query, run_status,
 };
 
 const DEMO_ATIF: &str = include_str!("../assets/onboard/support-ticket.json");

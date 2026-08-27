@@ -8,10 +8,7 @@ use crate::protocol::ProtocolKind;
 
 pub use persisting_events::EventRecord;
 
-/// Current wall-clock time as Unix milliseconds.
-pub fn unix_now_ms() -> u64 {
-    chrono::Utc::now().timestamp_millis().max(0) as u64
-}
+pub use persisting_events::unix_now_ms;
 
 /// Parse an RFC3339 event timestamp into Unix milliseconds.
 pub fn unix_ms_from_rfc3339(timestamp: &str) -> Option<u64> {
@@ -110,10 +107,10 @@ fn visible_user_from_payload(payload: &Value) -> Option<String> {
         .or_else(|| payload.get("messages"))?
         .as_array()?;
     for msg in messages.iter().rev() {
-        if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
-            if let Some(text) = msg.get("content").and_then(content_to_string) {
-                return non_empty(&text);
-            }
+        if msg.get("role").and_then(|r| r.as_str()) == Some("user")
+            && let Some(text) = msg.get("content").and_then(content_to_string)
+        {
+            return non_empty(&text);
         }
     }
     None
@@ -177,9 +174,10 @@ pub fn now_rfc3339() -> String {
 
 #[cfg(test)]
 mod timestamp_tests {
+    use proptest::prelude::*;
     use serde_json::Value;
 
-    use super::{ensure_timestamp, unix_ms_from_rfc3339, EventRecord};
+    use super::{EventRecord, ensure_timestamp, unix_ms_from_rfc3339};
 
     #[test]
     fn parses_rfc3339_to_unix_milliseconds() {
@@ -212,14 +210,50 @@ mod timestamp_tests {
         assert!(record.timestamp.is_some());
         assert!(record.identity.timestamp_unix_ms.is_some());
     }
+
+    proptest! {
+        #[test]
+        fn ensure_timestamp_is_idempotent_for_existing_rfc3339(
+            milliseconds in 0u64..=4_000_000_000_000u64
+        ) {
+            let timestamp = chrono::DateTime::from_timestamp_millis(milliseconds as i64)
+                .expect("generated timestamp is representable")
+                .to_rfc3339();
+            let mut record = EventRecord {
+                identity: Default::default(),
+                seq: 0,
+                source: "persisting-proxy".into(),
+                kind: "llm.request".into(),
+                timestamp: Some(timestamp.clone()),
+                session_id: None,
+                agent_id: None,
+                parent_uuid: None,
+                trace_id: None,
+                call_id: None,
+                subagent_id: None,
+                parent_agent_id: None,
+                branch: None,
+                parent_call_id: None,
+                payload: Value::Null,
+            };
+
+            ensure_timestamp(&mut record);
+            let first = record.clone();
+            ensure_timestamp(&mut record);
+
+            prop_assert_eq!(record.timestamp.as_deref(), Some(timestamp.as_str()));
+            prop_assert_eq!(record.identity.timestamp_unix_ms, Some(milliseconds));
+            prop_assert_eq!(record, first);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Call;
     use crate::config::CaptureLevel;
     use crate::sink::{llm_request_record, llm_request_summary_record, llm_response_record};
-    use crate::Call;
 
     #[test]
     fn internal_request_detects_count_tokens_path() {

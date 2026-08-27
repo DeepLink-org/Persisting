@@ -11,18 +11,18 @@ use futures::TryStreamExt;
 use crate::agenticmd::parse_agenticmd;
 use crate::convert::{actf_to_storylines, project_event_records};
 use crate::document::{
-    decode_json_storylines, FilterPushdown, QueryCapabilities, QueryTables,
-    DEFAULT_DOCUMENT_MATERIALIZE_BYTES, DEFAULT_DOCUMENT_MATERIALIZE_ROWS,
+    DEFAULT_DOCUMENT_MATERIALIZE_BYTES, DEFAULT_DOCUMENT_MATERIALIZE_ROWS, FilterPushdown,
+    QueryCapabilities, QueryTables, decode_json_storylines,
 };
 use crate::format::DocumentFormat;
 use crate::formats::actf::ActfDocument;
-use crate::formats::{parse_openai_msg_corpus_value, StorylineDocument};
+use crate::formats::{StorylineDocument, parse_openai_msg_corpus_value};
 
 use super::files::DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES;
 use super::{
-    datafusion_bridge::from_datafusion, AgenticMdDataSource, AtifReader, FileTrajectoryDataSource,
-    LocalQueryManifest, RawEventDataSource, StorylineDataSource, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
-    DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+    AgenticMdDataSource, AtifReader, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
+    DEFAULT_MAX_EVENT_FALLBACK_ROWS, FileTrajectoryDataSource, LocalQueryManifest,
+    RawEventDataSource, StorylineDataSource, datafusion_bridge::from_datafusion,
 };
 
 #[derive(Debug)]

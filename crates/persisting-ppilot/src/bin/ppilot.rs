@@ -4,8 +4,8 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use persisting_ppilot::{
-    init_tracing_with_verbose, produce_from_planner, produce_trajectories, run_ppilot,
-    BatchProductionManifest, BatchProductionOptions, PPilotArgs,
+    BatchProductionManifest, BatchProductionOptions, PPilotArgs, init_tracing_with_verbose,
+    produce_from_planner, produce_trajectories, run_ppilot,
 };
 
 #[derive(Debug, Parser)]

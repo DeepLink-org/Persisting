@@ -3,25 +3,25 @@
 use std::collections::BTreeMap;
 
 use anyhow::Context as _;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::{
-    ActfAttempt, ActfDocument, ActfObservation, ActfStep, ActfToolCall, ActfTrajectory,
-    ACTF_SCHEMA_VERSION,
+    ACTF_SCHEMA_VERSION, ActfAttempt, ActfDocument, ActfObservation, ActfStep, ActfToolCall,
+    ActfTrajectory,
 };
+use crate::Result;
 use crate::format::DocumentFormat;
 use crate::formats::storyline::{
-    StorylineAgent, StorylineDocument, StorylineEnv, StorylineOrigin, StorylinePrompt,
-    StorylineTask, StorylineTaskLlm, StorylineTaskResult, StorylineToolCall, StorylineToolResponse,
-    StorylineTurn, STORYLINE_SCHEMA_VERSION,
+    STORYLINE_SCHEMA_VERSION, StorylineAgent, StorylineDocument, StorylineEnv, StorylineOrigin,
+    StorylinePrompt, StorylineTask, StorylineTaskLlm, StorylineTaskResult, StorylineToolCall,
+    StorylineToolResponse, StorylineTurn,
 };
 use crate::formats::timestamp::StorylineTimestamp;
 use crate::formats::unknown_fields::{
-    decode_json_pointer, insert_unknown_map, normalize_actf_pointer, pointer_join,
-    restore_json_pointer, validate_unknown_fields_with, write_foreign_unknown_fields_envelope,
-    CarrierBinding, PointerWrite, UnknownFieldLimits,
+    CarrierBinding, PointerWrite, UnknownFieldLimits, decode_json_pointer, insert_unknown_map,
+    normalize_actf_pointer, pointer_join, restore_json_pointer, validate_unknown_fields_with,
+    write_foreign_unknown_fields_envelope,
 };
-use crate::Result;
 
 const ACTF_EXTRA_TASK_CORRECT: &str = "task_correct";
 const ACTF_EXTRA_CATEGORY: &str = "category";
@@ -1172,10 +1172,10 @@ fn storyline_tool_to_actf(call: &StorylineToolCall) -> Value {
 fn storyline_observation_to_actf(result: &Value) -> Value {
     let mut extra = result.as_object().cloned().unwrap_or_default();
     let source_call_id = extra.remove("source_call_id");
-    if extra.get("type").and_then(Value::as_str) == Some("command_execution") {
-        if let Some(content) = extra.remove("content") {
-            extra.insert("aggregated_output".into(), content);
-        }
+    if extra.get("type").and_then(Value::as_str) == Some("command_execution")
+        && let Some(content) = extra.remove("content")
+    {
+        extra.insert("aggregated_output".into(), content);
     }
     if let Some(source_call_id) = source_call_id {
         if extra.contains_key("tool_use_id") {
@@ -1714,8 +1714,8 @@ mod tests {
     #[test]
     fn actf_null_reasoning_content_omits_reason() {
         let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
-        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]
-            ["reasoning_content"] = Value::Null;
+        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]["reasoning_content"] =
+            Value::Null;
         let document: ActfDocument = serde_json::from_value(value).unwrap();
         let story = actf_to_storyline(&document).unwrap();
         assert!(story.turns[0].reasoning_content.is_none());
@@ -1736,17 +1736,19 @@ mod tests {
         value["attempts"]["1"]["attempt_unknown"] = json!([3, 2, 1]);
         value["attempts"]["1"]["trajectory"]["trajectory_unknown"] = json!({"x": 1});
         value["attempts"]["1"]["trajectory"]["steps"][0]["step_unknown"] = Value::Null;
-        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]
-            ["assistant_unknown"] = json!("kept");
+        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]["assistant_unknown"] =
+            json!("kept");
         value["attempts"]["1"]["trajectory"]["steps"][0]["tools"][0]["tool_unknown"] = Value::Null;
-        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]["tool_calls"][0]
-            ["tool_unknown"] = Value::Null;
+        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]["tool_calls"][0]["tool_unknown"] =
+            Value::Null;
         let document: ActfDocument = serde_json::from_value(value).unwrap();
 
         let mut story = actf_to_storyline(&document).unwrap();
-        assert!(!serde_json::to_string(&story)
-            .unwrap()
-            .contains(&["_pchron", "icle_"].concat()));
+        assert!(
+            !serde_json::to_string(&story)
+                .unwrap()
+                .contains(&["_pchron", "icle_"].concat())
+        );
         story.turns[0].message = json!("changed by Storyline");
         story.turns[0].reasoning_content = Some("new reasoning".into());
 
@@ -1849,15 +1851,16 @@ mod tests {
             Some(("system".into(), "later".into()))
         );
         assert_eq!(story.turns[3].message, json!("fourth"));
-        assert!(!story
-            .unknown_fields
-            .sources
-            .get("actf")
-            .map(|source| source
-                .fields
-                .keys()
-                .any(|key| { key.ends_with("/system_prompt") || key.ends_with("/user_content") }))
-            .unwrap_or(false));
+        assert!(
+            !story
+                .unknown_fields
+                .sources
+                .get("actf")
+                .map(|source| source.fields.keys().any(|key| {
+                    key.ends_with("/system_prompt") || key.ends_with("/user_content")
+                }))
+                .unwrap_or(false)
+        );
 
         let restored = storyline_to_actf(&story).unwrap();
         let restored_steps = &restored.attempts["1"].trajectory.steps;

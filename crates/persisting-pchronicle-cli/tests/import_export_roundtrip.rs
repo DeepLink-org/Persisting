@@ -8,7 +8,7 @@ use std::fs;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use common::{run_cli, EXAMPLE_FIXTURES};
+use common::{EXAMPLE_FIXTURES, run_cli};
 
 fn canonical_json_bytes(path: &std::path::Path) -> Result<Vec<u8>> {
     let value: Value = serde_json::from_slice(&fs::read(path)?)?;

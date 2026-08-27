@@ -4,8 +4,8 @@ use persisting_agentctl::{AttemptId, RunId};
 use persisting_events::{EventIdentity, EventRecord};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
-use tokio::sync::broadcast;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::broadcast;
 
 /// Whether an append error proves that the event was not persisted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

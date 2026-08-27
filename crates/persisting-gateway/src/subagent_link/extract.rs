@@ -98,24 +98,24 @@ fn collect_subagent_ids_from_value(v: &Value, out: &mut HashSet<String>) {
 pub fn extract_subagent_ids_from_text(text: &str) -> Vec<String> {
     let mut ids = HashSet::new();
     for cap in AGENT_ID_JSON.captures_iter(text) {
-        if let Some(id) = cap.get(1).map(|m| m.as_str()) {
-            if plausible_agent_id(id) {
-                ids.insert(id.to_string());
-            }
+        if let Some(id) = cap.get(1).map(|m| m.as_str())
+            && plausible_agent_id(id)
+        {
+            ids.insert(id.to_string());
         }
     }
     for cap in AGENT_ID_TOOL_RESULT.captures_iter(text) {
-        if let Some(id) = cap.get(1).map(|m| m.as_str()) {
-            if plausible_agent_id(id) {
-                ids.insert(id.to_string());
-            }
+        if let Some(id) = cap.get(1).map(|m| m.as_str())
+            && plausible_agent_id(id)
+        {
+            ids.insert(id.to_string());
         }
     }
     for cap in TASK_ID_XML.captures_iter(text) {
-        if let Some(id) = cap.get(1).map(|m| m.as_str()) {
-            if plausible_agent_id(id) {
-                ids.insert(id.to_string());
-            }
+        if let Some(id) = cap.get(1).map(|m| m.as_str())
+            && plausible_agent_id(id)
+        {
+            ids.insert(id.to_string());
         }
     }
     let mut out: Vec<_> = ids.into_iter().collect();

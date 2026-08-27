@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::document::{decode_json_storylines, open_document};
 use persisting_pchronicle::document::{DocumentFormat, QueryTables};
+use persisting_pchronicle::document::{decode_json_storylines, open_document};
 use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument};
 use persisting_pchronicle::query::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat, ExternalTableSpec,
@@ -16,8 +16,7 @@ mod support;
 
 use support::fixture_path;
 
-const SHARED_SQL: &str =
-    "SELECT s.session_id, s.step_id, s.source, t.tool_call_id, t.function_name \
+const SHARED_SQL: &str = "SELECT s.session_id, s.step_id, s.source, t.tool_call_id, t.function_name \
      FROM steps s LEFT JOIN tool_calls t \
        ON s.session_id = t.session_id AND s.step_id = t.step_id \
      WHERE s.session_id IN ('fixture-parallel_tools_14', 'fixture-reasoning_16') \
@@ -250,13 +249,15 @@ async fn atif_document_source_streams_ndjson_and_directories_in_path_order() -> 
 async fn generic_atif_source_validates_inputs() -> Result<()> {
     let trajectories = load_trajectories()?;
     let dir = tempfile::tempdir()?;
-    assert!(ChronicleQueryEngine::open(
-        DocumentFormat::Atif,
-        dir.path(),
-        ChronicleQueryExecutionOptions::default(),
-    )
-    .await
-    .is_err());
+    assert!(
+        ChronicleQueryEngine::open(
+            DocumentFormat::Atif,
+            dir.path(),
+            ChronicleQueryExecutionOptions::default(),
+        )
+        .await
+        .is_err()
+    );
     let duplicate_jsonl = dir.path().join("duplicate.ndjson");
     let duplicate_line = serde_json::to_string(&trajectories[0])?;
     std::fs::write(
@@ -292,13 +293,15 @@ async fn generic_atif_source_validates_inputs() -> Result<()> {
     );
 
     let missing = dir.path().join("missing.json");
-    assert!(ChronicleQueryEngine::open(
-        DocumentFormat::Atif,
-        missing,
-        ChronicleQueryExecutionOptions::default(),
-    )
-    .await
-    .is_err());
+    assert!(
+        ChronicleQueryEngine::open(
+            DocumentFormat::Atif,
+            missing,
+            ChronicleQueryExecutionOptions::default(),
+        )
+        .await
+        .is_err()
+    );
     Ok(())
 }
 
@@ -441,10 +444,12 @@ async fn query_runtime_validates_memory_and_spill_limits() -> Result<()> {
         },
     )
     .await?;
-    assert!(!engine
-        .query_jsonl("SELECT COUNT(*) FROM steps")
-        .await?
-        .is_empty());
+    assert!(
+        !engine
+            .query_jsonl("SELECT COUNT(*) FROM steps")
+            .await?
+            .is_empty()
+    );
     Ok(())
 }
 

@@ -1,21 +1,21 @@
 use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
-use axum::Router;
-use serde_json::{json, Map, Value};
-use tokio::sync::{oneshot, Notify};
+use serde_json::{Map, Value, json};
+use tokio::sync::{Notify, oneshot};
 
-use crate::claude_resume::{clean_resume_transport_envelope, ResumeTransportManifest};
+use crate::claude_resume::{ResumeTransportManifest, clean_resume_transport_envelope};
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 
 const BRIDGE_VERSION: &str = "sandbox-replay-anthropic-openai-bridge/1";
@@ -321,12 +321,12 @@ impl ClaudeBridgeHandle {
             None => None,
         };
 
-        if let Some(worker) = self.worker.take() {
-            if worker.join().is_err() {
-                return Err(ReplayError::continuation(
-                    "Claude SandboxReplay bridge thread panicked",
-                ));
-            }
+        if let Some(worker) = self.worker.take()
+            && worker.join().is_err()
+        {
+            return Err(ReplayError::continuation(
+                "Claude SandboxReplay bridge thread panicked",
+            ));
         }
         if let Some(result) = worker_result {
             result.replay_context(
@@ -448,13 +448,13 @@ async fn messages(
                 return invalid_request(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "Resume transport state lock poisoned".into(),
-                )
+                );
             }
         };
         match resume.clean(&payload) {
             Ok(cleaned) => cleaned,
             Err(error) => {
-                return invalid_request(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
+                return invalid_request(StatusCode::UNPROCESSABLE_ENTITY, error.to_string());
             }
         }
     };
@@ -490,7 +490,7 @@ async fn messages(
                 return invalid_request(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "Resume transport state lock poisoned".into(),
-                )
+                );
             }
         };
         if let Err(error) = resume.mark_forwarded(sequence) {
@@ -504,7 +504,7 @@ async fn messages(
             return upstream_error(
                 StatusCode::BAD_GATEWAY,
                 format!("serialize upstream request: {error}"),
-            )
+            );
         }
     };
     let (status, upstream_body) = match forward_openai_request(&shared, serialized).await {
@@ -524,13 +524,13 @@ async fn messages(
             return upstream_error(
                 StatusCode::BAD_GATEWAY,
                 "Upstream response must be a JSON object".into(),
-            )
+            );
         }
         Err(error) => {
             return upstream_error(
                 StatusCode::BAD_GATEWAY,
                 format!("parse upstream response: {error}"),
-            )
+            );
         }
     };
     let message = match anthropic_response(&cleaned, &upstream, &shared.model_name) {
@@ -765,9 +765,11 @@ fn openai_request(
     request.insert("messages".into(), Value::Array(openai_messages(payload)?));
     request.insert(
         "max_tokens".into(),
-        json!(requested_output_tokens
-            .min(max_output_tokens)
-            .min(available_output_tokens)),
+        json!(
+            requested_output_tokens
+                .min(max_output_tokens)
+                .min(available_output_tokens)
+        ),
     );
     request.insert("temperature".into(), json!(temperature));
     let tools = openai_tools(payload)?;
@@ -948,10 +950,8 @@ fn openai_messages(payload: &Value) -> anyhow::Result<Vec<Value>> {
                         output.push(json!({"role": "user", "content": pending_text.join("\n")}));
                         pending_text.clear();
                     }
-                    let call_id = required_string(
-                        block.get("tool_use_id"),
-                        "tool_result.tool_use_id",
-                    )?;
+                    let call_id =
+                        required_string(block.get("tool_use_id"), "tool_result.tool_use_id")?;
                     let result_content = block.get("content").unwrap_or(&Value::Null);
                     let rendered = content_text(result_content);
                     output.push(json!({
@@ -1046,10 +1046,10 @@ fn anthropic_response(
         .filter(|message| message.is_object())
         .ok_or_else(|| anyhow::anyhow!("OpenAI response choice has no message"))?;
     let mut content = Vec::new();
-    if let Some(text) = message.get("content").and_then(Value::as_str) {
-        if !text.is_empty() {
-            content.push(json!({"type": "text", "text": text}));
-        }
+    if let Some(text) = message.get("content").and_then(Value::as_str)
+        && !text.is_empty()
+    {
+        content.push(json!({"type": "text", "text": text}));
     }
     let raw_tool_calls = match message.get("tool_calls") {
         None | Some(Value::Null) => Vec::new(),
@@ -1613,12 +1613,16 @@ mod tests {
             assert_eq!(messages.len(), 3);
             assert_eq!(messages.last().unwrap()["role"], "tool");
             assert_eq!(messages.last().unwrap()["content"], "fresh observation");
-            assert!(!upstream_payload
-                .to_string()
-                .contains("PVISOR_NATIVE_REPLAY"));
-            assert!(!upstream_payload
-                .to_string()
-                .contains("temporary suffix must be dropped"));
+            assert!(
+                !upstream_payload
+                    .to_string()
+                    .contains("PVISOR_NATIVE_REPLAY")
+            );
+            assert!(
+                !upstream_payload
+                    .to_string()
+                    .contains("temporary suffix must be dropped")
+            );
 
             let resume = shared.resume.lock().unwrap();
             assert!(!resume.failed);
@@ -1658,11 +1662,13 @@ mod tests {
         };
         assert!(state.clean(&json!({"messages": []})).is_err());
         assert!(state.failed);
-        assert!(state
-            .clean(&json!({"messages": []}))
-            .unwrap_err()
-            .to_string()
-            .contains("FAILED"));
+        assert!(
+            state
+                .clean(&json!({"messages": []}))
+                .unwrap_err()
+                .to_string()
+                .contains("FAILED")
+        );
         assert_eq!(state.forwarded_requests, 0);
     }
     #[test]
@@ -1683,10 +1689,12 @@ mod tests {
                 "function": {"name": "TaskList", "arguments": {}}
             }]}}]
         });
-        assert!(anthropic_response(&payload, &non_text, "qwen")
-            .unwrap_err()
-            .to_string()
-            .contains("must be JSON text"));
+        assert!(
+            anthropic_response(&payload, &non_text, "qwen")
+                .unwrap_err()
+                .to_string()
+                .contains("must be JSON text")
+        );
     }
     fn test_manifest() -> ResumeTransportManifest {
         let canonical = vec![
@@ -1767,22 +1775,28 @@ mod tests {
     fn invalid_present_sampling_values_are_rejected() {
         let mut payload = json!({"messages": []});
         payload["max_tokens"] = json!("not-an-integer");
-        assert!(openai_request(&payload, "qwen", 8192, 200_000, 1024, false)
-            .unwrap_err()
-            .to_string()
-            .contains("max_tokens must be an integer"));
+        assert!(
+            openai_request(&payload, "qwen", 8192, 200_000, 1024, false)
+                .unwrap_err()
+                .to_string()
+                .contains("max_tokens must be an integer")
+        );
 
         payload = json!({"messages": [], "max_tokens": -1});
-        assert!(openai_request(&payload, "qwen", 8192, 200_000, 1024, false)
-            .unwrap_err()
-            .to_string()
-            .contains("max_tokens must be positive"));
+        assert!(
+            openai_request(&payload, "qwen", 8192, 200_000, 1024, false)
+                .unwrap_err()
+                .to_string()
+                .contains("max_tokens must be positive")
+        );
 
         payload = json!({"messages": [], "temperature": {"bad": true}});
-        assert!(openai_request(&payload, "qwen", 8192, 200_000, 1024, false)
-            .unwrap_err()
-            .to_string()
-            .contains("temperature must be a number"));
+        assert!(
+            openai_request(&payload, "qwen", 8192, 200_000, 1024, false)
+                .unwrap_err()
+                .to_string()
+                .contains("temperature must be a number")
+        );
 
         payload = json!({"messages": [], "max_tokens": "32", "temperature": "0.25"});
         let converted = openai_request(&payload, "qwen", 8192, 200_000, 1024, false).unwrap();

@@ -50,4 +50,5 @@ name = "pvisor"
 path = "src/bin/pvisor.rs"
 
 [dev-dependencies]
+proptest.workspace = true
 persisting-ppilot = { path = "../persisting-ppilot" }

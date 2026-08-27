@@ -40,6 +40,7 @@ persisting-overlaynet.workspace = true
 persisting-pchronicle = { workspace = true, default-features = false }
 
 [dev-dependencies]
+proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros"] }
 

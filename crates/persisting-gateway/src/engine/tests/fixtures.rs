@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::Call;
 use crate::config::CaptureLevel;
 use crate::engine::{CallContext, CaptureEngine};
 use crate::protocol::ProtocolKind;
@@ -9,7 +10,6 @@ use crate::record::EventRecord;
 use crate::session::index::SessionIndexStore;
 use crate::session::storage::CaptureRoute;
 use crate::sink::CaptureEventSink;
-use crate::Call;
 
 pub(crate) struct RecordingSink {
     records: Mutex<Vec<EventRecord>>,

@@ -86,7 +86,7 @@ impl TaskExpr {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskResult {
     pub task_id: String,
     /// Stable pVisor Run identity generated for this task.
@@ -286,61 +286,155 @@ pub fn unix_now() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use proptest::prelude::*;
+    use serde_json::{Map, Value, json};
 
-    #[test]
-    fn flat_payload_becomes_args() {
-        let t = TaskExpr::from_value(json!({"id": "t-0", "x": 1, "y": "a"})).unwrap();
-        assert_eq!(t.id, "t-0");
-        assert_eq!(t.op, "execute");
-        assert_eq!(t.args.get("x"), Some(&json!(1)));
-        assert_eq!(t.args.get("y"), Some(&json!("a")));
+    fn scalar_value() -> impl Strategy<Value = Value> {
+        prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::Bool),
+            any::<i64>().prop_map(|value| json!(value)),
+            proptest::string::string_regex("[a-zA-Z0-9 _-]{0,12}")
+                .unwrap()
+                .prop_map(Value::String),
+        ]
     }
 
-    #[test]
-    fn nested_args_and_task_id_alias() {
-        let t = TaskExpr::from_value(json!({
-            "task_id": 7,
-            "type": "execute",
-            "args": {"n": 3},
-            "meta": {"prio": 1}
-        }))
-        .unwrap();
-        assert_eq!(t.id, "7");
-        assert_eq!(t.op, "execute");
-        assert_eq!(t.args.get("n"), Some(&json!(3)));
-        assert_eq!(t.meta.get("prio"), Some(&json!(1)));
+    fn non_null_scalar_value() -> impl Strategy<Value = Value> {
+        scalar_value().prop_filter("value must not be JSON null", |value| !value.is_null())
     }
 
-    #[test]
-    fn rejects_non_object_meta() {
-        assert!(TaskExpr::from_value(json!({"id": "t", "meta": 1})).is_err());
+    fn indexed_object(prefix: &'static str, values: Vec<Value>) -> Map<String, Value> {
+        values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| (format!("{prefix}_{index}"), value))
+            .collect()
     }
 
-    #[test]
-    fn result_roundtrip_flags() {
-        let ok = TaskResult::success("t", json!({"v": 1}), "w0", 1.0);
-        let line = ok.to_ndjson().unwrap();
-        let back: TaskResult = serde_json::from_str(&line).unwrap();
-        assert!(back.ok && !back.cancelled);
+    proptest! {
+        #[test]
+        fn flat_payload_becomes_args(
+            fields in prop::collection::vec(scalar_value(), 0..8),
+        ) {
+            let mut input = Map::new();
+            input.insert("id".into(), json!("t-0"));
+            let expected = indexed_object("field", fields);
+            input.extend(expected.clone());
 
-        let c = TaskResult::cancelled("t");
-        assert!(c.cancelled && !c.ok);
-        let f = TaskResult::failure("t", "boom", Some("tb".into()), "w0", 0.0);
-        assert!(!f.ok && f.traceback.as_deref() == Some("tb"));
-    }
+            let task = TaskExpr::from_value(Value::Object(input)).unwrap();
+            prop_assert_eq!(task.id, "t-0");
+            prop_assert_eq!(task.op, "execute");
+            prop_assert_eq!(task.args, expected.into_iter().collect());
+            prop_assert!(task.meta.is_empty());
+        }
 
-    #[test]
-    fn success_extracts_metrics_and_artifacts_without_changing_value() {
-        let value = json!({
-            "metrics": {"reward": 0.75, "label": "ignored"},
-            "artifacts": {"trajectory": "lance://runs/t-0"},
-            "payload": {"x": 1}
-        });
-        let result = TaskResult::success("t", value.clone(), "w0", 0.0);
-        assert_eq!(result.value, Some(value));
-        assert_eq!(result.metrics.get("reward"), Some(&0.75));
-        assert_eq!(result.artifacts["trajectory"], json!("lance://runs/t-0"));
+        #[test]
+        fn nested_args_and_task_id_alias(
+            task_id in prop_oneof![
+                proptest::string::string_regex("[a-z][a-z0-9-]{0,8}")
+                    .unwrap()
+                    .prop_map(Value::String),
+                any::<u64>().prop_map(|value| json!(value)),
+            ],
+            args in prop::collection::vec(scalar_value(), 0..6),
+            meta in prop::collection::vec(scalar_value(), 0..6),
+        ) {
+            let expected_id = match &task_id {
+                Value::String(value) => value.clone(),
+                Value::Number(value) => value.to_string(),
+                _ => unreachable!(),
+            };
+            let expected_args = indexed_object("arg", args);
+            let expected_meta = indexed_object("meta", meta);
+            let input = json!({
+                "task_id": task_id,
+                "type": "execute",
+                "args": expected_args,
+                "meta": expected_meta,
+            });
+
+            let task = TaskExpr::from_value(input).unwrap();
+            prop_assert_eq!(task.id, expected_id);
+            prop_assert_eq!(task.op, "execute");
+            prop_assert_eq!(task.args, expected_args.into_iter().collect());
+            prop_assert_eq!(task.meta, expected_meta.into_iter().collect());
+        }
+
+        #[test]
+        fn rejects_non_object_meta(meta in scalar_value()) {
+            let input = json!({"id": "t", "meta": meta});
+            prop_assert!(TaskExpr::from_value(input).is_err());
+        }
+
+        #[test]
+        fn result_roundtrip_preserves_terminal_flags(
+            task_id in proptest::string::string_regex("[a-z][a-z0-9-]{0,8}").unwrap(),
+            value in non_null_scalar_value(),
+            worker in proptest::string::string_regex("w[0-9]{1,2}").unwrap(),
+            started_at in 0u64..1_000_000u64,
+        ) {
+            let started_at = started_at as f64;
+            let ok = TaskResult::success(&task_id, value, &worker, started_at);
+            let back: TaskResult = serde_json::from_str(&ok.to_ndjson().unwrap()).unwrap();
+            let back_wire = serde_json::to_value(&back).unwrap();
+            let ok_wire = serde_json::to_value(&ok).unwrap();
+            prop_assert_eq!(back_wire, ok_wire);
+            prop_assert!(back.ok);
+            prop_assert!(!back.cancelled);
+
+            let cancelled = TaskResult::cancelled(&task_id);
+            let cancelled_back: TaskResult =
+                serde_json::from_str(&cancelled.to_ndjson().unwrap()).unwrap();
+            let cancelled_back_wire = serde_json::to_value(&cancelled_back).unwrap();
+            let cancelled_wire = serde_json::to_value(&cancelled).unwrap();
+            prop_assert_eq!(cancelled_back_wire, cancelled_wire);
+            prop_assert!(cancelled_back.cancelled);
+            prop_assert!(!cancelled_back.ok);
+
+            let failed = TaskResult::failure(
+                &task_id,
+                "boom",
+                Some("traceback".into()),
+                &worker,
+                started_at,
+            );
+            let failed_back: TaskResult =
+                serde_json::from_str(&failed.to_ndjson().unwrap()).unwrap();
+            let failed_back_wire = serde_json::to_value(&failed_back).unwrap();
+            let failed_wire = serde_json::to_value(&failed).unwrap();
+            prop_assert_eq!(failed_back_wire, failed_wire);
+            prop_assert!(!failed_back.ok);
+            prop_assert_eq!(failed_back.traceback.as_deref(), Some("traceback"));
+        }
+
+        #[test]
+        fn success_extracts_metadata_without_changing_value(
+            metrics in prop::collection::vec(-1_000.0f64..1_000.0, 0..6),
+            artifacts in prop::collection::vec(scalar_value(), 0..6),
+            payload in scalar_value(),
+        ) {
+            let metric_values = indexed_object(
+                "metric",
+                metrics.into_iter().map(|value| json!(value)).collect(),
+            );
+            let artifact_values = indexed_object("artifact", artifacts);
+            let expected_artifacts: HashMap<_, _> = artifact_values.clone().into_iter().collect();
+            let value = json!({
+                "metrics": metric_values,
+                "artifacts": artifact_values,
+                "payload": payload,
+            });
+            let result = TaskResult::success("t", value.clone(), "w0", 0.0);
+
+            prop_assert_eq!(result.value, Some(value));
+            prop_assert_eq!(result.metrics.len(), metric_values.len());
+            for (name, metric) in metric_values {
+                let expected_metric = metric.as_f64();
+                prop_assert_eq!(result.metrics.get(&name), expected_metric.as_ref());
+            }
+            prop_assert_eq!(result.artifacts, expected_artifacts);
+        }
     }
 
     #[test]

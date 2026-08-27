@@ -1,12 +1,12 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::*;
+use crate::Call;
 use crate::config::CaptureLevel;
 use crate::sink::{
     llm_request_record, llm_request_summary_record, llm_response_record,
     llm_response_record_with_content,
 };
-use crate::Call;
 fn test_call() -> Call {
     Call {
         call_id: "call-test".into(),

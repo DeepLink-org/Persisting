@@ -2,14 +2,14 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use persisting_pchronicle::document::{
-    decode_json_storylines, encode_json_storylines, DocumentFormat,
+    DocumentFormat, decode_json_storylines, encode_json_storylines,
 };
 use persisting_pchronicle::model::{StorylineDocument, StorylineTimestamp};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 mod support;
 
-use support::{persist_and_restore, LookupStrategy};
+use support::{LookupStrategy, persist_and_restore};
 
 const JSON_FORMATS: [DocumentFormat; 3] = [
     DocumentFormat::Atif,
@@ -327,10 +327,12 @@ fn assert_target_modeled_semantics(
                     .all(|turn| timestamp_source(&turn.timestamp)
                         == Some("1970-01-01 00:00:00+00:00"))
             );
-            assert!(story
-                .turns
-                .iter()
-                .all(|turn| turn.reasoning_content.is_none()));
+            assert!(
+                story
+                    .turns
+                    .iter()
+                    .all(|turn| turn.reasoning_content.is_none())
+            );
             assert_eq!(
                 story.turns[1].metrics.as_ref().unwrap()["prompt_tokens_len"],
                 0
@@ -407,10 +409,12 @@ fn assert_target_modeled_semantics(
             assert_eq!(story.agent.id, "model");
             assert_eq!(story.agent.model_name.as_deref(), Some("model"));
             assert_eq!(story.agent.version.as_deref(), Some("unknown"));
-            assert!(story
-                .turns
-                .iter()
-                .all(|turn| timestamp_source(&turn.timestamp) == Some("2026-08-20T00:00:00Z")));
+            assert!(
+                story
+                    .turns
+                    .iter()
+                    .all(|turn| timestamp_source(&turn.timestamp) == Some("2026-08-20T00:00:00Z"))
+            );
             assert_eq!(story.turns[1].model_name.as_deref(), Some("model"));
             assert!(story.turns[1].metrics.as_ref().unwrap()["reward"].is_null());
         }
@@ -477,9 +481,11 @@ async fn direct_formats_survive_lance_semantically() -> Result<()> {
             .with_context(|| format!("canonicalize {} source", case.name))?;
         if case.format == DocumentFormat::Atif {
             assert_eq!(expected["session_id"], "semantic-atif");
-            assert!(expected["steps"][1]["tool_calls"][0]
-                .as_object()
-                .is_some_and(|call| !call.contains_key("result")));
+            assert!(
+                expected["steps"][1]["tool_calls"][0]
+                    .as_object()
+                    .is_some_and(|call| !call.contains_key("result"))
+            );
         }
 
         let restored = persist_and_restore(&stories, LookupStrategy::DocumentIds)

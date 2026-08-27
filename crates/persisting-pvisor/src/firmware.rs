@@ -1,6 +1,6 @@
 //! Verified libkrunfw download and per-user cache.
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use flate2::read::GzDecoder;
 use fs2::FileExt;
 use reqwest::blocking::Client;

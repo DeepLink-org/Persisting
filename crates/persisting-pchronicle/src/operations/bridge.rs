@@ -12,7 +12,7 @@ use crate::{
     SearchQueryResponse,
 };
 #[cfg(feature = "search")]
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 #[cfg(feature = "search")]
 use super::dispatch::invoke_request_body;

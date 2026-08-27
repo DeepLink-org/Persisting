@@ -15,7 +15,7 @@ use super::markdown_policy::should_skip_record;
 use super::markdown_trajectory::upsert_storyline_turn;
 use crate::dialogue_extract::count_visible_user_messages;
 use crate::record::{EventRecord, EventRecordExt};
-use crate::session::storage::{trajectory_run_dir, CaptureRoute};
+use crate::session::storage::{CaptureRoute, trajectory_run_dir};
 use persisting_pchronicle::storage::session_markdown_write_path_for_key;
 
 /// Per-session sequential state: static filters + Claude Code history-replay dedup.
@@ -222,10 +222,10 @@ pub fn skip_markdown_block(rec: &EventRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Call;
     use crate::config::CaptureLevel;
     use crate::session::storage::CaptureRoute;
     use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
-    use crate::Call;
     use persisting_pchronicle::document::decode_agenticmd;
     use serde_json::json;
 
@@ -376,43 +376,50 @@ mod tests {
     #[test]
     fn intentional_duplicate_user_text_with_increasing_count_both_kept() {
         let mut p = MarkdownPipeline::default();
-        assert!(p
-            .try_storyline_turn(&request("c1", "hi", 1, None))
-            .unwrap()
-            .is_some());
-        assert!(p
-            .try_storyline_turn(&response("c1", "Hello"))
-            .unwrap()
-            .is_some());
-        assert!(p
-            .try_storyline_turn(&request("c2", "hi", 2, None))
-            .unwrap()
-            .is_some());
-        assert!(p
-            .try_storyline_turn(&response("c2", "Hi again"))
-            .unwrap()
-            .is_some());
+        assert!(
+            p.try_storyline_turn(&request("c1", "hi", 1, None))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            p.try_storyline_turn(&response("c1", "Hello"))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            p.try_storyline_turn(&request("c2", "hi", 2, None))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            p.try_storyline_turn(&response("c2", "Hi again"))
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
     fn skips_history_replay_without_new_user_turn() {
         let mut p = MarkdownPipeline::default();
-        assert!(p
-            .try_storyline_turn(&request("c1", "hi", 1, None))
-            .unwrap()
-            .is_some());
-        assert!(p
-            .try_storyline_turn(&response("c1", "Hello"))
-            .unwrap()
-            .is_some());
+        assert!(
+            p.try_storyline_turn(&request("c1", "hi", 1, None))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            p.try_storyline_turn(&response("c1", "Hello"))
+                .unwrap()
+                .is_some()
+        );
 
         let replay = request("c3", "hi", 1, None);
         assert!(p.try_storyline_turn(&replay).unwrap().is_none());
         assert!(p.skips_draft("c3"));
-        assert!(p
-            .try_storyline_turn(&response("c3", "internal"))
-            .unwrap()
-            .is_none());
+        assert!(
+            p.try_storyline_turn(&response("c3", "internal"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -421,31 +428,37 @@ mod tests {
         tool_req.payload["user_content"] = json!("```tool_result:call_x\nchunk output\n```");
 
         let mut p = MarkdownPipeline::default();
-        assert!(p
-            .try_storyline_turn(&request("c1", "hi", 1, None))
-            .unwrap()
-            .is_some());
-        assert!(p
-            .try_storyline_turn(&response("c1", "Hello"))
-            .unwrap()
-            .is_some());
-        assert!(p
-            .try_storyline_turn(&request("c2", "review", 2, None))
-            .unwrap()
-            .is_some());
-        assert!(p
-            .try_storyline_turn(&response("c2", "running tools"))
-            .unwrap()
-            .is_some());
+        assert!(
+            p.try_storyline_turn(&request("c1", "hi", 1, None))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            p.try_storyline_turn(&response("c1", "Hello"))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            p.try_storyline_turn(&request("c2", "review", 2, None))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            p.try_storyline_turn(&response("c2", "running tools"))
+                .unwrap()
+                .is_some()
+        );
         assert!(p.try_storyline_turn(&tool_req).unwrap().is_some());
-        assert!(p
-            .try_storyline_turn(&response("c-tool", "Let me dig in."))
-            .unwrap()
-            .is_some());
-        assert!(p
-            .try_storyline_turn(&response("c-final", "Full design review."))
-            .unwrap()
-            .is_some());
+        assert!(
+            p.try_storyline_turn(&response("c-tool", "Let me dig in."))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            p.try_storyline_turn(&response("c-final", "Full design review."))
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

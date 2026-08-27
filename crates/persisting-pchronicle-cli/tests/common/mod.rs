@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use persisting_pchronicle_cli::{run, Cli};
+use persisting_pchronicle_cli::{Cli, run};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy)]

@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures::TryStreamExt;
+use lance::Dataset;
 use lance::dataset::{InsertBuilder, MergeInsertBuilder, WhenMatched, WhenNotMatched};
 use lance::deps::arrow_array::{Array, RecordBatch, RecordBatchIterator, StringArray};
 use lance::deps::arrow_schema::{DataType, Field, Schema};
-use lance::Dataset;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

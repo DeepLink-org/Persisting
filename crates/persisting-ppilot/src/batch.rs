@@ -1,7 +1,7 @@
 //! Product batch scenarios built from pPilot's pVisor and pChronicle seams.
 
-use anyhow::{bail, Context};
-use futures::{stream, stream::FuturesUnordered, Stream, StreamExt};
+use anyhow::{Context, bail};
+use futures::{Stream, StreamExt, stream, stream::FuturesUnordered};
 use persisting_agentctl::{
     PVisorProcessClient, PVisorProcessOptions, RunId, RunInvocation, RunSpec, RunState, StdioMode,
 };
@@ -380,11 +380,13 @@ mod tests {
                 },
             ],
         };
-        assert!(manifest
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("duplicate"));
+        assert!(
+            manifest
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate")
+        );
         manifest.runs.pop();
         manifest.runs[0].id = "../escape".into();
         assert!(manifest.validate().is_err());
@@ -437,7 +439,10 @@ def plan():
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("duplicate production run id"));
+        assert!(
+            error.to_string().contains("duplicate production run id"),
+            "unexpected planner error: {error:#}"
+        );
     }
 
     #[tokio::test]
@@ -466,8 +471,10 @@ def plan():
         )
         .await
         .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("requires the pVisor capture Gateway"));
+        assert!(
+            error
+                .to_string()
+                .contains("requires the pVisor capture Gateway")
+        );
     }
 }

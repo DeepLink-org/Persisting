@@ -3,10 +3,10 @@
 //! pVisor owns only the shared event contract and this lightweight control
 //! client. The sidecar process owns Lance, DataFusion, and object-store code.
 
-use std::fs::{create_dir_all, File, OpenOptions};
+use std::fs::{File, OpenOptions, create_dir_all};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use async_trait::async_trait;
 use persisting_events::EventRecord;
@@ -161,7 +161,7 @@ impl SidecarAppendSender {
             Ok(()) => {}
             Err(mpsc::TrySendError::Full(_)) => return Err(SidecarAppendError::Full.into()),
             Err(mpsc::TrySendError::Disconnected(_)) => {
-                return Err(SidecarAppendError::Closed.into())
+                return Err(SidecarAppendError::Closed.into());
             }
         }
         response.recv().map_err(|_| SidecarAppendError::Closed)??;

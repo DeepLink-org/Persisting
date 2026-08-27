@@ -353,13 +353,13 @@ pub fn list_story_read_locations(
     }
 
     if let Some(parsed) = infer_traj_location_from_path(&path_arg) {
-        if let Some(ref want) = agent_id {
-            if want != &parsed.agent_id {
-                anyhow::bail!(
-                    "trajectory stats: --agent-id {want} does not match path agent_id {}",
-                    parsed.agent_id
-                );
-            }
+        if let Some(ref want) = agent_id
+            && want != &parsed.agent_id
+        {
+            anyhow::bail!(
+                "trajectory stats: --agent-id {want} does not match path agent_id {}",
+                parsed.agent_id
+            );
         }
         let run_dir = Path::new(&parsed.storage)
             .join(&parsed.agent_id)
@@ -677,9 +677,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["run-001", "run-002"]
         );
-        assert!(locs
-            .iter()
-            .all(|l| l.root_session_id.as_deref() == Some(l.session_id.as_str())));
+        assert!(
+            locs.iter()
+                .all(|l| l.root_session_id.as_deref() == Some(l.session_id.as_str()))
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }

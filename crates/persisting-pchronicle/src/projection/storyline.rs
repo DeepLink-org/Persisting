@@ -478,9 +478,9 @@ fn project_canonical_event_records(records: Vec<EventRecord>) -> Result<Vec<Stor
 mod tests {
     use super::*;
     use crate::{
-        layout::StoryCoords,
-        store::{raw_event_lance_path, RawEventLanceStore},
         EventIdentity,
+        layout::StoryCoords,
+        store::{RawEventLanceStore, raw_event_lance_path},
     };
     use serde_json::json;
 

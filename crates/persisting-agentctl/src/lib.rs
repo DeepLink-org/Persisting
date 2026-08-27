@@ -532,15 +532,14 @@ fn parse_network_host_rule(raw: &str) -> anyhow::Result<NetworkHostRule> {
             "network allowlist entry `{entry}` must be a hostname, `*.suffix`, IP, or CIDR"
         );
     }
-    if let Some((host, port)) = entry.rsplit_once(':') {
-        if !host.is_empty()
-            && port.chars().all(|character| character.is_ascii_digit())
-            && !entry.contains('/')
-            && host.parse::<IpAddr>().is_err()
-            && !host.contains(':')
-        {
-            anyhow::bail!("network allowlist entry `{entry}` must not include a port");
-        }
+    if let Some((host, port)) = entry.rsplit_once(':')
+        && !host.is_empty()
+        && port.chars().all(|character| character.is_ascii_digit())
+        && !entry.contains('/')
+        && host.parse::<IpAddr>().is_err()
+        && !host.contains(':')
+    {
+        anyhow::bail!("network allowlist entry `{entry}` must not include a port");
     }
     if let Some(suffix) = entry.strip_prefix("*.") {
         let suffix = normalize_host(suffix);
@@ -704,15 +703,17 @@ mod tests {
         let restored: ControlMachine = serde_json::from_str(&encoded).unwrap();
         assert_eq!(restored.state(), machine.state());
         assert_eq!(restored.history(), machine.history());
-        assert!(machine
-            .authorize(
-                &controller,
-                ControlRequest::Network {
-                    policy: &guard,
-                    request: &request,
-                },
-            )
-            .is_err());
+        assert!(
+            machine
+                .authorize(
+                    &controller,
+                    ControlRequest::Network {
+                        policy: &guard,
+                        request: &request,
+                    },
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -726,12 +727,14 @@ mod tests {
             Vec::new(),
         )
         .unwrap();
-        assert!(controller
-            .authorize(ControlRequest::Network {
-                policy: &guard,
-                request: &network_request("api.example.com"),
-            })
-            .is_allowed());
+        assert!(
+            controller
+                .authorize(ControlRequest::Network {
+                    policy: &guard,
+                    request: &network_request("api.example.com"),
+                })
+                .is_allowed()
+        );
 
         let policy = ModelAccessPolicy {
             allowed_models: vec!["claude-*".into()],
@@ -748,24 +751,28 @@ mod tests {
             protocol: "messages".into(),
             upstream_host: "api.anthropic.com".into(),
         };
-        assert!(controller
-            .authorize(ControlRequest::Model {
-                policy: &policy,
-                request: &request,
-            })
-            .is_allowed());
+        assert!(
+            controller
+                .authorize(ControlRequest::Model {
+                    policy: &policy,
+                    request: &request,
+                })
+                .is_allowed()
+        );
     }
 
     #[test]
     fn loopback_is_only_trusted_when_explicitly_configured() {
         let controller = PolicyControlController;
         let denied = NetworkGuard::compile(NetworkCapability::Deny, Vec::new()).unwrap();
-        assert!(!controller
-            .authorize(ControlRequest::Network {
-                policy: &denied,
-                request: &network_request("127.0.0.1"),
-            })
-            .is_allowed());
+        assert!(
+            !controller
+                .authorize(ControlRequest::Network {
+                    policy: &denied,
+                    request: &network_request("127.0.0.1"),
+                })
+                .is_allowed()
+        );
 
         let trusted = NetworkGuard::compile(NetworkCapability::Deny, ["127.0.0.1".into()]).unwrap();
         let transition = controller.authorize(ControlRequest::Network {
@@ -807,12 +814,14 @@ mod tests {
             })
         };
 
-        assert!(decide(
-            443,
-            NetworkTransport::Https,
-            Some("93.184.216.34".parse().unwrap())
-        )
-        .is_allowed());
+        assert!(
+            decide(
+                443,
+                NetworkTransport::Https,
+                Some("93.184.216.34".parse().unwrap())
+            )
+            .is_allowed()
+        );
         assert_eq!(
             decide(
                 8443,

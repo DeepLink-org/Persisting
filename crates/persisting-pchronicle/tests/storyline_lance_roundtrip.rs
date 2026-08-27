@@ -1,13 +1,13 @@
 use anyhow::Result;
 use persisting_pchronicle::document::{
-    decode_json_storylines, encode_json_storylines, open_document, DocumentFormat,
+    DocumentFormat, decode_json_storylines, encode_json_storylines, open_document,
 };
 use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::storage::StorylineLanceStore;
 
 mod support;
 
-use support::{fixture_path, persist_and_restore, LookupStrategy};
+use support::{LookupStrategy, fixture_path, persist_and_restore};
 
 #[tokio::test]
 async fn storyline_lance_preserves_order_presence_origin_and_raw_observation() -> Result<()> {

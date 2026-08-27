@@ -99,7 +99,7 @@ fn boundary_writer_exhaustion_is_an_explicit_outcome() {
 
 fn router(storage: impl Into<String>) -> Router {
     let config = ChronicleServerConfig::mounted(vec![
-        DatasetMount::default(storage.into()).expect("test Dataset mount must be valid")
+        DatasetMount::default(storage.into()).expect("test Dataset mount must be valid"),
     ])
     .expect("test server config must be valid");
     warehouse_router(config)
@@ -164,7 +164,7 @@ fn write_gateway_fixture_with_status(
 #[tokio::test]
 async fn warehouse_rejects_non_loopback_bind() {
     let config = ChronicleServerConfig::mounted(vec![
-        DatasetMount::default("/tmp/none").expect("test Dataset mount must be valid")
+        DatasetMount::default("/tmp/none").expect("test Dataset mount must be valid"),
     ])
     .expect("test server config must be valid");
     let error = serve_warehouse(
@@ -368,9 +368,9 @@ fn evidence_queries_are_wrapped_with_a_server_side_row_bound() {
         "SELECT * FROM (SELECT * FROM dataset.runs) AS __pchronicle_evidence LIMIT 201"
     );
     assert_eq!(
-            bounded_evidence_sql("WITH rows AS (SELECT 1) SELECT * FROM rows", 1),
-            "SELECT * FROM (WITH rows AS (SELECT 1) SELECT * FROM rows) AS __pchronicle_evidence LIMIT 2"
-        );
+        bounded_evidence_sql("WITH rows AS (SELECT 1) SELECT * FROM rows", 1),
+        "SELECT * FROM (WITH rows AS (SELECT 1) SELECT * FROM rows) AS __pchronicle_evidence LIMIT 2"
+    );
     assert_eq!(
         bounded_evidence_sql("EXPLAIN SELECT * FROM dataset.runs", 10),
         "EXPLAIN SELECT * FROM dataset.runs"
@@ -469,10 +469,9 @@ async fn explorer_automatically_refreshes_new_dataset_sources() {
     use tower::ServiceExt;
 
     let root = json_dataset_root();
-    let config = ChronicleServerConfig::mounted(vec![DatasetMount::default(
-        root.to_string_lossy().to_string(),
-    )
-    .unwrap()])
+    let config = ChronicleServerConfig::mounted(vec![
+        DatasetMount::default(root.to_string_lossy().to_string()).unwrap(),
+    ])
     .unwrap();
     let app = test_router_with_catalog_refresh_interval(config, std::time::Duration::ZERO);
 
@@ -503,11 +502,13 @@ async fn explorer_automatically_refreshes_new_dataset_sources() {
     let refreshed: Value =
         serde_json::from_slice(&refreshed.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(refreshed["snapshot"]["total"], 2);
-    assert!(refreshed["records"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|run| run["session_id"] == "second-session"));
+    assert!(
+        refreshed["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|run| run["session_id"] == "second-session")
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -714,8 +715,8 @@ async fn catalog_refresh_is_atomic_and_dataset_filtering_is_explicit() -> anyhow
 }
 
 #[tokio::test]
-async fn prepared_catalog_installs_refreshes_and_retains_the_last_good_runtime(
-) -> anyhow::Result<()> {
+async fn prepared_catalog_installs_refreshes_and_retains_the_last_good_runtime()
+-> anyhow::Result<()> {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -1028,10 +1029,12 @@ async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
     assert_eq!(otlp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let otlp = response_json(otlp).await;
     assert_eq!(otlp["code"], "unsupported");
-    assert!(otlp["message"]
-        .as_str()
-        .unwrap()
-        .contains("reconstructed events"));
+    assert!(
+        otlp["message"]
+            .as_str()
+            .unwrap()
+            .contains("reconstructed events")
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1459,7 +1462,7 @@ fn storyline_document(
     run_id: &str,
 ) -> persisting_pchronicle::model::StorylineDocument {
     use persisting_pchronicle::model::{
-        StorylineAgent, StorylineDocument, StorylineTurn, STORYLINE_SCHEMA_VERSION,
+        STORYLINE_SCHEMA_VERSION, StorylineAgent, StorylineDocument, StorylineTurn,
     };
     StorylineDocument {
         schema_version: STORYLINE_SCHEMA_VERSION.into(),

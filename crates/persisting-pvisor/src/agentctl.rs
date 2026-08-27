@@ -1,8 +1,8 @@
 //! Optional, cooperative Run-scoped AgentCtl channel owned by pVisor.
 
 pub use persisting_agentctl::{
-    AgentDirective, AgentErrorCode, AgentRequest, AgentResponse, AgentState,
-    AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_VERSION,
+    AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_VERSION, AgentDirective, AgentErrorCode, AgentRequest,
+    AgentResponse, AgentState,
 };
 use persisting_agentctl::{AttemptId, RunId};
 use serde::{Deserialize, Serialize};
@@ -903,9 +903,11 @@ mod tests {
             control.request_shutdown(Some("stop".into()));
             shutdown_done_tx.send(()).unwrap();
         });
-        assert!(shutdown_done_rx
-            .recv_timeout(Duration::from_millis(30))
-            .is_err());
+        assert!(
+            shutdown_done_rx
+                .recv_timeout(Duration::from_millis(30))
+                .is_err()
+        );
 
         release_capture_tx.send(()).unwrap();
         assert_eq!(capture.join().unwrap(), Some(()));

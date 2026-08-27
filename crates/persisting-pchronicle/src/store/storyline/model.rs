@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::formats::unknown_fields::{
-    validate_unknown_fields, StorylineUnknownFields, UnknownFieldLimits, UnknownKeyCounts,
+    StorylineUnknownFields, UnknownFieldLimits, UnknownKeyCounts, validate_unknown_fields,
 };
 use crate::model::{
     StorylineEnv, StorylineOrigin, StorylinePrompt, StorylineTask, StorylineTimestamp,
@@ -662,10 +662,12 @@ mod tests {
 
         let mut gapped_ordinal = valid.clone();
         gapped_ordinal.steps[1].turn_ordinal = 7;
-        assert!(reconstruct_storyline(gapped_ordinal)
-            .unwrap_err()
-            .to_string()
-            .contains("turn ordinals must be contiguous"));
+        assert!(
+            reconstruct_storyline(gapped_ordinal)
+                .unwrap_err()
+                .to_string()
+                .contains("turn ordinals must be contiguous")
+        );
 
         let mut orphan_call = valid.clone();
         orphan_call.tool_calls[0].step_id = 99;
@@ -679,34 +681,42 @@ mod tests {
 
         let mut gapped_call_index = valid.clone();
         gapped_call_index.tool_calls[0].call_index = 1;
-        assert!(reconstruct_storyline(gapped_call_index)
-            .unwrap_err()
-            .to_string()
-            .contains("call indexes must be contiguous"));
+        assert!(
+            reconstruct_storyline(gapped_call_index)
+                .unwrap_err()
+                .to_string()
+                .contains("call indexes must be contiguous")
+        );
 
         let mut duplicate_call_index = valid.clone();
         let mut second_call = duplicate_call_index.tool_calls[0].clone();
         second_call.tool_call_id = "call-2".into();
         second_call.results.clear();
         duplicate_call_index.tool_calls.push(second_call);
-        assert!(reconstruct_storyline(duplicate_call_index)
-            .unwrap_err()
-            .to_string()
-            .contains("duplicate call index"));
+        assert!(
+            reconstruct_storyline(duplicate_call_index)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate call index")
+        );
 
         let mut stale_derived_results = valid.clone();
         stale_derived_results.tool_calls[0].results.clear();
-        assert!(reconstruct_storyline(stale_derived_results)
-            .unwrap_err()
-            .to_string()
-            .contains("do not match observation_json"));
+        assert!(
+            reconstruct_storyline(stale_derived_results)
+                .unwrap_err()
+                .to_string()
+                .contains("do not match observation_json")
+        );
 
         let mut mismatched_result = valid;
         mismatched_result.tool_calls[0].results[0]["source_call_id"] = json!("other-call");
-        assert!(reconstruct_storyline(mismatched_result)
-            .unwrap_err()
-            .to_string()
-            .contains("mismatched source_call_id"));
+        assert!(
+            reconstruct_storyline(mismatched_result)
+                .unwrap_err()
+                .to_string()
+                .contains("mismatched source_call_id")
+        );
     }
 
     #[test]

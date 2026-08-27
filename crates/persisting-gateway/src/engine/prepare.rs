@@ -6,7 +6,7 @@ use anyhow::Result;
 use pulsing_actor::ActorRef;
 use serde_json::Value;
 
-use super::wire::{run_enrich, StoryCommand, StoryScope};
+use super::wire::{StoryCommand, StoryScope, run_enrich};
 use super::{CallContext, CancelEvent, CompleteEvent, DraftEvent, Event, RequestEvent};
 use crate::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
 use crate::runtime::debug;
@@ -16,8 +16,8 @@ use crate::sink::{
 };
 use crate::subagent_link::SpawnLinkBackfill;
 use crate::usage::{
-    estimate_cost_usd, extract_usage_from_response, extract_usage_from_sse, StreamMetrics,
-    TokenUsage,
+    StreamMetrics, TokenUsage, estimate_cost_usd, extract_usage_from_response,
+    extract_usage_from_sse,
 };
 
 /// Index + config for the prepare phase (run actor accessed via wire client, not held here).

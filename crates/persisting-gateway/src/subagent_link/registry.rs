@@ -9,8 +9,8 @@ use super::match_::{
     find_agent_for_spawn, first_user_message_from_json, merge_spawn_hints, spawn_hint_matches_link,
 };
 use super::types::{
-    subagent_trajectory_path, AgentEntry, PendingMainSpawn, RunSubagents, SpawnHint, SpawnLink,
-    SpawnLinkBackfill, SubagentRegistry,
+    AgentEntry, PendingMainSpawn, RunSubagents, SpawnHint, SpawnLink, SpawnLinkBackfill,
+    SubagentRegistry, subagent_trajectory_path,
 };
 use crate::session::storage::CaptureRoute;
 

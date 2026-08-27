@@ -7,8 +7,8 @@ mod common;
 
 use persisting_events::{ChronicleControl, MemoryChronicleControl};
 use persisting_ppilot::{
-    run_local_fleet, spawn_coordinated_sink_writer, spawn_sink_writer, CheckpointLedger,
-    JsonlFileSink, Observer, RunCoordinator, RunOptions, SkipSet,
+    CheckpointLedger, JsonlFileSink, Observer, RunCoordinator, RunOptions, SkipSet,
+    run_local_fleet, spawn_coordinated_sink_writer, spawn_sink_writer,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -182,6 +182,12 @@ def execute(item):
     };
     let t0 = Instant::now();
     let results = run_local_fleet(opts, |_| {}).await.unwrap();
+    for r in &results {
+        eprintln!(
+            "DIAG task={} cancelled={} ok={} error={:?}",
+            r.task_id, r.cancelled, r.ok, r.error
+        );
+    }
     assert!(results.iter().any(|r| r.cancelled));
     assert!(t0.elapsed().as_secs_f64() < 2.5);
 }

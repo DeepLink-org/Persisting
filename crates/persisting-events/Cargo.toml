@@ -25,4 +25,5 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "process", "sync"], optional = true }
 
 [dev-dependencies]
+proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }

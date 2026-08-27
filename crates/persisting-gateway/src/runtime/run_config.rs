@@ -56,10 +56,10 @@ pub fn load_session_proxy_config(storage: &Path, session_id: &str) -> Option<Pro
     let dir = session_dir(storage, session_id);
     for name in [SESSION_PROXY_FILENAME, LEGACY_SESSION_PROXY_FILENAME] {
         let path = dir.join(name);
-        if path.is_file() {
-            if let Ok(cfg) = ProxyConfig::from_file(&path) {
-                return Some(cfg);
-            }
+        if path.is_file()
+            && let Ok(cfg) = ProxyConfig::from_file(&path)
+        {
+            return Some(cfg);
         }
     }
     None

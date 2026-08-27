@@ -1,8 +1,8 @@
 //! Visible dialogue extraction from Claude Code Anthropic payloads.
 
 use persisting_gateway::dialogue_extract::{
-    extract_assistant_turn_from_sse, extract_user_message_from_request_body,
-    is_main_agent_continuation, push_sse_tool_snapshot, SseStreamBlockParser,
+    SseStreamBlockParser, extract_assistant_turn_from_sse, extract_user_message_from_request_body,
+    is_main_agent_continuation, push_sse_tool_snapshot,
 };
 
 use super::support::fixture_body;

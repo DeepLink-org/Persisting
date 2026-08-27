@@ -6,12 +6,12 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::InputIssue;
 use crate::convert::actf_to_storylines;
 use crate::formats::actf::ActfDocument;
 use crate::formats::storyline::StorylineDocument;
-use crate::InputIssue;
 
-use crate::formats::common::json_stream::{visit_json_stream, ScopedJsonObjectReader};
+use crate::formats::common::json_stream::{ScopedJsonObjectReader, visit_json_stream};
 
 #[cfg(test)]
 pub(crate) fn parse_actf_storylines_from_reader<R: BufRead>(

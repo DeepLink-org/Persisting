@@ -8,8 +8,8 @@ use lance::deps::arrow_array::{
     TimestampNanosecondArray,
 };
 use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, TimeUnit};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use super::super::storyline_model::{StoryRunRow, StoryStepRow, StoryToolCallRow};
 use crate::model::StorylineTimestamp;
@@ -453,7 +453,11 @@ fn timestamp_nanos_at(batch: &RecordBatch, name: &str, row: usize) -> Result<Opt
                 return Ok(None);
             }
             Ok(Some(array.value(row).checked_mul(1_000_000).ok_or_else(
-                || anyhow::anyhow!("legacy timestamp millisecond value is outside nanosecond range"),
+                || {
+                    anyhow::anyhow!(
+                        "legacy timestamp millisecond value is outside nanosecond range"
+                    )
+                },
             )?))
         }
         data_type => anyhow::bail!(

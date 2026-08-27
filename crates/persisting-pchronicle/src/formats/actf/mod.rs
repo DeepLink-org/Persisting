@@ -14,8 +14,8 @@ use serde_json::{Map, Value};
 use crate::format::DocumentFormat;
 use crate::formats::storyline::StorylineDocument;
 use crate::formats::unknown_fields::{
-    attach_carried_unknown_fields, take_unknown_fields_envelope, validate_unknown_fields,
-    CarrierBinding, UnknownFieldLimits,
+    CarrierBinding, UnknownFieldLimits, attach_carried_unknown_fields,
+    take_unknown_fields_envelope, validate_unknown_fields,
 };
 use crate::{InputIssue, InputResult};
 
@@ -118,20 +118,20 @@ fn content_has_actf_fingerprint(content: &[u8]) -> bool {
     };
     let trimmed = text.trim_start();
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-            if looks_like_actf_value(&value) {
-                return true;
-            }
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed)
+            && looks_like_actf_value(&value)
+        {
+            return true;
         }
         for line in trimmed
             .lines()
             .filter(|line| !line.trim().is_empty())
             .take(32)
         {
-            if let Ok(value) = serde_json::from_str::<Value>(line) {
-                if looks_like_actf_value(&value) {
-                    return true;
-                }
+            if let Ok(value) = serde_json::from_str::<Value>(line)
+                && looks_like_actf_value(&value)
+            {
+                return true;
             }
         }
     }
@@ -560,13 +560,13 @@ impl ActfTrajectory {
                     .get("tool_use_id")
                     .or_else(|| observation.extra.get("id"))
                     .and_then(Value::as_str);
-                if let Some(referenced_id) = referenced_id {
-                    if !step_call_ids.contains(referenced_id) {
-                        return Err(InputIssue::invalid(format!(
-                            "ACTF step {} observation references unknown tool id '{}'",
-                            step.step_id, referenced_id
-                        )));
-                    }
+                if let Some(referenced_id) = referenced_id
+                    && !step_call_ids.contains(referenced_id)
+                {
+                    return Err(InputIssue::invalid(format!(
+                        "ACTF step {} observation references unknown tool id '{}'",
+                        step.step_id, referenced_id
+                    )));
                 }
             }
         }
@@ -735,8 +735,8 @@ mod tests {
     #[test]
     fn treats_null_reasoning_content_as_empty_string() {
         let mut value = serde_json::to_value(fixture()).unwrap();
-        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]
-            ["reasoning_content"] = Value::Null;
+        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]["reasoning_content"] =
+            Value::Null;
         let document: ActfDocument = serde_json::from_value(value).unwrap();
         assert_eq!(
             document.attempts["1"].trajectory.steps[0]
@@ -753,10 +753,12 @@ mod tests {
         document.attempts.get_mut("1").unwrap().trajectory.steps[0].observation[0]
             .extra
             .insert("tool_use_id".into(), Value::String("missing".into()));
-        assert!(document
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("unknown"));
+        assert!(
+            document
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("unknown")
+        );
     }
 }

@@ -4,8 +4,8 @@
 //! only an enforcement guarantee when the active driver is non-bypassable.
 
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -198,7 +198,7 @@ impl InterceptionMetrics {
     }
 
     pub(crate) fn tcp_flow_closed(&self) {
-        let _ = self.counters.active_tcp_flows.fetch_update(
+        let _ = self.counters.active_tcp_flows.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |active| active.checked_sub(1),

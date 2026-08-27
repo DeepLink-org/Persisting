@@ -18,5 +18,5 @@ pub use completions::CompletionsSseToolParser;
 pub use heuristics::{
     is_main_agent_continuation, is_main_agent_continuation_payload, is_subagent_shape_payload,
 };
-pub use messages::{push_sse_tool_snapshot, ContentBlock, SseStreamBlockParser};
+pub use messages::{ContentBlock, SseStreamBlockParser, push_sse_tool_snapshot};
 pub use request::{count_visible_user_messages, extract_user_message_from_request_body};

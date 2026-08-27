@@ -1,9 +1,9 @@
 use super::projected_steps::{
-    canonical_json_text, emit_projected_step_batch, projected_timing_from_actf_metrics,
-    ProjectedStepRow,
+    ProjectedStepRow, canonical_json_text, emit_projected_step_batch,
+    projected_timing_from_actf_metrics,
 };
 use super::*;
-use crate::formats::common::json_stream::{visit_json_stream, BoundedCountingReader};
+use crate::formats::common::json_stream::{BoundedCountingReader, visit_json_stream};
 use std::fmt;
 use std::io::{self, BufRead};
 
@@ -664,12 +664,11 @@ pub(super) fn stream_projected_actf_steps(
             Err(error)
         }
     });
-    if let Err(error) = result {
-        if !stream.cancelled {
-            return Err(error).with_context(|| {
-                format!("parse projected ACTF input {}", file.file.path().display())
-            });
-        }
+    if let Err(error) = result
+        && !stream.cancelled
+    {
+        return Err(error)
+            .with_context(|| format!("parse projected ACTF input {}", file.file.path().display()));
     }
     stream.finish()?;
     let bytes_read = reader.get_ref().bytes_read();

@@ -127,10 +127,12 @@ mod tests {
             "payload": {}
         });
         let record = serde_json::from_value::<EventRecord>(value).unwrap();
-        assert!(serde_json::to_value(record)
-            .unwrap()
-            .get("schema_version")
-            .is_none());
+        assert!(
+            serde_json::to_value(record)
+                .unwrap()
+                .get("schema_version")
+                .is_none()
+        );
     }
 
     #[test]

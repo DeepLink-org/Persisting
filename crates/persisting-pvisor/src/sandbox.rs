@@ -75,7 +75,7 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 
 #[cfg(target_os = "linux")]
 fn run_internal() -> anyhow::Result<()> {
-    use anyhow::{bail, Context};
+    use anyhow::{Context, bail};
     use std::os::fd::AsRawFd;
 
     let encoded = std::env::var(SANDBOX_PLAN_ENV).context("missing rootless sandbox plan")?;
@@ -115,21 +115,25 @@ fn run_internal() -> anyhow::Result<()> {
         .context("close inherited file descriptors")?;
     let landlock_abi = install_landlock(&plan).context("install Landlock filesystem policy")?;
     drop_process_capabilities().context("drop namespace capabilities")?;
-    std::env::remove_var(SANDBOX_PLAN_ENV);
-    std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "landlock");
-    std::env::set_var("PERSISTING_SANDBOX_LANDLOCK_ABI", landlock_abi.to_string());
-    std::env::set_var("PERSISTING_SANDBOX_USER_NAMESPACE", "1");
-    std::env::set_var(
-        "PERSISTING_SANDBOX_NETWORK",
-        if plan.deny_network { "deny" } else { "ambient" },
-    );
+    // The child process is configuring its environment immediately before
+    // exec; no concurrent environment mutation occurs in this scope.
+    unsafe {
+        std::env::remove_var(SANDBOX_PLAN_ENV);
+        std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "landlock");
+        std::env::set_var("PERSISTING_SANDBOX_LANDLOCK_ABI", landlock_abi.to_string());
+        std::env::set_var("PERSISTING_SANDBOX_USER_NAMESPACE", "1");
+        std::env::set_var(
+            "PERSISTING_SANDBOX_NETWORK",
+            if plan.deny_network { "deny" } else { "ambient" },
+        );
+    }
 
     supervise_pid_namespace(program, arguments, attestation)
 }
 
 #[cfg(target_os = "macos")]
 fn run_internal() -> anyhow::Result<()> {
-    use anyhow::{bail, Context};
+    use anyhow::{Context, bail};
     use std::io::Write;
     use std::os::unix::process::CommandExt;
 
@@ -171,12 +175,16 @@ fn run_internal() -> anyhow::Result<()> {
         )
     })?;
 
-    std::env::remove_var(SANDBOX_PLAN_ENV);
-    std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "seatbelt-write");
-    std::env::set_var(
-        "PERSISTING_SANDBOX_NETWORK",
-        if plan.deny_network { "deny" } else { "ambient" },
-    );
+    // The child process is configuring its environment immediately before
+    // exec; no concurrent environment mutation occurs in this scope.
+    unsafe {
+        std::env::remove_var(SANDBOX_PLAN_ENV);
+        std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "seatbelt-write");
+        std::env::set_var(
+            "PERSISTING_SANDBOX_NETWORK",
+            if plan.deny_network { "deny" } else { "ambient" },
+        );
+    }
 
     Err(std::process::Command::new(program)
         .args(arguments)

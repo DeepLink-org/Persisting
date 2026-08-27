@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use serde_json::Value;
 
-use super::record::{ensure_timestamp, now_rfc3339, EventRecord};
+use super::record::{EventRecord, ensure_timestamp, now_rfc3339};
+use crate::Call;
 use crate::config::CaptureLevel;
 use crate::projection::markdown_pipeline::stamp_request_payload;
 use crate::session::storage::CaptureRoute;
-use crate::Call;
 
 pub trait CaptureEventSink: Send + Sync {
     /// Assign session-local `seq` on `record`, then persist. Mutates `record.seq` in place.
@@ -589,10 +589,10 @@ pub fn llm_request_summary_record(
         "protocol": protocol,
         "provider": provider,
     });
-    if level.includes_user_text() {
-        if let Some(content) = user_content.filter(|s| !s.is_empty()) {
-            payload["user_content"] = serde_json::Value::String(content);
-        }
+    if level.includes_user_text()
+        && let Some(content) = user_content.filter(|s| !s.is_empty())
+    {
+        payload["user_content"] = serde_json::Value::String(content);
     }
     if let Some(fwd) = forward_to.filter(|s| !s.is_empty() && *s != model) {
         payload["forward_to"] = serde_json::Value::String(fwd.to_string());
@@ -705,10 +705,10 @@ pub fn llm_response_record_with_content(
 ) -> EventRecord {
     let mut payload = payload.clone();
     payload["status"] = serde_json::json!(status);
-    if level.includes_assistant_text() {
-        if let Some(content) = assistant_content.filter(|s| !s.is_empty()) {
-            payload["assistant_content"] = serde_json::Value::String(content);
-        }
+    if level.includes_assistant_text()
+        && let Some(content) = assistant_content.filter(|s| !s.is_empty())
+    {
+        payload["assistant_content"] = serde_json::Value::String(content);
     }
     let kind = if streaming {
         "llm.response.stream"

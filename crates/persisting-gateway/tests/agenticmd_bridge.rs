@@ -1,10 +1,10 @@
 //! Capture → Storyline → AgenticMD bridge tests.
 
+use persisting_gateway::Call;
 use persisting_gateway::projection::dialogue::capture_record_to_storyline_turn;
 use persisting_gateway::projection::markdown_pipeline::MarkdownPipeline;
 use persisting_gateway::record::EventRecord;
 use persisting_gateway::sink::{llm_request_record, llm_response_record};
-use persisting_gateway::Call;
 use persisting_pchronicle::document::{decode_agenticmd, write_agenticmd_storyline};
 use persisting_pchronicle::model::StorylineDocument;
 use serde_json::json;

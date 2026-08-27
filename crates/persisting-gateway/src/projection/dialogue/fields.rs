@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::record::{content_to_string, EventRecord, EventRecordExt};
+use crate::record::{EventRecord, EventRecordExt, content_to_string};
 
 pub(crate) fn role_and_body(rec: &EventRecord) -> Result<(String, String)> {
     Ok(match rec.kind.as_str() {

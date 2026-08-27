@@ -8,9 +8,9 @@ use std::path::Path;
 use datafusion::prelude::SessionContext;
 
 pub use crate::agenticmd::{
-    agenticmd_block_count, agenticmd_structural_issues, count_agenticmd_role, encode_agenticmd,
-    index_agenticmd_path, list_agenticmd_paths, rewrite_agenticmd_storyline_metadata,
-    upsert_agenticmd_turn, write_agenticmd_storyline, AgenticmdFileIndex,
+    AgenticmdFileIndex, agenticmd_block_count, agenticmd_structural_issues, count_agenticmd_role,
+    encode_agenticmd, index_agenticmd_path, list_agenticmd_paths,
+    rewrite_agenticmd_storyline_metadata, upsert_agenticmd_turn, write_agenticmd_storyline,
 };
 pub use crate::convert::{events_to_storyline, project_event_records, storyline_to_events};
 pub use crate::format::DocumentFormat;
@@ -22,8 +22,8 @@ pub use crate::interop::{
 
 pub type Result<T> = anyhow::Result<T>;
 
-use crate::formats::unknown_fields::{validate_unknown_fields, UnknownFieldLimits};
 use crate::formats::StorylineDocument;
+use crate::formats::unknown_fields::{UnknownFieldLimits, validate_unknown_fields};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DocumentCodecOptions {
@@ -323,12 +323,10 @@ mod tests {
     #[test]
     fn empty_openai_envelope_fails_closed() {
         let input = serde_json::json!({"custom": null, "session_steps": []});
-        assert!(decode_json_storylines(
-            DocumentFormat::OpenaiMsg,
-            &input.to_string(),
-            "empty.json"
-        )
-        .is_err());
+        assert!(
+            decode_json_storylines(DocumentFormat::OpenaiMsg, &input.to_string(), "empty.json")
+                .is_err()
+        );
     }
 
     #[test]

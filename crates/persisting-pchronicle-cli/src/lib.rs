@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 mod agent;
 mod control;
 mod exchange;
@@ -26,24 +28,23 @@ use std::process::Command as ProcessCommand;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
-use futures::{stream, stream::FuturesUnordered, StreamExt};
-use persisting_events::{ChronicleServeReady, CHRONICLE_SERVE_READY_VERSION};
+use futures::{StreamExt, stream, stream::FuturesUnordered};
+use persisting_events::{CHRONICLE_SERVE_READY_VERSION, ChronicleServeReady};
 use persisting_pchronicle::document::{
-    decode_json_storylines, detect_format, encode_json_storylines, open_document, DocumentFormat,
-    InputIssue, InputIssueKind,
+    DocumentFormat, InputIssue, InputIssueKind, decode_json_storylines, detect_format,
+    encode_json_storylines, open_document,
 };
 use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::query::ChronicleQueryEngine;
 use persisting_pchronicle::storage::{
-    automatic_projection_inventory, build_storyline_projection,
-    inspect_automatic_storyline_projection, probe_canonical_event_store,
     AutomaticProjectionInspection, AutomaticProjectionState, CatalogErrorPolicy,
     CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
-    DatasetCatalogSnapshot, DatasetLocation, DatasetMount, DiscoveredSource, EventFactSnapshot,
-    ObjectStoreManifestWriteMode, StorylineLanceStore, StorylineProjectionBuildOutcome,
-    DEFAULT_DATASET_NAME,
+    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetLocation, DatasetMount, DiscoveredSource,
+    EventFactSnapshot, ObjectStoreManifestWriteMode, StorylineLanceStore,
+    StorylineProjectionBuildOutcome, automatic_projection_inventory, build_storyline_projection,
+    inspect_automatic_storyline_projection, probe_canonical_event_store,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1571,10 +1572,10 @@ async fn serve_components<W: Write + ?Sized>(
             diagnostic = diagnostics.recv(), if diagnostics_open => {
                 match diagnostic {
                     Some(diagnostic) => {
-                        if diagnostic_error.is_none() {
-                            if let Err(error) = write_projection_diagnostic(stderr, &diagnostic) {
-                                diagnostic_error = Some(error);
-                            }
+                        if diagnostic_error.is_none()
+                            && let Err(error) = write_projection_diagnostic(stderr, &diagnostic)
+                        {
+                            diagnostic_error = Some(error);
                         }
                     }
                     None => diagnostics_open = false,
@@ -1583,10 +1584,10 @@ async fn serve_components<W: Write + ?Sized>(
         }
     }
     while let Ok(diagnostic) = diagnostics.try_recv() {
-        if diagnostic_error.is_none() {
-            if let Err(error) = write_projection_diagnostic(stderr, &diagnostic) {
-                diagnostic_error = Some(error);
-            }
+        if diagnostic_error.is_none()
+            && let Err(error) = write_projection_diagnostic(stderr, &diagnostic)
+        {
+            diagnostic_error = Some(error);
         }
     }
 
@@ -1914,15 +1915,15 @@ fn parse_storage_argument(
 ) -> Result<(Option<String>, String)> {
     let raw = raw.trim();
     anyhow::ensure!(!raw.is_empty(), "Dataset must not be empty");
-    if let Some((name, uri)) = raw.split_once('=') {
-        if looks_like_dataset_name(name) {
-            let uri = uri.trim();
-            anyhow::ensure!(!uri.is_empty(), "NAME=DATASET must include a Dataset");
-            return Ok((
-                Some(DatasetMount::new(name, "validation")?.name),
-                expand_dataset_reference(uri, settings_override, false)?,
-            ));
-        }
+    if let Some((name, uri)) = raw.split_once('=')
+        && looks_like_dataset_name(name)
+    {
+        let uri = uri.trim();
+        anyhow::ensure!(!uri.is_empty(), "NAME=DATASET must include a Dataset");
+        return Ok((
+            Some(DatasetMount::new(name, "validation")?.name),
+            expand_dataset_reference(uri, settings_override, false)?,
+        ));
     }
     Ok((
         None,

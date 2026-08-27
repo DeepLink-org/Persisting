@@ -3,6 +3,7 @@
 //! Callers configure a [`PVisor`] and invoke [`PVisor::run`]. There is no
 //! separate control plane: CLI / pPilot talk to this API directly.
 
+use crate::TrajectoryEventSink;
 use crate::config::{GatewayDriverConfig, NetworkDriverConfig, PVisorConfig};
 use crate::event::{EventSink, NoopEventSink, RunEventPublisher};
 use crate::executor::{AttemptContext, RunExecutor};
@@ -12,13 +13,12 @@ use crate::runtime::{
     RuntimeSupervisorBuilder,
 };
 use crate::util::unix_now_ms;
-use crate::TrajectoryEventSink;
-use crate::{AgentCtlServer, AGENTCTL_VERSION};
+use crate::{AGENTCTL_VERSION, AgentCtlServer};
 use persisting_agentctl::ControlController;
 use persisting_agentctl::{
     AttemptId, AttemptInfo, CapabilityDimension, CapabilityEnforcementEvidence, EnforcementLevel,
-    ExecutorDescriptor, IsolationKind, NetworkCapability, PolicyMode, RunFailure, RunFailureKind,
-    RunInvocation, RunResult, RunSpec, RunState, RunStatus, RUNTIME_SCHEMA_VERSION,
+    ExecutorDescriptor, IsolationKind, NetworkCapability, PolicyMode, RUNTIME_SCHEMA_VERSION,
+    RunFailure, RunFailureKind, RunInvocation, RunResult, RunSpec, RunState, RunStatus,
 };
 use persisting_events::{ChronicleControl, ChronicleServeProcessClient, EventRecord};
 use serde_json::json;
@@ -488,16 +488,16 @@ impl PVisor {
             )
             .await
         {
-            if let Some(session) = session.take() {
-                if let Err(cleanup_error) = session.abort_startup(
+            if let Some(session) = session.take()
+                && let Err(cleanup_error) = session.abort_startup(
                     &attempt_id,
                     spec.lease_epoch,
                     agentctl.snapshot(),
                     safe_profile_requested,
                     format!("event sink rejected run creation: {error:#}"),
-                ) {
-                    tracing::warn!(%cleanup_error, "persist pVisor startup failure");
-                }
+                )
+            {
+                tracing::warn!(%cleanup_error, "persist pVisor startup failure");
             }
             return Err(PVisorError::EventSink(error));
         }
@@ -630,17 +630,17 @@ impl PVisor {
             {
                 fail_finalization(&mut result, format!("attempt teardown failed: {error}"));
             }
-            if let Some(teardown) = teardown.as_mut() {
-                if let Err(error) = teardown.commit_state(result.state) {
-                    fail_finalization(
-                        &mut result,
-                        format!("commit local Run record failed: {error:#}"),
-                    );
-                    if let Err(error) = teardown.commit_state(RunState::Failed) {
-                        result.warnings.push(format!(
-                            "commit failed Run record after finalization error: {error:#}"
-                        ));
-                    }
+            if let Some(teardown) = teardown.as_mut()
+                && let Err(error) = teardown.commit_state(result.state)
+            {
+                fail_finalization(
+                    &mut result,
+                    format!("commit local Run record failed: {error:#}"),
+                );
+                if let Err(error) = teardown.commit_state(RunState::Failed) {
+                    result.warnings.push(format!(
+                        "commit failed Run record after finalization error: {error:#}"
+                    ));
                 }
             }
             if let Some(teardown) = teardown.as_mut() {
@@ -695,24 +695,23 @@ impl PVisor {
                         true,
                     );
                 }
-                if append_error_kind == crate::EventAppendErrorKind::Rejected {
-                    if let Err(error) = context
+                if append_error_kind == crate::EventAppendErrorKind::Rejected
+                    && let Err(error) = context
                         .events()
                         .publish("run.failed", "runtime", terminal_payload(&result))
                         .await
-                    {
-                        result.warnings.push(format!(
-                            "publish finalization failure event failed: {error:#}"
-                        ));
-                        if let Some(teardown) = teardown.as_mut() {
-                            persist_failed_local_state(
-                                teardown,
-                                &mut result,
-                                &bundle_agentctl,
-                                safe_profile_requested,
-                                true,
-                            );
-                        }
+                {
+                    result.warnings.push(format!(
+                        "publish finalization failure event failed: {error:#}"
+                    ));
+                    if let Some(teardown) = teardown.as_mut() {
+                        persist_failed_local_state(
+                            teardown,
+                            &mut result,
+                            &bundle_agentctl,
+                            safe_profile_requested,
+                            true,
+                        );
                     }
                 }
             }
@@ -846,12 +845,12 @@ fn persist_failed_local_state(
         result
             .warnings
             .push(format!("persist failed Run Bundle: {error:#}"));
-        if invalidate_stale_bundle {
-            if let Err(error) = crate::RunBundle::invalidate(&teardown.run_record().stage_dir()) {
-                result
-                    .warnings
-                    .push(format!("invalidate stale Run Bundle: {error:#}"));
-            }
+        if invalidate_stale_bundle
+            && let Err(error) = crate::RunBundle::invalidate(&teardown.run_record().stage_dir())
+        {
+            result
+                .warnings
+                .push(format!("invalidate stale Run Bundle: {error:#}"));
         }
     }
 }
@@ -1030,13 +1029,15 @@ mod tests {
             bundle.run.failure.as_ref().map(|failure| failure.kind),
             Some(RunFailureKind::Infrastructure)
         );
-        assert!(bundle
-            .run
-            .failure
-            .as_ref()
-            .unwrap()
-            .message
-            .contains("event sink rejected run creation"));
+        assert!(
+            bundle
+                .run
+                .failure
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("event sink rejected run creation")
+        );
         assert!(!storage.join("control.sock").exists());
         let _lease = crate::runtime::RunLease::acquire(&storage).unwrap();
     }
@@ -1150,12 +1151,14 @@ mod tests {
             result.failure.as_ref().map(|failure| failure.kind),
             Some(RunFailureKind::Infrastructure)
         );
-        assert!(result
-            .failure
-            .as_ref()
-            .unwrap()
-            .message
-            .contains("terminal event sink failed"));
+        assert!(
+            result
+                .failure
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("terminal event sink failed")
+        );
         let kinds = sink.kinds.lock().unwrap().clone();
         assert!(!kinds.iter().any(|kind| kind == "run.completed"));
         assert_eq!(kinds.last().map(String::as_str), Some("run.failed"));
@@ -1172,10 +1175,12 @@ mod tests {
 
         let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
         assert_eq!(result.state, RunState::Failed);
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("outcome is unknown")));
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("outcome is unknown"))
+        );
         let terminal_kinds = sink
             .kinds
             .lock()
@@ -1204,10 +1209,12 @@ mod tests {
 
         let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
         assert_eq!(result.state, RunState::Failed);
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("publish finalization failure event failed")));
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("publish finalization failure event failed"))
+        );
     }
 
     #[cfg(unix)]
@@ -1231,12 +1238,14 @@ mod tests {
 
         let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
         assert_eq!(result.state, RunState::Failed);
-        assert!(result
-            .failure
-            .as_ref()
-            .unwrap()
-            .message
-            .contains("write durable Run Bundle failed"));
+        assert!(
+            result
+                .failure
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("write durable Run Bundle failed")
+        );
         let terminal_kinds = sink
             .events()
             .into_iter()
@@ -1297,11 +1306,13 @@ mod tests {
         assert!(!record_raw.contains(SECRET));
         let bundle = crate::RunBundle::read(&storage).unwrap();
         assert!(!bundle.environment.inherits_host);
-        assert!(bundle
-            .environment
-            .projected_keys
-            .iter()
-            .any(|key| key == "PRIVATE_API_TOKEN"));
+        assert!(
+            bundle
+                .environment
+                .projected_keys
+                .iter()
+                .any(|key| key == "PRIVATE_API_TOKEN")
+        );
     }
 
     #[tokio::test]

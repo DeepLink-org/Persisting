@@ -8,7 +8,7 @@
 //! torchrun --nproc_per_node=4 -- <ppilot-host> plan.py
 //! ```
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;

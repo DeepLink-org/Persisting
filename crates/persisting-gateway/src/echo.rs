@@ -3,16 +3,16 @@
 use std::fmt;
 use std::future::Future;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use serde_json::{json, Value};
+use base64::engine::general_purpose::STANDARD;
+use serde_json::{Value, json};
 
 pub const ECHO_ENCODING_HEADER: &str = "x-persisting-echo-encoding";
 pub const ECHO_MODE_HEADER: &str = "x-persisting-echo-mode";

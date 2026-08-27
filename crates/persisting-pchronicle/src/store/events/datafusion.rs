@@ -9,17 +9,17 @@ use async_trait::async_trait;
 use datafusion::catalog::Session;
 use datafusion::datasource::TableProvider;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::union::UnionExec;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
-use lance::deps::arrow_schema::{Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
+use lance::deps::arrow_schema::{Schema as ArrowSchema, SchemaRef};
 
 use super::manifest::EventManifest;
 use crate::store::datafusion_bridge::{from_datafusion, into_datafusion};
-use crate::{event_row_to_event_record, event_rows_from_batch, EventRecord};
+use crate::{EventRecord, event_row_to_event_record, event_rows_from_batch};
 
 pub const DATAFUSION_EVENTS_TABLE: &str = "events";
 
@@ -203,7 +203,7 @@ impl RawEventDataSource {
                 Err(error) => {
                     return Err(error).with_context(|| {
                         format!("canonicalize canonical event source {}", uri.as_ref())
-                    })
+                    });
                 }
             }
         };

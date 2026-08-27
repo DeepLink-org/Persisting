@@ -9,9 +9,9 @@
 
 use std::collections::BTreeSet;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 pub const TRANSPORT_SCHEMA_VERSION: &str = "sandbox-playback.claude-resume-transport/v1";
@@ -812,11 +812,13 @@ mod tests {
             cleaned.validation.clean_prefix_sha256,
             manifest.canonical_prefix_sha256
         );
-        assert!(cleaned.payload["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|message| message["role"] == "system"));
+        assert!(
+            cleaned.payload["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| message["role"] == "system")
+        );
     }
 
     #[test]
@@ -857,20 +859,24 @@ mod tests {
             "type": "text",
             "text": format!("echo {}", manifest.nonce),
         }]);
-        assert!(clean_resume_transport_envelope(&payload, &manifest, 1)
-            .unwrap_err()
-            .to_string()
-            .contains("nonce remains anywhere"));
+        assert!(
+            clean_resume_transport_envelope(&payload, &manifest, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("nonce remains anywhere")
+        );
 
         let (manifest, mut payload) = manifest_and_payload();
         payload
             .as_object_mut()
             .unwrap()
             .insert(format!("extension-{}", manifest.nonce), Value::Bool(true));
-        assert!(clean_resume_transport_envelope(&payload, &manifest, 1)
-            .unwrap_err()
-            .to_string()
-            .contains("nonce remains anywhere"));
+        assert!(
+            clean_resume_transport_envelope(&payload, &manifest, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("nonce remains anywhere")
+        );
     }
 
     #[test]
@@ -878,28 +884,34 @@ mod tests {
         let (manifest, mut stale) = manifest_and_payload();
         let last = stale["messages"].as_array().unwrap().len();
         stale["messages"][last - 3]["content"][0]["content"] = json!("stale");
-        assert!(clean_resume_transport_envelope(&stale, &manifest, 1)
-            .unwrap_err()
-            .to_string()
-            .contains("observation hash"));
+        assert!(
+            clean_resume_transport_envelope(&stale, &manifest, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("observation hash")
+        );
 
         let (manifest, mut closure) = manifest_and_payload();
         let last = closure["messages"].as_array().unwrap().len();
         closure["messages"][last - 2]["content"] = json!("changed");
-        assert!(clean_resume_transport_envelope(&closure, &manifest, 1)
-            .unwrap_err()
-            .to_string()
-            .contains("assistant closure"));
+        assert!(
+            clean_resume_transport_envelope(&closure, &manifest, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("assistant closure")
+        );
 
         let (manifest, mut duplicate) = manifest_and_payload();
         duplicate["messages"]
             .as_array_mut()
             .unwrap()
             .push(json!({"role": "user", "content": manifest.nonce}));
-        assert!(clean_resume_transport_envelope(&duplicate, &manifest, 1)
-            .unwrap_err()
-            .to_string()
-            .contains("exactly one"));
+        assert!(
+            clean_resume_transport_envelope(&duplicate, &manifest, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("exactly one")
+        );
     }
 
     #[test]
@@ -917,17 +929,21 @@ mod tests {
         let (manifest, _) = manifest_and_payload();
         let mut wrong_profile = manifest.clone();
         wrong_profile.profile_id = "claude-code/unknown/native-resume-v1".into();
-        assert!(wrong_profile
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("unknown"));
+        assert!(
+            wrong_profile
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("unknown")
+        );
         let mut wrong_version = manifest;
         wrong_version.claude_code_version = "2.1.71".into();
-        assert!(wrong_version
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("requires"));
+        assert!(
+            wrong_version
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("requires")
+        );
     }
 }

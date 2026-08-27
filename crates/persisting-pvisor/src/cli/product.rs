@@ -1,7 +1,7 @@
 //! Product-facing review and logical checkpoint commands.
 
-use crate::runtime::{resolve_run, RunRecord};
-use crate::{create_logical_checkpoint, ChangeEntryType, ChangeKind, RunBundle};
+use crate::runtime::{RunRecord, resolve_run};
+use crate::{ChangeEntryType, ChangeKind, RunBundle, create_logical_checkpoint};
 use anyhow::Context;
 use clap::Args;
 use std::collections::BTreeMap;

@@ -13,8 +13,8 @@ use crate::formats::common::json_stream::BoundedCountingReader;
 use crate::formats::storyline::StorylineDocument;
 
 use super::{
-    LocalQueryInputFile, LocalQueryManifest, DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
-    DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES,
+    DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES, DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES, LocalQueryInputFile,
+    LocalQueryManifest,
 };
 
 /// Bounded-memory ATIF reader.

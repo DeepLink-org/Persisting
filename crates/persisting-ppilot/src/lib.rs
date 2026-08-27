@@ -49,12 +49,12 @@ pub(crate) mod worker;
 
 pub use agentctl::{AgentCtlClient, AgentCtlClientConfig};
 pub use batch::{
-    produce_from_planner, produce_trajectories, BatchProductionManifest, BatchProductionOptions,
-    BatchProductionReport, TrajectoryProductionRun,
+    BatchProductionManifest, BatchProductionOptions, BatchProductionReport,
+    TrajectoryProductionRun, produce_from_planner, produce_trajectories,
 };
-pub use check::{run_check, CheckOptions, CheckReport};
+pub use check::{CheckOptions, CheckReport, run_check};
 pub use checkpoint::CheckpointLedger;
-pub use cli::{init_tracing, init_tracing_with_verbose, run_ppilot, PPilotArgs, ResultsFormat};
+pub use cli::{PPilotArgs, ResultsFormat, init_tracing, init_tracing_with_verbose, run_ppilot};
 pub use coordination::{
     AttemptObservation, AttemptObserver, DurableAttemptObserver, ProcessLocalAttemptObserver,
     ReconcileReport, RunCoordinator,
@@ -66,7 +66,7 @@ pub use runtime::{run_fleet, run_local_fleet};
 pub use runtime_bridge::PilotRuntimeBridge;
 pub use skip::SkipSet;
 pub use supervisor::{
-    parse_bandwidth, EmbeddedSupervisor, EmbeddedSupervisorConfig, SupervisorRegistrationSnapshot,
+    EmbeddedSupervisor, EmbeddedSupervisorConfig, SupervisorRegistrationSnapshot, parse_bandwidth,
 };
 pub use task::{TaskExpr, TaskResult};
 pub use worker::{WorkerActor, WorkerCommand, WorkerReply};
@@ -76,5 +76,5 @@ pub use sink::{JsonlFileSink, ResultSink, TeeSink};
 #[cfg(feature = "traj-sink")]
 pub use sink_traj::LanceResultSink;
 pub use sink_writer::{
-    spawn_coordinated_sink_writer, spawn_sink_writer, SinkSubmitter, SinkWriterHandle,
+    SinkSubmitter, SinkWriterHandle, spawn_coordinated_sink_writer, spawn_sink_writer,
 };

@@ -29,7 +29,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::egress::{
-    connect_tcp_addresses, EgressContext, EgressError, EgressRuntime, CONNECT_TIMEOUT,
+    CONNECT_TIMEOUT, EgressContext, EgressError, EgressRuntime, connect_tcp_addresses,
 };
 use crate::interception::{InterceptionMetrics, InterceptionSnapshot};
 use crate::policy::DenyReason;
@@ -149,12 +149,11 @@ impl Drop for VmNetwork {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
-        if let Some(thread) = self.thread.take() {
-            if thread.thread().id() != thread::current().id() {
-                if let Err(error) = thread.join() {
-                    tracing::warn!(?error, "VM network backend panicked during drop");
-                }
-            }
+        if let Some(thread) = self.thread.take()
+            && thread.thread().id() != thread::current().id()
+            && let Err(error) = thread.join()
+        {
+            tracing::warn!(?error, "VM network backend panicked during drop");
         }
     }
 }
@@ -486,14 +485,15 @@ fn drive_flows(
             if guest_handshake_pending(socket.state()) {
                 continue;
             }
-            if let Some(sender) = flow.upstream.as_ref() {
-                if sender.capacity() > 0 && socket.can_recv() {
-                    let mut bytes = vec![0; 16 * 1024];
-                    if let Ok(length) = socket.recv_slice(&mut bytes) {
-                        bytes.truncate(length);
-                        if length > 0 && sender.try_send(bytes).is_err() {
-                            socket.abort();
-                        }
+            if let Some(sender) = flow.upstream.as_ref()
+                && sender.capacity() > 0
+                && socket.can_recv()
+            {
+                let mut bytes = vec![0; 16 * 1024];
+                if let Ok(length) = socket.recv_slice(&mut bytes) {
+                    bytes.truncate(length);
+                    if length > 0 && sender.try_send(bytes).is_err() {
+                        socket.abort();
                     }
                 }
             }

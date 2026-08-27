@@ -11,6 +11,6 @@ pub mod host_identity;
 pub mod peer;
 
 pub use env::{
-    capture_openai_v1_base, client_gateway_config_args, proxy_environment,
-    proxy_environment_with_local_auth, CAPTURE_PROXY_ENV_KEYS,
+    CAPTURE_PROXY_ENV_KEYS, capture_openai_v1_base, client_gateway_config_args, proxy_environment,
+    proxy_environment_with_local_auth,
 };

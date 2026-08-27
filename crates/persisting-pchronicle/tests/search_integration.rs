@@ -12,9 +12,9 @@
 //!（最少 **64** 行）以缩短索引构建时间。
 
 use persisting_pchronicle::{
-    search_add, search_index, search_index_delete, search_index_list, search_query,
     SearchAddRequest, SearchIndexDeleteRequest, SearchIndexListRequest, SearchIndexRequest,
-    SearchQueryRequest,
+    SearchQueryRequest, search_add, search_index, search_index_delete, search_index_list,
+    search_query,
 };
 use tempfile::TempDir;
 

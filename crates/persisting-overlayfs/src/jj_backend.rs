@@ -13,7 +13,7 @@ use jj_lib::ref_name::{WorkspaceName, WorkspaceNameBuf};
 use jj_lib::repo::{Repo as _, StoreFactories};
 use jj_lib::settings::UserSettings;
 use jj_lib::working_copy::SnapshotOptions;
-use jj_lib::workspace::{default_working_copy_factories, default_working_copy_factory, Workspace};
+use jj_lib::workspace::{Workspace, default_working_copy_factories, default_working_copy_factory};
 use pollster::FutureExt as _;
 use std::fs;
 use std::io;

@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/persisting-agentctl",
     "crates/persisting-events",
@@ -24,7 +24,7 @@ default-members = [
 
 [workspace.package]
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
 authors = ["reiase"]
 license = "Apache-2.0"
 description = "Agent execution, orchestration, and durable history infrastructure"
@@ -37,10 +37,13 @@ description = "Agent execution, orchestration, and durable history infrastructur
 # Use `--profile dev-debug` when source-level debugger information is needed.
 # `debug = 0` already omits debug info; `strip = "none"` avoids a redundant
 # post-link copy that doubles peak disk usage for large test executables.
+# Keep split DWARF disabled on macOS, where the pinned nightly may not ship a
+# runnable `rust-objcopy`/LLVM pair.
 debug = 0
 incremental = true
 codegen-units = 64
 strip = "none"
+split-debuginfo = "off"
 
 [profile.dev.package."*"]
 debug = false
@@ -50,6 +53,7 @@ debug = 0
 incremental = false
 codegen-units = 64
 strip = "none"
+split-debuginfo = "off"
 
 [profile.test.package."*"]
 debug = false
@@ -60,6 +64,7 @@ debug = "line-tables-only"
 incremental = true
 codegen-units = 256
 strip = "none"
+split-debuginfo = "off"
 
 [profile.release]
 # Release artifacts are distributed binaries, so optimize their installed and
@@ -70,12 +75,6 @@ lto = "thin"
 strip = "symbols"
 codegen-units = 1
 panic = "abort"
-
-[profile.release-compact]
-inherits = "release"
-# Keep the existing profile as the maximum-size-optimization option and as a
-# compatibility surface for release scripts that already select it.
-lto = "fat"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -125,6 +124,7 @@ persisting-pvisor = { path = "crates/persisting-pvisor" }
 persisting-replay = { path = "crates/persisting-replay" }
 pollster = "0.4"
 pulsing-actor = { version = "0.1.2", default-features = false }
+proptest = "1"
 regex = "1"
 reqwest = { version = "0.12", default-features = false }
 serde = "1"

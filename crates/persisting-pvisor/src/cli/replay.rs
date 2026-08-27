@@ -5,9 +5,10 @@ use std::str::FromStr;
 
 use clap::Args;
 use persisting_replay::{
-    execute, request_from_json, AgentKind, OverlayFsConfig as ReplayOverlayFsConfig,
-    OverlayNetConfig as ReplayOverlayNetConfig, PlaybackRequest, ReplayConfig, ReplayError,
-    ReplayMode, ReplayToml, RunConfig as ReplayRunConfig, RESULT_SCHEMA_VERSION,
+    AgentKind, OverlayFsConfig as ReplayOverlayFsConfig,
+    OverlayNetConfig as ReplayOverlayNetConfig, PlaybackRequest, RESULT_SCHEMA_VERSION,
+    ReplayConfig, ReplayError, ReplayMode, ReplayToml, RunConfig as ReplayRunConfig, execute,
+    request_from_json,
 };
 use serde_json::json;
 
@@ -289,7 +290,7 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
         other => {
             return Err(ReplayError::configuration(format!(
                 "unsupported run.executor {other:?}"
-            )))
+            )));
         }
     };
     outer.run.timeout_ms = config.run.timeout_ms;
@@ -299,7 +300,7 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
         other => {
             return Err(ReplayError::configuration(format!(
                 "unsupported run.policy {other:?}"
-            )))
+            )));
         }
     };
     outer.run.inherit_env = config.run.inherit_env;
@@ -320,7 +321,7 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
             other => {
                 return Err(ReplayError::configuration(format!(
                     "unsupported overlayfs.backend {other:?}"
-                )))
+                )));
             }
         };
         overlay.commit = match config.overlayfs.commit.as_deref().unwrap_or("manual") {
@@ -330,7 +331,7 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
             other => {
                 return Err(ReplayError::configuration(format!(
                     "unsupported overlayfs.commit {other:?}"
-                )))
+                )));
             }
         };
         outer.overlayfs = Some(overlay);
@@ -343,7 +344,7 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
             other => {
                 return Err(ReplayError::configuration(format!(
                     "unsupported overlaynet.mode {other:?}"
-                )))
+                )));
             }
         };
     }
@@ -355,7 +356,7 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
             other => {
                 return Err(ReplayError::configuration(format!(
                     "unsupported overlaynet.policy {other:?}"
-                )))
+                )));
             }
         };
     }
@@ -636,18 +637,26 @@ policy = "allowlist"
             inner_replay_command(&config, std::path::Path::new("/usr/bin/pvisor")).unwrap();
         assert_eq!(command[0], "/usr/bin/pvisor");
         assert!(command.windows(2).any(|pair| pair == ["--workspace", "."]));
-        assert!(command
-            .windows(2)
-            .any(|pair| { pair == ["--state-dir", "/tmp/pvisor-sandbox-replay/state"] }));
-        assert!(command
-            .windows(2)
-            .any(|pair| { pair == ["--output-dir", "/tmp/pvisor-sandbox-replay/output"] }));
-        assert!(command
-            .windows(2)
-            .any(|pair| pair == ["--agent-entrypoint", "/usr/bin/claude"]));
-        assert!(command
-            .iter()
-            .any(|argument| argument == "--disable-thinking"));
+        assert!(
+            command
+                .windows(2)
+                .any(|pair| { pair == ["--state-dir", "/tmp/pvisor-sandbox-replay/state"] })
+        );
+        assert!(
+            command
+                .windows(2)
+                .any(|pair| { pair == ["--output-dir", "/tmp/pvisor-sandbox-replay/output"] })
+        );
+        assert!(
+            command
+                .windows(2)
+                .any(|pair| pair == ["--agent-entrypoint", "/usr/bin/claude"])
+        );
+        assert!(
+            command
+                .iter()
+                .any(|argument| argument == "--disable-thinking")
+        );
         assert!(command.windows(2).any(|pair| {
             pair == [
                 "--boundary-user-prompt",
@@ -691,9 +700,11 @@ allow_stale_observations = true
             inner_replay_command(&config, std::path::Path::new("/usr/bin/pvisor")).unwrap();
 
         assert!(command.iter().any(|argument| argument == "--prepare-only"));
-        assert!(command
-            .iter()
-            .any(|argument| argument == "--allow-stale-observations"));
+        assert!(
+            command
+                .iter()
+                .any(|argument| argument == "--allow-stale-observations")
+        );
         assert!(!command.iter().any(|argument| argument == "--replay-only"));
     }
 

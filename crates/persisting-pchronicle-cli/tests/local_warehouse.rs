@@ -4,9 +4,9 @@
 mod common;
 
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use common::{examples_root, run_cli, EXAMPLE_FIXTURES};
+use common::{EXAMPLE_FIXTURES, examples_root, run_cli};
 
 fn settings_arg(path: &std::path::Path) -> String {
     path.to_string_lossy().into_owned()
@@ -141,9 +141,11 @@ async fn default_warehouse_exercises_catalog_query_find_and_export_without_a_ser
     .await?;
     let documents: Vec<Value> = serde_json::from_slice(&std::fs::read(export)?)?;
     assert_eq!(documents.len(), 4);
-    assert!(documents.iter().all(|document| document["turns"]
-        .as_array()
-        .is_some_and(|turns| !turns.is_empty())));
+    assert!(documents.iter().all(|document| {
+        document["turns"]
+            .as_array()
+            .is_some_and(|turns| !turns.is_empty())
+    }));
     Ok(())
 }
 

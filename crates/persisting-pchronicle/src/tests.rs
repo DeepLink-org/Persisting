@@ -285,7 +285,7 @@ fn events_string_convert_is_lance_only_error() {
 #[test]
 fn export_events_jsonl_debug_roundtrip_via_test_parser() {
     use crate::formats::events::{
-        export_events_jsonl, parse_events_jsonl_for_test, EventRecord, EventsDocument,
+        EventRecord, EventsDocument, export_events_jsonl, parse_events_jsonl_for_test,
     };
     use serde_json::json;
     let events = vec![EventRecord {

@@ -18,11 +18,11 @@ use persisting_pchronicle::document::DocumentFormat;
 use persisting_pchronicle::model::{EventIdentity, EventRecord};
 use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 use persisting_pchronicle::storage::{
-    raw_event_lance_path, CatalogSnapshotOptions, DatasetCatalogSnapshot, DatasetMount,
-    LanceMaintenanceOptions, RawEventLanceAppender, RawEventLanceStore, StoryCoords,
+    CatalogSnapshotOptions, DatasetCatalogSnapshot, DatasetMount, LanceMaintenanceOptions,
+    RawEventLanceAppender, RawEventLanceStore, StoryCoords, raw_event_lance_path,
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const DEFAULT_EVENTS: usize = 100_000;
 const DEFAULT_SCORES: usize = 10_000;

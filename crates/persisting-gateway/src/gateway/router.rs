@@ -1,6 +1,6 @@
 //! LLM model name → route selection and `forward` resolution.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::config::ModelRoute;
 

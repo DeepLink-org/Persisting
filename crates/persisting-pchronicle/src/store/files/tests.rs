@@ -26,12 +26,16 @@ fn default_options_allow_records_above_legacy_64_mib_cap() {
 
 #[test]
 fn virtual_column_does_not_change_lance_schemas() {
-    assert!(story_runs_arrow_schema()
-        .field_with_name(SOURCE_FILE_COLUMN)
-        .is_err());
-    assert!(query_schema(&story_runs_arrow_schema())
-        .field_with_name(SOURCE_FILE_COLUMN)
-        .is_ok());
+    assert!(
+        story_runs_arrow_schema()
+            .field_with_name(SOURCE_FILE_COLUMN)
+            .is_err()
+    );
+    assert!(
+        query_schema(&story_runs_arrow_schema())
+            .field_with_name(SOURCE_FILE_COLUMN)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -102,18 +106,22 @@ fn private_provider_options_and_table_names_fail_closed() {
     .unwrap_err();
     assert!(error.to_string().contains("batch_size"));
 
-    assert!(validate_table_names(&StorylineDataFusionTableNames {
-        runs: "same".into(),
-        steps: "same".into(),
-        tool_calls: "tools".into(),
-    })
-    .is_err());
-    assert!(validate_table_names(&StorylineDataFusionTableNames {
-        runs: "".into(),
-        steps: "steps".into(),
-        tool_calls: "tools".into(),
-    })
-    .is_err());
+    assert!(
+        validate_table_names(&StorylineDataFusionTableNames {
+            runs: "same".into(),
+            steps: "same".into(),
+            tool_calls: "tools".into(),
+        })
+        .is_err()
+    );
+    assert!(
+        validate_table_names(&StorylineDataFusionTableNames {
+            runs: "".into(),
+            steps: "steps".into(),
+            tool_calls: "tools".into(),
+        })
+        .is_err()
+    );
 }
 
 #[tokio::test]

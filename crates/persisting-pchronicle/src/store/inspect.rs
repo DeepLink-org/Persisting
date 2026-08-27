@@ -6,13 +6,13 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures::TryStreamExt;
+use lance::Dataset;
 use lance::dataset::statistics::DatasetStatisticsExt;
 use lance::deps::arrow_array::{
     Array, BinaryArray, BooleanArray, Float64Array, Int32Array, Int64Array, LargeBinaryArray,
     LargeStringArray, StringArray, UInt64Array,
 };
 use lance::deps::arrow_schema::DataType;
-use lance::Dataset;
 use serde::Serialize;
 
 use super::catalog::{DatasetCatalogSnapshot, PhysicalOpenTarget};
@@ -244,10 +244,10 @@ pub async fn inspect_physical_file(
             }],
         })
         .collect::<Vec<_>>();
-    if let Ok(uri) = table_uri(snapshot, dataset, file, table).await {
-        if let Ok(lance) = Dataset::open(&uri).await {
-            enrich_column_stats(&lance, fragment_id, &mut columns).await;
-        }
+    if let Ok(uri) = table_uri(snapshot, dataset, file, table).await
+        && let Ok(lance) = Dataset::open(&uri).await
+    {
+        enrich_column_stats(&lance, fragment_id, &mut columns).await;
     }
     Ok(PhysicalFileLayout {
         table: table.to_string(),
@@ -824,8 +824,8 @@ fn short_digest(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::store::{
-        CatalogSnapshotOptions, DatasetCatalogSnapshot, DatasetMount, StorylineLanceStore,
-        DEFAULT_DATASET_NAME,
+        CatalogSnapshotOptions, DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount,
+        StorylineLanceStore,
     };
     use crate::{StorylineAgent, StorylineDocument, StorylineTurn};
 
@@ -937,10 +937,12 @@ mod tests {
         assert!(session_id.non_null_count >= 1);
         assert!(session_id.uncompressed_bytes.unwrap_or(0) > 0);
         assert!(!session_id.value_distribution.is_empty());
-        assert!(session_id
-            .value_distribution
-            .iter()
-            .any(|bucket| bucket.label.contains("session-a")));
+        assert!(
+            session_id
+                .value_distribution
+                .iter()
+                .any(|bucket| bucket.label.contains("session-a"))
+        );
         assert!(session_id.max_value.is_some());
 
         let preview = inspect_physical_page(
@@ -958,10 +960,12 @@ mod tests {
         )
         .await?;
         assert_eq!(preview.columns, vec!["session_id".to_string()]);
-        assert!(preview
-            .rows
-            .iter()
-            .any(|row| row.contains(&"session-a".to_string())));
+        assert!(
+            preview
+                .rows
+                .iter()
+                .any(|row| row.contains(&"session-a".to_string()))
+        );
         Ok(())
     }
 

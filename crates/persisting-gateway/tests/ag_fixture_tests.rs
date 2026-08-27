@@ -7,10 +7,10 @@ mod support;
 use std::collections::BTreeMap;
 
 use persisting_gateway::conversion::{
-    completions_request_to_gemini, completions_response_to_messages,
-    gemini_response_to_completions, messages_request_to_completions,
-    responses_request_to_completions, translate_request_for_bridge, ProtocolBridge,
-    StreamTranslator,
+    ProtocolBridge, StreamTranslator, completions_request_to_gemini,
+    completions_response_to_messages, gemini_response_to_completions,
+    messages_request_to_completions, responses_request_to_completions,
+    translate_request_for_bridge,
 };
 use persisting_gateway::dialogue_extract::{
     count_visible_user_messages, extract_assistant_text_from_json, extract_assistant_turn_from_sse,
@@ -24,13 +24,13 @@ use support::ag_capture_cases::{
     ASSISTANT_JSON_CASES, ASSISTANT_SSE_CASES, USAGE_JSON_FIXTURES, USER_CAPTURE_CASES,
 };
 use support::ag_fixtures::{
-    ag_snap_request, ag_snap_response, assert_json_eq, assert_messages_response_eq,
-    client_model_from_completions_fixture, completions_messages_snap, fixture_exists,
-    for_each_existing, for_each_existing_case, load_json_fixture, messages_completions_snap,
-    parse_ag_sse_snap, parse_sse_events, read_fixture, read_fixture_bytes, sse_event_names,
-    translate_openai_sse_fixture, upstream_model_from_messages_fixture, CaseReport,
-    COMPLETIONS_TO_GEMINI, COMPLETIONS_TO_MESSAGES, GEMINI_TO_COMPLETIONS, MESSAGES_TO_COMPLETIONS,
-    RESPONSES_TO_COMPLETIONS,
+    COMPLETIONS_TO_GEMINI, COMPLETIONS_TO_MESSAGES, CaseReport, GEMINI_TO_COMPLETIONS,
+    MESSAGES_TO_COMPLETIONS, RESPONSES_TO_COMPLETIONS, ag_snap_request, ag_snap_response,
+    assert_json_eq, assert_messages_response_eq, client_model_from_completions_fixture,
+    completions_messages_snap, fixture_exists, for_each_existing, for_each_existing_case,
+    load_json_fixture, messages_completions_snap, parse_ag_sse_snap, parse_sse_events,
+    read_fixture, read_fixture_bytes, sse_event_names, translate_openai_sse_fixture,
+    upstream_model_from_messages_fixture,
 };
 
 // --- conversion: messages ↔ completions ---

@@ -276,10 +276,10 @@ impl ModelRoute {
     }
 
     fn effective_upstream_base(&self, protocol: ProtocolKind) -> anyhow::Result<&str> {
-        if protocol == ProtocolKind::Messages {
-            if let Some(ref u) = self.upstream_anthropic {
-                return Ok(u.as_str());
-            }
+        if protocol == ProtocolKind::Messages
+            && let Some(ref u) = self.upstream_anthropic
+        {
+            return Ok(u.as_str());
         }
         self.upstream
             .as_deref()
@@ -543,9 +543,11 @@ upstream = "http://example.com/v1"
 "#,
         )
         .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("network allow entries require mode"));
+        assert!(
+            error
+                .to_string()
+                .contains("network allow entries require mode")
+        );
     }
 
     #[test]
@@ -566,8 +568,10 @@ upstream = "http://example.com/v1"
 "#,
         )
         .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("network bandwidth limit must be greater than zero"));
+        assert!(
+            error
+                .to_string()
+                .contains("network bandwidth limit must be greater than zero")
+        );
     }
 }

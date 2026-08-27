@@ -6,7 +6,7 @@
 //! User CLI args after `--` become ``sys.argv`` for the plan module (argparse-friendly).
 
 use crate::task::TaskExpr;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use futures::{Stream, StreamExt};
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -225,10 +225,12 @@ def plan():
             .collect::<Vec<_>>()
             .await;
         assert_eq!(errors.len(), 1);
-        assert!(errors[0]
-            .as_ref()
-            .unwrap_err()
-            .to_string()
-            .contains("planner exploded"));
+        assert!(
+            errors[0]
+                .as_ref()
+                .unwrap_err()
+                .to_string()
+                .contains("planner exploded")
+        );
     }
 }

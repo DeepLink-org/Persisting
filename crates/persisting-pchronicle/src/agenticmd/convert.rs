@@ -5,18 +5,18 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::formats::storyline::{StorylineDocument, StorylineTurn};
 use crate::formats::unknown_fields::{
-    canonical_source_document_id, normalize_agenticmd_unknown_pointer, restore_json_pointer,
-    PointerWrite, UnknownFieldLimits,
+    PointerWrite, UnknownFieldLimits, canonical_source_document_id,
+    normalize_agenticmd_unknown_pointer, restore_json_pointer,
 };
 use crate::{InputIssue, InputResult, Result};
 
 use super::codec::{
-    encode_agenticmd_block, encode_agenticmd_preamble, parse_agenticmd_document, MarkdownBlock,
-    MarkdownDocument, MarkdownHeader, AGENTICMD_FRONTMATTER_FORMAT,
+    AGENTICMD_FRONTMATTER_FORMAT, MarkdownBlock, MarkdownDocument, MarkdownHeader,
+    encode_agenticmd_block, encode_agenticmd_preamble, parse_agenticmd_document,
 };
 use super::validate::{validate_agenticmd_storyline, validate_agenticmd_unknown_pointer};
 

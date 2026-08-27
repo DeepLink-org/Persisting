@@ -3,7 +3,7 @@ use crate::formats::StorylineDocument;
 use crate::{InputIssue, InputResult, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 /// Default unknown-field count limit. `usize::MAX` means unbounded.
 pub const DEFAULT_MAX_UNKNOWN_FIELDS: usize = usize::MAX;
@@ -397,7 +397,7 @@ fn merge_unknown_fields(
                         Entry::Occupied(_) => {
                             return Err(InputIssue::invalid(format!(
                                 "unknown fields source '{source}' has conflicting values at '{pointer}'"
-                            )))
+                            )));
                         }
                     }
                 }
@@ -760,7 +760,7 @@ fn decode_pointer_token(token: &str) -> InputResult<String> {
             _ => {
                 return Err(InputIssue::invalid(
                     "JSON Pointer contains an invalid '~' escape",
-                ))
+                ));
             }
         }
     }
@@ -1012,9 +1012,11 @@ mod tests {
         );
         assert_eq!(story.unknown_key_counts["codex"]["/events/*"], 2);
         assert_eq!(story.unknown_key_counts["codex"]["/events/*/content/*"], 1);
-        assert!(story.unknown_fields.sources["codex"]
-            .fields
-            .contains_key("/events/9989"));
+        assert!(
+            story.unknown_fields.sources["codex"]
+                .fields
+                .contains_key("/events/9989")
+        );
     }
 
     #[test]
@@ -1036,10 +1038,12 @@ mod tests {
                 "warning: unknown field source=atif key= occurrences=1".to_owned(),
             ]
         );
-        assert!(warnings
-            .warning_lines()
-            .iter()
-            .all(|line| !line.contains(['\n', '\r', '\u{1b}'])));
+        assert!(
+            warnings
+                .warning_lines()
+                .iter()
+                .all(|line| !line.contains(['\n', '\r', '\u{1b}']))
+        );
     }
 
     #[test]
@@ -1119,36 +1123,40 @@ mod tests {
         assert!(take_unknown_fields_envelope(&mut bad_pointer).is_err());
 
         let stories = &mut [StorylineDocument::new("s", "a")];
-        assert!(attach_carried_unknown_fields(
-            DocumentFormat::OpenaiMsg,
-            BTreeMap::new(),
-            &[
-                CarrierBinding {
-                    story_index: 0,
-                    pointer: "/same".into()
-                },
-                CarrierBinding {
-                    story_index: 0,
-                    pointer: "/same".into()
-                },
-            ],
-            stories,
-            UnknownFieldLimits::default(),
-        )
-        .is_err());
+        assert!(
+            attach_carried_unknown_fields(
+                DocumentFormat::OpenaiMsg,
+                BTreeMap::new(),
+                &[
+                    CarrierBinding {
+                        story_index: 0,
+                        pointer: "/same".into()
+                    },
+                    CarrierBinding {
+                        story_index: 0,
+                        pointer: "/same".into()
+                    },
+                ],
+                stories,
+                UnknownFieldLimits::default(),
+            )
+            .is_err()
+        );
 
         let unbound = BTreeMap::from([("/missing".into(), StorylineUnknownFields::default())]);
-        assert!(attach_carried_unknown_fields(
-            DocumentFormat::OpenaiMsg,
-            unbound,
-            &[CarrierBinding {
-                story_index: 0,
-                pointer: "/bound".into()
-            }],
-            stories,
-            UnknownFieldLimits::default(),
-        )
-        .is_err());
+        assert!(
+            attach_carried_unknown_fields(
+                DocumentFormat::OpenaiMsg,
+                unbound,
+                &[CarrierBinding {
+                    story_index: 0,
+                    pointer: "/bound".into()
+                }],
+                stories,
+                UnknownFieldLimits::default(),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1172,17 +1180,19 @@ mod tests {
                 )]),
             },
         )]);
-        assert!(attach_carried_unknown_fields(
-            DocumentFormat::OpenaiMsg,
-            changed_id,
-            &[CarrierBinding {
-                story_index: 0,
-                pointer: "".into()
-            }],
-            std::slice::from_mut(&mut story),
-            UnknownFieldLimits::default(),
-        )
-        .is_err());
+        assert!(
+            attach_carried_unknown_fields(
+                DocumentFormat::OpenaiMsg,
+                changed_id,
+                &[CarrierBinding {
+                    story_index: 0,
+                    pointer: "".into()
+                }],
+                std::slice::from_mut(&mut story),
+                UnknownFieldLimits::default(),
+            )
+            .is_err()
+        );
         assert_eq!(
             story.unknown_fields.sources["atif"].source_document_id,
             "first"
@@ -1200,20 +1210,22 @@ mod tests {
                 )]),
             },
         )]);
-        assert!(attach_carried_unknown_fields(
-            DocumentFormat::OpenaiMsg,
-            carried,
-            &[CarrierBinding {
-                story_index: 0,
-                pointer: "".into()
-            }],
-            std::slice::from_mut(&mut story),
-            UnknownFieldLimits {
-                max_fields: 1,
-                max_bytes: 1024
-            },
-        )
-        .is_err());
+        assert!(
+            attach_carried_unknown_fields(
+                DocumentFormat::OpenaiMsg,
+                carried,
+                &[CarrierBinding {
+                    story_index: 0,
+                    pointer: "".into()
+                }],
+                std::slice::from_mut(&mut story),
+                UnknownFieldLimits {
+                    max_fields: 1,
+                    max_bytes: 1024
+                },
+            )
+            .is_err()
+        );
         assert!(!story.unknown_fields.sources.contains_key("actf"));
     }
 
@@ -1248,13 +1260,15 @@ mod tests {
         assert_eq!(sources["atif"]["fields"]["/vendor"], 7);
 
         let mut collision = json!({"attempts": {"1": {}}, "_storyline": {}});
-        assert!(write_foreign_unknown_fields_envelope(
-            DocumentFormat::Actf,
-            &mut collision,
-            &[story],
-            &carriers,
-        )
-        .is_err());
+        assert!(
+            write_foreign_unknown_fields_envelope(
+                DocumentFormat::Actf,
+                &mut collision,
+                &[story],
+                &carriers,
+            )
+            .is_err()
+        );
     }
 
     // This catches a missing validation/normalization pass that would otherwise
@@ -1284,9 +1298,11 @@ mod tests {
             max_fields: 0,
             max_bytes: 1_048_576,
         };
-        assert!(fields
-            .validate_with(too_many, normalize_test_pointer)
-            .is_err());
+        assert!(
+            fields
+                .validate_with(too_many, normalize_test_pointer)
+                .is_err()
+        );
         assert!(validate_json_pointer("/bad~2escape").is_err());
     }
 
@@ -1308,12 +1324,14 @@ mod tests {
             .unwrap();
 
         validate_unknown_fields(&fields, UnknownFieldLimits::default()).unwrap();
-        assert!(UnknownFieldLimits {
-            max_fields: usize::MAX,
-            max_bytes: usize::MAX,
-        }
-        .validate()
-        .is_ok());
+        assert!(
+            UnknownFieldLimits {
+                max_fields: usize::MAX,
+                max_bytes: usize::MAX,
+            }
+            .validate()
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1387,11 +1405,13 @@ mod tests {
             )]),
         };
 
-        assert!(fields
-            .validate_with(UnknownFieldLimits::default(), |_, pointer| Ok(
-                pointer.into()
-            ))
-            .is_err());
+        assert!(
+            fields
+                .validate_with(UnknownFieldLimits::default(), |_, pointer| Ok(
+                    pointer.into()
+                ))
+                .is_err()
+        );
     }
 
     #[test]

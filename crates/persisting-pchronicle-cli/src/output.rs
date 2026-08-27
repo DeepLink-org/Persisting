@@ -66,8 +66,8 @@ pub(super) struct QueryRows {
 }
 
 pub(super) fn parse_jsonl_rows(jsonl: &str) -> Result<QueryRows> {
-    use serde::de::{MapAccess, Visitor};
     use serde::Deserializer as _;
+    use serde::de::{MapAccess, Visitor};
 
     struct OrderedObjectVisitor;
 

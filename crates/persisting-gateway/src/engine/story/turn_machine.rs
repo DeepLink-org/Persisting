@@ -186,13 +186,13 @@ impl TurnMachine {
 
     fn on_response(&mut self, call_id: &CallId, rec: &EventRecord) -> TurnObserveOutcome {
         let turn_id = self.ensure_call_for_call(call_id, CallPhase::Complete);
-        if let Some(text) = rec.visible_assistant_text() {
-            if let Some(turn) = turn_id.as_ref().and_then(|id| self.turn_mut(id)) {
-                turn.assistant = Some(TextBlock {
-                    text,
-                    call_id: Some(call_id.clone()),
-                });
-            }
+        if let Some(text) = rec.visible_assistant_text()
+            && let Some(turn) = turn_id.as_ref().and_then(|id| self.turn_mut(id))
+        {
+            turn.assistant = Some(TextBlock {
+                text,
+                call_id: Some(call_id.clone()),
+            });
         }
         TurnObserveOutcome {
             turn_index: turn_id.as_ref().and_then(|t| self.turn_index(t)),

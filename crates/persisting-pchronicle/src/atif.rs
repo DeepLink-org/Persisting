@@ -226,9 +226,11 @@ mod tests {
         });
 
         let error = AtifTrajectory::from_json_str(&duplicate.to_string()).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("duplicate embedded trajectory_id 'child'"));
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate embedded trajectory_id 'child'")
+        );
 
         let missing = serde_json::json!({
             "schema_version": "ATIF-v1.7",
@@ -243,8 +245,10 @@ mod tests {
             }]
         });
         let error = AtifTrajectory::from_json_str(&missing.to_string()).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("embedded ATIF trajectory requires trajectory_id"));
+        assert!(
+            error
+                .to_string()
+                .contains("embedded ATIF trajectory requires trajectory_id")
+        );
     }
 }

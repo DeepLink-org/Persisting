@@ -1,8 +1,9 @@
 //! Long-lived pPilot adapter for pVisor's AgentCtl v1 Control protocol.
 
 use crate::agentctl::AgentCtlClient;
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use persisting_agentctl::{AgentDirective, AgentState};
+use persisting_events::unix_now_ms;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -264,14 +265,6 @@ fn apply_directive(state: &mut BridgeState, directive: AgentDirective) -> bool {
     };
     state.directive = directive;
     immediate_sync
-}
-
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u64::MAX as u128) as u64
 }
 
 fn push_warning(inner: &Arc<BridgeInner>, warning: String) {

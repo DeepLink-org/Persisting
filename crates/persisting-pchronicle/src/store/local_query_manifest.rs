@@ -495,9 +495,10 @@ mod tests {
         );
 
         fs::write(&path, "[]")?;
-        assert!(file
-            .detect_format_with_options(LocalQueryManifestOptions::default())
-            .is_err());
+        assert!(
+            file.detect_format_with_options(LocalQueryManifestOptions::default())
+                .is_err()
+        );
         Ok(())
     }
 

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use axum::body::{to_bytes, Body};
+use axum::body::{Body, to_bytes};
 use axum::extract::Request;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -20,10 +20,11 @@ use super::router::resolve_route;
 use super::state::GatewayState;
 use super::streaming::{should_stream_to_client, streaming_llm_response};
 use super::upstream::prepare_upstream_body;
+use crate::Call;
 use crate::config::ProxyConfig;
 use crate::conversion::{
-    translate_error_for_bridge, translate_response_for_bridge, ProtocolBridge,
-    MAX_REQUEST_BODY_BYTES, MAX_RESPONSE_BODY_BYTES,
+    MAX_REQUEST_BODY_BYTES, MAX_RESPONSE_BODY_BYTES, ProtocolBridge, translate_error_for_bridge,
+    translate_response_for_bridge,
 };
 use crate::engine::headers_to_vec;
 use crate::engine::{CompleteEvent, Event, RequestEvent};
@@ -31,7 +32,6 @@ use crate::protocol::ProtocolKind;
 use crate::runtime::debug::{self, truncate_body_bytes};
 use crate::session::storage::resolve_capture_route;
 use crate::understanding::understand_request;
-use crate::Call;
 use persisting_overlaynet::headers::{is_websocket_upgrade, skip_response_header_after_reframing};
 
 fn client_request_url(parts: &axum::http::request::Parts) -> String {

@@ -11,16 +11,16 @@ use crate::session::client::SessionClientMeta;
 pub(crate) fn resolve_peer_client(peer: SocketAddr) -> Result<Option<SessionClientMeta>> {
     #[cfg(unix)]
     {
-        if let Some(pid) = lsof_client_pid_for_peer(peer)? {
-            if let Some(command) = command_line_for_pid(pid)? {
-                return Ok(Some(SessionClientMeta {
-                    peer: peer.to_string(),
-                    peer_port: peer.port(),
-                    pid,
-                    command,
-                    machine_fp: None,
-                }));
-            }
+        if let Some(pid) = lsof_client_pid_for_peer(peer)?
+            && let Some(command) = command_line_for_pid(pid)?
+        {
+            return Ok(Some(SessionClientMeta {
+                peer: peer.to_string(),
+                peer_port: peer.port(),
+                pid,
+                command,
+                machine_fp: None,
+            }));
         }
         Ok(None)
     }

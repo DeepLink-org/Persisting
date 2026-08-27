@@ -397,7 +397,7 @@ fn consume_one_line_break(bytes: &[u8], pos: usize) -> usize {
 mod strict_frontmatter_tests {
     use std::collections::BTreeMap;
 
-    use super::{encode_agenticmd_block, parse_agenticmd_document, MarkdownBlock, MarkdownHeader};
+    use super::{MarkdownBlock, MarkdownHeader, encode_agenticmd_block, parse_agenticmd_document};
 
     #[test]
     fn malformed_agenticmd_yaml_is_not_silently_replaced() {

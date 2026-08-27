@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! pChronicle：Persisting 的结构化 Agent 轨迹存储与查询层。
 //!
 //! # 权威边界
@@ -79,11 +81,12 @@ pub use operations::dispatch::invoke_request_body;
 pub use search::agent as agent_search;
 #[cfg(feature = "lance-store")]
 pub(crate) use store::{
-    event_record_to_event_row, event_row_to_event_record, event_rows_from_batch, EventRow,
-    TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL, TRAJECTORY_COLS, TRAJECTORY_EVENT_ID_COL,
-    TRAJECTORY_KIND_COL, TRAJECTORY_MODEL_COL, TRAJECTORY_PARENT_CALL_ID_COL,
-    TRAJECTORY_PAYLOAD_JSON_COL, TRAJECTORY_SEQ_COL, TRAJECTORY_SESSION_ID_COL,
-    TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL, TRAJECTORY_TRACE_ID_COL,
+    EventRow, TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL, TRAJECTORY_COLS,
+    TRAJECTORY_EVENT_ID_COL, TRAJECTORY_KIND_COL, TRAJECTORY_MODEL_COL,
+    TRAJECTORY_PARENT_CALL_ID_COL, TRAJECTORY_PAYLOAD_JSON_COL, TRAJECTORY_SEQ_COL,
+    TRAJECTORY_SESSION_ID_COL, TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL,
+    TRAJECTORY_TRACE_ID_COL, event_record_to_event_row, event_row_to_event_record,
+    event_rows_from_batch,
 };
 #[cfg(feature = "search")]
 pub const PERSISTING_VECTOR_INDEX_NAME: &str = search::search_lance::PERSISTING_VECTOR_INDEX_NAME;

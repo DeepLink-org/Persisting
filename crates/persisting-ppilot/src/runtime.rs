@@ -12,15 +12,15 @@
 
 use crate::dist::DistEnv;
 use crate::driver::Driver;
-use crate::job_control::{register_local_watches, spawn_cancel_broadcast, JobControlActor};
+use crate::job_control::{JobControlActor, register_local_watches, spawn_cancel_broadcast};
 use crate::observe::spawn_snapshot_loop;
-use crate::pulsing_ext::{ask_timeout, resolve_actor, spawn_supervised, ASK_TIMEOUT};
+use crate::pulsing_ext::{ASK_TIMEOUT, ask_timeout, resolve_actor, spawn_supervised};
 use crate::python_env::pythonpath_for_script;
 use crate::scheduler::{Scheduler, WorkerPool};
 use crate::supervisor::{EmbeddedSupervisor, EmbeddedSupervisorConfig};
 use crate::task::TaskResult;
 use crate::worker::{ShutdownGate, WorkerCommand, WorkerConfig, WorkerReply};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use pulsing_actor::prelude::*;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -272,7 +272,7 @@ async fn run_worker_rank(dist: DistEnv, opts: &RunOptions, pythonpath: Vec<PathB
     };
 
     if let Some(pp) = crate::python_env::merge_pythonpath(&pythonpath) {
-        std::env::set_var("PYTHONPATH", pp);
+        unsafe { std::env::set_var("PYTHONPATH", pp) };
     }
 
     spawn_job_control(&system, dist.rank, opts.job_cancel.clone(), None).await?;
@@ -310,7 +310,7 @@ fn apply_pythonpath(opts: &RunOptions) -> Vec<PathBuf> {
     let mut extras = pythonpath_for_script(&opts.script);
     extras.extend(opts.pythonpath_extra.iter().cloned());
     if let Some(pp) = crate::python_env::merge_pythonpath(&extras) {
-        std::env::set_var("PYTHONPATH", pp);
+        unsafe { std::env::set_var("PYTHONPATH", pp) };
     }
     extras
 }

@@ -6,10 +6,10 @@
 use anyhow::{Context, Result};
 use persisting_events::{
     AttemptRecord as ProtocolAttemptRecord, AttemptRecordState as ProtocolAttemptRecordState,
-    ChronicleControlEnvelope, ChronicleControlRequest, ChronicleControlResponse,
-    ChronicleControlResponseEnvelope, ChronicleServeControlReady, CommitRunOutcome,
-    LeaseAcquireOutcome, TrajectoryAppendRequest, TrajectoryAppendResponse, TrajectoryFormat,
-    CHRONICLE_CONTROL_MAX_FRAME_BYTES, CHRONICLE_CONTROL_VERSION,
+    CHRONICLE_CONTROL_MAX_FRAME_BYTES, CHRONICLE_CONTROL_VERSION, ChronicleControlEnvelope,
+    ChronicleControlRequest, ChronicleControlResponse, ChronicleControlResponseEnvelope,
+    ChronicleServeControlReady, CommitRunOutcome, LeaseAcquireOutcome, TrajectoryAppendRequest,
+    TrajectoryAppendResponse, TrajectoryFormat,
 };
 use persisting_pchronicle::storage::{
     AttemptRecord, AttemptRecordState, AttemptRegistry, DatasetLocation, RawEventLanceStore,

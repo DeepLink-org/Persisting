@@ -2,9 +2,9 @@
 
 use super::implant::{ImplantPlan, OverlayHint};
 use super::overlay::{
-    apply_overlay, discard_overlay, hint_from_record, lower_stack_from_config,
-    mount_overlay_record, prepare_overlay_record_mountless, resolve_overlay_workspace,
-    stage_overlay_record, OverlayMount, OverlayRecord,
+    OverlayMount, OverlayRecord, apply_overlay, discard_overlay, hint_from_record,
+    lower_stack_from_config, mount_overlay_record, prepare_overlay_record_mountless,
+    resolve_overlay_workspace, stage_overlay_record,
 };
 use super::registry::{EnvironmentProjection, RunControlServer, RunLease, RunLineage, RunRecord};
 use crate::TrajectoryEventSink;
@@ -16,7 +16,7 @@ use persisting_gateway::injection::{
     client_gateway_config_args, proxy_environment_with_local_auth,
 };
 use persisting_gateway::lifecycle::{
-    append_lifecycle, root_session_route, session_ended_record, session_started_record, CaptureMode,
+    CaptureMode, append_lifecycle, root_session_route, session_ended_record, session_started_record,
 };
 use persisting_gateway::runtime::in_process::{InProcessCapture, InProcessRuntime};
 use persisting_gateway::runtime::run_config::snapshot_proxy_config;
@@ -66,8 +66,8 @@ impl AttemptSession {
     pub(crate) fn teardown(mut self, exit_code: Option<i32>) -> AttemptTeardown {
         let mut errors = Vec::new();
         let duration_ms = self.started_at.elapsed().as_millis() as u64;
-        if let Some(sink) = &self.sink {
-            if let Err(err) = append_lifecycle(
+        if let Some(sink) = &self.sink
+            && let Err(err) = append_lifecycle(
                 sink.as_ref(),
                 &root_session_route(&self.root_session),
                 &self.agent_id,
@@ -79,9 +79,9 @@ impl AttemptSession {
                     exit_code,
                     Some(duration_ms),
                 ),
-            ) {
-                errors.push(format!("append session.ended: {err:#}"));
-            }
+            )
+        {
+            errors.push(format!("append session.ended: {err:#}"));
         }
 
         let mut record = if let Some(mount) = self.overlay.take() {
@@ -95,10 +95,10 @@ impl AttemptSession {
             }
         } else {
             let mut record = self.overlay_record.take();
-            if let Some(record) = record.as_mut() {
-                if let Err(err) = stage_overlay_record(record) {
-                    errors.push(format!("stage OverlayFS: {err:#}"));
-                }
+            if let Some(record) = record.as_mut()
+                && let Err(err) = stage_overlay_record(record)
+            {
+                errors.push(format!("stage OverlayFS: {err:#}"));
             }
             record
         };
@@ -151,10 +151,10 @@ impl AttemptSession {
                 Err(_) => errors.push("shutdown VM OverlayNet: attachment lock poisoned".into()),
             }
         }
-        if let Some(gateway) = self.gateway.take() {
-            if let Err(err) = gateway.shutdown() {
-                errors.push(format!("shutdown Gateway: {err:#}"));
-            }
+        if let Some(gateway) = self.gateway.take()
+            && let Err(err) = gateway.shutdown()
+        {
+            errors.push(format!("shutdown Gateway: {err:#}"));
         }
         self.run_record.finished_at_unix_ms = Some(crate::util::unix_now_ms());
         self.run_record.overlay = self.overlay_record.clone();
@@ -1297,10 +1297,10 @@ pub(crate) fn apply_implant(process: &mut ProcessInvocation, plan: &ImplantPlan)
             .entry(key.clone())
             .or_insert_with(|| value.clone());
     }
-    if process.cwd.is_none() {
-        if let Some(cwd) = &plan.cwd {
-            process.cwd = Some(cwd.display().to_string());
-        }
+    if process.cwd.is_none()
+        && let Some(cwd) = &plan.cwd
+    {
+        process.cwd = Some(cwd.display().to_string());
     }
 }
 

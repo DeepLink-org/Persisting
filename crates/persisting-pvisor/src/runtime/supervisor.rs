@@ -1,6 +1,6 @@
 use super::attempt::{
-    apply_implant, prepare_attempt, prepare_overlay_attempt, prepare_storage_attempt,
-    AttemptPrepareOpts, AttemptSession, OverlayAttemptPrepareOpts,
+    AttemptPrepareOpts, AttemptSession, OverlayAttemptPrepareOpts, apply_implant, prepare_attempt,
+    prepare_overlay_attempt, prepare_storage_attempt,
 };
 use super::implant::{ImplantPlan, OverlayHint};
 use crate::TrajectoryEventSink;
@@ -260,7 +260,9 @@ impl RuntimeSupervisor {
         let network = self.effective_network_config(spec);
         let vm_network = vm_executor && network_mode == OverlayNetMode::Auto;
         if vm_executor && network_mode == OverlayNetMode::Proxy {
-            anyhow::bail!("overlaynet mode `proxy` is only valid for host/container execution; use `auto` for VM smoltcp networking");
+            anyhow::bail!(
+                "overlaynet mode `proxy` is only valid for host/container execution; use `auto` for VM smoltcp networking"
+            );
         }
         if vm_executor && network_mode == OverlayNetMode::Off && self.proxy.is_some() {
             anyhow::bail!(
@@ -579,8 +581,10 @@ models = []
                 Ok(_) => panic!("offline VM accepted Gateway configuration"),
                 Err(error) => error,
             };
-        assert!(error
-            .to_string()
-            .contains("mode `off` makes the VM offline"));
+        assert!(
+            error
+                .to_string()
+                .contains("mode `off` makes the VM offline")
+        );
     }
 }

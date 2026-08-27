@@ -1,8 +1,8 @@
 //! Durable Run identity, project association, and liveness metadata.
 
 use super::overlay::{
-    load_overlay_record, mount_overlay_record_read_only, overlay_status, OverlayRecord,
-    OverlayUpper, ReadOnlyOverlayMount,
+    OverlayRecord, OverlayUpper, ReadOnlyOverlayMount, load_overlay_record,
+    mount_overlay_record_read_only, overlay_status,
 };
 use crate::util::{atomic_write, create_dir_all_durable};
 use anyhow::Context;
@@ -12,8 +12,8 @@ use std::fs::{self, File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -538,10 +538,10 @@ fn resolve_path(path: &Path) -> anyhow::Result<RunRecord> {
         }
     } else {
         candidates.push(absolute.clone());
-        if absolute.file_name().is_some_and(|name| name == "upper") {
-            if let Some(parent) = absolute.parent() {
-                candidates.push(parent.to_path_buf());
-            }
+        if absolute.file_name().is_some_and(|name| name == "upper")
+            && let Some(parent) = absolute.parent()
+        {
+            candidates.push(parent.to_path_buf());
         }
     }
     candidates.extend(absolute.ancestors().map(Path::to_path_buf));

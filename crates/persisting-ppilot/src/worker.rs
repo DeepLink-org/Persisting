@@ -6,7 +6,7 @@
 //! - Spawned via factory + [`SupervisionSpec`] so Pulsing can restart a failed slot.
 
 use crate::executor::ExecutorRouter;
-use crate::result_cache::{ResultCache, DEFAULT_RESULT_CACHE_CAP};
+use crate::result_cache::{DEFAULT_RESULT_CACHE_CAP, ResultCache};
 use crate::task::{TaskExpr, TaskResult};
 use persisting_agentctl::SupervisorBootstrap;
 use pulsing_actor::prelude::*;
@@ -212,15 +212,15 @@ impl WorkerActor {
 
     async fn execute(&mut self, task: TaskExpr, lease_epoch: u64) -> TaskResult {
         let cache_key = format!("{}@{}", task.id, lease_epoch);
-        if let Ok(g) = self.result_cache.lock() {
-            if let Some(cached) = g.get(&cache_key) {
-                tracing::debug!(
-                    task_id = %task.id,
-                    worker = %self.worker_id,
-                    "infra idempotency: returning cached TaskResult"
-                );
-                return cached.clone();
-            }
+        if let Ok(g) = self.result_cache.lock()
+            && let Some(cached) = g.get(&cache_key)
+        {
+            tracing::debug!(
+                task_id = %task.id,
+                worker = %self.worker_id,
+                "infra idempotency: returning cached TaskResult"
+            );
+            return cached.clone();
         }
         let r = self
             .executors

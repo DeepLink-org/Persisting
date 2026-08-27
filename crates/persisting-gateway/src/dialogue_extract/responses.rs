@@ -195,10 +195,10 @@ pub(crate) fn responses_sse_turn(raw: &str) -> String {
                 }
             }
             "response.output_text.done" => {
-                if let Some(done) = v.get("text").and_then(|t| t.as_str()) {
-                    if text.is_empty() {
-                        text.push_str(done);
-                    }
+                if let Some(done) = v.get("text").and_then(|t| t.as_str())
+                    && text.is_empty()
+                {
+                    text.push_str(done);
                 }
             }
             "response.output_item.added" | "response.output_item.done" => {
@@ -303,10 +303,10 @@ pub(crate) fn responses_assistant_from_json(body: &Value) -> Option<String> {
             Some("message") => {
                 if let Some(parts) = item.get("content").and_then(|c| c.as_array()) {
                     for part in parts {
-                        if part.get("type").and_then(|t| t.as_str()) == Some("output_text") {
-                            if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
-                                texts.push(t.to_string());
-                            }
+                        if part.get("type").and_then(|t| t.as_str()) == Some("output_text")
+                            && let Some(t) = part.get("text").and_then(|x| x.as_str())
+                        {
+                            texts.push(t.to_string());
                         }
                     }
                 }

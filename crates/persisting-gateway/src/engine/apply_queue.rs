@@ -1,7 +1,7 @@
 //! Per-`story_id` ordered capture apply queue — preserves event order within a story.
 
 use std::path::PathBuf;
-use std::sync::{mpsc as std_mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 
 use dashmap::DashMap;
 use tokio::sync::{mpsc, oneshot};
@@ -201,6 +201,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::Call;
     use crate::config::CaptureLevel;
     use crate::engine::CaptureEngine;
     use crate::engine::{CompleteEvent, Event, RequestEvent};
@@ -210,7 +211,6 @@ mod tests {
     use crate::session::index::SessionIndexStore;
     use crate::session::storage::CaptureRoute;
     use crate::sink::CaptureEventSink;
-    use crate::Call;
 
     struct OrderRecordingSink {
         order: Mutex<Vec<String>>,

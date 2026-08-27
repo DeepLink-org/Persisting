@@ -4,7 +4,7 @@
 mod common;
 
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs;
 
 use common::{examples_root, run_cli};

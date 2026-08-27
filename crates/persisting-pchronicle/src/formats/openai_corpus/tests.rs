@@ -102,11 +102,13 @@ fn openai_step_id_maps_to_storyline_turn_ids() {
             .collect::<Vec<_>>(),
         vec![1, 2]
     );
-    assert!(stories[0]
-        .unknown_fields
-        .sources
-        .get("openai-msg")
-        .is_none_or(|source| !source.fields.contains_key("/session_steps/0/step_id")));
+    assert!(
+        stories[0]
+            .unknown_fields
+            .sources
+            .get("openai-msg")
+            .is_none_or(|source| !source.fields.contains_key("/session_steps/0/step_id"))
+    );
     let recovered = recover_openai_msg_files(&stories).unwrap();
     assert_eq!(recovered[0].document["session_steps"][0]["step_id"], 1);
     stories[0].validate().unwrap();
@@ -274,15 +276,17 @@ fn openai_refusal_only_response_is_a_known_output() {
 
     let stories = parse_openai_msg_corpus_value(&input, "refusal.json").unwrap();
     assert_eq!(stories[0].turns[1].message, "I cannot help with that.");
-    assert!(stories[0]
-        .unknown_fields
-        .sources
-        .get("openai-msg")
-        .is_none_or(|source| {
-            !source
-                .fields
-                .contains_key("/session_steps/0/response/refusal")
-        }));
+    assert!(
+        stories[0]
+            .unknown_fields
+            .sources
+            .get("openai-msg")
+            .is_none_or(|source| {
+                !source
+                    .fields
+                    .contains_key("/session_steps/0/response/refusal")
+            })
+    );
     assert!(stories[0].turns.iter().all(|turn| turn.extra.is_none()));
 }
 
@@ -304,15 +308,17 @@ fn openai_maps_explicit_reasoning_content() {
         stories[0].turns[1].reasoning_content.as_deref(),
         Some("reasoning")
     );
-    assert!(stories[0]
-        .unknown_fields
-        .sources
-        .get("openai-msg")
-        .is_none_or(|source| {
-            !source
-                .fields
-                .contains_key("/session_steps/0/response/reasoning_content")
-        }));
+    assert!(
+        stories[0]
+            .unknown_fields
+            .sources
+            .get("openai-msg")
+            .is_none_or(|source| {
+                !source
+                    .fields
+                    .contains_key("/session_steps/0/response/reasoning_content")
+            })
+    );
 }
 
 #[test]
@@ -434,11 +440,13 @@ fn openai_embedded_tool_call_exports_as_canonical_structured_call() {
     }]});
 
     let stories = parse_openai_msg_corpus_value(&input, "embedded.json").unwrap();
-    assert!(stories[0]
-        .unknown_fields
-        .sources
-        .get("openai-msg")
-        .is_none_or(|source| source.fields.is_empty()));
+    assert!(
+        stories[0]
+            .unknown_fields
+            .sources
+            .get("openai-msg")
+            .is_none_or(|source| source.fields.is_empty())
+    );
     assert_eq!(
         stories[0]
             .turns
@@ -450,15 +458,17 @@ fn openai_embedded_tool_call_exports_as_canonical_structured_call() {
             .len(),
         1
     );
-    assert!(stories[0]
-        .turns
-        .last()
-        .unwrap()
-        .tool_calls
-        .as_ref()
-        .unwrap()
-        .iter()
-        .all(|call| call.extra.is_none()));
+    assert!(
+        stories[0]
+            .turns
+            .last()
+            .unwrap()
+            .tool_calls
+            .as_ref()
+            .unwrap()
+            .iter()
+            .all(|call| call.extra.is_none())
+    );
 
     let recovered = recover_openai_msg_files(&stories).unwrap();
     let response = &recovered[0].document["session_steps"][0]["response"];
@@ -612,24 +622,30 @@ fn synthesis_rejects_user_turn_without_agent_response() {
     stories[0].turns.truncate(2);
 
     let error = synthesize_openai_msg_corpus_value(&stories[..1]).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("OpenAI synthesis requires an agent response after user turn 2"));
+    assert!(
+        error
+            .to_string()
+            .contains("OpenAI synthesis requires an agent response after user turn 2")
+    );
 
     stories[0].turns[1].source = "system".into();
     let error = synthesize_openai_msg_corpus_value(&stories[..1]).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("OpenAI synthesis cannot represent Storyline turn 2 source 'system'"));
+    assert!(
+        error
+            .to_string()
+            .contains("OpenAI synthesis cannot represent Storyline turn 2 source 'system'")
+    );
 }
 
 #[test]
 fn openai_unknown_fields_preserve_values_but_storyline_content_is_authoritative() {
     let input = multi_session_corpus();
     let mut stories = parse_openai_msg_corpus_value(&input, "corpus.json").unwrap();
-    assert!(!serde_json::to_string(&stories)
-        .unwrap()
-        .contains(&["_pchron", "icle_"].concat()));
+    assert!(
+        !serde_json::to_string(&stories)
+            .unwrap()
+            .contains(&["_pchron", "icle_"].concat())
+    );
 
     stories[0].turns[1].message = json!("edited user");
     stories[0].turns[2].message = json!("edited assistant");
@@ -760,9 +776,11 @@ fn historical_tool_results_attach_to_the_originating_turn() {
             .count(),
         1
     );
-    assert!(messages
-        .iter()
-        .any(|message| { message["role"] == "tool" && message["tool_call_id"] == "call-1" }));
+    assert!(
+        messages
+            .iter()
+            .any(|message| { message["role"] == "tool" && message["tool_call_id"] == "call-1" })
+    );
 }
 
 #[test]

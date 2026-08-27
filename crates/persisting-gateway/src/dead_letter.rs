@@ -633,10 +633,12 @@ mod tests {
         let entries = read_trajectory_dead_letter_entries(dir.path()).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].error, "engine invoke failed");
-        assert!(serde_json::to_value(&entries[0])
-            .unwrap()
-            .get("schema_version")
-            .is_none());
+        assert!(
+            serde_json::to_value(&entries[0])
+                .unwrap()
+                .get("schema_version")
+                .is_none()
+        );
         assert_eq!(entries[0].decoded_records().unwrap().len(), 1);
     }
 

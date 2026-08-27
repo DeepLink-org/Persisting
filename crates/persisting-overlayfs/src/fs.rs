@@ -1,11 +1,11 @@
 #[cfg(target_os = "macos")]
 use fuser::ReplyXTimes;
 use fuser::{
-    FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
-    ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyStatfs, ReplyWrite,
-    ReplyXattr, Request, TimeOrNow, FUSE_ROOT_ID,
+    FUSE_ROOT_ID, FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData,
+    ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyStatfs,
+    ReplyWrite, ReplyXattr, Request, TimeOrNow,
 };
-use persisting_overlay_core::{sys, OverlayCore};
+use persisting_overlay_core::{OverlayCore, sys};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
@@ -186,10 +186,10 @@ impl OverlayFs {
             .cloned()
             .collect();
         for path in paths {
-            if let Some(ino) = self.by_path.remove(&path) {
-                if let Some(node) = self.nodes.get_mut(&ino) {
-                    node.paths.remove(&path);
-                }
+            if let Some(ino) = self.by_path.remove(&path)
+                && let Some(node) = self.nodes.get_mut(&ino)
+            {
+                node.paths.remove(&path);
             }
         }
     }

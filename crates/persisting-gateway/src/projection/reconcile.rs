@@ -165,10 +165,10 @@ pub fn write_run_reconcile_report(storage: &Path, report: &RunReconcileReport) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Call;
     use crate::config::CaptureLevel;
     use crate::projection::dialogue::capture_record_to_storyline_turn;
     use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
-    use crate::Call;
     use persisting_pchronicle::document::upsert_agenticmd_turn;
     use persisting_pchronicle::model::{StorylineDocument, StorylineTurn};
     use std::collections::BTreeMap as Map;

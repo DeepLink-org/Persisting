@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bytes::Bytes;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::dialogue_extract::extract_user_message_from_request_body;
 use crate::record::EventRecord;
@@ -20,23 +20,22 @@ pub(crate) fn find_agent_for_spawn<'a>(
     hint: &SpawnHint,
     used: &HashSet<String>,
 ) -> Option<&'a AgentEntry> {
-    if let Some(doc) = hint.doc_target.as_deref() {
-        if let Some(entry) = agents
+    if let Some(doc) = hint.doc_target.as_deref()
+        && let Some(entry) = agents
             .values()
             .find(|e| !used.contains(&e.agent_id) && e.doc_target.as_deref() == Some(doc))
-        {
-            return Some(entry);
-        }
+    {
+        return Some(entry);
     }
-    if let Some(prompt) = hint.prompt.as_deref() {
-        if let Some(entry) = agents.values().find(|e| {
+    if let Some(prompt) = hint.prompt.as_deref()
+        && let Some(entry) = agents.values().find(|e| {
             !used.contains(&e.agent_id)
                 && e.first_prompt
                     .as_deref()
                     .is_some_and(|p| prompts_match(p, prompt))
-        }) {
-            return Some(entry);
-        }
+        })
+    {
+        return Some(entry);
     }
     None
 }

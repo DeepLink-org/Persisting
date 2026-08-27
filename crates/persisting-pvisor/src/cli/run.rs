@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use clap::{Args, ValueEnum};
 use persisting_agentctl::{PolicyMode, RunInvocation, RunSpec, RunState, StdioMode};
 use persisting_events::TrajectoryFormat;
@@ -18,15 +18,15 @@ use crate::config::{
     OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings,
     RecordFormat, RunConfig, RunExecutorKind, RunPolicy, RunStdio,
 };
-use crate::runtime::{default_run_home, resolve_run, RunLineage};
+use crate::runtime::{RunLineage, default_run_home, resolve_run};
 use crate::{
-    latest_logical_checkpoint, restore_logical_checkpoint, ContainerExecutor, GatewayDriverConfig,
-    LogicalCheckpoint, NetworkDriverConfig, OverlayHint, PVisor, ProcessExecutor, RunBundle,
-    RunExecutor, TrajectoryEventSink, VmExecutor,
+    ContainerExecutor, GatewayDriverConfig, LogicalCheckpoint, NetworkDriverConfig, OverlayHint,
+    PVisor, ProcessExecutor, RunBundle, RunExecutor, TrajectoryEventSink, VmExecutor,
+    latest_logical_checkpoint, restore_logical_checkpoint,
 };
 
 use super::trajectory::{
-    chronicle_sink, jsonl_capture_sink, ChronicleWriter, JsonlEventSink, JsonlWriter,
+    ChronicleWriter, JsonlEventSink, JsonlWriter, chronicle_sink, jsonl_capture_sink,
 };
 
 type ChronicleSinks = (
@@ -633,7 +633,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
 async fn delegated_shutdown_signal() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
@@ -844,10 +844,9 @@ async fn execute_config(
             .as_ref()
             .and_then(|overlay| overlay.target.as_ref())
             .is_none()
+        && let Some(overlay) = &mut overlay
     {
-        if let Some(overlay) = &mut overlay {
-            overlay.protect_target = true;
-        }
+        overlay.protect_target = true;
     }
     let overlay_enabled = overlay.is_some();
     let proxy = resolve_proxy(&config)?;
@@ -1186,14 +1185,14 @@ fn apply_safe_defaults(config: &mut RunConfig) -> anyhow::Result<()> {
     if config.gateway.admin_listen == crate::GatewaySettings::default().admin_listen {
         config.gateway.admin_listen = free_loopback_address()?;
     }
-    if config.run.agent == "agent" {
-        if let Some(program) = config.run.command.first() {
-            config.run.agent = Path::new(program)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("agent")
-                .to_owned();
-        }
+    if config.run.agent == "agent"
+        && let Some(program) = config.run.command.first()
+    {
+        config.run.agent = Path::new(program)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("agent")
+            .to_owned();
     }
     Ok(())
 }
@@ -1551,12 +1550,13 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
             "libkrun uses the smoltcp driver; choose --overlaynet-mode auto or off"
         );
     }
-    if let Some(overlayfs) = &config.overlayfs {
-        if overlayfs.commit == OverlayFsCommit::Apply && !overlayfs.compose.is_empty() {
-            bail!(
-                "--overlayfs-commit apply cannot be combined with --overlayfs-compose until composed layers can be materialized safely"
-            );
-        }
+    if let Some(overlayfs) = &config.overlayfs
+        && overlayfs.commit == OverlayFsCommit::Apply
+        && !overlayfs.compose.is_empty()
+    {
+        bail!(
+            "--overlayfs-commit apply cannot be combined with --overlayfs-compose until composed layers can be materialized safely"
+        );
     }
     if config.overlaynet.mode == OverlayNetMode::Off {
         if config.overlaynet.policy != OverlayNetPolicy::Public
@@ -1796,6 +1796,7 @@ fn paths_overlap(left: &Path, right: &Path) -> bool {
 mod tests {
     use super::*;
     use clap::Parser;
+    use proptest::prelude::*;
 
     use crate::cli::Cli;
 
@@ -2005,10 +2006,12 @@ mod tests {
             assert!(!config.vm.rootfs_immutable);
         }
         #[cfg(not(target_os = "linux"))]
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("only supported on Linux"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("only supported on Linux")
+        );
     }
 
     #[test]
@@ -2404,31 +2407,19 @@ mod tests {
     }
 
     #[test]
-    fn simple_target_parser_handles_ports_cidrs_and_ipv6() {
-        let domain = parse_overlaynet_target("api.example.com:443").unwrap();
-        assert_eq!(domain.host, "api.example.com");
-        assert_eq!(domain.ports, [443]);
-
+    fn target_parser_handles_cidrs_portless_ipv6_and_malformed_inputs() {
         let cidr = parse_overlaynet_target("10.0.0.0/8:8080").unwrap();
         assert_eq!(cidr.host, "10.0.0.0/8");
         assert_eq!(cidr.ports, [8080]);
 
-        let ipv6 = parse_overlaynet_target("[::1]:8443").unwrap();
-        assert_eq!(ipv6.host, "::1");
-        assert_eq!(ipv6.ports, [8443]);
-        assert!(parse_overlaynet_target("2001:db8::1")
-            .unwrap()
-            .ports
-            .is_empty());
+        assert!(
+            parse_overlaynet_target("2001:db8::1")
+                .unwrap()
+                .ports
+                .is_empty()
+        );
 
-        for invalid in [
-            "",
-            "api.example.com:0",
-            "api.example.com:65536",
-            "api.example.com:",
-            "https://api.example.com",
-            "[::1",
-        ] {
+        for invalid in ["", "api.example.com:", "https://api.example.com", "[::1"] {
             assert!(
                 parse_overlaynet_target(invalid).is_err(),
                 "accepted invalid target {invalid:?}"
@@ -2436,24 +2427,89 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bandwidth_parser_uses_explicit_bit_and_byte_units() {
-        assert_eq!(parse_bandwidth("8bps").unwrap(), 1);
-        assert_eq!(parse_bandwidth("10mbps").unwrap(), 1_250_000);
-        assert_eq!(parse_bandwidth("2mb/s").unwrap(), 2_000_000);
-        assert_eq!(parse_bandwidth("1GB/S").unwrap(), 1_000_000_000);
-        for invalid in [
-            "",
-            "0mbps",
-            "10",
-            "fast",
-            "1tbps",
-            "18446744073709551615gbps",
-        ] {
-            assert!(
-                parse_bandwidth(invalid).is_err(),
-                "accepted invalid bandwidth {invalid:?}"
+    proptest! {
+        #[test]
+        fn target_parser_preserves_valid_domain_ports(
+            label in "[a-z][a-z0-9]{0,12}",
+            port in 1u16..=u16::MAX,
+        ) {
+            let host = format!("api-{label}.example.com");
+            let target = parse_overlaynet_target(&format!("{host}:{port}"))
+                .expect("generated domain target should parse");
+            prop_assert_eq!(target.host, host);
+            prop_assert_eq!(target.ports, vec![port]);
+            prop_assert!(target.transports.is_empty());
+            prop_assert!(!target.allow_private_ips);
+        }
+
+        #[test]
+        fn target_parser_preserves_valid_ipv6_ports(
+            segment in 1u16..=u16::MAX,
+            port in 1u16..=u16::MAX,
+        ) {
+            let input = format!("[2001:db8::{segment:x}]:{port}");
+            let target = parse_overlaynet_target(&input)
+                .expect("generated IPv6 target should parse");
+            prop_assert_eq!(target.host, format!("2001:db8::{segment:x}"));
+            prop_assert_eq!(target.ports, vec![port]);
+        }
+
+        #[test]
+        fn bandwidth_parser_matches_bit_and_byte_units(
+            amount in 1u64..=1_000_000u64,
+            unit in prop_oneof![
+                Just(("bps", 1u64, true)),
+                Just(("kbps", 1_000u64, true)),
+                Just(("mbps", 1_000_000u64, true)),
+                Just(("b/s", 1u64, false)),
+                Just(("kb/s", 1_000u64, false)),
+                Just(("mb/s", 1_000_000u64, false)),
+                Just(("GB/S", 1_000_000_000u64, false)),
+            ],
+        ) {
+            let (suffix, multiplier, bits) = unit;
+            let parsed = parse_bandwidth(&format!("{amount}{suffix}"))
+                .expect("generated bandwidth should parse");
+            let scaled = amount * multiplier;
+            let expected = if bits { scaled.div_ceil(8) } else { scaled };
+            prop_assert_eq!(parsed, expected);
+        }
+
+        #[test]
+        fn bandwidth_parser_rejects_zero_unsupported_and_overflow(
+            unit in prop_oneof![
+                Just("bps"),
+                Just("kbps"),
+                Just("mbps"),
+                Just("gbps"),
+                Just("b/s"),
+                Just("kb/s"),
+                Just("mb/s"),
+                Just("gb/s"),
+            ],
+            amount in 1u64..=1_000_000u64,
+            unsupported_suffix in prop_oneof![Just(""), Just("fast"), Just("tbps")],
+            overflow_amount in 18_446_744_074u64..=u64::MAX,
+        ) {
+            let zero_input = format!("0{unit}");
+            let unsupported_input = format!("{amount}{unsupported_suffix}");
+            let overflow_input = format!("{overflow_amount}gbps");
+            prop_assert!(parse_bandwidth(&zero_input).is_err());
+            prop_assert!(parse_bandwidth(&unsupported_input).is_err());
+            prop_assert!(parse_bandwidth(&overflow_input).is_err());
+            prop_assert!(parse_bandwidth("").is_err());
+        }
+
+        #[test]
+        fn target_parser_rejects_zero_and_out_of_range_ports(
+            port in prop_oneof![Just(0u32), 65_536u32..=u32::MAX]
+        ) {
+            let input = format!("api.example.com:{port}");
+            prop_assert!(
+                port == 0 || port > u32::from(u16::MAX),
+                "this property only generates invalid ports"
             );
+            prop_assert!(parse_overlaynet_target(&input).is_err());
         }
     }
 
@@ -2600,10 +2656,12 @@ mod tests {
             }),
             ..RunConfig::default()
         };
-        assert!(validate(&config)
-            .unwrap_err()
-            .to_string()
-            .contains("cannot be combined"));
+        assert!(
+            validate(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("cannot be combined")
+        );
     }
 
     #[test]

@@ -5,13 +5,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use persisting_pchronicle::document::{
-    decode_json_storylines, storyline_to_events, DocumentFormat,
+    DocumentFormat, decode_json_storylines, storyline_to_events,
 };
 use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument};
 use persisting_pchronicle::storage::{
-    build_storyline_projection, sync_storyline_projection, verify_storyline_projection,
     RawEventLanceAppender, StoryCoords, StorylineProjectionBuildOutcome,
-    StorylineProjectionSyncOutcome,
+    StorylineProjectionSyncOutcome, build_storyline_projection, sync_storyline_projection,
+    verify_storyline_projection,
 };
 
 fn main() -> Result<()> {

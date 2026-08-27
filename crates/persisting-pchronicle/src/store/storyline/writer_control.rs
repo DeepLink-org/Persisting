@@ -2,13 +2,13 @@ use anyhow::{Context, Result};
 use object_store::path::Path as ObjectPath;
 use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) use super::super::cas_store::unix_now_ms;
 use super::{
-    validate_current_control, write_local_current, StorylineLanceStore, StorylineSnapshotPointer,
-    CURRENT_FILE,
+    CURRENT_FILE, StorylineLanceStore, StorylineSnapshotPointer, validate_current_control,
+    write_local_current,
 };
 
 const CONTROL_CAS_RETRIES: usize = 32;
@@ -121,10 +121,10 @@ pub(super) fn acquire_transition(
         "writer lease owner must not be empty"
     );
     anyhow::ensure!(ttl_ms > 0, "writer lease TTL must be positive");
-    if let Some(lease) = &current.lease {
-        if lease.expires_at_unix_ms > now_unix_ms {
-            return Ok((LeaseAcquireOutcome::Held(lease.clone()), None));
-        }
+    if let Some(lease) = &current.lease
+        && lease.expires_at_unix_ms > now_unix_ms
+    {
+        return Ok((LeaseAcquireOutcome::Held(lease.clone()), None));
     }
     let revision = current
         .revision

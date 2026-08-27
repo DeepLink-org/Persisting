@@ -2,16 +2,16 @@
 //!
 //! With a script, `--check` validates first and the default path executes it.
 
-use crate::check::{run_check, CheckOptions};
+use crate::check::{CheckOptions, run_check};
 use crate::checkpoint::{CheckpointLedger, CheckpointTracker};
 use crate::coordination::RunCoordinator;
 use crate::observe::{Observer, ObserverOptions};
-use crate::runtime::{run_fleet, RunOptions};
+use crate::runtime::{RunOptions, run_fleet};
 use crate::sink::{JsonlFileSink, ResultSink, TeeSink};
 use crate::sink_writer::spawn_coordinated_sink_writer;
 use crate::skip::SkipSet;
 use crate::task::TaskResult;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
 use persisting_events::{ChronicleControl, ChronicleServeProcessClient};
 use std::collections::BTreeMap;
@@ -198,15 +198,17 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
             })
             .unwrap_or_else(|| "ppilot".into())
     });
-    std::env::set_var("PERSISTING_PPILOT_JOB_ID", &job_id);
+    unsafe { std::env::set_var("PERSISTING_PPILOT_JOB_ID", &job_id) };
     if let Some(dir) = &args.sink {
-        std::env::set_var("PERSISTING_PPILOT_OUTPUT_DIR", dir);
+        unsafe { std::env::set_var("PERSISTING_PPILOT_OUTPUT_DIR", dir) };
     }
     if !args.worker_label.is_empty() {
-        std::env::set_var(
-            "PERSISTING_PPILOT_WORKER_LABELS",
-            args.worker_label.join(","),
-        );
+        unsafe {
+            std::env::set_var(
+                "PERSISTING_PPILOT_WORKER_LABELS",
+                args.worker_label.join(","),
+            )
+        };
     }
     let per_worker = args.per_worker.max(1);
     let max_inflight = args.max_inflight.unwrap_or_else(|| {
@@ -437,10 +439,10 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
     };
 
     let collected = run_fleet(opts, move |r: TaskResult| {
-        if matches!(results_fmt, ResultsFormat::Ndjson) {
-            if let Ok(line) = r.to_ndjson() {
-                println!("{line}");
-            }
+        if matches!(results_fmt, ResultsFormat::Ndjson)
+            && let Ok(line) = r.to_ndjson()
+        {
+            println!("{line}");
         }
     })
     .await
@@ -479,10 +481,10 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
     if matches!(results_fmt, ResultsFormat::Summary) {
         println!("{summary}");
         for r in &collected {
-            if !r.ok {
-                if let Ok(line) = r.to_ndjson() {
-                    eprintln!("{line}");
-                }
+            if !r.ok
+                && let Ok(line) = r.to_ndjson()
+            {
+                eprintln!("{line}");
             }
         }
     }

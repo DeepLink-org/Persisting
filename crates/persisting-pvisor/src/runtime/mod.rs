@@ -18,14 +18,15 @@ pub use implant::{ImplantPlan, OverlayHint};
 #[cfg(all(test, target_os = "macos"))]
 pub use overlay::apply_overlay;
 pub use overlay::{
-    apply_overlay_selected, discard_overlay, load_apply_records, load_overlay_record,
-    mount_overlay_record, mount_overlay_record_read_only, overlay_changes, overlay_status,
-    restore_overlay_upper, snapshot_overlay_upper, write_overlay_record, ApplySelection,
-    ChangeEntry, ChangeEntryType, ChangeKind, OverlayRecord, OverlayState, OverlayUpper,
-    ReadOnlyOverlayMount,
+    ApplySelection, ChangeEntry, ChangeEntryType, ChangeKind, OverlayRecord, OverlayState,
+    OverlayUpper, ReadOnlyOverlayMount, apply_overlay_selected, discard_overlay,
+    load_apply_records, load_overlay_record, mount_overlay_record, mount_overlay_record_read_only,
+    overlay_changes, overlay_status, restore_overlay_upper, snapshot_overlay_upper,
+    write_overlay_record,
 };
 pub use registry::{
-    all_runs, control_mount_inspect, control_overlay_status, control_ping, control_unmount_inspect,
-    default_run_home, is_live, resolve_run, EnvironmentProjection, RunLease, RunLineage, RunRecord,
+    EnvironmentProjection, RunLease, RunLineage, RunRecord, all_runs, control_mount_inspect,
+    control_overlay_status, control_ping, control_unmount_inspect, default_run_home, is_live,
+    resolve_run,
 };
 pub use supervisor::RuntimeCapabilities;

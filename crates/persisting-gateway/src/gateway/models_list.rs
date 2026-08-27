@@ -1,6 +1,6 @@
 //! OpenAI-compatible `/v1/models` view of the capture gateway config.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::router::model_matches;
 use crate::config::{ModelRoute, ProxyConfig};

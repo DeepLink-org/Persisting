@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::markdown_trajectory::format_duration_human;
 use crate::session::client::resolve_client_meta_for_run_dir;
 use crate::session::index::{SessionIndexStore, SessionSummary};
 use crate::session::snapshots::load_snapshot_turn_counts;
-use crate::session::storage::{trajectory_run_dir, CaptureRoute};
+use crate::session::storage::{CaptureRoute, trajectory_run_dir};
 use persisting_pchronicle::document::{
     decode_agenticmd, encode_agenticmd, rewrite_agenticmd_storyline_metadata,
 };
@@ -195,10 +195,10 @@ fn apply_summary(document: &mut StorylineDocument, summary: &SessionFrontmatterS
     if let Some(provider) = &summary.provider {
         agent_extra.insert("provider".into(), json!(provider));
     }
-    if let Some(client) = &summary.client {
-        if let Ok(value) = serde_json::to_value(client) {
-            agent_extra.insert("client".into(), value);
-        }
+    if let Some(client) = &summary.client
+        && let Ok(value) = serde_json::to_value(client)
+    {
+        agent_extra.insert("client".into(), value);
     }
     document.agent.extra = (!agent_extra.is_empty()).then_some(Value::Object(agent_extra));
 

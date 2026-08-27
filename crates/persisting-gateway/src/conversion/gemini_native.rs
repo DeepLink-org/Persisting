@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 const THOUGHT_SIGNATURE_SEPARATOR: &str = "__thought__";
 
@@ -49,10 +49,10 @@ pub fn completions_request_to_gemini(body: &Bytes, model: &str) -> Result<Bytes>
         ("safety_settings", "safetySettings"),
         ("labels", "labels"),
     ] {
-        if output.get(target).is_none() {
-            if let Some(value) = object.get(source).filter(|value| !value.is_null()) {
-                output[target] = value.clone();
-            }
+        if output.get(target).is_none()
+            && let Some(value) = object.get(source).filter(|value| !value.is_null())
+        {
+            output[target] = value.clone();
         }
     }
     // Gemini cached content already owns system instructions and tools.
@@ -558,26 +558,22 @@ fn rewrite_schema_structure(object: &mut Map<String, Value>) -> bool {
                 continue;
             };
             for (key, value) in member {
-                if key == "properties" {
-                    if let Value::Object(source) = value {
-                        if let Value::Object(target) =
-                            object.entry("properties").or_insert_with(|| json!({}))
-                        {
-                            for (name, schema) in source {
-                                target.entry(name).or_insert(schema);
-                            }
-                        }
+                if key == "properties"
+                    && let Value::Object(ref source) = value
+                    && let Value::Object(target) =
+                        object.entry("properties").or_insert_with(|| json!({}))
+                {
+                    for (name, schema) in source {
+                        target.entry(name).or_insert(schema.clone());
                     }
-                } else if key == "required" {
-                    if let Value::Array(source) = value {
-                        if let Value::Array(target) =
-                            object.entry("required").or_insert_with(|| json!([]))
-                        {
-                            for required in source {
-                                if !target.contains(&required) {
-                                    target.push(required);
-                                }
-                            }
+                } else if key == "required"
+                    && let Value::Array(ref source) = value
+                    && let Value::Array(target) =
+                        object.entry("required").or_insert_with(|| json!([]))
+                {
+                    for required in source {
+                        if !target.contains(required) {
+                            target.push(required.clone());
                         }
                     }
                 } else {
@@ -633,31 +629,29 @@ fn rewrite_schema_structure(object: &mut Map<String, Value>) -> bool {
                     .iter()
                     .any(|member| member.get("type").and_then(Value::as_str) == Some("null"))
         });
-    if collapsible_any_of {
-        if let Some(Value::Array(members)) = object.remove("anyOf") {
-            changed = true;
-            let nullable = members
-                .iter()
-                .any(|member| member.get("type").and_then(Value::as_str) == Some("null"));
-            let non_null = members
-                .into_iter()
-                .filter(|member| member.get("type").and_then(Value::as_str) != Some("null"))
-                .collect::<Vec<_>>();
-            if nullable {
-                object.insert("nullable".into(), Value::Bool(true));
-            }
-            match non_null.len() {
-                0 => {}
-                1 => {
-                    if let Some(Value::Object(member)) = non_null.into_iter().next() {
-                        for (key, value) in member {
-                            object.entry(key).or_insert(value);
-                        }
+    if collapsible_any_of && let Some(Value::Array(members)) = object.remove("anyOf") {
+        changed = true;
+        let nullable = members
+            .iter()
+            .any(|member| member.get("type").and_then(Value::as_str) == Some("null"));
+        let non_null = members
+            .into_iter()
+            .filter(|member| member.get("type").and_then(Value::as_str) != Some("null"))
+            .collect::<Vec<_>>();
+        if nullable {
+            object.insert("nullable".into(), Value::Bool(true));
+        }
+        match non_null.len() {
+            0 => {}
+            1 => {
+                if let Some(Value::Object(member)) = non_null.into_iter().next() {
+                    for (key, value) in member {
+                        object.entry(key).or_insert(value);
                     }
                 }
-                _ => {
-                    object.insert("anyOf".into(), Value::Array(non_null));
-                }
+            }
+            _ => {
+                object.insert("anyOf".into(), Value::Array(non_null));
             }
         }
     }
@@ -806,12 +800,14 @@ fn build_choice(candidate: &Value, index: usize, response_id: &str) -> Value {
         message["reasoning_content"] = json!(decoded.reasoning);
     }
     if !decoded.tool_calls.is_empty() {
-        message["tool_calls"] = json!(decoded
-            .tool_calls
-            .iter()
-            .enumerate()
-            .map(|(tool_index, call)| tool_call_json(call, response_id, tool_index))
-            .collect::<Vec<_>>());
+        message["tool_calls"] = json!(
+            decoded
+                .tool_calls
+                .iter()
+                .enumerate()
+                .map(|(tool_index, call)| tool_call_json(call, response_id, tool_index))
+                .collect::<Vec<_>>()
+        );
     }
     let finish = finish_reason(
         candidate.get("finishReason").and_then(Value::as_str),
@@ -987,9 +983,11 @@ mod tests {
             responses[1]["functionResponse"]["response"]["content"],
             "result-b"
         );
-        assert!(responses
-            .iter()
-            .all(|response| response["functionResponse"].get("id").is_none()));
+        assert!(
+            responses
+                .iter()
+                .all(|response| response["functionResponse"].get("id").is_none())
+        );
     }
 
     #[test]

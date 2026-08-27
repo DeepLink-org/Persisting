@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use persisting_pchronicle::document::{
-    decode_agenticmd, decode_json_storylines, encode_agenticmd, encode_json_storylines,
-    DocumentFormat,
+    DocumentFormat, decode_agenticmd, decode_json_storylines, encode_agenticmd,
+    encode_json_storylines,
 };
 use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::query::{
@@ -367,13 +367,15 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
 async fn query_engine_validates_storyline_store_state() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let store = StorylineLanceStore::open(dir.path()).await?;
-    assert!(ChronicleQueryEngine::open(
-        DocumentFormat::StorylineLance,
-        dir.path(),
-        ChronicleQueryExecutionOptions::default(),
-    )
-    .await
-    .is_err());
+    assert!(
+        ChronicleQueryEngine::open(
+            DocumentFormat::StorylineLance,
+            dir.path(),
+            ChronicleQueryExecutionOptions::default(),
+        )
+        .await
+        .is_err()
+    );
 
     let raw = load(&fixture_root().join("dialogue_10.json"))?;
     store

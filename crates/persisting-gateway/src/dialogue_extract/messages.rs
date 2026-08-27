@@ -114,12 +114,11 @@ impl SseStreamBlockParser {
 
     pub fn finish(mut self) -> Vec<ContentBlock> {
         for idx in self.order.clone() {
-            if self.by_index.contains_key(&idx) {
-                if let Some(builder) = self.by_index.remove(&idx) {
-                    if let Some(block) = builder.finish() {
-                        self.completed.push(block);
-                    }
-                }
+            if self.by_index.contains_key(&idx)
+                && let Some(builder) = self.by_index.remove(&idx)
+                && let Some(block) = builder.finish()
+            {
+                self.completed.push(block);
             }
         }
         self.completed

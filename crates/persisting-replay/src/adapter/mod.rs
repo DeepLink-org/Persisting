@@ -11,7 +11,7 @@ mod pi_agent;
 mod runtime;
 mod swe_agent;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write, atomic_write_json, read_regular_file, sha256};
@@ -20,12 +20,12 @@ use crate::model::{
     AdapterPlan, AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome,
     ReplayPlan,
 };
-use crate::process::{run_process, ProcessSpec};
+use crate::process::{ProcessSpec, run_process};
+pub(crate) use runtime::{LaunchSpec, resolve_launch_spec};
 use runtime::{
     configure_mini_python_environment, mini_python_library_path, mini_python_runtime,
     pi_node_runtime,
 };
-pub(crate) use runtime::{resolve_launch_spec, LaunchSpec};
 
 const MAX_TOOL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 

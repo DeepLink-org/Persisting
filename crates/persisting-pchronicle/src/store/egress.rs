@@ -122,11 +122,12 @@ mod tests {
         let out = base.join("out");
         let r = export_story_bundle(&coords, &out, false).unwrap();
         assert!(r.files_copied >= 1);
-        assert!(out
-            .join("agent-a")
-            .join("sess-1")
-            .join("sess-1.md")
-            .exists());
+        assert!(
+            out.join("agent-a")
+                .join("sess-1")
+                .join("sess-1.md")
+                .exists()
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }

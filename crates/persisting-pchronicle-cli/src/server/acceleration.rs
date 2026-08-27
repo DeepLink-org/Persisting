@@ -29,8 +29,8 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tokio::sync::{Mutex, OnceCell};
 
-use super::explorer;
 use super::RunSummary;
+use super::explorer;
 
 const MAX_INJECTED_SOURCES: usize = 512;
 const MAX_ROUTING_INDEX_ROWS: usize = 1_000_000;
@@ -1425,12 +1425,16 @@ mod tests {
             assert_eq!(source.kind(), io::ErrorKind::Other);
             assert_eq!(source.to_string(), "required-summary-source-diagnostic");
             let chain = failure.chain().map(ToString::to_string).collect::<Vec<_>>();
-            assert!(chain
-                .iter()
-                .any(|entry| entry == "build required summaries"));
-            assert!(chain
-                .iter()
-                .any(|entry| entry == "required-summary-source-diagnostic"));
+            assert!(
+                chain
+                    .iter()
+                    .any(|entry| entry == "build required summaries")
+            );
+            assert!(
+                chain
+                    .iter()
+                    .any(|entry| entry == "required-summary-source-diagnostic")
+            );
         }
 
         let response = super::super::problem::ApiError::internal(
@@ -1441,16 +1445,18 @@ mod tests {
         let body: JsonValue = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["code"], "internal");
         assert_eq!(body["message"], "internal server error");
-        assert!(!body
-            .to_string()
-            .contains("required-summary-source-diagnostic"));
+        assert!(
+            !body
+                .to_string()
+                .contains("required-summary-source-diagnostic")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn optional_index_failure_is_cached_and_falls_back_without_diagnostics() -> Result<()> {
         use futures::future::join_all;
         use persisting_pchronicle::storage::{
-            CatalogSnapshotOptions, DatasetMount, DEFAULT_DATASET_NAME,
+            CatalogSnapshotOptions, DEFAULT_DATASET_NAME, DatasetMount,
         };
 
         let root = tempfile::tempdir()?;
@@ -1676,8 +1682,8 @@ mod tests {
     #[tokio::test]
     async fn event_index_routes_to_one_catalog_source_without_changing_results() -> Result<()> {
         use persisting_pchronicle::storage::{
-            CatalogSnapshotOptions, DatasetMount, RawEventLanceAppender, StoryCoords,
-            DEFAULT_DATASET_NAME,
+            CatalogSnapshotOptions, DEFAULT_DATASET_NAME, DatasetMount, RawEventLanceAppender,
+            StoryCoords,
         };
 
         let root = std::env::temp_dir().join(format!(
@@ -1743,10 +1749,12 @@ mod tests {
             engine.query_jsonl(&project_routed.sql).await?,
             engine.query_jsonl(project_sql).await?
         );
-        assert!(partition_acceleration
-            .status()
-            .event_identity_index
-            .is_none());
+        assert!(
+            partition_acceleration
+                .status()
+                .event_identity_index
+                .is_none()
+        );
         assert_eq!(
             partition_acceleration
                 .status()

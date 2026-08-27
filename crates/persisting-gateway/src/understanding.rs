@@ -310,10 +310,10 @@ fn parse_gemini_response(object: &Map<String, Value>) -> LlmResponse {
                     .unwrap_or(&Value::Null),
             );
             for (part_index, part) in parts.iter_mut().enumerate() {
-                if let LlmContentPart::ToolCall { id, .. } = part {
-                    if id.is_empty() {
-                        *id = format!("call_{response_id}_{index}_{part_index}");
-                    }
+                if let LlmContentPart::ToolCall { id, .. } = part
+                    && id.is_empty()
+                {
+                    *id = format!("call_{response_id}_{index}_{part_index}");
                 }
             }
             LlmCandidate {
@@ -455,10 +455,10 @@ fn parse_gemini_request(object: &Map<String, Value>) -> LlmRequest {
         };
         let mut parts = parse_gemini_parts(content.get("parts").unwrap_or(&Value::Null));
         for (part_index, part) in parts.iter_mut().enumerate() {
-            if let LlmContentPart::ToolCall { id, .. } = part {
-                if id.is_empty() {
-                    *id = format!("call-{message_index}-{part_index}");
-                }
+            if let LlmContentPart::ToolCall { id, .. } = part
+                && id.is_empty()
+            {
+                *id = format!("call-{message_index}-{part_index}");
             }
         }
         if !parts.is_empty() {

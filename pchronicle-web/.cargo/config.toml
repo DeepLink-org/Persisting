@@ -1,0 +1,8 @@
+# The Web workspace targets wasm32, while the repository's native development
+# profile uses the host-only Cranelift backend. Keep the Dioxus/WASM build on
+# LLVM; the parent repository config still supplies the nightly feature gate.
+[profile.dev]
+codegen-backend = "llvm"
+
+[profile.test]
+codegen-backend = "llvm"

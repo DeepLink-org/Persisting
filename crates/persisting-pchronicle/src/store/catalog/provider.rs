@@ -303,11 +303,11 @@ fn collect_business_conjuncts(expr: &Expr, output: &mut Vec<Expr>) {
         .any(|column| column.name == SOURCE_FILE_COLUMN)
     {
         output.push(expr.clone());
-    } else if let Expr::BinaryExpr(binary) = expr {
-        if binary.op == Operator::And {
-            collect_business_conjuncts(&binary.left, output);
-            collect_business_conjuncts(&binary.right, output);
-        }
+    } else if let Expr::BinaryExpr(binary) = expr
+        && binary.op == Operator::And
+    {
+        collect_business_conjuncts(&binary.left, output);
+        collect_business_conjuncts(&binary.right, output);
     }
 }
 

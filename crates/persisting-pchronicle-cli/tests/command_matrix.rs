@@ -5,9 +5,9 @@ mod common;
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use common::{examples_root, run_cli, EXAMPLE_FIXTURES};
+use common::{EXAMPLE_FIXTURES, examples_root, run_cli};
 
 #[test]
 fn fixture_catalog_covers_every_warehouse_example() -> Result<()> {

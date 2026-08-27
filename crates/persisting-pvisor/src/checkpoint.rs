@@ -1,7 +1,7 @@
 //! Filesystem-backed logical checkpoints for Agent Runs.
 
 use crate::runtime::{
-    is_live, restore_overlay_upper, snapshot_overlay_upper, OverlayState, RunRecord,
+    OverlayState, RunRecord, is_live, restore_overlay_upper, snapshot_overlay_upper,
 };
 use crate::unix_now_ms;
 use crate::util::{atomic_write, create_dir_all_durable};

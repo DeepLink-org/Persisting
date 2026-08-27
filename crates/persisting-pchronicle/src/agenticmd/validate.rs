@@ -4,8 +4,8 @@
 //! AgenticMD is a debugging view, not a protocol boundary.
 
 use crate::formats::unknown_fields::{
-    compute_unknown_key_counts, normalize_agenticmd_unknown_pointer, validate_json_pointer,
-    UnknownFieldLimits,
+    UnknownFieldLimits, compute_unknown_key_counts, normalize_agenticmd_unknown_pointer,
+    validate_json_pointer,
 };
 use crate::{InputIssue, InputResult, StorylineDocument};
 

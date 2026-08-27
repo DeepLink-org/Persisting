@@ -86,13 +86,13 @@ struct EnvGuard {
 impl EnvGuard {
     fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
         let previous = std::env::var_os(key);
-        std::env::set_var(key, value);
+        unsafe { std::env::set_var(key, value) };
         Self { key, previous }
     }
 
     fn unset(key: &'static str) -> Self {
         let previous = std::env::var_os(key);
-        std::env::remove_var(key);
+        unsafe { std::env::remove_var(key) };
         Self { key, previous }
     }
 }
@@ -100,8 +100,8 @@ impl EnvGuard {
 impl Drop for EnvGuard {
     fn drop(&mut self) {
         match &self.previous {
-            Some(value) => std::env::set_var(self.key, value),
-            None => std::env::remove_var(self.key),
+            Some(value) => unsafe { std::env::set_var(self.key, value) },
+            None => unsafe { std::env::remove_var(self.key) },
         }
     }
 }
@@ -298,11 +298,13 @@ fn command_tree_contains_the_product_commands() {
         .get_arguments()
         .find(|argument| argument.get_id() == "output_format")
         .unwrap();
-    assert!(output_format
-        .get_help()
-        .unwrap()
-        .to_string()
-        .contains("combine them into one Storyline Lance Store at the Dataset root"));
+    assert!(
+        output_format
+            .get_help()
+            .unwrap()
+            .to_string()
+            .contains("combine them into one Storyline Lance Store at the Dataset root")
+    );
     assert!(Cli::try_parse_from(["pchronicle", "project", "status"]).is_err());
 }
 
@@ -369,18 +371,20 @@ fn canonical_parser_surface_matches_the_cli_guide() -> Result<()> {
     assert_eq!(import.output_format, Some(ImportOutputFormat::Preserve));
 
     assert!(Cli::try_parse_from(["pchronicle", "export", "-t", "-", "-o", "storyline"]).is_err());
-    assert!(Cli::try_parse_from([
-        "pchronicle",
-        "serve",
-        "--listen",
-        "127.0.0.1:8080",
-        "--gateway-config",
-        "gateway.toml",
-        "--gateway-dataset",
-        "evals",
-        "evals=./dataset"
-    ])
-    .is_ok());
+    assert!(
+        Cli::try_parse_from([
+            "pchronicle",
+            "serve",
+            "--listen",
+            "127.0.0.1:8080",
+            "--gateway-config",
+            "gateway.toml",
+            "--gateway-dataset",
+            "evals",
+            "evals=./dataset"
+        ])
+        .is_ok()
+    );
     Ok(())
 }
 
@@ -788,9 +792,11 @@ async fn status_strict_mode_rejects_bad_sources() -> Result<()> {
         "strict",
     ])?;
 
-    assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
-        .await
-        .is_err());
+    assert!(
+        run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
@@ -829,14 +835,14 @@ async fn status_report_mode_marks_an_unreadable_dataset_as_error() -> Result<()>
 #[tokio::test]
 async fn status_report_mode_logs_each_cached_source_failure_once() -> Result<()> {
     use std::fmt::Write as _;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use tracing::field::{Field, Visit};
     use tracing::instrument::WithSubscriber as _;
     use tracing::{Event, Subscriber};
-    use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
     use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 
     const SENTINEL: &str = "status-duplicate-log-sentinel";
 
@@ -1323,9 +1329,11 @@ async fn find_validates_source_paths_and_escapes_quotes() -> Result<()> {
             "--session-id",
             "support-001",
         ])?;
-        assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
-            .await
-            .is_err());
+        assert!(
+            run(cli, false, &mut Vec::new(), &mut Vec::new())
+                .await
+                .is_err()
+        );
     }
 
     let temp = tempfile::tempdir()?;
@@ -1379,16 +1387,18 @@ async fn find_enforces_output_byte_limit_without_partial_stdout() -> Result<()> 
 #[test]
 fn find_cli_requires_one_identity_and_session_for_steps() {
     assert!(Cli::try_parse_from(["pchronicle", "find", "."]).is_err());
-    assert!(Cli::try_parse_from([
-        "pchronicle",
-        "find",
-        ".",
-        "--run-id",
-        "r",
-        "--session-id",
-        "s"
-    ])
-    .is_err());
+    assert!(
+        Cli::try_parse_from([
+            "pchronicle",
+            "find",
+            ".",
+            "--run-id",
+            "r",
+            "--session-id",
+            "s"
+        ])
+        .is_err()
+    );
     assert!(Cli::try_parse_from(["pchronicle", "find", ".", "--step-id", "1"]).is_err());
 }
 
@@ -1402,9 +1412,11 @@ async fn find_rejects_empty_and_oversized_identities() -> Result<()> {
             "--session-id",
             identity,
         ])?;
-        assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
-            .await
-            .is_err());
+        assert!(
+            run(cli, false, &mut Vec::new(), &mut Vec::new())
+                .await
+                .is_err()
+        );
     }
     Ok(())
 }
@@ -1909,9 +1921,11 @@ async fn directory_import_auto_detects_each_file_and_skips_unknown_json() -> Res
         );
         if output_format == ImportOutputFormat::Preserve {
             assert!(!output.join(unknown.file_name().unwrap()).exists());
-            assert!(!output
-                .join("details/_error_gravitational-wave-detection_astronomy.json")
-                .exists());
+            assert!(
+                !output
+                    .join("details/_error_gravitational-wave-detection_astronomy.json")
+                    .exists()
+            );
         }
     }
 
@@ -2132,9 +2146,11 @@ async fn canonical_event_import_auto_detects_and_is_create_only() -> Result<()> 
     let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
         .await
         .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("cannot preserve an existing canonical event Store"));
+    assert!(
+        error
+            .to_string()
+            .contains("cannot preserve an existing canonical event Store")
+    );
     assert!(!preserved.exists());
 
     let existing = temp.path().join("existing");
@@ -2148,9 +2164,11 @@ async fn canonical_event_import_auto_detects_and_is_create_only() -> Result<()> 
         "--output",
         existing.to_str().unwrap(),
     ])?;
-    assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
-        .await
-        .is_err());
+    assert!(
+        run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .is_err()
+    );
     assert_eq!(fs::read_to_string(existing.join("sentinel"))?, "keep");
     Ok(())
 }
@@ -2201,9 +2219,11 @@ async fn events_lance_suffix_without_manifest_remains_an_ordinary_directory_impo
     let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
         .await
         .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("contains no .json, .jsonl, or .ndjson files"));
+    assert!(
+        error
+            .to_string()
+            .contains("contains no .json, .jsonl, or .ndjson files")
+    );
     assert!(!output.exists());
     Ok(())
 }
@@ -2749,17 +2769,19 @@ async fn export_rejects_decode_only_session_formats() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let output = temp.path().join("out.json");
     for format in ["codex", "claude-code"] {
-        assert!(Cli::try_parse_from([
-            "pchronicle",
-            "export",
-            "--from",
-            temp.path().to_str().unwrap(),
-            "--output",
-            output.to_str().unwrap(),
-            "--format",
-            format,
-        ])
-        .is_err());
+        assert!(
+            Cli::try_parse_from([
+                "pchronicle",
+                "export",
+                "--from",
+                temp.path().to_str().unwrap(),
+                "--output",
+                output.to_str().unwrap(),
+                "--format",
+                format,
+            ])
+            .is_err()
+        );
     }
     Ok(())
 }
@@ -2836,8 +2858,8 @@ async fn storyline_import_from_stdin_writes_one_root_store() -> Result<()> {
 }
 
 #[tokio::test]
-async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_output(
-) -> Result<()> {
+async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_output()
+-> Result<()> {
     let temp = tempfile::tempdir()?;
     let invalid = temp.path().join("invalid.json");
     fs::write(&invalid, "not json")?;
@@ -2896,9 +2918,11 @@ async fn import_is_create_only_and_keeps_duplicate_documents() -> Result<()> {
         "--output",
         output.to_str().unwrap(),
     ])?;
-    assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
-        .await
-        .is_err());
+    assert!(
+        run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .is_err()
+    );
     assert_eq!(fs::read_to_string(output.join("sentinel"))?, "keep");
 
     let trajectory: Value = serde_json::from_slice(&fs::read(example_source("atif"))?)?;
@@ -3072,9 +3096,11 @@ async fn export_is_bounded_create_only_and_has_no_partial_output() -> Result<()>
         "atif",
     ];
     let cli = Cli::try_parse_from(base)?;
-    assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
-        .await
-        .is_err());
+    assert!(
+        run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .is_err()
+    );
     assert_eq!(fs::read_to_string(&output)?, "sentinel");
 
     let mut overwrite = base.to_vec();
@@ -3962,23 +3988,27 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
     assert!(args.gateway_stream_markdown);
     assert!(args.debug);
 
-    assert!(Cli::try_parse_from([
-        "pchronicle",
-        "serve",
-        "--warehouse-config",
-        "warehouse.toml",
-        "--gateway-dataset",
-        "captures",
-    ])
-    .is_err());
-    assert!(Cli::try_parse_from([
-        "pchronicle",
-        "serve",
-        "--warehouse-config",
-        "warehouse.toml",
-        "--gateway-debug",
-    ])
-    .is_err());
+    assert!(
+        Cli::try_parse_from([
+            "pchronicle",
+            "serve",
+            "--warehouse-config",
+            "warehouse.toml",
+            "--gateway-dataset",
+            "captures",
+        ])
+        .is_err()
+    );
+    assert!(
+        Cli::try_parse_from([
+            "pchronicle",
+            "serve",
+            "--warehouse-config",
+            "warehouse.toml",
+            "--gateway-debug",
+        ])
+        .is_err()
+    );
 
     let cli = Cli::try_parse_from([
         "pchronicle",

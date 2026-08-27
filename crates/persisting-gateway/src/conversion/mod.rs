@@ -239,125 +239,10 @@ fn route_supports_native_responses(route: &ModelRoute) -> bool {
 mod tests {
     use super::*;
     use crate::config::ProxyConfig;
+    use proptest::prelude::*;
 
-    fn deepseek_route() -> ModelRoute {
-        ProxyConfig::from_toml_str(
-            r#"
-listen = "127.0.0.1:1"
-
-[[models]]
-name = "deepseek-chat"
-upstream = "https://api.deepseek.com/v1"
-"#,
-        )
-        .unwrap()
-        .models
-        .into_iter()
-        .next()
-        .unwrap()
-    }
-
-    #[test]
-    fn responses_to_completions_for_deepseek() {
-        let route = deepseek_route();
-        assert_eq!(
-            ProtocolBridge::needed(ProtocolKind::Responses, &route),
-            ProtocolBridge::ResponsesToCompletions
-        );
-        assert_eq!(
-            ProtocolBridge::ResponsesToCompletions
-                .upstream_path("/v1/responses", "deepseek-chat", false)
-                .unwrap(),
-            "/v1/chat/completions"
-        );
-    }
-
-    #[test]
-    fn responses_passthrough_for_openai_upstream() {
-        let route = ProxyConfig::from_toml_str(
-            r#"
-listen = "127.0.0.1:1"
-
-[[models]]
-name = "gpt-5"
-upstream = "https://api.openai.com/v1"
-"#,
-        )
-        .unwrap()
-        .models
-        .into_iter()
-        .next()
-        .unwrap();
-        assert_eq!(
-            ProtocolBridge::needed(ProtocolKind::Responses, &route),
-            ProtocolBridge::Passthrough
-        );
-    }
-
-    #[test]
-    fn messages_bridge_translates_openai_error_envelope() {
-        let body = Bytes::from_static(
-            br#"{"error":{"message":"rate limited","type":"provider_limit","code":"x"}}"#,
-        );
-        let translated = translate_error_for_bridge(
-            ProtocolBridge::MessagesToCompletions,
-            &body,
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-        )
-        .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&translated).unwrap();
-        assert_eq!(value["type"], "error");
-        assert_eq!(value["error"]["type"], "provider_limit");
-        assert_eq!(value["error"]["message"], "rate limited");
-    }
-
-    #[test]
-    fn gemini_route_selects_native_bridge_and_path() {
-        let route = ProxyConfig::from_toml_str(
-            r#"
-listen = "127.0.0.1:1"
-
-[[models]]
-name = "gemini-2.5-pro"
-provider = "gemini"
-upstream = "https://generativelanguage.googleapis.com/v1beta"
-"#,
-        )
-        .unwrap()
-        .models
-        .into_iter()
-        .next()
-        .unwrap();
-        let bridge = ProtocolBridge::needed(ProtocolKind::ChatCompletions, &route);
-        assert_eq!(bridge, ProtocolBridge::CompletionsToGemini);
-        assert_eq!(
-            bridge.upstream_protocol(ProtocolKind::ChatCompletions),
-            ProtocolKind::Gemini
-        );
-        assert_eq!(
-            bridge
-                .upstream_path("/v1/chat/completions", "gemini-2.5-pro", false)
-                .unwrap(),
-            "/v1beta/models/gemini-2.5-pro:generateContent"
-        );
-        assert_eq!(
-            bridge
-                .upstream_path("/v1/chat/completions", "gemini-2.5-pro", true)
-                .unwrap(),
-            "/v1beta/models/gemini-2.5-pro:streamGenerateContent"
-        );
-    }
-
-    #[test]
-    fn responses_bridge_preserves_original_error_bytes() {
-        let body = Bytes::from_static(br#"{ "error": {"message":"bad"} }"#);
-        let translated = translate_error_for_bridge(
-            ProtocolBridge::ResponsesToCompletions,
-            &body,
-            axum::http::StatusCode::BAD_REQUEST,
-        )
-        .unwrap();
-        assert_eq!(translated, body);
+    fn text_strategy() -> impl Strategy<Value = String> {
+        "[a-zA-Z0-9][a-zA-Z0-9 .,!?_-]{0,63}"
     }
 
     #[test]
@@ -410,5 +295,266 @@ upstream = "https://generativelanguage.googleapis.com/v1beta"
             translated.semantic.output_format,
             persisting_pchronicle::model::LlmProtocol::Gemini
         );
+    }
+
+    proptest! {
+        #[test]
+        fn responses_bridge_selects_chat_completions_for_deepseek(
+            model in "deepseek-[a-z][a-z0-9-]{0,20}",
+            streaming in any::<bool>(),
+        ) {
+            let config = format!(
+                "listen = \"127.0.0.1:1\"\n\n[[models]]\nname = \"{model}\"\nupstream = \"https://api.deepseek.com/v1\"\n"
+            );
+            let route = ProxyConfig::from_toml_str(&config)
+                .unwrap()
+                .models
+                .into_iter()
+                .next()
+                .unwrap();
+            let bridge = ProtocolBridge::needed(ProtocolKind::Responses, &route);
+
+            prop_assert_eq!(bridge, ProtocolBridge::ResponsesToCompletions);
+            prop_assert_eq!(
+                bridge.upstream_protocol(ProtocolKind::Responses),
+                ProtocolKind::ChatCompletions
+            );
+            prop_assert_eq!(
+                bridge
+                    .upstream_path("/v1/responses", &model, streaming)
+                    .unwrap(),
+                "/v1/chat/completions"
+            );
+        }
+
+        #[test]
+        fn responses_bridge_passthrough_covers_native_openai_hosts(
+            model in "[a-z][a-z0-9._-]{0,24}",
+            host in prop_oneof![Just("api.openai.com"), Just("openai.azure.com")],
+        ) {
+            let config = format!(
+                "listen = \"127.0.0.1:1\"\n\n[[models]]\nname = \"{model}\"\nupstream = \"https://{host}/v1\"\n"
+            );
+            let route = ProxyConfig::from_toml_str(&config)
+                .unwrap()
+                .models
+                .into_iter()
+                .next()
+                .unwrap();
+
+            prop_assert_eq!(
+                ProtocolBridge::needed(ProtocolKind::Responses, &route),
+                ProtocolBridge::Passthrough
+            );
+        }
+
+        #[test]
+        fn messages_error_conversion_preserves_generated_error_details(
+            message in text_strategy(),
+            error_type in "[a-z][a-z0-9_-]{0,16}",
+            code in prop::option::of("[a-z][a-z0-9_-]{0,16}"),
+            status_code in prop_oneof![Just(400u16), Just(429u16), Just(500u16)],
+        ) {
+            let body = Bytes::from(serde_json::to_vec(&serde_json::json!({
+                "error": {
+                    "message": message.clone(),
+                    "type": error_type.clone(),
+                    "code": code,
+                }
+            })).unwrap());
+            let translated = translate_error_for_bridge(
+                ProtocolBridge::MessagesToCompletions,
+                &body,
+                axum::http::StatusCode::from_u16(status_code).unwrap(),
+            ).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&translated).unwrap();
+
+            prop_assert_eq!(value["type"].as_str(), Some("error"));
+            prop_assert_eq!(value["error"]["type"].as_str(), Some(error_type.as_str()));
+            prop_assert_eq!(value["error"]["message"].as_str(), Some(message.as_str()));
+        }
+
+        #[test]
+        fn responses_error_conversion_preserves_arbitrary_bytes(
+            body in prop::collection::vec(any::<u8>(), 0..=256),
+            status_code in prop_oneof![Just(400u16), Just(429u16), Just(500u16)],
+        ) {
+            let body = Bytes::from(body);
+            let translated = translate_error_for_bridge(
+                ProtocolBridge::ResponsesToCompletions,
+                &body,
+                axum::http::StatusCode::from_u16(status_code).unwrap(),
+            ).unwrap();
+
+            prop_assert_eq!(translated, body);
+        }
+
+        #[test]
+        fn gemini_bridge_preserves_model_and_stream_path(
+            model in "[a-z][a-z0-9._-]{0,24}",
+            prefixed in any::<bool>(),
+            streaming in any::<bool>(),
+        ) {
+            let route_model = if prefixed {
+                format!("models/{model}")
+            } else {
+                model.clone()
+            };
+            let config = format!(
+                "listen = \"127.0.0.1:1\"\n\n[[models]]\nname = \"{route_model}\"\nprovider = \"gemini\"\nupstream = \"https://generativelanguage.googleapis.com/v1beta\"\n"
+            );
+            let route = ProxyConfig::from_toml_str(&config)
+                .unwrap()
+                .models
+                .into_iter()
+                .next()
+                .unwrap();
+            let bridge = ProtocolBridge::needed(ProtocolKind::ChatCompletions, &route);
+            let method = if streaming {
+                "streamGenerateContent"
+            } else {
+                "generateContent"
+            };
+
+            prop_assert_eq!(bridge, ProtocolBridge::CompletionsToGemini);
+            prop_assert_eq!(
+                bridge.upstream_protocol(ProtocolKind::ChatCompletions),
+                ProtocolKind::Gemini
+            );
+            prop_assert_eq!(
+                bridge
+                    .upstream_path("/v1/chat/completions", &route_model, streaming)
+                    .unwrap(),
+                format!("/v1beta/models/{model}:{method}")
+            );
+        }
+
+        #[test]
+        fn messages_request_conversion_preserves_text_and_stream_flag(
+            text in text_strategy(),
+            system in prop::option::of(text_strategy()),
+            stream in any::<bool>(),
+        ) {
+            let request = serde_json::json!({
+                "model": "claude-test",
+                "system": system.clone(),
+                "messages": [{"role": "user", "content": text.clone()}],
+                "stream": stream,
+            });
+            let translated = messages_request_to_completions(
+                &Bytes::from(serde_json::to_vec(&request).unwrap()),
+                "upstream-model",
+            )
+            .unwrap();
+            let wire: serde_json::Value = serde_json::from_slice(&translated).unwrap();
+
+            prop_assert_eq!(wire["model"].as_str(), Some("upstream-model"));
+            prop_assert_eq!(wire["stream"].as_bool(), Some(stream));
+            let user_index = if let Some(system) = system.as_ref() {
+                prop_assert_eq!(wire["messages"][0]["role"].as_str(), Some("system"));
+                prop_assert_eq!(wire["messages"][0]["content"].as_str(), Some(system.as_str()));
+                1
+            } else {
+                0
+            };
+            prop_assert_eq!(wire["messages"][user_index]["role"].as_str(), Some("user"));
+            prop_assert_eq!(wire["messages"][user_index]["content"][0]["type"].as_str(), Some("text"));
+            prop_assert_eq!(
+                wire["messages"][user_index]["content"][0]["text"].as_str(),
+                Some(text.as_str())
+            );
+            prop_assert!(wire.get("system").is_none());
+        }
+
+        #[test]
+        fn responses_request_conversion_preserves_text_and_stream_flag(
+            text in text_strategy(),
+            instructions in prop::option::of(text_strategy()),
+            stream in any::<bool>(),
+        ) {
+            let request = serde_json::json!({
+                "model": "responses-test",
+                "instructions": instructions.clone(),
+                "input": text.clone(),
+                "stream": stream,
+            });
+            let translated = responses_request_to_completions(
+                &Bytes::from(serde_json::to_vec(&request).unwrap()),
+                "upstream-model",
+                None,
+            )
+            .unwrap();
+            let wire: serde_json::Value = serde_json::from_slice(&translated).unwrap();
+
+            prop_assert_eq!(wire["model"].as_str(), Some("upstream-model"));
+            prop_assert_eq!(wire["stream"].as_bool(), Some(stream));
+            let user_index = if let Some(instructions) = instructions.as_ref() {
+                prop_assert_eq!(wire["messages"][0]["role"].as_str(), Some("system"));
+                prop_assert_eq!(wire["messages"][0]["content"].as_str(), Some(instructions.as_str()));
+                1
+            } else {
+                0
+            };
+            prop_assert_eq!(wire["messages"][user_index]["role"].as_str(), Some("user"));
+            prop_assert_eq!(wire["messages"][user_index]["content"].as_str(), Some(text.as_str()));
+        }
+
+        #[test]
+        fn completion_response_conversion_preserves_wire_shape_and_usage(
+            text in text_strategy(),
+            model in "[a-z][a-z0-9_-]{0,24}",
+            finish_reason in prop_oneof![Just("stop"), Just("length"), Just("content_filter")],
+            input_tokens in 0u64..=10_000,
+            output_tokens in 0u64..=10_000,
+        ) {
+            let response = serde_json::json!({
+                "id": "chatcmpl-property",
+                "model": "upstream-model",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": text},
+                    "finish_reason": finish_reason
+                }],
+                "usage": {
+                    "prompt_tokens": input_tokens,
+                    "completion_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens
+                }
+            });
+            let body = Bytes::from(serde_json::to_vec(&response).unwrap());
+
+            let messages = completions_response_to_messages(&body, &model).unwrap();
+            let messages_wire: serde_json::Value = serde_json::from_slice(&messages).unwrap();
+            let expected_stop = match finish_reason {
+                "length" => "max_tokens",
+                "content_filter" => "refusal",
+                _ => "end_turn",
+            };
+            prop_assert_eq!(messages_wire["type"].as_str(), Some("message"));
+            prop_assert_eq!(messages_wire["role"].as_str(), Some("assistant"));
+            prop_assert_eq!(messages_wire["model"].as_str(), Some(model.as_str()));
+            prop_assert_eq!(messages_wire["content"][0]["type"].as_str(), Some("text"));
+            prop_assert_eq!(messages_wire["content"][0]["text"].as_str(), Some(text.as_str()));
+            prop_assert_eq!(messages_wire["stop_reason"].as_str(), Some(expected_stop));
+            prop_assert_eq!(messages_wire["usage"]["input_tokens"].as_u64(), Some(input_tokens));
+            prop_assert_eq!(messages_wire["usage"]["output_tokens"].as_u64(), Some(output_tokens));
+
+            let responses = completions_response_to_responses(&body, &model).unwrap();
+            let responses_wire: serde_json::Value = serde_json::from_slice(&responses).unwrap();
+            let expected_status = match finish_reason {
+                "length" => "incomplete",
+                "content_filter" => "failed",
+                _ => "completed",
+            };
+            prop_assert_eq!(responses_wire["object"].as_str(), Some("response"));
+            prop_assert_eq!(responses_wire["status"].as_str(), Some(expected_status));
+            prop_assert_eq!(responses_wire["model"].as_str(), Some(model.as_str()));
+            prop_assert_eq!(responses_wire["output"][0]["type"].as_str(), Some("message"));
+            prop_assert_eq!(responses_wire["output"][0]["content"][0]["type"].as_str(), Some("output_text"));
+            prop_assert_eq!(responses_wire["output"][0]["content"][0]["text"].as_str(), Some(text.as_str()));
+            prop_assert_eq!(responses_wire["usage"]["input_tokens"].as_u64(), Some(input_tokens));
+            prop_assert_eq!(responses_wire["usage"]["output_tokens"].as_u64(), Some(output_tokens));
+            prop_assert_eq!(responses_wire["usage"]["total_tokens"].as_u64(), Some(input_tokens + output_tokens));
+        }
     }
 }

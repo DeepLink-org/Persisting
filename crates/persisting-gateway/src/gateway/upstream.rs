@@ -3,7 +3,7 @@
 use anyhow::Result;
 use bytes::Bytes;
 
-use crate::conversion::{translate_request_for_bridge, ProtocolBridge};
+use crate::conversion::{ProtocolBridge, translate_request_for_bridge};
 
 use super::model::rewrite_model_in_body;
 use super::reasoning::ReasoningCacheHandle;

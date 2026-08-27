@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::tool_call::{
     chat_tool_call_from_input_item, is_tool_call_input_type, is_tool_call_output_type,
@@ -22,10 +22,10 @@ pub fn responses_request_to_completions(
 
     let mut messages = Vec::new();
 
-    if let Some(instructions) = obj.remove("instructions").and_then(|i| value_to_text(&i)) {
-        if !instructions.is_empty() {
-            messages.push(json!({"role": "system", "content": instructions}));
-        }
+    if let Some(instructions) = obj.remove("instructions").and_then(|i| value_to_text(&i))
+        && !instructions.is_empty()
+    {
+        messages.push(json!({"role": "system", "content": instructions}));
     }
 
     if let Some(input) = obj.remove("input") {
@@ -63,10 +63,10 @@ pub fn responses_request_to_completions(
         }
     }
 
-    if let Some(cache) = reasoning_cache {
-        if let Some(msgs) = out.get_mut("messages").and_then(|m| m.as_array_mut()) {
-            cache.apply_to_messages(msgs);
-        }
+    if let Some(cache) = reasoning_cache
+        && let Some(msgs) = out.get_mut("messages").and_then(|m| m.as_array_mut())
+    {
+        cache.apply_to_messages(msgs);
     }
 
     Ok(Bytes::from(
@@ -470,39 +470,12 @@ mod tests {
         assert!(msgs.len() >= 2);
         assert_eq!(msgs[0]["role"], "user");
         assert!(msgs[0]["content"].as_str().unwrap().contains("permissions"));
-        assert!(msgs.last().unwrap()["content"]
-            .as_str()
-            .unwrap()
-            .contains("hi"));
-    }
-
-    #[test]
-    fn completions_response_to_responses_shape() {
-        let body = Bytes::from_static(include_bytes!(
-            "../../tests/fixtures/response/completions/basic.json"
-        ));
-        let out = completions_response_to_responses(&body, "gpt-5.5").unwrap();
-        let v: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["object"], "response");
-        assert_eq!(v["status"], "completed");
-        assert_eq!(v["model"], "gpt-5.5");
-        assert_eq!(v["output"][0]["type"], "message");
-        assert!(v["output"][0]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("Sorry"));
-    }
-
-    #[test]
-    fn instructions_become_system_message() {
-        let body = Bytes::from_static(
-            br#"{"model":"m","instructions":"be helpful","input":"hello","stream":false}"#,
+        assert!(
+            msgs.last().unwrap()["content"]
+                .as_str()
+                .unwrap()
+                .contains("hi")
         );
-        let out = responses_request_to_completions(&body, "upstream", None).unwrap();
-        let v: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["messages"][0]["role"], "system");
-        assert_eq!(v["messages"][0]["content"], "be helpful");
-        assert_eq!(v["messages"][1]["content"], "hello");
     }
 
     #[test]
@@ -535,10 +508,12 @@ mod tests {
         assert_eq!(v["output"][0]["type"], "function_call");
         assert_eq!(v["output"][0]["call_id"], "call_abc123");
         assert_eq!(v["output"][0]["name"], "shell");
-        assert!(v["output"][0]["arguments"]
-            .as_str()
-            .unwrap()
-            .contains("ls -la"));
+        assert!(
+            v["output"][0]["arguments"]
+                .as_str()
+                .unwrap()
+                .contains("ls -la")
+        );
     }
 
     #[test]

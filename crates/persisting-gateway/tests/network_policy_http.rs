@@ -4,11 +4,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::Path;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::Router;
 use persisting_agentctl::{
     ControlController, ControlReason, ControlRequest, ControlTransition, PolicyControlController,
 };
@@ -472,11 +472,13 @@ upstream = "http://127.0.0.1:9/v1"
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert!(response
-        .text()
-        .await
-        .unwrap()
-        .contains("transport-not-allowed"));
+    assert!(
+        response
+            .text()
+            .await
+            .unwrap()
+            .contains("transport-not-allowed")
+    );
     let _ = stop.send(());
     let _ = mock_stop.send(());
 }
@@ -872,11 +874,13 @@ upstream = "http://127.0.0.1:9/v1"
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert!(response
-        .text()
-        .await
-        .unwrap()
-        .contains("resolved-address-not-allowed"));
+    assert!(
+        response
+            .text()
+            .await
+            .unwrap()
+            .contains("resolved-address-not-allowed")
+    );
     let _ = stop.send(());
     let _ = mock_stop.send(());
 }

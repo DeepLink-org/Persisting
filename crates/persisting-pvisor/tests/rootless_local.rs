@@ -1,14 +1,14 @@
 #![cfg(target_os = "linux")]
 
 use persisting_agentctl::{IsolationKind, RunFailureKind};
-use persisting_pvisor::sandbox::SANDBOX_SETUP_EXIT_CODE;
 use persisting_pvisor::RunBundle;
+use persisting_pvisor::sandbox::SANDBOX_SETUP_EXIT_CODE;
 use std::fs;
 use std::fs::OpenOptions;
 use std::net::{TcpListener, TcpStream};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::symlink;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::symlink;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -146,16 +146,20 @@ printf '%s:%s:%s\n' "$PERSISTING_SANDBOX_FILESYSTEM" "$PERSISTING_SANDBOX_LANDLO
     assert!(bundle.safety.filesystem_non_bypassable);
     assert!(bundle.safety.filesystem_changes_staged);
     assert!(!bundle.safety.network_non_bypassable);
-    assert!(bundle
-        .safety
-        .warnings
-        .iter()
-        .any(|warning| warning.contains("process-tree cleanup")));
-    assert!(bundle
-        .safety
-        .warnings
-        .iter()
-        .all(|warning| !warning.contains("host PID namespace")));
+    assert!(
+        bundle
+            .safety
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("process-tree cleanup"))
+    );
+    assert!(
+        bundle
+            .safety
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("host PID namespace"))
+    );
     let filesystem = bundle
         .filesystem
         .as_ref()
@@ -237,12 +241,14 @@ printf metadata-denied
     let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
     assert!(bundle.safety.filesystem_read_non_bypassable);
     assert!(bundle.safety.filesystem_write_non_bypassable);
-    assert!(bundle
-        .run
-        .output
-        .stdout
-        .as_deref()
-        .is_some_and(|stdout| stdout == "metadata-denied"));
+    assert!(
+        bundle
+            .run
+            .output
+            .stdout
+            .as_deref()
+            .is_some_and(|stdout| stdout == "metadata-denied")
+    );
 }
 
 #[test]
@@ -312,11 +318,13 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
     let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status["apply_history"].as_array().unwrap().len(), 1);
     assert_eq!(status["filesystem"]["state"], "staged");
-    assert!(status["filesystem"]["sample_paths"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|path| path.as_str().is_some_and(|path| path.contains("defer.txt"))));
+    assert!(
+        status["filesystem"]["sample_paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path.as_str().is_some_and(|path| path.contains("defer.txt")))
+    );
 
     let drop = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
@@ -456,12 +464,14 @@ fn safe_launcher_closes_inherited_host_file_descriptors() {
     );
     let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
     assert!(bundle.safety.filesystem_non_bypassable);
-    assert!(bundle
-        .run
-        .output
-        .stdout
-        .as_deref()
-        .is_some_and(|stdout| stdout.contains("inherited descriptors closed")));
+    assert!(
+        bundle
+            .run
+            .output
+            .stdout
+            .as_deref()
+            .is_some_and(|stdout| stdout.contains("inherited descriptors closed"))
+    );
 }
 
 /// Re-enter this test binary as the untrusted Agent. The parent deliberately
@@ -698,11 +708,13 @@ fn sandboxed_agent_may_legitimately_exit_with_reserved_launcher_code() {
         bundle.run.failure.as_ref().map(|failure| failure.kind),
         Some(RunFailureKind::ProcessExit)
     );
-    assert!(bundle
-        .run
-        .warnings
-        .iter()
-        .all(|warning| warning != "pvisor.sandbox.setup_failed"));
+    assert!(
+        bundle
+            .run
+            .warnings
+            .iter()
+            .all(|warning| warning != "pvisor.sandbox.setup_failed")
+    );
 }
 
 /// Re-enter this integration-test executable as the untrusted Agent so the

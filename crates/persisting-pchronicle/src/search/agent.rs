@@ -7,10 +7,10 @@ pub use crate::{
     SearchQueryRequest, SearchQueryResponse,
 };
 use anyhow::{Context, Result};
+use lance::Dataset;
 use lance::datatypes::Schema as LanceSchema;
 use lance::deps::arrow_schema::DataType;
 use lance::index::DatasetIndexExt;
-use lance::Dataset;
 use lance_index::is_system_index;
 use lance_index::optimize::OptimizeOptions;
 

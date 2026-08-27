@@ -13,6 +13,8 @@ use crate::{
     SearchQueryResponse,
 };
 use anyhow::{Context, Result};
+use lance::Dataset;
+use lance::Error as LanceError;
 use lance::dataset::scanner::QueryFilter;
 use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
 use lance::deps::arrow_array::{
@@ -21,15 +23,13 @@ use lance::deps::arrow_array::{
 };
 use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use lance::deps::datafusion::physical_plan::SendableRecordBatchStream;
-use lance::index::vector::VectorIndexParams;
 use lance::index::DatasetIndexExt;
-use lance::Dataset;
-use lance::Error as LanceError;
-use lance_index::scalar::inverted::InvertedIndexParams;
+use lance::index::vector::VectorIndexParams;
+use lance_index::IndexType;
 use lance_index::scalar::FullTextSearchQuery;
+use lance_index::scalar::inverted::InvertedIndexParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
-use lance_index::IndexType;
 use lance_linalg::distance::DistanceType;
 
 use super::agent::embed_text;

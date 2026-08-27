@@ -5,8 +5,8 @@
 use bytes::Bytes;
 use persisting_gateway::config::ProxyConfig;
 use persisting_gateway::conversion::{
-    completions_response_to_messages, messages_request_to_completions, ProtocolBridge,
-    StreamTranslator,
+    ProtocolBridge, StreamTranslator, completions_response_to_messages,
+    messages_request_to_completions,
 };
 use persisting_gateway::models_list::build_models_response;
 use persisting_gateway::protocol::ProtocolKind;

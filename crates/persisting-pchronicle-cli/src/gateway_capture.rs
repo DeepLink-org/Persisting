@@ -8,8 +8,8 @@ use persisting_gateway::sink::{CallbackSink, CaptureEventSink};
 #[cfg(test)]
 use persisting_pchronicle::storage::raw_event_append_queue;
 use persisting_pchronicle::storage::{
-    raw_event_append_queue_with_manifest_write_mode, ObjectStoreManifestWriteMode,
-    RawEventAppendOutcome, RawEventAppendSender, RawEventAppendWorker, StoryCoords,
+    ObjectStoreManifestWriteMode, RawEventAppendOutcome, RawEventAppendSender,
+    RawEventAppendWorker, StoryCoords, raw_event_append_queue_with_manifest_write_mode,
 };
 
 use crate::gateway_partition::{GatewayPartitionRouter, GatewaySplitTemplate};
