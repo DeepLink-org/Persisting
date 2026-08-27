@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Production-scale invariants for the canonical append-only event path.
 //!
 //! The regular tests are bounded scale proxies suitable for CI. The ignored
