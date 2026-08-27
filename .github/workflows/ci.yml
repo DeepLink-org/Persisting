@@ -293,6 +293,66 @@ jobs:
       - name: Test Web crate
         run: cargo nextest run --manifest-path pchronicle-web/Cargo.toml --locked
 
+  pvisor-fuzz:
+    name: pVisor cargo-fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-protoc: "false"
+          install-cranelift: "false"
+          install-nextest: "false"
+          install-zig: "false"
+          components: ""
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-pvisor-fuzz
+          workspaces: |
+            . -> target
+            crates/persisting-pvisor/fuzz -> target
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz@0.13.2
+
+      - name: Build every pVisor fuzz target
+        working-directory: crates/persisting-pvisor/fuzz
+        run: |
+          set -euo pipefail
+          for target in agentctl_frame oci_layer supervisor_frame; do
+            echo "==> building ${target}"
+            cargo fuzz build "${target}"
+          done
+
+      - name: Smoke OCI layer fuzz target
+        working-directory: crates/persisting-pvisor/fuzz
+        env:
+          FUZZ_ARTIFACT_DIR: ${{ runner.temp }}/pvisor-fuzz/artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p "${FUZZ_ARTIFACT_DIR}"
+          cargo fuzz run oci_layer -- \
+            -max_total_time=30 \
+            -timeout=5 \
+            -artifact_prefix="${FUZZ_ARTIFACT_DIR}/"
+
+      - name: Upload fuzz artifacts after failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pvisor-fuzz-artifacts-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/pvisor-fuzz/artifacts
+            crates/persisting-pvisor/fuzz/artifacts
+            crates/persisting-pvisor/fuzz/corpus
+          if-no-files-found: ignore
+
   pvisor-isolation-regression:
     name: pVisor Isolation Regression / Linux
     runs-on: ubuntu-latest
@@ -466,6 +526,7 @@ jobs:
       - python-lint
       - rust-test
       - pchronicle-web-test
+      - pvisor-fuzz
       - pvisor-isolation-regression
       - s3-contract
       - python-test

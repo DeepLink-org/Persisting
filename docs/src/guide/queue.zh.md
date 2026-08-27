@@ -203,4 +203,3 @@ async for batch in q.stream(limit=1000, wait=True, timeout=5.0):
 
 - [API 参考 — Queue](../api/queue.md) — 所有方法签名
 - [自定义后端](custom-backends.md) — 用自己的存储引擎替换 Lance
-- [TransferQueue 对比](../design/references/transfer-queue-comparison.md) — 打分与迁移指南

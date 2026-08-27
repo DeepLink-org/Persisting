@@ -203,4 +203,3 @@ Records are stored in Lance columnar format. Schema is inferred from the first b
 
 - [API Reference — Queue](../api/queue.md) — all method signatures
 - [Custom Backends](custom-backends.md) — replace Lance with your own storage engine
-- [TransferQueue Comparison](../design/references/transfer-queue-comparison.md) — scoring and migration guide

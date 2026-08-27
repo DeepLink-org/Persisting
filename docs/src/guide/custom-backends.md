@@ -97,5 +97,5 @@ Custom backends that implement this interface can be used internally where the q
 
 ## Next Steps
 
-- [Architecture](../design/architecture.md) — How backends fit into the system
+- [Queue guide](queue.md) — Current Queue behavior and usage
 - [API Reference](../api/index.md) — Full API documentation

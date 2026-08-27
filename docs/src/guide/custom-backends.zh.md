@@ -97,5 +97,5 @@ class SimpleBackend:
 
 ## 下一步
 
-- [架构设计](../design/architecture.md) — 后端在系统中的位置
+- [Queue 指南](queue.zh.md) — 当前 Queue 的行为与用法
 - [API 参考](../api/index.md) — 完整 API 文档

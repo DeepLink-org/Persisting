@@ -179,12 +179,6 @@ dependencies = [
 
 [[package]]
 name = "base64"
-version = "0.21.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
-
-[[package]]
-name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
@@ -234,9 +228,6 @@ name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
-dependencies = [
- "serde_core",
-]
 
 [[package]]
 name = "blake3"
@@ -259,6 +250,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
+]
+
+[[package]]
+name = "bstr"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
+dependencies = [
+ "memchr",
+ "serde_core",
 ]
 
 [[package]]
@@ -828,6 +829,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
+name = "globset"
+version = "0.4.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07c34a9410465b45bd9787443bc7370f37735bad04b0f0cd57ff1a3186c98988"
+dependencies = [
+ "aho-corasick",
+ "bstr",
+ "log",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1019,7 +1033,7 @@ version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "bytes",
  "futures-channel",
  "futures-util",
@@ -1783,8 +1797,25 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "ipnet",
+ "libc",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "persisting-events"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "persisting-agentctl",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
@@ -1794,6 +1825,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
  "blake3",
  "bytes",
  "chrono",
@@ -1803,12 +1835,12 @@ dependencies = [
  "hostname",
  "http-body-util",
  "persisting-agentctl",
+ "persisting-events",
  "persisting-overlaynet",
  "persisting-pchronicle",
  "pulsing-actor",
  "regex",
  "reqwest",
- "ron",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1825,6 +1857,9 @@ version = "0.2.0"
 dependencies = [
  "libc",
  "log",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1865,18 +1900,19 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64",
  "blake3",
  "chrono",
  "fs2",
  "persisting-agentctl",
- "reqwest",
- "ron",
+ "persisting-events",
  "serde",
  "serde_json",
  "serde_yaml",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
+ "url",
  "uuid",
  "zstd",
 ]
@@ -1887,18 +1923,21 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "clap",
  "dirs",
  "flate2",
  "fs2",
+ "globset",
  "libc",
  "libkrun",
  "persisting-agentctl",
+ "persisting-events",
  "persisting-gateway",
  "persisting-overlay-core",
  "persisting-overlayfs",
  "persisting-overlaynet",
- "persisting-pchronicle",
+ "persisting-replay",
  "reqwest",
  "serde",
  "serde_json",
@@ -1921,6 +1960,24 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "persisting-pvisor",
+]
+
+[[package]]
+name = "persisting-replay"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "fs2",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "toml",
+ "uuid",
 ]
 
 [[package]]
@@ -2247,7 +2304,7 @@ version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "bytes",
  "futures-channel",
  "futures-core",
@@ -2295,18 +2352,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "ron"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b91f7eff05f748767f183df4320a63d6936e9c6107d97c9e6bdd9784f4289c94"
-dependencies = [
- "base64 0.21.7",
- "bitflags 2.13.1",
- "serde",
- "serde_derive",
 ]
 
 [[package]]

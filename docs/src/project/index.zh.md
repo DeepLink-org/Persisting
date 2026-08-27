@@ -21,12 +21,6 @@ Persisting 的公共定位横跨模型状态与 Agent 历史。这一节记录�
 - [RFC 索引](../rfcs/index.md)
 - [实现状态](engineering.md)
 
-## 调研
-
-- [TransferQueue 对比](../design/references/transfer-queue-comparison.md)
-- [TransferQueue 接口映射](../design/references/transfer-queue-interface.md)
-- [LMCache 分析](../design/references/lmcache.md)
-
 ## 独立数据系统
 
 Queue 及其 Python API 独立于 Agent 执行主路径：
@@ -34,4 +28,5 @@ Queue 及其 Python API 独立于 Agent 执行主路径：
 - [Queue 指南](../guide/queue.md)
 - [Queue API](../api/queue.md)
 - [自定义 Queue backend](../guide/custom-backends.md)
-- [Queue 持久化设计](../design/architecture.md)
+
+历史 Queue 时代的设计笔记保留在仓库的 `docs/archive/` 目录中，不进入发布站点。
