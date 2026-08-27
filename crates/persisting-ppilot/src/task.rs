@@ -408,7 +408,12 @@ mod tests {
                 serde_json::from_str(&cancelled.to_ndjson().unwrap()).unwrap();
             let cancelled_back_wire = serde_json::to_value(&cancelled_back).unwrap();
             let cancelled_wire = serde_json::to_value(&cancelled).unwrap();
-            prop_assert_eq!(cancelled_back_wire, cancelled_wire);
+            prop_assert_eq!(
+                without_timestamps(cancelled_back_wire),
+                without_timestamps(cancelled_wire)
+            );
+            assert_timestamp_roundtrip(cancelled_back.started_at, cancelled.started_at);
+            assert_timestamp_roundtrip(cancelled_back.finished_at, cancelled.finished_at);
             prop_assert!(cancelled_back.cancelled);
             prop_assert!(!cancelled_back.ok);
 
