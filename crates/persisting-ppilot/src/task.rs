@@ -312,6 +312,24 @@ mod tests {
             .collect()
     }
 
+    fn without_timestamps(mut value: Value) -> Value {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("started_at");
+            object.remove("finished_at");
+        }
+        value
+    }
+
+    fn assert_timestamp_roundtrip(actual: Option<f64>, expected: Option<f64>) {
+        match (actual, expected) {
+            (Some(actual), Some(expected)) => {
+                assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+            }
+            (None, None) => {}
+            (actual, expected) => panic!("timestamp presence changed: {actual:?} != {expected:?}"),
+        }
+    }
+
     proptest! {
         #[test]
         fn flat_payload_becomes_args(
@@ -379,7 +397,9 @@ mod tests {
             let back: TaskResult = serde_json::from_str(&ok.to_ndjson().unwrap()).unwrap();
             let back_wire = serde_json::to_value(&back).unwrap();
             let ok_wire = serde_json::to_value(&ok).unwrap();
-            prop_assert_eq!(back_wire, ok_wire);
+            prop_assert_eq!(without_timestamps(back_wire), without_timestamps(ok_wire));
+            assert_timestamp_roundtrip(back.started_at, ok.started_at);
+            assert_timestamp_roundtrip(back.finished_at, ok.finished_at);
             prop_assert!(back.ok);
             prop_assert!(!back.cancelled);
 
@@ -403,7 +423,12 @@ mod tests {
                 serde_json::from_str(&failed.to_ndjson().unwrap()).unwrap();
             let failed_back_wire = serde_json::to_value(&failed_back).unwrap();
             let failed_wire = serde_json::to_value(&failed).unwrap();
-            prop_assert_eq!(failed_back_wire, failed_wire);
+            prop_assert_eq!(
+                without_timestamps(failed_back_wire),
+                without_timestamps(failed_wire)
+            );
+            assert_timestamp_roundtrip(failed_back.started_at, failed.started_at);
+            assert_timestamp_roundtrip(failed_back.finished_at, failed.finished_at);
             prop_assert!(!failed_back.ok);
             prop_assert_eq!(failed_back.traceback.as_deref(), Some("traceback"));
         }
