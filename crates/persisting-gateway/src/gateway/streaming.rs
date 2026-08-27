@@ -13,9 +13,9 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::common::attach_capture_headers;
 use super::state::GatewayState;
-use crate::conversion::{ProtocolBridge, StreamTranslator, MAX_STREAM_CAPTURE_BYTES};
+use crate::conversion::{MAX_STREAM_CAPTURE_BYTES, ProtocolBridge, StreamTranslator};
 use crate::engine::{
-    headers_to_vec, CallContext, CancelEvent, CaptureEngine, CompleteEvent, DraftEvent, Event,
+    CallContext, CancelEvent, CaptureEngine, CompleteEvent, DraftEvent, Event, headers_to_vec,
 };
 use crate::runtime::debug;
 use persisting_overlaynet::headers::skip_response_header_after_reframing;

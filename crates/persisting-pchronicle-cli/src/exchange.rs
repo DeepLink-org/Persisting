@@ -697,10 +697,10 @@ fn local_file_snapshot_ref(path: &Path) -> String {
     hash.update(path.to_string_lossy().as_bytes());
     if let Ok(metadata) = std::fs::metadata(path) {
         hash.update(&metadata.len().to_le_bytes());
-        if let Ok(modified) = metadata.modified() {
-            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-                hash.update(&duration.as_nanos().to_le_bytes());
-            }
+        if let Ok(modified) = metadata.modified()
+            && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+        {
+            hash.update(&duration.as_nanos().to_le_bytes());
         }
         #[cfg(unix)]
         {

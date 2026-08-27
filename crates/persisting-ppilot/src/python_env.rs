@@ -62,9 +62,11 @@ mod tests {
         let extras = vec![PathBuf::from("/b"), PathBuf::from("/c")];
         let merged = merge_pythonpath_parts(Some(&existing), &extras).unwrap();
         let parts: Vec<_> = env::split_paths(&merged).collect();
-        assert!(parts
-            .iter()
-            .any(|p| p.ends_with("a") || p == Path::new("/a")));
+        assert!(
+            parts
+                .iter()
+                .any(|p| p.ends_with("a") || p == Path::new("/a"))
+        );
         assert_eq!(
             parts
                 .iter()
@@ -72,9 +74,11 @@ mod tests {
                 .count(),
             1
         );
-        assert!(parts
-            .iter()
-            .any(|p| p.ends_with("c") || p == Path::new("/c")));
+        assert!(
+            parts
+                .iter()
+                .any(|p| p.ends_with("c") || p == Path::new("/c"))
+        );
     }
 
     #[test]

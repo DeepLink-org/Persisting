@@ -1,14 +1,14 @@
+use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
-use axum::Json;
 use persisting_pchronicle::storage::{
-    inspect_physical_file, inspect_physical_layout, inspect_physical_page, list_physical_sources,
-    PhysicalFileLayout, PhysicalLayout, PhysicalPagePreview, PhysicalPageQuery, PhysicalSource,
-    DEFAULT_PHYSICAL_PAGE_LIMIT,
+    DEFAULT_PHYSICAL_PAGE_LIMIT, PhysicalFileLayout, PhysicalLayout, PhysicalPagePreview,
+    PhysicalPageQuery, PhysicalSource, inspect_physical_file, inspect_physical_layout,
+    inspect_physical_page, list_physical_sources,
 };
 use serde::Deserialize;
 
-use super::{api_query, current_catalog, ApiError, AppState};
+use super::{ApiError, AppState, api_query, current_catalog};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct LayoutQuery {

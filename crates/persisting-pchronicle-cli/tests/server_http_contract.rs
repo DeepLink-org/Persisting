@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use axum::body::Body;
-use axum::http::{header, Method, Request, StatusCode};
+use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
-use persisting_pchronicle::storage::{DatasetMount, DEFAULT_DATASET_NAME};
-use persisting_pchronicle_cli::server::{warehouse_router, ChronicleServerConfig};
-use serde_json::{json, Value};
+use persisting_pchronicle::storage::{DEFAULT_DATASET_NAME, DatasetMount};
+use persisting_pchronicle_cli::server::{ChronicleServerConfig, warehouse_router};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 fn example_uri(name: &str) -> String {

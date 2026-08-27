@@ -23,17 +23,17 @@ pub(super) mod rows;
 mod writer_control;
 
 use mutation::{
-    externalize_rows, next_storyline_stream_chunk, replace_table_batches, write_batches,
-    ExternalizedStorylineBatches, StorylineChunkState,
+    ExternalizedStorylineBatches, StorylineChunkState, externalize_rows,
+    next_storyline_stream_chunk, replace_table_batches, write_batches,
 };
 
 pub use content::{
-    StorylineContentOptions, DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES,
+    DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES, StorylineContentOptions,
 };
 pub use datafusion::{
+    DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE,
     StorylineContentReadMode, StorylineDataFusionTableNames, StorylineDataSource,
-    StorylineDataSourceOptions, StorylineTableKind, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,
-    DATAFUSION_TOOL_CALLS_TABLE,
+    StorylineDataSourceOptions, StorylineTableKind,
 };
 pub use rows::{
     story_runs_arrow_schema, story_runs_from_batch, story_runs_to_batch, story_steps_arrow_schema,
@@ -45,14 +45,15 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use futures::TryStreamExt;
-use lance::dataset::optimize::{compact_files, CompactionOptions};
+use lance::Dataset;
+use lance::dataset::optimize::{CompactionOptions, compact_files};
 use lance::dataset::{
     InsertBuilder, MergeInsertBuilder, WhenMatched, WhenNotMatched, WhenNotMatchedBySource,
     WriteMode, WriteParams,
@@ -63,27 +64,26 @@ use lance::deps::arrow_array::{
 use lance::deps::arrow_schema::{ArrowError, SchemaRef};
 use lance::index::DatasetIndexExt;
 use lance::io::ObjectStore;
-use lance::Dataset;
+use lance_index::IndexType;
 use lance_index::optimize::OptimizeOptions;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
-use lance_index::IndexType;
 use object_store::path::Path as ObjectPath;
 use serde::{Deserialize, Serialize};
 
 use super::storyline_model::{
-    reconstruct_storyline, split_storyline_with_unknown_limits, StoryRunRow, StoryStepRow,
-    StoryToolCallRow, StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
+    STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE, StoryRunRow, StoryStepRow,
+    StoryToolCallRow, StorylineTables, reconstruct_storyline, split_storyline_with_unknown_limits,
 };
-use crate::formats::unknown_fields::{compute_unknown_key_counts, validate_unknown_fields};
 use crate::StorylineDocument;
+use crate::formats::unknown_fields::{compute_unknown_key_counts, validate_unknown_fields};
 
 use self::content::{
-    collect_content_ids, commit_pending_content, content_columns, externalize_batches,
-    externalize_unknown_field_values, hydrate_batches, open_objects, prune_unreferenced_objects,
-    PendingContent, STORYLINE_OBJECTS_DATASET,
+    PendingContent, STORYLINE_OBJECTS_DATASET, collect_content_ids, commit_pending_content,
+    content_columns, externalize_batches, externalize_unknown_field_values, hydrate_batches,
+    open_objects, prune_unreferenced_objects,
 };
 use super::AtifReader;
-use super::{root_write_lock, LanceMaintenanceOptions, LanceMaintenanceReport};
+use super::{LanceMaintenanceOptions, LanceMaintenanceReport, root_write_lock};
 
 const CURRENT_FILE: &str = "CURRENT";
 const GENERATIONS_DIR: &str = "generations";
@@ -770,15 +770,13 @@ impl StorylineLanceStore {
                 else {
                     break;
                 };
-                if !rebuild {
-                    if let Some(original) = &original {
-                        let existing =
-                            read_storage_ordinals_for_document_ids(original, &chunk.document_ids)
-                                .await?;
-                        for run in &mut chunk.runs {
-                            if let Some(ordinal) = existing.get(&run.document_id) {
-                                run.storage_ordinal = *ordinal;
-                            }
+                if !rebuild && let Some(original) = &original {
+                    let existing =
+                        read_storage_ordinals_for_document_ids(original, &chunk.document_ids)
+                            .await?;
+                    for run in &mut chunk.runs {
+                        if let Some(ordinal) = existing.get(&run.document_id) {
+                            run.storage_ordinal = *ordinal;
                         }
                     }
                 }
@@ -985,43 +983,42 @@ impl StorylineLanceStore {
         .await;
 
         let mut cleanup_failures = Vec::new();
-        if let Some(renewal) = writer_renewal.take() {
-            if !renewal.stop().await {
-                cleanup_failures.push("writer lease renewal reported ownership loss".to_string());
-            }
+        if let Some(renewal) = writer_renewal.take()
+            && !renewal.stop().await
+        {
+            cleanup_failures.push("writer lease renewal reported ownership loss".to_string());
         }
-        if result.is_err() {
-            if let Some(lease) = &writer_lease {
-                match self
-                    .release_writer_lease(&writer_owner, lease.lease.epoch)
-                    .await
-                {
-                    Ok(true) => {}
-                    Ok(false) => cleanup_failures
-                        .push("writer lease was lost before error cleanup".to_string()),
-                    Err(error) => cleanup_failures
-                        .push(format!("release writer lease after error: {error:#}")),
+        if result.is_err()
+            && let Some(lease) = &writer_lease
+        {
+            match self
+                .release_writer_lease(&writer_owner, lease.lease.epoch)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    cleanup_failures.push("writer lease was lost before error cleanup".to_string())
+                }
+                Err(error) => {
+                    cleanup_failures.push(format!("release writer lease after error: {error:#}"))
                 }
             }
         }
 
-        if result.is_err()
+        if (result.is_err()
             || matches!(
                 &result,
                 Ok(StorylineProjectionPublicationOutcome::OutputNotEmpty)
-            )
+            ))
+            && let Some(generation) = new_table_generation
+            && let Err(error) = self
+                .object_store
+                .remove_dir_all(self.generation_object_path(&generation))
+                .await
         {
-            if let Some(generation) = new_table_generation {
-                if let Err(error) = self
-                    .object_store
-                    .remove_dir_all(self.generation_object_path(&generation))
-                    .await
-                {
-                    cleanup_failures.push(format!(
-                        "remove uncommitted Storyline generation {generation}: {error:#}"
-                    ));
-                }
-            }
+            cleanup_failures.push(format!(
+                "remove uncommitted Storyline generation {generation}: {error:#}"
+            ));
         }
         attach_stream_cleanup_failures(result, cleanup_failures)
     }
@@ -1161,10 +1158,10 @@ impl StorylineLanceStore {
         .await;
 
         let mut cleanup_failures = Vec::new();
-        if let Some(renewal) = writer_renewal.take() {
-            if !renewal.stop().await {
-                cleanup_failures.push("writer lease renewal reported ownership loss".to_string());
-            }
+        if let Some(renewal) = writer_renewal.take()
+            && !renewal.stop().await
+        {
+            cleanup_failures.push("writer lease renewal reported ownership loss".to_string());
         }
         match self
             .release_writer_lease(&writer_owner, writer_lease.lease.epoch)
@@ -1174,18 +1171,17 @@ impl StorylineLanceStore {
             Ok(false) => cleanup_failures.push("writer lease was lost before release".to_string()),
             Err(error) => cleanup_failures.push(format!("release writer lease: {error:#}")),
         }
-        if result.is_err() && !published {
-            if let Some(generation) = takeover_generation {
-                if let Err(error) = self
-                    .object_store
-                    .remove_dir_all(self.generation_object_path(&generation))
-                    .await
-                {
-                    cleanup_failures.push(format!(
-                        "remove uncommitted Storyline generation {generation}: {error:#}"
-                    ));
-                }
-            }
+        if result.is_err()
+            && !published
+            && let Some(generation) = takeover_generation
+            && let Err(error) = self
+                .object_store
+                .remove_dir_all(self.generation_object_path(&generation))
+                .await
+        {
+            cleanup_failures.push(format!(
+                "remove uncommitted Storyline generation {generation}: {error:#}"
+            ));
         }
         if !cleanup_failures.is_empty() {
             let cleanup = format!(

@@ -1,16 +1,16 @@
 //! Egress policy for the explicit HTTP proxy backend.
 
 use axum::http::StatusCode;
-pub use persisting_agentctl::{
-    host_matches, normalize_host, parse_network_rule as parse_allowed_entry,
-    NetworkRule as AllowedEntry,
-};
 use persisting_agentctl::{
     ControlController, ControlMachine, ControlReason, ControlRequest, NetworkGuard,
     PolicyControlController,
 };
 use persisting_agentctl::{NetworkAccessRequest, NetworkCapability, NetworkDefaultAction};
 pub use persisting_agentctl::{NetworkAccessRule, NetworkBandwidthLimit};
+pub use persisting_agentctl::{
+    NetworkRule as AllowedEntry, host_matches, normalize_host,
+    parse_network_rule as parse_allowed_entry,
+};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -205,15 +205,16 @@ pub fn validate_network_config(network: &NetworkConfig) -> anyhow::Result<()> {
 
 pub fn host_from_authority(authority: &str) -> String {
     let authority = authority.trim();
-    if let Some(rest) = authority.strip_prefix('[') {
-        if let Some(end) = rest.find(']') {
-            return normalize_host(&rest[..end]);
-        }
+    if let Some(rest) = authority.strip_prefix('[')
+        && let Some(end) = rest.find(']')
+    {
+        return normalize_host(&rest[..end]);
     }
-    if let Some((host, port)) = authority.rsplit_once(':') {
-        if !host.is_empty() && port.chars().all(|character| character.is_ascii_digit()) {
-            return normalize_host(host);
-        }
+    if let Some((host, port)) = authority.rsplit_once(':')
+        && !host.is_empty()
+        && port.chars().all(|character| character.is_ascii_digit())
+    {
+        return normalize_host(host);
     }
     normalize_host(authority)
 }
@@ -289,51 +290,152 @@ mod tests {
     use super::*;
     use persisting_agentctl::NetworkTransport;
     use persisting_agentctl::PolicyControlController;
+    use proptest::prelude::*;
 
-    #[test]
-    fn allowlist_contains_only_explicit_network_entries() {
-        let config = NetworkConfig {
-            mode: NetworkMode::Allowlist,
-            allowed_hosts: vec!["*.example.com".into()],
-            rules: Vec::new(),
-            deny_rules: Vec::new(),
-            limits: Vec::new(),
-        };
-        let capability = network_capability(&config);
-        assert_eq!(
-            capability,
-            NetworkCapability::AllowList {
-                hosts: vec!["*.example.com".into()],
-                rules: Vec::new(),
-            }
-        );
+    fn host_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[a-z]{1,12}\\.example\\.com").unwrap()
     }
 
-    #[test]
-    fn deny_blocks_public_and_loopback_proxy_targets() {
-        let policy = NetworkPolicy::compile(&NetworkConfig {
-            mode: NetworkMode::NoNetwork,
-            allowed_hosts: Vec::new(),
-            rules: Vec::new(),
-            deny_rules: Vec::new(),
-            limits: Vec::new(),
-        })
-        .unwrap();
-        let request = |host: &str| NetworkAccessRequest {
-            run_id: None,
-            attempt_id: None,
-            storyline_id: None,
-            host: host.to_string(),
-            port: None,
-            transport: NetworkTransport::TcpTunnel,
-            resolved_ip: None,
-        };
-        assert!(
-            authorize_egress(&PolicyControlController, &policy, &request("example.com")).is_err()
-        );
-        assert!(
-            authorize_egress(&PolicyControlController, &policy, &request("127.0.0.1")).is_err()
-        );
+    fn transport_strategy() -> impl Strategy<Value = NetworkTransport> {
+        prop_oneof![
+            Just(NetworkTransport::Http),
+            Just(NetworkTransport::Https),
+            Just(NetworkTransport::TcpTunnel),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn allowlist_preserves_explicit_network_entries(
+            hosts in prop::collection::vec(host_strategy(), 0..8),
+        ) {
+            let capability = network_capability(&NetworkConfig {
+                mode: NetworkMode::Allowlist,
+                allowed_hosts: hosts.clone(),
+                ..NetworkConfig::default()
+            });
+            prop_assert_eq!(
+                capability,
+                NetworkCapability::AllowList {
+                    hosts,
+                    rules: Vec::new(),
+                }
+            );
+        }
+
+        #[test]
+        fn no_network_denies_every_request(
+            host in host_strategy(),
+            port in prop::option::of(1u16..=u16::MAX),
+            transport in transport_strategy(),
+        ) {
+            let policy = NetworkPolicy::compile(&NetworkConfig {
+                mode: NetworkMode::NoNetwork,
+                ..NetworkConfig::default()
+            }).unwrap();
+            let request = NetworkAccessRequest {
+                run_id: None,
+                attempt_id: None,
+                storyline_id: None,
+                host,
+                port,
+                transport,
+                resolved_ip: None,
+            };
+            prop_assert_eq!(
+                authorize_egress(&PolicyControlController, &policy, &request),
+                Err(DenyReason::NoNetwork)
+            );
+        }
+
+        #[test]
+        fn port_scoped_deny_rejects_only_the_denied_port(
+            denied_port in 1u16..=u16::MAX,
+        ) {
+            let other_port = if denied_port == u16::MAX {
+                1
+            } else {
+                denied_port + 1
+            };
+            let policy = NetworkPolicy::compile(&NetworkConfig {
+                mode: NetworkMode::Public,
+                deny_rules: vec![NetworkAccessRule {
+                    host: "api.example.com".into(),
+                    ports: vec![denied_port],
+                    transports: Vec::new(),
+                    allow_private_ips: false,
+                }],
+                ..NetworkConfig::default()
+            }).unwrap();
+            let request = |port| NetworkAccessRequest {
+                run_id: None,
+                attempt_id: None,
+                storyline_id: None,
+                host: "api.example.com".into(),
+                port: Some(port),
+                transport: NetworkTransport::TcpTunnel,
+                resolved_ip: None,
+            };
+            prop_assert_eq!(
+                authorize_egress(&PolicyControlController, &policy, &request(denied_port)),
+                Err(DenyReason::ExplicitDeny)
+            );
+            prop_assert!(authorize_egress(
+                &PolicyControlController,
+                &policy,
+                &request(other_port),
+            ).is_ok());
+        }
+
+        #[test]
+        fn wildcard_bandwidth_matches_subdomains_only(
+            subdomain in proptest::string::string_regex("[a-z]{1,12}").unwrap(),
+            port in 1u16..=u16::MAX,
+        ) {
+            let policy = NetworkPolicy::compile(&NetworkConfig {
+                limits: vec![NetworkBandwidthLimit {
+                    host: Some("*.example.com".into()),
+                    port: None,
+                    bytes_per_second: 1_000,
+                }],
+                ..NetworkConfig::default()
+            }).unwrap();
+            prop_assert_eq!(
+                policy.matching_limits(&format!("{subdomain}.example.com"), Some(port), &[]).len(),
+                1,
+            );
+            prop_assert!(policy.matching_limits("example.com", Some(port), &[]).is_empty());
+            prop_assert!(policy.matching_limits("example.net", Some(port), &[]).is_empty());
+        }
+
+        #[test]
+        fn invalid_bandwidth_limits_are_rejected(
+            positive_rate in 1u64..=u64::MAX,
+            invalid_kind in 0u8..3,
+        ) {
+            let limit = match invalid_kind {
+                0 => NetworkBandwidthLimit {
+                    host: None,
+                    port: None,
+                    bytes_per_second: 0,
+                },
+                1 => NetworkBandwidthLimit {
+                    host: Some("https://example.com".into()),
+                    port: None,
+                    bytes_per_second: positive_rate,
+                },
+                _ => NetworkBandwidthLimit {
+                    host: Some("example.com".into()),
+                    port: Some(0),
+                    bytes_per_second: positive_rate,
+                },
+            };
+            let result = NetworkPolicy::compile(&NetworkConfig {
+                limits: vec![limit],
+                ..NetworkConfig::default()
+            });
+            prop_assert!(result.is_err());
+        }
     }
 
     #[test]
@@ -367,12 +469,14 @@ mod tests {
             ),
             Err(DenyReason::ExplicitDeny)
         );
-        assert!(authorize_egress(
-            &PolicyControlController,
-            &policy,
-            &request("allowed.example.com")
-        )
-        .is_ok());
+        assert!(
+            authorize_egress(
+                &PolicyControlController,
+                &policy,
+                &request("allowed.example.com")
+            )
+            .is_ok()
+        );
 
         let policy = NetworkPolicy::compile(&NetworkConfig {
             mode: NetworkMode::Allowlist,
@@ -456,60 +560,6 @@ mod tests {
     }
 
     #[test]
-    fn explicit_deny_can_be_scoped_to_one_port() {
-        let policy = NetworkPolicy::compile(&NetworkConfig {
-            mode: NetworkMode::Public,
-            deny_rules: vec![NetworkAccessRule {
-                host: "api.example.com".into(),
-                ports: vec![443],
-                transports: Vec::new(),
-                allow_private_ips: false,
-            }],
-            ..NetworkConfig::default()
-        })
-        .unwrap();
-        let request = |port| NetworkAccessRequest {
-            run_id: None,
-            attempt_id: None,
-            storyline_id: None,
-            host: "api.example.com".into(),
-            port: Some(port),
-            transport: NetworkTransport::TcpTunnel,
-            resolved_ip: None,
-        };
-        assert_eq!(
-            authorize_egress(&PolicyControlController, &policy, &request(443)),
-            Err(DenyReason::ExplicitDeny)
-        );
-        assert!(authorize_egress(&PolicyControlController, &policy, &request(80)).is_ok());
-    }
-
-    #[test]
-    fn wildcard_bandwidth_limit_matches_subdomains_but_not_apex() {
-        let policy = NetworkPolicy::compile(&NetworkConfig {
-            limits: vec![NetworkBandwidthLimit {
-                host: Some("*.example.com".into()),
-                port: None,
-                bytes_per_second: 1_000,
-            }],
-            ..NetworkConfig::default()
-        })
-        .unwrap();
-        assert_eq!(
-            policy
-                .matching_limits("api.example.com", Some(443), &[])
-                .len(),
-            1
-        );
-        assert!(policy
-            .matching_limits("example.com", Some(443), &[])
-            .is_empty());
-        assert!(policy
-            .matching_limits("example.net", Some(443), &[])
-            .is_empty());
-    }
-
-    #[test]
     fn cidr_bandwidth_limit_matches_resolved_hostname_address() {
         let policy = NetworkPolicy::compile(&NetworkConfig {
             limits: vec![NetworkBandwidthLimit {
@@ -527,69 +577,48 @@ mod tests {
                 .len(),
             1
         );
-        assert!(policy
-            .matching_limits(
-                "service.internal",
-                Some(443),
-                &["192.168.1.2:443".parse().unwrap()],
-            )
-            .is_empty());
-    }
-
-    #[test]
-    fn invalid_bandwidth_limits_fail_configuration_validation() {
-        for limit in [
-            NetworkBandwidthLimit {
-                host: None,
-                port: None,
-                bytes_per_second: 0,
-            },
-            NetworkBandwidthLimit {
-                host: Some("https://example.com".into()),
-                port: None,
-                bytes_per_second: 1,
-            },
-            NetworkBandwidthLimit {
-                host: Some("example.com".into()),
-                port: Some(0),
-                bytes_per_second: 1,
-            },
-        ] {
-            assert!(NetworkPolicy::compile(&NetworkConfig {
-                limits: vec![limit],
-                ..NetworkConfig::default()
-            })
-            .is_err());
-        }
+        assert!(
+            policy
+                .matching_limits(
+                    "service.internal",
+                    Some(443),
+                    &["192.168.1.2:443".parse().unwrap()],
+                )
+                .is_empty()
+        );
     }
 
     #[test]
     fn public_and_no_network_modes_reject_allow_entries() {
         for mode in [NetworkMode::Public, NetworkMode::NoNetwork] {
-            assert!(NetworkPolicy::compile(&NetworkConfig {
-                mode,
-                rules: vec![NetworkAccessRule {
-                    host: "api.example.com".into(),
-                    ports: vec![443],
-                    transports: Vec::new(),
-                    allow_private_ips: false,
-                }],
-                ..NetworkConfig::default()
-            })
-            .is_err());
+            assert!(
+                NetworkPolicy::compile(&NetworkConfig {
+                    mode,
+                    rules: vec![NetworkAccessRule {
+                        host: "api.example.com".into(),
+                        ports: vec![443],
+                        transports: Vec::new(),
+                        allow_private_ips: false,
+                    }],
+                    ..NetworkConfig::default()
+                })
+                .is_err()
+            );
         }
     }
 
     #[test]
     fn public_validation_rejects_invalid_bandwidth_limits() {
-        assert!(validate_network_config(&NetworkConfig {
-            limits: vec![NetworkBandwidthLimit {
-                host: None,
-                port: None,
-                bytes_per_second: 0,
-            }],
-            ..NetworkConfig::default()
-        })
-        .is_err());
+        assert!(
+            validate_network_config(&NetworkConfig {
+                limits: vec![NetworkBandwidthLimit {
+                    host: None,
+                    port: None,
+                    bytes_per_second: 0,
+                }],
+                ..NetworkConfig::default()
+            })
+            .is_err()
+        );
     }
 }

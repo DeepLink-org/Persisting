@@ -13,7 +13,7 @@ use crate::injection::host_identity::machine_fingerprint_for_client;
 use crate::injection::peer::resolve_peer_client;
 use crate::runtime::run_env::{read_run_child_info, read_run_session};
 
-use super::storage::{trajectory_run_dir, CaptureRoute};
+use super::storage::{CaptureRoute, trajectory_run_dir};
 
 /// Sidecar metadata for `capture serve` (no `run_session`). `capture run` uses `run_child.yaml` + markdown frontmatter instead.
 pub const SESSION_CLIENT_META_FILENAME: &str = "session-meta.yaml";

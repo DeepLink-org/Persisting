@@ -11,7 +11,7 @@ mod jj_backend;
 #[path = "jj_disabled.rs"]
 mod jj_backend;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use fs::OverlayFs;
 use fuser::{BackgroundSession, MountOption, Session};
 use jj_backend::JujutsuWorkspace;
@@ -203,10 +203,10 @@ fn prepare(
         }
     }
     let fskit = config.backend.as_deref() == Some("fskit");
-    if let Some(backend) = &config.backend {
-        if !matches!(backend.as_str(), "kernel" | "fskit") {
-            bail!("unsupported macFUSE backend: {backend}");
-        }
+    if let Some(backend) = &config.backend
+        && !matches!(backend.as_str(), "kernel" | "fskit")
+    {
+        bail!("unsupported macFUSE backend: {backend}");
     }
     if !fskit {
         std::fs::create_dir_all(&config.mountpoint)

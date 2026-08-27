@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use persisting_pchronicle::document::{detect_format, DocumentFormat};
+use persisting_pchronicle::document::{DocumentFormat, detect_format};
 use persisting_pchronicle::query::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, SOURCE_FILE_COLUMN,
 };
@@ -133,9 +133,10 @@ async fn openai_directory_uses_relative_paths_for_like_narrowing() -> Result<()>
             .collect::<Vec<_>>(),
         ["cyber-b", "cyber-c"]
     );
-    assert!(rows
-        .iter()
-        .all(|row| row[SOURCE_FILE_COLUMN] == "batch/second.json"));
+    assert!(
+        rows.iter()
+            .all(|row| row[SOURCE_FILE_COLUMN] == "batch/second.json")
+    );
     Ok(())
 }
 
@@ -497,8 +498,8 @@ async fn projected_atif_includes_embedded_subagent_steps_by_document_id() -> Res
 }
 
 #[tokio::test]
-async fn projected_atif_ignores_unselected_large_values_without_materializing_the_file(
-) -> Result<()> {
+async fn projected_atif_ignores_unselected_large_values_without_materializing_the_file()
+-> Result<()> {
     let mut trajectory: serde_json::Value = serde_json::from_str(&fs::read_to_string(
         atif_fixtures().join("dialogue_10.json"),
     )?)?;

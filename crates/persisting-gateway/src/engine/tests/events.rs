@@ -108,16 +108,17 @@ async fn response_event_appends_single_stream_record() {
         records[0].payload["assistant_content"].as_str(),
         Some("hello")
     );
-    assert!(records[0].payload["llm_response"]
-        .get("schema_version")
-        .is_none());
+    assert!(
+        records[0].payload["llm_response"]
+            .get("schema_version")
+            .is_none()
+    );
     assert_eq!(
         records[0].payload["llm_response"]["output_format"],
         "chat_completions"
     );
     assert_eq!(
-        records[0].payload["llm_response"]["response"]["candidates"][0]["message"]["parts"][0]
-            ["text"],
+        records[0].payload["llm_response"]["response"]["candidates"][0]["message"]["parts"][0]["text"],
         "hello"
     );
 }

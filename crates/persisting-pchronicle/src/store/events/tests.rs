@@ -1,6 +1,6 @@
 use super::*;
-use crate::layout::StoryCoords;
 use crate::EventRecord;
+use crate::layout::StoryCoords;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const CHUNK_ROWS: usize = 8192;
@@ -432,10 +432,12 @@ async fn missing_event_id_is_stored_as_null_without_deduplication() {
         .to_string_lossy()
         .into_owned();
     let (_, datasets) = open_visible_snapshot(&uri).await.unwrap().unwrap();
-    assert!(datasets[0]
-        .schema()
-        .field(crate::TRAJECTORY_EVENT_ID_COL)
-        .is_some());
+    assert!(
+        datasets[0]
+            .schema()
+            .field(crate::TRAJECTORY_EVENT_ID_COL)
+            .is_some()
+    );
     let rows = read_all_rows(&raw_event_lance_path(&session).unwrap().to_string_lossy())
         .await
         .unwrap();
@@ -443,9 +445,11 @@ async fn missing_event_id_is_stored_as_null_without_deduplication() {
     assert_eq!(rows[0].event_id, None);
     assert_eq!(rows[1].event_id, None);
     let restored = replay(&session, 0, None).await.unwrap().records;
-    assert!(restored
-        .iter()
-        .all(|record| record.identity.event_id.is_none()));
+    assert!(
+        restored
+            .iter()
+            .all(|record| record.identity.event_id.is_none())
+    );
 }
 
 #[tokio::test]
@@ -509,11 +513,13 @@ async fn one_cached_appender_preserves_physical_append_order() {
     let (manifest, datasets) = open_visible_snapshot(&uri).await.unwrap().unwrap();
     assert_eq!(manifest.segments.len(), 1);
     assert_eq!(datasets[0].get_fragments().len(), 3);
-    assert!(datasets[0]
-        .load_indices_by_name(SESSION_INDEX_NAME)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        datasets[0]
+            .load_indices_by_name(SESSION_INDEX_NAME)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     let restored = replay(&session, 0, None).await.unwrap();
     assert_eq!(
@@ -534,10 +540,12 @@ async fn replay_available_follows_committed_pages() {
     let storage_s = storage.to_string_lossy().to_string();
     let session = flat_session(&storage_s, "agent", "sess");
 
-    assert!(replay_available(&session, 0, Some(2))
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        replay_available(&session, 0, Some(2))
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     append_events(&session, &[note("first"), note("second"), note("third")])
         .await
@@ -568,12 +576,14 @@ async fn replay_available_follows_committed_pages() {
             .collect::<Vec<_>>(),
         ["third", "fourth"]
     );
-    assert!(replay_available(&session, 4, Some(2))
-        .await
-        .unwrap()
-        .unwrap()
-        .records
-        .is_empty());
+    assert!(
+        replay_available(&session, 4, Some(2))
+            .await
+            .unwrap()
+            .unwrap()
+            .records
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -638,10 +648,12 @@ async fn session_partition_replay_isolates_stories_in_shared_run_dataset() {
 
     let main_replay = replay(&main, 0, None).await.unwrap();
     assert_eq!(main_replay.records.len(), 2);
-    assert!(main_replay
-        .records
-        .iter()
-        .all(|r| payload_content(r).starts_with("main-")));
+    assert!(
+        main_replay
+            .records
+            .iter()
+            .all(|r| payload_content(r).starts_with("main-"))
+    );
 
     let sub_a_replay = replay(&sub_a, 0, None).await.unwrap();
     assert_eq!(sub_a_replay.records.len(), 1);
@@ -823,11 +835,13 @@ async fn explicit_maintenance_compacts_fragments_and_builds_session_index() {
     let (manifest, datasets) = open_visible_snapshot(&uri).await.unwrap().unwrap();
     assert_eq!(manifest.segments.len(), 1);
     assert_eq!(datasets[0].get_fragments().len(), 1);
-    assert!(!datasets[0]
-        .load_indices_by_name(SESSION_INDEX_NAME)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        !datasets[0]
+            .load_indices_by_name(SESSION_INDEX_NAME)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(report.old_versions_removed >= 4);
     let segment_directories =
         std::fs::read_dir(raw_event_lance_path(&session).unwrap().join("segments"))

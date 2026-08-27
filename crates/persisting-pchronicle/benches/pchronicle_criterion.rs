@@ -7,10 +7,10 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use persisting_pchronicle::document::{
-    decode_json_storylines, encode_json_storylines, project_event_records, storyline_to_events,
-    DocumentFormat,
+    DocumentFormat, decode_json_storylines, encode_json_storylines, project_event_records,
+    storyline_to_events,
 };
 use persisting_pchronicle::model::StorylineDocument;
 

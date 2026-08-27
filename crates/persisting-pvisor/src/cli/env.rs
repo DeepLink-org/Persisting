@@ -4,14 +4,14 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand, ValueEnum};
 use persisting_overlayfs::jujutsu_upper_dir;
 
 use crate::runtime::{
-    all_runs, apply_overlay_selected, discard_overlay, is_live, load_overlay_record,
-    mount_overlay_record, resolve_run, write_overlay_record, ApplySelection, OverlayRecord,
-    OverlayState, OverlayUpper, RunLease, RunRecord,
+    ApplySelection, OverlayRecord, OverlayState, OverlayUpper, RunLease, RunRecord, all_runs,
+    apply_overlay_selected, discard_overlay, is_live, load_overlay_record, mount_overlay_record,
+    resolve_run, write_overlay_record,
 };
 
 #[derive(Debug, Args)]

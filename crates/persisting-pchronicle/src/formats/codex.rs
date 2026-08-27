@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::Path;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::codec::{
-    emit_stories, DecodeContext, DecodeReport, FormatCapabilities, ProbeConfidence,
-    TrajectoryFormat,
+    DecodeContext, DecodeReport, FormatCapabilities, ProbeConfidence, TrajectoryFormat,
+    emit_stories,
 };
 use super::common::jsonl::{
     filename_stem, for_each_jsonl_object, join_text_parts, leftover_textless_parts,
@@ -104,10 +104,10 @@ fn content_has_codex_fingerprint(content: &[u8]) -> bool {
             .filter(|line| !line.trim().is_empty())
             .take(32)
         {
-            if let Ok(value) = serde_json::from_str::<Value>(line) {
-                if looks_like_codex_event(&value) {
-                    return true;
-                }
+            if let Ok(value) = serde_json::from_str::<Value>(line)
+                && looks_like_codex_event(&value)
+            {
+                return true;
             }
         }
     }
@@ -511,17 +511,15 @@ fn attach_tool_output(
     model: Option<&str>,
 ) {
     let output = payload.get("output").cloned().unwrap_or(Value::Null);
-    if let Some(call_id) = payload.get("call_id").and_then(Value::as_str) {
-        if let Some(&(turn_idx, tool_idx)) = call_index.get(call_id) {
-            if let Some(call) = turns
-                .get_mut(turn_idx)
-                .and_then(|turn| turn.tool_calls.as_mut())
-                .and_then(|calls| calls.get_mut(tool_idx))
-            {
-                call.result = Some(output);
-                return;
-            }
-        }
+    if let Some(call_id) = payload.get("call_id").and_then(Value::as_str)
+        && let Some(&(turn_idx, tool_idx)) = call_index.get(call_id)
+        && let Some(call) = turns
+            .get_mut(turn_idx)
+            .and_then(|turn| turn.tool_calls.as_mut())
+            .and_then(|calls| calls.get_mut(tool_idx))
+    {
+        call.result = Some(output);
+        return;
     }
     let index = ensure_agent_turn(
         turns,
@@ -655,7 +653,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::formats::codec::{decode_all, DocumentSource};
+    use crate::formats::codec::{DocumentSource, decode_all};
     use serde_json::json;
 
     fn codex_to_storylines(
@@ -731,9 +729,11 @@ mod tests {
                 .as_deref(),
             Some("complete")
         );
-        assert!(story.unknown_fields.sources["codex"]
-            .fields
-            .contains_key("/events/12"));
+        assert!(
+            story.unknown_fields.sources["codex"]
+                .fields
+                .contains_key("/events/12")
+        );
     }
 
     #[test]

@@ -5,9 +5,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use super::storyline::{
+    StorylineProjectionBuildOutcome, StorylineProjectionSyncMode, StorylineProjectionSyncOutcome,
     build_storyline_projection, canonical_projection_lineage, projection_lineage_is_fresh,
     rebuild_storyline_projection, storyline_projection_status, sync_storyline_projection,
-    StorylineProjectionBuildOutcome, StorylineProjectionSyncMode, StorylineProjectionSyncOutcome,
 };
 use crate::store::{
     CatalogSourceStatus, DatasetCatalogSnapshot, EventFactSnapshot, ProjectionSourceSnapshot,
@@ -391,10 +391,10 @@ fn display_projection_path(source_path: &str) -> Result<String> {
 mod tests {
     use super::*;
     use crate::layout::StoryCoords;
-    use crate::projection::{build_storyline_projection, StorylineProjectionBuildOutcome};
+    use crate::projection::{StorylineProjectionBuildOutcome, build_storyline_projection};
     use crate::store::{
-        raw_event_lance_path, CatalogSnapshotOptions, DatasetCatalogSnapshot, DatasetMount,
-        RawEventLanceStore,
+        CatalogSnapshotOptions, DatasetCatalogSnapshot, DatasetMount, RawEventLanceStore,
+        raw_event_lance_path,
     };
     use crate::{EventIdentity, EventRecord};
     use lance::io::ObjectStore;
@@ -607,9 +607,11 @@ mod tests {
         let error = inspect_automatic_storyline_projection(&target_b)
             .await
             .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("matching canonical source ownership"));
+        assert!(
+            error
+                .to_string()
+                .contains("matching canonical source ownership")
+        );
         assert_eq!(std::fs::read(projection_b.join("CURRENT"))?, before);
 
         let projection_a = storage.join("agent/a/storyline");
@@ -645,9 +647,11 @@ mod tests {
 
         std::fs::write(&current, b"{broken")?;
         let malformed = std::fs::read(&current)?;
-        assert!(inspect_automatic_storyline_projection(&target_a)
-            .await
-            .is_err());
+        assert!(
+            inspect_automatic_storyline_projection(&target_a)
+                .await
+                .is_err()
+        );
         assert_eq!(std::fs::read(&current)?, malformed);
         Ok(())
     }

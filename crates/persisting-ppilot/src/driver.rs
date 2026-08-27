@@ -14,15 +14,15 @@ use crate::executor::task_run_spec;
 use crate::future::RunFuture;
 use crate::observe::Observer;
 use crate::plan::stream_plan_tasks;
-use crate::pulsing_ext::{ask_timeout, ASK_TIMEOUT};
+use crate::pulsing_ext::{ASK_TIMEOUT, ask_timeout};
 use crate::scheduler::{AcquireError, Scheduler, StickyLost, WorkerPool};
 use crate::sink_writer::SinkSubmitter;
 use crate::skip::SkipSet;
-use crate::task::{unix_now, ErrorKind, TaskExpr, TaskResult};
+use crate::task::{ErrorKind, TaskExpr, TaskResult, unix_now};
 use crate::worker::{WorkerCommand, WorkerReply};
 use anyhow::Result;
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -355,12 +355,14 @@ async fn execute_with_placement(
                     || r.attempt_id.is_none()
                 {
                     let detail = format!(
-                        "worker returned invalid Run identity: run={:?}, attempt={:?}, epoch={} (expected run={}, epoch={})",
+                        "worker returned invalid Run identity: run={:?}, attempt={:?}, epoch={} (expected run={}, epoch={}); worker error={:?}; traceback={:?}",
                         r.run_id,
                         r.attempt_id,
                         r.lease_epoch,
                         run_id,
-                        lease_epoch
+                        lease_epoch,
+                        r.error,
+                        r.traceback,
                     );
                     r = TaskResult::failure_with_kind(
                         task_id.clone(),
@@ -417,10 +419,10 @@ async fn execute_with_placement(
         Ok(stamp_control(r, &run_id, lease_epoch))
     }
     .await;
-    if outcome.is_ok() {
-        if let Some(heartbeat) = heartbeat {
-            heartbeat.detach();
-        }
+    if outcome.is_ok()
+        && let Some(heartbeat) = heartbeat
+    {
+        heartbeat.detach();
     }
     outcome
 }

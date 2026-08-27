@@ -35,3 +35,6 @@ uuid = { workspace = true, features = ["v4"] }
 default = []
 # Append pPilot results through the pChronicle control process (Tee with JsonlFileSink).
 traj-sink = ["dep:chrono"]
+
+[dev-dependencies]
+proptest.workspace = true

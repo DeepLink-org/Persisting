@@ -8,10 +8,10 @@
 
 use crate::checkpoint::CheckpointTracker;
 use crate::coordination::RunCoordinator;
-use crate::sink::{persist_terminal, ResultSink};
+use crate::sink::{ResultSink, persist_terminal};
 use crate::skip::SkipSet;
 use crate::task::TaskResult;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -42,10 +42,10 @@ struct PersistErrors {
 impl PersistErrors {
     fn note(&self, task_id: &str, err: impl std::fmt::Display) {
         let prev = self.count.fetch_add(1, Ordering::AcqRel);
-        if prev == 0 {
-            if let Ok(mut g) = self.first.lock() {
-                *g = Some(format!("{task_id}: {err}"));
-            }
+        if prev == 0
+            && let Ok(mut g) = self.first.lock()
+        {
+            *g = Some(format!("{task_id}: {err}"));
         }
     }
 

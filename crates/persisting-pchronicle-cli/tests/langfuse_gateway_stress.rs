@@ -16,8 +16,8 @@
 //! full-success OTLP response, every span must become one durable event, and
 //! trace/span/parent relationships must survive the Gateway chunking boundary.
 
-use anyhow::{bail, Context, Result};
-use serde_json::{json, Value};
+use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

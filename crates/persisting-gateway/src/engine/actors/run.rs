@@ -6,9 +6,9 @@ use pulsing_actor::prelude::*;
 
 use crate::engine::story::{RunId, StoryId};
 use crate::record::EventRecord;
-use crate::subagent_link::{enrich_record, main_route_for_backfill, SubagentRegistry};
+use crate::subagent_link::{SubagentRegistry, enrich_record, main_route_for_backfill};
 
-use super::super::wire::{headers_to_header_map, RunCommand, RunReply};
+use super::super::wire::{RunCommand, RunReply, headers_to_header_map};
 
 /// Run-level actor: subagent spawn links + active story index for one proxy instance.
 pub(crate) struct RunActor {

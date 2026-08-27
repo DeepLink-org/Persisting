@@ -8,9 +8,9 @@
 //!
 //! Compatible with pVisor's `apply_overlay` whiteout handling.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
-use persisting_overlayfs::{run_foreground, OverlayMountConfig};
+use persisting_overlayfs::{OverlayMountConfig, run_foreground};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -230,9 +230,11 @@ mod tests {
         assert_eq!(options.jjstore, Some(PathBuf::from("/shared/overlay.jj")));
         assert_eq!(options.jjworkspace.as_deref(), Some("attempt-1"));
         assert!(parse_options("lowerdir=/lower,jjstore=/shared/overlay.jj").is_err());
-        assert!(parse_options(
-            "lowerdir=/lower,jjstore=/shared/overlay.jj,jjworkspace=x,upperdir=/upper"
-        )
-        .is_err());
+        assert!(
+            parse_options(
+                "lowerdir=/lower,jjstore=/shared/overlay.jj,jjworkspace=x,upperdir=/upper"
+            )
+            .is_err()
+        );
     }
 }

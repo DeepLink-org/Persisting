@@ -8,8 +8,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -62,10 +62,10 @@ impl CheckpointLedger {
                 .get("error_kind")
                 .and_then(|kind| kind.as_str())
                 .unwrap_or("execute");
-            if wanted.contains(kind) {
-                if let Some(id) = value.get("task_id").and_then(|id| id.as_str()) {
-                    matched.insert(id.to_string());
-                }
+            if wanted.contains(kind)
+                && let Some(id) = value.get("task_id").and_then(|id| id.as_str())
+            {
+                matched.insert(id.to_string());
             }
         }
         Ok(matched)

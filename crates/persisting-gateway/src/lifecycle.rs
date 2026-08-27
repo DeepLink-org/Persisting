@@ -1,9 +1,9 @@
 //! Session lifecycle events for the raw Lance event log.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::record::{now_rfc3339, EventRecord};
+use super::record::{EventRecord, now_rfc3339};
 use crate::session::storage::CaptureRoute;
 
 pub const SESSION_STARTED: &str = "session.started";

@@ -4,8 +4,8 @@
 //! durable operations; orchestrators such as pPilot depend only on these
 //! contracts and the long-lived process transport.
 
-use crate::EventRecord;
-use anyhow::{bail, Context, Result};
+use crate::{EventRecord, unix_now_ms};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use persisting_agentctl::{
     AttemptId, RunCommit, RunCommitRequest, RunControlRecord, RunId, RunLeaseRecord,
@@ -16,10 +16,9 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
@@ -241,7 +240,7 @@ pub trait ChronicleControl: Send + Sync {
         ttl_ms: u64,
     ) -> Result<LeaseAcquireOutcome>;
     async fn bind_attempt(&self, run_id: &RunId, epoch: u64, attempt_id: AttemptId)
-        -> Result<bool>;
+    -> Result<bool>;
     async fn renew_lease(
         &self,
         run_id: &RunId,
@@ -1044,15 +1043,6 @@ impl ChronicleControl for MemoryChronicleControl {
     }
 }
 
-fn unix_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1096,30 +1086,40 @@ mod tests {
     #[tokio::test]
     async fn attempt_heartbeat_renews_only_the_active_fenced_attempt() {
         let control = MemoryChronicleControl::new("memory");
-        assert!(control
-            .publish_attempt_active("run-1", "attempt-1", 3, 1_000)
-            .await
-            .unwrap());
+        assert!(
+            control
+                .publish_attempt_active("run-1", "attempt-1", 3, 1_000)
+                .await
+                .unwrap()
+        );
         let initial = control.get_attempt("run-1").await.unwrap().unwrap();
-        assert!(!control
-            .heartbeat_attempt("run-1", "attempt-old", 2, 2_000)
-            .await
-            .unwrap());
-        assert!(control
-            .heartbeat_attempt("run-1", "attempt-1", 3, 2_000)
-            .await
-            .unwrap());
+        assert!(
+            !control
+                .heartbeat_attempt("run-1", "attempt-old", 2, 2_000)
+                .await
+                .unwrap()
+        );
+        assert!(
+            control
+                .heartbeat_attempt("run-1", "attempt-1", 3, 2_000)
+                .await
+                .unwrap()
+        );
         let renewed = control.get_attempt("run-1").await.unwrap().unwrap();
         assert_eq!(renewed.revision, initial.revision + 1);
         assert!(renewed.expires_at_unix_ms >= initial.expires_at_unix_ms);
 
-        assert!(control
-            .publish_attempt_terminal("run-1", "attempt-1", 3, serde_json::json!({"ok": true}))
-            .await
-            .unwrap());
-        assert!(!control
-            .heartbeat_attempt("run-1", "attempt-1", 3, 2_000)
-            .await
-            .unwrap());
+        assert!(
+            control
+                .publish_attempt_terminal("run-1", "attempt-1", 3, serde_json::json!({"ok": true}))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !control
+                .heartbeat_attempt("run-1", "attempt-1", 3, 2_000)
+                .await
+                .unwrap()
+        );
     }
 }

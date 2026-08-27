@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::bandwidth::{BandwidthRegistry, BandwidthSession};
 use crate::policy::{DenyReason, NetworkPolicy};
 use crate::resolver::{
-    authorize_target_with_policy, ResolvedAddressPolicy, TargetAuthorizationError,
+    ResolvedAddressPolicy, TargetAuthorizationError, authorize_target_with_policy,
 };
 use persisting_agentctl::{
     AttemptId, ControlController, NetworkAccessRequest, NetworkTransport, RunId, StorylineId,

@@ -1,11 +1,11 @@
 //! Durable, versioned summary of one pVisor Run.
 
 use crate::runtime::{
-    overlay_changes, overlay_status, ChangeEntry, OverlayState, RunLineage, RunRecord,
+    ChangeEntry, OverlayState, RunLineage, RunRecord, overlay_changes, overlay_status,
 };
 use crate::sandbox::SANDBOX_SETUP_FAILED_WARNING;
 use crate::util::{atomic_write, sync_directory};
-use crate::{unix_now_ms, AgentCtlSnapshot};
+use crate::{AgentCtlSnapshot, unix_now_ms};
 use persisting_agentctl::{
     ArtifactRef, CapabilityDimension, ExecutorDescriptor, IsolationKind, ProcessOutput,
     ResourceLimits, RunFailure, RunResult, RunState,
@@ -519,9 +519,11 @@ mod tests {
         .unwrap();
 
         let error = RunBundle::read(temp.path()).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("unsupported Run Bundle schema 999"));
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported Run Bundle schema 999")
+        );
     }
 
     #[test]
@@ -610,11 +612,13 @@ mod tests {
         assert_eq!(bundle.run.parent_run_id.as_deref(), Some("job-1"));
         assert_eq!(bundle.run.task_id.as_deref(), Some("task-1"));
         assert_eq!(bundle.orchestration["ppilot.job_id"], "job-1");
-        assert!(bundle
-            .environment
-            .runtime_injected_keys
-            .iter()
-            .any(|key| key == "PERSISTING_AGENTCTL_VERSION"));
+        assert!(
+            bundle
+                .environment
+                .runtime_injected_keys
+                .iter()
+                .any(|key| key == "PERSISTING_AGENTCTL_VERSION")
+        );
 
         record.executor = Some(ExecutorDescriptor {
             name: "libkrun-root-overlay-v1".into(),
@@ -673,11 +677,13 @@ mod tests {
         let denied = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         assert!(denied.safety.filesystem_non_bypassable);
         assert!(denied.safety.network_non_bypassable);
-        assert!(denied
-            .safety
-            .warnings
-            .iter()
-            .all(|warning| !warning.contains("direct sockets may bypass")));
+        assert!(
+            denied
+                .safety
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("direct sockets may bypass"))
+        );
 
         record.executor = Some(ExecutorDescriptor {
             name: "local-seatbelt-v1".into(),
@@ -702,10 +708,12 @@ mod tests {
         assert!(!seatbelt.safety.filesystem_read_non_bypassable);
         assert!(seatbelt.safety.filesystem_write_non_bypassable);
         assert!(seatbelt.safety.network_non_bypassable);
-        assert!(seatbelt
-            .safety
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("reads")));
+        assert!(
+            seatbelt
+                .safety
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("reads"))
+        );
     }
 }

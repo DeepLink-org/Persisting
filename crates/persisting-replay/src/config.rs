@@ -5,7 +5,7 @@ use std::str::FromStr;
 use serde::Deserialize;
 
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
-use crate::model::{AgentKind, PlaybackRequest, ReplayMode, REQUEST_SCHEMA_VERSION};
+use crate::model::{AgentKind, PlaybackRequest, REQUEST_SCHEMA_VERSION, ReplayMode};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

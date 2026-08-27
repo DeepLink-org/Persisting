@@ -8,8 +8,8 @@ use std::io::{self, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 pub const WHITEOUT_PREFIX: &str = ".wh.";
@@ -129,7 +129,7 @@ pub fn fingerprint_at(root: &Path, rel: &Path) -> io::Result<PathFingerprint> {
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(PathFingerprint::Absent)
+            return Ok(PathFingerprint::Absent);
         }
         Err(error) => return Err(error),
     };
@@ -301,11 +301,11 @@ impl OverlayCore {
             preimage_dir,
             preimage_lock: Mutex::new(()),
         };
-        if fs::read_dir(&core.upper)?.next().is_none() {
-            if let Some(root) = core.lowers.first() {
-                let metadata = fs::symlink_metadata(root)?;
-                core.copy_metadata(root, &core.upper, &metadata)?;
-            }
+        if fs::read_dir(&core.upper)?.next().is_none()
+            && let Some(root) = core.lowers.first()
+        {
+            let metadata = fs::symlink_metadata(root)?;
+            core.copy_metadata(root, &core.upper, &metadata)?;
         }
         Ok(core)
     }
@@ -509,10 +509,10 @@ impl OverlayCore {
         metadata: &Metadata,
     ) -> io::Result<()> {
         let nofollow = metadata.file_type().is_symlink();
-        if let Err(err) = sys::chown(destination, metadata.uid(), metadata.gid(), nofollow) {
-            if !ignorable_ownership_error(&err) {
-                return Err(err);
-            }
+        if let Err(err) = sys::chown(destination, metadata.uid(), metadata.gid(), nofollow)
+            && !ignorable_ownership_error(&err)
+        {
+            return Err(err);
         }
         if !nofollow {
             fs::set_permissions(
@@ -520,19 +520,19 @@ impl OverlayCore {
                 fs::Permissions::from_mode(metadata.mode() & 0o7777),
             )?;
         }
-        if let Err(err) = sys::copy_xattrs(source, destination) {
-            if !ignorable_metadata_error(&err) {
-                return Err(err);
-            }
+        if let Err(err) = sys::copy_xattrs(source, destination)
+            && !ignorable_metadata_error(&err)
+        {
+            return Err(err);
         }
         let atime = UNIX_EPOCH
             + Duration::new(metadata.atime().max(0) as u64, metadata.atime_nsec() as u32);
         let mtime = UNIX_EPOCH
             + Duration::new(metadata.mtime().max(0) as u64, metadata.mtime_nsec() as u32);
-        if let Err(err) = sys::set_times(destination, Some(atime), Some(mtime), nofollow) {
-            if !ignorable_metadata_error(&err) {
-                return Err(err);
-            }
+        if let Err(err) = sys::set_times(destination, Some(atime), Some(mtime), nofollow)
+            && !ignorable_metadata_error(&err)
+        {
+            return Err(err);
         }
         Ok(())
     }
@@ -626,10 +626,11 @@ impl OverlayCore {
             }
             self.copy_metadata(&resolved.path, &temporary, &metadata)?;
             fs::rename(&temporary, &upper)?;
-            if metadata.is_file() && metadata.nlink() > 1 {
-                if let Ok(mut links) = self.copied_hard_links.lock() {
-                    links.insert((metadata.dev(), metadata.ino()), upper.clone());
-                }
+            if metadata.is_file()
+                && metadata.nlink() > 1
+                && let Ok(mut links) = self.copied_hard_links.lock()
+            {
+                links.insert((metadata.dev(), metadata.ino()), upper.clone());
             }
             Ok(())
         })();
@@ -879,14 +880,14 @@ impl OverlayCore {
             return;
         };
         for path in links.values_mut() {
-            if path == old || path.starts_with(old) {
-                if let Ok(suffix) = path.strip_prefix(old) {
-                    *path = if suffix.as_os_str().is_empty() {
-                        new.to_path_buf()
-                    } else {
-                        new.join(suffix)
-                    };
-                }
+            if (path == old || path.starts_with(old))
+                && let Ok(suffix) = path.strip_prefix(old)
+            {
+                *path = if suffix.as_os_str().is_empty() {
+                    new.to_path_buf()
+                } else {
+                    new.join(suffix)
+                };
             }
         }
     }
@@ -904,14 +905,14 @@ impl OverlayCore {
                         second.join(suffix)
                     };
                 }
-            } else if path == second || path.starts_with(second) {
-                if let Ok(suffix) = path.strip_prefix(second) {
-                    *path = if suffix.as_os_str().is_empty() {
-                        first.to_path_buf()
-                    } else {
-                        first.join(suffix)
-                    };
-                }
+            } else if (path == second || path.starts_with(second))
+                && let Ok(suffix) = path.strip_prefix(second)
+            {
+                *path = if suffix.as_os_str().is_empty() {
+                    first.to_path_buf()
+                } else {
+                    first.join(suffix)
+                };
             }
         }
     }
@@ -945,13 +946,13 @@ impl OverlayCore {
         let backup = replaced_upper
             .as_ref()
             .map(|_| self.temporary_path(self.upper()));
-        if let (Some(destination), Some(backup)) = (&replaced_upper, &backup) {
-            if let Err(error) = fs::rename(destination, backup) {
-                if source_needs_whiteout {
-                    let _ = self.clear_whiteout(old);
-                }
-                return Err(error);
+        if let (Some(destination), Some(backup)) = (&replaced_upper, &backup)
+            && let Err(error) = fs::rename(destination, backup)
+        {
+            if source_needs_whiteout {
+                let _ = self.clear_whiteout(old);
             }
+            return Err(error);
         }
         if let Err(error) = fs::rename(&source, self.upper_path(new)) {
             if let (Some(destination), Some(backup)) = (&replaced_upper, &backup) {
@@ -962,13 +963,13 @@ impl OverlayCore {
             }
             return Err(error);
         }
-        if let Some(backup) = backup {
-            if let Err(error) = Self::remove_physical(&backup) {
-                log::warn!(
-                    "rename committed but cleanup of {} failed: {error}",
-                    backup.display()
-                );
-            }
+        if let Some(backup) = backup
+            && let Err(error) = Self::remove_physical(&backup)
+        {
+            log::warn!(
+                "rename committed but cleanup of {} failed: {error}",
+                backup.display()
+            );
         }
         self.remap_copied_hard_links(&self.upper_path(old), &self.upper_path(new));
         Ok(())
@@ -1120,11 +1121,13 @@ mod tests {
             .create_dir(Path::new("old"), 0o755)
             .expect("mkdir");
         assert!(fixture.upper.join("old").join(OPAQUE_NAME).is_file());
-        assert!(fixture
-            .core
-            .list_names(Path::new("old"))
-            .expect("names")
-            .is_empty());
+        assert!(
+            fixture
+                .core
+                .list_names(Path::new("old"))
+                .expect("names")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1274,10 +1277,12 @@ mod tests {
 
         assert!(core.resolve(Path::new("internal")).is_none());
         assert!(core.resolve(Path::new("internal/nested/control")).is_none());
-        assert!(!core
-            .list_names(Path::new(""))
-            .unwrap()
-            .contains(&OsString::from("internal")));
+        assert!(
+            !core
+                .list_names(Path::new(""))
+                .unwrap()
+                .contains(&OsString::from("internal"))
+        );
         assert_eq!(
             core.create_dir(Path::new("internal"), 0o755)
                 .unwrap_err()

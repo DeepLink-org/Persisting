@@ -31,9 +31,11 @@ fn non_create_publication_mismatch_is_an_operational_error() {
     let error = published_storyline_report(StorylineProjectionPublicationOutcome::OutputNotEmpty)
         .unwrap_err();
 
-    assert!(error
-        .to_string()
-        .contains("non-create Storyline publication reported nonempty output"));
+    assert!(
+        error
+            .to_string()
+            .contains("non-create Storyline publication reported nonempty output")
+    );
 }
 
 #[test]
@@ -248,13 +250,15 @@ fn unknown_field_limit_options_allow_unbounded_count_and_bytes() {
     ] {
         assert!(options.validate().is_err());
     }
-    assert!(StorylineContentOptions {
-        max_unknown_fields: usize::MAX,
-        max_unknown_bytes: usize::MAX,
-        ..Default::default()
-    }
-    .validate()
-    .is_ok());
+    assert!(
+        StorylineContentOptions {
+            max_unknown_fields: usize::MAX,
+            max_unknown_bytes: usize::MAX,
+            ..Default::default()
+        }
+        .validate()
+        .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -484,13 +488,15 @@ async fn projection_lineage_is_atomic_preserved_by_maintenance_and_cleared_by_di
     );
 
     store.replace_storyline(&story("direct")).await.unwrap();
-    assert!(store
-        .current_table_paths()
-        .await
-        .unwrap()
-        .unwrap()
-        .projection
-        .is_none());
+    assert!(
+        store
+            .current_table_paths()
+            .await
+            .unwrap()
+            .unwrap()
+            .projection
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -798,11 +804,12 @@ async fn maintenance_prunes_expired_physical_generations() {
         .await
         .unwrap();
     assert_eq!(no_vacuum.generations_removed, 0);
-    assert!(dir
-        .path()
-        .join(GENERATIONS_DIR)
-        .join(&first_table_generation)
-        .exists());
+    assert!(
+        dir.path()
+            .join(GENERATIONS_DIR)
+            .join(&first_table_generation)
+            .exists()
+    );
 
     let vacuumed = store
         .maintain(&LanceMaintenanceOptions {
@@ -812,16 +819,18 @@ async fn maintenance_prunes_expired_physical_generations() {
         .await
         .unwrap();
     assert_eq!(vacuumed.generations_removed, 1);
-    assert!(!dir
-        .path()
-        .join(GENERATIONS_DIR)
-        .join(first_table_generation)
-        .exists());
-    assert!(dir
-        .path()
-        .join(GENERATIONS_DIR)
-        .join(current_table_generation)
-        .exists());
+    assert!(
+        !dir.path()
+            .join(GENERATIONS_DIR)
+            .join(first_table_generation)
+            .exists()
+    );
+    assert!(
+        dir.path()
+            .join(GENERATIONS_DIR)
+            .join(current_table_generation)
+            .exists()
+    );
     assert!(malformed.exists());
 }
 
@@ -950,12 +959,14 @@ async fn batch_get_preserves_request_order_and_missing_sessions() {
         .await
         .unwrap();
     assert_eq!(actual, [Some(second), None, Some(first)]);
-    assert!(store
-        .get_storylines_full(&["a".into(), "a".into()])
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("duplicate session_id"));
+    assert!(
+        store
+            .get_storylines_full(&["a".into(), "a".into()])
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate session_id")
+    );
 }
 
 #[test]
@@ -1047,11 +1058,13 @@ async fn document_limit_failure_keeps_current_generation() {
             .generation,
         generation
     );
-    assert!(limited
-        .get_storyline_full("oversized")
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        limited
+            .get_storyline_full("oversized")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -1284,14 +1297,16 @@ async fn atif_stream_create_writes_one_fragment_per_table() {
         .await
         .unwrap();
     assert_eq!(report.tool_calls, 0);
-    assert!(empty_tools_store
-        .get_storyline_full("fixture-dialogue_10")
-        .await
-        .unwrap()
-        .unwrap()
-        .turns
-        .iter()
-        .all(|turn| turn.tool_calls.as_ref().is_none_or(Vec::is_empty)));
+    assert!(
+        empty_tools_store
+            .get_storyline_full("fixture-dialogue_10")
+            .await
+            .unwrap()
+            .unwrap()
+            .turns
+            .iter()
+            .all(|turn| turn.tool_calls.as_ref().is_none_or(Vec::is_empty))
+    );
 }
 
 #[tokio::test]
@@ -1349,11 +1364,13 @@ async fn streamed_replace_error_after_first_chunk_keeps_current() {
     assert!(error.to_string().contains("broken stream"));
     let after = store.current_table_paths().await.unwrap().unwrap();
     assert_eq!(before.generation, after.generation);
-    assert!(store
-        .get_storyline_full("committed")
-        .await
-        .unwrap()
-        .is_some());
+    assert!(
+        store
+            .get_storyline_full("committed")
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -1525,10 +1542,12 @@ async fn object_store_uri_round_trips_across_store_instances() {
         "remote-1"
     );
     let paths = reopened.current_table_paths().await.unwrap().unwrap();
-    assert!(paths
-        .runs
-        .to_string_lossy()
-        .starts_with("shared-memory://pchronicle-storyline-"));
+    assert!(
+        paths
+            .runs
+            .to_string_lossy()
+            .starts_with("shared-memory://pchronicle-storyline-")
+    );
 }
 
 #[tokio::test]
@@ -1543,13 +1562,15 @@ async fn generation_mismatch_releases_the_lease_immediately() {
         .unwrap_err();
 
     assert!(error.to_string().contains("commit conflict"), "{error:#}");
-    assert!(store
-        .read_current_control()
-        .await
-        .unwrap()
-        .control
-        .lease
-        .is_none());
+    assert!(
+        store
+            .read_current_control()
+            .await
+            .unwrap()
+            .control
+            .lease
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -1768,10 +1789,12 @@ async fn stale_maintenance_cannot_prune_a_successor_generation() {
         objects_version: cloned.objects_version,
         projection: cloned.projection,
     };
-    assert!(store
-        .publish_writer_snapshot(successor_owner, successor_lease.lease.epoch, &successor,)
-        .await
-        .unwrap());
+    assert!(
+        store
+            .publish_writer_snapshot(successor_owner, successor_lease.lease.epoch, &successor,)
+            .await
+            .unwrap()
+    );
 
     pause.resume();
     let error = maintenance.await.unwrap().unwrap_err();
@@ -1946,11 +1969,13 @@ async fn independent_replacements_conflict_at_current_cas_and_retry_cleanly() {
             .unwrap(),
         Some(winner.clone())
     );
-    assert!(reopened
-        .get_storyline_full(&loser.session_id)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        reopened
+            .get_storyline_full(&loser.session_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     reopened.replace_storyline(loser).await.unwrap();
     assert_eq!(
@@ -2044,11 +2069,13 @@ async fn assert_independent_object_store_create_case(
             .unwrap(),
         Some(winner.clone())
     );
-    assert!(reopened
-        .get_storyline_full(loser_session_id)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        reopened
+            .get_storyline_full(loser_session_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]

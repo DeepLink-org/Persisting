@@ -3,14 +3,14 @@
 //! Local backend: exclusive flock, then tmp `create_new` + rename.
 //! Object backend: conditional `PutMode::Create` / `PutMode::Update` with retries.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use futures::TryStreamExt;
 use lance::io::ObjectStore;
 use object_store::path::Path as ObjectPath;
 use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -201,12 +201,7 @@ impl CasStore {
     }
 }
 
-pub fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
+pub use persisting_events::unix_now_ms;
 
 pub(crate) fn encoded_id(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());

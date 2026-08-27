@@ -266,5 +266,5 @@ them.
 Run the complete CLI gate with:
 
 ```bash
-cargo test -p persisting-pchronicle-cli --tests
+cargo nextest run -p persisting-pchronicle-cli --tests --locked
 ```

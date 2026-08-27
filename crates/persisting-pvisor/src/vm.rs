@@ -624,11 +624,11 @@ impl RunExecutor for VmExecutor {
             ),
         };
         let mut warnings = Vec::new();
-        if let Some(network) = vm_network.take() {
-            if let Err(error) = network.shutdown() {
-                tracing::warn!(%error, "failed to stop VM smoltcp backend");
-                warnings.push(format!("failed to stop VM smoltcp backend: {error:#}"));
-            }
+        if let Some(network) = vm_network.take()
+            && let Err(error) = network.shutdown()
+        {
+            tracing::warn!(%error, "failed to stop VM smoltcp backend");
+            warnings.push(format!("failed to stop VM smoltcp backend: {error:#}"));
         }
         RunResult {
             run_id: spec.run_id,
@@ -1031,11 +1031,13 @@ mod tests {
         };
         assert!(VmExecutor::new(settings.clone()).is_ok());
         assert!(VmExecutor::new(VmSettings::default()).is_err());
-        assert!(VmExecutor::new(VmSettings {
-            cpus: 9,
-            ..settings
-        })
-        .is_err());
+        assert!(
+            VmExecutor::new(VmSettings {
+                cpus: 9,
+                ..settings
+            })
+            .is_err()
+        );
     }
 
     #[test]

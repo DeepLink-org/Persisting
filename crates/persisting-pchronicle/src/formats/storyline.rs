@@ -15,7 +15,7 @@ use super::codec::{
     DecodeContext, DecodeReport, FormatCapabilities, ProbeConfidence, TrajectoryFormat,
 };
 use super::timestamp::StorylineTimestamp;
-use super::unknown_fields::{compute_unknown_key_counts, StorylineUnknownFields, UnknownKeyCounts};
+use super::unknown_fields::{StorylineUnknownFields, UnknownKeyCounts, compute_unknown_key_counts};
 use crate::format::DocumentFormat;
 use crate::{InputIssue, InputResult, Result};
 
@@ -555,18 +555,18 @@ impl StorylineDocument {
                     "storyline.task must contain env, llm, or result",
                 ));
             }
-            if let Some(k) = task.llm.as_ref().and_then(|llm| llm.k) {
-                if k <= 0 {
-                    return Err(InputIssue::invalid("storyline.task.llm.k must be positive"));
-                }
+            if let Some(k) = task.llm.as_ref().and_then(|llm| llm.k)
+                && k <= 0
+            {
+                return Err(InputIssue::invalid("storyline.task.llm.k must be positive"));
             }
         }
-        if let Some(prompt) = &self.prompt {
-            if !prompt.has_nonempty_field() {
-                return Err(InputIssue::invalid(
-                    "storyline.prompt must contain a non-empty system or user",
-                ));
-            }
+        if let Some(prompt) = &self.prompt
+            && !prompt.has_nonempty_field()
+        {
+            return Err(InputIssue::invalid(
+                "storyline.prompt must contain a non-empty system or user",
+            ));
         }
         if let Some(origin) = &self.origin {
             if origin.format.is_empty() {
@@ -755,20 +755,20 @@ fn content_has_storyline_fingerprint(content: &[u8]) -> bool {
     };
     let trimmed = text.trim_start();
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-            if looks_like_storyline_value(&value) {
-                return true;
-            }
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed)
+            && looks_like_storyline_value(&value)
+        {
+            return true;
         }
         for line in trimmed
             .lines()
             .filter(|line| !line.trim().is_empty())
             .take(32)
         {
-            if let Ok(value) = serde_json::from_str::<Value>(line) {
-                if looks_like_storyline_value(&value) {
-                    return true;
-                }
+            if let Ok(value) = serde_json::from_str::<Value>(line)
+                && looks_like_storyline_value(&value)
+            {
+                return true;
             }
         }
     }
@@ -811,7 +811,7 @@ pub fn parse_storyline_document(input: &str) -> Result<StorylineDocument> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Map};
+    use serde_json::{Map, json};
 
     fn story_with_source_normalized_counts() -> StorylineDocument {
         let mut story = StorylineDocument::new("session", "agent");
@@ -1163,10 +1163,12 @@ mod tests {
 
         let missing: StorylineToolCall = serde_json::from_value(base.clone()).unwrap();
         assert_eq!(missing.result, None);
-        assert!(serde_json::to_value(missing)
-            .unwrap()
-            .get("result")
-            .is_none());
+        assert!(
+            serde_json::to_value(missing)
+                .unwrap()
+                .get("result")
+                .is_none()
+        );
 
         let mut null = base.clone();
         null["result"] = Value::Null;

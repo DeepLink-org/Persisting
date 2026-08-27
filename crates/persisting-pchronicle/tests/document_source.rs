@@ -3,8 +3,8 @@ use std::path::Path;
 use anyhow::Result;
 use datafusion::prelude::SessionContext;
 use persisting_pchronicle::document::{
-    encode_agenticmd, encode_json_storylines, open_document, DocumentFormat, FilterPushdown,
-    QueryTables, DEFAULT_DOCUMENT_MATERIALIZE_ROWS,
+    DEFAULT_DOCUMENT_MATERIALIZE_ROWS, DocumentFormat, FilterPushdown, QueryTables,
+    encode_agenticmd, encode_json_storylines, open_document,
 };
 use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument, StorylineTurn};
 use persisting_pchronicle::storage::{RawEventLanceStore, StoryCoords, StorylineLanceStore};

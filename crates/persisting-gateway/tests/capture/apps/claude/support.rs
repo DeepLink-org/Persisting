@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use axum::http::header::HeaderName;
 use axum::http::HeaderMap;
 use axum::http::HeaderValue;
+use axum::http::header::HeaderName;
 use bytes::Bytes;
 use persisting_gateway::session::storage::{
-    resolve_capture_route, trajectory_markdown_path, trajectory_run_dir, CaptureRoute,
+    CaptureRoute, resolve_capture_route, trajectory_markdown_path, trajectory_run_dir,
 };
 
 pub const RUN_ROOT: &str = "run-20260524-test";

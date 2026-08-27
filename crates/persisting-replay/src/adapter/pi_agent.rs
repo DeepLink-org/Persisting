@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{check_boundary, prepared_outcome, run_sdk_bridge, RunContext};
+use super::{RunContext, check_boundary, prepared_outcome, run_sdk_bridge};
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
@@ -198,7 +198,7 @@ fn parse_jsonl_events(raw: &[u8]) -> Result<Vec<Value>, ReplayError> {
                 return Err(ReplayError::trajectory(format!(
                     "Pi event JSONL line {} must contain an object",
                     index + 1
-                )))
+                )));
             }
             Err(_) if index + 1 == physical.len() && !source.ends_with('\n') => {
                 // The source process may be killed while writing its final line.
@@ -207,7 +207,7 @@ fn parse_jsonl_events(raw: &[u8]) -> Result<Vec<Value>, ReplayError> {
                 return Err(ReplayError::trajectory(format!(
                     "invalid Pi event JSONL line {}: {error}",
                     index + 1
-                )))
+                )));
             }
         }
     }

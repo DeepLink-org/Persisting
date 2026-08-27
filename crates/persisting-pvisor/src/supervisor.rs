@@ -1,15 +1,16 @@
 //! Optional pPilot Supervisor client. The Run data plane never depends on it.
 
+use crate::util::unix_now_ms;
 #[cfg(test)]
 use persisting_agentctl::SupervisorNetworkQuotaGrant;
 use persisting_agentctl::{AttemptId, NetworkBandwidthLimit, RunId, SupervisorBootstrap};
 use persisting_agentctl::{
-    SupervisorClientMessage, SupervisorDirective, SupervisorDirectiveAck,
-    SupervisorDirectiveEnvelope, SupervisorHeartbeat, SupervisorRegistration,
-    SupervisorServerMessage, SUPERVISOR_PROTOCOL_VERSION,
+    SUPERVISOR_PROTOCOL_VERSION, SupervisorClientMessage, SupervisorDirective,
+    SupervisorDirectiveAck, SupervisorDirectiveEnvelope, SupervisorHeartbeat,
+    SupervisorRegistration, SupervisorServerMessage,
 };
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -18,20 +19,6 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
-
-#[cfg(feature = "fuzzing")]
-pub fn decode_supervisor_frame_for_fuzz(frame: &[u8]) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        frame.len() <= MAX_FRAME_BYTES,
-        "Supervisor frame exceeds {MAX_FRAME_BYTES} bytes"
-    );
-    let client = serde_json::from_slice::<SupervisorClientMessage>(frame);
-    let server = serde_json::from_slice::<SupervisorServerMessage>(frame);
-    if client.is_err() && server.is_err() {
-        anyhow::bail!("frame is neither a Supervisor client nor server message");
-    }
-    Ok(())
-}
 
 pub(crate) struct SupervisorConnectOutcome {
     pub(crate) connected: Option<bool>,
@@ -142,19 +129,20 @@ async fn connect(
         if validate_directive(directive, controller_epoch, lease_epoch, last_applied).is_err() {
             continue;
         }
-        if let SupervisorDirective::GrantNetworkQuota(grant) = &directive.directive {
-            if grant.valid_until_unix_ms >= unix_now_ms() && grant.limit.bytes_per_second > 0 {
-                initial_limits.push(grant.limit.clone());
-                last_applied = directive.directive_seq;
-                write_client_message(
-                    &mut write,
-                    &SupervisorClientMessage::Ack(SupervisorDirectiveAck {
-                        directive_seq: directive.directive_seq,
-                        applied: true,
-                    }),
-                )
-                .await?;
-            }
+        if let SupervisorDirective::GrantNetworkQuota(grant) = &directive.directive
+            && grant.valid_until_unix_ms >= unix_now_ms()
+            && grant.limit.bytes_per_second > 0
+        {
+            initial_limits.push(grant.limit.clone());
+            last_applied = directive.directive_seq;
+            write_client_message(
+                &mut write,
+                &SupervisorClientMessage::Ack(SupervisorDirectiveAck {
+                    directive_seq: directive.directive_seq,
+                    applied: true,
+                }),
+            )
+            .await?;
         }
     }
 
@@ -279,14 +267,6 @@ async fn write_client_message(
     write.write_all(b"\n").await?;
     write.flush().await?;
     Ok(())
-}
-
-fn unix_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u64::MAX as u128) as u64
 }
 
 #[cfg(test)]

@@ -117,10 +117,10 @@ impl StoryActor {
             StoryCommand::Flush => {
                 // Drain any pending frontmatter writes so external observers see a
                 // consistent markdown file after `flush()` returns.
-                if self.frontmatter_pending > 0 {
-                    if let Some(scope) = self.last_scope.clone() {
-                        self.refresh_frontmatter(&scope);
-                    }
+                if self.frontmatter_pending > 0
+                    && let Some(scope) = self.last_scope.clone()
+                {
+                    self.refresh_frontmatter(&scope);
                 }
                 return Ok(StoryReply::Ack(CaptureAck::ok()));
             }

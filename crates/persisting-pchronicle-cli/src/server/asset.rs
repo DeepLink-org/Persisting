@@ -1,10 +1,10 @@
 use std::path::Path;
 
 use axum::body::Body;
-use axum::http::{header, HeaderMap, StatusCode, Uri};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 
 static EMBEDDED_ASSETS: Dir<'_> = include_dir!("$OUT_DIR/pchronicle-web-assets");
 
@@ -186,9 +186,11 @@ mod tests {
         // Either 404 or the SPA index — never raw file contents.
         assert!(status == StatusCode::NOT_FOUND || status == StatusCode::OK);
         assert!(!bytes.starts_with(b"root:"));
-        assert!(!bytes
-            .windows(b"nobody".len())
-            .any(|window| window == b"nobody"));
+        assert!(
+            !bytes
+                .windows(b"nobody".len())
+                .any(|window| window == b"nobody")
+        );
     }
 
     #[test]

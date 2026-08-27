@@ -14,20 +14,20 @@ use std::time::Duration;
 
 use crate::EventRow;
 use ::datafusion::error::DataFusionError;
-use ::datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use ::datafusion::physical_plan::SendableRecordBatchStream;
+use ::datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use anyhow::{Context, Result};
 use futures::{StreamExt, TryStreamExt};
-use lance::dataset::optimize::{compact_files, CompactionOptions};
+use lance::Dataset;
+use lance::dataset::optimize::{CompactionOptions, compact_files};
 use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
 use lance::deps::arrow_array::{Array, RecordBatch};
 use lance::index::DatasetIndexExt;
-use lance::Dataset;
+use lance_index::IndexType;
 use lance_index::optimize::OptimizeOptions;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
-use lance_index::IndexType;
 
-pub use self::datafusion::{EventFactSnapshot, RawEventDataSource, DATAFUSION_EVENTS_TABLE};
+pub use self::datafusion::{DATAFUSION_EVENTS_TABLE, EventFactSnapshot, RawEventDataSource};
 use self::manifest as raw_event_manifest;
 use self::manifest::{EventManifest, EventSegment, EventWriterConflict, ManifestWriteOutcome};
 pub use self::manifest::{EventWriterFence, ObjectStoreManifestWriteMode};
@@ -36,8 +36,8 @@ pub use self::rows::{
 };
 use self::rows::{event_row_for_storage, schema_columns_note};
 use super::{
-    dataset_write_lock, raw_event_lance_path, AppendOutcome, ReplayOutcome, StoryCoords,
-    TrajectoryStats,
+    AppendOutcome, ReplayOutcome, StoryCoords, TrajectoryStats, dataset_write_lock,
+    raw_event_lance_path,
 };
 
 const SESSION_INDEX_NAME: &str = "pchronicle_session_id_idx";
@@ -799,12 +799,12 @@ async fn read_all_rows(uri: &str) -> Result<Vec<EventRow>> {
 
 async fn append_rows(uri: &str, dataset: Option<Dataset>, rows: Vec<EventRow>) -> Result<Dataset> {
     let batch = event_rows_to_batch(raw_event_arrow_schema(), &rows)?;
-    if !is_object_store_uri(uri) {
-        if let Some(parent) = std::path::Path::new(uri).parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .with_context(|| format!("create_dir_all {}", parent.display()))?;
-        }
+    if !is_object_store_uri(uri)
+        && let Some(parent) = std::path::Path::new(uri).parent()
+    {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("create_dir_all {}", parent.display()))?;
     }
     match dataset {
         Some(dataset) => InsertBuilder::new(Arc::new(dataset))

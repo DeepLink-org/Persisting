@@ -18,11 +18,11 @@ mod model;
 mod process;
 
 pub use config::{
-    request_from_json, OverlayFsConfig, OverlayNetConfig, ReplayConfig, ReplayToml, RunConfig,
+    OverlayFsConfig, OverlayNetConfig, ReplayConfig, ReplayToml, RunConfig, request_from_json,
 };
 pub use engine::execute;
 pub use error::{ReplayError, ReplayErrorKind};
 pub use model::{
-    AgentKind, AgentStatus, ExecutionReport, PlaybackRequest, ReplayFailure, ReplayMode,
-    ReplayPhase, ReplayQuality, ReplayResult, RESULT_SCHEMA_VERSION,
+    AgentKind, AgentStatus, ExecutionReport, PlaybackRequest, RESULT_SCHEMA_VERSION, ReplayFailure,
+    ReplayMode, ReplayPhase, ReplayQuality, ReplayResult,
 };

@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::Path;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::codec::{
-    emit_stories, DecodeContext, DecodeReport, FormatCapabilities, ProbeConfidence,
-    TrajectoryFormat,
+    DecodeContext, DecodeReport, FormatCapabilities, ProbeConfidence, TrajectoryFormat,
+    emit_stories,
 };
 use super::common::jsonl::{filename_stem, for_each_jsonl_object};
 use crate::format::DocumentFormat;
@@ -84,10 +84,10 @@ fn content_has_claude_fingerprint(content: &[u8]) -> bool {
             .filter(|line| !line.trim().is_empty())
             .take(32)
         {
-            if let Ok(value) = serde_json::from_str::<Value>(line) {
-                if looks_like_claude_code_event(&value) {
-                    return true;
-                }
+            if let Ok(value) = serde_json::from_str::<Value>(line)
+                && looks_like_claude_code_event(&value)
+            {
+                return true;
             }
         }
     }
@@ -292,15 +292,14 @@ fn apply_user_event(
     let tool_results = collect_tool_results(&content);
     if !tool_results.is_empty() {
         for (tool_use_id, result) in tool_results {
-            if let Some(&(turn_idx, tool_idx)) = call_index.get(&tool_use_id) {
-                if let Some(call) = turns
+            if let Some(&(turn_idx, tool_idx)) = call_index.get(&tool_use_id)
+                && let Some(call) = turns
                     .get_mut(turn_idx)
                     .and_then(|turn| turn.tool_calls.as_mut())
                     .and_then(|calls| calls.get_mut(tool_idx))
-                {
-                    call.result = Some(result);
-                    continue;
-                }
+            {
+                call.result = Some(result);
+                continue;
             }
             if let Some(index) = *pending_agent {
                 turns[index].observation = Some(json!({ "results": [result] }));
@@ -492,7 +491,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::formats::codec::{decode_all, DocumentSource};
+    use crate::formats::codec::{DocumentSource, decode_all};
     use serde_json::json;
 
     fn claude_code_to_storylines(
@@ -532,9 +531,11 @@ mod tests {
         assert_eq!(tools[0].function_name, "Read");
         assert_eq!(tools[0].result, Some(json!("fn t(){}")));
         assert_eq!(story.turns[2].message, json!("done"));
-        assert!(story.unknown_fields.sources["claude-code"]
-            .fields
-            .contains_key("/events/5"));
+        assert!(
+            story.unknown_fields.sources["claude-code"]
+                .fields
+                .contains_key("/events/5")
+        );
         assert_eq!(
             story.unknown_fields.sources["claude-code"].fields["/events/5"]["type"],
             json!("compact_boundary")

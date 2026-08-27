@@ -1,8 +1,8 @@
 use anyhow::Result;
 use persisting_pchronicle::document::{
-    decode_json_storylines, encode_json_storylines, DocumentFormat,
+    DocumentFormat, decode_json_storylines, encode_json_storylines,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn atif_unknown_fields_survive_an_actf_hop() -> Result<()> {

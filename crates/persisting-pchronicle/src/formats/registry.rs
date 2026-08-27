@@ -7,8 +7,8 @@ use super::codec::{ProbeConfidence, TrajectoryFormat};
 use super::codex::CodexFormat;
 use super::openai_corpus::OpenaiMsgFormat;
 use super::storyline::StorylineFormat;
-use crate::format::DocumentFormat;
 use crate::InputResult;
+use crate::format::DocumentFormat;
 
 pub(crate) static FORMATS: &[&dyn TrajectoryFormat] = &[
     &ClaudeCodeFormat,

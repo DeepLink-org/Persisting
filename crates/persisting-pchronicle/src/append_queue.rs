@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -10,7 +10,7 @@ use anyhow::Context;
 use crate::formats::EventRecord;
 use crate::layout::StoryCoords;
 use crate::store::compact_sealed_event_segment;
-use crate::store::{raw_event_lance_path, ObjectStoreManifestWriteMode, RawEventLanceAppender};
+use crate::store::{ObjectStoreManifestWriteMode, RawEventLanceAppender, raw_event_lance_path};
 
 pub const DEFAULT_RAW_EVENT_QUEUE_CAPACITY: usize = 256;
 pub const DEFAULT_RAW_EVENT_BATCH_SIZE: usize = 256;

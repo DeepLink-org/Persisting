@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::error::ReplayError;
 use crate::io::atomic_write_json;
@@ -165,11 +165,12 @@ fn matching_blocks(a: &[char], b: &[char]) -> Vec<(usize, usize, usize)> {
     matches.sort_unstable();
     let mut collapsed: Vec<(usize, usize, usize)> = Vec::new();
     for (i, j, size) in matches {
-        if let Some(last) = collapsed.last_mut() {
-            if last.0 + last.2 == i && last.1 + last.2 == j {
-                last.2 += size;
-                continue;
-            }
+        if let Some(last) = collapsed.last_mut()
+            && last.0 + last.2 == i
+            && last.1 + last.2 == j
+        {
+            last.2 += size;
+            continue;
         }
         collapsed.push((i, j, size));
     }
@@ -204,24 +205,24 @@ fn longest_match(
     let mut previous: HashMap<usize, usize> = HashMap::new();
     for (i, character) in a.iter().copied().enumerate().take(ahi).skip(alo) {
         let mut current = HashMap::new();
-        if !popular.contains(&character) {
-            if let Some(indexes) = positions.get(&character) {
-                for &j in indexes {
-                    if j < blo {
-                        continue;
-                    }
-                    if j >= bhi {
-                        break;
-                    }
-                    let size = previous
-                        .get(&j.checked_sub(1).unwrap_or(usize::MAX))
-                        .copied()
-                        .unwrap_or(0)
-                        + 1;
-                    current.insert(j, size);
-                    if size > best_size {
-                        (best_i, best_j, best_size) = (i + 1 - size, j + 1 - size, size);
-                    }
+        if !popular.contains(&character)
+            && let Some(indexes) = positions.get(&character)
+        {
+            for &j in indexes {
+                if j < blo {
+                    continue;
+                }
+                if j >= bhi {
+                    break;
+                }
+                let size = previous
+                    .get(&j.checked_sub(1).unwrap_or(usize::MAX))
+                    .copied()
+                    .unwrap_or(0)
+                    + 1;
+                current.insert(j, size);
+                if size > best_size {
+                    (best_i, best_j, best_size) = (i + 1 - size, j + 1 - size, size);
                 }
             }
         }

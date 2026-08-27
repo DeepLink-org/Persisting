@@ -1741,11 +1741,13 @@ mod tests {
         assert!(revision.interpretation.is_some());
         assert!(revision.needs_rerun);
         assert_eq!(revision.state, RevisionState::QueryError);
-        assert!(restored
-            .active_revision_mut()
-            .unwrap()
-            .confirm_execution()
-            .is_ok());
+        assert!(
+            restored
+                .active_revision_mut()
+                .unwrap()
+                .confirm_execution()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1922,9 +1924,11 @@ mod tests {
             .begin_plan_generation()
             .unwrap();
 
-        assert!(planning
-            .apply_working_scope_change("planning", next_scope.clone())
-            .is_err());
+        assert!(
+            planning
+                .apply_working_scope_change("planning", next_scope.clone())
+                .is_err()
+        );
         assert_eq!(
             planning.active_revision().unwrap().state,
             RevisionState::GeneratingPlan
@@ -1933,9 +1937,11 @@ mod tests {
         let (executing, _) = executing_revision();
         let mut querying = AnalysisSession::with_revision(executing);
 
-        assert!(querying
-            .apply_working_scope_change("executing", next_scope)
-            .is_err());
+        assert!(
+            querying
+                .apply_working_scope_change("executing", next_scope)
+                .is_err()
+        );
         assert_eq!(
             querying.active_revision().unwrap().state,
             RevisionState::Executing
@@ -2064,10 +2070,12 @@ mod tests {
             RevisionState::Complete
         );
         assert!(session.active_revision().unwrap().pending_effect.is_none());
-        assert!(session
-            .revisions
-            .iter()
-            .any(|revision| revision.id == second_revision_id));
+        assert!(
+            session
+                .revisions
+                .iter()
+                .any(|revision| revision.id == second_revision_id)
+        );
     }
 
     #[test]
@@ -2279,9 +2287,11 @@ mod tests {
         let restored: Vec<AnalysisSession> = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(restored.len(), MAX_ANALYSIS_SESSIONS);
-        assert!(restored
-            .iter()
-            .all(|session| serde_json::to_vec(session).unwrap().len() <= MAX_SESSION_BYTES));
+        assert!(
+            restored
+                .iter()
+                .all(|session| serde_json::to_vec(session).unwrap().len() <= MAX_SESSION_BYTES)
+        );
     }
 
     #[test]
@@ -2300,19 +2310,23 @@ mod tests {
             serde_json::from_slice(&session.persisted_bytes().unwrap()).unwrap();
 
         assert_eq!(restored.revisions.len(), 6);
-        assert!(restored.revisions[1]
-            .execution
-            .as_ref()
-            .unwrap()
-            .profiles
-            .is_empty());
+        assert!(
+            restored.revisions[1]
+                .execution
+                .as_ref()
+                .unwrap()
+                .profiles
+                .is_empty()
+        );
         assert!(restored.revisions[1].interpretation.is_none());
-        assert!(!restored.revisions[2]
-            .execution
-            .as_ref()
-            .unwrap()
-            .profiles
-            .is_empty());
+        assert!(
+            !restored.revisions[2]
+                .execution
+                .as_ref()
+                .unwrap()
+                .profiles
+                .is_empty()
+        );
         assert!(restored.revisions[2].interpretation.is_some());
     }
 
@@ -2528,26 +2542,32 @@ mod tests {
     fn compile_failures_repair_spec_twice_then_stop_without_executing_sql() {
         let mut revision = AnalysisRevision::draft(1, "compare failures", scope());
         let operation_id = revision.begin_plan_generation().unwrap();
-        assert!(revision
-            .fail_compile(1, operation_id, "runs has no unified status")
-            .unwrap()
-            .is_none());
+        assert!(
+            revision
+                .fail_compile(1, operation_id, "runs has no unified status")
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(revision.state, RevisionState::GeneratingPlan);
         assert_eq!(revision.repair_count, 1);
         assert!(revision.pending_effect.is_none());
         assert!(revision.compiled_sql.is_none());
 
-        assert!(revision
-            .fail_compile(1, operation_id, "runs has no unified status")
-            .unwrap()
-            .is_none());
+        assert!(
+            revision
+                .fail_compile(1, operation_id, "runs has no unified status")
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(revision.state, RevisionState::GeneratingPlan);
         assert_eq!(revision.repair_count, 2);
 
-        assert!(revision
-            .fail_compile(1, operation_id, "runs has no unified status")
-            .unwrap()
-            .is_none());
+        assert!(
+            revision
+                .fail_compile(1, operation_id, "runs has no unified status")
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(revision.state, RevisionState::PlanError);
         assert!(revision.pending_effect.is_none());
         assert!(revision.compiled_sql.is_none());
@@ -2580,11 +2600,13 @@ mod tests {
         let operation_id = revision.begin_plan_generation().unwrap();
         assert_eq!(revision.trace[0].kind, AnalyzeTraceKind::GenerateSpec);
         assert_eq!(revision.trace[0].status, AnalyzeTraceStatus::Running);
-        assert!(revision.trace[0]
-            .prompt
-            .as_deref()
-            .unwrap()
-            .contains("compare models"));
+        assert!(
+            revision.trace[0]
+                .prompt
+                .as_deref()
+                .unwrap()
+                .contains("compare models")
+        );
 
         revision.note_spec_ready(&sample_spec());
         assert_eq!(revision.trace[0].status, AnalyzeTraceStatus::Ok);
@@ -2666,10 +2688,12 @@ mod tests {
             revision.trace.last().unwrap().status,
             AnalyzeTraceStatus::Error
         );
-        assert!(!revision
-            .trace
-            .iter()
-            .any(|step| step.status == AnalyzeTraceStatus::Running));
+        assert!(
+            !revision
+                .trace
+                .iter()
+                .any(|step| step.status == AnalyzeTraceStatus::Running)
+        );
     }
 
     #[test]

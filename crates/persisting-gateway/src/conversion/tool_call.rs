@@ -1,6 +1,6 @@
 //! Shared tool-call helpers (moon-bridge Core `tool_use` / `tool_result` subset).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Responses input types that represent an outbound tool invocation.
 pub fn is_tool_call_input_type(item_type: &str) -> bool {
@@ -71,10 +71,10 @@ pub fn decode_stream_arguments_delta(raw: &str) -> String {
     if raw.is_empty() {
         return String::new();
     }
-    if raw.starts_with('"') {
-        if let Ok(decoded) = serde_json::from_str::<String>(raw) {
-            return decoded;
-        }
+    if raw.starts_with('"')
+        && let Ok(decoded) = serde_json::from_str::<String>(raw)
+    {
+        return decoded;
     }
     raw.to_string()
 }

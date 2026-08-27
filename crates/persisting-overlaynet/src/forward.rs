@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::bandwidth::BandwidthSession;
-use crate::egress::{connect_tcp_addresses, CONNECT_TIMEOUT};
+use crate::egress::{CONNECT_TIMEOUT, connect_tcp_addresses};
 use crate::headers::skip_transparent_forward_header_for;
 use crate::resolver::AuthorizedTarget;
 

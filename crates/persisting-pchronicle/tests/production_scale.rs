@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Production-scale invariants for the canonical append-only event path.
 //!
 //! The regular tests are bounded scale proxies suitable for CI. The ignored
@@ -21,8 +23,8 @@ use persisting_pchronicle::document::DocumentFormat;
 use persisting_pchronicle::model::{EventIdentity, EventRecord};
 use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 use persisting_pchronicle::storage::{
-    raw_event_lance_path, EventWriterFence, LanceMaintenanceOptions, LeaseAcquireOutcome,
-    RawEventLanceAppender, RawEventLanceStore, RunControlStore, StoryCoords,
+    EventWriterFence, LanceMaintenanceOptions, LeaseAcquireOutcome, RawEventLanceAppender,
+    RawEventLanceStore, RunControlStore, StoryCoords, raw_event_lance_path,
 };
 
 const CI_STORIES: usize = 4;

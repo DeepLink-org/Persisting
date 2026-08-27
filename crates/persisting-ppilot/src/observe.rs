@@ -103,11 +103,11 @@ impl Observer {
     }
 
     pub async fn open(opts: ObserverOptions) -> anyhow::Result<Arc<Self>> {
-        let file = if let Some(p) = opts.path.as_deref() {
-            if let Some(parent) = p.parent() {
-                if !parent.as_os_str().is_empty() {
-                    tokio::fs::create_dir_all(parent).await?;
-                }
+        let file = if let Some(p) = opts.path.as_deref()
+            && let Some(parent) = p.parent()
+        {
+            if !parent.as_os_str().is_empty() {
+                tokio::fs::create_dir_all(parent).await?;
             }
             Some(OpenOptions::new().create(true).append(true).open(p).await?)
         } else {

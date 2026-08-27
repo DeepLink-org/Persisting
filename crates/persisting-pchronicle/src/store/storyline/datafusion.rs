@@ -23,8 +23,8 @@ use datafusion::physical_plan::{
 };
 use datafusion::prelude::SessionContext;
 use futures::StreamExt;
-use lance::deps::arrow_schema::{Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
+use lance::deps::arrow_schema::{Schema as ArrowSchema, SchemaRef};
 
 use super::content::{
     content_columns, hydrate_selected_batches, open_objects, preview_selected_batches,

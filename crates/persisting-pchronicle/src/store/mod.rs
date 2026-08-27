@@ -57,28 +57,28 @@ pub use attempt_registry::{AttemptRecord, AttemptRecordState, AttemptRegistry};
 pub use cas_store::unix_now_ms as attempt_registry_now_ms;
 #[cfg(feature = "lance-store")]
 pub use catalog::{
-    CatalogDataset, CatalogErrorPolicy, CatalogEventProvenance, CatalogEventView, CatalogNamespace,
-    CatalogPage, CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceDescription,
-    CatalogSourceKind, CatalogSourceRevision, CatalogSourceStatus, CatalogStorylineKey,
-    CatalogTrajectoryBundle, DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, NamespacePath,
-    CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE, DEFAULT_DATASET_NAME,
-    DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+    CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE, CatalogDataset, CatalogErrorPolicy,
+    CatalogEventProvenance, CatalogEventView, CatalogNamespace, CatalogPage,
+    CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind,
+    CatalogSourceRevision, CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle,
+    DEFAULT_DATASET_NAME, DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, NamespacePath,
 };
 #[cfg(feature = "lance-store")]
-pub(crate) use document_source::{open_document_source, DocumentSourceImpl};
+pub(crate) use document_source::{DocumentSourceImpl, open_document_source};
 #[cfg(feature = "lance-store")]
-pub use egress::{export_source_dirs, export_story_bundle, ExportOutcome};
+pub use egress::{ExportOutcome, export_source_dirs, export_story_bundle};
 #[cfg(feature = "lance-store")]
-pub use event_row::{event_record_to_event_row, event_row_to_event_record, EventRow};
-#[cfg(feature = "lance-store")]
-pub(crate) use events::{compact_sealed_event_segment, SealedEventSegment};
+pub use event_row::{EventRow, event_record_to_event_row, event_row_to_event_record};
 #[cfg(feature = "lance-store")]
 pub use events::{
-    distinct_session_ids_in_run, event_rows_from_batch, maintain as maintain_raw_events,
-    raw_event_arrow_schema, EventFactSnapshot, EventLogLayoutStats, EventWriterFence,
+    DATAFUSION_EVENTS_TABLE, EventFactSnapshot, EventLogLayoutStats, EventWriterFence,
     LanceMaintenanceOptions, LanceMaintenanceReport, ObjectStoreManifestWriteMode,
-    RawEventDataSource, RawEventLanceAppender, DATAFUSION_EVENTS_TABLE,
+    RawEventDataSource, RawEventLanceAppender, distinct_session_ids_in_run, event_rows_from_batch,
+    maintain as maintain_raw_events, raw_event_arrow_schema,
 };
+#[cfg(feature = "lance-store")]
+pub(crate) use events::{SealedEventSegment, compact_sealed_event_segment};
 #[cfg(feature = "lance-store")]
 pub(crate) use files::{
     AtifReader, FileTrajectoryDataSource, FileTrajectoryDataSourceOptions,
@@ -88,17 +88,17 @@ pub(crate) use files::{
 pub use files::{FileTrajectoryQueryMetricsSnapshot, SOURCE_FILE_COLUMN};
 #[cfg(feature = "lance-store")]
 pub use inspect::{
-    inspect_physical_file, inspect_physical_layout, inspect_physical_page, list_physical_sources,
-    PhysicalColumn, PhysicalDataFile, PhysicalFileLayout, PhysicalFragment, PhysicalLayout,
-    PhysicalPage, PhysicalPagePreview, PhysicalPageQuery, PhysicalSource, PhysicalTable,
-    DEFAULT_PHYSICAL_PAGE_LIMIT,
+    DEFAULT_PHYSICAL_PAGE_LIMIT, PhysicalColumn, PhysicalDataFile, PhysicalFileLayout,
+    PhysicalFragment, PhysicalLayout, PhysicalPage, PhysicalPagePreview, PhysicalPageQuery,
+    PhysicalSource, PhysicalTable, inspect_physical_file, inspect_physical_layout,
+    inspect_physical_page, list_physical_sources,
 };
+#[cfg(feature = "lance-store")]
+pub use local_query_manifest::{DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES};
 #[cfg(feature = "lance-store")]
 pub(crate) use local_query_manifest::{
     LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
 };
-#[cfg(feature = "lance-store")]
-pub use local_query_manifest::{DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES};
 #[cfg(feature = "lance-store")]
 pub use location::{DatasetLocation, DatasetLocationKind};
 #[cfg(feature = "lance-store")]
@@ -112,19 +112,19 @@ pub use run_control::{CommitRunOutcome, LeaseAcquireOutcome, RunControlStore};
 pub(crate) use storyline::StorylineProjectionPublicationOutcome;
 #[cfg(feature = "lance-store")]
 pub use storyline::{
-    story_runs_arrow_schema, story_runs_from_batch, story_runs_to_batch, story_steps_arrow_schema,
-    story_steps_from_batch, story_steps_to_batch, story_tool_calls_arrow_schema,
-    story_tool_calls_from_batch, story_tool_calls_to_batch, ProjectionSourceSnapshot,
+    DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE,
+    DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES, ProjectionSourceSnapshot,
     StorylineContentOptions, StorylineContentReadMode, StorylineDataFusionTableNames,
     StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
     StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
-    StorylineTableKind, StorylineTablePaths, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,
-    DATAFUSION_TOOL_CALLS_TABLE, DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES,
+    StorylineTableKind, StorylineTablePaths, story_runs_arrow_schema, story_runs_from_batch,
+    story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch, story_steps_to_batch,
+    story_tool_calls_arrow_schema, story_tool_calls_from_batch, story_tool_calls_to_batch,
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_model::{
-    reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
-    StorylineTables,
+    StoryRunRow, StoryStepRow, StoryToolCallRow, StorylineTables, reconstruct_storyline,
+    split_storyline,
 };
 
 #[cfg(feature = "lance-store")]
@@ -133,7 +133,7 @@ use std::path::PathBuf;
 #[cfg(feature = "lance-store")]
 use crate::formats::EventRecord;
 #[cfg(feature = "lance-store")]
-use crate::layout::{story_lance_event_path, StoryCoords};
+use crate::layout::{StoryCoords, story_lance_event_path};
 
 /// Producer-defined Storyline sequence. Physical replay order is the immutable
 /// Lance append order and does not require a read-before-write counter.

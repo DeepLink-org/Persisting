@@ -11,7 +11,7 @@ mod projected_steps;
 
 use crate::formats::common::json_stream::BoundedCountingReader;
 use actf_reader::parse_actf_storylines_from_reader_with_stats;
-use actf_stream::{stream_projected_actf_steps, ACTF_TRAJECTORY_NOT_PROJECTABLE};
+use actf_stream::{ACTF_TRAJECTORY_NOT_PROJECTABLE, stream_projected_actf_steps};
 pub(crate) use atif_reader::AtifReader;
 use atif_stream::stream_projected_atif_steps;
 
@@ -25,8 +25,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use datafusion::catalog::streaming::StreamingTable;
 use datafusion::catalog::Session;
+use datafusion::catalog::streaming::StreamingTable;
 use datafusion::common::ScalarValue;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
@@ -43,11 +43,11 @@ use tokio::sync::mpsc::Sender;
 use crate::format::DocumentFormat;
 
 use super::{
+    LocalQueryInputFile, LocalQueryManifest, StoryRunRow, StoryStepRow, StoryToolCallRow,
+    StorylineDataFusionTableNames, StorylineTableKind,
     datafusion_bridge::{from_datafusion, into_datafusion},
     split_storyline, story_runs_arrow_schema, story_runs_to_batch, story_steps_arrow_schema,
     story_steps_to_batch, story_tool_calls_arrow_schema, story_tool_calls_to_batch,
-    LocalQueryInputFile, LocalQueryManifest, StoryRunRow, StoryStepRow, StoryToolCallRow,
-    StorylineDataFusionTableNames, StorylineTableKind,
 };
 
 /// Query-only source path column. This is not part of any Lance table schema.

@@ -8,7 +8,7 @@ inputs:
   rust-toolchain:
     description: "Rust toolchain"
     required: false
-    default: "stable"
+    default: "nightly"
   install-protoc:
     description: "Install the legacy native protobuf compiler when explicitly required"
     required: false
@@ -16,11 +16,25 @@ inputs:
   components:
     description: "Rust components (comma-separated)"
     required: false
-    default: "rustfmt, clippy"
+    # rust-src keeps the opt-in `just sanitize` (-Z build-std) path usable in
+    # CI without changing the normal build commands.
+    default: "rustfmt, clippy, rust-src"
   install-dioxus:
     description: "Install the pinned Dioxus CLI and wasm target"
     required: false
     default: "false"
+  install-cranelift:
+    description: "Install the optional nightly Cranelift codegen backend"
+    required: false
+    default: "true"
+  install-nextest:
+    description: "Install cargo-nextest"
+    required: false
+    default: "true"
+  install-zig:
+    description: "Install Zig for the macOS-to-Linux guest init cross-build"
+    required: false
+    default: "true"
 
 runs:
   using: "composite"
@@ -36,6 +50,11 @@ runs:
         toolchain: ${{ inputs.rust-toolchain }}
         components: ${{ inputs.components }}
 
+    - name: Install Cranelift backend
+      if: inputs.install-cranelift == 'true'
+      shell: bash
+      run: rustup component add rustc-codegen-cranelift-preview --toolchain "${{ inputs.rust-toolchain }}"
+
     - name: Install uv
       uses: astral-sh/setup-uv@v6
       with:
@@ -46,8 +65,14 @@ runs:
       with:
         tool: just@1.57.0
 
+    - name: Install cargo-nextest
+      if: inputs.install-nextest == 'true'
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-nextest@0.9.137
+
     - name: Install Linux guest init cross-compiler
-      if: runner.os == 'macOS'
+      if: runner.os == 'macOS' && inputs.install-zig == 'true'
       shell: bash
       run: |
         brew install zig

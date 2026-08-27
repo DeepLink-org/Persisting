@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{
-    agent_command, check_boundary, sanitized_environment, with_boundary_user_prompt_metadata,
-    RunContext, MAX_TOOL_OUTPUT_BYTES,
+    MAX_TOOL_OUTPUT_BYTES, RunContext, agent_command, check_boundary, sanitized_environment,
+    with_boundary_user_prompt_metadata,
 };
 use crate::claude_bridge::ClaudeBridgeHandle;
 use crate::claude_resume::ResumeTransportManifest;
@@ -19,7 +19,7 @@ use crate::model::{
     AdapterPlan, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan,
     ToolBatch, ToolCall,
 };
-use crate::process::{run_process, ProcessSpec};
+use crate::process::{ProcessSpec, run_process};
 
 const FRESH_CLAUDE_TOOLS: &[&str] = &["Bash", "Edit", "Glob", "Grep", "MultiEdit", "Read", "Write"];
 const STALE_CLAUDE_TOOLS: &[&str] = &[
@@ -875,12 +875,12 @@ fn run_claude(
     let launch = context
         .launch
         .ok_or_else(|| ReplayError::continuation("Claude continuation has no launch spec"))?;
-    if let Some(max_steps) = context.request.max_steps {
-        if max_steps <= plan.prefix_model_turns {
-            return Err(ReplayError::continuation(
-                "max-steps is exhausted by the replay prefix",
-            ));
-        }
+    if let Some(max_steps) = context.request.max_steps
+        && max_steps <= plan.prefix_model_turns
+    {
+        return Err(ReplayError::continuation(
+            "max-steps is exhausted by the replay prefix",
+        ));
     }
     let remaining_turns = context
         .request
@@ -1728,7 +1728,14 @@ fn clean_claude_continuation(
     let envelope = events
         .get(boundary_index + 1..boundary_index + 6)
         .ok_or_else(|| ReplayError::continuation("Claude native resume envelope is incomplete"))?;
-    let [enqueue, dequeue, continue_event, no_response_event, nonce_event] = envelope else {
+    let [
+        enqueue,
+        dequeue,
+        continue_event,
+        no_response_event,
+        nonce_event,
+    ] = envelope
+    else {
         return Err(ReplayError::continuation(
             "Claude native resume envelope is incomplete",
         ));
@@ -2037,14 +2044,14 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::{
         claude_boundary_tool_use_ids, claude_canonical_messages, execute_claude_tool_with_policy,
         expected_claude_max_turn_exit, rebuild_claude, run_bash, validate_claude_tool_policy,
         wildcard_match,
     };
-    use crate::adapter::{build_plan, run, RunContext};
+    use crate::adapter::{RunContext, build_plan, run};
     use crate::claude_resume::ResumeTransportManifest;
     use crate::journal::Journal;
     use crate::model::{
@@ -2309,11 +2316,13 @@ mod tests {
             .unwrap();
             assert!(observation.is_error);
             assert_eq!(observation.return_code, Some(1));
-            assert!(observation
-                .content
-                .as_str()
-                .unwrap()
-                .contains("Read failed"));
+            assert!(
+                observation
+                    .content
+                    .as_str()
+                    .unwrap()
+                    .contains("Read failed")
+            );
         }
     }
 
@@ -2349,11 +2358,13 @@ mod tests {
         .unwrap();
         assert!(observation.is_error);
         assert_eq!(observation.return_code, Some(1));
-        assert!(observation
-            .content
-            .as_str()
-            .unwrap()
-            .contains("missing or empty"));
+        assert!(
+            observation
+                .content
+                .as_str()
+                .unwrap()
+                .contains("missing or empty")
+        );
     }
 
     #[test]

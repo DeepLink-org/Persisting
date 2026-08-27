@@ -1,7 +1,7 @@
 //! Enrich capture records with subagent cross-refs.
 
 use axum::http::HeaderMap;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::extract::{
     extract_spawn_hints_from_assistant, extract_subagent_ids_from_request,

@@ -1,4 +1,4 @@
-use crate::agent::{thread_storage_key, AssistantThread, ThreadRole};
+use crate::agent::{AssistantThread, ThreadRole, thread_storage_key};
 use crate::model::RunSummary;
 
 pub const SESSION_INDEX_KEY: &str = "pchronicle_copilot_index";

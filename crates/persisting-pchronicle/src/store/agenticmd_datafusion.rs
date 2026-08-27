@@ -15,9 +15,9 @@ use crate::formats::StorylineDocument;
 use crate::store::split_storyline;
 
 use super::{
-    datafusion_bridge::from_datafusion, story_runs_arrow_schema, story_runs_to_batch,
-    story_steps_arrow_schema, story_steps_to_batch, story_tool_calls_arrow_schema,
-    story_tool_calls_to_batch, StorylineDataFusionTableNames,
+    StorylineDataFusionTableNames, datafusion_bridge::from_datafusion, story_runs_arrow_schema,
+    story_runs_to_batch, story_steps_arrow_schema, story_steps_to_batch,
+    story_tool_calls_arrow_schema, story_tool_calls_to_batch,
 };
 
 #[derive(Debug)]

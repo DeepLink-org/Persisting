@@ -1,8 +1,8 @@
 //! Durable Run identity, project association, and liveness metadata.
 
 use super::overlay::{
-    load_overlay_record, mount_overlay_record_read_only, overlay_status, OverlayRecord,
-    OverlayUpper, ReadOnlyOverlayMount,
+    OverlayRecord, OverlayUpper, ReadOnlyOverlayMount, load_overlay_record,
+    mount_overlay_record_read_only, overlay_status,
 };
 use crate::util::{atomic_write, create_dir_all_durable};
 use anyhow::Context;
@@ -12,8 +12,8 @@ use std::fs::{self, File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -220,10 +220,11 @@ impl RunControlServer {
         if locator_path.exists() || locator_path.is_symlink() {
             fs::remove_file(&locator_path)?;
         }
-        // macOS sockaddr_un paths are short. Bind in the system temporary
-        // directory and expose a stable stage-local symlink for discovery.
+        // macOS sockaddr_un paths are short. Bind in the fixed, short `/tmp`
+        // directory rather than `std::env::temp_dir()` (which can point at a deep
+        // per-user path) and expose a stable stage-local symlink for discovery.
         let socket_path =
-            std::env::temp_dir().join(format!("pvisor-{}.sock", uuid::Uuid::new_v4().simple()));
+            Path::new("/tmp").join(format!("pvisor-{}.sock", uuid::Uuid::new_v4().simple()));
         let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
         std::os::unix::fs::symlink(&socket_path, &locator_path)?;
@@ -538,10 +539,10 @@ fn resolve_path(path: &Path) -> anyhow::Result<RunRecord> {
         }
     } else {
         candidates.push(absolute.clone());
-        if absolute.file_name().is_some_and(|name| name == "upper") {
-            if let Some(parent) = absolute.parent() {
-                candidates.push(parent.to_path_buf());
-            }
+        if absolute.file_name().is_some_and(|name| name == "upper")
+            && let Some(parent) = absolute.parent()
+        {
+            candidates.push(parent.to_path_buf());
         }
     }
     candidates.extend(absolute.ancestors().map(Path::to_path_buf));

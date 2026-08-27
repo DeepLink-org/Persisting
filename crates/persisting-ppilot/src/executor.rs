@@ -12,8 +12,8 @@
 //! ```
 
 use crate::python_env;
-use crate::task::{unix_now, ErrorKind, TaskExpr, TaskResult};
-use anyhow::{bail, Context, Result};
+use crate::task::{ErrorKind, TaskExpr, TaskResult, unix_now};
+use anyhow::{Context, Result, bail};
 #[cfg(test)]
 use persisting_agentctl::{ArtifactRef, ProcessOutput};
 use persisting_agentctl::{
@@ -21,7 +21,7 @@ use persisting_agentctl::{
     RunResult, RunSpec, RunState, StdioMode,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 #[cfg(test)]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

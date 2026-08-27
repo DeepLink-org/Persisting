@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::api;
@@ -1823,9 +1823,11 @@ mod tests {
                 })
             ]
         );
-        assert!(mapped
-            .iter()
-            .all(|message| message.get("tool_calls").is_none()));
+        assert!(
+            mapped
+                .iter()
+                .all(|message| message.get("tool_calls").is_none())
+        );
         assert!(mapped.iter().all(|message| message["role"] != "tool"));
     }
 

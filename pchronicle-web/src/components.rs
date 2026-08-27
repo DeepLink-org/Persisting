@@ -4,11 +4,11 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::chat_view::{chat_row_visible, group_chats, source_class, step_row_visible, TraceCard};
-use crate::json_value::{is_structured_json, JsonValue};
+use crate::chat_view::{TraceCard, chat_row_visible, group_chats, source_class, step_row_visible};
+use crate::json_value::{JsonValue, is_structured_json};
 use crate::model::{
-    extract_message_text, EventProvenance, QueryEvidence, StorylineTurn, TurnDetail, TurnSummary,
-    WireToolCall,
+    EventProvenance, QueryEvidence, StorylineTurn, TurnDetail, TurnSummary, WireToolCall,
+    extract_message_text,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

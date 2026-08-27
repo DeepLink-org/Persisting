@@ -164,10 +164,10 @@ impl Scheduler {
     /// Prefer `prefer` when that slot still has capacity; otherwise least-loaded.
     pub async fn acquire_prefer(&self, prefer: Option<usize>) -> Result<usize, AcquireError> {
         loop {
-            if let Some(i) = prefer {
-                if self.try_acquire_index(i) {
-                    return Ok(i);
-                }
+            if let Some(i) = prefer
+                && self.try_acquire_index(i)
+            {
+                return Ok(i);
             }
             if let Some(i) = self.try_acquire() {
                 return Ok(i);

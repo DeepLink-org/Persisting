@@ -2,9 +2,9 @@ use crate::executor::{AttemptContext, RunExecutor};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::sandbox::INTERNAL_SANDBOX_ARG;
 #[cfg(target_os = "macos")]
-use crate::sandbox::{seatbelt_profile, SeatbeltPlan, MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION};
+use crate::sandbox::{MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION, SeatbeltPlan, seatbelt_profile};
 #[cfg(target_os = "linux")]
-use crate::sandbox::{SandboxPlan, ROOTLESS_ATTESTATION};
+use crate::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan};
 use crate::sandbox::{SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
 use async_trait::async_trait;
 use persisting_agentctl::{
@@ -1055,17 +1055,17 @@ impl RunExecutor for ProcessExecutor {
         }
 
         let mut output = ProcessOutput::default();
-        if let Some(task) = stdout_task {
-            if let Ok(Ok(captured)) = task.await {
-                output.stdout = Some(captured.text);
-                output.stdout_truncated = captured.truncated;
-            }
+        if let Some(task) = stdout_task
+            && let Ok(Ok(captured)) = task.await
+        {
+            output.stdout = Some(captured.text);
+            output.stdout_truncated = captured.truncated;
         }
-        if let Some(task) = stderr_task {
-            if let Ok(Ok(captured)) = task.await {
-                output.stderr = Some(captured.text);
-                output.stderr_truncated = captured.truncated;
-            }
+        if let Some(task) = stderr_task
+            && let Ok(Ok(captured)) = task.await
+        {
+            output.stderr = Some(captured.text);
+            output.stderr_truncated = captured.truncated;
         }
 
         let finished_at = crate::util::unix_now_ms();
@@ -1186,15 +1186,21 @@ mod tests {
         let descriptor = executor.descriptor();
         assert_eq!(descriptor.name, "local-rootless-v1");
         assert_eq!(descriptor.isolation, IsolationKind::RootlessProcess);
-        assert!(descriptor
-            .capability_enforcement
-            .is_enforced(CapabilityDimension::FilesystemRead));
-        assert!(descriptor
-            .capability_enforcement
-            .is_enforced(CapabilityDimension::FilesystemWrite));
-        assert!(!descriptor
-            .capability_enforcement
-            .is_enforced(CapabilityDimension::Network));
+        assert!(
+            descriptor
+                .capability_enforcement
+                .is_enforced(CapabilityDimension::FilesystemRead)
+        );
+        assert!(
+            descriptor
+                .capability_enforcement
+                .is_enforced(CapabilityDimension::FilesystemWrite)
+        );
+        assert!(
+            !descriptor
+                .capability_enforcement
+                .is_enforced(CapabilityDimension::Network)
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -1205,12 +1211,16 @@ mod tests {
         let descriptor = executor.descriptor();
         assert_eq!(descriptor.name, "local-seatbelt-v1");
         assert_eq!(descriptor.isolation, IsolationKind::SandboxedProcess);
-        assert!(!descriptor
-            .capability_enforcement
-            .is_enforced(CapabilityDimension::FilesystemRead));
-        assert!(descriptor
-            .capability_enforcement
-            .is_enforced(CapabilityDimension::FilesystemWrite));
+        assert!(
+            !descriptor
+                .capability_enforcement
+                .is_enforced(CapabilityDimension::FilesystemRead)
+        );
+        assert!(
+            descriptor
+                .capability_enforcement
+                .is_enforced(CapabilityDimension::FilesystemWrite)
+        );
     }
 
     #[cfg(target_os = "macos")]

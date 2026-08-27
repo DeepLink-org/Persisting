@@ -8,7 +8,7 @@
 //! ActorIds here and quarantine them in [`Scheduler`] on termination.
 
 use crate::dist::DistEnv;
-use crate::pulsing_ext::{ask_timeout, resolve_actor, ASK_TIMEOUT};
+use crate::pulsing_ext::{ASK_TIMEOUT, ask_timeout, resolve_actor};
 use crate::scheduler::Scheduler;
 use futures::future::join_all;
 use pulsing_actor::actor::{ActorId, StopReason};

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use pulsing_actor::prelude::*;
 
 use super::actors::{RunActor, StoryActor, StoryActorDeps};
@@ -14,15 +14,15 @@ use super::egress::persist_story_snapshots;
 use super::prepare::CapturePreparer;
 use super::story::Story;
 use super::story::{StoryContext, StoryId};
-use super::wal::{replay_pending, EventWal};
+use super::wal::{EventWal, replay_pending};
 use super::wire::{
-    run_main_route, CaptureAck, StoryCommand, StoryReply, StoryScope, RUN_ACTOR_NAME,
+    CaptureAck, RUN_ACTOR_NAME, StoryCommand, StoryReply, StoryScope, run_main_route,
 };
 use super::{CallContext, Event};
 use crate::dead_letter;
 use crate::session::index::SessionIndexHandle;
 use crate::sink::CaptureEventSink;
-use crate::subagent_link::{spawn_link_backfill_record, SpawnLinkBackfill};
+use crate::subagent_link::{SpawnLinkBackfill, spawn_link_backfill_record};
 
 const STORY_MAILBOX: usize = 256;
 
@@ -136,10 +136,10 @@ impl CaptureRuntime {
         persist_story_snapshots(self.inner.story_deps.storage.as_path(), &snapshots)?;
         // Never erase a failed or rejected capture. A fully acknowledged WAL
         // can be truncated; otherwise its pending rows remain for restart replay.
-        if replay_pending(self.inner.story_deps.storage.as_path()).is_empty() {
-            if let Err(e) = self.inner.wal.truncate() {
-                tracing::warn!(target: "persisting_gateway", "wal truncate on shutdown: {e:#}");
-            }
+        if replay_pending(self.inner.story_deps.storage.as_path()).is_empty()
+            && let Err(e) = self.inner.wal.truncate()
+        {
+            tracing::warn!(target: "persisting_gateway", "wal truncate on shutdown: {e:#}");
         }
         self.inner.system.shutdown().await.map_err(pulsing_err)
     }

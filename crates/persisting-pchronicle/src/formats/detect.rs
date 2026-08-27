@@ -2,9 +2,9 @@
 
 use std::path::Path;
 
+use crate::Result;
 use crate::format::DocumentFormat;
 use crate::formats::registry;
-use crate::Result;
 
 /// Detect format from a file path (extension / basename).
 ///
@@ -64,10 +64,10 @@ pub fn detect_format(path: Option<&Path>, content: Option<&str>) -> Result<Optio
     if let Some(fmt) = registry::detect(path, content.map(str::as_bytes).unwrap_or(b""))? {
         return Ok(Some(fmt));
     }
-    if let Some(c) = content {
-        if let Some(fmt) = detect_format_from_content(c)? {
-            return Ok(Some(fmt));
-        }
+    if let Some(c) = content
+        && let Some(fmt) = detect_format_from_content(c)?
+    {
+        return Ok(Some(fmt));
     }
     if let Some(p) = path {
         return Ok(detect_format_from_path(p));

@@ -13,7 +13,7 @@ use persisting_pchronicle::model::{
     LlmRequestEventPayload, LlmResponse, LlmResponseEventPayload, LlmRole, LlmToolChoiceMode,
     LlmUsage,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub fn request_to_chat_completions(
     semantic: &LlmRequestEventPayload,
@@ -22,12 +22,11 @@ pub fn request_to_chat_completions(
 ) -> Result<Bytes> {
     let mut rendered =
         render_chat_completions(&semantic.request, &semantic.input_format, upstream_model);
-    if semantic.input_format == LlmProtocol::Responses {
-        if let Some(cache) = reasoning_cache {
-            if let Some(messages) = rendered.get_mut("messages").and_then(Value::as_array_mut) {
-                cache.apply_to_messages(messages);
-            }
-        }
+    if semantic.input_format == LlmProtocol::Responses
+        && let Some(cache) = reasoning_cache
+        && let Some(messages) = rendered.get_mut("messages").and_then(Value::as_array_mut)
+    {
+        cache.apply_to_messages(messages);
     }
     Ok(Bytes::from(serde_json::to_vec(&rendered)?))
 }
@@ -197,10 +196,10 @@ pub fn request_to_gemini(semantic: &LlmRequestEventPayload, upstream_model: &str
             LlmToolChoiceMode::Auto => "AUTO",
         };
         let mut config = json!({"mode": mode});
-        if choice.mode == LlmToolChoiceMode::Tool {
-            if let Some(name) = &choice.name {
-                config["allowedFunctionNames"] = json!([name]);
-            }
+        if choice.mode == LlmToolChoiceMode::Tool
+            && let Some(name) = &choice.name
+        {
+            config["allowedFunctionNames"] = json!([name]);
         }
         output["toolConfig"] = json!({"functionCallingConfig": config});
     }

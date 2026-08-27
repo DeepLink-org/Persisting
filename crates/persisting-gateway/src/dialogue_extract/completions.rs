@@ -90,10 +90,11 @@ impl CompletionsSseToolParser {
             }
         }
         if let Some(message) = choice.get("message") {
-            if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
-                if self.text.is_empty() && !content.is_empty() {
-                    self.text.push_str(content);
-                }
+            if let Some(content) = message.get("content").and_then(|c| c.as_str())
+                && self.text.is_empty()
+                && !content.is_empty()
+            {
+                self.text.push_str(content);
             }
             if let Some(tcs) = message.get("tool_calls").and_then(|t| t.as_array()) {
                 self.merge_complete_tool_calls(tcs);
@@ -162,10 +163,9 @@ pub(crate) fn completions_assistant_from_json(body: &Value) -> Option<String> {
         .and_then(|a| a.first())
         .and_then(|c| c.get("message"))
         .and_then(|m| m.get("content"))
+        && let Some(text) = super::messages::content_to_string(content)
     {
-        if let Some(text) = super::messages::content_to_string(content) {
-            return Some(text);
-        }
+        return Some(text);
     }
     if let Some(message) = body
         .get("choices")

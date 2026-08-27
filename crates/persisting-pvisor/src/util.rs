@@ -1,18 +1,11 @@
 //! Shared helpers for pVisor.
 
 use anyhow::Context;
+pub use persisting_events::unix_now_ms;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-pub fn unix_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 pub fn now_rfc3339_and_unix_ms() -> (String, u64) {
     let now = chrono::Utc::now();

@@ -8,14 +8,14 @@ use persisting_agentctl::ModelAccessPolicy;
 use serde_json::Value;
 
 use super::state::GatewayState;
+use crate::Call;
 use crate::config::{CaptureLevel, ProxyConfig};
-use crate::engine::headers_to_vec;
 use crate::engine::CallContext;
+use crate::engine::headers_to_vec;
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
 use crate::runtime::run_config::load_session_proxy_config;
-use crate::session::storage::{route_config_key, CaptureRoute};
-use crate::Call;
+use crate::session::storage::{CaptureRoute, route_config_key};
 
 pub(crate) fn effective_config(state: &GatewayState, route: &CaptureRoute) -> Arc<ProxyConfig> {
     load_session_proxy_config(state.storage.as_path(), route_config_key(route))

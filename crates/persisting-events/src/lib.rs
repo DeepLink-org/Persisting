@@ -8,6 +8,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod time;
+pub use time::unix_now_ms;
+
 #[cfg(feature = "control")]
 mod control;
 #[cfg(feature = "control")]

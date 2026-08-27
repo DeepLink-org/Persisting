@@ -1,6 +1,6 @@
 //! LLM request-body model rewrite for `forward` routes.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use serde_json::Value;
 

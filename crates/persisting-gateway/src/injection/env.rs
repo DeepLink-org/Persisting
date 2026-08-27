@@ -131,17 +131,17 @@ mod tests {
 
     #[test]
     fn proxy_environment_never_projects_upstream_credentials() {
-        std::env::set_var("DEEPSEEK_API_KEY", "host-secret");
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "host-secret") };
         let env = proxy_environment("127.0.0.1:8080", "sess-1");
         assert!(!env.contains_key("DEEPSEEK_API_KEY"));
         assert!(!env.contains_key("ANTHROPIC_AUTH_TOKEN"));
         assert!(!env.contains_key("ANTHROPIC_API_KEY"));
-        std::env::remove_var("DEEPSEEK_API_KEY");
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
     }
 
     #[test]
     fn local_auth_uses_run_scoped_placeholders_not_host_secrets() {
-        std::env::set_var("OPENAI_API_KEY", "host-secret");
+        unsafe { std::env::set_var("OPENAI_API_KEY", "host-secret") };
         let env = proxy_environment_with_local_auth("127.0.0.1:8080", "sess-1", true);
         assert_eq!(
             env.get("OPENAI_API_KEY").map(String::as_str),
@@ -151,6 +151,6 @@ mod tests {
             env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
             Some("persisting-local-sess-1")
         );
-        std::env::remove_var("OPENAI_API_KEY");
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
     }
 }

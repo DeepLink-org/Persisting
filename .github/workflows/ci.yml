@@ -10,13 +10,16 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  lint:
-    name: Lint & Format
+  format:
+    name: Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,27 +28,248 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-protoc: "false"
-
-      - uses: Swatinem/rust-cache@v2
+          install-cranelift: "false"
+          install-nextest: "false"
+          install-zig: "false"
+          components: "rustfmt"
 
       - name: Rust formatting
         run: |
           cargo fmt --all -- --check
           cargo fmt --manifest-path pchronicle-web/Cargo.toml -- --check
 
-      - name: Rust clippy
-        run: just lint-rust
+  rust-clippy-workspace:
+    name: Clippy / Workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Python lint (ruff)
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-protoc: "false"
+          install-cranelift: "false"
+          install-nextest: "false"
+          install-zig: "false"
+          components: "clippy"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-clippy-workspace
+
+      - name: Workspace Clippy
+        run: just clippy-deny
+
+  rust-clippy-pchronicle:
+    name: Clippy / pChronicle Feature Contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-protoc: "false"
+          install-cranelift: "false"
+          install-nextest: "false"
+          install-zig: "false"
+          components: "clippy"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-clippy-pchronicle
+
+      - name: Strict pChronicle Clippy
+        run: just clippy-pchronicle-panics
+
+      - name: pChronicle storage feature contracts
+        run: just clippy-pchronicle-features
+
+  python-lint:
+    name: Python Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Ruff
         run: uvx ruff check persisting/
 
   rust-test:
-    name: Rust Test (${{ matrix.os }})
+    name: Rust Test / ${{ matrix.platform }} / ${{ matrix.shard }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - platform: Linux
+            os: ubuntu-latest
+            shard: core
+            packages: >-
+              -p persisting-agentctl
+              -p persisting-events
+              -p persisting-overlay-core
+              -p persisting-overlayfs
+              -p persisting-overlaynet
+              -p persisting-replay
+            event_control: true
+            prepare_pvisor: false
+            prepare_runtime: false
+            smoke_pvisor: false
+            smoke_ppilot: false
+            smoke_pchronicle: false
+            install_zig: false
+          - platform: Linux
+            os: ubuntu-latest
+            shard: gateway
+            packages: -p persisting-gateway
+            event_control: false
+            prepare_pvisor: false
+            prepare_runtime: false
+            smoke_pvisor: false
+            smoke_ppilot: false
+            smoke_pchronicle: false
+            install_zig: false
+          - platform: Linux
+            os: ubuntu-latest
+            shard: pvisor
+            packages: -p persisting-pvisor
+            event_control: false
+            prepare_pvisor: true
+            prepare_runtime: false
+            smoke_pvisor: true
+            smoke_ppilot: false
+            smoke_pchronicle: false
+            install_zig: false
+          - platform: Linux
+            os: ubuntu-latest
+            shard: ppilot
+            packages: -p persisting-ppilot
+            event_control: false
+            prepare_pvisor: false
+            prepare_runtime: true
+            smoke_pvisor: false
+            smoke_ppilot: true
+            smoke_pchronicle: false
+            install_zig: false
+          - platform: Linux
+            os: ubuntu-latest
+            shard: pchronicle
+            packages: >-
+              -p persisting-pchronicle
+              -p persisting-pchronicle-cli
+            event_control: false
+            prepare_pvisor: false
+            prepare_runtime: false
+            smoke_pvisor: false
+            smoke_ppilot: false
+            smoke_pchronicle: true
+            install_zig: false
+          - platform: macOS
+            os: macos-latest
+            shard: agent-runtime
+            packages: >-
+              -p persisting-agentctl
+              -p persisting-events
+              -p persisting-gateway
+              -p persisting-overlay-core
+              -p persisting-overlayfs
+              -p persisting-overlaynet
+              -p persisting-ppilot
+              -p persisting-pvisor
+              -p persisting-replay
+            event_control: false
+            prepare_pvisor: false
+            prepare_runtime: true
+            smoke_pvisor: true
+            smoke_ppilot: true
+            smoke_pchronicle: false
+            install_zig: true
+          - platform: macOS
+            os: macos-latest
+            shard: pchronicle
+            packages: >-
+              -p persisting-pchronicle
+              -p persisting-pchronicle-cli
+            event_control: false
+            prepare_pvisor: false
+            prepare_runtime: false
+            smoke_pvisor: false
+            smoke_ppilot: false
+            smoke_pchronicle: true
+            install_zig: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-protoc: "false"
+          install-cranelift: "false"
+          install-zig: "${{ matrix.install_zig }}"
+          components: ""
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-rust-${{ matrix.shard }}
+
+      # macOS needs the Hypervisor entitlement on the product binary. Running
+      # the same recipe on Linux also keeps the smoke-test setup identical.
+      - name: Build pVisor product binary
+        if: matrix.prepare_pvisor
+        run: just pvisor debug
+
+      # pPilot's integration tests resolve the real pVisor and pChronicle
+      # executables from PATH. Build them once in this shard before nextest.
+      - name: Build Agent runtime component set
+        if: matrix.prepare_runtime
+        run: |
+          just pvisor debug
+          cargo build --locked \
+            -p persisting-pchronicle-cli --bin pchronicle \
+            -p persisting-ppilot --bin ppilot
+          echo "${GITHUB_WORKSPACE}/target/debug" >> "${GITHUB_PATH}"
+
+      - name: Run ${{ matrix.shard }} tests
+        env:
+          # GitHub-hosted Linux runners may disable unprivileged user
+          # namespaces. The dedicated isolation job remains strict.
+          PERSISTING_TEST_ALLOW_NO_USERNS: "1"
+          RUST_MIN_STACK: "8388608"
+        run: cargo nextest run --locked ${{ matrix.packages }}
+
+      - name: Test shared event control contract
+        if: matrix.event_control
+        run: cargo nextest run -p persisting-events --features control --locked
+
+      - name: Build pChronicle CLI
+        if: matrix.smoke_pchronicle
+        run: cargo build -p persisting-pchronicle-cli --bin pchronicle --locked
+
+      - name: Smoke pVisor CLI
+        if: matrix.smoke_pvisor
+        run: just smoke-pvisor-cli
+
+      - name: Smoke pPilot CLI
+        if: matrix.smoke_ppilot
+        run: |
+          ./target/debug/ppilot run --help
+          ./target/debug/ppilot produce --help
+
+      - name: Smoke pChronicle CLI
+        if: matrix.smoke_pchronicle
+        run: ./target/debug/pchronicle query --help
+
+  pchronicle-web-test:
+    name: pChronicle Web
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -54,47 +278,23 @@ jobs:
         with:
           install-protoc: "false"
           install-dioxus: "true"
+          install-cranelift: "false"
+          install-zig: "false"
+          components: ""
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-pchronicle-web
+          workspaces: pchronicle-web -> target
 
-      - name: Build
-        run: |
-          python3 scripts/packaging/stage_wheel_binaries.py --web-only
-          cargo build --workspace --all-targets --locked
+      - name: Build Web assets
+        run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
 
-      - name: Test pChronicle Web
-        run: cargo test --manifest-path pchronicle-web/Cargo.toml --locked
-
-      - name: Build Agent CLI component set
-        run: |
-          cargo build -p persisting-pchronicle-cli --bin pchronicle --locked
-          just pvisor debug
-          cargo build -p persisting-ppilot --bin ppilot --locked
-
-      - name: Test
-        # GitHub-hosted Linux runners may disable unprivileged user namespaces.
-        # The rootless integration tests only skip permission-denied failures
-        # from that exact namespace setup boundary; other failures remain fatal.
-        env:
-          PERSISTING_TEST_ALLOW_NO_USERNS: "1"
-          RUST_MIN_STACK: "8388608"
-        run: cargo test --workspace --locked
-
-      - name: Test shared event control contract
-        if: runner.os == 'Linux'
-        # pVisor no longer links a Chronicle storage backend. Exercise the
-        # lightweight sidecar/control feature at its owning crate boundary.
-        run: cargo test -p persisting-events --features control --locked
-
-      - name: Smoke product CLIs
-        run: |
-          just smoke-pvisor-cli
-          ./target/debug/ppilot run --help
-          ./target/debug/ppilot produce --help
-          ./target/debug/pchronicle query --help
+      - name: Test Web crate
+        run: cargo nextest run --manifest-path pchronicle-web/Cargo.toml --locked
 
   pvisor-isolation-regression:
-    name: pVisor Isolation Regression (Linux)
+    name: pVisor Isolation Regression / Linux
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -104,9 +304,13 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-protoc: "false"
+          install-cranelift: "false"
+          install-zig: "false"
           components: ""
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-pvisor-isolation
 
       - name: Enable rootless isolation primitives
         shell: bash
@@ -133,7 +337,7 @@ jobs:
         run: just examples-pvisor-filesystem
 
   s3-contract:
-    name: pChronicle S3 Contract (MinIO)
+    name: pChronicle S3 Contract / MinIO
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -141,8 +345,14 @@ jobs:
 
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
+        with:
+          install-cranelift: "false"
+          install-zig: "false"
+          components: ""
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-pchronicle-s3
 
       - name: Start pinned MinIO server
         run: |
@@ -177,7 +387,7 @@ jobs:
           AWS_ENDPOINT: http://127.0.0.1:9000
           AWS_ALLOW_HTTP: "true"
           AWS_VIRTUAL_HOSTED_STYLE_REQUEST: "false"
-        run: cargo test -p persisting-pchronicle --test s3_storage --locked -- --ignored
+        run: cargo nextest run -p persisting-pchronicle --test s3_storage --locked --run-ignored all
 
       - name: Show MinIO logs after failure
         if: failure()
@@ -193,14 +403,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          install-protoc: "false"
-          install-dioxus: "true"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
 
       - name: Sync Python deps
         run: uv sync --extra all --extra dev
@@ -209,46 +418,67 @@ jobs:
         run: uv run pytest tests/ -q
 
   examples:
-    name: Agent Infra Examples
+    name: Examples / ${{ matrix.shard }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: pvisor
+            command: |
+              just test-pvisor-benchmark
+              just examples-pvisor-portable
+          - shard: ppilot
+            command: just examples-ppilot
+          - shard: pchronicle
+            command: just examples-pchronicle
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
+        with:
+          install-protoc: "false"
+          install-cranelift: "false"
+          install-nextest: "false"
+          install-zig: "false"
+          components: ""
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-examples-${{ matrix.shard }}
 
       - name: Install jq
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
 
-      - name: Validate pVisor benchmark contract
-        run: just test-pvisor-benchmark
-
-      - name: Run portable pVisor examples
+      - name: Run ${{ matrix.shard }} examples
         env:
-          WORK_ROOT: ${{ runner.temp }}/pvisor-portable-examples
-        run: just examples-pvisor-portable
+          WORK_ROOT: ${{ runner.temp }}/${{ matrix.shard }}-examples
+        run: ${{ matrix.command }}
 
-      # pPilot retains its existing loop until it receives the same explicit
-      # scenario runner used by pVisor and pChronicle.
-      - name: Run pPilot examples
+  ci:
+    name: CI
+    if: always()
+    needs:
+      - format
+      - rust-clippy-workspace
+      - rust-clippy-pchronicle
+      - python-lint
+      - rust-test
+      - pchronicle-web-test
+      - pvisor-isolation-regression
+      - s3-contract
+      - python-test
+      - examples
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every CI shard to pass
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          cargo build --release -q \
-            -p persisting-pchronicle-cli --bin pchronicle \
-            -p persisting-ppilot --bin ppilot
-          cargo build --release -q \
-            -p persisting-pvisor --bin pvisor
-          for example in examples/ppilot/*; do
-            [ -f "$example/run.sh" ] || continue
-            echo "==> ${example}/run.sh"
-            (cd "$example" && bash run.sh)
+          for result in ${RESULTS}; do
+            if [[ "${result}" != "success" ]]; then
+              echo "A required CI job finished with: ${result}" >&2
+              exit 1
+            fi
           done
-
-      - name: Run pChronicle examples
-        run: |
-          cargo build --release -q -p persisting-pchronicle-cli --bin pchronicle
-          cargo build --release -q -p persisting-pchronicle \
-            --example pchronicle_storage_query_benchmark
-          bash examples/pchronicle/test.sh --profile release
-          bash examples/pchronicle/output-contract.sh >/dev/null

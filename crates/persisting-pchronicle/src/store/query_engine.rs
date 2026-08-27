@@ -18,8 +18,8 @@ use datafusion::sql::sqlparser::ast::Statement as SqlStatement;
 use futures::TryStreamExt;
 
 use super::{
-    datafusion_bridge::from_datafusion, DatasetCatalogSnapshot, FileTrajectoryQueryMetrics,
-    FileTrajectoryQueryMetricsSnapshot, SOURCE_FILE_COLUMN,
+    DatasetCatalogSnapshot, FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot,
+    SOURCE_FILE_COLUMN, datafusion_bridge::from_datafusion,
 };
 use crate::{DocumentFormat, QueryCapabilities, QueryTables};
 
@@ -423,10 +423,10 @@ impl ChronicleQueryEngine {
             rows_written = rows_written
                 .checked_add(batch.num_rows() as u64)
                 .context("streaming SQL result row count overflow")?;
-            if let Some(max_rows) = max_rows {
-                if rows_written > max_rows {
-                    return Ok(QueryWriteOutcome::LimitExceeded);
-                }
+            if let Some(max_rows) = max_rows
+                && rows_written > max_rows
+            {
+                return Ok(QueryWriteOutcome::LimitExceeded);
             }
             writer
                 .write(&batch)
@@ -528,22 +528,21 @@ fn ensure_collision_safe_file_joins(
     plan: &LogicalPlan,
     catalog: Option<&DatasetCatalogSnapshot>,
 ) -> Result<()> {
-    if let LogicalPlan::Join(join) = plan {
-        if join_can_collide_without_file_key(&join.left, &join.right, catalog)
-            && !join
-                .on
-                .iter()
-                .any(|(left, right)| is_source_file_column(left) && is_source_file_column(right))
-            && !join
-                .filter
-                .as_ref()
-                .is_some_and(expr_has_source_file_equality)
-        {
-            anyhow::bail!(
-                "multi-file trajectory joins must include left.{0} = right.{0}; session_id is only unique within one source file",
-                SOURCE_FILE_COLUMN
-            );
-        }
+    if let LogicalPlan::Join(join) = plan
+        && join_can_collide_without_file_key(&join.left, &join.right, catalog)
+        && !join
+            .on
+            .iter()
+            .any(|(left, right)| is_source_file_column(left) && is_source_file_column(right))
+        && !join
+            .filter
+            .as_ref()
+            .is_some_and(expr_has_source_file_equality)
+    {
+        anyhow::bail!(
+            "multi-file trajectory joins must include left.{0} = right.{0}; session_id is only unique within one source file",
+            SOURCE_FILE_COLUMN
+        );
     }
     for input in plan.inputs() {
         ensure_collision_safe_file_joins(input, catalog)?;
@@ -591,25 +590,25 @@ fn collect_trajectory_plan_sources(
     catalog: Option<&DatasetCatalogSnapshot>,
     sources: &mut TrajectoryPlanSources,
 ) {
-    if let LogicalPlan::TableScan(scan) = plan {
-        if matches!(scan.table_name.table(), "runs" | "steps" | "tool_calls") {
-            let dataset = catalog.and_then(|catalog| {
-                scan.table_name
-                    .schema()
-                    .filter(|schema| catalog.dataset(schema).is_some())
-                    .or_else(|| {
-                        scan.table_name
-                            .schema()
-                            .is_none_or(|schema| schema == "public")
-                            .then(|| catalog.default_dataset())
-                            .flatten()
-                    })
-            });
-            if let Some(dataset) = dataset {
-                sources.datasets.insert(dataset.to_string());
-            } else {
-                sources.legacy = true;
-            }
+    if let LogicalPlan::TableScan(scan) = plan
+        && matches!(scan.table_name.table(), "runs" | "steps" | "tool_calls")
+    {
+        let dataset = catalog.and_then(|catalog| {
+            scan.table_name
+                .schema()
+                .filter(|schema| catalog.dataset(schema).is_some())
+                .or_else(|| {
+                    scan.table_name
+                        .schema()
+                        .is_none_or(|schema| schema == "public")
+                        .then(|| catalog.default_dataset())
+                        .flatten()
+                })
+        });
+        if let Some(dataset) = dataset {
+            sources.datasets.insert(dataset.to_string());
+        } else {
+            sources.legacy = true;
         }
     }
     for input in plan.inputs() {

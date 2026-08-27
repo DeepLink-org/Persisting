@@ -24,8 +24,8 @@ use discovery::{
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -37,14 +37,14 @@ use datafusion::catalog::Session;
 use datafusion::common::{DataFusionError, ScalarValue, TableReference};
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, TableType};
-use datafusion::physical_expr::expressions::{col as physical_col, Literal};
+use datafusion::physical_expr::expressions::{Literal, col as physical_col};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
 use datafusion::physical_plan::union::UnionExec;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
-use futures::{stream, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt, stream};
 use lance::io::ObjectStore as LanceObjectStore;
 use object_store::path::Path as ObjectPath;
 use object_store::{GetOptions, ObjectMeta};
@@ -61,13 +61,13 @@ use crate::projection::projection_lineage_is_fresh;
 use super::events::datafusion::{RawEventDataSource, RawEventDataSourceOptions, RawEventSnapshot};
 use super::files::matches_file_filter;
 use super::{
-    raw_event_arrow_schema, reconstruct_storyline, split_storyline, story_runs_arrow_schema,
-    story_runs_from_batch, story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch,
-    story_steps_to_batch, story_tool_calls_arrow_schema, story_tool_calls_from_batch,
-    story_tool_calls_to_batch, FileTrajectoryDataSource, FileTrajectoryDataSourceOptions,
-    FileTrajectoryQueryMetrics, LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
-    ProjectionSourceSnapshot, StoryRunRow, StoryStepRow, StoryToolCallRow, StorylineDataSource,
-    StorylineDataSourceOptions, StorylineTableKind, StorylineTablePaths, SOURCE_FILE_COLUMN,
+    FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, FileTrajectoryQueryMetrics,
+    LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions, ProjectionSourceSnapshot,
+    SOURCE_FILE_COLUMN, StoryRunRow, StoryStepRow, StoryToolCallRow, StorylineDataSource,
+    StorylineDataSourceOptions, StorylineTableKind, StorylineTablePaths, raw_event_arrow_schema,
+    reconstruct_storyline, split_storyline, story_runs_arrow_schema, story_runs_from_batch,
+    story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch, story_steps_to_batch,
+    story_tool_calls_arrow_schema, story_tool_calls_from_batch, story_tool_calls_to_batch,
 };
 
 pub const DEFAULT_DATASET_NAME: &str = "dataset";
@@ -796,10 +796,10 @@ fn local_snapshot_ref(path: &Path) -> String {
     hash.update(path.to_string_lossy().as_bytes());
     if let Ok(metadata) = fs::metadata(path) {
         hash.update(&metadata.len().to_le_bytes());
-        if let Ok(modified) = metadata.modified() {
-            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-                hash.update(&duration.as_nanos().to_le_bytes());
-            }
+        if let Ok(modified) = metadata.modified()
+            && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+        {
+            hash.update(&duration.as_nanos().to_le_bytes());
         }
         #[cfg(unix)]
         {

@@ -114,10 +114,10 @@ pub(crate) struct DraftPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Call;
     use crate::config::CaptureLevel;
     use crate::session::storage::CaptureRoute;
     use crate::sink::llm_request_summary_record;
-    use crate::Call;
 
     #[test]
     fn story_command_bincode_roundtrip() {

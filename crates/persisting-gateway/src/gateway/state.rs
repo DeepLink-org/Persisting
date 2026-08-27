@@ -1,8 +1,8 @@
 //! Gateway state and composition with OverlayNet.
 
 use std::path::Path;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -10,7 +10,7 @@ use persisting_agentctl::{ControlController, PolicyControlController};
 use persisting_overlaynet::{BandwidthRegistry, InterceptionMetrics};
 use tokio::task::JoinHandle;
 
-use super::admin::{admin_router, AdminState};
+use super::admin::{AdminState, admin_router};
 use super::dispatch::build_router;
 use super::reasoning::ReasoningCacheHandle;
 use crate::config::ProxyConfig;

@@ -1,14 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use clap::Args;
 
 use crate::runtime::{
+    ApplySelection, OverlayState, ReadOnlyOverlayMount, RunLease, RunRecord,
     apply_overlay_selected, control_mount_inspect, control_overlay_status, control_ping,
     control_unmount_inspect, discard_overlay, is_live, load_apply_records,
-    mount_overlay_record_read_only, overlay_status, resolve_run, ApplySelection, OverlayState,
-    ReadOnlyOverlayMount, RunLease, RunRecord,
+    mount_overlay_record_read_only, overlay_status, resolve_run,
 };
 
 const DEFAULT_STORAGE: &str = ".persisting/capture";

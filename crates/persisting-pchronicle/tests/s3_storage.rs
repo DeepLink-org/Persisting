@@ -6,12 +6,12 @@
 use anyhow::{Context, Result};
 use lance::io::ObjectStore;
 use object_store::ObjectStoreExt;
-use persisting_pchronicle::document::{decode_json_storylines, DocumentFormat};
+use persisting_pchronicle::document::{DocumentFormat, decode_json_storylines};
 use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument};
 use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 use persisting_pchronicle::storage::{
-    raw_event_lance_path, LanceMaintenanceOptions, ObjectStoreManifestWriteMode,
-    RawEventLanceAppender, RawEventLanceStore, StoryCoords, StorylineLanceStore,
+    LanceMaintenanceOptions, ObjectStoreManifestWriteMode, RawEventLanceAppender,
+    RawEventLanceStore, StoryCoords, StorylineLanceStore, raw_event_lance_path,
 };
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -133,10 +133,12 @@ async fn run_contract(root: &str) -> Result<()> {
     // the already committed S3 dataset.
     let mut invalid = event("invalid");
     invalid.seq = u64::MAX;
-    assert!(RawEventLanceStore
-        .append_events(&main, &[invalid])
-        .await
-        .is_err());
+    assert!(
+        RawEventLanceStore
+            .append_events(&main, &[invalid])
+            .await
+            .is_err()
+    );
     assert_eq!(
         RawEventLanceStore.read_events(&main, 0, None).await?.len(),
         2

@@ -1,26 +1,26 @@
 //! Generic explicit-proxy server and request dispatch.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
+use axum::Router;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
-use axum::Router;
 use persisting_agentctl::ControlController;
 use persisting_agentctl::{NetworkAccessRequest, NetworkTransport, RunId, StorylineId};
 
-use crate::bandwidth::{throttle_body, BandwidthRegistry, BandwidthSession};
+use crate::bandwidth::{BandwidthRegistry, BandwidthSession, throttle_body};
 use crate::forward::{
     handle_connect_authorized, is_forward_proxy_request, parse_connect_target,
     transparent_forward_authorized,
 };
 use crate::interception::InterceptionMetrics;
-use crate::policy::{forbidden_response, DenyReason, NetworkPolicy};
-use crate::resolver::{authorize_target, AuthorizedTarget, TargetAuthorizationError};
+use crate::policy::{DenyReason, NetworkPolicy, forbidden_response};
+use crate::resolver::{AuthorizedTarget, TargetAuthorizationError, authorize_target};
 #[derive(Clone)]
 pub struct OverlayRequestContext<T> {
     pub policy: NetworkPolicy,

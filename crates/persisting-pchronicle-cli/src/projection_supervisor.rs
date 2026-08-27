@@ -252,26 +252,27 @@ impl ProjectionSupervisor {
         let catalog_due = self
             .catalog_retry
             .is_none_or(|retry| retry.next_attempt <= now);
-        if self.catalog_dirty && catalog_due {
-            if let Some(warehouse) = self.warehouse.clone() {
-                match warehouse.refresh_catalog().await {
-                    Ok(snapshot_id) => {
-                        self.observed_snapshot_id = Some(snapshot_id);
-                        self.catalog_dirty = false;
-                        self.catalog_retry = None;
-                        report.catalog_refreshes = 1;
-                    }
-                    Err(_) => {
-                        let failures = self
-                            .catalog_retry
-                            .map_or(1, |retry| retry.failures.saturating_add(1));
-                        let delay = self.retry_delay(failures);
-                        self.catalog_retry = Some(RetryState {
-                            failures,
-                            next_attempt: now + delay,
-                        });
-                        self.send_diagnostic("catalog", "", "error", delay);
-                    }
+        if self.catalog_dirty
+            && catalog_due
+            && let Some(warehouse) = self.warehouse.clone()
+        {
+            match warehouse.refresh_catalog().await {
+                Ok(snapshot_id) => {
+                    self.observed_snapshot_id = Some(snapshot_id);
+                    self.catalog_dirty = false;
+                    self.catalog_retry = None;
+                    report.catalog_refreshes = 1;
+                }
+                Err(_) => {
+                    let failures = self
+                        .catalog_retry
+                        .map_or(1, |retry| retry.failures.saturating_add(1));
+                    let delay = self.retry_delay(failures);
+                    self.catalog_retry = Some(RetryState {
+                        failures,
+                        next_attempt: now + delay,
+                    });
+                    self.send_diagnostic("catalog", "", "error", delay);
                 }
             }
         }
@@ -349,9 +350,8 @@ pub(crate) fn sanitize_log_field(value: &str) -> String {
 mod tests {
     use super::*;
     use persisting_pchronicle::storage::{
-        automatic_projection_inventory, build_storyline_projection,
-        inspect_automatic_storyline_projection, AutomaticProjectionState, RawEventLanceStore,
-        StoryCoords,
+        AutomaticProjectionState, RawEventLanceStore, StoryCoords, automatic_projection_inventory,
+        build_storyline_projection, inspect_automatic_storyline_projection,
     };
 
     async fn append_note(storage: &Path, run_id: &str, seq: u64) -> Result<PathBuf> {

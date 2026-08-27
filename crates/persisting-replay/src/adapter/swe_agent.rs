@@ -1,9 +1,9 @@
 use std::path::Path;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::runtime::safe_relative;
-use super::{check_boundary, prepared_outcome, run_sdk_bridge, RunContext};
+use super::{RunContext, check_boundary, prepared_outcome, run_sdk_bridge};
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write_json, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod audit;
 pub mod capture;
 pub mod config;

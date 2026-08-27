@@ -4,8 +4,8 @@
 //! important: checking a lease in one object and creating a commit in another
 //! leaves a race where a newer lease can be issued between the two operations.
 
-use super::cas_store::{unix_now_ms, CasStore, Mutation};
-use anyhow::{bail, Context};
+use super::cas_store::{CasStore, Mutation, unix_now_ms};
+use anyhow::{Context, bail};
 use persisting_agentctl::{
     AttemptId, RunCommit, RunCommitRequest, RunControlRecord, RunId, RunLeaseRecord,
 };
@@ -473,14 +473,18 @@ mod tests {
         let LeaseAcquireOutcome::Acquired(lease) = lease else {
             panic!()
         };
-        assert!(!store
-            .renew_lease(&run, lease.epoch, "owner-b", 2_000)
-            .await
-            .unwrap());
-        assert!(store
-            .renew_lease(&run, lease.epoch, "owner-a", 2_000)
-            .await
-            .unwrap());
+        assert!(
+            !store
+                .renew_lease(&run, lease.epoch, "owner-b", 2_000)
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .renew_lease(&run, lease.epoch, "owner-a", 2_000)
+                .await
+                .unwrap()
+        );
         let renewed = store.get(&run).await.unwrap().unwrap().lease.unwrap();
         assert!(renewed.expires_at_unix_ms > lease.expires_at_unix_ms);
         assert!(matches!(
@@ -510,10 +514,12 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
 
-        assert!(!store
-            .renew_lease(&run, lease.epoch, "owner", 10_000)
-            .await
-            .unwrap());
+        assert!(
+            !store
+                .renew_lease(&run, lease.epoch, "owner", 10_000)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -567,14 +573,18 @@ mod tests {
             panic!()
         };
 
-        assert!(store
-            .bind_attempt(&run, lease.epoch, AttemptId::new("attempt-owner"))
-            .await
-            .unwrap());
-        assert!(!store
-            .bind_attempt(&run, lease.epoch, AttemptId::new("attempt-stale"))
-            .await
-            .unwrap());
+        assert!(
+            store
+                .bind_attempt(&run, lease.epoch, AttemptId::new("attempt-owner"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .bind_attempt(&run, lease.epoch, AttemptId::new("attempt-stale"))
+                .await
+                .unwrap()
+        );
         assert!(matches!(
             store
                 .commit_run(commit(
@@ -617,10 +627,12 @@ mod tests {
         let LeaseAcquireOutcome::Acquired(lease) = lease else {
             panic!()
         };
-        assert!(store
-            .renew_lease(&run, lease.epoch, "owner", 10_000)
-            .await
-            .unwrap());
+        assert!(
+            store
+                .renew_lease(&run, lease.epoch, "owner", 10_000)
+                .await
+                .unwrap()
+        );
         assert!(matches!(
             store
                 .commit_run(commit(

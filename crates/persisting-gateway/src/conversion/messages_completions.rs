@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Convert Anthropic `/v1/messages` JSON body to OpenAI `/v1/chat/completions`.
 pub fn messages_request_to_completions(body: &Bytes, upstream_model: &str) -> Result<Bytes> {
@@ -151,10 +151,12 @@ pub fn completions_value_to_messages(body: &Value, client_model: &str) -> Result
 fn append_system_message(system: &Value, prompt_cache: bool, messages: &mut Vec<Value>) {
     let content = match system {
         Value::String(text) if !text.is_empty() => json!(text),
-        Value::Array(blocks) => json!(blocks
-            .iter()
-            .filter_map(|block| text_part(block, prompt_cache))
-            .collect::<Vec<_>>()),
+        Value::Array(blocks) => json!(
+            blocks
+                .iter()
+                .filter_map(|block| text_part(block, prompt_cache))
+                .collect::<Vec<_>>()
+        ),
         _ => return,
     };
     if !is_empty_array(&content) {
@@ -435,50 +437,4 @@ fn openai_usage_to_anthropic(body: &Value) -> Value {
         out["cache_read_input_tokens"] = json!(tokens);
     }
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn basic_messages_request_to_completions() {
-        let body = Bytes::from_static(include_bytes!(
-            "../../tests/fixtures/requests/messages/basic.json"
-        ));
-        let out = messages_request_to_completions(&body, "deepseek-chat").unwrap();
-        let v: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["model"], "deepseek-chat");
-        assert_eq!(v["messages"][0]["role"], "user");
-        assert_eq!(v["messages"][0]["content"][0]["type"], "text");
-        assert_eq!(v["messages"][0]["content"][0]["text"], "Hello, world");
-        assert!(v.get("system").is_none());
-    }
-
-    #[test]
-    fn basic_completions_response_to_messages() {
-        let body = Bytes::from_static(include_bytes!(
-            "../../tests/fixtures/response/completions/basic.json"
-        ));
-        let out = completions_response_to_messages(&body, "claude-test").unwrap();
-        let v: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["type"], "message");
-        assert_eq!(v["role"], "assistant");
-        assert_eq!(v["model"], "claude-test");
-        assert_eq!(v["content"][0]["type"], "text");
-        assert!(v["content"][0]["text"].as_str().unwrap().contains("Sorry"));
-        assert_eq!(v["stop_reason"], "end_turn");
-        assert_eq!(v["usage"]["input_tokens"], 17);
-        assert_eq!(v["usage"]["output_tokens"], 23);
-    }
-
-    #[test]
-    fn system_string_preserved() {
-        let body = Bytes::from_static(br#"{"model":"m","max_tokens":1,"system":"sys","messages":[{"role":"user","content":"hi"}]}"#);
-        let out = messages_request_to_completions(&body, "upstream").unwrap();
-        let v: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["messages"][0]["role"], "system");
-        assert_eq!(v["messages"][0]["content"], "sys");
-        assert_eq!(v["messages"][1]["content"][0]["text"], "hi");
-    }
 }

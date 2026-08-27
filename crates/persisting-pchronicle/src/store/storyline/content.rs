@@ -10,24 +10,24 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use futures::TryStreamExt;
 use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
 use lance::deps::arrow_array::{
-    Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray, UInt64Array, UInt8Array,
+    Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray, UInt8Array, UInt64Array,
 };
 use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, SchemaRef};
 use lance::index::DatasetIndexExt;
-use lance::{blob_field_with_options, BlobArrayBuilder, BlobFieldOptions, Dataset};
+use lance::{BlobArrayBuilder, BlobFieldOptions, Dataset, blob_field_with_options};
 use lance_file::version::LanceFileVersion;
-use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::IndexType;
+use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 
 use super::datafusion::StorylineTableKind;
 use crate::formats::unknown_fields::{
-    StorylineUnknownFields, UnknownFieldLimits, DEFAULT_MAX_UNKNOWN_BYTES,
-    DEFAULT_MAX_UNKNOWN_FIELDS,
+    DEFAULT_MAX_UNKNOWN_BYTES, DEFAULT_MAX_UNKNOWN_FIELDS, StorylineUnknownFields,
+    UnknownFieldLimits,
 };
 
 pub const STORYLINE_OBJECTS_DATASET: &str = "objects.lance";

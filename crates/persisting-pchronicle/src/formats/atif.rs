@@ -11,21 +11,21 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
 use crate::format::DocumentFormat;
 use crate::formats::storyline::{
-    StoryLink, StorylineAgent, StorylineDocument, StorylineOrigin, StorylineToolCall,
-    StorylineTurn, STORYLINE_SCHEMA_VERSION,
+    STORYLINE_SCHEMA_VERSION, StoryLink, StorylineAgent, StorylineDocument, StorylineOrigin,
+    StorylineToolCall, StorylineTurn,
 };
 use crate::formats::timestamp::StorylineTimestamp;
 use crate::formats::unknown_fields::{
-    attach_carried_unknown_fields, canonical_source_document_id, insert_unknown_map, pointer_join,
-    restore_json_pointer, take_unknown_fields_envelope, validate_unknown_fields,
-    write_foreign_unknown_fields_envelope, CarrierBinding, PointerWrite, UnknownFieldLimits,
+    CarrierBinding, PointerWrite, UnknownFieldLimits, attach_carried_unknown_fields,
+    canonical_source_document_id, insert_unknown_map, pointer_join, restore_json_pointer,
+    take_unknown_fields_envelope, validate_unknown_fields, write_foreign_unknown_fields_envelope,
 };
 use crate::{InputIssue, InputResult, Result};
 
 use super::codec::{
     DecodeContext, DecodeReport, FormatCapabilities, ProbeConfidence, TrajectoryFormat,
 };
-use super::common::json_stream::{visit_json_stream, JsonRecordLocation, ScopedJsonObjectReader};
+use super::common::json_stream::{JsonRecordLocation, ScopedJsonObjectReader, visit_json_stream};
 
 pub struct AtifFormat;
 
@@ -195,20 +195,20 @@ fn content_has_atif_fingerprint(content: &[u8]) -> bool {
     };
     let trimmed = text.trim_start();
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-            if looks_like_atif_value(&value) {
-                return true;
-            }
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed)
+            && looks_like_atif_value(&value)
+        {
+            return true;
         }
         for line in trimmed
             .lines()
             .filter(|line| !line.trim().is_empty())
             .take(32)
         {
-            if let Ok(value) = serde_json::from_str::<Value>(line) {
-                if looks_like_atif_value(&value) {
-                    return true;
-                }
+            if let Ok(value) = serde_json::from_str::<Value>(line)
+                && looks_like_atif_value(&value)
+            {
+                return true;
             }
         }
     }
@@ -577,10 +577,10 @@ fn storyline_to_atif_node(
                 .iter()
                 .map(|c| {
                     let mut extra = c.extra.clone().unwrap_or(serde_json::json!({}));
-                    if let Some(ms) = c.duration_ms {
-                        if let Some(obj) = extra.as_object_mut() {
-                            obj.insert("duration_ms".into(), serde_json::json!(ms));
-                        }
+                    if let Some(ms) = c.duration_ms
+                        && let Some(obj) = extra.as_object_mut()
+                    {
+                        obj.insert("duration_ms".into(), serde_json::json!(ms));
                     }
                     let extra = if extra.as_object().map(|o| o.is_empty()).unwrap_or(true) {
                         None
@@ -824,16 +824,15 @@ fn restore_atif_documents(
 
     let mut source_roots = BTreeMap::<String, usize>::new();
     for story_index in &root_indexes {
-        if let Some(source) = stories[*story_index].unknown_fields.sources.get("atif") {
-            if source_roots
+        if let Some(source) = stories[*story_index].unknown_fields.sources.get("atif")
+            && source_roots
                 .insert(source.source_document_id.clone(), *story_index)
                 .is_some()
-            {
-                anyhow::bail!(
-                    "ATIF source document '{}' has multiple root trajectories",
-                    source.source_document_id
-                );
-            }
+        {
+            anyhow::bail!(
+                "ATIF source document '{}' has multiple root trajectories",
+                source.source_document_id
+            );
         }
     }
     let carrier_by_story = carriers
@@ -890,11 +889,11 @@ fn restore_atif_documents(
 #[cfg(test)]
 mod tests {
     use super::{
-        atif_to_storyline, atif_to_storylines, atif_value_to_storylines, storyline_to_atif,
-        storylines_to_atif, STORYLINE_SCHEMA_VERSION,
+        STORYLINE_SCHEMA_VERSION, atif_to_storyline, atif_to_storylines, atif_value_to_storylines,
+        storyline_to_atif, storylines_to_atif,
     };
-    use crate::atif::AtifTrajectory;
     use crate::StorylineDocument;
+    use crate::atif::AtifTrajectory;
 
     #[test]
     fn atif_observation_unknown_fields_roundtrip_at_exact_pointer() {
@@ -1127,8 +1126,10 @@ mod tests {
         second.child_session_ids = Some(vec!["child".into()]);
 
         let error = storylines_to_atif(&[first, second, child]).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("Storyline child 'child' has multiple parents"));
+        assert!(
+            error
+                .to_string()
+                .contains("Storyline child 'child' has multiple parents")
+        );
     }
 }

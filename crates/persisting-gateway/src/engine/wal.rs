@@ -18,7 +18,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -220,10 +220,10 @@ impl Drop for EventWal {
         if let Some(sender) = &self.sender {
             let _ = sender.send(WalCommand::Shutdown);
         }
-        if let Some(worker) = self.worker.lock().expect("wal worker mutex").take() {
-            if worker.join().is_err() {
-                tracing::warn!(target: "persisting_gateway", "wal writer thread panicked");
-            }
+        if let Some(worker) = self.worker.lock().expect("wal worker mutex").take()
+            && worker.join().is_err()
+        {
+            tracing::warn!(target: "persisting_gateway", "wal writer thread panicked");
         }
     }
 }
@@ -414,12 +414,12 @@ fn next_sequence(path: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Call;
     use crate::config::CaptureLevel;
     use crate::engine::RequestEvent;
     use crate::protocol::ProtocolKind;
     use crate::provider::ProviderKind;
     use crate::session::storage::CaptureRoute;
-    use crate::Call;
 
     fn sample_ctx() -> CallContext {
         CallContext::new(

@@ -10,7 +10,6 @@ readme = "README.md"
 [features]
 default = []
 jujutsu-overlay = ["persisting-overlayfs/jujutsu"]
-fuzzing = []
 
 [dependencies]
 anyhow.workspace = true
@@ -50,4 +49,5 @@ name = "pvisor"
 path = "src/bin/pvisor.rs"
 
 [dev-dependencies]
+proptest.workspace = true
 persisting-ppilot = { path = "../persisting-ppilot" }

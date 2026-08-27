@@ -169,8 +169,8 @@ pub fn route_config_key(route: &CaptureRoute) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::header::HeaderName;
     use axum::http::HeaderValue;
+    use axum::http::header::HeaderName;
 
     fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
         let mut h = HeaderMap::new();

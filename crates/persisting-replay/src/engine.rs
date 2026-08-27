@@ -2,17 +2,17 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::adapter::{build_plan, resolve_launch_spec, run, LaunchSpec, RunContext};
+use crate::adapter::{LaunchSpec, RunContext, build_plan, resolve_launch_spec, run};
 use crate::comparison::write_next_action;
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write_json, canonicalize, sha256};
 use crate::journal::Journal;
 use crate::model::{
     AdapterPlan, AgentKind, AgentResult, AgentStatus, Artifact, ExecutionReport, PlaybackRequest,
-    ReplayFailure, ReplayMode, ReplayOutcome, ReplayPhase, ReplayQuality, ReplayResult,
-    RESULT_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION, ReplayFailure, ReplayMode, ReplayOutcome, ReplayPhase, ReplayQuality,
+    ReplayResult,
 };
 
 pub fn execute(request: PlaybackRequest) -> Result<ExecutionReport, ReplayError> {
@@ -44,17 +44,17 @@ fn execute_with_run_id(
     let plan = build_plan(&request)?;
     validate_step_budget(request.mode, request.max_steps, plan.prefix_model_turns())?;
     let launch = resolve_launch_spec(&request)?;
-    if let Some(launch) = &launch {
-        if launch.version != plan.agent().supported_version() {
-            return Err(ReplayError::new(
-                ReplayErrorKind::UnsupportedVersion,
-                format!(
-                    "trajectory version {:?} does not match agent version {:?}",
-                    plan.agent().supported_version(),
-                    launch.version
-                ),
-            ));
-        }
+    if let Some(launch) = &launch
+        && launch.version != plan.agent().supported_version()
+    {
+        return Err(ReplayError::new(
+            ReplayErrorKind::UnsupportedVersion,
+            format!(
+                "trajectory version {:?} does not match agent version {:?}",
+                plan.agent().supported_version(),
+                launch.version
+            ),
+        ));
     }
 
     let mut journal = Journal::open(&state_dir)?;
@@ -115,9 +115,11 @@ fn execute_allocated(
             ),
             (
                 "boundary_user_prompt_sha256".into(),
-                json!(request
-                    .boundary_user_prompt()
-                    .map(|prompt| sha256(prompt.as_bytes()))),
+                json!(
+                    request
+                        .boundary_user_prompt()
+                        .map(|prompt| sha256(prompt.as_bytes()))
+                ),
             ),
         ],
     )?;
@@ -372,27 +374,25 @@ fn validate(request: &PlaybackRequest) -> Result<(), ReplayError> {
             request.trajectory.display()
         )));
     }
-    if let Some(run_id) = &request.run_id {
-        if run_id.is_empty()
+    if let Some(run_id) = &request.run_id
+        && (run_id.is_empty()
             || !run_id.chars().all(|character| {
                 character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
-            })
-        {
-            return Err(ReplayError::configuration(
-                "run_id may contain only letters, digits, '-' and '_'",
-            ));
-        }
+            }))
+    {
+        return Err(ReplayError::configuration(
+            "run_id may contain only letters, digits, '-' and '_'",
+        ));
     }
-    if let Some(session_id) = &request.session_id {
-        if session_id.is_empty()
+    if let Some(session_id) = &request.session_id
+        && (session_id.is_empty()
             || session_id
                 .chars()
-                .any(|character| matches!(character, '\0' | '\r' | '\n'))
-        {
-            return Err(ReplayError::configuration(
-                "session_id must be non-empty and contain no NUL, CR, or LF",
-            ));
-        }
+                .any(|character| matches!(character, '\0' | '\r' | '\n')))
+    {
+        return Err(ReplayError::configuration(
+            "session_id must be non-empty and contain no NUL, CR, or LF",
+        ));
     }
     if request.agent != AgentKind::ClaudeCode && !request.disallowed_tools.is_empty() {
         return Err(ReplayError::configuration(
@@ -429,11 +429,11 @@ fn validate_step_budget(
     };
     match mode {
         ReplayMode::PrepareOnly => Ok(()),
-        ReplayMode::ReplayOnly if max_steps < prefix_steps => Err(ReplayError::configuration(
-            format!(
+        ReplayMode::ReplayOnly if max_steps < prefix_steps => {
+            Err(ReplayError::configuration(format!(
                 "max_steps {max_steps} is smaller than the selected replay prefix of {prefix_steps} steps"
-            ),
-        )),
+            )))
+        }
         ReplayMode::ReplayAndContinue if max_steps <= prefix_steps => {
             Err(ReplayError::configuration(format!(
                 "max_steps {max_steps} leaves no live step after the selected replay prefix of {prefix_steps} steps"
@@ -521,14 +521,14 @@ fn artifacts(
             prepared_path.clone(),
         ));
     }
-    if let Some(path) = &outcome.reconstructed_path {
-        if path != &prepared_path {
-            artifacts.push(artifact(
-                "reconstructed_native_trajectory",
-                native_format,
-                path.clone(),
-            ));
-        }
+    if let Some(path) = &outcome.reconstructed_path
+        && path != &prepared_path
+    {
+        artifacts.push(artifact(
+            "reconstructed_native_trajectory",
+            native_format,
+            path.clone(),
+        ));
     }
     if let Some(path) = &outcome.continued_path {
         artifacts.push(artifact(
@@ -757,9 +757,11 @@ mod tests {
 
         let error = execute(request).unwrap_err();
 
-        assert!(error
-            .to_string()
-            .contains("boundary_user_prompt must contain a non-whitespace character"));
+        assert!(
+            error
+                .to_string()
+                .contains("boundary_user_prompt must contain a non-whitespace character")
+        );
     }
 
     #[test]

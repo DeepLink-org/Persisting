@@ -5,8 +5,8 @@ use persisting_gateway::projection::dialogue::skip_markdown_block;
 use persisting_gateway::record::EventRecord;
 use persisting_gateway::session::storage::CaptureRoute;
 use persisting_gateway::subagent_link::{
-    enrich_record, extract_spawn_hints_from_assistant, extract_subagent_ids_from_request,
-    extract_subagent_ids_from_text, SubagentRegistry,
+    SubagentRegistry, enrich_record, extract_spawn_hints_from_assistant,
+    extract_subagent_ids_from_request, extract_subagent_ids_from_text,
 };
 use serde_json::json;
 

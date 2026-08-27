@@ -4,7 +4,7 @@
 //! to Docker, Podman, or Buildah. The on-disk layout is private to pVisor; OCI
 //! digests remain the source of truth for blobs and prepared root filesystems.
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use flate2::read::GzDecoder;
 use fs2::FileExt;
 use reqwest::blocking::{Client, Response};
@@ -611,20 +611,6 @@ fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyhow::Result<(
     Ok(())
 }
 
-#[cfg(feature = "fuzzing")]
-#[doc(hidden)]
-pub fn fuzz_oci_layer(bytes: &[u8]) -> anyhow::Result<()> {
-    use std::io::Write;
-    let mut layer = tempfile::NamedTempFile::new()?;
-    layer.write_all(bytes)?;
-    let root = tempfile::tempdir()?;
-    apply_layer(
-        layer.path(),
-        "application/vnd.oci.image.layer.v1.tar",
-        root.path(),
-    )
-}
-
 #[cfg(unix)]
 fn make_ancestor_directories_writable(
     rootfs: &Path,
@@ -829,10 +815,12 @@ mod tests {
         remove_relative(root.path(), Path::new("etc/old")).unwrap();
         clear_relative_directory(root.path(), Path::new("etc/sub")).unwrap();
         assert!(!root.path().join("etc/old").exists());
-        assert!(fs::read_dir(root.path().join("etc/sub"))
-            .unwrap()
-            .next()
-            .is_none());
+        assert!(
+            fs::read_dir(root.path().join("etc/sub"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
     }
 
     #[test]

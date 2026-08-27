@@ -4,11 +4,11 @@
 
 use crate::plan::stream_plan_tasks;
 use crate::python_env::{self, pythonpath_for_script};
-use crate::runtime::{run_local_fleet, RunOptions};
+use crate::runtime::{RunOptions, run_local_fleet};
 use crate::task::TaskExpr;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use futures::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -262,7 +262,9 @@ async fn collect_plan_tasks(
     script_args: &[String],
 ) -> Result<Vec<TaskExpr>> {
     if let Some(pp) = python_env::merge_pythonpath(extras) {
-        std::env::set_var("PYTHONPATH", pp);
+        // This process configures its environment before spawning the plan
+        // worker; no concurrent environment mutation occurs in this scope.
+        unsafe { std::env::set_var("PYTHONPATH", pp) };
     }
     let mut stream = stream_plan_tasks(
         script.to_path_buf(),

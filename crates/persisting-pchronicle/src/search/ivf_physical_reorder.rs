@@ -7,26 +7,26 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
-use futures::{stream, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt, stream};
+use lance::Dataset;
+use lance::dataset::ROW_ID;
 use lance::dataset::fragment::write::FragmentCreateBuilder;
 use lance::dataset::index::DatasetIndexRemapperOptions;
 use lance::dataset::optimize::{IndexRemapperOptions, RemappedIndex};
 use lance::dataset::transaction::{Operation, RewriteGroup, RewrittenIndex, Transaction};
 use lance::dataset::write::{CommitBuilder, WriteDestination, WriteParams};
-use lance::dataset::ROW_ID;
+use lance::deps::arrow_array::RecordBatch;
 use lance::deps::arrow_array::cast::AsArray;
 use lance::deps::arrow_array::types::UInt64Type;
-use lance::deps::arrow_array::RecordBatch;
 use lance::deps::arrow_schema::Schema as ArrowSchema;
 use lance::deps::datafusion::error::DataFusionError;
-use lance::deps::datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use lance::deps::datafusion::physical_plan::SendableRecordBatchStream;
+use lance::deps::datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use lance::index::DatasetIndexExt;
-use lance::Dataset;
 use lance_core::datatypes::Schema as LanceSchema;
 use lance_core::utils::address::RowAddress;
 use lance_core::utils::row_addr_remap::RowAddrRemap;

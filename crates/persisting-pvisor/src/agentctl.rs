@@ -1,8 +1,8 @@
 //! Optional, cooperative Run-scoped AgentCtl channel owned by pVisor.
 
 pub use persisting_agentctl::{
-    AgentDirective, AgentErrorCode, AgentRequest, AgentResponse, AgentState,
-    AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_VERSION,
+    AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_VERSION, AgentDirective, AgentErrorCode, AgentRequest,
+    AgentResponse, AgentState,
 };
 use persisting_agentctl::{AttemptId, RunId};
 use serde::{Deserialize, Serialize};
@@ -346,7 +346,10 @@ pub struct AgentCtlServer {
 impl AgentCtlServer {
     /// Create and start one Run-scoped AgentCtl server.
     pub fn start(run_id: &RunId, attempt_id: &AttemptId) -> anyhow::Result<Self> {
-        let socket_path = std::env::temp_dir().join(format!(
+        // macOS `sockaddr_un` paths are capped at SUN_LEN (~104 bytes), so bind in
+        // the fixed, short `/tmp` directory rather than `std::env::temp_dir()`,
+        // which can point at a deep per-user path (e.g. `/var/folders/.../T/`).
+        let socket_path = Path::new("/tmp").join(format!(
             "pvisor-agent-{}.sock",
             uuid::Uuid::new_v4().simple()
         ));
@@ -489,18 +492,6 @@ fn read_request(stream: &std::os::unix::net::UnixStream) -> anyhow::Result<Agent
         anyhow::bail!("empty AgentCtl frame");
     }
     Ok(serde_json::from_slice(&frame)?)
-}
-
-#[cfg(feature = "fuzzing")]
-#[doc(hidden)]
-pub fn decode_agentctl_frame_for_fuzz(frame: &[u8]) -> anyhow::Result<AgentRequest> {
-    anyhow::ensure!(
-        !frame.is_empty() && frame.len() <= AGENTCTL_MAX_FRAME_BYTES,
-        "invalid AgentCtl frame length"
-    );
-    let frame = frame.strip_suffix(b"\n").unwrap_or(frame);
-    anyhow::ensure!(!frame.is_empty(), "empty AgentCtl frame");
-    Ok(serde_json::from_slice(frame)?)
 }
 
 fn dispatch_request(
@@ -903,9 +894,11 @@ mod tests {
             control.request_shutdown(Some("stop".into()));
             shutdown_done_tx.send(()).unwrap();
         });
-        assert!(shutdown_done_rx
-            .recv_timeout(Duration::from_millis(30))
-            .is_err());
+        assert!(
+            shutdown_done_rx
+                .recv_timeout(Duration::from_millis(30))
+                .is_err()
+        );
 
         release_capture_tx.send(()).unwrap();
         assert_eq!(capture.join().unwrap(), Some(()));

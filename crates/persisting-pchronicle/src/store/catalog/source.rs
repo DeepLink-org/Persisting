@@ -4,13 +4,13 @@ pub(super) async fn load_storyline_from_source(
     source: &ResolvedSource,
     key: &CatalogStorylineKey,
 ) -> Result<Option<StorylineDocument>> {
-    if let ResolvedSource::Events(events) = source {
-        if events.projection.is_none() {
-            let Some(records) = events.records_for_storyline(&key.session_id).await? else {
-                return Ok(None);
-            };
-            return Ok(Some(project_event_records(&records)?));
-        }
+    if let ResolvedSource::Events(events) = source
+        && events.projection.is_none()
+    {
+        let Some(records) = events.records_for_storyline(&key.session_id).await? else {
+            return Ok(None);
+        };
+        return Ok(Some(project_event_records(&records)?));
     }
     let context = SessionContext::new();
     register_normalized_source(&context, source).await?;

@@ -1,8 +1,10 @@
+#![recursion_limit = "256"]
+
 use std::io::{self, IsTerminal};
 use std::process::ExitCode;
 
 use clap::Parser;
-use persisting_pchronicle_cli::{error_code, error_exit_code, run_with_stdio, Cli};
+use persisting_pchronicle_cli::{Cli, error_code, error_exit_code, run_with_stdio};
 
 #[tokio::main]
 async fn main() -> ExitCode {

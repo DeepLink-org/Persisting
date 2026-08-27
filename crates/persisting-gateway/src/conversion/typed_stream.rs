@@ -12,11 +12,11 @@ use persisting_pchronicle::model::{
     LlmCandidate, LlmContentPart, LlmMessage, LlmProtocol, LlmResponse, LlmResponseEventPayload,
     LlmRole, LlmStreamEvent, LlmUsage,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{ProtocolBridge, MAX_SSE_FRAME_BYTES};
+use super::{MAX_SSE_FRAME_BYTES, ProtocolBridge};
 use crate::protocol::ProtocolKind;
-use crate::usage::{extract_usage_from_response, StreamMetrics, TokenUsage};
+use crate::usage::{StreamMetrics, TokenUsage, extract_usage_from_response};
 
 pub struct TypedStreamTranslator {
     passthrough: bool,
@@ -1252,9 +1252,11 @@ mod tests {
         .unwrap();
         let output = translator.push_chunk(b"data: {\"id\":\"x\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n").unwrap();
         let tail = translator.finish_stream().unwrap();
-        assert!(std::str::from_utf8(&output)
-            .unwrap()
-            .contains("content_block_delta"));
+        assert!(
+            std::str::from_utf8(&output)
+                .unwrap()
+                .contains("content_block_delta")
+        );
         assert!(std::str::from_utf8(&tail).unwrap().contains("message_stop"));
         assert_eq!(
             translator.semantic_response().response.candidates[0]
@@ -1294,10 +1296,12 @@ mod tests {
             "client-model",
         )
         .unwrap();
-        assert!(translator
-            .push_chunk(&input.as_bytes()[..split])
-            .unwrap()
-            .is_empty());
+        assert!(
+            translator
+                .push_chunk(&input.as_bytes()[..split])
+                .unwrap()
+                .is_empty()
+        );
         let output = translator.push_chunk(&input.as_bytes()[split..]).unwrap();
         assert!(std::str::from_utf8(&output).unwrap().contains("你好🌍"));
         assert_eq!(translator.upstream_snapshot(), input.as_bytes());

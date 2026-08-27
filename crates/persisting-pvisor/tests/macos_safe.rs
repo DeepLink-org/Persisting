@@ -104,12 +104,14 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
     assert!(!bundle.safety.filesystem_read_non_bypassable);
     assert!(bundle.safety.filesystem_write_non_bypassable);
     assert!(!bundle.safety.network_non_bypassable);
-    assert!(bundle
-        .run
-        .output
-        .stdout
-        .as_deref()
-        .is_some_and(|stdout| stdout == "macos-ok"));
+    assert!(
+        bundle
+            .run
+            .output
+            .stdout
+            .as_deref()
+            .is_some_and(|stdout| stdout == "macos-ok")
+    );
     let filesystem = bundle.filesystem.as_ref().expect("filesystem summary");
     assert_eq!(filesystem.changed_files, 2);
     assert!(filesystem.upper.join("macos-staged.txt").is_file());
@@ -227,9 +229,11 @@ raise SystemExit(0 if inet_code in denied and host_code in denied else 1)"#,
     );
     assert!(bundle.safety.filesystem_write_non_bypassable);
     assert!(bundle.safety.network_non_bypassable);
-    assert!(bundle
-        .safety
-        .warnings
-        .iter()
-        .all(|warning| !warning.contains("direct sockets may bypass")));
+    assert!(
+        bundle
+            .safety
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("direct sockets may bypass"))
+    );
 }

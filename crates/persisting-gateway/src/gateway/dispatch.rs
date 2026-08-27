@@ -1,9 +1,9 @@
 //! Gateway sink adapter for the OverlayNet proxy server.
 
 use async_trait::async_trait;
+use axum::Router;
 use axum::extract::Request;
 use axum::response::Response;
-use axum::Router;
 use bytes::Bytes;
 use persisting_overlaynet::policy::{DenyReason, NetworkPolicy};
 use persisting_overlaynet::server::{OverlayRequestContext, OverlayServerState, OverlaySink};

@@ -7,8 +7,8 @@ mod common;
 
 use persisting_events::{ChronicleControl, MemoryChronicleControl};
 use persisting_ppilot::{
-    run_local_fleet, spawn_coordinated_sink_writer, spawn_sink_writer, CheckpointLedger,
-    JsonlFileSink, Observer, RunCoordinator, RunOptions, SkipSet,
+    CheckpointLedger, JsonlFileSink, Observer, RunCoordinator, RunOptions, SkipSet,
+    run_local_fleet, spawn_coordinated_sink_writer, spawn_sink_writer,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;

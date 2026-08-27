@@ -1,18 +1,19 @@
 //! Job-scoped pPilot supervisor embedded into normal orchestration commands.
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use persisting_agentctl::{
-    NetworkBandwidthLimit, RunId, SupervisorBootstrap, SupervisorClientMessage,
-    SupervisorDirective, SupervisorDirectiveEnvelope, SupervisorNetworkQuotaGrant,
-    SupervisorServerMessage, SUPERVISOR_PROTOCOL_VERSION,
+    NetworkBandwidthLimit, RunId, SUPERVISOR_PROTOCOL_VERSION, SupervisorBootstrap,
+    SupervisorClientMessage, SupervisorDirective, SupervisorDirectiveEnvelope,
+    SupervisorNetworkQuotaGrant, SupervisorServerMessage,
 };
+use persisting_events::unix_now_ms;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -320,14 +321,6 @@ async fn send_message(
     write.write_all(b"\n").await?;
     write.flush().await?;
     Ok(())
-}
-
-fn unix_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u64::MAX as u128) as u64
 }
 
 /// Parse an explicit network rate. Lowercase `bps` units are bits per second;

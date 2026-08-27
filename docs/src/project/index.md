@@ -22,12 +22,6 @@ systems outside the current pVisor → pChronicle product path.
 - [RFC index](../rfcs/index.md)
 - [Implementation status](engineering.md)
 
-## Research
-
-- [TransferQueue comparison](../design/references/transfer-queue-comparison.md)
-- [TransferQueue interface mapping](../design/references/transfer-queue-interface.md)
-- [LMCache analysis](../design/references/lmcache.md)
-
 ## Standalone data systems
 
 Queue and its Python API remain independent of the Agent execution path:
@@ -35,4 +29,6 @@ Queue and its Python API remain independent of the Agent execution path:
 - [Queue guide](../guide/queue.md)
 - [Queue API](../api/queue.md)
 - [Custom Queue backends](../guide/custom-backends.md)
-- [Queue persistence design](../design/architecture.md)
+
+Historical queue-era design notes are retained outside the published site in
+the repository's `docs/archive/` directory.

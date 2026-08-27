@@ -5,13 +5,13 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use super::codec::{
-    encode_agenticmd_block, encode_agenticmd_preamble, parse_agenticmd_blocks_with_spans,
-    parse_agenticmd_document, MarkdownBlock, MarkdownBlockSpan, MarkdownHeader,
-    AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT,
+    AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT, MarkdownBlock, MarkdownBlockSpan,
+    MarkdownHeader, encode_agenticmd_block, encode_agenticmd_preamble,
+    parse_agenticmd_blocks_with_spans, parse_agenticmd_document,
 };
 use super::convert::{encode_storyline_preamble, storyline_turn_block};
 use super::validate::{
@@ -368,8 +368,8 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::super::codec::{
-        encode_agenticmd_preamble, MarkdownHeader, AGENTICMD_BLOCK_LAYOUT,
-        AGENTICMD_FRONTMATTER_FORMAT,
+        AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT, MarkdownHeader,
+        encode_agenticmd_preamble,
     };
     use super::*;
     use serde::Serialize;
@@ -468,12 +468,14 @@ mod tests {
             block_with_call("call-1", "assistant", "draft"),
         )
         .unwrap();
-        assert!(upsert_block_by_call_id(
-            &path,
-            "call-1",
-            block_with_call("call-1", "assistant", "final")
-        )
-        .unwrap());
+        assert!(
+            upsert_block_by_call_id(
+                &path,
+                "call-1",
+                block_with_call("call-1", "assistant", "final")
+            )
+            .unwrap()
+        );
         let blocks = read_blocks(&path);
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].body, "final");
@@ -485,12 +487,10 @@ mod tests {
         let path = dir.path().join("sess.md");
         upsert_block_by_call_id(&path, "call-1", block_with_call("call-1", "assistant", "a"))
             .unwrap();
-        assert!(!upsert_block_by_call_id(
-            &path,
-            "call-2",
-            block_with_call("call-2", "assistant", "b")
-        )
-        .unwrap());
+        assert!(
+            !upsert_block_by_call_id(&path, "call-2", block_with_call("call-2", "assistant", "b"))
+                .unwrap()
+        );
         assert_eq!(read_blocks(&path).len(), 2);
     }
 
@@ -636,9 +636,11 @@ mod tests {
 
     #[test]
     fn frontmatter_only_yields_no_blocks() {
-        assert!(parse_agenticmd_document_validated(&baseline_preamble())
-            .unwrap()
-            .is_empty());
+        assert!(
+            parse_agenticmd_document_validated(&baseline_preamble())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -806,9 +808,11 @@ mod tests {
             parsed.turns[0].extra,
             Some(serde_json::json!({"domain": "kept"}))
         );
-        assert!(index_agenticmd_path(&path)
-            .unwrap()
-            .call_ids
-            .contains("call-7"));
+        assert!(
+            index_agenticmd_path(&path)
+                .unwrap()
+                .call_ids
+                .contains("call-7")
+        );
     }
 }

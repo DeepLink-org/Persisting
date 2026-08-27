@@ -3,17 +3,17 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{ChronicleEventRecordExt, EventIdentity, EventRecord, EventsDocument};
+use crate::Result;
 use crate::format::DocumentFormat;
 use crate::formats::llm::LlmContentPart;
 use crate::formats::storyline::{
-    StoryLink, StorylineAgent, StorylineDocument, StorylineOrigin, StorylineToolCall,
-    StorylineTurn, STORYLINE_SCHEMA_VERSION,
+    STORYLINE_SCHEMA_VERSION, StoryLink, StorylineAgent, StorylineDocument, StorylineOrigin,
+    StorylineToolCall, StorylineTurn,
 };
 use crate::formats::timestamp::StorylineTimestamp;
-use crate::Result;
 
 /// Resolve and project exactly one canonical Storyline from append-ordered events.
 ///
@@ -202,35 +202,35 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
             })
             .map(|e| e.seq);
 
-        if let Some(ut) = user_text.clone() {
-            if asst_text.is_some() {
-                let mut user_extra = json!({"call_id": cid});
-                if let Some(seq) = req_seq {
-                    user_extra["seq"] = json!(seq);
-                }
-                turns.push(StorylineTurn {
-                    id: next_id,
-                    kind: Some("llm.request".into()),
-                    timestamp: req_ts.clone().or_else(|| first_ts.clone()),
-                    source: "user".into(),
-                    message: serde_json::Value::String(ut),
-                    reasoning_content: None,
-                    reasoning_effort: None,
-                    tool_calls: None,
-                    observation: None,
-                    metrics: None,
-                    model_name: None,
-                    llm_call_count: None,
-                    is_copied_context: None,
-                    latency_ms: None,
-                    ttft_ms: None,
-                    extra: Some(user_extra),
-                    env: None,
-                    prompt: None,
-                    finished_at: None,
-                });
-                next_id += 1;
+        if let Some(ut) = user_text.clone()
+            && asst_text.is_some()
+        {
+            let mut user_extra = json!({"call_id": cid});
+            if let Some(seq) = req_seq {
+                user_extra["seq"] = json!(seq);
             }
+            turns.push(StorylineTurn {
+                id: next_id,
+                kind: Some("llm.request".into()),
+                timestamp: req_ts.clone().or_else(|| first_ts.clone()),
+                source: "user".into(),
+                message: serde_json::Value::String(ut),
+                reasoning_content: None,
+                reasoning_effort: None,
+                tool_calls: None,
+                observation: None,
+                metrics: None,
+                model_name: None,
+                llm_call_count: None,
+                is_copied_context: None,
+                latency_ms: None,
+                ttft_ms: None,
+                extra: Some(user_extra),
+                env: None,
+                prompt: None,
+                finished_at: None,
+            });
+            next_id += 1;
         }
 
         let (source, message, turn_kind, turn_seq) = if let Some(a) = asst_text {
@@ -359,10 +359,9 @@ fn collect_tool_results(events: &[EventRecord]) -> Result<BTreeMap<String, Value
                 if let LlmContentPart::ToolResult {
                     call_id, content, ..
                 } = part
+                    && !call_id.is_empty()
                 {
-                    if !call_id.is_empty() {
-                        results.insert(call_id, content);
-                    }
+                    results.insert(call_id, content);
                 }
             }
         }
@@ -658,12 +657,12 @@ fn canonical_event_timestamp(record: &EventRecord) -> Result<Option<StorylineTim
                 .map_err(|_| anyhow::anyhow!("event timestamp_unix_ms exceeds i64"))
         })
         .transpose()?;
-    if let (Some(canonical), Some(textual)) = (canonical_ms, textual_ms) {
-        if canonical != textual {
-            anyhow::bail!(
-                "event timestamp conflict: timestamp_unix_ms={canonical}, RFC3339 timestamp={textual}"
-            );
-        }
+    if let (Some(canonical), Some(textual)) = (canonical_ms, textual_ms)
+        && canonical != textual
+    {
+        anyhow::bail!(
+            "event timestamp conflict: timestamp_unix_ms={canonical}, RFC3339 timestamp={textual}"
+        );
     }
     if let Some(timestamp) = textual {
         return Ok(Some(timestamp));

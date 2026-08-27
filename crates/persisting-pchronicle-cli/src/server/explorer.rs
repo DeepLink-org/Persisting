@@ -519,10 +519,10 @@ pub(crate) fn analyze(
             .model_name
             .clone()
             .or_else(|| first_string(&values, &["model", "model_name", "agent_model"]));
-        if let Some(model) = &model {
-            if !model.trim().is_empty() {
-                models.insert(model.clone());
-            }
+        if let Some(model) = &model
+            && !model.trim().is_empty()
+        {
+            models.insert(model.clone());
         }
         let has_error = turn_has_error(item, &linked);
         if has_error {
@@ -970,15 +970,15 @@ fn collect_message_parts(
             }
         }
         Value::Object(map) => {
-            if let Some(Value::String(text)) = map.get("text") {
-                if !text.is_empty() {
-                    texts.push(text.clone());
-                }
+            if let Some(Value::String(text)) = map.get("text")
+                && !text.is_empty()
+            {
+                texts.push(text.clone());
             }
-            if let Some(Value::String(content)) = map.get("content") {
-                if !content.is_empty() {
-                    texts.push(content.clone());
-                }
+            if let Some(Value::String(content)) = map.get("content")
+                && !content.is_empty()
+            {
+                texts.push(content.clone());
             }
             if value_present(map.get("image"))
                 || value_present(map.get("image_url"))
@@ -1397,10 +1397,11 @@ mod tests {
             },
         );
         assert_eq!(page.snapshot.total, 2);
-        assert!(page
-            .records
-            .iter()
-            .all(|item| item.run.file.starts_with("gsm8k")));
+        assert!(
+            page.records
+                .iter()
+                .all(|item| item.run.file.starts_with("gsm8k"))
+        );
         assert_eq!(page.path_index.len(), 2);
     }
 }

@@ -1,7 +1,7 @@
 //! Shared projected step row batching for ATIF and ACTF streaming queries.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result};
 use lance::deps::arrow_array::{

@@ -4,6 +4,6 @@ mod core;
 pub mod sys;
 
 pub use core::{
-    fingerprint_at, load_preimages, preimage_journal_is_complete, remove_preimages, OverlayCore,
-    PathFingerprint, PathPreimage, Resolved, OPAQUE_NAME, WHITEOUT_PREFIX,
+    OPAQUE_NAME, OverlayCore, PathFingerprint, PathPreimage, Resolved, WHITEOUT_PREFIX,
+    fingerprint_at, load_preimages, preimage_journal_is_complete, remove_preimages,
 };

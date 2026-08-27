@@ -5,9 +5,9 @@
 //! append without executing the workload again.
 
 use crate::digest::sha256_hex;
-use crate::sink::{persist_terminal, ResultSink};
+use crate::sink::{ResultSink, persist_terminal};
 use crate::task::TaskResult;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use persisting_agentctl::{
     AttemptId, RunCommitRequest, RunId, RunLeaseRecord, RunResult, RunState,
@@ -17,7 +17,7 @@ use persisting_events::ChronicleServeProcessClient;
 #[cfg(test)]
 use persisting_events::MemoryChronicleControl;
 use persisting_events::{
-    AttemptRecordState, ChronicleControl, CommitRunOutcome, LeaseAcquireOutcome,
+    AttemptRecordState, ChronicleControl, CommitRunOutcome, LeaseAcquireOutcome, unix_now_ms,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,9 +25,9 @@ use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
 
 const RESULT_JOURNAL_SCHEMA_VERSION: u32 = 1;
@@ -680,10 +680,10 @@ impl RunCoordinator {
     }
 
     fn stop_lease_heartbeat(&self, run_id: &RunId) {
-        if let Ok(mut heartbeats) = self.heartbeats.lock() {
-            if let Some(stop) = heartbeats.remove(run_id) {
-                stop.cancel();
-            }
+        if let Ok(mut heartbeats) = self.heartbeats.lock()
+            && let Some(stop) = heartbeats.remove(run_id)
+        {
+            stop.cancel();
         }
     }
 }
@@ -730,15 +730,6 @@ fn unique_owner_id() -> String {
         .unwrap_or(0);
     let sequence = OWNER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     format!("ppilot:{}:{nanos}:{sequence}", std::process::id())
-}
-
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 fn result_digest(result: &TaskResult) -> Result<String> {
@@ -884,14 +875,16 @@ mod tests {
         assert_eq!(report.recovered_commits, 1);
         assert_eq!(report.recovered_sink_appends, 1);
         assert!(report.committed_task_ids.contains("task-1"));
-        assert!(coordinator
-            .control
-            .get_run(&run)
-            .await
-            .unwrap()
-            .unwrap()
-            .commit
-            .is_some());
+        assert!(
+            coordinator
+                .control
+                .get_run(&run)
+                .await
+                .unwrap()
+                .unwrap()
+                .commit
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -1026,14 +1019,16 @@ mod tests {
             .unwrap();
         assert!(report.committed_task_ids.is_empty());
         assert!(report.retry_task_ids.is_empty());
-        assert!(scoped
-            .control
-            .get_run(&other_run)
-            .await
-            .unwrap()
-            .unwrap()
-            .commit
-            .is_none());
+        assert!(
+            scoped
+                .control
+                .get_run(&other_run)
+                .await
+                .unwrap()
+                .unwrap()
+                .commit
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1064,9 +1059,11 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(error
-            .to_string()
-            .contains("lease TTL must be at least 1000ms"));
+        assert!(
+            error
+                .to_string()
+                .contains("lease TTL must be at least 1000ms")
+        );
     }
 
     #[tokio::test]
@@ -1167,14 +1164,16 @@ mod tests {
             .unwrap();
         assert_eq!(report.fenced_results, 1);
         assert!(report.retry_task_ids.contains("task-2"));
-        assert!(coordinator
-            .control
-            .get_run(&run)
-            .await
-            .unwrap()
-            .unwrap()
-            .commit
-            .is_none());
+        assert!(
+            coordinator
+                .control
+                .get_run(&run)
+                .await
+                .unwrap()
+                .unwrap()
+                .commit
+                .is_none()
+        );
     }
 
     #[tokio::test]

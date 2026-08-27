@@ -4,11 +4,11 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{
-    agent_command, check_boundary, prepared_outcome, with_boundary_user_prompt_metadata,
-    LaunchSpec, RunContext, MAX_TOOL_OUTPUT_BYTES,
+    LaunchSpec, MAX_TOOL_OUTPUT_BYTES, RunContext, agent_command, check_boundary, prepared_outcome,
+    with_boundary_user_prompt_metadata,
 };
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write_json, canonicalize, read_regular_file, sha256};
@@ -17,7 +17,7 @@ use crate::model::{
     AdapterPlan, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan,
     ToolBatch, ToolCall,
 };
-use crate::process::{run_process, ProcessSpec};
+use crate::process::{ProcessSpec, run_process};
 
 pub(super) fn build(request: &PlaybackRequest) -> Result<AdapterPlan, ReplayError> {
     build_openhands_plan(request).map(AdapterPlan::Openhands)
@@ -701,13 +701,13 @@ mod tests {
     use std::fs;
     use std::process::Command;
 
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::{
-        openhands_action_signature, openhands_boundary_user_prompt_event,
+        LaunchSpec, openhands_action_signature, openhands_boundary_user_prompt_event,
         openhands_complete_batches, openhands_fatal_controller_marker,
         openhands_observation_content, openhands_reconstructed_tool_metadata,
-        prepend_openhands_runtime_tools, LaunchSpec,
+        prepend_openhands_runtime_tools,
     };
 
     #[test]

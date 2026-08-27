@@ -38,3 +38,11 @@ Enter an excluded subsystem only when:
 
 For the second case, keep the adjustment minimal and explain why it is
 required. Do not use incidental cleanup as a reason to broaden scope.
+
+## Test command
+
+Use `just test` as the default validation command. It runs Rust tests through
+`cargo nextest` in release mode and then runs the Python test suite. To limit
+Rust coverage to one package, pass its Cargo package name positionally, for
+example `just test persisting-agentctl`. Use a direct `cargo test` invocation
+only when doctests or an explicitly documented special runner is required.

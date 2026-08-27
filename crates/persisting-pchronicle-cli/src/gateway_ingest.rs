@@ -6,14 +6,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use persisting_events::{EventRecord, TrajectoryAppendResponse};
 use persisting_pchronicle::storage::{
-    raw_event_append_queue_with_manifest_write_mode, ObjectStoreManifestWriteMode,
-    RawEventAppendOutcome, RawEventAppendSender, RawEventAppendWorker, StoryCoords,
+    ObjectStoreManifestWriteMode, RawEventAppendOutcome, RawEventAppendSender,
+    RawEventAppendWorker, StoryCoords, raw_event_append_queue_with_manifest_write_mode,
 };
 use serde::{Deserialize, Serialize};
 

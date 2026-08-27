@@ -10,23 +10,23 @@ use std::io::{BufRead, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context as _;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::format::DocumentFormat;
 use crate::formats::codec::{
-    emit_stories, DecodeContext, DecodeReport, FormatCapabilities, ProbeConfidence,
-    TrajectoryFormat,
+    DecodeContext, DecodeReport, FormatCapabilities, ProbeConfidence, TrajectoryFormat,
+    emit_stories,
 };
 use crate::formats::storyline::{
-    StorylineAgent, StorylineDocument, StorylineEnv, StorylineOrigin, StorylineTask,
-    StorylineToolCall, StorylineTurn, STORYLINE_SCHEMA_VERSION,
+    STORYLINE_SCHEMA_VERSION, StorylineAgent, StorylineDocument, StorylineEnv, StorylineOrigin,
+    StorylineTask, StorylineToolCall, StorylineTurn,
 };
 use crate::formats::timestamp::StorylineTimestamp;
 use crate::formats::unknown_fields::{
-    attach_carried_unknown_fields, decode_json_pointer, insert_unknown_map,
-    normalize_openai_pointer, pointer_join, restore_json_pointer, take_unknown_fields_envelope,
-    validate_unknown_fields_with, write_foreign_unknown_fields_envelope, CarrierBinding,
-    PointerWrite, UnknownFieldLimits,
+    CarrierBinding, PointerWrite, UnknownFieldLimits, attach_carried_unknown_fields,
+    decode_json_pointer, insert_unknown_map, normalize_openai_pointer, pointer_join,
+    restore_json_pointer, take_unknown_fields_envelope, validate_unknown_fields_with,
+    write_foreign_unknown_fields_envelope,
 };
 use crate::{InputIssue, InputResult, Result};
 
@@ -118,20 +118,20 @@ fn content_has_openai_fingerprint(content: &[u8]) -> bool {
     };
     let trimmed = text.trim_start();
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-            if looks_like_openai_value(&value) {
-                return true;
-            }
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed)
+            && looks_like_openai_value(&value)
+        {
+            return true;
         }
         for line in trimmed
             .lines()
             .filter(|line| !line.trim().is_empty())
             .take(32)
         {
-            if let Ok(value) = serde_json::from_str::<Value>(line) {
-                if looks_like_openai_value(&value) {
-                    return true;
-                }
+            if let Ok(value) = serde_json::from_str::<Value>(line)
+                && looks_like_openai_value(&value)
+            {
+                return true;
             }
         }
     }
@@ -302,46 +302,46 @@ fn capture_openai_message(
 ) -> InputResult<()> {
     for (key, value) in message {
         let field_prefix = pointer_join(prefix, key);
-        if key == "tool_calls" {
-            if let Some(calls) = value.as_array() {
-                for (index, call) in calls.iter().enumerate() {
-                    let call_prefix = pointer_join(&field_prefix, &index.to_string());
-                    let Some(call) = call.as_object() else {
-                        if !call.is_null() {
-                            story.unknown_fields.insert(
-                                "openai-msg",
-                                source_document_id,
-                                call_prefix,
-                                call.clone(),
-                            )?;
-                        }
-                        continue;
-                    };
-                    for (call_key, call_value) in call {
-                        let call_field_prefix = pointer_join(&call_prefix, call_key);
-                        if call_key == "function" {
-                            if let Some(function) = call_value.as_object() {
-                                for (function_key, function_value) in function {
-                                    story.unknown_fields.insert(
-                                        "openai-msg",
-                                        source_document_id,
-                                        pointer_join(&call_field_prefix, function_key),
-                                        function_value.clone(),
-                                    )?;
-                                }
-                                continue;
-                            }
-                        }
+        if key == "tool_calls"
+            && let Some(calls) = value.as_array()
+        {
+            for (index, call) in calls.iter().enumerate() {
+                let call_prefix = pointer_join(&field_prefix, &index.to_string());
+                let Some(call) = call.as_object() else {
+                    if !call.is_null() {
                         story.unknown_fields.insert(
                             "openai-msg",
                             source_document_id,
-                            call_field_prefix,
-                            call_value.clone(),
+                            call_prefix,
+                            call.clone(),
                         )?;
                     }
+                    continue;
+                };
+                for (call_key, call_value) in call {
+                    let call_field_prefix = pointer_join(&call_prefix, call_key);
+                    if call_key == "function"
+                        && let Some(function) = call_value.as_object()
+                    {
+                        for (function_key, function_value) in function {
+                            story.unknown_fields.insert(
+                                "openai-msg",
+                                source_document_id,
+                                pointer_join(&call_field_prefix, function_key),
+                                function_value.clone(),
+                            )?;
+                        }
+                        continue;
+                    }
+                    story.unknown_fields.insert(
+                        "openai-msg",
+                        source_document_id,
+                        call_field_prefix,
+                        call_value.clone(),
+                    )?;
                 }
-                continue;
             }
+            continue;
         }
         story.unknown_fields.insert(
             "openai-msg",
@@ -361,18 +361,18 @@ fn capture_openai_meta(
 ) -> InputResult<()> {
     for (key, value) in meta {
         let field_prefix = pointer_join(prefix, key);
-        if key == "env_state" {
-            if let Some(env_state) = value.as_object() {
-                for (env_key, env_value) in env_state {
-                    story.unknown_fields.insert(
-                        "openai-msg",
-                        source_document_id,
-                        pointer_join(&field_prefix, env_key),
-                        env_value.clone(),
-                    )?;
-                }
-                continue;
+        if key == "env_state"
+            && let Some(env_state) = value.as_object()
+        {
+            for (env_key, env_value) in env_state {
+                story.unknown_fields.insert(
+                    "openai-msg",
+                    source_document_id,
+                    pointer_join(&field_prefix, env_key),
+                    env_value.clone(),
+                )?;
             }
+            continue;
         }
         story.unknown_fields.insert(
             "openai-msg",
@@ -604,12 +604,11 @@ fn consume_openai_message(message: &mut Map<String, Value>, force_assistant: boo
     if refusal_is_output {
         message.remove("refusal");
     }
-    if assistant {
-        if let Some(tool_calls) = message.get_mut("tool_calls") {
-            if consume_tool_call_residuals(tool_calls) {
-                message.remove("tool_calls");
-            }
-        }
+    if assistant
+        && let Some(tool_calls) = message.get_mut("tool_calls")
+        && consume_tool_call_residuals(tool_calls)
+    {
+        message.remove("tool_calls");
     }
     for key in ["name", "refusal", "tool_call_id", "tool_calls"] {
         discard_known_optional_empty(message, key);
@@ -891,15 +890,15 @@ fn populate_openai_row_fields(
                 env_state.insert((*field).to_string(), value.clone());
             }
         }
-        if !metrics.contains_key("total_latency_ms") {
-            if let Some(latency_ms) = agent.latency_ms {
-                env_state.insert("total_latency_ms".into(), json!(latency_ms));
-            }
+        if !metrics.contains_key("total_latency_ms")
+            && let Some(latency_ms) = agent.latency_ms
+        {
+            env_state.insert("total_latency_ms".into(), json!(latency_ms));
         }
-        if !metrics.contains_key("ttft_ms") {
-            if let Some(ttft_ms) = agent.ttft_ms {
-                env_state.insert("ttft_ms".into(), json!(ttft_ms));
-            }
+        if !metrics.contains_key("ttft_ms")
+            && let Some(ttft_ms) = agent.ttft_ms
+        {
+            env_state.insert("ttft_ms".into(), json!(ttft_ms));
         }
         if !env_state.is_empty() {
             row.insert(
@@ -1624,10 +1623,10 @@ fn append_tool_result(observation: &mut Option<Value>, result: Value) {
         .get_or_insert_with(|| json!({"results": []}))
         .get_mut("results")
         .and_then(Value::as_array_mut);
-    if let Some(results) = results {
-        if !results.contains(&result) {
-            results.push(result);
-        }
+    if let Some(results) = results
+        && !results.contains(&result)
+    {
+        results.push(result);
     }
 }
 

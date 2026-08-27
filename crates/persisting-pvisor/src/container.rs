@@ -723,15 +723,17 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert!(args
-            .windows(2)
-            .any(|pair| pair == ["--entrypoint", GUEST_PVISOR]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--entrypoint", GUEST_PVISOR])
+        );
         assert!(args.windows(2).any(|pair| pair == ["--executor", "host"]));
         assert!(args.windows(2).any(|pair| pair == ["--memory", "1048576b"]));
         assert!(args.windows(2).any(|pair| pair == ["--pids-limit", "8"]));
-        assert!(args
-            .windows(2)
-            .any(|pair| pair == ["--ulimit", "nofile=32:32"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--ulimit", "nofile=32:32"])
+        );
         assert!(args.iter().any(|arg| arg.ends_with(SPEC_FILENAME)));
         assert!(!args.iter().any(|arg| arg == "secret-agent"));
     }
@@ -752,12 +754,14 @@ mod tests {
 
     #[test]
     fn rejects_custom_container_user() {
-        assert!(ContainerExecutor::new(ContainerSettings {
-            image: "agent".into(),
-            user: Some("1000".into()),
-            ..ContainerSettings::default()
-        })
-        .is_err());
+        assert!(
+            ContainerExecutor::new(ContainerSettings {
+                image: "agent".into(),
+                user: Some("1000".into()),
+                ..ContainerSettings::default()
+            })
+            .is_err()
+        );
     }
 
     #[test]

@@ -15,5 +15,5 @@ For the product binary, `just chronicle-web-build` compiles and stages assets
 that the server embeds at build time. Verify the standalone project with:
 
 ```bash
-cargo test --manifest-path pchronicle-web/Cargo.toml --locked
+cargo nextest run --manifest-path pchronicle-web/Cargo.toml --locked
 ```

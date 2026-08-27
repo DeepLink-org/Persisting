@@ -16,12 +16,12 @@ use crate::util::{atomic_write, create_dir_all_durable};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use persisting_gateway::config::{OverlayBackend, OverlayConfig};
 use persisting_overlay_core::{
-    fingerprint_at, load_preimages, preimage_journal_is_complete, remove_preimages,
-    PathFingerprint, PathPreimage,
+    PathFingerprint, PathPreimage, fingerprint_at, load_preimages, preimage_journal_is_complete,
+    remove_preimages,
 };
 use persisting_overlayfs::{
-    jujutsu_upper_dir, mount as mount_embedded_overlay, snapshot_jujutsu_upper, OverlayMountConfig,
-    OverlaySession,
+    OverlayMountConfig, OverlaySession, jujutsu_upper_dir, mount as mount_embedded_overlay,
+    snapshot_jujutsu_upper,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1915,11 +1915,11 @@ fn snapshot_entry_raw(
         std::os::unix::fs::symlink(fs::read_link(source)?, destination)?;
     } else if kind.is_file() {
         let identity = (metadata.dev(), metadata.ino());
-        if metadata.nlink() > 1 {
-            if let Some(existing) = hard_links.get(&identity) {
-                fs::hard_link(existing, destination)?;
-                return Ok(());
-            }
+        if metadata.nlink() > 1
+            && let Some(existing) = hard_links.get(&identity)
+        {
+            fs::hard_link(existing, destination)?;
+            return Ok(());
         }
         fs::copy(source, destination)?;
         if metadata.nlink() > 1 {
@@ -1949,15 +1949,14 @@ fn copy_snapshot_metadata(source: &Path, destination: &Path) -> io::Result<()> {
     let destination_c = c_path(destination)?;
     for name in OPAQUE_XATTRS {
         let name = CString::new(name).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
-        if let Ok(value) = get_host_xattr(&source_c, &name) {
-            if let Err(error) = set_host_xattr(&destination_c, &name, &value) {
-                if !matches!(
-                    error.raw_os_error(),
-                    Some(libc::EPERM) | Some(libc::EACCES) | Some(libc::ENOTSUP)
-                ) {
-                    return Err(error);
-                }
-            }
+        if let Ok(value) = get_host_xattr(&source_c, &name)
+            && let Err(error) = set_host_xattr(&destination_c, &name, &value)
+            && !matches!(
+                error.raw_os_error(),
+                Some(libc::EPERM) | Some(libc::EACCES) | Some(libc::ENOTSUP)
+            )
+        {
+            return Err(error);
         }
     }
     Ok(())
@@ -2055,13 +2054,13 @@ fn copy_host_xattrs(source: &CString, destination: &CString) -> io::Result<()> {
         {
             let name =
                 CString::new(name).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
-            if let Err(error) = remove_host_xattr(destination, &name) {
-                if !matches!(
+            if let Err(error) = remove_host_xattr(destination, &name)
+                && !matches!(
                     error.raw_os_error(),
                     Some(libc::EPERM) | Some(libc::EACCES) | Some(libc::ENOTSUP)
-                ) {
-                    return Err(error);
-                }
+                )
+            {
+                return Err(error);
             }
         }
     }
@@ -2071,13 +2070,13 @@ fn copy_host_xattrs(source: &CString, destination: &CString) -> io::Result<()> {
     {
         let name = CString::new(name).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
         let value = get_host_xattr(source, &name)?;
-        if let Err(error) = set_host_xattr(destination, &name, &value) {
-            if !matches!(
+        if let Err(error) = set_host_xattr(destination, &name, &value)
+            && !matches!(
                 error.raw_os_error(),
                 Some(libc::EPERM) | Some(libc::EACCES) | Some(libc::ENOTSUP)
-            ) {
-                return Err(error);
-            }
+            )
+        {
+            return Err(error);
         }
     }
     Ok(())
@@ -2277,13 +2276,23 @@ fn is_mountpoint(path: &Path) -> bool {
     let Ok(parent_metadata) = fs::metadata(parent) else {
         return false;
     };
-    if metadata.dev() != parent_metadata.dev()
-        || (metadata.dev() == parent_metadata.dev() && metadata.ino() == parent_metadata.ino())
+    // `dev`/`ino` differ (or `ino` matches for hardlinks) across the parent
+    // boundary means this path is a distinct mount. On Linux there is an
+    // additional `/proc/self/mounts` probe that the early return cannot fold
+    // into, so the platforms are branched explicitly to stay clippy-clean.
+    #[cfg(not(target_os = "linux"))]
     {
-        return true;
+        metadata.dev() != parent_metadata.dev()
+            || (metadata.dev() == parent_metadata.dev() && metadata.ino() == parent_metadata.ino())
     }
+
     #[cfg(target_os = "linux")]
     {
+        if metadata.dev() != parent_metadata.dev()
+            || (metadata.dev() == parent_metadata.dev() && metadata.ino() == parent_metadata.ino())
+        {
+            return true;
+        }
         let target = path.display().to_string();
         if let Ok(mounts) = fs::read_to_string("/proc/self/mounts") {
             return mounts.lines().any(|line| {
@@ -2292,8 +2301,8 @@ fn is_mountpoint(path: &Path) -> bool {
                     .is_some_and(|mount| mount == target)
             });
         }
+        false
     }
-    false
 }
 
 #[cfg(test)]
@@ -2628,10 +2637,12 @@ mod tests {
         assert_eq!(fs::read(target.join("src/b.txt")).unwrap(), b"old-b");
         assert!(target.join("gone.txt").exists());
         assert_eq!(record.state, OverlayState::Staged);
-        assert!(first
-            .remaining
-            .iter()
-            .any(|change| change.path == "src/b.txt"));
+        assert!(
+            first
+                .remaining
+                .iter()
+                .any(|change| change.path == "src/b.txt")
+        );
         assert!(upper.join("src/b.txt").is_file());
         assert!(upper.join(".wh.gone.txt").is_file());
 
@@ -2663,9 +2674,11 @@ mod tests {
 
         let ledger = load_apply_records(&stage).unwrap();
         assert_eq!(ledger.len(), 3);
-        assert!(ledger
-            .iter()
-            .all(|record| record.state == ApplyRecordState::Committed));
+        assert!(
+            ledger
+                .iter()
+                .all(|record| record.state == ApplyRecordState::Committed)
+        );
         assert_eq!(ledger[0].remaining_changes, first.remaining.len());
         assert_eq!(ledger[2].remaining_changes, 0);
     }
@@ -2911,10 +2924,12 @@ mod tests {
         assert_eq!(fs::read(target.join("src/lib.rs")).unwrap(), b"accepted");
         assert!(!target.join("src/generated/code.rs").exists());
         assert!(upper.join("src/generated/code.rs").is_file());
-        assert!(outcome
-            .remaining
-            .iter()
-            .any(|change| change.path == "src/generated/code.rs"));
+        assert!(
+            outcome
+                .remaining
+                .iter()
+                .any(|change| change.path == "src/generated/code.rs")
+        );
         assert_eq!(record.state, OverlayState::Staged);
     }
 
@@ -3083,18 +3098,24 @@ mod tests {
         };
 
         let changes = overlay_changes(&record, std::slice::from_ref(&target)).unwrap();
-        assert!(changes
-            .iter()
-            .any(|change| change.path == "added.txt" && change.kind == ChangeKind::Added));
+        assert!(
+            changes
+                .iter()
+                .any(|change| change.path == "added.txt" && change.kind == ChangeKind::Added)
+        );
         assert!(changes.iter().any(|change| {
             change.path == "modified.txt" && change.kind == ChangeKind::Modified
         }));
-        assert!(changes
-            .iter()
-            .any(|change| { change.path == "deleted.txt" && change.kind == ChangeKind::Deleted }));
-        assert!(changes
-            .iter()
-            .any(|change| change.path == "dir" && change.kind == ChangeKind::Opaque));
+        assert!(
+            changes.iter().any(|change| {
+                change.path == "deleted.txt" && change.kind == ChangeKind::Deleted
+            })
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|change| change.path == "dir" && change.kind == ChangeKind::Opaque)
+        );
     }
 
     #[test]

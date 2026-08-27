@@ -1,8 +1,8 @@
 use super::*;
-use crate::layout::{story_lance_event_path, StoryCoords};
+use crate::layout::{StoryCoords, story_lance_event_path};
 use crate::projection::{
-    build_storyline_projection, rebuild_storyline_projection, sync_storyline_projection,
     StorylineProjectionBuildOutcome, StorylineProjectionSyncMode, StorylineProjectionSyncOutcome,
+    build_storyline_projection, rebuild_storyline_projection, sync_storyline_projection,
 };
 use crate::store::{RawEventLanceStore, StorylineLanceStore};
 use crate::{EventIdentity, StorylineAgent, StorylineTurn};
@@ -325,16 +325,20 @@ async fn catalog_prunes_file_sources_before_lazy_resolution() -> Result<()> {
         )
         .await?,
     );
-    assert!(snapshot.prepared[0]
-        .sources
-        .iter()
-        .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0));
+    assert!(
+        snapshot.prepared[0]
+            .sources
+            .iter()
+            .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0)
+    );
 
     let engine = snapshot.clone().query_engine(Default::default()).await?;
-    assert!(snapshot.prepared[0]
-        .sources
-        .iter()
-        .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0));
+    assert!(
+        snapshot.prepared[0]
+            .sources
+            .iter()
+            .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0)
+    );
     assert_eq!(
         engine
             .query_jsonl("SELECT COUNT(*) AS sources FROM dataset.sources")
@@ -342,10 +346,12 @@ async fn catalog_prunes_file_sources_before_lazy_resolution() -> Result<()> {
             .trim(),
         r#"{"sources":2}"#
     );
-    assert!(snapshot.prepared[0]
-        .sources
-        .iter()
-        .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0));
+    assert!(
+        snapshot.prepared[0]
+            .sources
+            .iter()
+            .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0)
+    );
     let unsafe_mixed_join = engine
         .query(
             "SELECT * FROM runs r JOIN dataset.steps s \
@@ -423,10 +429,12 @@ async fn catalog_downloads_only_selected_remote_file_source() -> Result<()> {
         )
         .await?,
     );
-    assert!(snapshot.prepared[0]
-        .sources
-        .iter()
-        .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0));
+    assert!(
+        snapshot.prepared[0]
+            .sources
+            .iter()
+            .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0)
+    );
     let engine = snapshot.clone().query_engine(Default::default()).await?;
     let rows = engine
         .query_jsonl("SELECT document_id FROM dataset.runs WHERE _file_ = 'one.json'")
@@ -493,10 +501,12 @@ async fn catalog_prunes_storyline_sources_before_opening_lance() -> Result<()> {
         .replace_storyline(&storyline("session-a-new", "run-a-new"))
         .await?;
     let engine = snapshot.clone().query_engine(Default::default()).await?;
-    assert!(snapshot.prepared[0]
-        .sources
-        .iter()
-        .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0));
+    assert!(
+        snapshot.prepared[0]
+            .sources
+            .iter()
+            .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0)
+    );
 
     let rows = engine
         .query_jsonl(

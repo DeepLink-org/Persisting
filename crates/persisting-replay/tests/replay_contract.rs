@@ -6,9 +6,9 @@ use std::process::Command;
 use std::os::unix::fs::PermissionsExt;
 
 use persisting_replay::{
-    execute, AgentKind, AgentStatus, PlaybackRequest, ReplayMode, ReplayPhase,
+    AgentKind, AgentStatus, PlaybackRequest, ReplayMode, ReplayPhase, execute,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn crate_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
@@ -344,11 +344,15 @@ fn swe_max_steps_caps_total_actions() {
     assert!(reconstructed.is_file());
     assert!(continued.is_file());
     let trajectory: Value = serde_json::from_slice(&fs::read(continued).unwrap()).unwrap();
-    assert!(trajectory["history"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|message| { message["role"] == "user" && message["content"] == "review O-prime N" }));
+    assert!(
+        trajectory["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| {
+                message["role"] == "user" && message["content"] == "review O-prime N"
+            })
+    );
 }
 
 #[cfg(unix)]
@@ -404,11 +408,13 @@ fn openhands_boundary_prompt_is_queued_after_the_replay_prefix() {
         report.result.metadata["boundary_user_prompt"]["injected"],
         true
     );
-    assert!(!report
-        .result
-        .metadata
-        .to_string()
-        .contains("review O-prime N"));
+    assert!(
+        !report
+            .result
+            .metadata
+            .to_string()
+            .contains("review O-prime N")
+    );
 }
 
 #[cfg(unix)]
@@ -427,11 +433,13 @@ fn openhands_zero_exit_fatal_status_is_a_failed_result_with_trajectory() {
 
     assert_ne!(report.exit_code, 0);
     assert_eq!(report.result.agent_status, AgentStatus::Failed);
-    assert!(report
-        .result
-        .failure
-        .as_ref()
-        .is_some_and(|failure| { failure.message.contains("Error while running the agent") }));
+    assert!(
+        report
+            .result
+            .failure
+            .as_ref()
+            .is_some_and(|failure| { failure.message.contains("Error while running the agent") })
+    );
     assert_eq!(
         report.result.output_dir,
         temporary.path().join("output/contract")

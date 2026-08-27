@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use persisting_pchronicle::document::{
-    decode_json_storylines, encode_json_storylines, DocumentFormat,
+    DocumentFormat, decode_json_storylines, encode_json_storylines,
 };
 use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};

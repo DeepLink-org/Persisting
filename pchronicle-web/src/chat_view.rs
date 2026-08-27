@@ -26,11 +26,7 @@ impl TraceCard {
 }
 
 pub fn normalize_trace_view(value: &str) -> &'static str {
-    if value == "steps" {
-        "steps"
-    } else {
-        "chats"
-    }
+    if value == "steps" { "steps" } else { "chats" }
 }
 
 pub fn group_chats(turns: &[TurnSummary]) -> Vec<TraceCard> {

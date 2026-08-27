@@ -4,8 +4,8 @@
 //! update from an older Attempt, while heartbeat expiry lets pPilot distinguish
 //! a live remote Attempt from an orphan after coordinator restart.
 
-use super::cas_store::{unix_now_ms, CasStore, Mutation};
-use anyhow::{bail, Context};
+use super::cas_store::{CasStore, Mutation, unix_now_ms};
+use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -205,26 +205,36 @@ mod tests {
         let registry = AttemptRegistry::open(dir.path().to_str().unwrap())
             .await
             .unwrap();
-        assert!(registry
-            .publish_active("run-1", "attempt-1", 1, 10_000)
-            .await
-            .unwrap());
-        assert!(registry
-            .publish_active("run-1", "attempt-2", 2, 10_000)
-            .await
-            .unwrap());
-        assert!(!registry
-            .heartbeat("run-1", "attempt-1", 1, 10_000)
-            .await
-            .unwrap());
-        assert!(!registry
-            .publish_terminal("run-1", "attempt-1", 1, serde_json::json!({"old": true}))
-            .await
-            .unwrap());
-        assert!(registry
-            .publish_terminal("run-1", "attempt-2", 2, serde_json::json!({"ok": true}))
-            .await
-            .unwrap());
+        assert!(
+            registry
+                .publish_active("run-1", "attempt-1", 1, 10_000)
+                .await
+                .unwrap()
+        );
+        assert!(
+            registry
+                .publish_active("run-1", "attempt-2", 2, 10_000)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !registry
+                .heartbeat("run-1", "attempt-1", 1, 10_000)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !registry
+                .publish_terminal("run-1", "attempt-1", 1, serde_json::json!({"old": true}))
+                .await
+                .unwrap()
+        );
+        assert!(
+            registry
+                .publish_terminal("run-1", "attempt-2", 2, serde_json::json!({"ok": true}))
+                .await
+                .unwrap()
+        );
         let record = registry.get("run-1").await.unwrap().unwrap();
         assert_eq!(record.state, AttemptRecordState::Terminal);
         assert_eq!(record.attempt_id, "attempt-2");

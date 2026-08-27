@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use bytes::Bytes;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Root of agentgateway LLM fixtures (`crates/persisting-gateway/tests/fixtures/`).
 pub fn fixtures_root() -> PathBuf {
@@ -31,10 +31,10 @@ pub fn read_fixture_bytes(relative: &str) -> Bytes {
 
 /// Strip insta YAML frontmatter (`---` … `---`) from AG snapshot files.
 pub fn strip_snap_frontmatter(raw: &str) -> &str {
-    if let Some(stripped) = raw.strip_prefix("---\n") {
-        if let Some(end) = stripped.find("\n---\n") {
-            return stripped[end + 5..].trim_start();
-        }
+    if let Some(stripped) = raw.strip_prefix("---\n")
+        && let Some(end) = stripped.find("\n---\n")
+    {
+        return stripped[end + 5..].trim_start();
     }
     raw.trim()
 }

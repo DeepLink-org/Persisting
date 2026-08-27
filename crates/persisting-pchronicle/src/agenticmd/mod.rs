@@ -8,9 +8,9 @@ mod validate;
 
 pub use convert::{encode_agenticmd, parse_agenticmd};
 pub use fs::{
-    agenticmd_block_count, agenticmd_structural_issues, count_agenticmd_role, index_agenticmd_path,
-    list_agenticmd_paths, rewrite_agenticmd_storyline_metadata, upsert_agenticmd_turn,
-    write_agenticmd_storyline, AgenticmdFileIndex,
+    AgenticmdFileIndex, agenticmd_block_count, agenticmd_structural_issues, count_agenticmd_role,
+    index_agenticmd_path, list_agenticmd_paths, rewrite_agenticmd_storyline_metadata,
+    upsert_agenticmd_turn, write_agenticmd_storyline,
 };
 pub use layout::{
     is_subagent_session_storage_key, is_trajectory_markdown_path, locate_run_bucket_markdown,

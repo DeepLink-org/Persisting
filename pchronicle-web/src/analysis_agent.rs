@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::analysis_session::{
     AnalysisInterpretation, AnalysisPlan, AnalysisScope, AnalysisScopeItem, AnalysisSpec,
@@ -974,7 +974,7 @@ fn serialized_len<T: Serialize>(value: &T) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::*;
     use crate::analysis_session::{AnalysisPlan, AnalysisScope, AnalysisScopeItem, SuggestedView};
@@ -1060,12 +1060,14 @@ mod tests {
     #[test]
     fn plan_parser_rejects_keyword_prefixes_and_multiple_sql_statements() {
         assert!(parse_plan_content(&plan_payload("SELECTED 1"), 1, "question").is_err());
-        assert!(parse_plan_content(
-            &plan_payload("SELECT 1; DELETE FROM default.runs"),
-            1,
-            "question"
-        )
-        .is_err());
+        assert!(
+            parse_plan_content(
+                &plan_payload("SELECT 1; DELETE FROM default.runs"),
+                1,
+                "question"
+            )
+            .is_err()
+        );
         assert!(
             parse_plan_content(&plan_payload("SELECT 1; 'not a comment'"), 1, "question").is_err()
         );
@@ -1100,10 +1102,12 @@ mod tests {
         assert_eq!(interpretation.observations, vec!["One run is failed."]);
         assert_eq!(interpretation.references[0].row_index, Some(0));
 
-        assert!(parse_interpretation_content(
-            r#"{"observations":[],"inferences":[],"limitations":[],"follow_ups":[]}"#
-        )
-        .is_err());
+        assert!(
+            parse_interpretation_content(
+                r#"{"observations":[],"inferences":[],"limitations":[],"follow_ups":[]}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

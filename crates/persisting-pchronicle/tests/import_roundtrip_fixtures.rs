@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use persisting_pchronicle::document::{
-    decode_json_storylines, encode_json_storylines, open_document, DocumentFormat,
+    DocumentFormat, decode_json_storylines, encode_json_storylines, open_document,
 };
 mod support;
 
-use support::{fixture_path, persist_and_restore, LookupStrategy};
+use support::{LookupStrategy, fixture_path, persist_and_restore};
 
 async fn assert_openai_fixture_roundtrip(
     name: &str,

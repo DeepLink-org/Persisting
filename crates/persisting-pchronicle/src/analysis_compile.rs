@@ -275,10 +275,10 @@ pub fn compile(
             select.push(format!("{}.{}", grain.alias, quote_ident(column)));
         }
     }
-    if let Some(dim) = dimension.as_ref() {
-        if !include_identity || !identity_columns.iter().any(|column| column == &dim.column) {
-            select.push(format!("{} AS {}", dim.qualified, dim.column));
-        }
+    if let Some(dim) = dimension.as_ref()
+        && (!include_identity || !identity_columns.iter().any(|column| column == &dim.column))
+    {
+        select.push(format!("{} AS {}", dim.qualified, dim.column));
     }
     select.push(measure_select);
 
@@ -303,11 +303,11 @@ pub fn compile(
         sql.push_str("\nWHERE ");
         sql.push_str(&predicates.join(" AND "));
     }
-    if matches!(intent, "compare" | "composition") {
-        if let Some(dim) = dimension.as_ref() {
-            sql.push_str("\nGROUP BY ");
-            sql.push_str(&dim.qualified);
-        }
+    if matches!(intent, "compare" | "composition")
+        && let Some(dim) = dimension.as_ref()
+    {
+        sql.push_str("\nGROUP BY ");
+        sql.push_str(&dim.qualified);
     }
     if let Some(ranking) = ranking {
         match ranking {
@@ -355,10 +355,10 @@ pub fn compile(
     if include_identity {
         expected_columns.extend(identity_columns.iter().cloned());
     }
-    if let Some(dim) = dimension.as_ref() {
-        if !expected_columns.iter().any(|column| column == &dim.column) {
-            expected_columns.push(dim.column.clone());
-        }
+    if let Some(dim) = dimension.as_ref()
+        && !expected_columns.iter().any(|column| column == &dim.column)
+    {
+        expected_columns.push(dim.column.clone());
     }
     expected_columns.push(measure.name.to_string());
 
@@ -1051,14 +1051,16 @@ mod tests {
         unknown_dim.dimension = Some("not_a_column".into());
         let error = compile(unknown_dim, &schema(), &dataset_scope()).unwrap_err();
         assert_eq!(error.code, "unknown_column");
-        assert!(compile(
-            spec("compare", "run", "row_count", "comparison"),
-            &schema(),
-            &dataset_scope()
-        )
-        .unwrap_err()
-        .message
-        .contains("dimension"));
+        assert!(
+            compile(
+                spec("compare", "run", "row_count", "comparison"),
+                &schema(),
+                &dataset_scope()
+            )
+            .unwrap_err()
+            .message
+            .contains("dimension")
+        );
     }
 
     #[test]

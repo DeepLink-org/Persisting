@@ -1,15 +1,15 @@
 use anyhow::{Context, Result};
 use persisting_agentctl::{AttemptId, RunCommitRequest, RunId, RunState};
 use persisting_events::{
-    ChronicleControl, ChronicleControlEnvelope, ChronicleControlRequest, ChronicleControlResponse,
+    CHRONICLE_CONTROL_VERSION, CHRONICLE_SERVE_READY_VERSION, ChronicleControl,
+    ChronicleControlEnvelope, ChronicleControlRequest, ChronicleControlResponse,
     ChronicleControlResponseEnvelope, ChronicleServeProcessClient, ChronicleServeReady,
-    CommitRunOutcome, LeaseAcquireOutcome, TrajectoryAppendRequest, CHRONICLE_CONTROL_VERSION,
-    CHRONICLE_SERVE_READY_VERSION,
+    CommitRunOutcome, LeaseAcquireOutcome, TrajectoryAppendRequest,
 };
 use persisting_pchronicle::storage::{
+    AutomaticProjectionState, AutomaticProjectionTarget, RawEventLanceStore, StoryCoords,
     build_storyline_projection, inspect_automatic_storyline_projection,
-    probe_canonical_event_store, AutomaticProjectionState, AutomaticProjectionTarget,
-    RawEventLanceStore, StoryCoords,
+    probe_canonical_event_store,
 };
 use std::future::Future;
 use std::process::Stdio;

@@ -17,6 +17,7 @@ default:
     @echo ""
     @echo "常用："
     @echo "  just gate                # 提交前（fmt + lint + test-rust）"
+    @echo "  just test [package]      # nextest + Python；可指定 Cargo 包"
     @echo "  just ci                  # CI 近似全量"
     @echo "  just py-dev              # 同步纯 Python 开发环境"
     @echo "  just install-cli         # 安装 pchronicle、pvisor 和 ppilot"
@@ -28,6 +29,8 @@ default:
     @echo "  just benchmark-gateway   # Gateway 转发与持久化黑盒压测"
     @echo "  just benchmark-gateway-replay # 回放 examples/data 并生成人工 review bundle"
     @echo "  just build-wheel         # 打 release wheel → dist/"
+    @echo "  just build-analysis      # nightly 构建分析（按需）"
+    @echo "  just sanitize            # nightly Sanitizer 测试（按需）"
     @echo "  just docs-serve          # 本地文档"
 
 # ── 测试套件导航 ──────────────────────────────────────────────────────────────
@@ -44,7 +47,11 @@ test-list:
         just gate                 提交前：fmt + lint + test-rust
         just dev                  日常：fmt + clippy + check-quick
         just ci                   CI 近似
-        just test-rust / test-pchronicle / capture-test / test-py
+        just build-analysis       nightly 构建瓶颈分析（按需）
+        just sanitize              nightly Sanitizer 测试（按需）
+        just test [package]        nextest + Python 测试；可指定包
+        just test-pchronicle / capture-test / test-py
+        （Rust 测试由 cargo nextest 执行；文档测试仍用 cargo test）
         just regression           大规模黑盒回归（按场景运行 tests/regression）
         just gateway-fuzz         一分钟 Gateway 四类 fuzz 汇总
         just gateway-fuzz-formats / gateway-fuzz-forwarding
@@ -310,6 +317,48 @@ build profile="debug":
 build-release:
     just build release
 
+# Collect detailed Cargo build metrics without enabling the overhead for every
+# normal build. Reports are persisted under CARGO_HOME/log and can be queried
+# with `just build-analysis-report`.
+[group('diagnostics')]
+build-analysis package="persisting-pvisor" target_dir="target/build-analysis":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +nightly -Zbuild-analysis \
+      --config unstable.build-analysis=true \
+      --config build.analysis.enabled=true \
+      build --locked --timings --target-dir "{{ target_dir }}" -p "{{ package }}"
+    echo "Build analysis recorded. Run: just build-analysis-report"
+
+# Query metrics collected by build-analysis. `report` may be sessions, timings,
+# or rebuilds; timings/rebuilds use the most recent session by default.
+[group('diagnostics')]
+build-analysis-report report="sessions":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ report }}" in
+      sessions|timings|rebuilds) ;;
+      *) echo "unsupported report: {{ report }} (sessions|timings|rebuilds)" >&2; exit 2 ;;
+    esac
+    cargo +nightly -Zbuild-analysis report "{{ report }}"
+
+# Run one crate's tests with a nightly sanitizer. Sanitizers require LLVM
+# instrumentation and a rebuilt standard library, and are substantially slower.
+[group('diagnostics')]
+sanitize sanitizer="address" package="persisting-agentctl":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ sanitizer }}" in
+      address|leak|thread|undefined) ;;
+      *) echo "unsupported sanitizer: {{ sanitizer }} (address|leak|thread|undefined)" >&2; exit 2 ;;
+    esac
+    host="$$(rustup run nightly rustc -vV | sed -n 's/^host: //p')"
+    [[ -n "$$host" ]] || { echo "unable to determine nightly target; install nightly rustc" >&2; exit 1; }
+    export RUSTFLAGS="$${RUSTFLAGS:+$$RUSTFLAGS }-Zsanitizer={{ sanitizer }}"
+    cargo +nightly -Zbuild-std \
+      test --locked --target "$$host" --target-dir "target/sanitizer/{{ sanitizer }}" \
+      -p "{{ package }}" --lib
+
 # Build pVisor and add the Hypervisor entitlement required by macOS/HVF.
 # Usage: `just pvisor` (release) or `just pvisor debug`.
 [group('build')]
@@ -450,10 +499,18 @@ ci-lint:
     just lint-rust
     uvx ruff check persisting/
 
-# 日常开发快捷路径
+# 日常开发快捷路径。完整 workspace/all-targets lint 仍由 gate/CI 负责；这里
+# 只检查日常会改动的运行时 crate，并用无存储 feature 的 pChronicle 核心检查
+# 保持增量反馈快速。
 dev:
     just fmt
-    just lint-rust
+    cargo clippy \
+      -p persisting-agentctl \
+      -p persisting-events \
+      -p persisting-gateway \
+      -p persisting-ppilot \
+      -p persisting-pvisor \
+      --lib --bins --locked -- -D warnings
     just check-quick
 
 # CI 近似：gate + 构建 + Gateway fixture 回归
@@ -469,38 +526,54 @@ test-crate crate:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ crate }}" in
-      pchronicle) cargo test -p persisting-pchronicle ;;
-      pchronicle-cli) cargo test -p persisting-pchronicle-cli ;;
-      agentctl) cargo test -p persisting-agentctl ;;
-      capture) cargo test -p persisting-gateway ;;
+      pchronicle) cargo nextest run -p persisting-pchronicle --locked ;;
+      pchronicle-cli) cargo nextest run -p persisting-pchronicle-cli --locked ;;
+      agentctl) cargo nextest run -p persisting-agentctl --locked ;;
+      capture) cargo nextest run -p persisting-gateway --locked ;;
       ppilot)
         cargo build -p persisting-pvisor --bin pvisor
-        cargo test -p persisting-ppilot
+        cargo nextest run -p persisting-ppilot --locked
         ;;
-      pvisor) cargo test -p persisting-pvisor ;;
+      pvisor) cargo nextest run -p persisting-pvisor --locked ;;
       dlcapt) cargo test -p persisting-dlcapt ;;
       *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|agentctl|capture|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;
     esac
 
-test-rust:
-    cargo test --workspace
+test-rust package="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    package="{{ package }}"
+    if [[ -z "$package" || "$package" == "persisting-ppilot" ]]; then
+        target_dir="${CARGO_TARGET_DIR:-$PWD/target}"
+        if [[ "$target_dir" != /* ]]; then
+            target_dir="$PWD/$target_dir"
+        fi
+        cargo build --locked -p persisting-pvisor --bin pvisor
+        cargo build --locked -p persisting-pchronicle-cli --bin pchronicle
+        export PATH="$target_dir/debug:$PATH"
+    fi
+    if [[ -n "$package" ]]; then
+        cargo nextest run --locked -p "$package"
+    else
+        cargo nextest run --workspace --locked
+    fi
 
 # Default pVisor crate profile, including CLI and integration regressions.
 [group('test')]
 test-pvisor:
-    cargo test -p persisting-pvisor --locked
+    cargo nextest run -p persisting-pvisor --locked
 
 # Mandatory pVisor ↔ pChronicle capture bridge feature profile.
 [group('test')]
 test-pvisor-lance:
-    cargo test -p persisting-pvisor --features lance-chronicle --locked
+    cargo nextest run -p persisting-pvisor --features lance-chronicle --locked
 
 # Strict Linux rootless/FUSE boundary tests. This deliberately does not allow
 # the optional-userns skip used by the broad cross-platform workspace job.
 [group('test')]
 test-pvisor-isolation:
     env -u PERSISTING_TEST_ALLOW_NO_USERNS \
-      cargo test -p persisting-pvisor --test rootless_local --locked -- --nocapture
+      cargo nextest run -p persisting-pvisor --test rootless_local --locked -- --nocapture
 
 # Product CLI surface exercised by CI after the debug component build.
 [group('test')]
@@ -510,14 +583,14 @@ smoke-pvisor-cli:
     target/debug/pvisor review --help >/dev/null
 
 test-capture-claude:
-    cargo test -p persisting-gateway --test capture_apps_claude
+    cargo nextest run -p persisting-gateway --test capture_apps_claude --locked
 
 test-capture-fixtures:
-    cargo test -p persisting-gateway --test llm_fixtures --test ag_fixture_tests
+    cargo nextest run -p persisting-gateway --locked --test llm_fixtures --test ag_fixture_tests
 
 test-capture-network:
-    cargo test -p persisting-gateway --lib network_policy
-    cargo test -p persisting-gateway --test network_policy_http
+    cargo nextest run -p persisting-gateway --locked --lib network_policy
+    cargo nextest run -p persisting-gateway --locked --test network_policy_http
 
 test-search-integration:
     cargo test -p persisting-pchronicle --test search_integration
@@ -525,10 +598,19 @@ test-search-integration:
 # pChronicle 库单测
 [group('test')]
 test-pchronicle:
-    cargo test -p persisting-pchronicle --lib
+    cargo nextest run -p persisting-pchronicle --lib --locked
 
-# Rust + Python
-test: test-rust test-py
+# Rust + Python. Rust tests run debug-mode nextest for faster iteration; use
+# `just test-rust` with a package for targeted coverage. Passing a package runs
+# only that Rust package; the full Python suite runs only for the no-argument
+# repository-wide invocation.
+test package="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just test-rust "{{ package }}"
+    if [[ -z "{{ package }}" ]]; then
+        just test-py
+    fi
 
 # ── Python ───────────────────────────────────────────────────────────────────
 
@@ -583,7 +665,14 @@ check:
     just test-pchronicle
 
 check-quick:
-    just test-pchronicle
+    cargo check \
+      -p persisting-agentctl \
+      -p persisting-events \
+      -p persisting-gateway \
+      -p persisting-ppilot \
+      -p persisting-pvisor \
+      --locked
+    cargo check -p persisting-pchronicle --no-default-features --locked
 
 # capture 相关 Rust 测试
 capture-test:
