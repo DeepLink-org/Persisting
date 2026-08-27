@@ -12,8 +12,8 @@ use crate::api;
 use crate::llm;
 use crate::llm_settings::LlmSettings;
 use crate::model::{QueryCatalog, QueryEvidence};
-use crate::result_explorer::{identity_href, ResultExplorer, ResultIdentity};
-use crate::result_profile::{profile_rows, AnalysisRefinement, ColumnProfile};
+use crate::result_explorer::{ResultExplorer, ResultIdentity, identity_href};
+use crate::result_profile::{AnalysisRefinement, ColumnProfile, profile_rows};
 
 const QUESTION_STARTERS: [&str; 3] = [
     "Compare step counts per run by agent model",

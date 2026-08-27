@@ -7,12 +7,12 @@ use crate::agent::{self, ThreadMessage, ThreadRole};
 use crate::api;
 use crate::catalog::CatalogExplorer;
 use crate::chat_view::normalize_trace_view;
-use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView};
+use crate::components::{DataTable, RichBlock, TrajectoryView, parse_rich_blocks};
 use crate::copilot_sessions::{
-    can_start_new_chat, delete_session, empty_thread, load_index, load_session_thread,
-    new_session_id, now_millis, page_after_history_switch, persist_indexed_thread, relative_time,
-    restore_for_run, save_index, session_storage_key, title_from_thread, AssistantSessionMeta,
-    BrowserStore, KvStore,
+    AssistantSessionMeta, BrowserStore, KvStore, can_start_new_chat, delete_session, empty_thread,
+    load_index, load_session_thread, new_session_id, now_millis, page_after_history_switch,
+    persist_indexed_thread, relative_time, restore_for_run, save_index, session_storage_key,
+    title_from_thread,
 };
 use crate::llm;
 use crate::llm_settings::LlmSettings;

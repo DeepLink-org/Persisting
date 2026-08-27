@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 
 use dioxus::prelude::*;
 use serde_json::Value;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-use crate::json_value::{is_structured_json, JsonValue};
+use crate::json_value::{JsonValue, is_structured_json};
 use crate::model::QueryEvidence;
 use crate::result_profile::{
     AnalysisRefinement, ColumnKind, ColumnProfile, RefinementIntent, RefinementPredicate,
@@ -618,7 +618,7 @@ fn format_bytes(value: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use crate::model::QueryEvidence;
 

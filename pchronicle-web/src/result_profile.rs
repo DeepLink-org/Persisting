@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -415,7 +415,7 @@ fn add_top_values(profile: &mut ColumnProfile, counts: BTreeMap<String, CountedV
 mod tests {
     use serde_json::json;
 
-    use super::{profile_rows, ColumnKind, ColumnProfile};
+    use super::{ColumnKind, ColumnProfile, profile_rows};
 
     fn profile<'a>(profiles: &'a [ColumnProfile], name: &str) -> &'a ColumnProfile {
         profiles
