@@ -15,10 +15,15 @@ permissions:
   contents: read
 
 jobs:
-  compare:
-    name: Criterion + hyperfine report
+  benchmark:
+    name: Benchmark (${{ matrix.ref }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        ref: [main, candidate]
     steps:
       - name: Checkout candidate
         uses: actions/checkout@v4
@@ -29,6 +34,9 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-protoc: "false"
+          install-cranelift: "false"
+          install-nextest: "false"
+          install-zig: "false"
 
       - name: Install hyperfine
         uses: taiki-e/install-action@v2
@@ -37,9 +45,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: pchronicle-benchmark
+          shared-key: pchronicle-benchmark-${{ matrix.ref }}
 
       - name: Resolve main baseline
+        if: matrix.ref == 'main'
         id: baseline
         shell: bash
         run: |
@@ -64,26 +73,57 @@ jobs:
           fi
 
       - name: Benchmark main
-        if: steps.baseline.outputs.supported == 'true'
+        if: matrix.ref == 'main' && steps.baseline.outputs.supported == 'true'
         shell: bash
         run: |
           set -euo pipefail
           baseline_repo="${{ steps.baseline.outputs.repo }}"
-          python3 benchmark/pchronicle/bench.py run \
+          mkdir -p "${RUNNER_TEMP}/pchronicle-benchmark/main"
+          python3 "$baseline_repo/benchmark/pchronicle/bench.py" run \
             --repo "$baseline_repo" \
             --suite smoke \
-            --target-dir "${GITHUB_WORKSPACE}/target/pchronicle-benchmark-ci" \
+            --target-dir "${GITHUB_WORKSPACE}/target/pchronicle-benchmark-ci-main" \
             --output "${RUNNER_TEMP}/pchronicle-benchmark/main"
 
       - name: Benchmark candidate
+        if: matrix.ref == 'candidate'
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/pchronicle-benchmark/candidate"
           python3 benchmark/pchronicle/bench.py run \
             --repo . \
             --suite smoke \
-            --target-dir "${GITHUB_WORKSPACE}/target/pchronicle-benchmark-ci" \
+            --target-dir "${GITHUB_WORKSPACE}/target/pchronicle-benchmark-ci-candidate" \
             --output "${RUNNER_TEMP}/pchronicle-benchmark/candidate"
+
+      - name: Upload benchmark data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pchronicle-benchmark-part-${{ matrix.ref }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/pchronicle-benchmark
+          retention-days: 30
+          if-no-files-found: warn
+
+  compare:
+    name: Criterion + hyperfine report
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download benchmark data
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pchronicle-benchmark-part-*
+          path: ${{ runner.temp }}/pchronicle-benchmark
+          merge-multiple: true
 
       - name: Compare and render report page
         shell: bash

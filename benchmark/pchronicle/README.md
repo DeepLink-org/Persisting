@@ -96,12 +96,14 @@ reads that same JSONPath root.
 
 ## CI contract
 
-The pChronicle benchmark workflow runs the main baseline and candidate on the
-same GitHub Actions runner when the baseline already contains this framework.
-It writes the comparison to the Actions Job Summary and uploads the complete
+The pChronicle benchmark workflow runs the main baseline and candidate as two
+parallel matrix jobs. Each job uses its own target directory and uploads a
+ref-scoped raw report; a short aggregation job then downloads both reports,
+writes the comparison to the Actions Job Summary, and uploads the complete
 HTML/JSON report. During the framework's first pull request, the missing main
-runner is reported as an incomparable baseline and the candidate report is
-still published.
+baseline is reported as incomparable and the candidate report is
+still published. The benchmark jobs disable unrelated toolchain installs
+(nextest, Cranelift, and Zig) to keep setup overhead out of this workflow.
 
 The nightly workflow runs the larger suite, stores its latest complete report
 under `$["latest"]` in `nightly.json`, and updates the generated benchmark block
