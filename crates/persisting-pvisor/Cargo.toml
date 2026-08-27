@@ -10,7 +10,6 @@ readme = "README.md"
 [features]
 default = []
 jujutsu-overlay = ["persisting-overlayfs/jujutsu"]
-fuzzing = []
 
 [dependencies]
 anyhow.workspace = true

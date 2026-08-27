@@ -31,8 +31,6 @@ mod supervisor;
 mod util;
 mod vm;
 
-#[cfg(feature = "fuzzing")]
-pub use agentctl::decode_agentctl_frame_for_fuzz;
 pub use agentctl::{
     AGENTCTL_MAX_SESSIONS, AgentClientSnapshot, AgentCtlControl, AgentCtlServer, AgentCtlSnapshot,
 };
@@ -61,8 +59,6 @@ pub use event::{
     EventAppendErrorKind, EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher,
 };
 pub use executor::{AttemptContext, RunExecutor};
-#[cfg(feature = "fuzzing")]
-pub use oci::fuzz_oci_layer;
 pub use persisting_agentctl::{
     AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
     AGENTCTL_VERSION, AGENTCTL_VERSION_ENV, AgentDirective, AgentErrorCode, AgentRequest,
@@ -77,8 +73,6 @@ pub use runtime::{
     ChangeEntry, ChangeEntryType, ChangeKind, ImplantPlan, OverlayHint, RunLineage,
     RuntimeCapabilities,
 };
-#[cfg(feature = "fuzzing")]
-pub use supervisor::decode_supervisor_frame_for_fuzz;
 pub use util::unix_now_ms;
 pub use vm::VmExecutor;
 pub use vm::run_internal_if_requested as run_krun_internal_if_requested;

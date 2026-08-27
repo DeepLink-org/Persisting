@@ -494,18 +494,6 @@ fn read_request(stream: &std::os::unix::net::UnixStream) -> anyhow::Result<Agent
     Ok(serde_json::from_slice(&frame)?)
 }
 
-#[cfg(feature = "fuzzing")]
-#[doc(hidden)]
-pub fn decode_agentctl_frame_for_fuzz(frame: &[u8]) -> anyhow::Result<AgentRequest> {
-    anyhow::ensure!(
-        !frame.is_empty() && frame.len() <= AGENTCTL_MAX_FRAME_BYTES,
-        "invalid AgentCtl frame length"
-    );
-    let frame = frame.strip_suffix(b"\n").unwrap_or(frame);
-    anyhow::ensure!(!frame.is_empty(), "empty AgentCtl frame");
-    Ok(serde_json::from_slice(frame)?)
-}
-
 fn dispatch_request(
     request: AgentRequest,
     state: &Arc<Mutex<AgentCtlState>>,

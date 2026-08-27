@@ -611,20 +611,6 @@ fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyhow::Result<(
     Ok(())
 }
 
-#[cfg(feature = "fuzzing")]
-#[doc(hidden)]
-pub fn fuzz_oci_layer(bytes: &[u8]) -> anyhow::Result<()> {
-    use std::io::Write;
-    let mut layer = tempfile::NamedTempFile::new()?;
-    layer.write_all(bytes)?;
-    let root = tempfile::tempdir()?;
-    apply_layer(
-        layer.path(),
-        "application/vnd.oci.image.layer.v1.tar",
-        root.path(),
-    )
-}
-
 #[cfg(unix)]
 fn make_ancestor_directories_writable(
     rootfs: &Path,
