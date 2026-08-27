@@ -182,12 +182,6 @@ def execute(item):
     };
     let t0 = Instant::now();
     let results = run_local_fleet(opts, |_| {}).await.unwrap();
-    for r in &results {
-        eprintln!(
-            "DIAG task={} cancelled={} ok={} error={:?}",
-            r.task_id, r.cancelled, r.ok, r.error
-        );
-    }
     assert!(results.iter().any(|r| r.cancelled));
     assert!(t0.elapsed().as_secs_f64() < 2.5);
 }
