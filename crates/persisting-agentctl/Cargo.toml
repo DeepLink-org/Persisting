@@ -15,3 +15,6 @@ serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "time"] }
 tokio-util = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+proptest.workspace = true

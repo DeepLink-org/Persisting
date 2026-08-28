@@ -154,6 +154,7 @@ mod tests {
         ControlReason, ControlRequest, ControlTransition, PolicyControlController,
     };
     use persisting_agentctl::{NetworkAccessRule, NetworkTransport};
+    use proptest::prelude::*;
 
     fn request(host: &str) -> NetworkAccessRequest {
         NetworkAccessRequest {
@@ -474,5 +475,88 @@ mod tests {
             result,
             Err(TargetAuthorizationError::Denied(DenyReason::NotInAllowlist))
         ));
+    }
+
+    fn connector_alias_strategy() -> impl Strategy<Value = IpAddr> {
+        (18u8..=19, any::<u8>(), any::<u8>())
+            .prop_map(|(second, third, fourth)| [198, second, third, fourth].into())
+    }
+
+    proptest! {
+        #[test]
+        fn connector_alias_range_is_recognized_for_logical_hosts_only(
+            address in connector_alias_strategy(),
+        ) {
+            prop_assert!(is_host_connector_alias("api.example.com", address));
+            prop_assert!(!is_host_connector_alias(&address.to_string(), address));
+        }
+
+        #[test]
+        fn addresses_outside_connector_range_are_never_aliases(
+            first in any::<u8>(),
+            second in any::<u8>(),
+            third in any::<u8>(),
+            fourth in any::<u8>(),
+        ) {
+            prop_assume!(first != 198 || (second != 18 && second != 19));
+            let address = IpAddr::from([first, second, third, fourth]);
+            prop_assert!(!is_host_connector_alias("api.example.com", address));
+        }
+
+        #[test]
+        fn authorized_results_are_public_deduplicated_and_first_seen_ordered(
+            indexes in prop::collection::vec(0usize..6, 1..32),
+        ) {
+            let candidates: [SocketAddr; 6] = [
+                "1.1.1.1:443".parse().unwrap(),
+                "8.8.8.8:443".parse().unwrap(),
+                "9.9.9.9:443".parse().unwrap(),
+                "127.0.0.1:443".parse().unwrap(),
+                "10.0.0.1:443".parse().unwrap(),
+                "192.168.0.1:443".parse().unwrap(),
+            ];
+            let resolved = indexes.iter().map(|index| candidates[*index]).collect::<Vec<_>>();
+            let mut expected = Vec::new();
+            for address in &resolved {
+                if !address.ip().is_loopback()
+                    && !matches!(address.ip(), IpAddr::V4(ip) if ip.is_private())
+                    && !expected.contains(address)
+                {
+                    expected.push(*address);
+                }
+            }
+
+            let policy = host_allowlist("api.example.com");
+            let result = authorize_resolved_target(
+                &PolicyControlController,
+                &policy,
+                request("api.example.com"),
+                resolved,
+            );
+            if expected.is_empty() {
+                prop_assert!(matches!(
+                    result,
+                    Err(TargetAuthorizationError::Denied(DenyReason::ResolvedAddressNotAllowed))
+                ));
+            } else {
+                prop_assert_eq!(result.unwrap().addresses, expected);
+            }
+        }
+
+        #[test]
+        fn alias_policy_accepts_the_entire_benchmarking_range(
+            address in connector_alias_strategy(),
+        ) {
+            let policy = host_allowlist("api.example.com");
+            let socket = SocketAddr::new(address, 443);
+            let target = authorize_resolved_target_with_policy(
+                &PolicyControlController,
+                &policy,
+                request("api.example.com"),
+                [socket],
+                ResolvedAddressPolicy::HostConnectorAliases,
+            ).unwrap();
+            prop_assert_eq!(target.addresses, [socket]);
+        }
     }
 }

@@ -84,6 +84,25 @@ pub fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn token_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[a-z][a-z0-9-]{0,12}").unwrap()
+    }
+
+    fn hop_header_strategy() -> impl Strategy<Value = &'static str> {
+        prop_oneof![
+            Just("connection"),
+            Just("proxy-connection"),
+            Just("keep-alive"),
+            Just("proxy-authenticate"),
+            Just("proxy-authorization"),
+            Just("te"),
+            Just("trailers"),
+            Just("transfer-encoding"),
+            Just("upgrade"),
+        ]
+    }
 
     #[test]
     fn filters_hop_by_hop_and_rewritten_body_headers() {
@@ -168,5 +187,72 @@ mod tests {
         assert!(is_websocket_upgrade(&headers));
         headers.insert("upgrade", "h2c".parse().unwrap());
         assert!(!is_websocket_upgrade(&headers));
+    }
+
+    proptest! {
+        #[test]
+        fn fixed_hop_headers_are_case_insensitive(name in hop_header_strategy()) {
+            prop_assert!(is_hop_by_hop(name));
+            prop_assert!(is_hop_by_hop(&name.to_ascii_uppercase()));
+            prop_assert!(skip_transparent_forward_header(&name.to_ascii_uppercase()));
+        }
+
+        #[test]
+        fn connection_tokens_nominate_headers_with_arbitrary_spacing_and_case(
+            token in token_strategy(),
+            uppercase in any::<bool>(),
+        ) {
+            let nominated = if uppercase {
+                token.to_ascii_uppercase()
+            } else {
+                token.clone()
+            };
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "connection",
+                format!(" keep-alive ,  {nominated} ").parse().unwrap(),
+            );
+            let non_nominated_header = format!("{}-other", token);
+            prop_assert!(skip_transparent_forward_header_for(&headers, &token));
+            prop_assert!(!skip_transparent_forward_header_for(
+                &headers,
+                &non_nominated_header,
+            ));
+        }
+
+        #[test]
+        fn reframing_always_removes_content_length_and_conditionally_removes_content_metadata(
+            body_changed in any::<bool>(),
+        ) {
+            let headers = HeaderMap::new();
+            prop_assert!(skip_response_header_after_reframing(
+                &headers,
+                "content-length",
+                body_changed,
+            ));
+            prop_assert_eq!(
+                skip_response_header_after_reframing(&headers, "content-type", body_changed),
+                body_changed,
+            );
+            prop_assert_eq!(
+                skip_response_header_after_reframing(&headers, "content-encoding", body_changed),
+                body_changed,
+            );
+        }
+
+        #[test]
+        fn websocket_upgrade_detection_is_token_based_not_substring(
+            prefix in token_strategy(),
+            suffix in token_strategy(),
+        ) {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "upgrade",
+                format!("{prefix}, WebSocket, {suffix}").parse().unwrap(),
+            );
+            prop_assert!(is_websocket_upgrade(&headers));
+            headers.insert("upgrade", format!("{prefix}websocket{suffix}").parse().unwrap());
+            prop_assert!(!is_websocket_upgrade(&headers));
+        }
     }
 }

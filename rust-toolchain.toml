@@ -1,8 +1,7 @@
 [toolchain]
-# Cranelift is currently exposed by rustc as a nightly-only codegen backend.
-# Keep the backend channel explicit. The exact nightly is managed by rustup so
-# contributors can use an already-installed toolchain without a forced network
-# sync; CI should pin a date if it needs bit-for-bit compiler reproducibility.
-channel = "nightly"
+# Stable is the default compiler for local development and normal CI builds.
+# The opt-in `just build-analysis` and `just sanitize` recipes install/use
+# nightly explicitly because they depend on unstable Cargo/rustc flags.
+channel = "stable"
 # rust-src is used by the opt-in `just sanitize` recipe (`-Z build-std`).
-components = ["rustfmt", "clippy", "rust-src", "rustc-codegen-cranelift-preview"]
+components = ["rustfmt", "clippy", "rust-src"]

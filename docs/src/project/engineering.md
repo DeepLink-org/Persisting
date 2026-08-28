@@ -12,7 +12,7 @@ experiments, or test plans.
 
 ## Fast local builds
 
-The repository `rust-toolchain.toml` selects nightly for compiler validation
+The repository `rust-toolchain.toml` selects stable for normal compiler validation
 and opt-in diagnostics. Normal development, test, and release builds all use
 the toolchain's default LLVM backend.
 

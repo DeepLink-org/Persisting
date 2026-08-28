@@ -103,7 +103,7 @@ writes the comparison to the Actions Job Summary, and uploads the complete
 HTML/JSON report. During the framework's first pull request, the missing main
 baseline is reported as incomparable and the candidate report is
 still published. The benchmark jobs disable unrelated toolchain installs
-(nextest, Cranelift, and Zig) to keep setup overhead out of this workflow.
+(nextest and Zig) to keep setup overhead out of this workflow.
 
 The nightly workflow runs the larger suite, stores its latest complete report
 under `$["latest"]` in `nightly.json`, and updates the generated benchmark block

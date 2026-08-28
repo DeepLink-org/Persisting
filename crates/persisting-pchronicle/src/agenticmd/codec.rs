@@ -136,7 +136,12 @@ pub fn agenticmd_body_byte_offset(input: &str) -> InputResult<usize> {
 ///
 /// Storyline metadata encoding is layered on top by `agenticmd::convert`.
 pub fn encode_agenticmd_preamble<T: Serialize>(frontmatter: &T) -> Result<String> {
-    let yaml = serde_yaml::to_string(frontmatter)?;
+    // Serialize through JSON first. With serde_json's `arbitrary_precision`
+    // feature, directly handing `serde_json::Value` to serde_yaml exposes the
+    // private Number representation instead of emitting a YAML scalar.
+    let json = serde_json::to_string(frontmatter)?;
+    let yaml_value: serde_yaml::Value = serde_yaml::from_str(&json)?;
+    let yaml = serde_yaml::to_string(&yaml_value)?;
     Ok(format!("---\n{yaml}---\n\n"))
 }
 
@@ -172,7 +177,14 @@ fn split_frontmatter_with_offset(
     };
     let yaml = &rest[..end];
     let after = &rest[end + "\n---".len()..];
-    let body = after.strip_prefix('\n').unwrap_or(after);
+    // The canonical encoder emits a blank separator line (`\n\n`) after the
+    // closing fence. Treat that separator as part of the frontmatter so
+    // rewrites do not accumulate an extra blank line on every pass. Preserve
+    // any additional blank lines supplied by the caller as document body.
+    let body = after
+        .strip_prefix("\n\n")
+        .or_else(|| after.strip_prefix('\n'))
+        .unwrap_or(after);
     let map = serde_yaml::from_str::<BTreeMap<String, Value>>(yaml)
         .map_err(|error| InputIssue::invalid(error.to_string()).at("frontmatter"))?;
     let body_offset = input.len() - body.len();
@@ -437,5 +449,136 @@ mod strict_frontmatter_tests {
                 .map(|block| block.body.as_str())
                 .collect::<Vec<_>>()
         );
+    }
+}
+
+#[cfg(test)]
+mod proptest_tests {
+    use std::collections::BTreeMap;
+
+    use proptest::prelude::*;
+    use serde_json::Value;
+
+    use super::{
+        AGENTICMD_FORMAT_NAME, AGENTICMD_FRONTMATTER_FORMAT, MarkdownBlock, MarkdownHeader,
+        agenticmd_body_byte_offset, encode_agenticmd_block, encode_agenticmd_preamble,
+        parse_agenticmd_blocks_with_spans, parse_agenticmd_document,
+    };
+
+    fn safe_token_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[a-zA-Z0-9_-]{1,24}").unwrap()
+    }
+
+    fn body_strategy() -> impl Strategy<Value = String> {
+        prop::collection::vec(any::<char>(), 0..128).prop_map(|chars| chars.into_iter().collect())
+    }
+
+    fn source_strategy() -> impl Strategy<Value = &'static str> {
+        prop_oneof![Just("user"), Just("agent"), Just("system")]
+    }
+
+    proptest! {
+        #[test]
+        fn encoded_blocks_roundtrip_body_source_and_declared_length(
+            body in body_strategy(),
+            source in source_strategy(),
+            type_name in safe_token_strategy(),
+        ) {
+            let block = MarkdownBlock {
+                header: MarkdownHeader {
+                    type_name,
+                    length: usize::MAX,
+                    fields: BTreeMap::from([(
+                        "source".into(),
+                        Value::String(source.into()),
+                    )]),
+                },
+                body: body.clone(),
+            };
+            let encoded = encode_agenticmd_block(&block).unwrap();
+            let spans = parse_agenticmd_blocks_with_spans(&encoded).unwrap();
+            prop_assert_eq!(spans.len(), 1);
+            let decoded = &spans[0];
+            prop_assert_eq!(&decoded.block.body, &body);
+            prop_assert_eq!(decoded.block.source(), Some(source));
+            prop_assert_eq!(&decoded.block.header.type_name, &block.header.type_name);
+            prop_assert_eq!(decoded.block.header.length, decoded.block.body.len());
+            prop_assert_eq!(decoded.start, 0);
+            prop_assert_eq!(decoded.end, encoded.len());
+        }
+
+        #[test]
+        fn encoded_blocks_parse_as_agenticmd_documents(
+            body in body_strategy(),
+            source in source_strategy(),
+        ) {
+            let block = MarkdownBlock {
+                header: MarkdownHeader {
+                    type_name: "text".into(),
+                    length: 0,
+                    fields: BTreeMap::from([(
+                        "source".into(),
+                        Value::String(source.into()),
+                    )]),
+                },
+                body,
+            };
+            let encoded = encode_agenticmd_block(&block).unwrap();
+            let document = parse_agenticmd_document(&encoded).unwrap();
+            prop_assert_eq!(document.format, AGENTICMD_FORMAT_NAME);
+            prop_assert_eq!(document.frontmatter_format, AGENTICMD_FRONTMATTER_FORMAT);
+            prop_assert_eq!(document.blocks.len(), 1);
+        }
+
+        #[test]
+        fn preamble_offsets_are_byte_offsets(
+            key in safe_token_strategy(),
+            value in safe_token_strategy(),
+        ) {
+            let frontmatter = BTreeMap::from([(key, value)]);
+            let preamble = encode_agenticmd_preamble(&frontmatter).unwrap();
+            let body_offset = agenticmd_body_byte_offset(&preamble).unwrap();
+            prop_assert!(body_offset <= preamble.len());
+            let document = format!("{}body", preamble);
+            prop_assert_eq!(
+                agenticmd_body_byte_offset(&document).unwrap(),
+                body_offset,
+            );
+        }
+
+        #[test]
+        fn source_and_role_fallbacks_are_consistent(source in source_strategy()) {
+            let source_block = MarkdownBlock {
+                header: MarkdownHeader {
+                    type_name: "text".into(),
+                    length: 0,
+                    fields: BTreeMap::from([(
+                        "source".into(),
+                        Value::String(source.into()),
+                    )]),
+                },
+                body: String::new(),
+            };
+            let expected_role = match source {
+                "user" => "user",
+                "agent" => "assistant",
+                "system" => "note",
+                _ => unreachable!(),
+            };
+            prop_assert_eq!(source_block.source(), Some(source));
+            prop_assert_eq!(source_block.role(), Some(expected_role));
+        }
+    }
+
+    #[test]
+    fn preamble_serializes_json_numbers_as_yaml_scalars() {
+        let frontmatter = BTreeMap::from([(
+            "turn_count".to_string(),
+            Value::Number(serde_json::Number::from(1)),
+        )]);
+        let encoded = encode_agenticmd_preamble(&frontmatter).unwrap();
+
+        assert!(encoded.contains("turn_count: 1"));
+        assert!(!encoded.contains("$serde_json::private::Number"));
     }
 }

@@ -34,7 +34,6 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-protoc: "false"
-          install-cranelift: "false"
           install-nextest: "false"
           install-zig: "false"
 

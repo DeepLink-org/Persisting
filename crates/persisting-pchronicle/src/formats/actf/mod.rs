@@ -582,6 +582,7 @@ pub fn parse_actf_document(input: &str) -> InputResult<ActfDocument> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use serde_json::json;
 
     fn fixture() -> ActfDocument {
@@ -695,6 +696,64 @@ mod tests {
             document.attempts["1"].trajectory.steps[0].effective_tools()[0].id,
             "call-1"
         );
+    }
+
+    proptest! {
+        #[test]
+        fn effective_tool_ids_are_stable_for_missing_and_present_ids(
+            step_id in 1i64..10_000,
+            index in 0usize..64,
+            id in proptest::string::string_regex("[a-zA-Z0-9 _-]{0,24}").unwrap(),
+        ) {
+            let call = ActfToolCall { kind: "tool_use".into(), id: id.clone(), extra: Map::new() };
+            let effective = call.effective_id(step_id, index);
+            if id.trim().is_empty() {
+                prop_assert_eq!(effective, format!("step-{step_id}-tool-{index}"));
+            } else {
+                prop_assert_eq!(effective, id);
+            }
+        }
+
+        #[test]
+        fn event_log_trajectory_uses_first_and_last_timestamps(
+            timestamps in proptest::collection::vec(prop::option::of(
+                proptest::string::string_regex("[0-9TZ:+-]{1,24}").unwrap()
+            ), 0..16),
+        ) {
+            let events = timestamps.iter().map(|timestamp| match timestamp {
+                Some(timestamp) => json!({"timestamp": timestamp}),
+                None => json!({"kind": "event"}),
+            }).collect::<Vec<_>>();
+            let trajectory = ActfTrajectory::from_event_log(events.clone());
+            let first = timestamps.iter().find_map(Option::as_ref)
+                .map(String::as_str).unwrap_or("1970-01-01T00:00:00Z");
+            let last = timestamps.iter().rev().find_map(Option::as_ref)
+                .map(String::as_str).unwrap_or(first);
+            prop_assert_eq!(trajectory.schema_version, ACTF_SCHEMA_VERSION);
+            prop_assert!(trajectory.steps.is_empty());
+            prop_assert_eq!(trajectory.events, events);
+            prop_assert_eq!(trajectory.started_at, first);
+            prop_assert_eq!(trajectory.finished_at, last);
+        }
+
+        #[test]
+        fn trajectory_validation_enforces_strictly_increasing_step_ids(
+            first in 1i64..10_000,
+            second in 1i64..10_000,
+        ) {
+            let mut document = fixture();
+            let trajectory = &mut document.attempts.get_mut("1").unwrap().trajectory;
+            let mut first_step = trajectory.steps[0].clone();
+            first_step.step_id = first;
+            first_step.tools.clear();
+            first_step.assistant_content.tool_calls.clear();
+            first_step.observation.clear();
+            let mut second_step = first_step.clone();
+            second_step.step_id = second;
+            trajectory.steps = vec![first_step, second_step];
+            let result = trajectory.validate();
+            prop_assert_eq!(result.is_ok(), second > first);
+        }
     }
 
     #[test]
