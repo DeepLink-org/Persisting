@@ -65,6 +65,7 @@ pub type InputResult<T> = std::result::Result<T, InputIssue>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn display_includes_location_when_present() {
@@ -76,5 +77,43 @@ mod tests {
             InputIssue::invalid("invalid JSON").to_string(),
             "invalid JSON"
         );
+    }
+
+    proptest! {
+        #[test]
+        fn invalid_issue_preserves_arbitrary_message(message in any::<String>()) {
+            let issue = InputIssue::invalid(message.clone());
+            prop_assert_eq!(issue.kind(), InputIssueKind::Invalid);
+            prop_assert_eq!(issue.message(), message.as_str());
+            prop_assert_eq!(issue.location(), None);
+            prop_assert_eq!(issue.to_string(), message);
+        }
+
+        #[test]
+        fn unsupported_issue_preserves_arbitrary_message(message in any::<String>()) {
+            let issue = InputIssue::unsupported(message.clone());
+            prop_assert_eq!(issue.kind(), InputIssueKind::Unsupported);
+            prop_assert_eq!(issue.message(), message.as_str());
+            prop_assert_eq!(issue.to_string(), message);
+        }
+
+        #[test]
+        fn attaching_location_is_composable(
+            message in any::<String>(),
+            first in any::<String>(),
+            second in any::<String>(),
+        ) {
+            let issue = InputIssue::invalid(message.clone()).at(first.clone()).at(second.clone());
+            prop_assert_eq!(issue.kind(), InputIssueKind::Invalid);
+            prop_assert_eq!(issue.message(), message.as_str());
+            prop_assert_eq!(issue.location(), Some(second.as_str()));
+            prop_assert_eq!(issue.to_string(), format!("{message} ({second})"));
+        }
+
+        #[test]
+        fn display_without_location_is_exact_message(message in any::<String>()) {
+            let issue = InputIssue::invalid(message.clone());
+            prop_assert_eq!(issue.to_string(), message);
+        }
     }
 }

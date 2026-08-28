@@ -157,6 +157,7 @@ fn read_linux_machine_id() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn sample_input() -> HostIdentityInput {
         HostIdentityInput {
@@ -223,5 +224,98 @@ mod tests {
         let peer: SocketAddr = "127.0.0.1:12345".parse().unwrap();
         let fp = machine_fingerprint_for_client(peer, None);
         assert_eq!(fp.len(), 32);
+    }
+
+    fn identity_text_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[a-zA-Z0-9._:-]{1,64}").unwrap()
+    }
+
+    fn identity_strategy() -> impl Strategy<Value = HostIdentityInput> {
+        (
+            identity_text_strategy(),
+            identity_text_strategy(),
+            identity_text_strategy(),
+            prop::option::of(identity_text_strategy()),
+        )
+            .prop_map(
+                |(hostname, username, identity_ip, machine_id)| HostIdentityInput {
+                    hostname,
+                    username,
+                    identity_ip,
+                    machine_id,
+                },
+            )
+    }
+
+    proptest! {
+        #[test]
+        fn every_fingerprint_is_stable_lowercase_hex(input in identity_strategy()) {
+            let first = fingerprint_host(&input);
+            let second = fingerprint_host(&input);
+            prop_assert_eq!(&first, &second);
+            prop_assert_eq!(first.len(), 32);
+            prop_assert!(first.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        }
+
+        #[test]
+        fn hostname_case_whitespace_and_local_suffix_are_normalized(
+            hostname in proptest::string::string_regex("[a-zA-Z0-9-]{1,48}").unwrap(),
+            username in identity_text_strategy(),
+            identity_ip in identity_text_strategy(),
+        ) {
+            let canonical = HostIdentityInput {
+                hostname: hostname.to_ascii_lowercase(),
+                username: username.clone(),
+                identity_ip: identity_ip.clone(),
+                machine_id: None,
+            };
+            let decorated = HostIdentityInput {
+                hostname: format!("  {}.LOCAL  ", hostname.to_ascii_uppercase()),
+                ..canonical.clone()
+            };
+            prop_assert_eq!(fingerprint_host(&canonical), fingerprint_host(&decorated));
+        }
+
+        #[test]
+        fn username_and_ip_outer_whitespace_do_not_change_identity(
+            hostname in identity_text_strategy(),
+            username in identity_text_strategy(),
+            identity_ip in identity_text_strategy(),
+        ) {
+            let canonical = HostIdentityInput {
+                hostname,
+                username: username.to_ascii_lowercase(),
+                identity_ip: identity_ip.clone(),
+                machine_id: None,
+            };
+            let decorated = HostIdentityInput {
+                username: format!("  {}  ", username.to_ascii_uppercase()),
+                identity_ip: format!("  {identity_ip}  "),
+                ..canonical.clone()
+            };
+            prop_assert_eq!(fingerprint_host(&canonical), fingerprint_host(&decorated));
+        }
+
+        #[test]
+        fn empty_machine_ids_are_equivalent_to_absent_ids(
+            mut input in identity_strategy(),
+            spaces in 0usize..32,
+        ) {
+            input.machine_id = None;
+            let absent = fingerprint_host(&input);
+            input.machine_id = Some(" ".repeat(spaces));
+            prop_assert_eq!(fingerprint_host(&input), absent);
+        }
+
+        #[test]
+        fn machine_id_outer_whitespace_is_ignored(
+            mut input in identity_strategy(),
+            machine_id in identity_text_strategy(),
+        ) {
+            input.machine_id = Some(machine_id.clone());
+            let canonical = fingerprint_host(&input);
+            input.machine_id = Some(format!("  {machine_id}  "));
+            prop_assert_eq!(fingerprint_host(&input), canonical);
+        }
     }
 }

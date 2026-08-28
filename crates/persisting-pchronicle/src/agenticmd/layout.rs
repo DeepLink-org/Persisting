@@ -5,15 +5,69 @@ use std::path::{Path, PathBuf};
 /// Max filename stem length for `{session_id}.md` on disk.
 const SESSION_FILENAME_MAX_LEN: usize = 128;
 
-/// Sanitize a logical session id for use as a markdown filename stem.
+/// Encode a logical session id as a bounded, filesystem-safe filename stem.
+///
+/// ASCII filename characters are preserved. Every other UTF-8 byte is encoded
+/// as `~HH`, making the representation injective until the fixed filename
+/// budget is exhausted. Overlong encodings retain a complete readable prefix
+/// and a digest of the full logical key.
+pub fn session_filename_stem(session_id: &str) -> String {
+    let trimmed = session_id.trim();
+    if trimmed.is_empty() {
+        return "session".to_string();
+    }
+
+    let mut encoded = String::with_capacity(trimmed.len().min(SESSION_FILENAME_MAX_LEN));
+    for byte in trimmed.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+            encoded.push(*byte as char);
+        } else {
+            encoded.push('~');
+            encoded.push_str(&format!("{byte:02X}"));
+        }
+    }
+
+    if encoded.len() <= SESSION_FILENAME_MAX_LEN {
+        return encoded;
+    }
+
+    let digest = blake3::hash(trimmed.as_bytes()).to_hex();
+    let suffix = format!("~h{}", &digest[..16]);
+    let prefix_limit = SESSION_FILENAME_MAX_LEN - suffix.len();
+    let mut prefix = String::with_capacity(prefix_limit);
+    for byte in trimmed.as_bytes() {
+        let token_len = if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+            1
+        } else {
+            3
+        };
+        if prefix.len() + token_len > prefix_limit {
+            break;
+        }
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+            prefix.push(*byte as char);
+        } else {
+            prefix.push('~');
+            prefix.push_str(&format!("{byte:02X}"));
+        }
+    }
+    prefix.push_str(&suffix);
+    prefix
+}
+
+/// Backwards-compatible name for [`session_filename_stem`].
 pub fn sanitize_session_filename(session_id: &str) -> String {
+    session_filename_stem(session_id)
+}
+
+fn legacy_session_filename_stem(session_id: &str) -> String {
     let trimmed = session_id.trim();
     let mut out = String::with_capacity(trimmed.len().min(SESSION_FILENAME_MAX_LEN));
     for c in trimmed.chars() {
         if out.len() >= SESSION_FILENAME_MAX_LEN {
             break;
         }
-        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
             out.push(c);
         } else {
             out.push('_');
@@ -28,7 +82,7 @@ pub fn sanitize_session_filename(session_id: &str) -> String {
 
 /// Markdown filename for a logical session (`{session_id}.md`).
 pub fn session_markdown_filename(session_key: &str) -> String {
-    format!("{}.md", sanitize_session_filename(session_key))
+    format!("{}.md", session_filename_stem(session_key))
 }
 
 /// `{run_dir}/{session_key}.md`
@@ -44,7 +98,8 @@ pub fn session_markdown_write_path_for_key(run_dir: &Path, session_key: &str) ->
 
 /// Whether `session_key` names a subagent markdown stem (`agent-{id}`).
 pub fn is_subagent_session_storage_key(session_key: &str) -> bool {
-    sanitize_session_filename(session_key)
+    session_key
+        .trim()
         .strip_prefix("agent-")
         .is_some_and(|suffix| {
             !suffix.is_empty()
@@ -78,6 +133,12 @@ pub fn locate_session_markdown_for_key(run_dir: &Path, session_key: &str) -> Opt
     // Subagent keys always map to sibling `agent-{id}.md`; never inherit the main run file.
     if is_subagent_session_storage_key(session_key) {
         return None;
+    }
+    // Read-through compatibility for files written before the injective
+    // filename codec was introduced. New writes always use `named` above.
+    let legacy = run_dir.join(format!("{}.md", legacy_session_filename_stem(session_key)));
+    if legacy != named && legacy.is_file() {
+        return Some(legacy);
     }
     // Main session in a capture run: prefer the run bucket file over subagent siblings.
     if let Some(run_md) = locate_run_bucket_markdown(run_dir) {
@@ -130,6 +191,7 @@ fn is_session_key_markdown_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn touch(path: std::path::PathBuf) {
         if let Some(parent) = path.parent() {
@@ -223,6 +285,30 @@ mod tests {
     }
 
     #[test]
+    fn encoded_session_ids_are_disambiguated() {
+        assert_ne!(
+            sanitize_session_filename("a/b"),
+            sanitize_session_filename("a?b")
+        );
+        assert_ne!(
+            sanitize_session_filename(&"x".repeat(129)),
+            sanitize_session_filename(&format!("{}y", "x".repeat(128)))
+        );
+    }
+
+    #[test]
+    fn existing_legacy_filename_is_read_without_reusing_legacy_encoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("a_b.md");
+        std::fs::write(&legacy, "legacy").unwrap();
+        assert_eq!(
+            locate_session_markdown_for_key(dir.path(), "a/b"),
+            Some(legacy)
+        );
+        assert_ne!(session_markdown_filename("a/b"), "a_b.md");
+    }
+
+    #[test]
     fn main_session_prefers_run_md_over_subagent_siblings() {
         let dir = tempfile::tempdir().unwrap();
         let run_dir = dir.path().join("run-20260524-161537-122998000");
@@ -245,5 +331,60 @@ mod tests {
             locate_session_markdown(&run_dir),
             Some(run_dir.join("run-20260524-161537-122998000.md"))
         );
+    }
+
+    fn storage_safe_suffix_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[a-zA-Z0-9_-]{1,64}").unwrap()
+    }
+
+    proptest! {
+        #[test]
+        fn encoding_is_bounded_ascii_and_path_safe(session_id in any::<String>()) {
+            let encoded = session_filename_stem(&session_id);
+            prop_assert!(!encoded.is_empty());
+            prop_assert!(encoded.len() <= SESSION_FILENAME_MAX_LEN);
+            prop_assert!(encoded.is_ascii());
+            prop_assert!(!encoded.contains('/'));
+            prop_assert!(!encoded.contains('\\'));
+        }
+
+        #[test]
+        fn markdown_filename_is_a_single_md_path_component(session_id in any::<String>()) {
+            let filename = session_markdown_filename(&session_id);
+            prop_assert!(filename.ends_with(".md"));
+            prop_assert!(!filename.contains('/'));
+            prop_assert!(!filename.contains('\\'));
+            prop_assert_eq!(Path::new(&filename).file_name().and_then(|v| v.to_str()), Some(filename.as_str()));
+        }
+
+        #[test]
+        fn canonical_subagent_keys_roundtrip_through_storage_detection(
+            suffix in storage_safe_suffix_strategy(),
+        ) {
+            let key = format!("agent-{suffix}");
+            let filename = session_markdown_filename(&key);
+            prop_assert!(is_subagent_session_storage_key(&key));
+            prop_assert!(is_subagent_markdown_filename(&filename));
+            prop_assert!(is_trajectory_markdown_path(&filename));
+        }
+
+        #[test]
+        fn generated_run_and_agent_markdown_names_are_trajectory_paths(
+            prefix in prop_oneof![Just("run-"), Just("agent-")],
+            suffix in storage_safe_suffix_strategy(),
+        ) {
+            let filename = format!("{prefix}{suffix}.md");
+            prop_assert!(is_trajectory_markdown_path(filename));
+        }
+
+        #[test]
+        fn write_path_stays_beneath_run_directory_when_no_file_exists(
+            session_id in any::<String>(),
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let path = session_markdown_write_path_for_key(dir.path(), &session_id);
+            prop_assert_eq!(path.parent(), Some(dir.path()));
+            prop_assert_eq!(path, session_markdown_path_for_key(dir.path(), &session_id));
+        }
     }
 }

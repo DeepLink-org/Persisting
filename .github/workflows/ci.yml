@@ -28,7 +28,6 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-protoc: "false"
-          install-cranelift: "false"
           install-nextest: "false"
           install-zig: "false"
           components: "rustfmt"
@@ -48,7 +47,6 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-protoc: "false"
-          install-cranelift: "false"
           install-nextest: "false"
           install-zig: "false"
           components: "clippy"
@@ -70,7 +68,6 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-protoc: "false"
-          install-cranelift: "false"
           install-nextest: "false"
           install-zig: "false"
           components: "clippy"
@@ -212,7 +209,6 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-protoc: "false"
-          install-cranelift: "false"
           install-zig: "${{ matrix.install_zig }}"
           components: ""
 
@@ -278,7 +274,6 @@ jobs:
         with:
           install-protoc: "false"
           install-dioxus: "true"
-          install-cranelift: "false"
           install-zig: "false"
           components: ""
 
@@ -304,7 +299,6 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-protoc: "false"
-          install-cranelift: "false"
           install-zig: "false"
           components: ""
 
@@ -346,7 +340,6 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-cranelift: "false"
           install-zig: "false"
           components: ""
 
@@ -439,7 +432,6 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-protoc: "false"
-          install-cranelift: "false"
           install-nextest: "false"
           install-zig: "false"
           components: ""

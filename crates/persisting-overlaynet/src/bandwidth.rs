@@ -103,6 +103,61 @@ pub(crate) fn throttle_body(body: Body, bandwidth: BandwidthSession) -> Body {
 mod tests {
     use super::*;
     use http_body_util::BodyExt;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn sequential_reservations_have_the_declared_duration(
+            bytes_per_second in 1u64..=1_000_000_000,
+            bytes in 0usize..=100_000,
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let bucket = BandwidthBucket::new(bytes_per_second);
+                let first = bucket.reserve(bytes).await;
+                let second = bucket.reserve(bytes).await;
+                let expected_nanos = (bytes as u128)
+                    .saturating_mul(1_000_000_000)
+                    .div_ceil(bytes_per_second as u128)
+                    .min(u64::MAX as u128) as u64;
+                prop_assert!(
+                    second.duration_since(first) >= Duration::from_nanos(expected_nanos),
+                    "reservation interval was shorter than the declared rate"
+                );
+                Ok(())
+            })?;
+        }
+
+        #[test]
+        fn registry_session_contains_one_bucket_per_distinct_limit(
+            limits in prop::collection::vec(
+                (
+                    prop::option::of(proptest::string::string_regex("[a-z]{1,8}\\.example\\.com").unwrap()),
+                    prop::option::of(1u16..=u16::MAX),
+                    1u64..=1_000_000_000,
+                ).prop_map(|(host, port, bytes_per_second)| NetworkBandwidthLimit {
+                    host,
+                    port,
+                    bytes_per_second,
+                }),
+                0..16,
+            ),
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let expected = limits.iter().collect::<std::collections::HashSet<_>>().len();
+                let session = BandwidthRegistry::default().session(limits).await;
+                prop_assert_eq!(session.buckets.len(), expected);
+                Ok(())
+            })?;
+        }
+    }
 
     #[tokio::test]
     async fn registry_shares_identical_limits_between_sessions() {

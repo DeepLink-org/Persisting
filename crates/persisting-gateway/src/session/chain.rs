@@ -122,6 +122,7 @@ fn plausible_session_value(v: &str) -> bool {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+    use proptest::prelude::*;
 
     fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
         use axum::http::header::HeaderName;
@@ -188,5 +189,79 @@ mod tests {
     fn claude_code_agent_id_from_header() {
         let h = headers(&[("x-claude-code-agent-id", "a5aa661")]);
         assert_eq!(extract_claude_agent_id(&h).as_deref(), Some("a5aa661"));
+    }
+
+    fn header_token_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[a-zA-Z0-9._-]{1,64}").unwrap()
+    }
+
+    fn plausible_generic_session_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[a-zA-Z0-9._-]{8,64}").unwrap()
+    }
+
+    proptest! {
+        #[test]
+        fn configured_header_wins_the_complete_priority_chain(
+            configured in header_token_strategy(),
+            standard in header_token_strategy(),
+            trace in header_token_strategy(),
+            generic in plausible_generic_session_strategy(),
+        ) {
+            let h = headers(&[
+                ("x-custom-session", &configured),
+                ("x-session-id", &standard),
+                ("x-persisting-trace-id", &trace),
+                ("x-vendor-session-id", &generic),
+            ]);
+            prop_assert_eq!(
+                extract_session_from_headers(&h, "x-custom-session"),
+                Some(configured),
+            );
+        }
+
+        #[test]
+        fn generic_session_acceptance_matches_length_and_alphabet(
+            value in proptest::string::string_regex("[a-zA-Z0-9._-]{0,96}").unwrap(),
+        ) {
+            prop_assert_eq!(plausible_session_value(&value), value.len() >= MIN_SESSION_ID_LEN);
+        }
+
+        #[test]
+        fn generic_vendor_session_headers_roundtrip(
+            vendor in proptest::string::string_regex("[a-z][a-z0-9-]{0,20}").unwrap(),
+            value in plausible_generic_session_strategy(),
+        ) {
+            let name = format!("x-{vendor}-session-id");
+            let h = headers(&[(&name, &value)]);
+            prop_assert_eq!(
+                extract_session_from_headers(&h, "x-custom-session"),
+                Some(value),
+            );
+        }
+
+        #[test]
+        fn invalid_generic_characters_are_rejected(
+            prefix in plausible_generic_session_strategy(),
+            invalid in prop_oneof![Just("/"), Just(" "), Just(":"), Just("💥")],
+        ) {
+            let value = format!("{prefix}{invalid}");
+            prop_assert!(!plausible_session_value(&value));
+        }
+
+        #[test]
+        fn trace_resolution_uses_first_nonempty_header(
+            persisting in header_token_strategy(),
+            litellm in header_token_strategy(),
+            request in header_token_strategy(),
+            call_id in header_token_strategy(),
+        ) {
+            let h = headers(&[
+                ("x-persisting-trace-id", &persisting),
+                ("x-litellm-trace-id", &litellm),
+                ("x-request-id", &request),
+            ]);
+            prop_assert_eq!(resolve_trace_id(&h, &call_id), persisting);
+            prop_assert_eq!(resolve_trace_id(&HeaderMap::new(), &call_id), call_id);
+        }
     }
 }

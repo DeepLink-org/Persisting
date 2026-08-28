@@ -176,3 +176,74 @@ fn parse_digits(digits: &str) -> InputResult<i128> {
         .parse::<i128>()
         .map_err(|_| InputIssue::invalid("timestamp is outside nanosecond range"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn nanos_as_decimal(nanos: i64) -> String {
+        let negative = nanos < 0;
+        let magnitude = (nanos as i128).abs();
+        let whole = magnitude / 1_000_000_000;
+        let fraction = magnitude % 1_000_000_000;
+        let sign = if negative { "-" } else { "" };
+        if fraction == 0 {
+            format!("{sign}{whole}")
+        } else {
+            let fraction = format!("{fraction:09}");
+            format!("{sign}{whole}.{}", fraction.trim_end_matches('0'))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn decimal_seconds_preserve_every_representable_nanosecond(nanos in any::<i64>()) {
+            let encoded = nanos_as_decimal(nanos);
+            prop_assert_eq!(decimal_seconds_to_nanos(&encoded).unwrap(), nanos);
+        }
+
+        #[test]
+        fn integer_json_timestamps_preserve_their_semantic_nanoseconds(
+            seconds in -9_000_000_000i64..=9_000_000_000,
+        ) {
+            let nanos = seconds * 1_000_000_000;
+            let encoded = nanos_as_decimal(nanos);
+            let source: Value = serde_json::from_str(&encoded).unwrap();
+            let timestamp = StorylineTimestamp::from_json(source.clone()).unwrap();
+            prop_assert_eq!(timestamp.timestamp_nanos(), nanos);
+            prop_assert_eq!(serde_json::to_value(&timestamp).unwrap(), source);
+        }
+
+        #[test]
+    fn finer_than_nanosecond_precision_is_rejected(
+            whole in 0u64..=9_000_000_000,
+            fraction in 0u32..=999_999_999,
+            extra in 1u8..=9,
+        ) {
+            let encoded = format!("{whole}.{fraction:09}{extra}");
+            prop_assert!(decimal_seconds_to_nanos(&encoded).is_err());
+        }
+
+        #[test]
+        fn json_decimal_parsing_preserves_nanoseconds_without_float_rounding(
+            whole in 0u64..=90_000_000,
+            fraction in 1u32..=999_999_999,
+        ) {
+            let encoded = format!("-{whole}.{fraction:09}");
+            let source: Value = serde_json::from_str(&encoded).unwrap();
+            let timestamp = StorylineTimestamp::from_json(source).unwrap();
+            let expected = -((whole as i128) * 1_000_000_000 + fraction as i128);
+            prop_assert_eq!(timestamp.timestamp_nanos() as i128, expected);
+        }
+
+        #[test]
+        fn canonical_rfc3339_roundtrips_the_instant(nanos in any::<i64>()) {
+            let instant = DateTime::<Utc>::from_timestamp_nanos(nanos);
+            let timestamp = StorylineTimestamp::from_utc(instant).unwrap();
+            let reparsed = StorylineTimestamp::from_rfc3339(&timestamp.canonical_rfc3339()).unwrap();
+            prop_assert_eq!(reparsed.instant(), instant);
+            prop_assert_eq!(reparsed.timestamp_nanos(), nanos);
+        }
+    }
+}

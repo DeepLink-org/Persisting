@@ -37,7 +37,7 @@ description = "Agent execution, orchestration, and durable history infrastructur
 # Use `--profile dev-debug` when source-level debugger information is needed.
 # `debug = 0` already omits debug info; `strip = "none"` avoids a redundant
 # post-link copy that doubles peak disk usage for large test executables.
-# Keep split DWARF disabled on macOS, where the pinned nightly may not ship a
+# Keep split DWARF disabled on macOS, where the active toolchain may not ship a
 # runnable `rust-objcopy`/LLVM pair.
 debug = 0
 incremental = true

@@ -201,6 +201,75 @@ pub enum AgentResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn text_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[a-zA-Z0-9_ ./:-]{0,32}").unwrap()
+    }
+
+    fn state_strategy() -> impl Strategy<Value = AgentState> {
+        prop_oneof![
+            Just(AgentState::Active),
+            Just(AgentState::Idle),
+            text_strategy().prop_map(|checkpoint_id| AgentState::Quiesced { checkpoint_id }),
+        ]
+    }
+
+    fn directive_strategy() -> impl Strategy<Value = AgentDirective> {
+        prop_oneof![
+            Just(AgentDirective::Continue),
+            (text_strategy(), prop::option::of(any::<u64>())).prop_map(
+                |(checkpoint_id, deadline_unix_ms)| AgentDirective::Quiesce {
+                    checkpoint_id,
+                    deadline_unix_ms,
+                },
+            ),
+            prop::option::of(text_strategy())
+                .prop_map(|reason| AgentDirective::Shutdown { reason }),
+        ]
+    }
+
+    fn request_strategy() -> impl Strategy<Value = AgentRequest> {
+        prop_oneof![
+            (any::<u32>(), text_strategy(), text_strategy()).prop_map(
+                |(version, token, client_id)| AgentRequest::Hello {
+                    version,
+                    token,
+                    client_id,
+                },
+            ),
+            (any::<u32>(), text_strategy(), state_strategy()).prop_map(
+                |(version, session_id, state)| AgentRequest::Sync {
+                    version,
+                    session_id,
+                    state,
+                },
+            ),
+        ]
+    }
+
+    fn response_strategy() -> impl Strategy<Value = AgentResponse> {
+        prop_oneof![
+            (text_strategy(), any::<u64>(), directive_strategy()).prop_map(
+                |(session_id, sync_interval_ms, directive)| AgentResponse::Welcome {
+                    session_id,
+                    sync_interval_ms,
+                    directive,
+                },
+            ),
+            directive_strategy().prop_map(|directive| AgentResponse::Synced { directive }),
+            (
+                prop_oneof![
+                    Just(AgentErrorCode::InvalidRequest),
+                    Just(AgentErrorCode::Unauthorized),
+                    Just(AgentErrorCode::VersionMismatch),
+                    Just(AgentErrorCode::Conflict),
+                ],
+                text_strategy()
+            )
+                .prop_map(|(code, message)| AgentResponse::Error { code, message }),
+        ]
+    }
 
     #[test]
     fn hello_has_the_v1_wire_shape() {
@@ -328,5 +397,42 @@ mod tests {
             .unwrap(),
             serde_json::json!({ "kind": "shutdown", "reason": "maintenance" })
         );
+    }
+
+    proptest! {
+        #[test]
+        fn every_request_roundtrips_through_json(request in request_strategy()) {
+            let encoded = serde_json::to_value(&request).unwrap();
+            let decoded = serde_json::from_value::<AgentRequest>(encoded).unwrap();
+            prop_assert_eq!(decoded, request);
+        }
+
+        #[test]
+        fn every_response_roundtrips_through_json(response in response_strategy()) {
+            let encoded = serde_json::to_value(&response).unwrap();
+            let decoded = serde_json::from_value::<AgentResponse>(encoded).unwrap();
+            prop_assert_eq!(decoded, response);
+        }
+
+        #[test]
+        fn optional_directive_fields_follow_presence_semantics(
+            checkpoint_id in text_strategy(),
+            deadline_unix_ms in prop::option::of(any::<u64>()),
+            reason in prop::option::of(text_strategy()),
+        ) {
+            let quiesce = serde_json::to_value(AgentDirective::Quiesce {
+                checkpoint_id,
+                deadline_unix_ms,
+            }).unwrap();
+            prop_assert_eq!(
+                quiesce.get("deadline_unix_ms").is_some(),
+                deadline_unix_ms.is_some(),
+            );
+
+            let shutdown = serde_json::to_value(AgentDirective::Shutdown {
+                reason: reason.clone(),
+            }).unwrap();
+            prop_assert_eq!(shutdown.get("reason").is_some(), reason.is_some());
+        }
     }
 }

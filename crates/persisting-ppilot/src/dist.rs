@@ -145,6 +145,7 @@ impl DistEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
@@ -226,5 +227,84 @@ mod tests {
     #[test]
     fn analysis_worker_names_are_rank_stable() {
         assert_eq!(DistEnv::analysis_worker_name(3), "ppilot/analysis/3");
+    }
+
+    fn placement_strategy() -> impl Strategy<Value = (usize, usize, usize, usize)> {
+        (1usize..32, 1usize..16).prop_flat_map(|(n_workers, per_worker)| {
+            (
+                Just(n_workers),
+                Just(per_worker),
+                0..n_workers,
+                0..per_worker,
+            )
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn flat_index_selects_the_corresponding_slot_name(
+            (n_workers, per_worker, worker, slot) in placement_strategy(),
+        ) {
+            let names = DistEnv::slot_names(n_workers, per_worker);
+            let index = DistEnv::slot_flat_index(worker, slot, n_workers, per_worker);
+            prop_assert_eq!(&names[index], &DistEnv::slot_name(worker, slot, per_worker));
+        }
+
+        #[test]
+        fn slot_names_form_a_unique_complete_slot_major_grid(
+            n_workers in 1usize..32,
+            per_worker in 1usize..16,
+        ) {
+            let names = DistEnv::slot_names(n_workers, per_worker);
+            prop_assert_eq!(names.len(), n_workers * per_worker);
+            let unique = names.iter().collect::<std::collections::HashSet<_>>();
+            prop_assert_eq!(unique.len(), names.len());
+
+            for (index, name) in names.iter().enumerate() {
+                let slot = index / n_workers;
+                let worker = index % n_workers;
+                prop_assert_eq!(name, &DistEnv::slot_name(worker, slot, per_worker));
+            }
+        }
+
+        #[test]
+        fn valid_torchrun_maps_preserve_rank_and_port_defaults(
+            world_size in 1usize..128,
+            rank_seed in any::<usize>(),
+            master_port in 1u16..=u16::MAX - 17,
+        ) {
+            let rank = rank_seed % world_size;
+            let env = map(&[
+                ("RANK", &rank.to_string()),
+                ("WORLD_SIZE", &world_size.to_string()),
+                ("MASTER_PORT", &master_port.to_string()),
+            ]);
+            let dist = DistEnv::from_map(&env).unwrap().unwrap();
+            prop_assert_eq!(dist.rank, rank);
+            prop_assert_eq!(dist.world_size, world_size);
+            prop_assert_eq!(dist.is_driver(), rank == 0);
+            prop_assert_eq!(dist.pulsing_seed.port(), master_port + 17);
+        }
+
+        #[test]
+        fn rank_outside_world_is_rejected(
+            world_size in 1usize..128,
+            excess in 0usize..128,
+        ) {
+            let rank = world_size + excess;
+            let env = map(&[
+                ("RANK", &rank.to_string()),
+                ("WORLD_SIZE", &world_size.to_string()),
+            ]);
+            prop_assert!(DistEnv::from_map(&env).is_err());
+        }
+
+        #[test]
+        fn worker_names_are_the_single_slot_projection(world_size in 0usize..64) {
+            prop_assert_eq!(
+                DistEnv::worker_names(world_size),
+                DistEnv::slot_names(world_size, 1),
+            );
+        }
     }
 }

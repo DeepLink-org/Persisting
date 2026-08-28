@@ -87,6 +87,7 @@ impl FromStr for DocumentFormat {
 #[cfg(test)]
 mod tests {
     use super::DocumentFormat;
+    use proptest::prelude::*;
     use std::str::FromStr;
 
     #[test]
@@ -118,6 +119,45 @@ mod tests {
             "openclaw-events",
         ] {
             assert!(DocumentFormat::from_str(alias).is_err(), "accepted {alias}");
+        }
+    }
+
+    fn format_strategy() -> impl Strategy<Value = DocumentFormat> {
+        prop::sample::select(DocumentFormat::ALL.to_vec())
+    }
+
+    proptest! {
+        #[test]
+        fn every_format_roundtrips_through_display_and_parser(format in format_strategy()) {
+            let canonical = format.as_str();
+            prop_assert_eq!(format.to_string(), canonical);
+            prop_assert_eq!(DocumentFormat::from_str(canonical).unwrap(), format);
+        }
+
+        #[test]
+        fn canonical_names_accept_outer_whitespace_and_ascii_case(
+            format in format_strategy(),
+            left in 0usize..4,
+            right in 0usize..4,
+            uppercase in any::<bool>(),
+        ) {
+            let name = if uppercase {
+                format.as_str().to_ascii_uppercase()
+            } else {
+                format.as_str().to_string()
+            };
+            let decorated = format!("{}{}{}", " ".repeat(left), name, "\t".repeat(right));
+            prop_assert_eq!(DocumentFormat::from_str(&decorated).unwrap(), format);
+        }
+
+        #[test]
+        fn unknown_names_are_rejected(
+            suffix in proptest::string::string_regex("[a-z0-9-]{0,24}").unwrap(),
+        ) {
+            let unknown = format!("unknown-format-{suffix}");
+            let error = DocumentFormat::from_str(&unknown).unwrap_err();
+            prop_assert_eq!(error.kind(), crate::input::InputIssueKind::Invalid);
+            prop_assert!(error.message().contains(&unknown));
         }
     }
 }
