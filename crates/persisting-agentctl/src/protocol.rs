@@ -422,7 +422,7 @@ mod tests {
         ) {
             let quiesce = serde_json::to_value(AgentDirective::Quiesce {
                 checkpoint_id,
-                deadline_unix_ms: deadline_unix_ms.clone(),
+                deadline_unix_ms,
             }).unwrap();
             prop_assert_eq!(
                 quiesce.get("deadline_unix_ms").is_some(),

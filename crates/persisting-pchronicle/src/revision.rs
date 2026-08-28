@@ -173,7 +173,7 @@ mod tests {
         prop_oneof![
             Just(Value::Null),
             any::<bool>().prop_map(Value::Bool),
-            (0u64..100_000).prop_map(|value| Value::from(value)),
+            (0u64..100_000).prop_map(Value::from),
             token_strategy().prop_map(Value::String),
             token_strategy().prop_map(|value| serde_json::json!({"op": value})),
         ]
