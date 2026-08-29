@@ -1,0 +1,2 @@
+The bundled dict.txt is the default dictionary from jieba-rs 0.10.3.
+It is distributed under the MIT license; see https://github.com/messense/jieba-rs.

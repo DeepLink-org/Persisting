@@ -1,7 +1,7 @@
 use crate::analysis_session::{AnalysisScope, AnalysisSpec, CompileFailure, CompiledQuery};
 use crate::model::{
     CatalogTree, PhysicalFileLayout, PhysicalLayout, PhysicalPagePreview, PhysicalSource,
-    QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, StorylineSnapshot, TurnDetail,
+    QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, TurnDetail,
     TurnPage,
 };
 use gloo_net::http::{Request, Response};
@@ -96,19 +96,6 @@ pub async fn turn_detail(run: &RunSummary, turn_id: i64) -> Result<TurnDetail, S
         .send()
         .await
         .map_err(|e| e.to_string())?,
-    )
-    .await?
-    .json()
-    .await
-    .map_err(|e| e.to_string())
-}
-
-pub async fn storyline(run: &RunSummary) -> Result<StorylineSnapshot, String> {
-    checked(
-        Request::get(&format!("/api/storyline?{}", run.query()))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?,
     )
     .await?
     .json()

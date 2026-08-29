@@ -339,6 +339,17 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
         "Storyline FTS returned no matches"
     );
 
+    let mut zh_fts_scan = steps.scan();
+    zh_fts_scan.full_text_search(
+        FullTextSearchQuery::new("验证中文".to_string())
+            .with_column("message_value".to_string())?,
+    )?;
+    let zh_fts_batch = zh_fts_scan.try_into_batch().await?;
+    assert!(
+        zh_fts_batch.num_rows() > 0,
+        "bundled Jieba tokenizer returned no Chinese matches"
+    );
+
     // A registered datasource remains a consistent snapshot after CURRENT moves.
     let raw = load(&fixture_root().join("dialogue_10.json"))?;
     let mut additional = into_storyline(TestFormat::Atif, &raw)?;

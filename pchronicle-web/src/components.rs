@@ -4,13 +4,14 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::agenticmd_view::AgenticMdRenderer;
 use crate::chat_view::{
-    TraceCard, chat_row_visible, group_chats, prompt_turn, source_class, step_row_visible,
+    chat_row_visible, group_chats, prompt_turn, source_class, step_row_visible, TraceCard,
 };
-use crate::json_value::{JsonValue, is_structured_json};
+use crate::json_value::{is_structured_json, JsonValue};
 use crate::model::{
-    EventProvenance, QueryEvidence, StorylineTurn, TurnDetail, TurnSummary, WireToolCall,
-    extract_message_text,
+    extract_message_text, EventProvenance, QueryEvidence, StorylineTurn, TurnDetail, TurnSummary,
+    WireToolCall,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -647,14 +648,12 @@ pub fn TrajectoryView(
     expanded_turn_id: Option<i64>,
     detail: Option<TurnDetail>,
     loading: bool,
-    #[props(default)] context: Option<Vec<StorylineTurn>>,
     #[props(default = false)] embedded: bool,
     #[props(default = "chats".to_string())] view: String,
     #[props(default = "all".to_string())] source: String,
     #[props(default)] query: String,
-    #[props(default = false)] context_loading: bool,
     on_turn: EventHandler<i64>,
-    #[props(default)] on_context: EventHandler<()>,
+    #[props(default)] on_open_drawer: EventHandler<(i64, String, Vec<i64>)>,
 ) -> Element {
     let mut open_key = use_signal(|| None::<String>);
     let mut last_focus = use_signal(|| None::<i64>);
@@ -746,10 +745,8 @@ pub fn TrajectoryView(
                         detail: detail.clone(),
                         loading,
                         embedded,
-                        context: context.clone(),
-                        context_loading,
                         on_turn,
-                        on_context,
+                        on_open_drawer,
                         on_open: move |key| open_key.set(key),
                         on_hover: move |ids| hovered_ids.set(ids),
                         group,
@@ -773,10 +770,8 @@ fn CompactSpanRow(
     detail: Option<TurnDetail>,
     loading: bool,
     embedded: bool,
-    #[props(default)] context: Option<Vec<StorylineTurn>>,
-    #[props(default = false)] context_loading: bool,
     on_turn: EventHandler<i64>,
-    #[props(default)] on_context: EventHandler<()>,
+    #[props(default)] on_open_drawer: EventHandler<(i64, String, Vec<i64>)>,
     on_open: EventHandler<Option<String>>,
     on_hover: EventHandler<Vec<i64>>,
 ) -> Element {
@@ -789,6 +784,23 @@ fn CompactSpanRow(
     let diagnostic = group_diagnostic(&group.entries);
     let modalities = summary_modalities(&group.entries);
     let meta = structure_meta(&group);
+    let step_count = group.entries.len();
+    let mut tool_names = group
+        .entries
+        .iter()
+        .flat_map(|turn| turn.tool_names.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    tool_names.dedup();
+    let tool_summary = if group.tool_calls > 0 {
+        if tool_names.is_empty() {
+            format!("{} tools", group.tool_calls)
+        } else {
+            format!("{} tools · {}", group.tool_calls, tool_names.join(", "))
+        }
+    } else {
+        String::new()
+    };
     let kind = group.kind_chip;
     let kind_text = kind_label(kind);
     let bars = seq_bars(&group.entries, &session_index, axis_len);
@@ -796,19 +808,46 @@ fn CompactSpanRow(
     let has_error = group.entries.iter().any(|turn| turn.has_error);
     let group_key = group.key.clone();
     let hover_ids = group.entries.iter().map(|turn| turn.id).collect::<Vec<_>>();
+    let drawer_id = group
+        .entries
+        .iter()
+        .find(|turn| turn.id >= 0)
+        .map(|turn| turn.id);
+    let drawer_ids = group
+        .entries
+        .iter()
+        .filter(|turn| turn.id >= 0)
+        .map(|turn| turn.id)
+        .collect::<Vec<_>>();
+    let drawer_label = group.label.clone();
     rsx! { details {
         class: if row_open { "span-row is-open" } else { "span-row" },
         open: row_open,
         onmouseenter: move |_| on_hover.call(hover_ids.clone()),
         onmouseleave: move |_| on_hover.call(Vec::new()),
         summary { class: "span-row-summary", onclick: move |event| { event.prevent_default(); on_open.call(if row_open { None } else { Some(group_key.clone()) }); },
-            div { class: "span-structure", span { class: "disclosure" } div { div { class: "span-structure-title", strong { title: "{group.label}", "{group.label}" } span { class: "phase-badge {kind}", "{kind_text}" } if has_error { span { class: "pc2-error-chip", "error" } } } div { class: "span-structure-chips", for modality in modalities { span { class: "modality-chip {modality}", "{modality}" } } } span { "{meta}" } } }
+            div { class: "span-structure", span { class: "disclosure" } div {
+                div { class: "span-structure-title", strong { title: "{group.label}", "{group.label}" }
+                    if kind != "chat" { span { class: "phase-badge {kind}", "{kind_text}" } }
+                    if has_error { span { class: "pc2-error-chip", "error" } }
+                    if step_count > 1 { span { class: "summary-chip", "{step_count} steps" } }
+                    if !composition_label(&group.entries).is_empty() { span { class: "summary-chip", "{composition_label(&group.entries)}" } }
+                    if !tool_summary.is_empty() { span { class: "summary-chip tool", title: "{tool_summary}", "{tool_summary}" } }
+                    for modality in modalities { span { class: "modality-chip {modality}", "{modality}" } }
+                    if event_refs > 0 { span { class: "summary-chip event", "{event_refs} events" } }
+                }
+            } }
             div { class: "span-row-copy",
                 strong { class: "overview-line", title: "{preview}", "{preview}" }
                 if row_open { span { class: "span-row-diagnostic", title: "{diagnostic}", "{diagnostic}" } }
             }
             OccupancyTrack { bars, expose_range, focus_left, caption: caption.clone(), title: "{caption} · {meta}", exposed_ids, expanded_turn_id, hovered_ids }
-            div { class: "span-evidence-count", if event_refs > 0 { strong { "{event_refs} events" } } if group.tool_calls > 0 { span { "{group.tool_calls} tools" } } }
+            div { class: "span-evidence-count", if event_refs > 0 { span { class: "span-count-chip event", "{event_refs} events" } } }
+            if !embedded {
+                if let Some(id) = drawer_id {
+                    button { class: "pc2-conversation-drawer-button", title: "Open conversation as AgenticMD", aria_label: "Open {drawer_label} as AgenticMD", onclick: move |event| { event.prevent_default(); event.stop_propagation(); on_open_drawer.call((id, drawer_label.clone(), drawer_ids.clone())); }, "↗" }
+                }
+            }
         }
         if row_open {
             div { class: "span-detail", for turn in group.entries {
@@ -819,10 +858,7 @@ fn CompactSpanRow(
                     detail: detail.clone(),
                     loading,
                     embedded,
-                    context: context.clone(),
-                    context_loading,
                     on_turn,
-                    on_context,
                 }
             } }
         }
@@ -871,10 +907,7 @@ fn CompactTurnRow(
     detail: Option<TurnDetail>,
     loading: bool,
     embedded: bool,
-    #[props(default)] context: Option<Vec<StorylineTurn>>,
-    #[props(default = false)] context_loading: bool,
     on_turn: EventHandler<i64>,
-    #[props(default)] on_context: EventHandler<()>,
 ) -> Element {
     let id = turn.id;
     let kind = turn.kind.clone().unwrap_or_else(|| "step".into());
@@ -898,16 +931,13 @@ fn CompactTurnRow(
     }
     rsx! { details { class: if expanded { "compact-turn selected" } else { "compact-turn" }, open: expanded,
         summary { aria_label: "Expand {turn.source} step {id}", onclick: move |event| { event.prevent_default(); on_turn.call(id); }, span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } if expanded { span { class: "compact-kind", "{expanded_facts}" } } else { span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", "{preview}" } span { class: "compact-turn-stats", if !collapsed_meta.is_empty() { span { "{collapsed_meta}" } } if tool_count > 0 { span { "{tool_count} tools" } } span { "{event_count} events" } } } }
-        if expanded { div { class: "compact-turn-body pc2-inline-detail", if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Loading full step…" } } else if let Some(value) = detail.filter(|value| value.summary.id == id) { InlineTurnDetail { value, context: context.clone(), context_loading, on_context } } else { div { class: "pc2-inline-unavailable", "Details are unavailable for this step." } } } }
+        if expanded { div { class: "compact-turn-body pc2-inline-detail", if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Loading full step…" } } else if let Some(value) = detail.filter(|value| value.summary.id == id) { InlineTurnDetail { value } } else { div { class: "pc2-inline-unavailable", "Details are unavailable for this step." } } } }
     } }
 }
 
 #[component]
 fn InlineTurnDetail(
     value: TurnDetail,
-    #[props(default)] context: Option<Vec<StorylineTurn>>,
-    #[props(default = false)] context_loading: bool,
-    #[props(default)] on_context: EventHandler<()>,
 ) -> Element {
     let message = value.turn.message.clone();
     let message_text = value.turn.text();
@@ -942,14 +972,10 @@ fn InlineTurnDetail(
         EventProvenance::Canonical => crate::terminology::RECORDED_EVENTS,
         EventProvenance::SyntheticFromStoryline => crate::terminology::RECONSTRUCTED_EVENTS,
     };
-    let tool_block_title = if embedded_from_message.len() == 1 {
-        "Tool call"
-    } else {
-        "Tool calls"
-    };
-    let focus_id = value.summary.id;
+    let has_any_tool_calls = !embedded_from_message.is_empty()
+        || !deduped_wire_calls.is_empty()
+        || !native_tool_calls.is_empty();
     rsx! {
-        ContextRebuild { turns: context, focus_id, loading: context_loading, on_load: on_context }
         div { class: "pc2-inspector-chips",
             Fact { label: "Step", value: format!("#{}", value.summary.id) }
             Fact { label: "Role", value: value.summary.source.clone() }
@@ -958,33 +984,28 @@ fn InlineTurnDetail(
             if let Some(latency) = value.summary.latency_ms { Fact { label: "Latency", value: format_ms(latency) } }
             if let Some(tokens) = value.summary.total_tokens { Fact { label: "Tokens", value: tokens.to_string() } }
         }
-        if value.summary.ttft_ms.is_some() || value.summary.prompt_tokens.is_some() || value.summary.completion_tokens.is_some() || !value.events.is_empty() {
-            details { class: "pc2-inspector-more",
-                summary { "More details" }
-                div { class: "pc2-inspector-chips secondary",
-                    if let Some(ttft) = value.summary.ttft_ms { Fact { label: "TTFT", value: format_ms(ttft) } }
-                    if value.summary.prompt_tokens.is_some() || value.summary.completion_tokens.is_some() { Fact { label: "Token split", value: format!("{} in · {} out", optional_u64(value.summary.prompt_tokens), optional_u64(value.summary.completion_tokens)) } }
-                    if !value.events.is_empty() { Fact { label: "Events", value: value.events.len().to_string() } }
-                }
-            }
+        if let Some(ttft) = value.summary.ttft_ms { Fact { label: "TTFT", value: format_ms(ttft) } }
+        if value.summary.prompt_tokens.is_some() || value.summary.completion_tokens.is_some() {
+            Fact { label: "Token split", value: format!("{} in · {} out", optional_u64(value.summary.prompt_tokens), optional_u64(value.summary.completion_tokens)) }
+        }
+        if !value.events.is_empty() {
+            Fact { label: "Events", value: value.events.len().to_string() }
         }
         if !embedded_from_message.is_empty() {
-            EvidenceBlock { title: tool_block_title, open: true, ToolCallCards { calls: embedded_from_message } }
+            ToolCallCards { calls: embedded_from_message, observation: value.turn.observation.clone() }
         } else if !deduped_wire_calls.is_empty() {
-            EvidenceBlock { title: "Tool calls", ToolCallCards { calls: deduped_wire_calls } }
+            ToolCallCards { calls: deduped_wire_calls, observation: value.turn.observation.clone() }
         } else if tool_capable_source && !native_tool_calls.is_empty() {
-            EvidenceBlock {
-                title: "Tool calls",
-                ToolCallCards {
-                    calls: native_tool_calls
-                        .into_iter()
-                        .map(|call| WireToolCall {
-                        id: Some(call.tool_call_id),
-                        name: call.function_name,
-                        arguments: call.arguments,
-                    })
-                    .collect()
-                }
+            ToolCallCards {
+                observation: value.turn.observation.clone(),
+                calls: native_tool_calls
+                    .into_iter()
+                    .map(|call| WireToolCall {
+                    id: Some(call.tool_call_id),
+                    name: call.function_name,
+                    arguments: call.arguments,
+                })
+                .collect()
             }
         }
         if misplaced_tool_call_count.is_some_and(|count| count > 0) {
@@ -994,25 +1015,127 @@ fn InlineTurnDetail(
         }
         if !has_embedded_tool_calls {
             if structured_message && !message_is_text_bearing {
-                EvidenceBlock { title: "Message", open: true, JsonValue { value: message } }
+                InlineSection { title: "Message", JsonValue { value: message } }
             } else {
-                EvidenceBlock { title: "Message", open: true, pre { "{message_text}" } }
+                if !message_text.trim().is_empty() && message_text != "No text" {
+                    InlineSection { title: "Message", pre { "{message_text}" } }
+                }
             }
         }
         if let Some(reasoning) = &value.turn.reasoning_content {
-            EvidenceBlock { title: "Reasoning", pre { "{reasoning.clone()}" } }
+            InlineSection { title: "Reasoning", pre { "{reasoning.clone()}" } }
         }
-        if let Some(observation) = value.turn.observation.clone() {
-            EvidenceBlock { title: "Observation", JsonValue { value: observation } }
+        if !has_any_tool_calls {
+            if let Some(observation) = value.turn.observation.clone() {
+                InlineSection { title: "Observation", ObservationChips { value: observation.clone() } ObservationBlock { value: observation, tone: "generic" } }
+            }
         }
         if !value.events.is_empty() {
-            EvidenceBlock { title: event_block_title, JsonValue { value: events } }
+            InlineSection { title: event_block_title, JsonValue { value: events } }
         }
         if let Some(extra) = value.turn.extra.clone() {
-            EvidenceBlock { title: "Extra", JsonValue { value: extra } }
+            InlineSection { title: "Extra", JsonValue { value: extra } }
         }
         if let Some(metrics) = value.turn.metrics.clone() {
-            EvidenceBlock { title: "Metrics", JsonValue { value: metrics } }
+            InlineSection { title: "Metrics", JsonValue { value: metrics } }
+        }
+    }
+}
+
+#[component]
+pub fn StepDrawer(
+    detail: Option<TurnDetail>,
+    #[props(default = "Step details".to_string())] title: String,
+    #[props(default)] conversation_turns: Vec<StorylineTurn>,
+    #[props(default)] conversation_details: Vec<TurnDetail>,
+    loading: bool,
+    on_close: EventHandler<MouseEvent>,
+) -> Element {
+    let Some(value) = detail else {
+        return rsx! {
+            div { class: "pc2-step-drawer-layer",
+                button { class: "pc2-step-drawer-backdrop", aria_label: "Close step details", onclick: on_close }
+                aside { class: "pc2-step-drawer", role: "dialog", aria_modal: "true", aria_label: "Step details",
+                    header { class: "pc2-step-drawer-head",
+                        div { strong { "{title}" } }
+                        button { class: "pc2-step-drawer-close", aria_label: "Close step details", onclick: on_close, "×" }
+                    }
+                    div { class: "pc2-step-drawer-loading", if loading { span { class: "spinner" } "Loading step…" } else { "Details are unavailable for this step." } }
+                }
+            }
+        };
+    };
+    let turn = value.turn.clone();
+    let mut agenticmd_turns = if !conversation_details.is_empty() {
+        conversation_details.iter().map(|item| item.turn.clone()).collect::<Vec<_>>()
+    } else if !conversation_turns.is_empty() {
+        conversation_turns
+    } else {
+        vec![turn.clone()]
+    };
+    // Chat rows may contain a synthetic user prompt (negative id) generated
+    // from an agent turn's `user_prompt`. It cannot be loaded through the
+    // turn-detail API, so reconstruct it locally for the AgenticMD drawer.
+    let mut synthetic_user_added = false;
+    if agenticmd_turns.first().is_some_and(|item| item.source == "agent") {
+        if let Some(prompt) = value
+            .summary
+            .user_prompt
+            .as_deref()
+            .filter(|prompt| !prompt.trim().is_empty())
+        {
+            let synthetic_id = value.summary.id.saturating_neg();
+            if !agenticmd_turns.iter().any(|item| item.id == synthetic_id) {
+                agenticmd_turns.insert(
+                    0,
+                    StorylineTurn {
+                        id: synthetic_id,
+                        kind: Some("llm.request".into()),
+                        timestamp: value.turn.timestamp.clone(),
+                        source: "user".into(),
+                        message: Value::String(prompt.to_string()),
+                        reasoning_content: None,
+                        tool_calls: None,
+                        observation: None,
+                        metrics: None,
+                        model_name: None,
+                        latency_ms: None,
+                        ttft_ms: None,
+                        extra: None,
+                    },
+                );
+                synthetic_user_added = true;
+            }
+        }
+    }
+    let drawer_wire_tool_calls = agenticmd_turns
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            let detail_index = if synthetic_user_added { index.saturating_sub(1) } else { index };
+            conversation_details
+                .get(detail_index)
+                .map(|item| item.wire_tool_calls.clone())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    let loaded_block_count = agenticmd_turns.len();
+    rsx! {
+        div { class: "pc2-step-drawer-layer",
+            button { class: "pc2-step-drawer-backdrop", aria_label: "Close step details", onclick: on_close }
+            aside { class: "pc2-step-drawer", role: "dialog", aria_modal: "true", aria_label: "{title}",
+                header { class: "pc2-step-drawer-head",
+                    div { class: "pc2-step-drawer-title", strong { "AgenticMD" } span { class: "pc2-step-drawer-kind", "{loaded_block_count} blocks" } }
+                    button { class: "pc2-step-drawer-close", aria_label: "Close step details", onclick: on_close, "×" }
+                }
+                div { class: "pc2-step-drawer-scroll",
+                    AgenticMdRenderer {
+                        title: title.clone(),
+                        turns: agenticmd_turns,
+                        wire_tool_calls: drawer_wire_tool_calls,
+                    }
+                }
+            }
         }
     }
 }
@@ -1029,107 +1152,6 @@ fn Fact(label: &'static str, value: String) -> Element {
     rsx! { span { class: "pc2-fact-chip", span { "{label}" } code { "{value}" } } }
 }
 
-/// "What the model saw" at a given step: every storyline message recorded
-/// before the focus turn, replayed in order. This is the reconstruction
-/// primitive — the recorded trajectory up to the decision point, not a
-/// summary of it.
-/// Index of the focus turn inside the recorded storyline. Context rebuild
-/// slices everything before this index; a missing turn yields an unavailable
-/// context body.
-fn context_focus_index(turns: &[StorylineTurn], focus_id: i64) -> Option<usize> {
-    turns.iter().position(|turn| turn.id == focus_id)
-}
-
-#[component]
-fn ContextRebuild(
-    turns: Option<Vec<StorylineTurn>>,
-    focus_id: i64,
-    loading: bool,
-    on_load: EventHandler<()>,
-) -> Element {
-    let mut open = use_signal(|| false);
-    let mut last_focus = use_signal(|| None::<i64>);
-    if last_focus() != Some(focus_id) {
-        last_focus.set(Some(focus_id));
-        open.set(false);
-    }
-    let context_loaded = turns.is_some();
-    let loaded_context = turns.as_ref().and_then(|turns| {
-        context_focus_index(turns, focus_id).map(|focus_index| &turns[..focus_index])
-    });
-    let (context_count, total_chars) = if open() {
-        let count = loaded_context.map_or(0, |context| context.len());
-        let chars = loaded_context.map_or(0, |context| {
-            context
-                .iter()
-                .map(|turn| turn.text().chars().count() as u64)
-                .sum::<u64>()
-        });
-        (count, chars)
-    } else {
-        (0, 0)
-    };
-    rsx! {
-        section { class: "pc2-context-rebuild",
-            button {
-                class: "pc2-context-head",
-                aria_expanded: open(),
-                onclick: move |_| {
-                    let next = !open();
-                    open.set(next);
-                    if next && !context_loaded && !loading {
-                        on_load.call(());
-                    }
-                },
-                span { class: "pc2-context-disclosure", if open() { "▾" } else { "▸" } }
-                strong { "Context at this step" }
-                span { if context_loaded { "what the model saw before step #{focus_id}" } else { "Expand to load context" } }
-                if context_loaded && open() {
-                    span { class: "pc2-context-stats", "{context_count} messages · {format_char_count(total_chars)}" }
-                }
-            }
-            if open() && loading {
-                div { class: "pc2-inline-loading", span { class: "spinner" } "Loading context…" }
-            } else if open() && loaded_context.is_none() {
-                p { class: "pc2-context-empty", "Context is unavailable for this step." }
-            } else if open() && loaded_context.is_some_and(|context| context.is_empty()) {
-                p { class: "pc2-context-empty", "No earlier messages — this step starts the run." }
-            } else if open() {
-                div { class: "pc2-context-list",
-                    for turn in loaded_context.into_iter().flatten() {
-                        ContextMessage { key: "ctx-{turn.id}", turn: turn.clone() }
-                    }
-                }
-                div { class: "pc2-context-boundary", span { "step #{focus_id} used the context above ↓" } }
-            }
-        }
-    }
-}
-
-#[component]
-fn ContextMessage(turn: StorylineTurn) -> Element {
-    let text = turn.text();
-    let char_count = text.chars().count();
-    let preview = compact_preview(&text, 240);
-    rsx! {
-        div { class: "pc2-context-message",
-            div { class: "pc2-context-message-head",
-                span { class: "pc2-role {turn.source}", "{turn.source}" }
-                code { "#{turn.id}" }
-                span { class: "pc2-context-message-meta", "{format_char_count(char_count as u64)}" }
-            }
-            if char_count > 240 {
-                details { class: "pc2-context-message-body",
-                    summary { "{preview}" }
-                    pre { "{text}" }
-                }
-            } else {
-                p { class: "pc2-context-message-body", "{preview}" }
-            }
-        }
-    }
-}
-
 #[component]
 fn EvidenceBlock(
     title: &'static str,
@@ -1139,18 +1161,44 @@ fn EvidenceBlock(
     rsx! { details { class: "pc2-evidence-block", open, summary { "{title}" } {children} } }
 }
 
+/// A second-level content panel: the step itself remains the only expandable
+/// row, while long detail content is clipped and can be expanded in place.
 #[component]
-fn ToolCallCards(calls: Vec<WireToolCall>) -> Element {
+fn InlineSection(
+    title: &'static str,
+    #[props(default = false)] default_expanded: bool,
+    children: Element,
+) -> Element {
+    let mut expanded = use_signal(move || default_expanded);
+    rsx! {
+        section { class: if expanded() { "pc2-inline-section expanded" } else { "pc2-inline-section" },
+            header { class: "pc2-inline-section-head",
+                strong { "{title}" }
+                button { class: "pc2-inline-section-toggle", aria_expanded: expanded(), onclick: move |_| expanded.set(!expanded()), if expanded() { "Less" } else { "More" } }
+            }
+            div { class: "pc2-inline-section-body", {children} }
+        }
+    }
+}
+
+#[component]
+pub(crate) fn ToolCallCards(calls: Vec<WireToolCall>, #[props(default)] observation: Option<Value>) -> Element {
     rsx! {
         div { class: "pc2-tool-call-stack",
-            for call in calls {
-                div { class: "pc2-tool-call-card",
+            for (index, call) in calls.into_iter().enumerate() {
+                {
+                    let tone = tool_type_tone(&call.name);
+                    let linked_observation = observation_for_call(observation.as_ref(), call.id.as_deref(), index);
+                    rsx! { div { class: "pc2-tool-call-card pc2-tool-tone-{tone}",
                     div { class: "pc2-tool-call-header",
                         div { class: "pc2-tool-call-head-left",
-                            span { class: "pc2-tool-call-type", "function" }
+                            span { class: "pc2-tool-call-type-chip pc2-tool-tone-{tone}", "{tone}" }
                             strong { "{clean_tool_call_name(&call.name)}" }
                         }
                         div { class: "pc2-tool-call-head-right",
+                            if let Some(observation) = linked_observation {
+                                ObservationChips { value: observation.clone() }
+                            }
                             span { class: "pc2-tool-call-meta", "{argument_count_label(&call.arguments)}" }
                             if let Some(id) = &call.id {
                                 span { class: "pc2-tool-call-id", "#{id}" }
@@ -1169,14 +1217,74 @@ fn ToolCallCards(calls: Vec<WireToolCall>) -> Element {
                             pre { "{call.arguments}" }
                         }
                     }
-                    details { class: "pc2-tool-call-raw",
-                        summary { "Raw call" }
-                        pre { "{serde_json::to_string_pretty(&call).unwrap_or_default()}" }
+                    if let Some(observation) = linked_observation {
+                        ObservationBlock { value: observation.clone(), tone: tone.to_string() }
                     }
-                }
+                } } }
             }
         }
     }
+}
+
+fn tool_type_tone(name: &str) -> &'static str {
+    let normalized = name.to_ascii_lowercase();
+    if normalized.contains("command") || normalized.contains("bash") || normalized.contains("shell") {
+        "command_execution"
+    } else if normalized.starts_with("mcp") || normalized.contains("browser") {
+        "mcp"
+    } else {
+        "function"
+    }
+}
+
+fn observation_for_call<'a>(value: Option<&'a Value>, call_id: Option<&str>, index: usize) -> Option<&'a Value> {
+    let value = value?;
+    let items = value
+        .as_object()
+        .and_then(|object| object.get("results"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .or_else(|| value.as_array().map(Vec::as_slice))
+        .unwrap_or_else(|| std::slice::from_ref(value));
+    call_id.and_then(|id| items.iter().find(|item| item.get("source_call_id").and_then(Value::as_str) == Some(id)))
+        .or_else(|| items.get(index))
+}
+
+#[component]
+fn ObservationBlock(value: Value, tone: String) -> Element {
+    let output = observation_output(&value);
+    rsx! {
+        div { class: "pc2-tool-observation pc2-tool-tone-{tone}",
+            if let Some(output) = output { pre { class: "pc2-tool-observation-output", "{output}" } }
+        }
+    }
+}
+
+#[component]
+fn ObservationChips(value: Value) -> Element {
+    let exit_code = value.get("exit_code").and_then(Value::as_i64);
+    let status = value.get("status").and_then(Value::as_str);
+    let observed_type = value.get("type").and_then(Value::as_str);
+    rsx! {
+        div { class: "pc2-tool-observation-chips",
+            if let Some(code) = exit_code { Fact { label: "exit_code", value: code.to_string() } }
+            if let Some(status) = status { Fact { label: "status", value: status.to_string() } }
+            if let Some(kind) = observed_type { Fact { label: "type", value: kind.to_string() } }
+        }
+    }
+}
+
+fn observation_output(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    for key in ["content", "aggregated_output", "output", "result"] {
+        if let Some(output) = object.get(key) {
+            return Some(match output {
+                Value::String(text) => text.clone(),
+                _ => serde_json::to_string_pretty(output).unwrap_or_else(|_| output.to_string()),
+            });
+        }
+    }
+    None
 }
 
 fn clean_tool_call_name(name: &str) -> String {
@@ -1350,32 +1458,6 @@ mod tests {
         }
     }
 
-    fn storyline_turn(id: i64) -> StorylineTurn {
-        StorylineTurn {
-            id,
-            kind: None,
-            timestamp: None,
-            source: "agent".into(),
-            message: Value::String(format!("message-{id}")),
-            reasoning_content: None,
-            tool_calls: None,
-            observation: None,
-            metrics: None,
-            model_name: None,
-            latency_ms: None,
-            ttft_ms: None,
-            extra: None,
-        }
-    }
-
-    #[test]
-    fn context_rebuild_slices_everything_before_the_focus_turn() {
-        let turns = vec![storyline_turn(1), storyline_turn(2), storyline_turn(3)];
-        assert_eq!(context_focus_index(&turns, 2), Some(1));
-        assert_eq!(context_focus_index(&turns, 1), Some(0));
-        assert_eq!(context_focus_index(&turns, 9), None);
-    }
-
     #[test]
     fn chats_keep_one_timeline_row_for_a_user_and_following_agents() {
         let turns = vec![
@@ -1428,10 +1510,7 @@ mod tests {
             vec!["text", "tool_call"]
         );
         assert_eq!(row_char_count(&groups[0].entries, true), 15);
-        assert_eq!(
-            composition_label(&groups[0].entries),
-            "1 user + 1 agent"
-        );
+        assert_eq!(composition_label(&groups[0].entries), "1 user + 1 agent");
         assert_eq!(summary_modalities(&groups[0].entries), Vec::<String>::new());
         assert_eq!(format_char_count(15), "15 chars");
         assert_eq!(format_char_count(1200), "1.2k chars");

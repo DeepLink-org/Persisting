@@ -44,7 +44,7 @@
 .trace-root-summary,
 .span-row-summary {
   display: grid;
-  grid-template-columns: minmax(230px, 31%) minmax(230px, 31%) minmax(180px, 1fr) 70px;
+  grid-template-columns: minmax(230px, 31%) minmax(230px, 31%) minmax(180px, 1fr) 110px;
   align-items: stretch;
 }
 
@@ -152,16 +152,73 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
+  overflow: hidden;
+  flex-wrap: nowrap;
 }
 
 .span-structure-title .phase-badge {
   margin-left: 0;
 }
 
+.span-structure-title > strong {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.span-structure-title > .summary-chip,
+.span-structure-title > .modality-chip,
+.span-structure-title > .phase-badge,
+.span-structure-title > .pc2-error-chip {
+  flex: 0 0 auto;
+}
+
 .span-structure-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.span-summary-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  max-width: 100%;
+}
+
+.summary-chip,
+.span-count-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 150px;
+  overflow: hidden;
+  padding: 2px 5px;
+  border: 1px solid #e4e7ec;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #667085;
+  font: 8px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summary-chip.tool,
+.span-count-chip.tool {
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.summary-chip.event,
+.span-count-chip.event {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.summary-chip.model {
+  border-color: #e9d5ff;
+  background: #faf5ff;
+  color: #7e22ce;
 }
 
 .modality-chip {
@@ -200,7 +257,7 @@
   white-space: nowrap;
 }
 
-.span-structure > div > span {
+.span-structure-meta {
   color: #98a2b3;
   font-size: 9px;
 }
@@ -448,15 +505,23 @@
   align-items: flex-end;
   justify-content: center;
   gap: 2px;
-  padding: 0 8px;
+  padding: 0 42px 0 8px;
   border-left: 1px solid #f0f2f4;
   color: #667085;
   font: 9px ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-.span-evidence-count strong {
-  color: #344054;
-  font-size: 10px;
+.span-count-chip {
+  max-width: 66px;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: #667085;
+  font-size: 9px;
+}
+
+.span-count-chip.empty {
+  color: #c1c7d0;
 }
 
 .span-detail {

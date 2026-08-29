@@ -96,21 +96,21 @@ fn scalar_text(value: &Value) -> String {
 }
 
 #[component]
-pub fn JsonValue(value: Value) -> Element {
+pub fn JsonValue(value: Value, #[props(default = false)] default_open: bool) -> Element {
     let peeled = peel_json(&value);
     match classify_json(&value) {
         JsonShape::Scalar => {
             let text = scalar_text(&peeled);
             rsx! { span { class: "pc2-json-scalar", "{text}" } }
         }
-        JsonShape::KvTable => rsx! { JsonKvTable { value: peeled } },
-        JsonShape::RecordTable => rsx! { JsonRecordTable { value: peeled } },
-        JsonShape::Tree => rsx! { JsonTree { value: peeled } },
+        JsonShape::KvTable => rsx! { JsonKvTable { value: peeled, default_open } },
+        JsonShape::RecordTable => rsx! { JsonRecordTable { value: peeled, default_open } },
+        JsonShape::Tree => rsx! { JsonTree { value: peeled, default_open } },
     }
 }
 
 #[component]
-fn JsonKvTable(value: Value) -> Element {
+fn JsonKvTable(value: Value, default_open: bool) -> Element {
     let map = match value {
         Value::Object(map) => map,
         _ => return rsx! { span { class: "pc2-json-scalar", "—" } },
@@ -122,7 +122,7 @@ fn JsonKvTable(value: Value) -> Element {
                 for (key, child) in map {
                     tr { key: "{key}",
                         th { scope: "row", "{key}" }
-                        td { JsonValue { value: child } }
+                        td { JsonValue { value: child, default_open } }
                     }
                 }
             }
@@ -131,7 +131,7 @@ fn JsonKvTable(value: Value) -> Element {
 }
 
 #[component]
-fn JsonRecordTable(value: Value) -> Element {
+fn JsonRecordTable(value: Value, default_open: bool) -> Element {
     let rows = match value {
         Value::Array(rows) => rows,
         _ => return rsx! { span { class: "pc2-json-scalar", "—" } },
@@ -152,7 +152,8 @@ fn JsonRecordTable(value: Value) -> Element {
                                                 object.get(column).cloned().unwrap_or(Value::Null)
                                             }
                                             _ => Value::Null,
-                                        }
+                                        },
+                                        default_open,
                                     }
                                 }
                             }
@@ -165,24 +166,24 @@ fn JsonRecordTable(value: Value) -> Element {
 }
 
 #[component]
-fn JsonTree(value: Value) -> Element {
+fn JsonTree(value: Value, default_open: bool) -> Element {
     match value {
         Value::Array(items) if items.is_empty() => rsx! {
-            details { class: "pc2-json-node",
+            details { class: "pc2-json-node", open: default_open,
                 summary { span { class: "pc2-json-size", "[0 items]" } }
             }
         },
         Value::Object(map) => rsx! {
             div { class: "pc2-json-tree",
                 for (key, child) in map {
-                    JsonTreeNode { key: "{key}", label: key, value: child }
+                    JsonTreeNode { key: "{key}", label: key, value: child, default_open }
                 }
             }
         },
         Value::Array(items) => rsx! {
             div { class: "pc2-json-tree",
                 for (index, child) in items.into_iter().enumerate() {
-                    JsonTreeNode { key: "{index}", label: format!("[{index}]"), value: child }
+                    JsonTreeNode { key: "{index}", label: format!("[{index}]"), value: child, default_open }
                 }
             }
         },
@@ -194,12 +195,12 @@ fn JsonTree(value: Value) -> Element {
 }
 
 #[component]
-fn JsonTreeNode(label: String, value: Value) -> Element {
+fn JsonTreeNode(label: String, value: Value, default_open: bool) -> Element {
     let summary = json_summary(&value);
     rsx! {
-        details { class: "pc2-json-node",
+        details { class: "pc2-json-node", open: default_open,
             summary { span { class: "pc2-json-key", "{label}" } span { class: "pc2-json-size", "{summary}" } }
-            JsonValue { value }
+            JsonValue { value, default_open }
         }
     }
 }

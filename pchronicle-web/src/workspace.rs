@@ -1,24 +1,25 @@
 use std::collections::BTreeMap;
 
 use dioxus::prelude::*;
+use futures_util::StreamExt;
 use wasm_bindgen::JsValue;
 
 use crate::agent::{self, ThreadMessage, ThreadRole};
 use crate::api;
 use crate::catalog::CatalogExplorer;
 use crate::chat_view::normalize_trace_view;
-use crate::components::{DataTable, RichBlock, TrajectoryView, parse_rich_blocks};
+use crate::components::{parse_rich_blocks, DataTable, RichBlock, StepDrawer, TrajectoryView};
 use crate::copilot_sessions::{
-    AssistantSessionMeta, BrowserStore, KvStore, can_start_new_chat, delete_session, empty_thread,
-    load_index, load_session_thread, new_session_id, now_millis, page_after_history_switch,
-    persist_indexed_thread, relative_time, restore_for_run, save_index, session_storage_key,
-    title_from_thread,
+    can_start_new_chat, delete_session, empty_thread, load_index, load_session_thread,
+    new_session_id, now_millis, page_after_history_switch, persist_indexed_thread, relative_time,
+    restore_for_run, save_index, session_storage_key, title_from_thread, AssistantSessionMeta,
+    BrowserStore, KvStore,
 };
 use crate::llm;
 use crate::llm_settings::LlmSettings;
 use crate::model::{
     CatalogTree, DimensionAggregate, EventProvenance, HistogramBucket, QueryCatalog,
-    QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary, StorylineSnapshot,
+    QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary,
     ToolAggregate, TurnDetail, TurnSummary,
 };
 use crate::terminology::{ANALYSIS, ASSISTANT, DATASETS, RUNS, STEPS, STORAGE, TIMELINE};
@@ -146,11 +147,14 @@ pub fn App() -> Element {
     let mut analysis = use_signal(|| None::<RunAnalysis>);
     let mut turns = use_signal(Vec::<TurnSummary>::new);
     let mut selected_turn = use_signal(|| None::<TurnDetail>);
+    let mut drawer_turn = use_signal(|| None::<TurnDetail>);
+    let mut drawer_details = use_signal(Vec::<TurnDetail>::new);
+    let mut drawer_turn_id = use_signal(|| None::<i64>);
+    let mut drawer_turn_ids = use_signal(Vec::<i64>::new);
+    let mut drawer_title = use_signal(String::new);
+    let mut drawer_loading = use_signal(|| false);
     let mut expanded_turn_id =
         use_signal(|| url_param("turn").and_then(|value| value.parse::<i64>().ok()));
-    let mut storyline = use_signal(|| None::<StorylineSnapshot>);
-    let mut context_requested = use_signal(|| false);
-    let mut context_loading = use_signal(|| false);
     let detail_loading = use_signal(|| false);
     let turn_loading = use_signal(|| false);
     let mut detail_mode = use_signal(|| url_param("workspace").unwrap_or_else(|| "trace".into()));
@@ -204,35 +208,6 @@ pub fn App() -> Element {
                 load_workspace(run, analysis, turns, detail_loading, error);
             }
         }
-    });
-
-    use_effect(move || {
-        if !context_requested() || storyline().is_some() || context_loading() {
-            return;
-        }
-        let Some(run) = selected_run() else {
-            return;
-        };
-        context_loading.set(true);
-        spawn(async move {
-            let still_active = || {
-                selected_run()
-                    .as_ref()
-                    .is_some_and(|active| active.query() == run.query())
-            };
-            match api::storyline(&run).await {
-                Ok(snapshot) if still_active() => storyline.set(Some(snapshot)),
-                Err(_) => {
-                    if still_active() {
-                        context_requested.set(false);
-                    }
-                }
-                _ => {}
-            }
-            if still_active() {
-                context_loading.set(false);
-            }
-        });
     });
 
     use_effect(move || {
@@ -368,7 +343,7 @@ pub fn App() -> Element {
                         rsx! { div { class: "pc2-detail-layout",
                             PathExplorer { runs: path_runs, selected_path, loading: runs_loading(), filter_folders: false,
                                 on_path: move |value| { run_path.set(value); offset.set(0); page.set("runs".into()); },
-                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); storyline.set(None); context_requested.set(false); context_loading.set(false); },
+                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); },
                             }
                             if let (Some(_run), Some(value)) = (selected_run(), analysis()) {
                                 RunDetailWorkspace {
@@ -376,8 +351,11 @@ pub fn App() -> Element {
                                     analysis: value,
                                     turns: turns(),
                                     selected: selected_turn(),
-                                    storyline: storyline(),
-                                    context_loading: context_loading(),
+                                    drawer: drawer_turn(),
+                                    drawer_details: drawer_details(),
+                                    drawer_ids: drawer_turn_ids(),
+                                    drawer_title: drawer_title(),
+                                    drawer_loading: drawer_loading(),
                                     expanded_turn_id: expanded_turn_id(),
                                     loading: detail_loading(),
                                     turn_loading: turn_loading(),
@@ -403,7 +381,6 @@ pub fn App() -> Element {
                                             error,
                                         );
                                     },
-                                    on_context: move |_| context_requested.set(true),
                                     on_turn: move |id| {
                                         if expanded_turn_id() == Some(id) {
                                             expanded_turn_id.set(None);
@@ -413,6 +390,34 @@ pub fn App() -> Element {
                                             selected_turn.set(None);
                                             load_turn(run, id, expanded_turn_id, selected_turn, turn_loading, error);
                                         }
+                                    },
+                                    on_open_drawer: move |(id, title, ids): (i64, String, Vec<i64>)| {
+                                        let same = drawer_turn_id() == Some(id);
+                                        if same {
+                                            drawer_turn_id.set(None);
+                                            drawer_turn.set(None);
+                                            drawer_details.set(Vec::new());
+                                            drawer_turn_ids.set(Vec::new());
+                                            drawer_title.set(String::new());
+                                            drawer_loading.set(false);
+                                        } else if let Some(run) = selected_run() {
+                                            let requested_ids = ids.clone();
+                                            drawer_turn_id.set(Some(id));
+                                            drawer_turn_ids.set(ids);
+                                            drawer_title.set(title);
+                                            drawer_turn.set(None);
+                                            drawer_details.set(Vec::new());
+                                            drawer_loading.set(true);
+                                            load_conversation_turns(run, requested_ids, drawer_turn_id, drawer_turn, drawer_details, drawer_loading, error);
+                                        }
+                                    },
+                                    on_close_drawer: move |_| {
+                                        drawer_turn_id.set(None);
+                                        drawer_turn.set(None);
+                                        drawer_details.set(Vec::new());
+                                        drawer_turn_ids.set(Vec::new());
+                                        drawer_title.set(String::new());
+                                        drawer_loading.set(false);
                                     },
                                     on_open_copilot: move |_| copilot_open.set(true),
                                     on_analyze: move |run: RunSummary| {
@@ -430,7 +435,7 @@ pub fn App() -> Element {
                         rsx! { div { class: "pc2-runs-layout",
                         PathExplorer { runs: path_runs, selected_path: run_path(), loading: runs_loading(), filter_folders: true,
                             on_path: move |value| { run_path.set(value); offset.set(0); },
-                            on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); storyline.set(None); context_requested.set(false); context_loading.set(false); detail_mode.set("trace".into()); page.set("detail".into()); },
+                            on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); detail_mode.set("trace".into()); page.set("detail".into()); },
                         }
                         RunsExplorer {
                             page: runs(),
@@ -479,9 +484,6 @@ pub fn App() -> Element {
                                 turns.set(Vec::new());
                                 selected_turn.set(None);
                                 expanded_turn_id.set(None);
-                                storyline.set(None);
-                                context_requested.set(false);
-                                context_loading.set(false);
                                 detail_mode.set("trace".into());
                                 page.set("detail".into());
                             },
@@ -526,9 +528,6 @@ pub fn App() -> Element {
                                 turns.set(Vec::new());
                                 selected_turn.set(None);
                                 expanded_turn_id.set(None);
-                                storyline.set(None);
-                                context_requested.set(false);
-                                context_loading.set(false);
                             }
                             if page() != next_page {
                                 page.set(next_page.to_string());
@@ -649,6 +648,74 @@ fn load_turn(
         if active() == Some(id) {
             loading.set(false);
         }
+    });
+}
+
+const MAX_CONVERSATION_DRAWER_BLOCKS: usize = 64;
+
+fn load_conversation_turns(
+    run: RunSummary,
+    ids: Vec<i64>,
+    active: Signal<Option<i64>>,
+    mut primary: Signal<Option<TurnDetail>>,
+    mut details: Signal<Vec<TurnDetail>>,
+    mut loading: Signal<bool>,
+    mut error: Signal<Option<WorkspaceNotice>>,
+) {
+    let requested = ids.into_iter().take(MAX_CONVERSATION_DRAWER_BLOCKS).collect::<Vec<_>>();
+    let Some(first_id) = requested.first().copied() else {
+        loading.set(false);
+        return;
+    };
+    loading.set(true);
+    spawn(async move {
+        let mut stream = futures_util::stream::iter(requested.iter().copied())
+            .map(|id| {
+                let run = run.clone();
+                async move { (id, api::turn_detail(&run, id).await) }
+            })
+            .buffer_unordered(4);
+        let mut loaded = Vec::<(i64, TurnDetail)>::new();
+        let mut first_error = None;
+        while let Some((id, result)) = stream.next().await {
+            if active() != Some(first_id) {
+                return;
+            }
+            match result {
+                Ok(value) => {
+                    loaded.push((id, value));
+                    loaded.sort_by_key(|(loaded_id, _)| {
+                        requested
+                            .iter()
+                            .position(|candidate| candidate == loaded_id)
+                            .unwrap_or(usize::MAX)
+                    });
+                    let ordered = loaded
+                        .iter()
+                        .map(|(_, value)| value.clone())
+                        .collect::<Vec<_>>();
+                    // Make the drawer useful as soon as the first detail is
+                    // available; later responses progressively fill the
+                    // AgenticMD document without another user action.
+                    if let Some(value) = ordered.first().cloned() {
+                        primary.set(Some(value));
+                        details.set(ordered);
+                        loading.set(false);
+                    }
+                }
+                Err(message) => {
+                    if first_error.is_none() {
+                        first_error = Some(evidence_notice(id, &message));
+                    }
+                }
+            }
+        }
+        if loaded.is_empty() {
+            if let Some(notice) = first_error {
+                error.set(Some(notice));
+            }
+        }
+        loading.set(false);
     });
 }
 
@@ -873,8 +940,11 @@ fn RunDetailWorkspace(
     analysis: RunAnalysis,
     turns: Vec<TurnSummary>,
     selected: Option<TurnDetail>,
-    storyline: Option<StorylineSnapshot>,
-    context_loading: bool,
+    drawer: Option<TurnDetail>,
+    drawer_details: Vec<TurnDetail>,
+    drawer_ids: Vec<i64>,
+    drawer_title: String,
+    drawer_loading: bool,
     expanded_turn_id: Option<i64>,
     loading: bool,
     turn_loading: bool,
@@ -889,7 +959,8 @@ fn RunDetailWorkspace(
     on_query: EventHandler<String>,
     on_apply_filter: EventHandler<()>,
     on_turn: EventHandler<i64>,
-    on_context: EventHandler<()>,
+    on_open_drawer: EventHandler<(i64, String, Vec<i64>)>,
+    on_close_drawer: EventHandler<MouseEvent>,
     on_open_copilot: EventHandler<MouseEvent>,
     on_analyze: EventHandler<RunSummary>,
 ) -> Element {
@@ -964,9 +1035,12 @@ fn RunDetailWorkspace(
                     div { id: RUN_DETAIL_SCROLL_ID, class: "pc2-turn-list pc2-span-scroll", onscroll: on_detail_scroll,
                         if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing run details…" } }
                         if turns.is_empty() { div { class: "pc2-empty", strong { "No visible steps" } span { "No loaded steps match this filter." } } }
-                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, context: storyline.map(|snapshot| snapshot.turns), context_loading, view: view_for_list, source: source_for_list, query: query_for_list, on_turn, on_context } }
+                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, view: view_for_list, source: source_for_list, query: query_for_list, on_turn, on_open_drawer } }
                     }
                 }
+            }
+            if drawer.is_some() || drawer_loading {
+                StepDrawer { detail: drawer, title: drawer_title, conversation_details: drawer_details, loading: drawer_loading, on_close: on_close_drawer }
             }
         }
     }

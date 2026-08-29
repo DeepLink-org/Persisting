@@ -539,14 +539,6 @@ pub struct TurnDetail {
     pub events: Vec<EventRecord>,
 }
 
-/// Minimal projection of the `/api/storyline` document: the full ordered turn
-/// list, used client-side to rebuild the model's context at any step.
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
-pub struct StorylineSnapshot {
-    #[serde(default)]
-    pub turns: Vec<StorylineTurn>,
-}
-
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct QueryEvidence {
     pub rows: Vec<Value>,

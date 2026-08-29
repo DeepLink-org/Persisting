@@ -11,6 +11,7 @@ readme = "README.md"
 default = ["lance-store", "s3-store"]
 lance-store = [
     "dep:datafusion",
+    "dep:dirs",
     "dep:futures",
     "dep:lance",
     "dep:lance-arrow",
@@ -43,6 +44,7 @@ base64.workspace = true
 blake3.workspace = true
 chrono.workspace = true
 datafusion = { workspace = true, features = ["sql"], optional = true }
+dirs = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 fs2.workspace = true
 lance = { workspace = true, optional = true }

@@ -107,7 +107,7 @@ lance-arrow = "9.0.1"
 lance-core = "9.0.1"
 lance-file = "9.0.1"
 lance-datafusion = "9.0.1"
-lance-index = "9.0.1"
+lance-index = { version = "9.0.1", features = ["tokenizer-jieba"] }
 lance-linalg = "9.0.1"
 lance-table = "9.0.1"
 libc = "0.2"

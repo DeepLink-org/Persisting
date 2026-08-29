@@ -42,7 +42,7 @@ pub use rows::{
 };
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -112,9 +112,13 @@ const TOOL_CALL_INDEXES: [(&str, IndexType); 4] = [
     ("function_name", IndexType::Bitmap),
 ];
 
-/// Text columns receive a Lance inverted index with the default text
-/// tokenizer.  JSON columns are discovered from Arrow field metadata below
-/// and receive a JSON-aware inverted index instead.
+const DEFAULT_JIEBA_MODEL: &str = "jieba/default";
+const DEFAULT_JIEBA_CONFIG: &[u8] = include_bytes!("../../../resources/jieba/default/config.json");
+const DEFAULT_JIEBA_DICT: &[u8] = include_bytes!("../../../resources/jieba/default/dict.txt");
+
+/// Text columns receive a Lance inverted index with the bundled Jieba
+/// tokenizer. JSON columns are discovered from Arrow field metadata below and
+/// receive a JSON-aware inverted index using the same Jieba base tokenizer.
 const STORYLINE_FTS_COLUMNS: &[&str] = &[
     "agent_name",
     "agent_version",
@@ -1678,6 +1682,100 @@ fn sort_rows(
     });
 }
 
+fn storyline_inverted_index_params(lance_tokenizer: Option<&str>) -> InvertedIndexParams {
+    let params = InvertedIndexParams::default()
+        .base_tokenizer(DEFAULT_JIEBA_MODEL.to_string())
+        // Jieba already performs language-appropriate segmentation. The
+        // English stemmer and stop-word list are not useful for these fields.
+        .stem(false)
+        .remove_stop_words(false)
+        .ascii_folding(false);
+    match lance_tokenizer {
+        Some(tokenizer) => params.lance_tokenizer(tokenizer.to_string()),
+        None => params,
+    }
+}
+
+/// Materialize the bundled model in Lance's standard model directory.
+///
+/// Lance's tokenizer API intentionally loads models by path so that model
+/// selection is persisted in index metadata. Keeping the files in the
+/// application data directory makes the default work for both index builders
+/// and readers without requiring callers to set an environment variable.
+fn ensure_default_jieba_model() -> Result<()> {
+    let configured_home = std::env::var_os("LANCE_LANGUAGE_MODEL_HOME").map(PathBuf::from);
+    let preferred_home = configured_home
+        .clone()
+        .or_else(dirs::data_local_dir)
+        .map(|path| {
+            if configured_home.is_some() {
+                path
+            } else {
+                path.join("lance").join("language_models")
+            }
+        });
+    let Some(preferred_home) = preferred_home else {
+        return Err(anyhow::anyhow!(
+            "cannot determine Lance language model directory"
+        ));
+    };
+
+    if let Err(error) = materialize_default_jieba_model(&preferred_home) {
+        // Sandboxed deployments may not be allowed to write the platform
+        // data directory. In that case use a shared temporary location for
+        // this process and point Lance at it. An explicitly configured home
+        // remains authoritative and surfaces its original error.
+        if configured_home.is_some()
+            || !matches!(error.root_cause().downcast_ref::<std::io::Error>(), Some(io_error) if io_error.kind() == std::io::ErrorKind::PermissionDenied)
+        {
+            return Err(error);
+        }
+        let fallback_home = std::env::temp_dir()
+            .join("pchronicle")
+            .join("language_models");
+        materialize_default_jieba_model(&fallback_home).with_context(|| {
+            format!(
+                "materialize bundled Jieba model in fallback directory {}",
+                fallback_home.display()
+            )
+        })?;
+        // SAFETY: this is process-wide configuration used by Lance's model
+        // loader. It is set once before index construction/query execution.
+        unsafe { std::env::set_var("LANCE_LANGUAGE_MODEL_HOME", &fallback_home) };
+    }
+    Ok(())
+}
+
+fn materialize_default_jieba_model(home: &Path) -> Result<()> {
+    let model_dir = home.join(DEFAULT_JIEBA_MODEL);
+    fs::create_dir_all(&model_dir)
+        .with_context(|| format!("create Jieba model directory {}", model_dir.display()))?;
+
+    for (name, contents) in [
+        ("config.json", DEFAULT_JIEBA_CONFIG),
+        ("dict.txt", DEFAULT_JIEBA_DICT),
+    ] {
+        let path = model_dir.join(name);
+        if path.exists() {
+            continue;
+        }
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                file.write_all(contents)
+                    .with_context(|| format!("write bundled Jieba model {}", path.display()))?;
+                file.sync_all()
+                    .with_context(|| format!("flush bundled Jieba model {}", path.display()))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("create bundled Jieba model {}", path.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn ensure_table_indexes(dataset: &mut Dataset, indexes: &[(&str, IndexType)]) -> Result<()> {
     if dataset.count_rows(None).await? == 0 {
         return Ok(());
@@ -1698,12 +1796,22 @@ async fn ensure_table_indexes(dataset: &mut Dataset, indexes: &[(&str, IndexType
     }
 
     let schema = ArrowSchema::from(dataset.schema());
+    let has_searchable_columns = schema.fields().iter().any(|field| {
+        lance_arrow::json::is_json_field(field)
+            || STORYLINE_FTS_COLUMNS
+                .iter()
+                .any(|column| *column == field.name())
+    });
+    if has_searchable_columns {
+        ensure_default_jieba_model()?;
+    }
+
     for field in schema.fields() {
         if !lance_arrow::json::is_json_field(field) {
             continue;
         }
         let column = field.name();
-        let params = InvertedIndexParams::default().lance_tokenizer("json".to_string());
+        let params = storyline_inverted_index_params(Some("json"));
         ensure_named_index(
             dataset,
             column,
@@ -1721,7 +1829,7 @@ async fn ensure_table_indexes(dataset: &mut Dataset, indexes: &[(&str, IndexType
         if lance_arrow::json::is_json_field(field) {
             continue;
         }
-        let params = InvertedIndexParams::default();
+        let params = storyline_inverted_index_params(None);
         ensure_named_index(
             dataset,
             column,
@@ -1743,6 +1851,7 @@ pub async fn search_storyline_steps_fts(
 ) -> Result<Vec<i64>> {
     let query = query.trim();
     anyhow::ensure!(!query.is_empty(), "Storyline FTS query must not be empty");
+    ensure_default_jieba_model()?;
     let dataset = open_table_version(&paths.steps, paths.steps_version).await?;
     let columns = [
         "message_value",
@@ -1783,8 +1892,29 @@ async fn ensure_named_index(
     name: String,
     params: &dyn lance_index::IndexParams,
 ) -> Result<()> {
-    if !dataset.load_indices_by_name(&name).await?.is_empty() {
-        return Ok(());
+    let existing = dataset.load_indices_by_name(&name).await?;
+    if !existing.is_empty() {
+        let is_jieba_index = index_type != IndexType::Inverted
+            || existing.iter().all(|metadata| {
+                metadata
+                    .index_details
+                    .as_ref()
+                    .map(|details| {
+                        details
+                            .value
+                            .windows(DEFAULT_JIEBA_MODEL.len())
+                            .any(|window| window == DEFAULT_JIEBA_MODEL.as_bytes())
+                    })
+                    .unwrap_or(false)
+            });
+        if is_jieba_index {
+            return Ok(());
+        }
+        // Replace legacy simple-tokenizer indexes in place. The serialized
+        // Lance details are protobuf; checking for the persisted tokenizer
+        // name keeps this migration compatible with old index versions
+        // without coupling pChronicle to Lance's generated protobuf types.
+        dataset.drop_index(&name).await?;
     }
     let _admission = super::index_build_gate::acquire().await;
     dataset
