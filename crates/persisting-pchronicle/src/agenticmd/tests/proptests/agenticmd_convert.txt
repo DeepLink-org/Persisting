@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9d59355e6811316a95d836c8180ea5dd4788abfdd0de1449e20faee2556e85d5 # shrinks to story = StorylineDocument { schema_version: "storyline/v1", origin: None, run_id: None, trajectory_id: None, attempt_id: None, session_id: "A", agent: StorylineAgent { id: "_", name: Some("_"), version: None, model_name: None, tool_definitions: None, extra: None }, parent: None, child_session_ids: None, notes: Some("\u{fffe}"), task: None, prompt: None, started_at: None, finished_at: None, final_metrics: None, continued_trajectory_ref: None, extra: None, meta: None, unknown_fields: StorylineUnknownFields { sources: {} }, unknown_key_counts: {}, turns: [] }

@@ -1912,6 +1912,14 @@ async fn directory_import_auto_detects_each_file_and_skips_unknown_json() -> Res
         assert_eq!(response["trajectories"], 3, "{output_format:?}: {response}");
         let warnings = String::from_utf8(stderr)?;
         assert!(
+            warnings.contains("import source=root.json status=processing"),
+            "{output_format:?}: {warnings}"
+        );
+        assert!(
+            warnings.contains("import source=root.json status=completed"),
+            "{output_format:?}: {warnings}"
+        );
+        assert!(
             warnings.contains("_error_gravitational-wave-detection_astronomy.json"),
             "{output_format:?}: {warnings}"
         );

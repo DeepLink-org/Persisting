@@ -55,4 +55,34 @@ mod tests {
 
         assert!(format!("{recovered:#}").contains("bad plan"));
     }
+
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use datafusion::error::DataFusionError;
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn external_errors_preserve_operation_and_message(
+                operation in proptest::string::string_regex("[A-Za-z0-9 _-]{1,32}").unwrap(),
+                message in proptest::string::string_regex("[A-Za-z0-9 _-]{1,64}").unwrap(),
+            ) {
+                let error = anyhow::anyhow!("{message}");
+                let recovered = from_datafusion(Box::leak(operation.clone().into_boxed_str()), into_datafusion(error));
+                let rendered = format!("{recovered:#}");
+                prop_assert!(rendered.contains(&operation));
+                prop_assert!(rendered.contains(&message));
+            }
+
+            #[test]
+            fn native_plan_errors_keep_their_text(
+                message in proptest::string::string_regex("[A-Za-z0-9 _-]{1,64}").unwrap(),
+            ) {
+                let recovered = from_datafusion("plan", DataFusionError::Plan(message.clone()));
+                prop_assert!(format!("{recovered:#}").contains(&message), "recovered={:?}", recovered);
+            }
+        }
+    }
 }

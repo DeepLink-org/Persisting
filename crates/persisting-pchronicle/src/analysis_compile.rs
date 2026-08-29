@@ -158,20 +158,20 @@ const MEASURES: &[MeasureInfo] = &[
     MeasureInfo {
         name: "step_latency_ms",
         grains: &["step"],
-        kind: MeasureKind::Column("latency_ms"),
-        assumption: "step_latency_ms ignores NULL latency_ms",
+        kind: MeasureKind::Column("latency"),
+        assumption: "step_latency_ms reads milliseconds from latency and ignores NULL",
     },
     MeasureInfo {
         name: "step_ttft_ms",
         grains: &["step"],
-        kind: MeasureKind::Column("ttft_ms"),
-        assumption: "step_ttft_ms ignores NULL ttft_ms",
+        kind: MeasureKind::Column("ttft"),
+        assumption: "step_ttft_ms reads milliseconds from ttft and ignores NULL",
     },
     MeasureInfo {
         name: "tool_duration_ms",
         grains: &["tool_call"],
-        kind: MeasureKind::Column("duration_ms"),
-        assumption: "tool_duration_ms ignores NULL duration_ms",
+        kind: MeasureKind::Column("duration"),
+        assumption: "tool_duration_ms reads milliseconds from duration and ignores NULL",
     },
 ];
 
@@ -453,7 +453,7 @@ fn uncomputable_measure(name: &str) -> Option<&'static str> {
     if lower.contains("token") {
         return Some("token measures are not first-class columns in v1");
     }
-    if lower.contains("json") {
+    if lower.contains("json") || lower == "final_metrics" {
         return Some("JSON extraction is not a registered measure");
     }
     None
@@ -827,7 +827,7 @@ mod tests {
                     "agent_version".into(),
                     "agent_model_name".into(),
                     "trajectory_id_explicit".into(),
-                    "final_metrics_json".into(),
+                    "final_metrics".into(),
                 ],
             },
             TableSchema {
@@ -841,8 +841,8 @@ mod tests {
                     "effective_kind".into(),
                     "model_name".into(),
                     "had_tool_calls".into(),
-                    "latency_ms".into(),
-                    "ttft_ms".into(),
+                    "latency".into(),
+                    "ttft".into(),
                 ],
             },
             TableSchema {
@@ -854,7 +854,7 @@ mod tests {
                     "step_id".into(),
                     "tool_call_id".into(),
                     "function_name".into(),
-                    "duration_ms".into(),
+                    "duration".into(),
                 ],
             },
         ]
@@ -901,7 +901,7 @@ mod tests {
                 "step_latency_ms",
                 "distribution"
             ))),
-            "SELECT s.latency_ms AS step_latency_ms FROM dataset.steps AS s WHERE s.latency_ms IS NOT NULL"
+            "SELECT s.latency AS step_latency_ms FROM dataset.steps AS s WHERE s.latency IS NOT NULL"
         );
     }
 
@@ -963,7 +963,7 @@ mod tests {
         let compiled = compile(spec, &schema(), &dataset_scope()).unwrap();
         assert_eq!(
             normalize(&compiled.sql),
-            "SELECT s._file_, s.session_id, s.step_id, s.document_id, s.latency_ms AS step_latency_ms FROM dataset.steps AS s WHERE s.latency_ms IS NOT NULL ORDER BY step_latency_ms DESC LIMIT 20"
+            "SELECT s._file_, s.session_id, s.step_id, s.document_id, s.latency AS step_latency_ms FROM dataset.steps AS s WHERE s.latency IS NOT NULL ORDER BY step_latency_ms DESC LIMIT 20"
         );
         assert_eq!(
             compiled.identity_columns,
@@ -997,7 +997,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             normalize(&compiled.sql),
-            "SELECT t._file_, t.session_id, t.step_id, t.tool_call_id, t.function_name, t.duration_ms AS tool_duration_ms FROM dataset.tool_calls AS t WHERE t._file_ = 'gateway.json' AND t.session_id = 'json-session' AND t.document_id = 'doc-1' AND t.duration_ms IS NOT NULL"
+            "SELECT t._file_, t.session_id, t.step_id, t.tool_call_id, t.function_name, t.duration AS tool_duration_ms FROM dataset.tool_calls AS t WHERE t._file_ = 'gateway.json' AND t.session_id = 'json-session' AND t.document_id = 'doc-1' AND t.duration IS NOT NULL"
         );
     }
 
@@ -1030,7 +1030,7 @@ mod tests {
                 "uncomputable",
             ),
             (
-                spec("distribution", "run", "final_metrics_json", "distribution"),
+                spec("distribution", "run", "final_metrics", "distribution"),
                 "measure",
                 "uncomputable",
             ),
@@ -1085,5 +1085,63 @@ mod tests {
         let sql = sql_of(spec);
         assert!(normalize(&sql).contains("s.source = 'agent'"));
         assert!(!sql.contains(';'));
+    }
+
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn simple_identifiers_are_not_quoted(
+                ident in proptest::string::string_regex("[A-Za-z_][A-Za-z0-9_]{0,32}").unwrap(),
+            ) {
+                prop_assert!(is_simple_ident(&ident));
+                prop_assert_eq!(quote_ident(&ident), ident);
+            }
+
+            #[test]
+            fn sql_string_escapes_quotes_without_injection(
+                value in proptest::string::string_regex("[A-Za-z0-9 _.'-]{0,64}").unwrap(),
+            ) {
+                let escaped = sql_string(&value);
+                prop_assert!(escaped.starts_with('\''));
+                prop_assert!(escaped.ends_with('\''));
+                prop_assert!(!escaped[1..escaped.len() - 1].contains(';'));
+                prop_assert_eq!(escaped.matches('\'').count(), 2 + 2 * value.matches('\'').count());
+            }
+
+            #[test]
+            fn scope_session_predicates_are_sorted_and_deduplicated(
+                ids in proptest::collection::vec(
+                    proptest::string::string_regex("[a-z0-9-]{1,12}").unwrap(),
+                    0..20,
+                ),
+            ) {
+                let scope = CompileScope {
+                    dataset: "dataset".into(),
+                    session_ids: ids.clone(),
+                    ..CompileScope::default()
+                };
+                let predicates = scope_predicates("s", &scope);
+                let mut expected = ids;
+                expected.sort();
+                expected.dedup();
+                match expected.as_slice() {
+                    [] => prop_assert!(predicates.is_empty()),
+                    [id] => prop_assert_eq!(predicates, vec![format!("s.session_id = {}", sql_string(id))]),
+                    ids => {
+                        let expected = format!(
+                            "s.session_id IN ({})",
+                            ids.iter().map(|id| sql_string(id)).collect::<Vec<_>>().join(", ")
+                        );
+                        prop_assert_eq!(predicates, vec![expected]);
+                    }
+                }
+            }
+
+        }
     }
 }

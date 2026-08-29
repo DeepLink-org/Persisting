@@ -874,3 +874,30 @@ async fn large_append_produces_valid_lance_dataset() {
     assert_eq!(replay.records.len(), 10);
     assert_eq!(payload_content(&replay.records[0]), "row-8192");
 }
+
+#[cfg(feature = "proptest")]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn note_payload_content_roundtrips_arbitrary_text(
+            content in proptest::string::string_regex("[A-Za-z0-9 .,!?_:/-]{0,128}").unwrap(),
+        ) {
+            let record = note(&content);
+            prop_assert_eq!(payload_content(&record), content);
+        }
+
+        #[test]
+        fn routed_session_coordinates_preserve_root_and_child_identity(
+            root in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+            child in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+        ) {
+            let coords = run_session("store", "agent", &child, &root);
+            prop_assert_eq!(&coords.session_id, &child);
+            prop_assert_eq!(coords.root_session_id.as_deref(), Some(root.as_str()));
+        }
+    }
+}

@@ -40,11 +40,12 @@ pub use crate::store::{
     PhysicalFileLayout, PhysicalFragment, PhysicalLayout, PhysicalPage, PhysicalPagePreview,
     PhysicalPageQuery, PhysicalSource, PhysicalTable, ProjectionSourceSnapshot,
     RawEventLanceAppender, RawEventLanceStore, ReplayOutcome, RunControlStore,
-    StorylineContentOptions, StorylineContentReadMode, StorylineLanceStore,
-    StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
-    StorylineTablePaths, TrajectoryStats, attempt_registry_now_ms, distinct_session_ids_in_run,
-    export_source_dirs, export_story_bundle, inspect_physical_file, inspect_physical_layout,
-    inspect_physical_page, list_physical_sources, raw_event_lance_path,
+    StorylineContentOptions, StorylineContentReadMode, StorylineDataSource,
+    StorylineDataSourceOptions, StorylineLanceStore, StorylineMaintenanceReport,
+    StorylineProjectionLineage, StorylineStreamImportReport, StorylineTablePaths, TrajectoryStats,
+    attempt_registry_now_ms, distinct_session_ids_in_run, export_source_dirs, export_story_bundle,
+    inspect_physical_file, inspect_physical_layout, inspect_physical_page, list_physical_sources,
+    raw_event_lance_path,
 };
 
 #[cfg(feature = "lance-store")]

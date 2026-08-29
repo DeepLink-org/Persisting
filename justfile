@@ -17,7 +17,8 @@ default:
     @echo ""
     @echo "常用："
     @echo "  just gate                # 提交前（fmt + lint + test-rust）"
-    @echo "  just test [package]      # nextest + Python；可指定 Cargo 包"
+    @echo "  just test [package]      # 日常功能测试（可指定 Cargo 包）"
+    @echo "  just proptest pchronicle # pChronicle 全量 Proptest 回归"
     @echo "  just ci                  # CI 近似全量"
     @echo "  just py-dev              # 同步纯 Python 开发环境"
     @echo "  just install-cli         # 安装 pchronicle、pvisor 和 ppilot"
@@ -49,8 +50,9 @@ test-list:
         just ci                   CI 近似
         just build-analysis       nightly 构建瓶颈分析（按需）
         just sanitize              nightly Sanitizer 测试（按需）
-        just test [package]        nextest + Python 测试；可指定包
-        just test-pchronicle / capture-test / test-py
+        just test [package]        日常功能测试；可指定 Cargo 包
+        just proptest pchronicle   pChronicle 全量性质测试回归
+        just capture-test / test-py  其他定向测试入口
         （Rust 测试由 cargo nextest 执行；文档测试仍用 cargo test）
         just regression           大规模黑盒回归（按场景运行 tests/regression）
         just gateway-fuzz         一分钟 Gateway 四类 fuzz 汇总
@@ -513,11 +515,11 @@ dev:
       --lib --bins --locked -- -D warnings
     just check-quick
 
-# CI 近似：gate + 构建 + Gateway fixture 回归
+# CI 近似：功能门禁 + Proptest 回归 + 构建
 ci:
     just gate
+    just proptest pchronicle
     just build
-    just test-capture-claude
 
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
@@ -595,10 +597,21 @@ test-capture-network:
 test-search-integration:
     cargo test -p persisting-pchronicle --test search_integration
 
-# pChronicle 库单测
+# 按包执行全量性质测试回归，例如：`just proptest pchronicle`。
 [group('test')]
-test-pchronicle:
-    cargo nextest run -p persisting-pchronicle --lib --locked
+proptest package:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ package }}" in
+      pchronicle)
+        cargo nextest run -p persisting-pchronicle --features proptest --locked \
+          -E 'test(/proptest/) or binary(proptest_*)'
+        ;;
+      *)
+        echo "unknown proptest package: {{ package }} (pchronicle)" >&2
+        exit 2
+        ;;
+    esac
 
 # Rust + Python. Rust tests run debug-mode nextest for faster iteration; use
 # `just test-rust` with a package for targeted coverage. Passing a package runs
@@ -607,15 +620,22 @@ test-pchronicle:
 test package="":
     #!/usr/bin/env bash
     set -euo pipefail
-    just test-rust "{{ package }}"
-    if [[ -z "{{ package }}" ]]; then
-        just test-py
+    package="{{ package }}"
+    if [[ -z "$package" ]]; then
+      just test-rust
+      just test-py
+      exit 0
     fi
+    case "$package" in
+      pchronicle|pchronicle-cli|agentctl|capture|ppilot|pvisor|dlcapt)
+        just test-crate "$package"
+        ;;
+      *)
+        just test-rust "$package"
+        ;;
+    esac
 
 # ── Python ───────────────────────────────────────────────────────────────────
-
-py-sync:
-    uv sync --all-extras
 
 # 同步纯 Python 开发环境
 py-dev:
@@ -661,9 +681,6 @@ generate-benchmark search_rows="100" traj_rows="50" seed="42" search_out="" traj
     [[ -n "{{ traj_out }}" ]] && args+=(--traj-out "{{ traj_out }}")
     python3 "$gen_py" "${args[@]}"
 
-check:
-    just test-pchronicle
-
 check-quick:
     cargo check \
       -p persisting-agentctl \
@@ -674,12 +691,6 @@ check-quick:
       --locked
     cargo check -p persisting-pchronicle --no-default-features --locked
 
-# capture 相关 Rust 测试
+# capture 相关 Rust 测试（Gateway 包测试已覆盖全部 capture targets）。
 capture-test:
     just test-crate capture
-    just test-capture-fixtures
-    just test-capture-claude
-
-# 完整 Gateway 验证。
-capture-check:
-    just capture-test

@@ -170,3 +170,31 @@ fn validate_namespace_component(component: &str) -> Result<()> {
     );
     Ok(())
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn alias_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[A-Za-z_][A-Za-z0-9_]{0,24}")
+            .unwrap()
+            .prop_filter("reserved aliases are rejected", |alias| {
+                alias != "public" && alias != "information_schema"
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn sql_alias_normalization_is_lowercase_and_idempotent(
+            alias in alias_strategy(),
+        ) {
+            let padded = format!("  {}  ", alias.to_ascii_uppercase());
+            let normalized = normalize_sql_alias(&padded).expect("generated SQL alias is valid");
+            prop_assert_eq!(normalized.clone(), alias.to_ascii_lowercase());
+            prop_assert_eq!(normalize_sql_alias(&normalized).unwrap(), normalized);
+        }
+
+    }
+}

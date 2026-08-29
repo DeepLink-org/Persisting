@@ -446,7 +446,16 @@ async fn explorer_tree(
     query: Result<Query<explorer::ExplorerTreeQuery>, QueryRejection>,
 ) -> Result<Json<explorer::CatalogTree>, ApiError> {
     let query = api_query(query)?;
-    let summaries = load_run_summaries(&state).await?;
+    // Tree navigation is a read of the already-installed catalog. Do not run
+    // the five-second automatic catalog refresh on every folder interaction;
+    // the runs endpoint remains the freshness boundary for live summaries.
+    let runtime = current_catalog(&state).await?;
+    let summaries = runtime
+        .acceleration
+        .run_summaries(&runtime.snapshot, &runtime.engine)
+        .await
+        .map(|summaries| summaries.as_ref().clone())
+        .map_err(ApiError::internal)?;
     let dataset = query
         .dataset
         .as_deref()
@@ -455,7 +464,6 @@ async fn explorer_tree(
     let prefix = query.prefix.as_deref().unwrap_or("");
     let mut tree = explorer::catalog_tree(&summaries, dataset, prefix, explorer::MAX_TREE_CHILDREN);
     if let Some(name) = tree.dataset.clone() {
-        let runtime = current_catalog(&state).await?;
         if tree.prefix.is_empty()
             && let Some(dataset) = runtime.snapshot.dataset(&name)
         {
@@ -1119,29 +1127,26 @@ fn run_query_fields() -> Vec<QueryFieldSummary> {
         field("agent_version", "TEXT?", "Agent version"),
         field("agent_model_name", "TEXT?", "Model used by the agent"),
         field(
-            "agent_tool_definitions_json",
+            "agent_tool_definitions",
             "JSON?",
             "Declared tool definitions",
         ),
-        field(
-            "agent_extra_json",
-            "JSON?",
-            "Source-specific agent metadata",
-        ),
-        field("parent_json", "JSON?", "Parent run reference"),
-        field(
-            "child_session_ids_json",
-            "JSON?",
-            "Child session identifiers",
-        ),
+        field("agent_extra", "JSON?", "Source-specific agent metadata"),
+        field("parent", "TEXT?", "Parent run reference"),
+        field("child_session_ids", "JSON?", "Child session identifiers"),
         field("notes", "TEXT?", "Run notes"),
-        field("final_metrics_json", "JSON?", "Final evaluation metrics"),
+        field("final_metrics", "JSON?", "Final evaluation metrics"),
         field(
             "continued_trajectory_ref",
             "TEXT?",
             "Continuation reference",
         ),
-        field("extra_json", "JSON?", "Source-specific metadata"),
+        field("extra", "JSON?", "Source-specific metadata"),
+        field(
+            "finished_at",
+            "TIMESTAMP(NANOSECOND, UTC)?",
+            "UTC completion timestamp",
+        ),
     ]
 }
 
@@ -1159,18 +1164,33 @@ fn step_query_fields() -> Vec<QueryFieldSummary> {
         field("effective_kind", "TEXT", "Normalized step kind"),
         field(
             "timestamp",
-            "TIMESTAMP(MILLISECOND, UTC)?",
-            "UTC millisecond timestamp for ordering and range queries",
+            "TIMESTAMP(NANOSECOND, UTC)?",
+            "UTC nanosecond timestamp for ordering and range queries",
+        ),
+        field(
+            "finished_at",
+            "TIMESTAMP(NANOSECOND, UTC)?",
+            "UTC completion timestamp",
         ),
         field("source", "TEXT", "user, agent, or system"),
-        field("message_json", "JSON", "Complete normalized message"),
+        field(
+            "message_kind",
+            "ENUM",
+            "Message representation: null, text, parts, or json",
+        ),
+        field("message_value", "JSON", "Complete normalized message value"),
         field(
             "reasoning_content",
             "TEXT?",
             "Reasoning content when present",
         ),
-        field("reasoning_effort_json", "JSON?", "Reasoning configuration"),
-        field("metrics_json", "JSON?", "Per-step metrics"),
+        field(
+            "reasoning_effort_kind",
+            "ENUM?",
+            "Reasoning effort representation: null, text, number, or json",
+        ),
+        field("reasoning_effort_value", "JSON?", "Reasoning effort value"),
+        field("metrics", "JSON?", "Per-step metrics"),
         field("model_name", "TEXT?", "Model for this step"),
         field("llm_call_count", "BIGINT?", "Number of model calls"),
         field(
@@ -1178,14 +1198,14 @@ fn step_query_fields() -> Vec<QueryFieldSummary> {
             "BOOLEAN?",
             "Whether context was copied",
         ),
-        field("latency_ms", "BIGINT?", "End-to-end latency"),
-        field("ttft_ms", "BIGINT?", "Time to first token"),
+        field("latency", "BIGINT?", "End-to-end latency in milliseconds"),
+        field("ttft", "BIGINT?", "Time to first token in milliseconds"),
         field(
             "had_observation",
             "BOOLEAN",
             "Whether an observation exists",
         ),
-        field("extra_json", "JSON?", "Source-specific metadata"),
+        field("extra", "JSON?", "Source-specific metadata"),
     ]
 }
 
@@ -1202,10 +1222,15 @@ fn tool_call_query_fields() -> Vec<QueryFieldSummary> {
         field("call_index", "BIGINT", "Tool-call order within the step"),
         field("tool_call_id", "TEXT", "Tool-call identifier"),
         field("function_name", "TEXT", "Normalized tool name"),
-        field("arguments_json", "JSON", "Complete call arguments"),
-        field("results_json", "JSON", "Complete tool results"),
-        field("duration_ms", "BIGINT?", "Tool execution duration"),
-        field("extra_json", "JSON?", "Source-specific metadata"),
+        field("arguments", "TEXT", "Complete call arguments"),
+        field("result", "TEXT?", "Single tool result"),
+        field("results", "TEXT", "Complete tool results"),
+        field(
+            "duration",
+            "BIGINT?",
+            "Tool execution duration in milliseconds",
+        ),
+        field("extra", "JSON?", "Source-specific metadata"),
     ]
 }
 

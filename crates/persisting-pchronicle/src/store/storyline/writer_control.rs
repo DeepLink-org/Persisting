@@ -528,7 +528,7 @@ mod tests {
 
     fn pointer(generation: &str) -> StorylineSnapshotPointer {
         StorylineSnapshotPointer {
-            schema_version: 2,
+            schema_version: crate::store::storyline::STORYLINE_LANCE_SCHEMA_VERSION,
             generation: generation.into(),
             parent_generation: None,
             table_generation: generation.into(),
@@ -615,5 +615,95 @@ mod tests {
             published.lease.unwrap().base_generation.as_deref(),
             Some("gen-2-1-1")
         );
+    }
+}
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn pointer(generation: &str) -> StorylineSnapshotPointer {
+        StorylineSnapshotPointer {
+            schema_version: crate::store::storyline::STORYLINE_LANCE_SCHEMA_VERSION,
+            generation: generation.into(),
+            parent_generation: None,
+            table_generation: generation.into(),
+            runs_version: 1,
+            steps_version: 1,
+            tool_calls_version: 1,
+            objects_version: 1,
+            projection: None,
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn fresh_acquisition_is_held_until_expiry(
+            owner in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+            now in 0u64..1_000_000,
+            ttl in 1u64..10_000,
+        ) {
+            let current = empty_control();
+            let (outcome, next) = acquire_transition(&current, &owner, now, ttl).unwrap();
+            let LeaseAcquireOutcome::Acquired(acquired) = outcome else {
+                panic!("empty control must acquire");
+            };
+            let next = next.expect("acquisition must produce next control");
+            prop_assert_eq!(acquired.lease.epoch, 1);
+            prop_assert_eq!(acquired.lease.expires_at_unix_ms, now + ttl);
+            let (held, unchanged) = acquire_transition(&next, "other", now, ttl).unwrap();
+            prop_assert!(matches!(held, LeaseAcquireOutcome::Held(_)));
+            prop_assert!(unchanged.is_none());
+        }
+
+        #[test]
+        fn valid_publish_and_renewal_advance_revision_and_preserve_identity(
+            now in 0u64..1_000_000,
+            ttl in 1u64..10_000,
+            generation in proptest::string::string_regex("gen-[A-Za-z0-9_-]{1,16}").unwrap(),
+        ) {
+            let (outcome, current) = acquire_transition(&empty_control(), "writer", now, ttl).unwrap();
+            let acquired = match outcome { LeaseAcquireOutcome::Acquired(value) => value, _ => unreachable!() };
+            let current = current.unwrap();
+            let renewed = renew_transition(&current, "writer", acquired.lease.epoch, now, ttl).unwrap().unwrap();
+            prop_assert_eq!(renewed.revision, current.revision + 1);
+            prop_assert_eq!(&renewed.lease.as_ref().unwrap().owner_id, "writer");
+            let published = publish_transition(&renewed, "writer", acquired.lease.epoch, now, &pointer(&generation)).unwrap().unwrap();
+            prop_assert_eq!(published.revision, renewed.revision + 1);
+            prop_assert_eq!(&published.committed.as_ref().unwrap().generation, &generation);
+            prop_assert!(published.lease.is_none());
+        }
+
+        #[test]
+        fn expired_leases_can_only_be_taken_over_with_a_new_epoch(
+            now in 1u64..1_000_000,
+            ttl in 1u64..10_000,
+            revision in 0u64..1_000_000,
+            old_owner in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+            new_owner in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+        ) {
+            prop_assume!(old_owner != new_owner);
+            let current = StorylineCurrentControl {
+                control_version: CURRENT_CONTROL_VERSION,
+                revision,
+                committed: None,
+                lease: Some(StorylineWriterLease {
+                    epoch: revision.saturating_add(1),
+                    owner_id: old_owner,
+                    issued_at_unix_ms: now.saturating_sub(ttl),
+                    expires_at_unix_ms: now,
+                    base_generation: None,
+                }),
+            };
+            let (outcome, next) = acquire_transition(&current, &new_owner, now, ttl).unwrap();
+            let LeaseAcquireOutcome::Acquired(acquired) = outcome else {
+                panic!("expired lease must be taken over");
+            };
+            prop_assert!(acquired.takeover);
+            prop_assert_eq!(acquired.lease.epoch, revision.saturating_add(1));
+            prop_assert_eq!(next.unwrap().lease.unwrap().owner_id, new_owner);
+        }
     }
 }

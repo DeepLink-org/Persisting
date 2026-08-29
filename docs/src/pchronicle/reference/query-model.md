@@ -34,7 +34,7 @@ When joining built-in Run relations inside one Dataset, include `_file_`
 alongside the entity key:
 
 ```sql
-SELECT r.run_id, s.step_id, s.message_json
+SELECT r.run_id, s.step_id, s.message_kind, s.message_value
 FROM dataset.runs r
 JOIN dataset.steps s
   ON r._file_ = s._file_

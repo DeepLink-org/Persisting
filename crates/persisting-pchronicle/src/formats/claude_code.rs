@@ -494,6 +494,49 @@ mod tests {
     use crate::formats::codec::{DocumentSource, decode_all};
     use serde_json::json;
 
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn claude_fingerprint_requires_transcript_type_and_identity(
+                event_type in prop::sample::select(vec!["user", "assistant", "system", "other"]),
+                identity_kind in 0usize..3,
+                has_step_id in any::<bool>(),
+            ) {
+                let mut event = serde_json::Map::new();
+                event.insert("type".into(), Value::String(event_type.to_string()));
+                match identity_kind {
+                    0 => {}
+                    1 => { event.insert("sessionId".into(), Value::String("session".into())); }
+                    _ => { event.insert("uuid".into(), Value::String("uuid".into())); }
+                }
+                if has_step_id {
+                    event.insert("step_id".into(), Value::from(1));
+                }
+                let expected = matches!(event_type, "user" | "assistant" | "system")
+                    && identity_kind != 0
+                    && !has_step_id;
+                prop_assert_eq!(looks_like_claude_code_event(&Value::Object(event)), expected);
+            }
+
+            #[test]
+            fn claude_event_fingerprint_rejects_missing_type(identity_kind in 0usize..3) {
+                let mut event = serde_json::Map::new();
+                match identity_kind {
+                    0 => {}
+                    1 => { event.insert("sessionId".into(), Value::String("session".into())); }
+                    _ => { event.insert("uuid".into(), Value::String("uuid".into())); }
+                }
+                prop_assert!(!looks_like_claude_code_event(&Value::Object(event)));
+            }
+
+        }
+    }
+
     fn claude_code_to_storylines(
         input: &str,
         relative_path: &str,

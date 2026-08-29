@@ -1582,6 +1582,18 @@ async fn physical_api_inspects_storyline_lance_layout_file_and_page() {
     let app = router(root.to_string_lossy().to_string());
     let dataset = encode_query(DEFAULT_DATASET_NAME);
 
+    let (status, explorer) = get_json(&app, "/api/explorer/runs?limit=10").await;
+    assert_eq!(status, StatusCode::OK, "{explorer}");
+    assert_eq!(explorer["snapshot"]["total"], 2, "{explorer}");
+    assert!(
+        explorer["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|run| run["session_id"] == "session-a"),
+        "{explorer}"
+    );
+
     let (status, sources) = get_json(&app, "/api/physical/sources").await;
     assert_eq!(status, StatusCode::OK, "{sources}");
     assert_eq!(sources.as_array().map(Vec::len), Some(1));

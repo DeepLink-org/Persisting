@@ -2,7 +2,7 @@ use serde_json::json;
 
 use crate::atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TestFormat {
     Storyline,
     CanonicalEvent,
@@ -692,4 +692,38 @@ fn convert_atif_to_agenticmd_keeps_user_agent_text() {
     let v: serde_json::Value = serde_json::from_str(&story).unwrap();
     assert_eq!(v["session"], "sess-1");
     assert!(v["turns"].as_array().unwrap().len() >= 2);
+}
+
+#[cfg(feature = "proptest")]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn non_lance_format() -> impl Strategy<Value = TestFormat> {
+        prop::sample::select(vec![
+            TestFormat::Storyline,
+            TestFormat::AgenticMd,
+            TestFormat::OpenaiMsg,
+            TestFormat::Atif,
+        ])
+    }
+
+    proptest! {
+        #[test]
+        fn same_format_conversion_is_an_identity_for_non_lance_formats(
+            format in non_lance_format(),
+            input in proptest::string::string_regex("[A-Za-z0-9 {}\\\"._:-]{0,128}").unwrap(),
+        ) {
+            prop_assert_eq!(convert(format, format, &input).unwrap(), input);
+        }
+
+        #[test]
+        fn lance_only_conversion_always_returns_the_documented_error(
+            input in proptest::string::string_regex("[A-Za-z0-9 _-]{0,64}").unwrap(),
+        ) {
+            let error = convert(TestFormat::CanonicalEvent, TestFormat::Storyline, &input).unwrap_err();
+            prop_assert!(error.to_string().contains("Lance"));
+        }
+    }
 }

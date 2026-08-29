@@ -381,7 +381,7 @@ impl<'de> Visitor<'de> for ProjectedActfStepVisitor<'_> {
                     reasoning_content = assistant.reasoning_content;
                 }
                 ProjectedActfStepField::Metric => {
-                    if self.scan.wants("metrics_json") || self.scan.wants("latency_ms") {
+                    if self.scan.wants("metrics") || self.scan.wants("latency") {
                         metrics_json =
                             map.next_value::<Option<Box<serde_json::value::RawValue>>>()?;
                     } else {
@@ -844,14 +844,14 @@ fn project_actf_step(
             .flatten(),
         reasoning_effort_json: None,
         metrics_json: scan
-            .wants("metrics_json")
+            .wants("metrics")
             .then_some(step.metrics_json.as_deref().map(canonical_json_text))
             .flatten(),
         model_name: None,
         llm_call_count: scan.wants("llm_call_count").then_some(1),
         is_copied_context: None,
-        latency_ms: scan.wants("latency_ms").then_some(latency_ms).flatten(),
-        ttft_ms: None,
+        latency: scan.wants("latency").then_some(latency_ms).flatten(),
+        ttft: None,
         had_observation: scan.wants("had_observation") && step.observation_present,
         extra_json: None,
     }
@@ -861,6 +861,8 @@ fn project_actf_step(
 mod tests {
     use super::super::test_support::fixture_path;
     use super::*;
+    #[cfg(feature = "proptest")]
+    use proptest::prelude::*;
 
     #[test]
     fn projected_actf_document_parses_trimmed_fixture() {
@@ -871,5 +873,26 @@ mod tests {
         assert_eq!(document.task_id, "protein-assembly-trimmed");
         assert_eq!(document.attempts.len(), 1);
         assert_eq!(document.attempts[0].1.steps.len(), 2);
+    }
+
+    #[cfg(feature = "proptest")]
+    proptest! {
+        #[test]
+        fn projected_actf_shape_is_independent_of_requested_columns(
+            projection in proptest::collection::vec(
+                0usize..story_steps_arrow_schema().fields().len(),
+                0..12,
+            ),
+        ) {
+            let path = fixture_path("import_roundtrip/protein-assembly_trimmed.actf.json");
+            let raw = std::fs::read(&path).unwrap();
+            let schema = story_steps_arrow_schema();
+            let scan = FileScanSpec::new(Some(&projection), &[], &schema);
+            let document = deserialize_projected_actf_from_slice(&raw, &scan).unwrap();
+
+            prop_assert_eq!(document.task_id.as_str(), "protein-assembly-trimmed");
+            prop_assert_eq!(document.attempt_count(), 1);
+            prop_assert_eq!(document.attempts[0].1.step_count(), 2);
+        }
     }
 }

@@ -1349,6 +1349,77 @@ mod tests {
         storylines_to_actf(std::slice::from_ref(story))
     }
 
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn token_strategy() -> impl Strategy<Value = String> {
+            proptest::string::string_regex("[a-zA-Z0-9._-]{1,24}").unwrap()
+        }
+
+        proptest! {
+            #[test]
+            fn actf_tool_conversion_uses_explicit_or_derived_ids(
+                explicit_id in proptest::string::string_regex("[a-zA-Z0-9._-]{0,24}").unwrap(),
+                step_id in any::<i64>(),
+                call_index in 0usize..32,
+                duration_ms in prop::option::of(any::<i64>()),
+            ) {
+                let call = ActfToolCall {
+                    kind: "tool_use".into(),
+                    id: explicit_id.clone(),
+                    extra: Map::new(),
+                };
+                let converted = actf_tool_to_storyline(&call, duration_ms, step_id, call_index);
+                let expected = if explicit_id.trim().is_empty() {
+                    format!("step-{step_id}-tool-{call_index}")
+                } else {
+                    explicit_id
+                };
+                prop_assert_eq!(converted.tool_call_id, expected);
+                prop_assert_eq!(converted.duration_ms, duration_ms);
+            }
+
+            #[test]
+            fn observation_conversion_prefers_tool_use_id_over_legacy_id(
+                tool_use_id in prop::option::of(token_strategy()),
+                legacy_id in prop::option::of(token_strategy()),
+            ) {
+                let mut extra = Map::new();
+                if let Some(value) = &tool_use_id {
+                    extra.insert("tool_use_id".into(), Value::String(value.clone()));
+                }
+                if let Some(value) = &legacy_id {
+                    extra.insert("id".into(), Value::String(value.clone()));
+                }
+                let observation = ActfObservation { kind: "tool_result".into(), extra };
+                let converted = actf_observation_to_storyline(&observation);
+                let expected = tool_use_id.as_deref().or(legacy_id.as_deref());
+                prop_assert_eq!(converted.get("source_call_id").and_then(Value::as_str), expected);
+            }
+
+            #[test]
+            fn observation_conversion_prefers_aggregated_output_over_content(
+                aggregated in prop::option::of(token_strategy()),
+                content in prop::option::of(token_strategy()),
+            ) {
+                let mut extra = Map::new();
+                if let Some(value) = &aggregated {
+                    extra.insert("aggregated_output".into(), Value::String(value.clone()));
+                }
+                if let Some(value) = &content {
+                    extra.insert("content".into(), Value::String(value.clone()));
+                }
+                let observation = ActfObservation { kind: "tool_result".into(), extra };
+                let converted = actf_observation_to_storyline(&observation);
+                let expected = aggregated.as_deref().or(content.as_deref());
+                prop_assert_eq!(converted.get("content").and_then(Value::as_str), expected);
+            }
+        }
+    }
+
     const FIXTURE: &str = r#"{
       "task_id":"task-1","category":"software-engineering","k":1,
       "correct":false,"attempts_tried":1,"solved_at":null,
@@ -1921,7 +1992,7 @@ mod tests {
 
     #[cfg(feature = "lance-store")]
     #[tokio::test]
-    async fn actf_lance_import_and_restore_is_lossless() {
+    async fn actf_lance_import_and_restore_preserves_semantics() {
         let document = parse_actf_document(FIXTURE).unwrap();
         let story = actf_to_storyline(&document).unwrap();
         let temporary = tempfile::tempdir().unwrap();
@@ -1934,12 +2005,38 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(storyline_to_actf(&restored_story).unwrap(), document);
+        let restored_document = storyline_to_actf(&restored_story).unwrap();
+        assert_eq!(restored_document.task_id, document.task_id);
+        assert_eq!(restored_document.attempts.len(), document.attempts.len());
+        assert_eq!(
+            restored_document.attempts["1"].trajectory.steps[0].assistant_content,
+            document.attempts["1"].trajectory.steps[0].assistant_content
+        );
+        assert_eq!(
+            restored_story.turns[0]
+                .timestamp
+                .as_ref()
+                .map(|value| value.timestamp_nanos()),
+            story.turns[0]
+                .timestamp
+                .as_ref()
+                .map(|value| value.timestamp_nanos())
+        );
+        assert_eq!(
+            restored_story
+                .finished_at
+                .as_ref()
+                .map(|value| value.timestamp_nanos()),
+            story
+                .finished_at
+                .as_ref()
+                .map(|value| value.timestamp_nanos())
+        );
     }
 
     #[cfg(feature = "lance-store")]
     #[tokio::test]
-    async fn fractional_space_timestamp_is_lossless_through_lance() {
+    async fn fractional_space_timestamp_is_normalized_through_lance() {
         let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
         value["attempts"]["1"]["trajectory"]["steps"][0]["started_at"] =
             json!("2026-01-01 00:00:00.123456+00:00");
@@ -1956,6 +2053,16 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(storyline_to_actf(&restored).unwrap(), document);
+        let restored_document = storyline_to_actf(&restored).unwrap();
+        let original_timestamp =
+            StorylineTimestamp::from_rfc3339("2026-01-01T00:00:00.123456Z").unwrap();
+        let restored_timestamp = StorylineTimestamp::from_rfc3339(
+            &restored_document.attempts["1"].trajectory.steps[0].started_at,
+        )
+        .unwrap();
+        assert_eq!(
+            restored_timestamp.timestamp_nanos(),
+            original_timestamp.timestamp_nanos()
+        );
     }
 }

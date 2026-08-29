@@ -656,6 +656,52 @@ mod tests {
     use crate::formats::codec::{DocumentSource, decode_all};
     use serde_json::json;
 
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn codex_fingerprint_requires_supported_event_shape(
+                event_type in prop::sample::select(vec![
+                    "session_meta", "response_item", "event_msg", "other",
+                ]),
+                has_timestamp in any::<bool>(),
+                has_payload in any::<bool>(),
+            ) {
+                let mut event = serde_json::Map::new();
+                event.insert("type".into(), Value::String(event_type.to_string()));
+                if has_timestamp {
+                    event.insert("timestamp".into(), Value::String("2026-01-01T00:00:00Z".into()));
+                }
+                if has_payload {
+                    event.insert("payload".into(), Value::Null);
+                }
+                let expected = has_timestamp && has_payload
+                    && matches!(event_type, "session_meta" | "response_item" | "event_msg");
+                prop_assert_eq!(looks_like_codex_event(&Value::Object(event)), expected);
+            }
+
+            #[test]
+            fn codex_fingerprint_rejects_missing_event_type(
+                has_timestamp in any::<bool>(),
+                has_payload in any::<bool>(),
+            ) {
+                let mut event = serde_json::Map::new();
+                if has_timestamp {
+                    event.insert("timestamp".into(), Value::String("2026-01-01T00:00:00Z".into()));
+                }
+                if has_payload {
+                    event.insert("payload".into(), Value::Null);
+                }
+                prop_assert!(!looks_like_codex_event(&Value::Object(event)));
+            }
+
+        }
+    }
+
     fn codex_to_storylines(
         input: &str,
         relative_path: &str,

@@ -502,6 +502,7 @@ impl StorylineDataSource {
     #[cfg(test)]
     pub fn session_context(&self) -> Result<SessionContext> {
         let context = SessionContext::new();
+        lance_datafusion::udf::register_functions(&context);
         self.register(&context)?;
         Ok(context)
     }

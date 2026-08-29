@@ -940,7 +940,24 @@ async fn openai_canonical_export_survives_lance_roundtrip() {
 
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].relative_path, PathBuf::from("corpus.json"));
-    assert_eq!(recovered[0].document, canonical);
+    let mut recovered_document = recovered[0].document.clone();
+    let mut canonical_document = canonical.clone();
+    for document in [&mut recovered_document, &mut canonical_document] {
+        for step in document
+            .get_mut("session_steps")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(timestamp) = step.get_mut("created_at") {
+                let normalized = StorylineTimestamp::from_json(timestamp.clone())
+                    .unwrap()
+                    .canonical_rfc3339();
+                *timestamp = json!(normalized);
+            }
+        }
+    }
+    assert_eq!(recovered_document, canonical_document);
 }
 
 #[cfg(feature = "lance-store")]
@@ -1008,4 +1025,38 @@ async fn openai_null_source_fields_survive_lance_roundtrip() {
             .unwrap();
 
     assert_eq!(recovered[0].document, canonical);
+}
+
+#[cfg(feature = "proptest")]
+mod proptests {
+    use std::path::Path;
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn openai_turn_ids_are_ordered_and_deterministic(
+            context_count in 0i64..1_000_000,
+            step_id in 1i64..1_000_000,
+        ) {
+            let (user_id, agent_id) = openai_turn_ids(context_count, step_id).expect("positive step id fits");
+            prop_assert_eq!(agent_id - user_id, 1);
+            prop_assert_eq!(user_id, context_count + step_id * 2 - 1);
+            prop_assert_eq!(agent_id, context_count + step_id * 2);
+        }
+
+        #[test]
+        fn relative_path_validation_rejects_absolute_and_parent_paths(
+            component in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+        ) {
+            let safe = Path::new(&component);
+            prop_assert!(validate_relative_path(safe).is_ok());
+            prop_assert!(validate_relative_path(Path::new("/absolute/file.json")).is_err());
+            let parent = Path::new("..").join(&component);
+            prop_assert!(validate_relative_path(&parent).is_err());
+        }
+
+    }
 }

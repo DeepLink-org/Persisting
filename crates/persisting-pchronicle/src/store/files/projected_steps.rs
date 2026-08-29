@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use lance::deps::arrow_array::{
     ArrayRef, BooleanArray, Int64Array, RecordBatch, RecordBatchOptions, StringArray,
 };
-use lance::deps::arrow_schema::SchemaRef;
+use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, SchemaRef};
 use tokio::sync::mpsc::Sender;
 
 use super::{FileState, FileTrajectoryRuntime, SOURCE_FILE_COLUMN};
@@ -30,10 +30,43 @@ pub(crate) struct ProjectedStepRow {
     pub model_name: Option<String>,
     pub llm_call_count: Option<i64>,
     pub is_copied_context: Option<bool>,
-    pub latency_ms: Option<i64>,
-    pub ttft_ms: Option<i64>,
+    pub latency: Option<i64>,
+    pub ttft: Option<i64>,
     pub had_observation: bool,
     pub extra_json: Option<String>,
+}
+
+/// Query-only steps schema for direct ATIF/ACTF sources.
+///
+/// Direct file queries expose JSON values as UTF-8 text; timestamp columns use
+/// the same native Arrow types as Storyline Lance.
+pub(crate) fn projected_steps_arrow_schema() -> SchemaRef {
+    let fields = crate::store::storyline::rows::story_steps_arrow_schema()
+        .fields()
+        .iter()
+        .filter(|field| field.name() != "message_kind" && field.name() != "reasoning_effort_kind")
+        .map(|field| {
+            if field.name() == "message_value" || field.name() == "reasoning_effort_value" {
+                Field::new(
+                    if field.name() == "message_value" {
+                        "message_json"
+                    } else {
+                        "reasoning_effort_json"
+                    },
+                    field.data_type().clone(),
+                    field.is_nullable(),
+                )
+            } else if lance_arrow::json::is_json_field(field) {
+                // Direct JSON/ACTF sources expose JSON text to DataFusion;
+                // the Lance JSONB extension is only a physical type for the
+                // persisted Storyline tables.
+                Field::new(field.name(), DataType::Utf8, field.is_nullable())
+            } else {
+                field.as_ref().clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    Arc::new(ArrowSchema::new(fields))
 }
 
 /// Renders JSON captured as a [`serde_json::value::RawValue`] in the same
@@ -97,6 +130,42 @@ pub(crate) fn projected_timing_from_actf_metrics(metrics_json: Option<&str>) -> 
     })
 }
 
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+    use serde_json::value::RawValue;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn canonical_json_text_is_parseable_and_semantically_equal(
+            value in prop_oneof![
+                Just(serde_json::json!({"b": 2, "a": [true, null]})),
+                Just(serde_json::json!([1, 2, 3])),
+                proptest::string::string_regex("[A-Za-z0-9 .,!?]{0,64}").unwrap().prop_map(serde_json::Value::String),
+            ],
+        ) {
+            let raw = RawValue::from_string(serde_json::to_string_pretty(&value).unwrap()).unwrap();
+            let canonical = canonical_json_text(&raw);
+            prop_assert_eq!(serde_json::from_str::<serde_json::Value>(&canonical).unwrap(), value);
+        }
+
+        #[test]
+        fn projected_timing_uses_latency_alias_precedence(
+            latency in prop::option::of(-10_000i64..10_000),
+            elapsed in prop::option::of(-10_000i64..10_000),
+            duration in prop::option::of(-10_000i64..10_000),
+            ttft in prop::option::of(-10_000i64..10_000),
+        ) {
+            let metrics = serde_json::json!({"latency_ms": latency, "elapsed_ms": elapsed, "duration_ms": duration, "ttft_ms": ttft});
+            let (actual_latency, actual_ttft) = projected_timing_from_metrics(Some(&metrics.to_string()));
+            prop_assert_eq!(actual_latency, latency.or(elapsed).or(duration));
+            prop_assert_eq!(actual_ttft, ttft);
+        }
+    }
+}
+
 pub(crate) fn emit_projected_step_batch(
     rows: &mut Vec<ProjectedStepRow>,
     file: &Arc<FileState>,
@@ -132,16 +201,6 @@ pub(crate) fn projected_step_rows_to_batch(
                 .map_err(anyhow::Error::from)
         })
         .collect::<Result<Vec<_>>>()?;
-    let timestamp_sources = timestamps
-        .iter()
-        .map(|timestamp| {
-            timestamp
-                .as_ref()
-                .map(|timestamp| serde_json::to_string(timestamp.source_value()))
-                .transpose()
-                .map_err(anyhow::Error::from)
-        })
-        .collect::<Result<Vec<_>>>()?;
     let mut columns = Vec::<ArrayRef>::with_capacity(schema.fields().len());
     for field in schema.fields() {
         let column: ArrayRef = match field.name().as_str() {
@@ -164,12 +223,7 @@ pub(crate) fn projected_step_rows_to_batch(
                 rows.iter().map(|row| row.effective_kind.as_str()),
             )),
             "timestamp" => Arc::new(timestamp_array(timestamps.iter().map(Option::as_ref))),
-            "timestamp_source_json" => Arc::new(StringArray::from_iter(
-                timestamp_sources.iter().map(Option::as_deref),
-            )),
-            "timestamp_rfc3339" => Arc::new(StringArray::from_iter(
-                rows.iter().map(|row| row.timestamp.as_deref()),
-            )),
+            "finished_at" => Arc::new(timestamp_array(std::iter::repeat_n(None, rows.len()))),
             "source" => Arc::new(StringArray::from_iter_values(
                 rows.iter().map(|row| row.source.as_str()),
             )),
@@ -182,7 +236,7 @@ pub(crate) fn projected_step_rows_to_batch(
             "reasoning_effort_json" => Arc::new(StringArray::from_iter(
                 rows.iter().map(|row| row.reasoning_effort_json.as_deref()),
             )),
-            "metrics_json" => Arc::new(StringArray::from_iter(
+            "metrics" => Arc::new(StringArray::from_iter(
                 rows.iter().map(|row| row.metrics_json.as_deref()),
             )),
             "model_name" => Arc::new(StringArray::from_iter(
@@ -198,18 +252,18 @@ pub(crate) fn projected_step_rows_to_batch(
                     .map(|row| row.is_copied_context)
                     .collect::<Vec<_>>(),
             )),
-            "latency_ms" => Arc::new(Int64Array::from(
-                rows.iter().map(|row| row.latency_ms).collect::<Vec<_>>(),
+            "latency" => Arc::new(Int64Array::from(
+                rows.iter().map(|row| row.latency).collect::<Vec<_>>(),
             )),
-            "ttft_ms" => Arc::new(Int64Array::from(
-                rows.iter().map(|row| row.ttft_ms).collect::<Vec<_>>(),
+            "ttft" => Arc::new(Int64Array::from(
+                rows.iter().map(|row| row.ttft).collect::<Vec<_>>(),
             )),
             "had_observation" => Arc::new(BooleanArray::from(
                 rows.iter()
                     .map(|row| row.had_observation)
                     .collect::<Vec<_>>(),
             )),
-            "extra_json" => Arc::new(StringArray::from_iter(
+            "extra" => Arc::new(StringArray::from_iter(
                 rows.iter().map(|row| row.extra_json.as_deref()),
             )),
             SOURCE_FILE_COLUMN => Arc::new(StringArray::from_iter_values(std::iter::repeat_n(

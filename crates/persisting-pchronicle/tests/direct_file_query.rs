@@ -341,9 +341,9 @@ async fn atif_steps_projection_matches_full_normalization_and_prunes_rows() -> R
          ORDER BY step_id",
         "SELECT step_id FROM steps WHERE source = 'agent' ORDER BY session_id, step_id",
         "SELECT run_id, session_id, step_id, kind, effective_kind, timestamp, source, \
-                message_json, reasoning_content, reasoning_effort_json, metrics_json, \
-                model_name, llm_call_count, is_copied_context, latency_ms, ttft_ms, \
-                had_observation, extra_json \
+                message_json, reasoning_content, reasoning_effort_json, metrics, \
+                model_name, llm_call_count, is_copied_context, latency, ttft, \
+                had_observation, extra \
          FROM steps WHERE session_id = 'fixture-dialogue_10' AND step_id = 5",
     ];
     for query in queries {

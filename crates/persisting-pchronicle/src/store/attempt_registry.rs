@@ -239,4 +239,25 @@ mod tests {
         assert_eq!(record.state, AttemptRecordState::Terminal);
         assert_eq!(record.attempt_id, "attempt-2");
     }
+
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn identity_validation_matches_the_registry_contract(
+                run_id in proptest::string::string_regex("[A-Za-z0-9 _-]{0,16}").unwrap(),
+                attempt_id in proptest::string::string_regex("[A-Za-z0-9 _-]{0,16}").unwrap(),
+                epoch in any::<u64>(),
+            ) {
+                let valid = !run_id.trim().is_empty()
+                    && !attempt_id.trim().is_empty()
+                    && epoch != 0;
+                prop_assert_eq!(validate_identity(&run_id, &attempt_id, epoch).is_ok(), valid);
+            }
+        }
+    }
 }

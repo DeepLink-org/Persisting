@@ -87,7 +87,7 @@ use super::{LanceMaintenanceOptions, LanceMaintenanceReport, root_write_lock};
 
 const CURRENT_FILE: &str = "CURRENT";
 const GENERATIONS_DIR: &str = "generations";
-const STORYLINE_LANCE_SCHEMA_VERSION: u32 = 2;
+const STORYLINE_LANCE_SCHEMA_VERSION: u32 = 1;
 const WRITE_BATCH_ROWS: usize = 8192;
 const STREAM_IMPORT_STORIES: usize = 256;
 const RUN_INDEXES: [(&str, IndexType); 3] = [
@@ -1783,7 +1783,7 @@ fn content_column_projection(kind: StorylineTableKind) -> Vec<&'static str> {
         .map(|(column, _)| *column)
         .collect::<Vec<_>>();
     if kind == StorylineTableKind::Runs {
-        columns.push("unknown_fields_json");
+        columns.push("unknown_fields");
     }
     columns
 }

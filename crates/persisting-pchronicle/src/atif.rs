@@ -199,64 +199,6 @@ impl AtifTrajectory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
-
-    fn token_strategy() -> impl Strategy<Value = String> {
-        proptest::string::string_regex("[a-zA-Z0-9._:-]{1,20}").unwrap()
-    }
-
-    fn valid_trajectory_strategy() -> impl Strategy<Value = AtifTrajectory> {
-        proptest::collection::vec(1i64..10_000, 0..8).prop_map(|mut ids| {
-            ids.sort_unstable();
-            ids.dedup();
-            let steps = ids
-                .iter()
-                .map(|step_id| AtifStep {
-                    step_id: *step_id,
-                    timestamp: None,
-                    source: "agent".into(),
-                    model_name: None,
-                    reasoning_effort: None,
-                    message: Value::String("message".into()),
-                    reasoning_content: None,
-                    tool_calls: Some(vec![AtifToolCall {
-                        tool_call_id: format!("call-{step_id}"),
-                        function_name: "tool".into(),
-                        arguments: serde_json::json!({"ok": true}),
-                        result: None,
-                        extra: None,
-                        unknown: Map::new(),
-                    }]),
-                    observation: None,
-                    metrics: None,
-                    extra: None,
-                    llm_call_count: None,
-                    is_copied_context: None,
-                    unknown: Map::new(),
-                })
-                .collect();
-            AtifTrajectory {
-                schema_version: "ATIF-v1.7".into(),
-                session_id: Some("session".into()),
-                trajectory_id: Some("trajectory".into()),
-                agent: AtifAgent {
-                    name: "agent".into(),
-                    version: "1".into(),
-                    model_name: None,
-                    tool_definitions: None,
-                    extra: None,
-                    unknown: Map::new(),
-                },
-                steps,
-                notes: None,
-                final_metrics: None,
-                continued_trajectory_ref: None,
-                extra: None,
-                subagent_trajectories: None,
-                unknown: Map::new(),
-            }
-        })
-    }
 
     #[test]
     fn embedded_subagents_require_unique_nonempty_trajectory_ids() {
@@ -310,61 +252,127 @@ mod tests {
         );
     }
 
-    proptest! {
-        #[test]
-        fn valid_trajectories_validate_and_roundtrip(
-            trajectory in valid_trajectory_strategy(),
-        ) {
-            trajectory.validate().unwrap();
-            let encoded = serde_json::to_value(&trajectory).unwrap();
-            prop_assert_eq!(serde_json::from_value::<AtifTrajectory>(encoded).unwrap(), trajectory);
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+        use serde_json::{Map, Value};
+
+        use crate::atif::{AtifAgent, AtifStep, AtifToolCall, AtifTrajectory};
+
+        fn token_strategy() -> impl Strategy<Value = String> {
+            proptest::string::string_regex("[a-zA-Z0-9._:-]{1,20}").unwrap()
         }
 
-        #[test]
-        fn effective_session_id_prefers_session_then_trajectory(
-            session in prop::option::of(token_strategy()),
-            trajectory_id in prop::option::of(token_strategy()),
-        ) {
-            let trajectory = AtifTrajectory {
-                schema_version: "ATIF-v1.7".into(),
-                session_id: session.clone(),
-                trajectory_id: trajectory_id.clone(),
-                agent: AtifAgent {
-                    name: "agent".into(), version: "1".into(), model_name: None,
-                    tool_definitions: None, extra: None, unknown: Map::new(),
-                },
-                steps: Vec::new(), notes: None, final_metrics: None,
-                continued_trajectory_ref: None, extra: None,
-                subagent_trajectories: None, unknown: Map::new(),
-            };
-            let expected = session.as_deref().filter(|id| !id.is_empty())
-                .or_else(|| trajectory_id.as_deref().filter(|id| !id.is_empty()));
-            prop_assert_eq!(trajectory.effective_session_id().ok(), expected);
+        fn valid_trajectory_strategy() -> impl Strategy<Value = AtifTrajectory> {
+            proptest::collection::vec(1i64..10_000, 0..8).prop_map(|mut ids| {
+                ids.sort_unstable();
+                ids.dedup();
+                let steps = ids
+                    .iter()
+                    .map(|step_id| AtifStep {
+                        step_id: *step_id,
+                        timestamp: None,
+                        source: "agent".into(),
+                        model_name: None,
+                        reasoning_effort: None,
+                        message: Value::String("message".into()),
+                        reasoning_content: None,
+                        tool_calls: Some(vec![AtifToolCall {
+                            tool_call_id: format!("call-{step_id}"),
+                            function_name: "tool".into(),
+                            arguments: serde_json::json!({"ok": true}),
+                            result: None,
+                            extra: None,
+                            unknown: Map::new(),
+                        }]),
+                        observation: None,
+                        metrics: None,
+                        extra: None,
+                        llm_call_count: None,
+                        is_copied_context: None,
+                        unknown: Map::new(),
+                    })
+                    .collect();
+                AtifTrajectory {
+                    schema_version: "ATIF-v1.7".into(),
+                    session_id: Some("session".into()),
+                    trajectory_id: Some("trajectory".into()),
+                    agent: AtifAgent {
+                        name: "agent".into(),
+                        version: "1".into(),
+                        model_name: None,
+                        tool_definitions: None,
+                        extra: None,
+                        unknown: Map::new(),
+                    },
+                    steps,
+                    notes: None,
+                    final_metrics: None,
+                    continued_trajectory_ref: None,
+                    extra: None,
+                    subagent_trajectories: None,
+                    unknown: Map::new(),
+                }
+            })
         }
 
-        #[test]
-        fn invalid_step_ids_are_rejected(
-            invalid_step_id in prop_oneof![Just(0i64), (-10i64..0)],
-        ) {
-            let trajectory = AtifTrajectory {
-                schema_version: "ATIF-v1.7".into(),
-                session_id: Some("session".into()),
-                trajectory_id: None,
-                agent: AtifAgent {
-                    name: "agent".into(), version: "1".into(), model_name: None,
-                    tool_definitions: None, extra: None, unknown: Map::new(),
-                },
-                steps: vec![AtifStep {
-                    step_id: invalid_step_id, timestamp: None, source: "agent".into(),
-                    model_name: None, reasoning_effort: None, message: Value::Null,
-                    reasoning_content: None, tool_calls: None, observation: None,
-                    metrics: None, extra: None, llm_call_count: None,
-                    is_copied_context: None, unknown: Map::new(),
-                }],
-                notes: None, final_metrics: None, continued_trajectory_ref: None,
-                extra: None, subagent_trajectories: None, unknown: Map::new(),
-            };
-            prop_assert!(trajectory.validate().is_err());
+        proptest! {
+            #[test]
+            fn valid_trajectories_validate_and_roundtrip(trajectory in valid_trajectory_strategy()) {
+                trajectory.validate().unwrap();
+                let encoded = serde_json::to_value(&trajectory).unwrap();
+                prop_assert_eq!(serde_json::from_value::<AtifTrajectory>(encoded).unwrap(), trajectory);
+            }
+
+            #[test]
+            fn effective_session_id_prefers_session_then_trajectory(
+                session in prop::option::of(token_strategy()),
+                trajectory_id in prop::option::of(token_strategy()),
+            ) {
+                let trajectory = AtifTrajectory {
+                    schema_version: "ATIF-v1.7".into(),
+                    session_id: session.clone(),
+                    trajectory_id: trajectory_id.clone(),
+                    agent: AtifAgent { name: "agent".into(), version: "1".into(), model_name: None, tool_definitions: None, extra: None, unknown: Map::new() },
+                    steps: Vec::new(), notes: None, final_metrics: None, continued_trajectory_ref: None,
+                    extra: None, subagent_trajectories: None, unknown: Map::new(),
+                };
+                let expected = session.as_deref().filter(|id| !id.is_empty())
+                    .or_else(|| trajectory_id.as_deref().filter(|id| !id.is_empty()));
+                prop_assert_eq!(trajectory.effective_session_id().ok(), expected);
+            }
+
+            #[test]
+            fn invalid_step_ids_are_rejected(invalid_step_id in prop_oneof![Just(0i64), (-10i64..0)]) {
+                let trajectory = AtifTrajectory {
+                    schema_version: "ATIF-v1.7".into(), session_id: Some("session".into()), trajectory_id: None,
+                    agent: AtifAgent { name: "agent".into(), version: "1".into(), model_name: None, tool_definitions: None, extra: None, unknown: Map::new() },
+                    steps: vec![AtifStep { step_id: invalid_step_id, timestamp: None, source: "agent".into(), model_name: None, reasoning_effort: None, message: Value::Null, reasoning_content: None, tool_calls: None, observation: None, metrics: None, extra: None, llm_call_count: None, is_copied_context: None, unknown: Map::new() }],
+                    notes: None, final_metrics: None, continued_trajectory_ref: None, extra: None, subagent_trajectories: None, unknown: Map::new(),
+                };
+                prop_assert!(trajectory.validate().is_err());
+            }
+
+            #[test]
+            fn duplicate_tool_ids_are_rejected(tool_id in token_strategy()) {
+                let trajectory = AtifTrajectory {
+                    schema_version: "ATIF-v1.7".into(), session_id: Some("session".into()), trajectory_id: None,
+                    agent: AtifAgent { name: "agent".into(), version: "1".into(), model_name: None, tool_definitions: None, extra: None, unknown: Map::new() },
+                    steps: vec![AtifStep {
+                        step_id: 1, timestamp: None, source: "agent".into(), model_name: None, reasoning_effort: None,
+                        message: Value::Null, reasoning_content: None,
+                        tool_calls: Some(vec![
+                            AtifToolCall { tool_call_id: tool_id.clone(), function_name: "one".into(), arguments: Value::Null, result: None, extra: None, unknown: Map::new() },
+                            AtifToolCall { tool_call_id: tool_id, function_name: "two".into(), arguments: Value::Null, result: None, extra: None, unknown: Map::new() },
+                        ]),
+                        observation: None, metrics: None, extra: None, llm_call_count: None, is_copied_context: None, unknown: Map::new(),
+                    }],
+                    notes: None, final_metrics: None, continued_trajectory_ref: None, extra: None,
+                    subagent_trajectories: None, unknown: Map::new(),
+                };
+                let error = trajectory.validate().unwrap_err();
+                prop_assert!(error.message().contains("duplicate tool_call_id"));
+            }
         }
     }
 }

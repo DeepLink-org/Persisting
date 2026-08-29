@@ -80,30 +80,22 @@ impl CatalogTableProvider {
         else {
             return Ok(None);
         };
-        let plan = if table.carries_file_column {
-            let source_projection = file_source_projection(projection, self.schema.fields().len());
-            table
-                .provider
-                .scan(state, Some(&source_projection), filters, limit)
-                .await?
+        let physical_schema = table.provider.schema();
+        let source_projection = if table.carries_file_column {
+            file_source_projection(projection, self.schema.as_ref(), physical_schema.as_ref())?
         } else {
-            let physical_projection = physical_projection(
-                projection,
-                self.schema.as_ref(),
-                table.provider.schema().as_ref(),
-            )?;
-            let business_filters = business_filters(filters);
-            let input = table
-                .provider
-                .scan(
-                    state,
-                    physical_projection.as_ref(),
-                    &business_filters,
-                    limit,
-                )
-                .await?;
-            project_catalog_source(input, source.file(), projection, &self.schema)?
+            physical_projection(projection, self.schema.as_ref(), physical_schema.as_ref())?
         };
+        let forwarded_filters = if table.carries_file_column {
+            filters.to_vec()
+        } else {
+            business_filters(filters)
+        };
+        let input = table
+            .provider
+            .scan(state, source_projection.as_ref(), &forwarded_filters, limit)
+            .await?;
+        let plan = project_catalog_source(input, source.file(), projection, &self.schema)?;
         Ok(Some(plan))
     }
 }
@@ -344,14 +336,22 @@ fn null_literal(
     )))
 }
 
-fn file_source_projection(projection: Option<&Vec<usize>>, catalog_width: usize) -> Vec<usize> {
-    let file_column = catalog_width.saturating_sub(1);
-    projection
-        .cloned()
-        .unwrap_or_else(|| (0..catalog_width).collect())
-        .into_iter()
-        .map(|index| if index == 0 { file_column } else { index - 1 })
-        .collect()
+fn file_source_projection(
+    projection: Option<&Vec<usize>>,
+    catalog_schema: &Schema,
+    physical_schema: &Schema,
+) -> datafusion::common::Result<Option<Vec<usize>>> {
+    let Some(projection) = projection else {
+        return Ok(None);
+    };
+    let physical = projection
+        .iter()
+        .filter_map(|index| {
+            let name = catalog_schema.field(*index).name();
+            physical_schema.index_of(name).ok()
+        })
+        .collect::<Vec<_>>();
+    Ok(Some(physical))
 }
 
 fn projected_schema(
@@ -436,15 +436,15 @@ pub(super) async fn create_trajectories_view(
                       WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS step_ids, \
                     (SELECT array_agg(s.source ORDER BY s.step_id) FROM {dataset}.steps s \
                       WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS step_sources, \
-                    (SELECT array_agg(s.message_json ORDER BY s.step_id) FROM {dataset}.steps s \
-                      WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS messages_json, \
+                    (SELECT array_agg(s.message_value ORDER BY s.step_id) FROM {dataset}.steps s \
+                      WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS messages_value, \
                     (SELECT COUNT(*) FROM {dataset}.tool_calls t \
                       WHERE t._file_ = r._file_ AND t.document_id = r.document_id) AS tool_call_count, \
                     (SELECT array_agg(t.function_name ORDER BY t.step_id, t.call_index) FROM {dataset}.tool_calls t \
                       WHERE t._file_ = r._file_ AND t.document_id = r.document_id) AS tool_names, \
-                    (SELECT array_agg(t.arguments_json ORDER BY t.step_id, t.call_index) FROM {dataset}.tool_calls t \
+                    (SELECT array_agg(t.arguments ORDER BY t.step_id, t.call_index) FROM {dataset}.tool_calls t \
                       WHERE t._file_ = r._file_ AND t.document_id = r.document_id) AS tool_arguments_json, \
-                    (SELECT array_agg(t.results_json ORDER BY t.step_id, t.call_index) FROM {dataset}.tool_calls t \
+                    (SELECT array_agg(t.results ORDER BY t.step_id, t.call_index) FROM {dataset}.tool_calls t \
                       WHERE t._file_ = r._file_ AND t.document_id = r.document_id) AS tool_results_json \
              FROM {dataset}.runs r"
         ),
@@ -583,26 +583,26 @@ mod tests {
         let fields = story_runs_arrow_schema()
             .fields()
             .iter()
-            .filter(|field| field.name() != "meta_json")
+            .filter(|field| field.name() != "meta")
             .cloned()
             .collect::<Vec<_>>();
         Arc::new(Schema::new(fields))
     }
 
     #[test]
-    fn storyline_projection_follows_column_names_when_meta_json_is_absent() {
+    fn storyline_projection_follows_column_names_when_meta_is_absent() {
         let catalog = catalog_schema(&story_runs_arrow_schema());
         let physical = runs_schema_without_meta();
         let catalog_index = catalog
-            .index_of("unknown_fields_json")
-            .expect("catalog schema exposes unknown_fields_json");
+            .index_of("unknown_fields")
+            .expect("catalog schema exposes unknown_fields");
         let physical_index = physical
-            .index_of("unknown_fields_json")
-            .expect("older Storyline runs still have unknown_fields_json");
+            .index_of("unknown_fields")
+            .expect("older Storyline runs still have unknown_fields");
         assert_ne!(
             catalog_index.checked_sub(1),
             Some(physical_index),
-            "inserting meta_json must shift later catalog indexes"
+            "inserting meta must shift later catalog indexes"
         );
 
         let mapped =
@@ -616,8 +616,8 @@ mod tests {
         let catalog = catalog_schema(&story_runs_arrow_schema());
         let physical = runs_schema_without_meta();
         let meta = catalog
-            .index_of("meta_json")
-            .expect("current catalog schema exposes meta_json");
+            .index_of("meta")
+            .expect("current catalog schema exposes meta");
         let mapped =
             physical_projection(Some(&vec![meta]), &catalog, physical.as_ref()).expect("missing");
         assert_eq!(mapped, Some(Vec::new()));

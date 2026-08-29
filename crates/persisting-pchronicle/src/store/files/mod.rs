@@ -42,13 +42,16 @@ use tokio::sync::mpsc::Sender;
 
 use crate::format::DocumentFormat;
 
+#[cfg(test)]
+use super::story_steps_arrow_schema;
 use super::{
     LocalQueryInputFile, LocalQueryManifest, StoryRunRow, StoryStepRow, StoryToolCallRow,
     StorylineDataFusionTableNames, StorylineTableKind,
     datafusion_bridge::{from_datafusion, into_datafusion},
-    split_storyline, story_runs_arrow_schema, story_runs_to_batch, story_steps_arrow_schema,
-    story_steps_to_batch, story_tool_calls_arrow_schema, story_tool_calls_to_batch,
+    split_storyline, story_runs_arrow_schema, story_runs_to_batch, story_steps_to_batch,
+    story_tool_calls_arrow_schema, story_tool_calls_to_batch,
 };
+use projected_steps::projected_steps_arrow_schema;
 
 /// Query-only source path column. This is not part of any Lance table schema.
 pub const SOURCE_FILE_COLUMN: &str = "_file_";
@@ -305,7 +308,7 @@ impl FileScanSpec {
         self.projection
             .as_ref()
             .is_some_and(|projection| projection.len() < schema.fields().len())
-            && !["turn_ordinal", "had_tool_calls", "observation_json"]
+            && !["turn_ordinal", "had_tool_calls", "observation"]
                 .into_iter()
                 .any(|name| self.wants(name))
     }
@@ -940,23 +943,23 @@ fn stories_to_parsed_file(
     let runs = encode_query_batches(
         &runs,
         batch_size,
-        story_runs_to_batch,
+        story_runs_to_query_batch,
         file.relative_path(),
-        query_schema(&story_runs_arrow_schema()),
+        query_schema(&projected_runs_arrow_schema()),
     )?;
     let steps = encode_query_batches(
         &steps,
         batch_size,
-        story_steps_to_batch,
+        story_steps_to_query_batch,
         file.relative_path(),
-        query_schema(&story_steps_arrow_schema()),
+        query_schema(&projected_steps_arrow_schema()),
     )?;
     let tool_calls = encode_query_batches(
         &tool_calls,
         batch_size,
-        story_tool_calls_to_batch,
+        story_tool_calls_to_query_batch,
         file.relative_path(),
-        query_schema(&story_tool_calls_arrow_schema()),
+        query_schema(&projected_tool_calls_arrow_schema()),
     )?;
     let arrow_bytes = runs
         .iter()
@@ -982,6 +985,69 @@ fn encode_query_batches<T>(
     rows.chunks(batch_size)
         .map(|chunk| append_file_column(encode(chunk)?, relative_path, schema.clone()))
         .collect()
+}
+
+fn story_steps_to_query_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
+    let batch = lance_arrow::json::convert_lance_json_to_arrow(&story_steps_to_batch(rows)?)
+        .context("convert direct-query steps JSON columns")?;
+    let columns = batch
+        .schema()
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| {
+            field.name() != "message_kind" && field.name() != "reasoning_effort_kind"
+        })
+        .map(|(index, _)| batch.column(index).clone())
+        .collect::<Vec<_>>();
+    RecordBatch::try_new(projected_steps_arrow_schema(), columns)
+        .context("build direct-query steps batch")
+}
+
+fn projected_runs_arrow_schema() -> SchemaRef {
+    // Catalog-backed queries use the same physical Lance JSONB schema for
+    // direct files and Storyline stores, allowing mixed-source unions.
+    story_runs_arrow_schema()
+}
+
+fn story_runs_to_query_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
+    RecordBatch::try_new(
+        projected_runs_arrow_schema(),
+        story_runs_to_batch(rows)?.columns().to_vec(),
+    )
+    .context("build direct-query runs batch")
+}
+
+fn story_tool_calls_to_query_batch(rows: &[StoryToolCallRow]) -> Result<RecordBatch> {
+    let batch = lance_arrow::json::convert_lance_json_to_arrow(&story_tool_calls_to_batch(rows)?)
+        .context("convert direct-query tool-call JSON columns")?;
+    RecordBatch::try_new(
+        projected_tool_calls_arrow_schema(),
+        batch.columns().to_vec(),
+    )
+    .context("build direct-query tool_calls batch")
+}
+
+fn projected_tool_calls_arrow_schema() -> SchemaRef {
+    logical_json_schema(&story_tool_calls_arrow_schema())
+}
+
+fn logical_json_schema(schema: &SchemaRef) -> SchemaRef {
+    let fields = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            if lance_arrow::json::is_json_field(field) {
+                Field::new(field.name(), DataType::Utf8, field.is_nullable())
+            } else {
+                field.as_ref().clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    Arc::new(ArrowSchema::new_with_metadata(
+        fields,
+        schema.metadata().clone(),
+    ))
 }
 
 fn append_file_column(
@@ -1035,9 +1101,9 @@ fn projected_schema(
 
 fn base_schema(kind: StorylineTableKind) -> SchemaRef {
     match kind {
-        StorylineTableKind::Runs => story_runs_arrow_schema(),
-        StorylineTableKind::Steps => story_steps_arrow_schema(),
-        StorylineTableKind::ToolCalls => story_tool_calls_arrow_schema(),
+        StorylineTableKind::Runs => projected_runs_arrow_schema(),
+        StorylineTableKind::Steps => projected_steps_arrow_schema(),
+        StorylineTableKind::ToolCalls => projected_tool_calls_arrow_schema(),
     }
 }
 

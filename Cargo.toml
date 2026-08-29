@@ -103,6 +103,7 @@ hyper-util = { version = "0.1", default-features = false }
 ipnet = "2"
 jj-lib = "0.43.0"
 lance = { version = "9.0.1", default-features = false }
+lance-arrow = "9.0.1"
 lance-core = "9.0.1"
 lance-file = "9.0.1"
 lance-datafusion = "9.0.1"

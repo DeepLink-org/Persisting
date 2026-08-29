@@ -31,10 +31,8 @@ impl ProjectedAtifScanFlags {
             reasoning_content: scan.wants("reasoning_content"),
             kind_fields: scan.wants("kind") || scan.wants("effective_kind"),
             had_observation: scan.wants("had_observation"),
-            metrics: scan.wants("metrics_json")
-                || scan.wants("latency_ms")
-                || scan.wants("ttft_ms"),
-            extra_json: scan.wants("extra_json"),
+            metrics: scan.wants("metrics") || scan.wants("latency") || scan.wants("ttft"),
+            extra_json: scan.wants("extra"),
             llm_call_count: scan.wants("llm_call_count"),
             is_copied_context: scan.wants("is_copied_context"),
         }
@@ -1020,7 +1018,7 @@ fn project_atif_step(
             )
             .flatten(),
         metrics_json: scan
-            .wants("metrics_json")
+            .wants("metrics")
             .then_some(step.metrics_json.as_deref().map(canonical_json_text))
             .flatten(),
         model_name: scan
@@ -1035,11 +1033,11 @@ fn project_atif_step(
             .wants("is_copied_context")
             .then_some(step.is_copied_context)
             .flatten(),
-        latency_ms: scan.wants("latency_ms").then_some(latency_ms).flatten(),
-        ttft_ms: scan.wants("ttft_ms").then_some(ttft_ms).flatten(),
+        latency: scan.wants("latency").then_some(latency_ms).flatten(),
+        ttft: scan.wants("ttft").then_some(ttft_ms).flatten(),
         had_observation: scan.wants("had_observation") && step.observation_present,
         extra_json: scan
-            .wants("extra_json")
+            .wants("extra")
             .then_some(step.extra_json.as_deref().map(canonical_json_text))
             .flatten(),
     }

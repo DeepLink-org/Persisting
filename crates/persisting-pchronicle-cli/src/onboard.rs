@@ -17,11 +17,11 @@ const DEMO_ACTF: &str = include_str!("../assets/onboard/code-repair.actf.json");
 const DEMO_OPENAI: &str = include_str!("../assets/onboard/training.json");
 const MAX_FILES: usize = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES;
 const MAX_ENTRIES: usize = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES;
-const STEP_SAMPLE_SQL: &str = r#"SELECT session_id, step_id, source, model_name, message_json
+const STEP_SAMPLE_SQL: &str = r#"SELECT session_id, step_id, source, model_name, message_kind, message_value
 FROM dataset.steps
 ORDER BY session_id, step_id
 LIMIT 10"#;
-const TOOL_SAMPLE_SQL: &str = r#"SELECT session_id, step_id, function_name, arguments_json
+const TOOL_SAMPLE_SQL: &str = r#"SELECT session_id, step_id, function_name, arguments
 FROM dataset.tool_calls
 ORDER BY session_id, step_id, call_index
 LIMIT 10"#;
@@ -392,7 +392,7 @@ async fn render_query(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &str)
     .await?;
     renderer.render(&command_section(
         "Query · 查看 Step",
-        "`message_json` 保留消息值，Agent、Model 和时间字段则可直接参与 SQL。",
+        "`message_kind` 标识消息类型，`message_value` 保留原始消息值；Agent、Model 和时间字段则可直接参与 SQL。",
         &format!(
             "pchronicle query {dataset} --sql {} --format table",
             shell_quote(STEP_SAMPLE_SQL)

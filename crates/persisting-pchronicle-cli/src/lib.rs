@@ -2539,8 +2539,8 @@ const ANALYSIS_TOOLS_SQL: &str = r#"
 WITH per_trajectory AS (
   SELECT _file_, document_id, function_name,
          COUNT(*) AS calls,
-         COUNT(duration_ms) AS duration_samples,
-         SUM(COALESCE(duration_ms, 0)) AS total_duration_ms
+         COUNT(duration) AS duration_samples,
+         SUM(COALESCE(duration, 0)) AS total_duration_ms
   FROM dataset.tool_calls
   GROUP BY _file_, document_id, function_name
 )

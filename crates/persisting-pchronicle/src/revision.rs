@@ -163,55 +163,6 @@ pub async fn write_revisions(session: &StoryCoords, rows: &[RevisionRow]) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
-
-    fn token_strategy() -> impl Strategy<Value = String> {
-        proptest::string::string_regex("[a-zA-Z0-9._:/-]{0,32}").unwrap()
-    }
-
-    fn recipe_strategy() -> impl Strategy<Value = Value> {
-        prop_oneof![
-            Just(Value::Null),
-            any::<bool>().prop_map(Value::Bool),
-            (0u64..100_000).prop_map(Value::from),
-            token_strategy().prop_map(Value::String),
-            token_strategy().prop_map(|value| serde_json::json!({"op": value})),
-        ]
-    }
-
-    fn revision_row_strategy() -> impl Strategy<Value = RevisionRow> {
-        (
-            token_strategy(),
-            proptest::collection::vec(token_strategy(), 0..4),
-            token_strategy(),
-            token_strategy(),
-            recipe_strategy(),
-            token_strategy(),
-            token_strategy(),
-            proptest::collection::vec(token_strategy(), 0..4),
-        )
-            .prop_map(
-                |(
-                    revision_id,
-                    parent_revision_ids,
-                    kind,
-                    canonical_snapshot,
-                    recipe,
-                    status,
-                    created_at,
-                    output_refs,
-                )| RevisionRow {
-                    revision_id,
-                    parent_revision_ids,
-                    kind,
-                    canonical_snapshot,
-                    recipe,
-                    status,
-                    created_at,
-                    output_refs,
-                },
-            )
-    }
 
     #[tokio::test]
     async fn revision_catalog_upserts_by_id() {
@@ -235,43 +186,89 @@ mod tests {
         assert_eq!(rows[0].status, "ready");
     }
 
-    proptest! {
-        #[test]
-        fn revision_batches_preserve_all_columns(
-            rows in proptest::collection::vec(revision_row_strategy(), 0..12),
-        ) {
-            let record_batch = batch(&rows).unwrap();
-            prop_assert_eq!(record_batch.num_rows(), rows.len());
-            for (index, expected) in rows.iter().enumerate() {
-                prop_assert_eq!(text(&record_batch, "revision_id", index).unwrap(), expected.revision_id.clone());
-                prop_assert_eq!(serde_json::from_str::<Vec<String>>(
-                    &text(&record_batch, "parent_revision_ids_json", index).unwrap()
-                ).unwrap(), expected.parent_revision_ids.clone());
-                prop_assert_eq!(text(&record_batch, "kind", index).unwrap(), expected.kind.clone());
-                prop_assert_eq!(text(&record_batch, "canonical_snapshot", index).unwrap(), expected.canonical_snapshot.clone());
-                prop_assert_eq!(serde_json::from_str::<Value>(
-                    &text(&record_batch, "recipe_json", index).unwrap()
-                ).unwrap(), expected.recipe.clone());
-                prop_assert_eq!(text(&record_batch, "status", index).unwrap(), expected.status.clone());
-                prop_assert_eq!(text(&record_batch, "created_at", index).unwrap(), expected.created_at.clone());
-                prop_assert_eq!(serde_json::from_str::<Vec<String>>(
-                    &text(&record_batch, "output_refs_json", index).unwrap()
-                ).unwrap(), expected.output_refs.clone());
-            }
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+        use serde_json::Value;
+
+        use crate::revision::{RevisionRow, batch, text};
+
+        fn token_strategy() -> impl Strategy<Value = String> {
+            proptest::string::string_regex("[a-zA-Z0-9._:/-]{0,32}").unwrap()
         }
 
-        #[test]
-        fn revision_dataset_path_is_always_run_scoped(
-            storage in prop_oneof![Just("/tmp/store".to_string()), Just("s3://bucket/prefix".to_string())],
-            agent in proptest::string::string_regex("[a-zA-Z0-9_-]{1,16}").unwrap(),
-            session in proptest::string::string_regex("[a-zA-Z0-9_-]{1,16}").unwrap(),
-            root in prop::option::of(proptest::string::string_regex("[a-zA-Z0-9_-]{1,16}").unwrap()),
-        ) {
-            let coords = StoryCoords::new(storage, agent, session, root);
-            let path = revision_dataset_path(&coords).unwrap();
-            prop_assert!(path.ends_with("revisions.lance"));
-            let run_dir = coords.run_dir().unwrap();
-            prop_assert_eq!(std::path::Path::new(&path).parent(), Some(run_dir.as_path()));
+        fn recipe_strategy() -> impl Strategy<Value = Value> {
+            prop_oneof![
+                Just(Value::Null),
+                any::<bool>().prop_map(Value::Bool),
+                (0u64..100_000).prop_map(Value::from),
+                token_strategy().prop_map(Value::String),
+                token_strategy().prop_map(|value| serde_json::json!({"op": value})),
+            ]
+        }
+
+        fn revision_row_strategy() -> impl Strategy<Value = RevisionRow> {
+            (
+                token_strategy(),
+                proptest::collection::vec(token_strategy(), 0..4),
+                token_strategy(),
+                token_strategy(),
+                recipe_strategy(),
+                token_strategy(),
+                token_strategy(),
+                proptest::collection::vec(token_strategy(), 0..4),
+            )
+                .prop_map(
+                    |(
+                        revision_id,
+                        parent_revision_ids,
+                        kind,
+                        canonical_snapshot,
+                        recipe,
+                        status,
+                        created_at,
+                        output_refs,
+                    )| RevisionRow {
+                        revision_id,
+                        parent_revision_ids,
+                        kind,
+                        canonical_snapshot,
+                        recipe,
+                        status,
+                        created_at,
+                        output_refs,
+                    },
+                )
+        }
+
+        proptest! {
+            #[test]
+            fn revision_batches_preserve_all_columns(rows in proptest::collection::vec(revision_row_strategy(), 0..12)) {
+                let record_batch = batch(&rows).unwrap();
+                prop_assert_eq!(record_batch.num_rows(), rows.len());
+                for (index, expected) in rows.iter().enumerate() {
+                    prop_assert_eq!(text(&record_batch, "revision_id", index).unwrap(), expected.revision_id.clone());
+                    prop_assert_eq!(serde_json::from_str::<Vec<String>>(&text(&record_batch, "parent_revision_ids_json", index).unwrap()).unwrap(), expected.parent_revision_ids.clone());
+                    prop_assert_eq!(text(&record_batch, "kind", index).unwrap(), expected.kind.clone());
+                    prop_assert_eq!(text(&record_batch, "canonical_snapshot", index).unwrap(), expected.canonical_snapshot.clone());
+                    prop_assert_eq!(serde_json::from_str::<Value>(&text(&record_batch, "recipe_json", index).unwrap()).unwrap(), expected.recipe.clone());
+                    prop_assert_eq!(text(&record_batch, "status", index).unwrap(), expected.status.clone());
+                    prop_assert_eq!(text(&record_batch, "created_at", index).unwrap(), expected.created_at.clone());
+                    prop_assert_eq!(serde_json::from_str::<Vec<String>>(&text(&record_batch, "output_refs_json", index).unwrap()).unwrap(), expected.output_refs.clone());
+                }
+            }
+
+            #[test]
+            fn revision_batch_preserves_unicode_and_delimiters(
+                id in any::<String>(),
+                snapshot in any::<String>(),
+                status in any::<String>(),
+            ) {
+                let row = RevisionRow { revision_id: id.clone(), parent_revision_ids: vec!["父/parent".into()], kind: "kind\nline".into(), canonical_snapshot: snapshot.clone(), recipe: serde_json::json!({"文本": status.clone()}), status, created_at: "2026-01-01T00:00:00Z".into(), output_refs: vec!["ref\nwith\nnewline".into()] };
+                let record_batch = batch(&[row]).unwrap();
+                prop_assert_eq!(text(&record_batch, "revision_id", 0).unwrap(), id);
+                prop_assert_eq!(text(&record_batch, "canonical_snapshot", 0).unwrap(), snapshot);
+            }
         }
     }
 }

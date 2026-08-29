@@ -119,6 +119,8 @@ fn deserialize_actf_document<R: Read>(reader: R) -> Result<ActfDocument> {
 mod tests {
     use super::super::test_support::fixture_path;
     use super::*;
+    #[cfg(feature = "proptest")]
+    use proptest::prelude::*;
     use std::io::Cursor;
 
     #[test]
@@ -167,5 +169,20 @@ mod tests {
                 .any(|source| source.downcast_ref::<crate::InputIssue>().is_some()),
             "missing InputIssue source: {error:#}"
         );
+    }
+
+    #[cfg(feature = "proptest")]
+    proptest! {
+        #[test]
+        fn streaming_actf_array_emits_one_story_per_generated_record(
+            records in 1usize..5,
+        ) {
+            let path = fixture_path("import_roundtrip/protein-assembly_trimmed.actf.json");
+            let object = std::fs::read_to_string(&path).unwrap();
+            let corpus = format!("[{}]", std::iter::repeat_n(object.as_str(), records).collect::<Vec<_>>().join(","));
+            let mut reader = Cursor::new(corpus.into_bytes());
+            let stories = parse_actf_storylines_from_reader(&path, &mut reader, 64 * 1024 * 1024).unwrap();
+            prop_assert_eq!(stories.len(), records);
+        }
     }
 }

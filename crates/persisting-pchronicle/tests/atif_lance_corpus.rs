@@ -297,7 +297,7 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
     assert!(!plan_text.contains("pchronicle_step_id_idx"), "{plan_text}");
     let joined = context
         .sql(
-            "SELECT t.tool_call_id, t.results_json, s.effective_kind \
+            "SELECT t.tool_call_id, t.results, s.effective_kind \
              FROM tool_calls t JOIN steps s \
                ON t.session_id = s.session_id AND t.step_id = s.step_id \
              WHERE t.session_id = 'fixture-parallel_tools_14' \

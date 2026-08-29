@@ -241,6 +241,13 @@ jobs:
           RUST_MIN_STACK: "8388608"
         run: cargo nextest run --locked ${{ matrix.packages }}
 
+      # pChronicle's property tests are opt-in so the everyday package test
+      # stays lightweight. CI is the full regression path and enables them
+      # explicitly (including private inline property modules).
+      - name: Run pChronicle property-test regression
+        if: matrix.shard == 'pchronicle'
+        run: just proptest pchronicle
+
       - name: Test shared event control contract
         if: matrix.event_control
         run: cargo nextest run -p persisting-events --features control --locked

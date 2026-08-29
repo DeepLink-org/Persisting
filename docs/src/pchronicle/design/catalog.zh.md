@@ -294,7 +294,7 @@ Storyline 投影。
 有效。两个内建轨迹表跨多个同 Dataset source 联接时，必须显式加入 `_file_` 等值：
 
 ```sql
-SELECT r.run_id, s.step_id, s.message_json
+SELECT r.run_id, s.step_id, s.message_kind, s.message_value
 FROM archive.runs r
 JOIN archive.steps s
   ON r._file_ = s._file_

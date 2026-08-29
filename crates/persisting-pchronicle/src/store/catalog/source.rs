@@ -130,6 +130,52 @@ impl std::error::Error for SharedResolutionFailure {
     }
 }
 
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+    use std::error::Error;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn shared_resolution_failures_preserve_a_source_error(
+            message in proptest::string::string_regex("[A-Za-z0-9 .,!?]{1,64}").unwrap(),
+        ) {
+            let failure = SharedResolutionFailure::new(anyhow::anyhow!("{}", message.clone()));
+            prop_assert_eq!(failure.to_string(), "cached Dataset source resolution failure");
+            prop_assert_eq!(failure.source().map(ToString::to_string), Some(message));
+        }
+
+        #[test]
+        fn storyline_lazy_sources_support_normalized_tables_but_not_events(
+            file in proptest::string::string_regex("[A-Za-z0-9._-]{1,24}").unwrap(),
+            generation in proptest::string::string_regex("gen-[A-Za-z0-9_-]{1,16}").unwrap(),
+        ) {
+            let temp = Arc::new(SnapshotTempDir::new().unwrap());
+            let paths = StorylineTablePaths {
+                generation: generation.clone(),
+                table_generation: generation.clone(),
+                runs: PathBuf::from("runs.lance"),
+                steps: PathBuf::from("steps.lance"),
+                tool_calls: PathBuf::from("tool_calls.lance"),
+                objects: PathBuf::from("objects.lance"),
+                runs_version: 1,
+                steps_version: 1,
+                tool_calls_version: 1,
+                objects_version: 1,
+                projection: None,
+            };
+            let source = LazySource::new(file, LazySourceSpec::Storyline { paths }, CatalogSnapshotOptions::default(), temp);
+            prop_assert!(source.supports(CatalogTableKind::Runs));
+            prop_assert!(source.supports(CatalogTableKind::Steps));
+            prop_assert!(source.supports(CatalogTableKind::ToolCalls));
+            prop_assert!(!source.supports(CatalogTableKind::Events));
+            prop_assert!(source.canonical_event_uri().is_none());
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct LazySource {
     pub(super) file: String,

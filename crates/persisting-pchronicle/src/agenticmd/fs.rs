@@ -816,3 +816,94 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use std::collections::BTreeMap;
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn token_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap()
+    }
+
+    fn body_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[A-Za-z0-9 .,!?_:/\\n]{0,96}").unwrap()
+    }
+
+    proptest! {
+        #[test]
+        fn validated_block_encoding_roundtrips_header_identity_and_body(
+            speaker in token_strategy(),
+            type_name in proptest::string::string_regex("[A-Za-z0-9._/-]{1,24}").unwrap(),
+            body in body_strategy(),
+        ) {
+            let block = MarkdownBlock {
+                header: MarkdownHeader {
+                    type_name: type_name.clone(),
+                    length: 0,
+                    fields: BTreeMap::from([(String::from("source"), serde_json::json!(speaker))]),
+                },
+                body: body.clone(),
+            };
+            let encoded = encode_agenticmd_block_validated(&block).expect("generated block is safe");
+            let parsed = parse_agenticmd_document_validated(&encoded).expect("encoded block parses");
+            prop_assert_eq!(parsed.len(), 1);
+            prop_assert_eq!(parsed[0].header.type_name.as_str(), type_name.as_str());
+            prop_assert_eq!(parsed[0].header.fields.get("source").and_then(|v| v.as_str()), Some(speaker.as_str()));
+            prop_assert_eq!(parsed[0].body.as_str(), body.as_str());
+            prop_assert_eq!(parsed[0].header.length, body.len());
+        }
+
+        #[test]
+        fn validated_spans_cover_the_complete_encoded_block(
+            speaker in token_strategy(),
+            body in body_strategy(),
+        ) {
+            let block = MarkdownBlock {
+                header: MarkdownHeader {
+                    type_name: "message".into(),
+                    length: 0,
+                    fields: BTreeMap::from([(String::from("source"), serde_json::json!(speaker))]),
+                },
+                body,
+            };
+            let encoded = encode_agenticmd_block_validated(&block).unwrap();
+            let spans = parse_agenticmd_spans_validated(&encoded).unwrap();
+            prop_assert_eq!(spans.len(), 1);
+            prop_assert_eq!(spans[0].1, 0);
+            prop_assert_eq!(spans[0].2, encoded.len());
+        }
+
+        #[test]
+        fn validated_encoding_preserves_order_for_arbitrary_block_sequences(
+            blocks in prop::collection::vec(
+                (token_strategy(), proptest::string::string_regex("[A-Za-z0-9._/-]{1,24}").unwrap(), body_strategy()),
+                0..8,
+            ),
+        ) {
+            let encoded = blocks.iter().try_fold(String::new(), |mut output, (speaker, type_name, body)| {
+                let block = MarkdownBlock {
+                    header: MarkdownHeader {
+                        type_name: type_name.clone(),
+                        length: 0,
+                        fields: BTreeMap::from([(String::from("source"), serde_json::json!(speaker))]),
+                    },
+                    body: body.clone(),
+                };
+                output.push_str(&encode_agenticmd_block_validated(&block).map_err(|_| ())?);
+                Ok::<_, ()>(output)
+            }).expect("generated blocks are safe");
+            let parsed = parse_agenticmd_document_validated(&encoded).expect("encoded blocks parse");
+            prop_assert_eq!(parsed.len(), blocks.len());
+            for (parsed, (speaker, type_name, body)) in parsed.iter().zip(blocks) {
+                prop_assert_eq!(&parsed.header.type_name, &type_name);
+                prop_assert_eq!(parsed.header.fields.get("source").and_then(serde_json::Value::as_str), Some(speaker.as_str()));
+                prop_assert_eq!(&parsed.body, &body);
+                prop_assert_eq!(parsed.header.length, parsed.body.len());
+            }
+        }
+    }
+}

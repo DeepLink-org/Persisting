@@ -873,7 +873,7 @@ async fn build_run_summaries(
         let event_stats = build_event_stats(engine, name).await?;
         let sql = format!(
             "SELECT r._file_, r.document_id, r.run_id, r.session_id, r.agent_id, r.agent_model_name, \
-                    r.parent_json, r.final_metrics_json, r.extra_json, r.unknown_fields_json, \
+                    r.parent, r.final_metrics, r.extra, r.unknown_fields, \
                     (SELECT COUNT(*) FROM {name}.steps s \
                       WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS row_count \
              FROM {name}.runs r"
@@ -894,7 +894,8 @@ async fn build_run_summaries(
                 .and_then(JsonValue::as_str)
                 .map(str::to_owned);
             let parent_session_id = row
-                .get("parent_json")
+                .get("parent")
+                .or_else(|| row.get("parent_json"))
                 .and_then(JsonValue::as_str)
                 .and_then(|parent| serde_json::from_str::<JsonValue>(parent).ok())
                 .and_then(|parent| {
@@ -1036,10 +1037,19 @@ fn capture_call_status(request_count: u64, response_count: u64) -> Option<String
 }
 
 fn run_status(row: &JsonValue) -> String {
-    let values = ["final_metrics_json", "extra_json", "unknown_fields_json"]
-        .into_iter()
-        .filter_map(|field| parsed_json_field(row, field))
-        .collect::<Vec<_>>();
+    let values = [
+        "final_metrics",
+        "extra",
+        "unknown_fields",
+        // Accept the pre-V1 names in synthetic/legacy rows while all physical
+        // Storyline Lance queries use the stable names above.
+        "final_metrics_json",
+        "extra_json",
+        "unknown_fields_json",
+    ]
+    .into_iter()
+    .filter_map(|field| parsed_json_field(row, field))
+    .collect::<Vec<_>>();
     if let Some(status) = ["status", "state"].into_iter().find_map(|field| {
         values
             .iter()
@@ -1117,6 +1127,11 @@ mod run_summary_tests {
 
     #[test]
     fn run_status_uses_normalized_terminal_metadata() {
+        let native_completed = serde_json::json!({
+            "final_metrics": "{\"is_session_completed\":true}"
+        });
+        assert_eq!(run_status(&native_completed), "completed");
+
         let completed = serde_json::json!({
             "final_metrics_json": "{\"is_session_completed\":true}"
         });

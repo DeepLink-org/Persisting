@@ -890,6 +890,82 @@ async fn empty_storyline_still_creates_queryable_tables() {
 }
 
 #[tokio::test]
+async fn native_json_columns_support_lance_datafusion_udfs() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open_with_content_options(
+        dir.path(),
+        StorylineContentOptions {
+            offload_threshold: 64,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut document = story("json-query");
+    document.extra = Some(serde_json::json!({
+        "answer": "yes",
+        "large_blob": "x".repeat(1024),
+    }));
+    document.final_metrics = Some(serde_json::json!({"score": 7}));
+    document.turns[1].metrics = Some(serde_json::json!({"tokens": 42}));
+    document.turns[1].tool_calls.as_mut().unwrap()[0].response =
+        Some(crate::formats::storyline::StorylineToolResponse {
+            status: Some("ok".into()),
+            exit_code: None,
+        });
+    store.replace_storyline(&document).await.unwrap();
+
+    let paths = store.current_table_paths().await.unwrap().unwrap();
+    let raw = read_projected_batches(&paths.runs, paths.runs_version, &["extra"], None)
+        .await
+        .unwrap();
+    let raw_extra = raw[0]
+        .column_by_name("extra")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<lance::deps::arrow_array::StringArray>()
+        .unwrap()
+        .value(0)
+        .to_string();
+    let raw_extra: serde_json::Value = serde_json::from_str(&raw_extra).unwrap();
+    assert!(
+        raw_extra["large_blob"]
+            .as_str()
+            .is_some_and(|value| value.starts_with(CONTENT_REF_MAGIC))
+    );
+    assert_eq!(
+        store.get_storyline_full("json-query").await.unwrap(),
+        Some(document)
+    );
+
+    let source = super::datafusion::StorylineDataSource::open(dir.path())
+        .await
+        .unwrap();
+    let context = source.session_context().unwrap();
+    let batches = context
+        .sql("SELECT json_get_string(extra, 'answer') AS answer, json_get_int(final_metrics, 'score') AS score FROM runs")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let answer = batches[0]
+        .column_by_name("answer")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<lance::deps::arrow_array::StringArray>()
+        .unwrap();
+    assert_eq!(answer.value(0), "yes");
+    let score = batches[0]
+        .column_by_name("score")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<lance::deps::arrow_array::Int64Array>()
+        .unwrap();
+    assert_eq!(score.value(0), 7);
+}
+
+#[tokio::test]
 async fn replacement_is_session_scoped_and_switches_generation() {
     let dir = tempfile::tempdir().unwrap();
     let store = StorylineLanceStore::open(dir.path()).await.unwrap();
@@ -1347,7 +1423,31 @@ async fn atif_stream_preserves_nested_documents_with_shared_session() {
         .into_iter()
         .collect::<Option<Vec<_>>>()
         .unwrap();
-    let rebuilt = crate::convert::storylines_to_atif(&stories).unwrap();
+    let mut rebuilt = crate::convert::storylines_to_atif(&stories).unwrap();
+    let canonical_timestamp = canonical[0].subagent_trajectories.as_ref().unwrap()[0].steps[0]
+        .timestamp
+        .as_ref()
+        .map(|value| crate::formats::timestamp::StorylineTimestamp::from_rfc3339(value))
+        .transpose()
+        .unwrap();
+    let rebuilt_timestamp = rebuilt[0].subagent_trajectories.as_ref().unwrap()[0].steps[0]
+        .timestamp
+        .as_ref()
+        .map(|value| crate::formats::timestamp::StorylineTimestamp::from_rfc3339(value))
+        .transpose()
+        .unwrap();
+    assert_eq!(
+        rebuilt_timestamp
+            .as_ref()
+            .map(|value| value.timestamp_nanos()),
+        canonical_timestamp
+            .as_ref()
+            .map(|value| value.timestamp_nanos())
+    );
+    rebuilt[0].subagent_trajectories.as_mut().unwrap()[0].steps[0].timestamp =
+        canonical[0].subagent_trajectories.as_ref().unwrap()[0].steps[0]
+            .timestamp
+            .clone();
     assert_eq!(rebuilt, canonical);
 }
 
@@ -1493,8 +1593,8 @@ async fn open_rejects_missing_or_unsupported_snapshot_schema_version() {
     for (schema_version, expected) in [
         (None, "schema_version"),
         (
-            Some(1),
-            "unsupported Storyline Lance schema_version 1; expected 2",
+            Some(2),
+            "unsupported Storyline Lance schema_version 2; expected 1",
         ),
     ] {
         let root = tempfile::tempdir().unwrap();
@@ -2160,4 +2260,45 @@ fn joins_object_store_locations_without_losing_uri_scheme() {
         "s3://bucket/轨迹/generations/gen-1"
     );
     assert!(normalize_root_uri("  ").is_err());
+}
+
+#[cfg(feature = "proptest")]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn positive_content_limits_are_accepted(
+            document_rows in 1usize..10_000,
+            document_bytes in 1usize..10_000_000,
+            chunk_rows in 1usize..10_000,
+            chunk_bytes in 1usize..10_000_000,
+            import_documents in 1usize..10_000,
+        ) {
+            let options = StorylineContentOptions {
+                max_document_rows: Some(document_rows),
+                max_document_bytes: Some(document_bytes),
+                max_chunk_rows: Some(chunk_rows),
+                max_chunk_bytes: Some(chunk_bytes),
+                max_import_documents: Some(import_documents),
+                ..Default::default()
+            };
+            prop_assert!(options.validate().is_ok());
+        }
+
+        #[test]
+        fn any_zero_content_limit_is_rejected(field in 0usize..5) {
+            let mut options = StorylineContentOptions::default();
+            match field {
+                0 => options.max_document_rows = Some(0),
+                1 => options.max_document_bytes = Some(0),
+                2 => options.max_chunk_rows = Some(0),
+                3 => options.max_chunk_bytes = Some(0),
+                _ => options.max_import_documents = Some(0),
+            }
+            prop_assert!(options.validate().is_err());
+        }
+    }
 }

@@ -32,7 +32,7 @@ original ID。
 在一个 Dataset 内联接内建轨迹关系时，entity key 必须同时带 `_file_`：
 
 ```sql
-SELECT r.run_id, s.step_id, s.message_json
+SELECT r.run_id, s.step_id, s.message_kind, s.message_value
 FROM dataset.runs r
 JOIN dataset.steps s
   ON r._file_ = s._file_

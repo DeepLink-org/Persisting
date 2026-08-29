@@ -54,7 +54,6 @@ pub fn detect(path: Option<&Path>, content: &[u8]) -> InputResult<Option<Documen
 mod tests {
     use super::*;
     use crate::formats::codec::{DecodeContext, DocumentSource};
-    use proptest::prelude::*;
     use std::io::Cursor;
 
     #[test]
@@ -321,46 +320,68 @@ mod tests {
         assert!(report.peak_record_bytes >= ATIF_DOC.len());
     }
 
-    proptest! {
-        #[test]
-        fn every_registered_format_has_a_unique_lookup_identity(_seed in any::<u8>()) {
-            let ids = FORMATS.iter().map(|codec| codec.id()).collect::<Vec<_>>();
-            prop_assert_eq!(ids.len(), DocumentFormat::ALL.iter().filter(|format| get(**format).is_some()).count());
-            for (index, codec) in FORMATS.iter().enumerate() {
-                prop_assert_eq!(get(codec.id()).map(|found| found.id()), Some(ids[index]));
-                prop_assert!(!ids[..index].contains(&ids[index]), "duplicate codec id: {}", ids[index]);
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn every_registered_format_has_a_unique_lookup_identity(_seed in any::<u8>()) {
+                let ids = FORMATS.iter().map(|codec| codec.id()).collect::<Vec<_>>();
+                prop_assert_eq!(ids.len(), DocumentFormat::ALL.iter().filter(|format| get(**format).is_some()).count());
+                for (index, codec) in FORMATS.iter().enumerate() {
+                    prop_assert_eq!(get(codec.id()).map(|found| found.id()), Some(ids[index]));
+                    prop_assert!(!ids[..index].contains(&ids[index]));
+                }
             }
-        }
 
-        #[test]
-        fn whitespace_without_a_path_hint_is_not_a_format(
-            whitespace in proptest::collection::vec(
-                prop::sample::select(vec![b' ', b'\n', b'\r', b'\t']),
-                0..128,
-            ),
-        ) {
-            prop_assert_eq!(detect(None, &whitespace).unwrap(), None);
-        }
+            #[test]
+            fn whitespace_without_a_path_hint_is_not_a_format(whitespace in proptest::collection::vec(prop::sample::select(vec![b' ', b'\n', b'\r', b'\t']), 0..128)) {
+                prop_assert_eq!(detect(None, &whitespace).unwrap(), None);
+            }
 
-        #[test]
-        fn direct_query_candidate_helper_matches_registered_codecs(
-            filename in proptest::string::string_regex("[a-zA-Z0-9._/-]{0,64}").unwrap(),
-        ) {
-            let path = Path::new(&filename);
-            let expected = FORMATS.iter().any(|codec| {
-                codec.capabilities().direct_query && codec.is_candidate(path)
-            });
-            prop_assert_eq!(is_direct_query_candidate(path), expected);
-        }
+            #[test]
+            fn direct_query_candidate_helper_matches_registered_codecs(filename in proptest::string::string_regex("[a-zA-Z0-9._/-]{0,64}").unwrap()) {
+                let path = Path::new(&filename);
+                let expected = FORMATS.iter().any(|codec| codec.capabilities().direct_query && codec.is_candidate(path));
+                prop_assert_eq!(is_direct_query_candidate(path), expected);
+            }
 
-        #[test]
-        fn detection_results_always_resolve_back_to_the_same_codec(
-            filename in proptest::string::string_regex("[a-zA-Z0-9._/-]{0,48}").unwrap(),
-            content in proptest::collection::vec(any::<u8>(), 0..256),
-        ) {
-            let detected = detect(Some(Path::new(&filename)), &content).unwrap();
-            if let Some(format) = detected {
-                prop_assert!(get(format).is_some(), "detected unregistered format: {format}");
+            #[test]
+            fn detection_results_always_resolve_back_to_the_same_codec(filename in proptest::string::string_regex("[a-zA-Z0-9._/-]{0,48}").unwrap(), content in proptest::collection::vec(any::<u8>(), 0..256)) {
+                let detected = detect(Some(Path::new(&filename)), &content).unwrap();
+                if let Some(format) = detected { prop_assert!(get(format).is_some()); }
+            }
+
+            #[test]
+            fn registered_formats_have_stable_ids_across_repeated_lookup(_seed in any::<u8>()) {
+                for format in DocumentFormat::ALL {
+                    if let Some(codec) = get(*format) {
+                        prop_assert_eq!(codec.id(), *format);
+                        prop_assert!(get(codec.id()).is_some());
+                    }
+                }
+            }
+
+            #[test]
+            fn direct_query_capability_matches_the_registry_helper(_seed in any::<u8>()) {
+                for format in DocumentFormat::ALL {
+                    let expected = get(*format).is_some_and(|codec| codec.capabilities().direct_query);
+                    prop_assert_eq!(supports_direct_query(*format), expected);
+                }
+            }
+
+            #[test]
+            fn every_registered_codec_exposes_a_nonempty_extension_set(_seed in any::<u8>()) {
+                for codec in FORMATS {
+                    prop_assert!(!codec.extensions().is_empty());
+                    let extensions_are_ascii = codec.extensions().iter().all(|extension| {
+                        !extension.is_empty() && extension.chars().all(|character| character.is_ascii())
+                    });
+                    prop_assert!(extensions_are_ascii);
+                }
             }
         }
     }

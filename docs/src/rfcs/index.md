@@ -13,3 +13,4 @@ Persisting 格式与协议的 RFC 索引。
 | [0007](0007-events-contract-pchronicle-sidecar.md) | 事件契约与 pChronicle Sidecar 边界 | Accepted |
 | [0008](0008-atif-format.md) | ATIF v1.7 轨迹格式 | Accepted |
 | [0009](0009-openai-messages-format.md) | OpenAI Messages 轨迹语料格式 | Accepted |
+| [0010](0010-agent-corpus-lance-layout.md) | Agent 评测语料的分层 Lance 布局 | Proposed |

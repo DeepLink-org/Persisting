@@ -638,7 +638,6 @@ pub fn TrajectoryView(
 ) -> Element {
     let mut open_key = use_signal(|| None::<String>);
     let mut last_focus = use_signal(|| None::<i64>);
-    let mut viewport_ids = use_signal(HashSet::<i64>::new);
     let mut hovered_ids = use_signal(Vec::<i64>::new);
     let class = if embedded {
         "pc2-trajectory-component embedded"
@@ -691,8 +690,10 @@ pub fn TrajectoryView(
             }
         }
     }
-    let mut exposed_ids = viewport_ids().into_iter().collect::<Vec<_>>();
-    exposed_ids.sort_unstable();
+    // Visibility tracking is intentionally omitted here. Dioxus's synthetic
+    // `onvisible` event traps in the WASM event bridge for these rows in some
+    // browsers; focus and hover still provide the sequence emphasis affordance.
+    let exposed_ids = Vec::new();
     let hover_ids = hovered_ids();
     let table_class =
         if expanded_turn_id.is_some() || !exposed_ids.is_empty() || !hover_ids.is_empty() {
@@ -733,17 +734,6 @@ pub fn TrajectoryView(
                         on_turn,
                         on_open: move |key| open_key.set(key),
                         on_hover: move |ids| hovered_ids.set(ids),
-                        on_viewport: move |(ids, visible)| {
-                            viewport_ids.with_mut(|set| {
-                                if visible {
-                                    set.extend(ids);
-                                } else {
-                                    for id in ids {
-                                        set.remove(&id);
-                                    }
-                                }
-                            });
-                        },
                         group,
                     }
                 } }
@@ -769,7 +759,6 @@ fn CompactSpanRow(
     on_turn: EventHandler<i64>,
     on_open: EventHandler<Option<String>>,
     on_hover: EventHandler<Vec<i64>>,
-    on_viewport: EventHandler<(Vec<i64>, bool)>,
 ) -> Element {
     let event_refs = group
         .entries
@@ -786,16 +775,10 @@ fn CompactSpanRow(
     let caption = sequence_caption(group.first_seq, group.last_seq);
     let has_error = group.entries.iter().any(|turn| turn.has_error);
     let group_key = group.key.clone();
-    let member_ids = group.entries.iter().map(|turn| turn.id).collect::<Vec<_>>();
-    let hover_ids = member_ids.clone();
+    let hover_ids = group.entries.iter().map(|turn| turn.id).collect::<Vec<_>>();
     rsx! { details {
         class: if row_open { "span-row is-open" } else { "span-row" },
         open: row_open,
-        onvisible: move |event| {
-            let intersecting = event.data().is_intersecting().unwrap_or(false);
-            let visible = intersecting && visible_in_span_scroll(&event.data()).unwrap_or(true);
-            on_viewport.call((member_ids.clone(), visible));
-        },
         onmouseenter: move |_| on_hover.call(hover_ids.clone()),
         onmouseleave: move |_| on_hover.call(Vec::new()),
         summary { class: "span-row-summary", onclick: move |event| { event.prevent_default(); on_open.call(if row_open { None } else { Some(group_key.clone()) }); },
@@ -849,19 +832,6 @@ fn OccupancyTrack(
             span { class: "span-seq-caption", "{caption}" }
         }
     }
-}
-
-fn visible_in_span_scroll(data: &VisibleData) -> Option<bool> {
-    let row = data.get_bounding_client_rect().ok()?;
-    let window = web_sys::window()?;
-    let root = window
-        .document()?
-        .query_selector(".pc2-span-scroll")
-        .ok()??;
-    let bounds = root.get_bounding_client_rect();
-    let top = row.origin.y;
-    let bottom = top + row.size.height;
-    Some(top < bounds.bottom() && bottom > bounds.top())
 }
 
 #[component]

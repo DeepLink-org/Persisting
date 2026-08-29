@@ -899,3 +899,58 @@ mod projection_tests {
         assert_eq!(story.session_id, "session");
     }
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+    use serde_json::json;
+
+    use super::*;
+
+    fn id_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[a-zA-Z0-9._-]{1,24}").unwrap()
+    }
+
+    fn response_event(
+        session: &str,
+        agent: &str,
+        call_id: &str,
+        seq: u64,
+        content: &str,
+    ) -> EventRecord {
+        EventRecord {
+            identity: EventIdentity::default(),
+            seq,
+            source: "test".into(),
+            kind: "llm.response".into(),
+            timestamp: None,
+            session_id: Some(session.into()),
+            agent_id: Some(agent.into()),
+            parent_uuid: None,
+            trace_id: None,
+            call_id: Some(call_id.into()),
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: json!({"content": content}),
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn event_storyline_key_uses_session_then_storyline_then_run(
+            session in prop::option::of(id_strategy()),
+            storyline in prop::option::of(id_strategy()),
+            run in prop::option::of(id_strategy()),
+        ) {
+            prop_assume!(session.is_some() || storyline.is_some() || run.is_some());
+            let mut record = response_event("fallback", "agent", "call", 1, "text");
+            record.session_id = session.clone();
+            record.identity.storyline_id = storyline.clone();
+            record.identity.run_id = run.clone();
+            let expected = session.as_deref().or(storyline.as_deref()).or(run.as_deref());
+            prop_assert_eq!(event_storyline_key(&record), expected);
+        }
+    }
+}

@@ -82,7 +82,7 @@ fn projected_read_falls_back_for_lossless_only_step_columns() {
     let safe = vec![index("session_id")];
     assert!(FileScanSpec::new(Some(&safe), &[], &schema).can_project_steps(&schema));
 
-    for name in ["turn_ordinal", "had_tool_calls", "observation_json"] {
+    for name in ["turn_ordinal", "had_tool_calls", "observation"] {
         let projection = vec![index(name)];
         assert!(
             !FileScanSpec::new(Some(&projection), &[], &schema).can_project_steps(&schema),
@@ -354,4 +354,33 @@ async fn projected_atif_pushdown_matches_session_id_not_document_id() {
         .unwrap();
 
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+}
+
+#[cfg(feature = "proptest")]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn exact_file_filters_match_only_their_target(
+            path in proptest::string::string_regex("[A-Za-z0-9_./-]{1,64}").unwrap(),
+            other in proptest::string::string_regex("[A-Za-z0-9_./-]{1,64}").unwrap(),
+        ) {
+            let expression = col(SOURCE_FILE_COLUMN).eq(lit(path.clone()));
+            prop_assert_eq!(matches_file_filter(&expression, &path), Some(true));
+            if path != other {
+                prop_assert_eq!(matches_file_filter(&expression, &other), Some(false));
+            }
+        }
+
+        #[test]
+        fn filters_on_non_file_columns_are_conservative(
+            name in proptest::string::string_regex("[A-Za-z0-9_]{1,32}").unwrap(),
+        ) {
+            let expression = col(name).eq(lit("value"));
+            prop_assert_eq!(matches_file_filter(&expression, "source.json"), None);
+        }
+    }
 }

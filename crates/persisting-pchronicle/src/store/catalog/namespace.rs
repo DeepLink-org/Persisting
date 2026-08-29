@@ -153,3 +153,32 @@ fn parse_page_token(snapshot_id: &str, token: &str) -> Result<usize> {
     );
     offset.parse().context("invalid catalog page token offset")
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn page_tokens_roundtrip_snapshot_and_offset(
+            snapshot in proptest::string::string_regex("[A-Za-z0-9._-]{1,32}").unwrap(),
+            offset in 0usize..1_000_000,
+        ) {
+            let token = page_token_for(&snapshot, offset);
+            prop_assert_eq!(parse_page_token(&snapshot, &token).unwrap(), offset);
+            prop_assert!(parse_page_token("other-snapshot", &token).is_err());
+        }
+
+        #[test]
+        fn malformed_page_tokens_fail_closed(
+            snapshot in proptest::string::string_regex("[A-Za-z0-9._-]{1,32}").unwrap(),
+            token in proptest::string::string_regex("[A-Za-z0-9._-]{1,32}").unwrap(),
+        ) {
+            prop_assert!(parse_page_token(&snapshot, &token).is_err());
+            let invalid_offset = format!("{}:not-a-number", snapshot);
+            prop_assert!(parse_page_token(&snapshot, &invalid_offset).is_err());
+        }
+    }
+}

@@ -6981,6 +6981,7 @@ dependencies = [
  "fs2",
  "futures",
  "lance",
+ "lance-arrow",
  "lance-core",
  "lance-datafusion",
  "lance-file",

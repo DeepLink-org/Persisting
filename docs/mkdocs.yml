@@ -234,6 +234,7 @@ nav:
           - 0007 Events contract and pChronicle sidecar: rfcs/0007-events-contract-pchronicle-sidecar.md
           - 0008 ATIF format: rfcs/0008-atif-format.md
           - 0009 OpenAI Messages format: rfcs/0009-openai-messages-format.md
+          - 0010 Agent corpus Lance layout: rfcs/0010-agent-corpus-lance-layout.md
       - Standalone systems:
           - Queue guide: guide/queue.md
           - Python API overview: api/index.md

@@ -36,3 +36,35 @@ mod tests {
         assert!(!Arc::ptr_eq(&first, &other));
     }
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn lock_identity_is_stable_per_live_root(
+            root in proptest::string::string_regex("[A-Za-z0-9_./:-]{1,64}").unwrap(),
+            repetitions in 1usize..32,
+        ) {
+            let first = for_root(&root);
+            for _ in 0..repetitions {
+                let next = for_root(&root);
+                prop_assert!(Arc::ptr_eq(&first, &next));
+            }
+        }
+
+        #[test]
+        fn distinct_live_roots_never_share_a_lock(
+            first_root in proptest::string::string_regex("[A-Za-z0-9_./:-]{1,64}").unwrap(),
+            second_root in proptest::string::string_regex("[A-Za-z0-9_./:-]{1,64}").unwrap(),
+        ) {
+            prop_assume!(first_root != second_root);
+            let first = for_root(&first_root);
+            let second = for_root(&second_root);
+            prop_assert!(!Arc::ptr_eq(&first, &second));
+        }
+    }
+}
