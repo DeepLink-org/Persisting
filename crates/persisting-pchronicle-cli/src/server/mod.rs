@@ -28,7 +28,7 @@ use persisting_pchronicle::query::ChronicleQueryEngine;
 use persisting_pchronicle::storage::StoryCoords;
 use persisting_pchronicle::storage::{
     CatalogErrorPolicy, CatalogEventProvenance, CatalogSnapshotOptions, CatalogStorylineKey,
-    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount,
+    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount, search_storyline_steps_fts,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -999,10 +999,47 @@ async fn explorer_turns(
     let query = api_query(query)?;
     let session = query.session();
     let loaded = load_trajectory(&state, &session).await?;
+    let (turns, search_query) = if let Some(needle) = query
+        .q
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let runtime = current_catalog(&state).await?;
+        let paths = runtime
+            .snapshot
+            .storyline_table_paths(&loaded.run.dataset, &loaded.run.file)
+            .map_err(ApiError::internal)?;
+        if let Some(paths) = paths {
+            match search_storyline_steps_fts(&paths, needle).await {
+                Ok(step_ids) => {
+                    let step_ids = step_ids.into_iter().collect::<BTreeSet<_>>();
+                    let turns = loaded
+                        .turns
+                        .iter()
+                        .filter(|item| step_ids.contains(&item.turn.id))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    (turns, None)
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        target: "persisting_pchronicle",
+                        "Storyline FTS unavailable; falling back to in-memory turn search: {error:#}"
+                    );
+                    (loaded.turns.clone(), query.q.as_deref())
+                }
+            }
+        } else {
+            (loaded.turns.clone(), query.q.as_deref())
+        }
+    } else {
+        (loaded.turns.clone(), query.q.as_deref())
+    };
     Ok(Json(explorer::turn_page(
-        &loaded.turns,
+        &turns,
         &loaded.records,
-        query.q.as_deref(),
+        search_query,
         query.source.as_deref(),
         query.offset.unwrap_or(0),
         query.limit.unwrap_or(100),

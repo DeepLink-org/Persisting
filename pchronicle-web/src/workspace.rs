@@ -392,7 +392,17 @@ pub fn App() -> Element {
                                     },
                                     on_source: move |value| source.set(value),
                                     on_query: move |value| turn_query.set(value),
-                                    on_apply_filter: move |_| {},
+                                    on_apply_filter: move |_| {
+                                        let Some(run) = selected_run() else { return; };
+                                        load_turns(
+                                            run,
+                                            turn_query(),
+                                            source(),
+                                            turns,
+                                            turn_loading,
+                                            error,
+                                        );
+                                    },
                                     on_context: move |_| context_requested.set(true),
                                     on_turn: move |id| {
                                         if expanded_turn_id() == Some(id) {
@@ -599,6 +609,24 @@ fn load_workspace(
             }
             loading.set(false);
         }
+    });
+}
+
+fn load_turns(
+    run: RunSummary,
+    query: String,
+    source: String,
+    mut turns: Signal<Vec<TurnSummary>>,
+    mut loading: Signal<bool>,
+    mut error: Signal<Option<WorkspaceNotice>>,
+) {
+    loading.set(true);
+    spawn(async move {
+        match api::turns(&run, &query, &source).await {
+            Ok(value) => turns.set(value.records),
+            Err(message) => error.set(Some(workspace_notice(message))),
+        }
+        loading.set(false);
     });
 }
 
@@ -867,11 +895,23 @@ fn RunDetailWorkspace(
 ) -> Element {
     let chats_active = view == "chats";
     let steps_active = view == "steps";
+    let mut compact_header = use_signal(|| false);
+    let mut last_run_identity = use_signal(|| None::<String>);
+    if last_run_identity().as_deref() != Some(run.session_id.as_str()) {
+        last_run_identity.set(Some(run.session_id.clone()));
+        compact_header.set(false);
+    }
+    let on_detail_scroll = move |_| {
+        let next = run_detail_is_scrolled();
+        if compact_header() != next {
+            compact_header.set(next);
+        }
+    };
     let view_for_list = view.clone();
     let source_for_list = source.clone();
     let query_for_list = query.clone();
     rsx! {
-        section { class: "pc2-detail",
+        section { class: if compact_header() { "pc2-detail is-condensed" } else { "pc2-detail" },
             header { class: "pc2-detail-head",
                 div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, "← Runs" } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
                 div { class: "pc2-head-actions",
@@ -905,6 +945,7 @@ fn RunDetailWorkspace(
                         on_turn.call(id);
                         on_detail_mode.call("trace".into());
                     },
+                    on_scroll: on_detail_scroll,
                 }
             } else {
                 section { class: "pc2-trace-surface pc2-inline-trace",
@@ -916,11 +957,11 @@ fn RunDetailWorkspace(
                                 button { class: if steps_active { "active" } else { "" }, onclick: move |_| on_view.call("steps".to_string()), {STEPS} }
                             }
                             select { value: "{source}", aria_label: "Filter steps by role", onchange: move |event| on_source.call(event.value()), option { value: "all", "All roles" } option { value: "user", "User" } option { value: "agent", "Agent" } option { value: "system", "System" } }
-                            input { value: "{query}", placeholder: "Filter loaded steps", aria_label: "Filter steps", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| if event.key() == Key::Enter { on_apply_filter.call(()) } }
+                            input { value: "{query}", placeholder: "Search steps (Enter for full-text)", aria_label: "Filter steps", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| if event.key() == Key::Enter { on_apply_filter.call(()) } }
                             button { class: "pc2-icon", aria_label: "Apply step filter", onclick: move |_| on_apply_filter.call(()), "⌕" }
                         }
                     }
-                    div { class: "pc2-turn-list pc2-span-scroll",
+                    div { id: RUN_DETAIL_SCROLL_ID, class: "pc2-turn-list pc2-span-scroll", onscroll: on_detail_scroll,
                         if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing run details…" } }
                         if turns.is_empty() { div { class: "pc2-empty", strong { "No visible steps" } span { "No loaded steps match this filter." } } }
                         else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, context: storyline.map(|snapshot| snapshot.turns), context_loading, view: view_for_list, source: source_for_list, query: query_for_list, on_turn, on_context } }
@@ -1026,6 +1067,7 @@ fn AnalysisWorkspace(
     analysis: RunAnalysis,
     turns: Vec<TurnSummary>,
     on_turn: EventHandler<i64>,
+    #[props(default)] on_scroll: EventHandler<ScrollEvent>,
 ) -> Element {
     let mut tab = use_signal(|| "overview".to_string());
     let active = tab();
@@ -1036,7 +1078,7 @@ fn AnalysisWorkspace(
             AnalysisTab { value: "tokens", label: "Tokens", active: active.clone(), on_select: move |value| tab.set(value) }
             AnalysisTab { value: "tools", label: "Tools", active: active.clone(), on_select: move |value| tab.set(value) }
         }
-        div { class: "pc2-analysis-scroll",
+        div { id: RUN_DETAIL_SCROLL_ID, class: "pc2-analysis-scroll", onscroll: on_scroll,
             match active.as_str() {
                 "performance" => rsx! { PerformanceAnalysis { analysis: analysis.clone(), turns: turns.clone(), on_turn } },
                 "tokens" => rsx! { TokenAnalysis { analysis: analysis.clone(), turns: turns.clone(), on_turn } },
@@ -1328,7 +1370,15 @@ fn assistant_panel_class(wide: bool) -> &'static str {
 }
 
 const ASSISTANT_CHAT_ID: &str = "pc2-copilot-chat";
+const RUN_DETAIL_SCROLL_ID: &str = "pc2-run-detail-scroll";
 const COPILOT_FOLLOW_THRESHOLD: f64 = 48.0;
+
+fn run_detail_is_scrolled() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(RUN_DETAIL_SCROLL_ID))
+        .is_some_and(|element| element.scroll_top() > 28)
+}
 
 fn copilot_distance_from_bottom(scroll_top: f64, client_height: f64, scroll_height: f64) -> f64 {
     (scroll_height - client_height - scroll_top).max(0.0)

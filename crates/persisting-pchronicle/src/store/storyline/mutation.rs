@@ -318,32 +318,9 @@ async fn write_record_batch_reader(
         .execute_stream(reader)
         .await
         .with_context(|| format!("stream ATIF into Storyline table {}", path.display()))?;
-    if dataset.count_rows(None).await? > 0 {
-        for (column, index_type) in indexes {
-            let builtin = match index_type {
-                IndexType::Bitmap => BuiltinIndexType::Bitmap,
-                _ => BuiltinIndexType::BTree,
-            };
-            let _admission = super::super::index_build_gate::acquire().await;
-            dataset
-                .create_index(
-                    &[*column],
-                    *index_type,
-                    Some(format!("pchronicle_{column}_idx")),
-                    &ScalarIndexParams::for_builtin(builtin),
-                    false,
-                )
-                .await
-                .with_context(|| {
-                    format!(
-                        "create {:?} index on {}.{}",
-                        index_type,
-                        path.display(),
-                        column
-                    )
-                })?;
-        }
-    }
+    super::ensure_table_indexes(&mut dataset, indexes)
+        .await
+        .with_context(|| format!("ensure Storyline indexes for {}", path.display()))?;
     Ok(dataset.version_id())
 }
 

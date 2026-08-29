@@ -583,6 +583,31 @@ impl DatasetCatalogSnapshot {
         Ok(self.lazy_source(key)?.canonical_event_uri())
     }
 
+    /// Return the normalized Storyline table paths for a physical Storyline
+    /// source. File and canonical-event sources return `None` and retain their
+    /// existing in-memory search behavior in callers.
+    pub fn storyline_table_paths(
+        &self,
+        dataset: &str,
+        file: &str,
+    ) -> Result<Option<StorylineTablePaths>> {
+        let dataset_name = identity::normalize_sql_alias(dataset)?;
+        let prepared = self
+            .prepared
+            .iter()
+            .find(|candidate| candidate.name == dataset_name)
+            .with_context(|| format!("physical source not found: {dataset}/{file}"))?;
+        let source = prepared
+            .sources
+            .iter()
+            .find(|source| source.file() == file)
+            .with_context(|| format!("physical source not found: {dataset}/{file}"))?;
+        Ok(match &source.spec {
+            LazySourceSpec::Storyline { paths } => Some(paths.clone()),
+            _ => None,
+        })
+    }
+
     pub(crate) fn physical_open_target(
         &self,
         dataset: &str,

@@ -950,12 +950,29 @@ fn InlineTurnDetail(
     let focus_id = value.summary.id;
     rsx! {
         ContextRebuild { turns: context, focus_id, loading: context_loading, on_load: on_context }
-        div { class: "pc2-inspector-facts", Fact { label: "Step", value: format!("#{}", value.summary.id) } Fact { label: "Role", value: value.summary.source.clone() } Fact { label: "Type", value: value.summary.kind.clone().unwrap_or_else(|| "unavailable".into()) } Fact { label: "Model", value: value.summary.model_name.clone().unwrap_or_else(|| "unavailable".into()) } Fact { label: "Latency", value: value.summary.latency_ms.map(format_ms).unwrap_or_else(|| "unavailable".into()) } Fact { label: "TTFT", value: value.summary.ttft_ms.map(format_ms).unwrap_or_else(|| "unavailable".into()) } Fact { label: "Tokens", value: value.summary.total_tokens.map(|tokens| tokens.to_string()).unwrap_or_else(|| "unavailable".into()) } Fact { label: "Token split", value: format!("{} in · {} out", optional_u64(value.summary.prompt_tokens), optional_u64(value.summary.completion_tokens)) } Fact { label: "Events", value: value.events.len().to_string() } }
+        div { class: "pc2-inspector-chips",
+            Fact { label: "Step", value: format!("#{}", value.summary.id) }
+            Fact { label: "Role", value: value.summary.source.clone() }
+            if let Some(kind) = value.summary.kind.clone() { Fact { label: "Type", value: kind } }
+            if let Some(model) = value.summary.model_name.clone() { Fact { label: "Model", value: model } }
+            if let Some(latency) = value.summary.latency_ms { Fact { label: "Latency", value: format_ms(latency) } }
+            if let Some(tokens) = value.summary.total_tokens { Fact { label: "Tokens", value: tokens.to_string() } }
+        }
+        if value.summary.ttft_ms.is_some() || value.summary.prompt_tokens.is_some() || value.summary.completion_tokens.is_some() || !value.events.is_empty() {
+            details { class: "pc2-inspector-more",
+                summary { "More details" }
+                div { class: "pc2-inspector-chips secondary",
+                    if let Some(ttft) = value.summary.ttft_ms { Fact { label: "TTFT", value: format_ms(ttft) } }
+                    if value.summary.prompt_tokens.is_some() || value.summary.completion_tokens.is_some() { Fact { label: "Token split", value: format!("{} in · {} out", optional_u64(value.summary.prompt_tokens), optional_u64(value.summary.completion_tokens)) } }
+                    if !value.events.is_empty() { Fact { label: "Events", value: value.events.len().to_string() } }
+                }
+            }
+        }
         if !embedded_from_message.is_empty() {
             EvidenceBlock { title: tool_block_title, open: true, ToolCallCards { calls: embedded_from_message } }
         } else if !deduped_wire_calls.is_empty() {
             EvidenceBlock { title: "Tool calls", ToolCallCards { calls: deduped_wire_calls } }
-        } else if !native_tool_calls.is_empty() {
+        } else if tool_capable_source && !native_tool_calls.is_empty() {
             EvidenceBlock {
                 title: "Tool calls",
                 ToolCallCards {
@@ -1009,7 +1026,7 @@ fn source_can_call_tools(source: &str) -> bool {
 
 #[component]
 fn Fact(label: &'static str, value: String) -> Element {
-    rsx! { div { span { "{label}" } code { "{value}" } } }
+    rsx! { span { class: "pc2-fact-chip", span { "{label}" } code { "{value}" } } }
 }
 
 /// "What the model saw" at a given step: every storyline message recorded
@@ -1429,6 +1446,14 @@ mod tests {
         assert_eq!(groups[0].kind_chip, "chat");
         assert_eq!(groups[0].overview, "No user step");
         assert_eq!(row_char_count(&groups[0].entries, true), 0);
+    }
+
+    #[test]
+    fn tool_calls_are_only_renderable_for_agent_roles() {
+        assert!(source_can_call_tools("agent"));
+        assert!(source_can_call_tools(" assistant "));
+        assert!(!source_can_call_tools("user"));
+        assert!(!source_can_call_tools("system"));
     }
 
     #[test]

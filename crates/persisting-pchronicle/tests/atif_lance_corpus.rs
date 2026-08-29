@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use lance_index::scalar::FullTextSearchQuery;
 use persisting_pchronicle::document::{
     DocumentFormat, decode_agenticmd, decode_json_storylines, encode_agenticmd,
     encode_json_storylines,
@@ -323,6 +324,20 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
     assert!(names.contains(&"pchronicle_session_id_idx"));
     assert!(!names.contains(&"pchronicle_step_id_idx"));
     assert!(names.contains(&"pchronicle_effective_kind_idx"));
+    assert!(names.contains(&"pchronicle_fts_message_value_idx"));
+    assert!(names.contains(&"pchronicle_json_metrics_idx"));
+
+    let steps = lance::Dataset::open(paths.steps.to_string_lossy().as_ref()).await?;
+    let mut fts_scan = steps.scan();
+    fts_scan.full_text_search(
+        FullTextSearchQuery::new("deterministic".to_string())
+            .with_column("message_value".to_string())?,
+    )?;
+    let fts_batch = fts_scan.try_into_batch().await?;
+    assert!(
+        fts_batch.num_rows() > 0,
+        "Storyline FTS returned no matches"
+    );
 
     // A registered datasource remains a consistent snapshot after CURRENT moves.
     let raw = load(&fixture_root().join("dialogue_10.json"))?;

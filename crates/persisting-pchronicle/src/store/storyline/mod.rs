@@ -61,12 +61,12 @@ use lance::dataset::{
 use lance::deps::arrow_array::{
     Array, Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
 };
-use lance::deps::arrow_schema::{ArrowError, SchemaRef};
+use lance::deps::arrow_schema::{ArrowError, Schema as ArrowSchema, SchemaRef};
 use lance::index::DatasetIndexExt;
 use lance::io::ObjectStore;
 use lance_index::IndexType;
 use lance_index::optimize::OptimizeOptions;
-use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
+use lance_index::scalar::{BuiltinIndexType, InvertedIndexParams, ScalarIndexParams};
 use object_store::path::Path as ObjectPath;
 use serde::{Deserialize, Serialize};
 
@@ -110,6 +110,28 @@ const TOOL_CALL_INDEXES: [(&str, IndexType); 4] = [
     ("session_id", IndexType::BTree),
     ("tool_call_id", IndexType::BTree),
     ("function_name", IndexType::Bitmap),
+];
+
+/// Text columns receive a Lance inverted index with the default text
+/// tokenizer.  JSON columns are discovered from Arrow field metadata below
+/// and receive a JSON-aware inverted index instead.
+const STORYLINE_FTS_COLUMNS: &[&str] = &[
+    "agent_name",
+    "agent_version",
+    "agent_model_name",
+    "agent_tool_definitions",
+    "task",
+    "prompt",
+    "notes",
+    "message_value",
+    "reasoning_content",
+    "model_name",
+    "observation",
+    "env",
+    "function_name",
+    "arguments",
+    "result",
+    "results",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -895,9 +917,10 @@ impl StorylineLanceStore {
             let (runs_version, steps_version, tool_calls_version) =
                 if report.storylines > STREAM_IMPORT_STORIES {
                     let maintenance = LanceMaintenanceOptions {
-                        // Extend indices once after a genuinely multi-chunk
-                        // import, without putting compaction in the ingest
-                        // path or rewriting the corpus.
+                        // Extend scalar, FTS, and JSON indices once after a
+                        // genuinely multi-chunk import, without putting
+                        // compaction in the ingest path or rewriting corpus
+                        // data.
                         compact: false,
                         optimize_indices: true,
                         vacuum_older_than: None,
@@ -1023,9 +1046,9 @@ impl StorylineLanceStore {
         attach_stream_cleanup_failures(result, cleanup_failures)
     }
 
-    /// Compact fragments, extend scalar indices to appended fragments, and
-    /// optionally vacuum old Lance versions while preserving one atomic
-    /// three-table CURRENT snapshot.
+    /// Compact fragments, extend scalar/FTS/JSON indices to appended
+    /// fragments, and optionally vacuum old Lance versions while preserving
+    /// one atomic three-table CURRENT snapshot.
     pub async fn maintain(
         &self,
         options: &LanceMaintenanceOptions,
@@ -1660,25 +1683,113 @@ async fn ensure_table_indexes(dataset: &mut Dataset, indexes: &[(&str, IndexType
         return Ok(());
     }
     for (column, index_type) in indexes {
-        let name = format!("pchronicle_{column}_idx");
-        if !dataset.load_indices_by_name(&name).await?.is_empty() {
-            continue;
-        }
         let builtin = match index_type {
             IndexType::Bitmap => BuiltinIndexType::Bitmap,
             _ => BuiltinIndexType::BTree,
         };
-        let _admission = super::index_build_gate::acquire().await;
-        dataset
-            .create_index(
-                &[*column],
-                *index_type,
-                Some(name),
-                &ScalarIndexParams::for_builtin(builtin),
-                false,
-            )
-            .await?;
+        ensure_named_index(
+            dataset,
+            column,
+            *index_type,
+            format!("pchronicle_{column}_idx"),
+            &ScalarIndexParams::for_builtin(builtin),
+        )
+        .await?;
     }
+
+    let schema = ArrowSchema::from(dataset.schema());
+    for field in schema.fields() {
+        if !lance_arrow::json::is_json_field(field) {
+            continue;
+        }
+        let column = field.name();
+        let params = InvertedIndexParams::default().lance_tokenizer("json".to_string());
+        ensure_named_index(
+            dataset,
+            column,
+            IndexType::Inverted,
+            format!("pchronicle_json_{column}_idx"),
+            &params,
+        )
+        .await?;
+    }
+
+    for column in STORYLINE_FTS_COLUMNS {
+        let Ok(field) = schema.field_with_name(column) else {
+            continue;
+        };
+        if lance_arrow::json::is_json_field(field) {
+            continue;
+        }
+        let params = InvertedIndexParams::default();
+        ensure_named_index(
+            dataset,
+            column,
+            IndexType::Inverted,
+            format!("pchronicle_fts_{column}_idx"),
+            &params,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Search normalized Storyline turns through the persisted FTS indexes.
+/// Callers may fall back to an in-memory scan for legacy tables created before
+/// FTS indexes were introduced.
+pub async fn search_storyline_steps_fts(
+    paths: &StorylineTablePaths,
+    query: &str,
+) -> Result<Vec<i64>> {
+    let query = query.trim();
+    anyhow::ensure!(!query.is_empty(), "Storyline FTS query must not be empty");
+    let dataset = open_table_version(&paths.steps, paths.steps_version).await?;
+    let columns = [
+        "message_value",
+        "reasoning_content",
+        "model_name",
+        "observation",
+        "env",
+        "prompt",
+    ]
+    .into_iter()
+    .filter(|column| dataset.schema().field(column).is_some())
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    anyhow::ensure!(
+        !columns.is_empty(),
+        "Storyline steps have no searchable text columns"
+    );
+    let query = lance_index::scalar::FullTextSearchQuery::new(query.to_string())
+        .with_columns(&columns)
+        .map_err(anyhow::Error::from)?;
+    let mut scan = dataset.scan();
+    scan.full_text_search(query).map_err(anyhow::Error::from)?;
+    scan.project(&["step_id"]).map_err(anyhow::Error::from)?;
+    let batch = scan.try_into_batch().await.map_err(anyhow::Error::from)?;
+    let step_ids = batch
+        .column_by_name("step_id")
+        .context("Storyline FTS result is missing step_id")?
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .context("Storyline FTS step_id has an unexpected type")?;
+    Ok(step_ids.values().to_vec())
+}
+
+async fn ensure_named_index(
+    dataset: &mut Dataset,
+    column: &str,
+    index_type: IndexType,
+    name: String,
+    params: &dyn lance_index::IndexParams,
+) -> Result<()> {
+    if !dataset.load_indices_by_name(&name).await?.is_empty() {
+        return Ok(());
+    }
+    let _admission = super::index_build_gate::acquire().await;
+    dataset
+        .create_index(&[column], index_type, Some(name), params, false)
+        .await?;
     Ok(())
 }
 

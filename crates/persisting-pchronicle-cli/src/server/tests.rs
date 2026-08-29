@@ -334,6 +334,9 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
             }],
         },
     ];
+    let mut user_with_native_call = turns[0].clone();
+    user_with_native_call.turn.tool_calls = turns[1].turn.tool_calls.clone();
+    assert!(explorer::display_tool_calls(&user_with_native_call).is_empty());
     let run = RunSummary {
         dataset: "dataset".into(),
         file: "events.lance".into(),
@@ -1599,6 +1602,17 @@ async fn physical_api_inspects_storyline_lance_layout_file_and_page() {
     assert_eq!(sources.as_array().map(Vec::len), Some(1));
     assert_eq!(sources[0]["file"], "story");
     assert_eq!(sources[0]["format"], "storyline-lance");
+
+    let (status, turns) = get_json(
+        &app,
+        &format!(
+            "/api/explorer/turns?dataset={dataset}&file=story&run_id=run-a&agent_id=agent&session_id=session-a&q=hello&limit=10"
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{turns}");
+    assert_eq!(turns["snapshot"]["total"], 1, "{turns}");
+    assert_eq!(turns["records"][0]["id"], 1, "{turns}");
 
     let (status, layout) = get_json(
         &app,

@@ -963,6 +963,19 @@ async fn native_json_columns_support_lance_datafusion_udfs() {
         .downcast_ref::<lance::deps::arrow_array::Int64Array>()
         .unwrap();
     assert_eq!(score.value(0), 7);
+
+    let runs_indices = lance::Dataset::open(paths.runs.to_string_lossy().as_ref())
+        .await
+        .unwrap()
+        .load_indices()
+        .await
+        .unwrap();
+    let runs_index_names = runs_indices
+        .iter()
+        .map(|index| index.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(runs_index_names.contains(&"pchronicle_json_extra_idx"));
+    assert!(runs_index_names.contains(&"pchronicle_json_final_metrics_idx"));
 }
 
 #[tokio::test]

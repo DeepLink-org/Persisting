@@ -138,6 +138,43 @@
   margin: 0 20px 18px;
 }
 
+/* The detail header stays visible while the inner trace/analysis pane scrolls.
+ * Once the user has moved past the top, metrics and overview cards collapse so
+ * the timeline gets the vertical space back. */
+.pc2-detail-head,
+.pc2-metrics,
+.pc2-trace-overview {
+  transition: min-height 160ms ease, max-height 160ms ease, margin 160ms ease,
+    padding 160ms ease, opacity 120ms ease;
+}
+
+.pc2-detail.is-condensed > .pc2-metrics,
+.pc2-detail.is-condensed > .pc2-trace-overview {
+  max-height: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  border-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.pc2-detail.is-condensed > .pc2-detail-head {
+  min-height: 48px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.pc2-detail.is-condensed .pc2-detail-title > div > p,
+.pc2-detail.is-condensed .pc2-detail-title h1 + div code {
+  display: none;
+}
+
+.pc2-detail.is-condensed .pc2-detail-title h1 {
+  margin: 0;
+  font-size: 14px;
+}
+
 .pc2-span-scroll {
   padding: 0;
   overflow: auto;
@@ -300,8 +337,51 @@ details.pc2-context-message-body pre {
   font-size: 10px;
 }
 
-.pc2-inline-detail .pc2-inspector-facts {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.pc2-inspector-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.pc2-fact-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid #e4e7ec;
+  border-radius: 999px;
+  background: #fff;
+}
+
+.pc2-fact-chip span {
+  color: #98a2b3;
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.pc2-fact-chip code {
+  overflow: hidden;
+  color: #344054;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc2-inspector-more {
+  margin-top: 7px;
+}
+
+.pc2-inspector-more summary {
+  display: inline-block;
+  color: #667085;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.pc2-inspector-more .pc2-inspector-chips {
+  margin-top: 5px;
 }
 
 .pc2-inline-detail .pc2-evidence-block pre {
@@ -433,12 +513,6 @@ details.pc2-context-message-body pre {
   color: #1d2939;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-@media (max-width: 1050px) {
-  .pc2-inline-detail .pc2-inspector-facts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 850px) {
