@@ -314,6 +314,7 @@ pub(crate) struct TurnSummary {
     pub(crate) timestamp: Option<String>,
     pub(crate) call_id: Option<String>,
     pub(crate) preview: String,
+    pub(crate) user_prompt: Option<String>,
     pub(crate) char_count: u64,
     pub(crate) modalities: Vec<String>,
     pub(crate) model_name: Option<String>,
@@ -690,6 +691,11 @@ fn turn_summary(item: &TrajectoryTurnView, events: &[EventRecord]) -> TurnSummar
             .map(|timestamp| timestamp.canonical_rfc3339()),
         call_id: item.call_id.clone(),
         preview: compact(&extracted.text, 180),
+        user_prompt: item
+            .turn
+            .prompt
+            .as_ref()
+            .and_then(|prompt| prompt.user.clone()),
         char_count: extracted.char_count,
         modalities: extracted.modalities,
         model_name: item
@@ -884,6 +890,12 @@ fn percentile(values: &[f64], percentile: f64) -> Option<f64> {
 }
 
 pub(super) fn display_tool_calls(item: &TrajectoryTurnView) -> Vec<(String, Option<f64>)> {
+    if !matches!(
+        item.turn.source.trim().to_ascii_lowercase().as_str(),
+        "agent" | "assistant" | "model"
+    ) {
+        return Vec::new();
+    }
     if let Some(calls) = &item.turn.tool_calls {
         return calls
             .iter()
@@ -895,12 +907,6 @@ pub(super) fn display_tool_calls(item: &TrajectoryTurnView) -> Vec<(String, Opti
             })
             .collect();
     }
-    if !matches!(
-        item.turn.source.trim().to_ascii_lowercase().as_str(),
-        "agent" | "assistant" | "model"
-    ) {
-        return Vec::new();
-    }
     item.wire_tool_calls
         .iter()
         .map(|call| (call.name.clone(), None))
@@ -909,10 +915,15 @@ pub(super) fn display_tool_calls(item: &TrajectoryTurnView) -> Vec<(String, Opti
 
 fn searchable_turn(item: &TrajectoryTurnView) -> String {
     format!(
-        "{} {} {} {}",
+        "{} {} {} {} {}",
         item.turn.source,
         item.turn.kind.as_deref().unwrap_or_default(),
         item.call_id.as_deref().unwrap_or_default(),
+        item.turn
+            .prompt
+            .as_ref()
+            .and_then(|prompt| prompt.user.as_deref())
+            .unwrap_or_default(),
         match &item.turn.message {
             Value::String(value) => value.clone(),
             value => value.to_string(),

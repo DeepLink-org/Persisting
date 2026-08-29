@@ -861,8 +861,6 @@ fn project_actf_step(
 mod tests {
     use super::super::test_support::fixture_path;
     use super::*;
-    #[cfg(feature = "proptest")]
-    use proptest::prelude::*;
 
     #[test]
     fn projected_actf_document_parses_trimmed_fixture() {
@@ -876,7 +874,11 @@ mod tests {
     }
 
     #[cfg(feature = "proptest")]
-    proptest! {
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
         #[test]
         fn projected_actf_shape_is_independent_of_requested_columns(
             projection in proptest::collection::vec(
@@ -893,6 +895,46 @@ mod tests {
             prop_assert_eq!(document.task_id.as_str(), "protein-assembly-trimmed");
             prop_assert_eq!(document.attempt_count(), 1);
             prop_assert_eq!(document.attempts[0].1.step_count(), 2);
+        }
+
+            #[test]
+            fn projected_actf_count_helpers_match_generated_nested_shapes(
+            attempts in proptest::collection::vec(
+                proptest::collection::vec(any::<i64>(), 0..32),
+                0..16,
+            ),
+        ) {
+            let document = ProjectedActfDocument {
+                task_id: "generated".into(),
+                attempts: attempts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, step_ids)| {
+                        (
+                            format!("attempt-{index}"),
+                            ProjectedActfAttempt {
+                                steps: step_ids
+                                    .iter()
+                                    .map(|step_id| ProjectedActfStep {
+                                        step_id: *step_id,
+                                        started_at: "2026-01-01T00:00:00Z".into(),
+                                        content: String::new(),
+                                        reasoning_content: None,
+                                        tools_nonempty: false,
+                                        observation_present: false,
+                                        metrics_json: None,
+                                    })
+                                    .collect(),
+                            },
+                        )
+                    })
+                    .collect(),
+            };
+            prop_assert_eq!(document.attempt_count(), attempts.len());
+            for (actual, expected) in document.attempts.iter().zip(&attempts) {
+                prop_assert_eq!(actual.1.step_count(), expected.len());
+            }
+            }
         }
     }
 }

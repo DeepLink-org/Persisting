@@ -508,6 +508,8 @@ pub struct TurnSummary {
     pub call_id: Option<String>,
     pub preview: String,
     #[serde(default)]
+    pub user_prompt: Option<String>,
+    #[serde(default)]
     pub char_count: u64,
     #[serde(default)]
     pub modalities: Vec<String>,

@@ -623,3 +623,54 @@ mod tests {
         assert_eq!(mapped, Some(Vec::new()));
     }
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use super::*;
+    use datafusion::logical_expr::{col, lit};
+    use proptest::prelude::*;
+
+    fn catalog_index_strategy() -> impl Strategy<Value = usize> {
+        let field_count = catalog_schema(&story_runs_arrow_schema()).fields().len();
+        0usize..field_count
+    }
+
+    proptest! {
+        #[test]
+        fn physical_projection_never_forwards_the_virtual_file_column(
+            catalog_index in catalog_index_strategy(),
+        ) {
+            let catalog = catalog_schema(&story_runs_arrow_schema());
+            let physical = story_runs_arrow_schema();
+            let mapped = physical_projection(
+                Some(&vec![catalog_index]),
+                catalog.as_ref(),
+                physical.as_ref(),
+            )
+            .expect("schema projection should be valid")
+            .expect("an explicit projection returns a mapping");
+
+            if catalog_index == 0 {
+                prop_assert!(mapped.is_empty());
+            } else {
+                let name = catalog.field(catalog_index).name();
+                match physical.index_of(name) {
+                    Ok(index) => prop_assert_eq!(mapped, vec![index]),
+                    Err(_) => prop_assert!(mapped.is_empty()),
+                }
+            }
+        }
+
+        #[test]
+        fn negated_file_filters_are_the_complement_of_their_base_expression(
+            candidate in proptest::string::string_regex("[A-Za-z0-9_./-]{0,48}").unwrap(),
+            expected in proptest::string::string_regex("[A-Za-z0-9_./-]{0,48}").unwrap(),
+        ) {
+            let expression = col(SOURCE_FILE_COLUMN).eq(lit(expected.clone()));
+            let base = evaluate_file_filter(&expression, &candidate);
+            let negated = Expr::Not(Box::new(expression));
+            prop_assert_eq!(base, Some(candidate == expected));
+            prop_assert_eq!(evaluate_file_filter(&negated, &candidate), base.map(|value| !value));
+        }
+    }
+}

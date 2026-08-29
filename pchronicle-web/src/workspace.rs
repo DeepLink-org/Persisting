@@ -149,6 +149,8 @@ pub fn App() -> Element {
     let mut expanded_turn_id =
         use_signal(|| url_param("turn").and_then(|value| value.parse::<i64>().ok()));
     let mut storyline = use_signal(|| None::<StorylineSnapshot>);
+    let mut context_requested = use_signal(|| false);
+    let mut context_loading = use_signal(|| false);
     let detail_loading = use_signal(|| false);
     let turn_loading = use_signal(|| false);
     let mut detail_mode = use_signal(|| url_param("workspace").unwrap_or_else(|| "trace".into()));
@@ -199,9 +201,38 @@ pub fn App() -> Element {
     use_effect(move || {
         if analysis().is_none() {
             if let Some(run) = selected_run() {
-                load_workspace(run, analysis, turns, storyline, detail_loading, error);
+                load_workspace(run, analysis, turns, detail_loading, error);
             }
         }
+    });
+
+    use_effect(move || {
+        if !context_requested() || storyline().is_some() || context_loading() {
+            return;
+        }
+        let Some(run) = selected_run() else {
+            return;
+        };
+        context_loading.set(true);
+        spawn(async move {
+            let still_active = || {
+                selected_run()
+                    .as_ref()
+                    .is_some_and(|active| active.query() == run.query())
+            };
+            match api::storyline(&run).await {
+                Ok(snapshot) if still_active() => storyline.set(Some(snapshot)),
+                Err(_) => {
+                    if still_active() {
+                        context_requested.set(false);
+                    }
+                }
+                _ => {}
+            }
+            if still_active() {
+                context_loading.set(false);
+            }
+        });
     });
 
     use_effect(move || {
@@ -337,7 +368,7 @@ pub fn App() -> Element {
                         rsx! { div { class: "pc2-detail-layout",
                             PathExplorer { runs: path_runs, selected_path, loading: runs_loading(), filter_folders: false,
                                 on_path: move |value| { run_path.set(value); offset.set(0); page.set("runs".into()); },
-                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); storyline.set(None); },
+                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); storyline.set(None); context_requested.set(false); context_loading.set(false); },
                             }
                             if let (Some(_run), Some(value)) = (selected_run(), analysis()) {
                                 RunDetailWorkspace {
@@ -346,6 +377,7 @@ pub fn App() -> Element {
                                     turns: turns(),
                                     selected: selected_turn(),
                                     storyline: storyline(),
+                                    context_loading: context_loading(),
                                     expanded_turn_id: expanded_turn_id(),
                                     loading: detail_loading(),
                                     turn_loading: turn_loading(),
@@ -361,6 +393,7 @@ pub fn App() -> Element {
                                     on_source: move |value| source.set(value),
                                     on_query: move |value| turn_query.set(value),
                                     on_apply_filter: move |_| {},
+                                    on_context: move |_| context_requested.set(true),
                                     on_turn: move |id| {
                                         if expanded_turn_id() == Some(id) {
                                             expanded_turn_id.set(None);
@@ -387,7 +420,7 @@ pub fn App() -> Element {
                         rsx! { div { class: "pc2-runs-layout",
                         PathExplorer { runs: path_runs, selected_path: run_path(), loading: runs_loading(), filter_folders: true,
                             on_path: move |value| { run_path.set(value); offset.set(0); },
-                            on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); detail_mode.set("trace".into()); page.set("detail".into()); },
+                            on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); storyline.set(None); context_requested.set(false); context_loading.set(false); detail_mode.set("trace".into()); page.set("detail".into()); },
                         }
                         RunsExplorer {
                             page: runs(),
@@ -437,6 +470,8 @@ pub fn App() -> Element {
                                 selected_turn.set(None);
                                 expanded_turn_id.set(None);
                                 storyline.set(None);
+                                context_requested.set(false);
+                                context_loading.set(false);
                                 detail_mode.set("trace".into());
                                 page.set("detail".into());
                             },
@@ -482,6 +517,8 @@ pub fn App() -> Element {
                                 selected_turn.set(None);
                                 expanded_turn_id.set(None);
                                 storyline.set(None);
+                                context_requested.set(false);
+                                context_loading.set(false);
                             }
                             if page() != next_page {
                                 page.set(next_page.to_string());
@@ -542,7 +579,6 @@ fn load_workspace(
     run: RunSummary,
     mut analysis: Signal<Option<RunAnalysis>>,
     mut turns: Signal<Vec<TurnSummary>>,
-    mut storyline: Signal<Option<StorylineSnapshot>>,
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
@@ -562,14 +598,6 @@ fn load_workspace(
                 }
             }
             loading.set(false);
-        }
-    });
-    // The storyline powers context reconstruction in the turn inspector. It is
-    // additive and can be slow to project, so it loads independently: it must
-    // neither block nor blank the workspace.
-    spawn(async move {
-        if let Ok(snapshot) = api::storyline(&run).await {
-            storyline.set(Some(snapshot));
         }
     });
 }
@@ -818,6 +846,7 @@ fn RunDetailWorkspace(
     turns: Vec<TurnSummary>,
     selected: Option<TurnDetail>,
     storyline: Option<StorylineSnapshot>,
+    context_loading: bool,
     expanded_turn_id: Option<i64>,
     loading: bool,
     turn_loading: bool,
@@ -832,6 +861,7 @@ fn RunDetailWorkspace(
     on_query: EventHandler<String>,
     on_apply_filter: EventHandler<()>,
     on_turn: EventHandler<i64>,
+    on_context: EventHandler<()>,
     on_open_copilot: EventHandler<MouseEvent>,
     on_analyze: EventHandler<RunSummary>,
 ) -> Element {
@@ -893,7 +923,7 @@ fn RunDetailWorkspace(
                     div { class: "pc2-turn-list pc2-span-scroll",
                         if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing run details…" } }
                         if turns.is_empty() { div { class: "pc2-empty", strong { "No visible steps" } span { "No loaded steps match this filter." } } }
-                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, context: storyline.map(|snapshot| snapshot.turns), view: view_for_list, source: source_for_list, query: query_for_list, on_turn } }
+                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, context: storyline.map(|snapshot| snapshot.turns), context_loading, view: view_for_list, source: source_for_list, query: query_for_list, on_turn, on_context } }
                     }
                 }
             }

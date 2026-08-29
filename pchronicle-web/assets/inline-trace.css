@@ -157,13 +157,29 @@
 }
 
 .pc2-context-head {
+  width: 100%;
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
   padding: 8px 10px;
+  border: 0;
   border-bottom: 1px solid #e3eaf3;
   background: #eef4fb;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pc2-context-head:hover {
+  background: #e7f0fb;
+}
+
+.pc2-context-disclosure {
+  flex: none;
+  width: 10px;
+  color: #667085 !important;
+  font-size: 11px !important;
 }
 
 .pc2-context-head strong {
@@ -301,6 +317,15 @@ details.pc2-context-message-body pre {
 .pc2-tool-call-stack {
   display: grid;
   gap: 8px;
+}
+
+.pc2-protocol-anomaly {
+  padding: 7px 10px;
+  border: 1px solid #fed7aa;
+  border-radius: 6px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 9px;
 }
 
 .pc2-tool-call-card {

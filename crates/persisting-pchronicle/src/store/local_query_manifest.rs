@@ -606,6 +606,21 @@ mod tests {
                 prop_assert_eq!(manifest.files().len(), 1);
                 prop_assert_eq!(manifest.files()[0].relative_path(), relative);
             }
+
+            #[test]
+            fn invalid_manifest_limits_fail_before_filesystem_access(
+                max_files in 0usize..=1,
+                max_entries in 0usize..=1,
+                max_detection_bytes in 0u64..=1,
+            ) {
+                prop_assume!(max_files == 0 || max_entries == 0 || max_detection_bytes == 0);
+                let options = LocalQueryManifestOptions {
+                    max_files,
+                    max_entries,
+                    max_detection_bytes,
+                };
+                prop_assert!(validate_options(options).is_err());
+            }
         }
     }
 }

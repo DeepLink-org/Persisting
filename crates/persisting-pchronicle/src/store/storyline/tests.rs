@@ -2300,5 +2300,50 @@ mod proptests {
             }
             prop_assert!(options.validate().is_err());
         }
+
+        #[test]
+        fn generation_timestamps_roundtrip_without_precision_loss(
+            nanos in 0u128..1_000_000_000_000_000_000u128,
+            epoch in 0u32..1_000_000,
+            ordinal in 0u64..1_000_000,
+        ) {
+            let generation = format!("gen-{nanos}-{epoch}-{ordinal}");
+            prop_assert_eq!(parse_generation_timestamp(&generation), Some(nanos));
+        }
+
+        #[test]
+        fn joining_normalized_generation_parts_is_stable(
+            root in proptest::string::string_regex("shared-memory://bucket/[A-Za-z0-9._-]{1,16}").unwrap(),
+            parts in proptest::collection::vec(
+                proptest::string::string_regex("[A-Za-z0-9._-]{1,16}").unwrap(),
+                1..5,
+            ),
+            leading in any::<bool>(),
+            trailing in any::<bool>(),
+        ) {
+            let raw_parts = parts
+                .iter()
+                .map(|part| format!("{}{}{}", if leading { "/" } else { "" }, part, if trailing { "/" } else { "" }))
+                .collect::<Vec<_>>();
+            let joined = join_location(&root, &raw_parts.iter().map(String::as_str).collect::<Vec<_>>());
+            prop_assert_eq!(joined, format!("{root}/{}", parts.join("/")));
+        }
+
+        #[test]
+        fn generation_name_validation_accepts_only_safe_gen_prefixed_names(
+            suffix in proptest::string::string_regex("[A-Za-z0-9._-]{1,24}").unwrap(),
+            invalid in prop::sample::select(vec![
+                String::new(),
+                ".".into(),
+                "..".into(),
+                "generation".into(),
+                "gen/escape".into(),
+                "gen\\\\escape".into(),
+            ]),
+        ) {
+            let valid = format!("gen-{}", suffix);
+            prop_assert!(validate_generation_name(&valid).is_ok());
+            prop_assert!(validate_generation_name(&invalid).is_err());
+        }
     }
 }

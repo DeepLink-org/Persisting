@@ -118,4 +118,26 @@ proptest! {
         prop_assert_eq!(left.identity_columns, right.identity_columns);
         prop_assert_eq!(left.expected_columns, right.expected_columns);
     }
+
+    #[test]
+    fn public_unknown_analysis_measures_fail_with_a_structured_error(
+        measure in proptest::string::string_regex("[A-Za-z0-9_]{1,32}").unwrap(),
+    ) {
+        prop_assume!(measure != "row_count");
+        prop_assume!(measure != "tool_call_count");
+        prop_assume!(measure != "step_count_per_run");
+        prop_assume!(measure != "tool_call_count_per_run");
+        prop_assume!(measure != "step_latency_ms");
+        prop_assume!(measure != "step_ttft_ms");
+        prop_assume!(measure != "tool_duration_ms");
+        let mut analysis = analysis_for(0);
+        analysis.measure = measure;
+        let error = compile(
+            analysis,
+            &schema(),
+            &CompileScope { dataset: "dataset".into(), ..CompileScope::default() },
+        ).unwrap_err();
+        prop_assert_eq!(error.code, "unknown_measure");
+        prop_assert_eq!(error.field.as_deref(), Some("measure"));
+    }
 }

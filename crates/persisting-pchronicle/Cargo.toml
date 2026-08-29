@@ -338,3 +338,33 @@ required-features = ["proptest"]
 name = "proptest_storyline_datafusion"
 path = "tests/proptests/storyline_datafusion.rs"
 required-features = ["proptest"]
+
+[[test]]
+name = "proptest_public_api"
+path = "tests/proptests/public_api.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_document_source"
+path = "tests/proptests/document_source.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_query_engine"
+path = "tests/proptests/query_engine.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_direct_file_query"
+path = "tests/proptests/direct_file_query.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_storyline_lance"
+path = "tests/proptests/storyline_lance.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_unknown_fields_roundtrip"
+path = "tests/proptests/unknown_fields_roundtrip.rs"
+required-features = ["proptest"]

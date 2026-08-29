@@ -1,6 +1,6 @@
 use persisting_pchronicle::storage::{
     AutomaticProjectionMaintenanceMode, AutomaticProjectionMaintenanceReport,
-    storyline_projection_destination_exists,
+    AutomaticProjectionState, storyline_projection_destination_exists,
 };
 use proptest::prelude::*;
 
@@ -63,5 +63,21 @@ proptest! {
             .block_on(storyline_projection_destination_exists(destination.to_string_lossy()))
             .unwrap();
         prop_assert!(after);
+    }
+
+    #[test]
+    fn public_projection_states_use_stable_snake_case_wire_names(
+        state in prop_oneof![
+            Just(AutomaticProjectionState::Fresh),
+            Just(AutomaticProjectionState::Stale),
+            Just(AutomaticProjectionState::Missing),
+        ],
+    ) {
+        let expected = match state {
+            AutomaticProjectionState::Fresh => "fresh",
+            AutomaticProjectionState::Stale => "stale",
+            AutomaticProjectionState::Missing => "missing",
+        };
+        prop_assert_eq!(serde_json::to_value(state).unwrap(), serde_json::Value::String(expected.into()));
     }
 }

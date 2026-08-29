@@ -29,4 +29,19 @@ proptest! {
         let kept = drop_lifecycle_run_partitions(vec![location.clone()]);
         prop_assert_eq!(kept, vec![location]);
     }
+
+    #[test]
+    fn public_lifecycle_partition_filter_is_idempotent(
+        root in proptest::string::string_regex("[A-Za-z0-9_-]{1,16}").unwrap(),
+        child in proptest::string::string_regex("[A-Za-z0-9_-]{1,16}").unwrap(),
+    ) {
+        prop_assume!(root != child);
+        let locations = vec![
+            StoryCoords::new("store", "agent", &root, Some(root.clone())),
+            StoryCoords::new("store", "agent", &child, Some(root.clone())),
+        ];
+        let once = drop_lifecycle_run_partitions(locations.clone());
+        let twice = drop_lifecycle_run_partitions(once.clone());
+        prop_assert_eq!(twice, once);
+    }
 }

@@ -74,4 +74,17 @@ proptest! {
             prop_assert_eq!(snapshot, format!("version:{value}"));
         }
     }
+
+    #[test]
+    fn public_namespace_paths_reject_path_separators_and_empty_components(
+        invalid in prop::sample::select(vec![
+            String::new(),
+            "a/b".into(),
+            "a\\\\b".into(),
+            "a b".into(),
+            "a?b".into(),
+        ]),
+    ) {
+        prop_assert!(NamespacePath::single(invalid).is_err());
+    }
 }

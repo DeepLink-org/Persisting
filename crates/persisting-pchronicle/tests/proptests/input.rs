@@ -51,4 +51,16 @@ proptest! {
         let expected_kind = issue.kind();
         prop_assert_eq!(issue.at(location).kind(), expected_kind);
     }
+
+    #[test]
+    fn public_location_chain_keeps_only_the_last_attached_location(
+        message in any::<String>(),
+        locations in proptest::collection::vec(any::<String>(), 1..8),
+    ) {
+        let issue = locations.iter().fold(InputIssue::invalid(message.clone()), |issue, location| {
+            issue.at(location.clone())
+        });
+        prop_assert_eq!(issue.message(), message.as_str());
+        prop_assert_eq!(issue.location(), locations.last().map(String::as_str));
+    }
 }

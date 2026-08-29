@@ -346,3 +346,27 @@ async fn write_record_batch_reader(
     }
     Ok(dataset.version_id())
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn chunk_limit_helpers_share_the_same_strict_boundary(
+            actual in any::<usize>(),
+            limit in prop::option::of(any::<usize>()),
+        ) {
+            let exceeded = limit.is_some_and(|value| actual > value);
+            prop_assert_eq!(exceeds_limit(actual, limit), exceeded);
+            prop_assert_eq!(enforce_limit("generated", actual, limit).is_ok(), !exceeded);
+        }
+
+        #[test]
+        fn unlimited_chunk_limits_accept_every_generated_size(actual in any::<usize>()) {
+            prop_assert!(!exceeds_limit(actual, None));
+            prop_assert!(enforce_limit("generated", actual, None).is_ok());
+        }
+    }
+}

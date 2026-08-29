@@ -31,4 +31,17 @@ proptest! {
         let encoded = serde_json::to_string(&fence).unwrap();
         prop_assert_eq!(serde_json::from_str::<EventWriterFence>(&encoded).unwrap(), fence);
     }
+
+    #[test]
+    fn public_writer_fence_preserves_nonempty_owner_whitespace(
+        epoch in 1u64..1_000_000,
+        owner in proptest::string::string_regex("[ A-Za-z0-9._-]{0,32}").unwrap(),
+    ) {
+        let result = EventWriterFence::new(epoch, owner.clone());
+        if owner.trim().is_empty() {
+            prop_assert!(result.is_err());
+        } else {
+            prop_assert_eq!(result.unwrap().writer_id, owner);
+        }
+    }
 }

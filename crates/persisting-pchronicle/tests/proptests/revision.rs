@@ -24,4 +24,32 @@ proptest! {
         let run_dir = coords.run_dir().unwrap();
         prop_assert_eq!(std::path::Path::new(&path).parent(), Some(run_dir.as_path()));
     }
+
+    #[test]
+    fn public_revision_paths_share_the_root_partition_for_child_sessions(
+        agent in proptest::string::string_regex("[a-zA-Z0-9_-]{1,16}").unwrap(),
+        root in proptest::string::string_regex("[a-zA-Z0-9_-]{1,16}").unwrap(),
+        child in proptest::string::string_regex("[a-zA-Z0-9_-]{1,16}").unwrap(),
+    ) {
+        let root_coords = StoryCoords::new("/tmp/store", &agent, &root, Some(root.clone()));
+        let child_coords = StoryCoords::new("/tmp/store", &agent, &child, Some(root));
+        prop_assert_eq!(
+            revision_dataset_path(&root_coords).unwrap(),
+            revision_dataset_path(&child_coords).unwrap(),
+        );
+    }
+
+    #[test]
+    fn public_revision_dataset_path_rejects_unsafe_coordinates(
+        unsafe_segment in prop_oneof![
+            Just("".to_string()),
+            Just(".".to_string()),
+            Just("..".to_string()),
+            Just("a/b".to_string()),
+            Just("a\\\\b".to_string()),
+        ],
+    ) {
+        let coords = StoryCoords::new("/tmp/store", unsafe_segment, "session", None);
+        prop_assert!(revision_dataset_path(&coords).is_err());
+    }
 }

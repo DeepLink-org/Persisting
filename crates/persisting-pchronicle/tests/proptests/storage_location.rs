@@ -63,4 +63,16 @@ proptest! {
         prop_assert_eq!(twice.as_str(), once.as_str());
         prop_assert_eq!(twice.kind(), once.kind());
     }
+
+    #[test]
+    fn public_local_locations_preserve_their_path_without_becoming_object_store_uris(
+        segments in proptest::collection::vec(path_segment_strategy(), 1..5),
+    ) {
+        let raw = segments.join("/");
+        let location = DatasetLocation::parse(&raw).expect("generated local path is valid");
+        prop_assert_eq!(location.kind(), DatasetLocationKind::Local);
+        prop_assert!(!location.is_object_store());
+        prop_assert_eq!(location.local_path(), Some(std::path::Path::new(&raw)));
+        prop_assert_eq!(location.as_str(), raw);
+    }
 }

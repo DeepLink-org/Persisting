@@ -84,4 +84,29 @@ proptest! {
         let content = whitespace.into_iter().collect::<String>();
         prop_assert_eq!(detect_format(None, Some(&content)).unwrap(), None);
     }
+
+    #[test]
+    fn public_openai_session_steps_name_is_case_insensitive(uppercase in any::<bool>()) {
+        let path = if uppercase {
+            "SESSION_STEPS.JSON"
+        } else {
+            "session_steps.json"
+        };
+        prop_assert_eq!(
+            detect_format(Some(Path::new(path)), None).unwrap(),
+            Some(DocumentFormat::OpenaiMsg),
+        );
+    }
+
+    #[test]
+    fn public_unknown_path_extensions_remain_unclassified(
+        stem in safe_stem_strategy(),
+        extension in proptest::string::string_regex("[a-z]{1,12}").unwrap(),
+    ) {
+        let path = format!("{stem}.{extension}");
+        prop_assume!(
+            !matches!(extension.as_str(), "md" | "json" | "jsonl" | "lance")
+        );
+        prop_assert_eq!(detect_format(Some(Path::new(&path)), None).unwrap(), None);
+    }
 }

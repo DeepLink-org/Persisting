@@ -21,4 +21,14 @@ proptest! {
             Some(filename.as_str()),
         );
     }
+
+    #[test]
+    fn public_session_filename_stem_is_deterministic_for_arbitrary_unicode(
+        session_id in proptest::collection::vec(any::<char>(), 0..256)
+            .prop_map(|chars| chars.into_iter().collect::<String>()),
+    ) {
+        let first = session_filename_stem(&session_id);
+        let second = session_filename_stem(&session_id);
+        prop_assert_eq!(first, second);
+    }
 }

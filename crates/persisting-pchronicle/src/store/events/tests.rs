@@ -899,5 +899,27 @@ mod proptests {
             prop_assert_eq!(&coords.session_id, &child);
             prop_assert_eq!(coords.root_session_id.as_deref(), Some(root.as_str()));
         }
+
+        #[test]
+        fn session_predicates_escape_arbitrary_quotes_without_changing_the_value(
+            session_id in proptest::string::string_regex("[A-Za-z0-9_'-]{0,48}").unwrap(),
+        ) {
+            let predicate = session_predicate(&session_id);
+            prop_assert_eq!(
+                predicate,
+                format!("session_id = '{}'", session_id.replace('\'', "''")),
+            );
+        }
+
+        #[test]
+        fn session_predicates_keep_backslashes_and_quotes_literal(
+            session_id in proptest::string::string_regex("[A-Za-z0-9_'\\\\/-]{0,48}").unwrap(),
+        ) {
+            let predicate = session_predicate(&session_id);
+            prop_assert_eq!(
+                predicate,
+                format!("session_id = '{}'", session_id.replace('\'', "''")),
+            );
+        }
     }
 }

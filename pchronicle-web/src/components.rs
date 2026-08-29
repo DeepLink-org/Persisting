@@ -4,7 +4,9 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::chat_view::{TraceCard, chat_row_visible, group_chats, source_class, step_row_visible};
+use crate::chat_view::{
+    TraceCard, chat_row_visible, group_chats, prompt_turn, source_class, step_row_visible,
+};
 use crate::json_value::{JsonValue, is_structured_json};
 use crate::model::{
     EventProvenance, QueryEvidence, StorylineTurn, TurnDetail, TurnSummary, WireToolCall,
@@ -308,10 +310,6 @@ fn composition_label(entries: &[TurnSummary]) -> String {
         .iter()
         .filter(|turn| turn.source == "system")
         .count();
-    let tools = entries
-        .iter()
-        .map(|turn| turn.tool_names.len())
-        .sum::<usize>();
     let mut parts = Vec::new();
     if users > 0 {
         parts.push(format!("{users} user"));
@@ -322,11 +320,14 @@ fn composition_label(entries: &[TurnSummary]) -> String {
     if systems > 0 {
         parts.push(format!("{systems} system"));
     }
-    let mut label = parts.join(" + ");
-    if tools > 0 {
-        label = format!("{label} · {tools} tool");
-    }
-    label
+    parts.join(" + ")
+}
+
+fn summary_modalities(entries: &[TurnSummary]) -> Vec<String> {
+    union_modalities(entries)
+        .into_iter()
+        .filter(|modality| modality != "text" && modality != "tool_call")
+        .collect()
 }
 
 fn row_char_count(entries: &[TurnSummary], user_only: bool) -> u64 {
@@ -359,12 +360,15 @@ fn kind_label(kind: &str) -> &'static str {
 }
 
 fn structure_meta(group: &CompactSpanGroup) -> String {
-    let user_only = group.kind_chip == "chat";
-    format!(
-        "{} · {}",
-        composition_label(&group.entries),
-        format_char_count(row_char_count(&group.entries, user_only))
-    )
+    let composition = composition_label(&group.entries);
+    if group.kind_chip == "chat" {
+        composition
+    } else {
+        format!(
+            "{composition} · {}",
+            format_char_count(row_char_count(&group.entries, false))
+        )
+    }
 }
 
 fn group_diagnostic(entries: &[TurnSummary]) -> String {
@@ -377,6 +381,10 @@ fn group_diagnostic(entries: &[TurnSummary]) -> String {
         .iter()
         .filter_map(|turn| turn.latency_ms)
         .sum::<f64>();
+    let tools = entries
+        .iter()
+        .map(|turn| turn.tool_names.len())
+        .sum::<usize>();
     let mut parts = vec![
         if turns == 1 {
             "1 step".into()
@@ -385,6 +393,9 @@ fn group_diagnostic(entries: &[TurnSummary]) -> String {
         },
         composition_label(entries),
     ];
+    if tools > 0 {
+        parts.push(format!("{tools} tool"));
+    }
     if tokens > 0 {
         parts.push(format!("{tokens} tokens"));
     }
@@ -586,24 +597,31 @@ fn chat_span_groups(turns: &[TurnSummary]) -> Vec<CompactSpanGroup> {
 }
 
 fn step_span_groups(turns: &[TurnSummary]) -> Vec<CompactSpanGroup> {
-    turns
-        .iter()
-        .cloned()
-        .enumerate()
-        .map(|(index, turn)| {
-            let id = turn.id;
-            let overview = step_overview(&turn);
-            let kind_chip = source_class(&turn.source);
-            span_from_entries(
-                format!("turn-{id}"),
-                format!("#{id}"),
-                overview,
-                vec![turn],
+    let mut groups = Vec::with_capacity(turns.len() * 2);
+    for (index, turn) in turns.iter().cloned().enumerate() {
+        if let Some(user) = prompt_turn(&turn) {
+            groups.push(span_from_entries(
+                format!("prompt-{}", turn.id),
+                format!("Prompt for #{}", turn.id),
+                step_overview(&user),
+                vec![user],
                 index,
-                kind_chip,
-            )
-        })
-        .collect()
+                "user",
+            ));
+        }
+        let id = turn.id;
+        let overview = step_overview(&turn);
+        let kind_chip = source_class(&turn.source);
+        groups.push(span_from_entries(
+            format!("turn-{id}"),
+            format!("#{id}"),
+            overview,
+            vec![turn],
+            index,
+            kind_chip,
+        ));
+    }
+    groups
 }
 
 fn compact_preview(value: &str, limit: usize) -> String {
@@ -634,7 +652,9 @@ pub fn TrajectoryView(
     #[props(default = "chats".to_string())] view: String,
     #[props(default = "all".to_string())] source: String,
     #[props(default)] query: String,
+    #[props(default = false)] context_loading: bool,
     on_turn: EventHandler<i64>,
+    #[props(default)] on_context: EventHandler<()>,
 ) -> Element {
     let mut open_key = use_signal(|| None::<String>);
     let mut last_focus = use_signal(|| None::<i64>);
@@ -673,12 +693,8 @@ pub fn TrajectoryView(
         .iter()
         .map(|turn| turn.tool_names.len())
         .sum::<usize>();
-    let root_modalities = union_modalities(&turns);
-    let root_meta = format!(
-        "{} · {}",
-        composition_label(&turns),
-        format_char_count(row_char_count(&turns, true))
-    );
+    let root_modalities = summary_modalities(&turns);
+    let root_meta = composition_label(&turns);
     if last_focus() != expanded_turn_id {
         last_focus.set(expanded_turn_id);
         if let Some(id) = expanded_turn_id {
@@ -714,7 +730,7 @@ pub fn TrajectoryView(
         div { class: "{table_class}", role: "tree", aria_label: "Run step hierarchy",
             div { class: "span-sticky-chrome",
                 div { class: "span-table-head", div { "Structure" } div { "Overview" } div { class: "span-axis-head", span { "Sequence / coverage" } div { class: "span-axis-ticks", span { "0" } span { "25%" } span { "50%" } span { "75%" } span { "{axis_len.saturating_sub(1)}" } } } div { "Details" } }
-                div { class: "trace-root-summary", div { class: "span-structure root", div { div { class: "span-structure-title", strong { "run" } span { "{groups.len()} {noun}" } } div { class: "span-structure-chips", for modality in root_modalities { span { class: "modality-chip {modality}", "{modality}" } } } span { "{root_meta}" } } } div { class: "span-row-copy root-copy" } OccupancyTrack { bars: root_bars.clone(), expose_range, focus_left, caption: root_caption, title: "Run coverage · {turns.len()} steps", exposed_ids: exposed_ids.clone(), expanded_turn_id, hovered_ids: hover_ids.clone() } div { class: "span-evidence-count", strong { "{total_refs} events" } span { "{total_tools} tools" } } }
+                div { class: "trace-root-summary", div { class: "span-structure root", div { div { class: "span-structure-title", strong { "run" } span { "{groups.len()} {noun}" } } div { class: "span-structure-chips", for modality in root_modalities { span { class: "modality-chip {modality}", "{modality}" } } } span { "{root_meta}" } } } div { class: "span-row-copy root-copy" } OccupancyTrack { bars: root_bars.clone(), expose_range, focus_left, caption: root_caption, title: "Run coverage · {turns.len()} steps", exposed_ids: exposed_ids.clone(), expanded_turn_id, hovered_ids: hover_ids.clone() } div { class: "span-evidence-count", if total_refs > 0 { strong { "{total_refs} events" } } if total_tools > 0 { span { "{total_tools} tools" } } } }
             }
             div { class: "span-children", for group in groups {
                     CompactSpanRow {
@@ -731,7 +747,9 @@ pub fn TrajectoryView(
                         loading,
                         embedded,
                         context: context.clone(),
+                        context_loading,
                         on_turn,
+                        on_context,
                         on_open: move |key| open_key.set(key),
                         on_hover: move |ids| hovered_ids.set(ids),
                         group,
@@ -756,7 +774,9 @@ fn CompactSpanRow(
     loading: bool,
     embedded: bool,
     #[props(default)] context: Option<Vec<StorylineTurn>>,
+    #[props(default = false)] context_loading: bool,
     on_turn: EventHandler<i64>,
+    #[props(default)] on_context: EventHandler<()>,
     on_open: EventHandler<Option<String>>,
     on_hover: EventHandler<Vec<i64>>,
 ) -> Element {
@@ -767,7 +787,7 @@ fn CompactSpanRow(
         .sum::<usize>();
     let preview = group.overview.clone();
     let diagnostic = group_diagnostic(&group.entries);
-    let modalities = union_modalities(&group.entries);
+    let modalities = summary_modalities(&group.entries);
     let meta = structure_meta(&group);
     let kind = group.kind_chip;
     let kind_text = kind_label(kind);
@@ -784,17 +804,27 @@ fn CompactSpanRow(
         summary { class: "span-row-summary", onclick: move |event| { event.prevent_default(); on_open.call(if row_open { None } else { Some(group_key.clone()) }); },
             div { class: "span-structure", span { class: "disclosure" } div { div { class: "span-structure-title", strong { title: "{group.label}", "{group.label}" } span { class: "phase-badge {kind}", "{kind_text}" } if has_error { span { class: "pc2-error-chip", "error" } } } div { class: "span-structure-chips", for modality in modalities { span { class: "modality-chip {modality}", "{modality}" } } } span { "{meta}" } } }
             div { class: "span-row-copy",
-                if row_open {
-                    strong { class: "overview-line", title: "{diagnostic}", "{diagnostic}" }
-                } else {
-                    strong { class: "overview-line", title: "{preview}", "{preview}" }
-                }
+                strong { class: "overview-line", title: "{preview}", "{preview}" }
+                if row_open { span { class: "span-row-diagnostic", title: "{diagnostic}", "{diagnostic}" } }
             }
             OccupancyTrack { bars, expose_range, focus_left, caption: caption.clone(), title: "{caption} · {meta}", exposed_ids, expanded_turn_id, hovered_ids }
-            div { class: "span-evidence-count", strong { "{event_refs} events" } span { "{group.tool_calls} tools" } }
+            div { class: "span-evidence-count", if event_refs > 0 { strong { "{event_refs} events" } } if group.tool_calls > 0 { span { "{group.tool_calls} tools" } } }
         }
         if row_open {
-            div { class: "span-detail", for turn in group.entries { CompactTurnRow { key: "turn-{turn.id}", turn: turn.clone(), expanded: expanded_turn_id == Some(turn.id), detail: detail.clone(), loading, embedded, context: context.clone(), on_turn } } }
+            div { class: "span-detail", for turn in group.entries {
+                CompactTurnRow {
+                    key: "turn-{turn.id}",
+                    turn: turn.clone(),
+                    expanded: expanded_turn_id == Some(turn.id),
+                    detail: detail.clone(),
+                    loading,
+                    embedded,
+                    context: context.clone(),
+                    context_loading,
+                    on_turn,
+                    on_context,
+                }
+            } }
         }
     } }
 }
@@ -842,7 +872,9 @@ fn CompactTurnRow(
     loading: bool,
     embedded: bool,
     #[props(default)] context: Option<Vec<StorylineTurn>>,
+    #[props(default = false)] context_loading: bool,
     on_turn: EventHandler<i64>,
+    #[props(default)] on_context: EventHandler<()>,
 ) -> Element {
     let id = turn.id;
     let kind = turn.kind.clone().unwrap_or_else(|| "step".into());
@@ -851,12 +883,22 @@ fn CompactTurnRow(
     let expanded_facts = turn_expanded_facts(&turn);
     let tool_count = turn.tool_names.len();
     let event_count = turn.event_seqs.len();
+    if id < 0 {
+        return rsx! {
+            div { class: "compact-turn synthetic-prompt",
+                span { class: "compact-turn-chevron" }
+                span { class: "pc2-role user", "user" }
+                span { class: "synthetic-prompt-kind", "initial prompt" }
+                span { class: "compact-preview", title: "{preview}", "{preview}" }
+            }
+        };
+    }
     if embedded {
         return rsx! { button { class: "compact-turn pc2-embedded-turn", onclick: move |_| on_turn.call(id), span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", "{preview}" } span { class: "compact-turn-stats", if tool_count > 0 { span { "{tool_count} tools" } } span { "{event_count} events" } } } };
     }
     rsx! { details { class: if expanded { "compact-turn selected" } else { "compact-turn" }, open: expanded,
         summary { aria_label: "Expand {turn.source} step {id}", onclick: move |event| { event.prevent_default(); on_turn.call(id); }, span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } if expanded { span { class: "compact-kind", "{expanded_facts}" } } else { span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", "{preview}" } span { class: "compact-turn-stats", if !collapsed_meta.is_empty() { span { "{collapsed_meta}" } } if tool_count > 0 { span { "{tool_count} tools" } } span { "{event_count} events" } } } }
-        if expanded { div { class: "compact-turn-body pc2-inline-detail", if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Loading full step…" } } else if let Some(value) = detail.filter(|value| value.summary.id == id) { InlineTurnDetail { value, context: context.clone() } } else { div { class: "pc2-inline-unavailable", "Details are unavailable for this step." } } } }
+        if expanded { div { class: "compact-turn-body pc2-inline-detail", if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Loading full step…" } } else if let Some(value) = detail.filter(|value| value.summary.id == id) { InlineTurnDetail { value, context: context.clone(), context_loading, on_context } } else { div { class: "pc2-inline-unavailable", "Details are unavailable for this step." } } } }
     } }
 }
 
@@ -864,23 +906,37 @@ fn CompactTurnRow(
 fn InlineTurnDetail(
     value: TurnDetail,
     #[props(default)] context: Option<Vec<StorylineTurn>>,
+    #[props(default = false)] context_loading: bool,
+    #[props(default)] on_context: EventHandler<()>,
 ) -> Element {
     let message = value.turn.message.clone();
     let message_text = value.turn.text();
     let message_is_text_bearing = extract_message_text(&message).is_some();
     let structured_message = is_structured_json(&message);
-    let embedded_from_message = parse_embedded_tool_calls_from_text(&message_text);
+    let tool_capable_source = source_can_call_tools(&value.summary.source);
+    let native_tool_calls = value.turn.tool_calls.clone().unwrap_or_default();
+    let misplaced_tool_call_count = (!tool_capable_source).then_some(native_tool_calls.len());
+    let embedded_from_message = if tool_capable_source {
+        parse_embedded_tool_calls_from_text(&message_text)
+    } else {
+        Vec::new()
+    };
+    let has_embedded_tool_calls = !embedded_from_message.is_empty();
     let mut embedded_seen = HashSet::new();
     for call in &embedded_from_message {
         let _ = embedded_seen.insert((call.name.clone(), call.arguments.to_string()));
     }
-    let deduped_wire_calls: Vec<WireToolCall> = value
-        .wire_tool_calls
-        .into_iter()
-        .filter(|call| !embedded_seen.contains(&(call.name.clone(), call.arguments.to_string())))
-        .collect();
-    let wire_tool_calls_value =
-        serde_json::to_value(&deduped_wire_calls).unwrap_or(Value::Array(Vec::new()));
+    let deduped_wire_calls: Vec<WireToolCall> = if tool_capable_source {
+        value
+            .wire_tool_calls
+            .into_iter()
+            .filter(|call| {
+                !embedded_seen.contains(&(call.name.clone(), call.arguments.to_string()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let events = serde_json::to_value(&value.events).unwrap_or(Value::Array(Vec::new()));
     let event_block_title = match value.event_provenance {
         EventProvenance::Canonical => crate::terminology::RECORDED_EVENTS,
@@ -893,22 +949,41 @@ fn InlineTurnDetail(
     };
     let focus_id = value.summary.id;
     rsx! {
-        if let Some(turns) = context {
-            ContextRebuild { turns, focus_id }
-        }
+        ContextRebuild { turns: context, focus_id, loading: context_loading, on_load: on_context }
         div { class: "pc2-inspector-facts", Fact { label: "Step", value: format!("#{}", value.summary.id) } Fact { label: "Role", value: value.summary.source.clone() } Fact { label: "Type", value: value.summary.kind.clone().unwrap_or_else(|| "unavailable".into()) } Fact { label: "Model", value: value.summary.model_name.clone().unwrap_or_else(|| "unavailable".into()) } Fact { label: "Latency", value: value.summary.latency_ms.map(format_ms).unwrap_or_else(|| "unavailable".into()) } Fact { label: "TTFT", value: value.summary.ttft_ms.map(format_ms).unwrap_or_else(|| "unavailable".into()) } Fact { label: "Tokens", value: value.summary.total_tokens.map(|tokens| tokens.to_string()).unwrap_or_else(|| "unavailable".into()) } Fact { label: "Token split", value: format!("{} in · {} out", optional_u64(value.summary.prompt_tokens), optional_u64(value.summary.completion_tokens)) } Fact { label: "Events", value: value.events.len().to_string() } }
         if !embedded_from_message.is_empty() {
             EvidenceBlock { title: tool_block_title, open: true, ToolCallCards { calls: embedded_from_message } }
-        } else if structured_message && !message_is_text_bearing {
-            EvidenceBlock { title: "Message", open: true, JsonValue { value: message } }
-        } else {
-            EvidenceBlock { title: "Message", open: true, pre { "{message_text}" } }
+        } else if !deduped_wire_calls.is_empty() {
+            EvidenceBlock { title: "Tool calls", ToolCallCards { calls: deduped_wire_calls } }
+        } else if !native_tool_calls.is_empty() {
+            EvidenceBlock {
+                title: "Tool calls",
+                ToolCallCards {
+                    calls: native_tool_calls
+                        .into_iter()
+                        .map(|call| WireToolCall {
+                        id: Some(call.tool_call_id),
+                        name: call.function_name,
+                        arguments: call.arguments,
+                    })
+                    .collect()
+                }
+            }
+        }
+        if misplaced_tool_call_count.is_some_and(|count| count > 0) {
+            div { class: "pc2-protocol-anomaly",
+                "Ignored {misplaced_tool_call_count.unwrap_or_default()} tool call(s) attached to a {value.summary.source} turn."
+            }
+        }
+        if !has_embedded_tool_calls {
+            if structured_message && !message_is_text_bearing {
+                EvidenceBlock { title: "Message", open: true, JsonValue { value: message } }
+            } else {
+                EvidenceBlock { title: "Message", open: true, pre { "{message_text}" } }
+            }
         }
         if let Some(reasoning) = &value.turn.reasoning_content {
             EvidenceBlock { title: "Reasoning", pre { "{reasoning.clone()}" } }
-        }
-        if !deduped_wire_calls.is_empty() {
-            EvidenceBlock { title: "Tool calls", JsonValue { value: wire_tool_calls_value } }
         }
         if let Some(observation) = value.turn.observation.clone() {
             EvidenceBlock { title: "Observation", JsonValue { value: observation } }
@@ -925,6 +1000,13 @@ fn InlineTurnDetail(
     }
 }
 
+fn source_can_call_tools(source: &str) -> bool {
+    matches!(
+        source.trim().to_ascii_lowercase().as_str(),
+        "agent" | "assistant" | "model"
+    )
+}
+
 #[component]
 fn Fact(label: &'static str, value: String) -> Element {
     rsx! { div { span { "{label}" } code { "{value}" } } }
@@ -935,33 +1017,69 @@ fn Fact(label: &'static str, value: String) -> Element {
 /// primitive — the recorded trajectory up to the decision point, not a
 /// summary of it.
 /// Index of the focus turn inside the recorded storyline. Context rebuild
-/// slices everything before this index; a missing turn yields no panel.
+/// slices everything before this index; a missing turn yields an unavailable
+/// context body.
 fn context_focus_index(turns: &[StorylineTurn], focus_id: i64) -> Option<usize> {
     turns.iter().position(|turn| turn.id == focus_id)
 }
 
 #[component]
-fn ContextRebuild(turns: Vec<StorylineTurn>, focus_id: i64) -> Element {
-    let Some(focus_index) = context_focus_index(&turns, focus_id) else {
-        return rsx! {};
+fn ContextRebuild(
+    turns: Option<Vec<StorylineTurn>>,
+    focus_id: i64,
+    loading: bool,
+    on_load: EventHandler<()>,
+) -> Element {
+    let mut open = use_signal(|| false);
+    let mut last_focus = use_signal(|| None::<i64>);
+    if last_focus() != Some(focus_id) {
+        last_focus.set(Some(focus_id));
+        open.set(false);
+    }
+    let context_loaded = turns.is_some();
+    let loaded_context = turns.as_ref().and_then(|turns| {
+        context_focus_index(turns, focus_id).map(|focus_index| &turns[..focus_index])
+    });
+    let (context_count, total_chars) = if open() {
+        let count = loaded_context.map_or(0, |context| context.len());
+        let chars = loaded_context.map_or(0, |context| {
+            context
+                .iter()
+                .map(|turn| turn.text().chars().count() as u64)
+                .sum::<u64>()
+        });
+        (count, chars)
+    } else {
+        (0, 0)
     };
-    let context = &turns[..focus_index];
-    let total_chars = context
-        .iter()
-        .map(|turn| turn.text().chars().count() as u64)
-        .sum::<u64>();
     rsx! {
         section { class: "pc2-context-rebuild",
-            div { class: "pc2-context-head",
+            button {
+                class: "pc2-context-head",
+                aria_expanded: open(),
+                onclick: move |_| {
+                    let next = !open();
+                    open.set(next);
+                    if next && !context_loaded && !loading {
+                        on_load.call(());
+                    }
+                },
+                span { class: "pc2-context-disclosure", if open() { "▾" } else { "▸" } }
                 strong { "Context at this step" }
-                span { "what the model saw before step #{focus_id}" }
-                span { class: "pc2-context-stats", "{context.len()} messages · {format_char_count(total_chars)}" }
+                span { if context_loaded { "what the model saw before step #{focus_id}" } else { "Expand to load context" } }
+                if context_loaded && open() {
+                    span { class: "pc2-context-stats", "{context_count} messages · {format_char_count(total_chars)}" }
+                }
             }
-            if context.is_empty() {
+            if open() && loading {
+                div { class: "pc2-inline-loading", span { class: "spinner" } "Loading context…" }
+            } else if open() && loaded_context.is_none() {
+                p { class: "pc2-context-empty", "Context is unavailable for this step." }
+            } else if open() && loaded_context.is_some_and(|context| context.is_empty()) {
                 p { class: "pc2-context-empty", "No earlier messages — this step starts the run." }
-            } else {
+            } else if open() {
                 div { class: "pc2-context-list",
-                    for turn in context.iter() {
+                    for turn in loaded_context.into_iter().flatten() {
                         ContextMessage { key: "ctx-{turn.id}", turn: turn.clone() }
                     }
                 }
@@ -1200,6 +1318,7 @@ mod tests {
             timestamp: None,
             call_id: None,
             preview: format!("{source}-{id}"),
+            user_prompt: None,
             char_count: 0,
             modalities: Vec::new(),
             model_name: None,
@@ -1294,8 +1413,9 @@ mod tests {
         assert_eq!(row_char_count(&groups[0].entries, true), 15);
         assert_eq!(
             composition_label(&groups[0].entries),
-            "1 user + 1 agent · 1 tool"
+            "1 user + 1 agent"
         );
+        assert_eq!(summary_modalities(&groups[0].entries), Vec::<String>::new());
         assert_eq!(format_char_count(15), "15 chars");
         assert_eq!(format_char_count(1200), "1.2k chars");
     }

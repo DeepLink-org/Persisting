@@ -2129,6 +2129,7 @@ mod tests {
                 timestamp: None,
                 call_id: None,
                 preview: String::new(),
+                user_prompt: None,
                 char_count: 0,
                 modalities: Vec::new(),
                 model_name: None,

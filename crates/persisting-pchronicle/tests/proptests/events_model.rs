@@ -122,4 +122,40 @@ proptest! {
         });
         prop_assert_eq!(EventsDocument::new(events).session_id, Some(session));
     }
+
+    #[test]
+    fn public_events_document_roundtrip_preserves_runtime_identity_fields(
+        event_id in id_strategy(),
+        run_id in id_strategy(),
+        storyline_id in id_strategy(),
+        timestamp_unix_ms in any::<u64>(),
+    ) {
+        let event = EventRecord {
+            identity: EventIdentity {
+                event_id: Some(event_id),
+                run_id: Some(run_id),
+                storyline_id: Some(storyline_id),
+                timestamp_unix_ms: Some(timestamp_unix_ms),
+                ..EventIdentity::default()
+            },
+            seq: 0,
+            source: "capture".into(),
+            kind: "note".into(),
+            timestamp: None,
+            session_id: None,
+            agent_id: None,
+            parent_uuid: None,
+            trace_id: None,
+            call_id: None,
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: Value::Null,
+        };
+        let document = EventsDocument::new(vec![event]);
+        let encoded = serde_json::to_value(&document).unwrap();
+        let decoded: EventsDocument = serde_json::from_value(encoded).unwrap();
+        prop_assert_eq!(decoded, document);
+    }
 }

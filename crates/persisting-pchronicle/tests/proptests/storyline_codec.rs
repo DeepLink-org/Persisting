@@ -37,4 +37,44 @@ proptest! {
         ).unwrap();
         prop_assert_eq!(decoded, vec![story]);
     }
+
+    #[test]
+    fn public_storyline_wire_uses_only_short_canonical_field_names(
+        session_id in "[A-Za-z0-9._-]{1,24}",
+        agent_id in "[A-Za-z0-9._-]{1,24}",
+        message in text_strategy(),
+    ) {
+        let mut story = StorylineDocument::new(session_id, agent_id);
+        story.turns.push(StorylineTurn {
+            id: 1,
+            kind: None,
+            timestamp: None,
+            source: "user".into(),
+            message: json!(message),
+            reasoning_content: None,
+            reasoning_effort: None,
+            tool_calls: None,
+            observation: None,
+            metrics: None,
+            model_name: None,
+            llm_call_count: None,
+            is_copied_context: None,
+            latency_ms: None,
+            ttft_ms: None,
+            extra: None,
+            env: None,
+            prompt: None,
+            finished_at: None,
+        });
+        let encoded = encode_json_storylines(DocumentFormat::Storyline, &[story]).unwrap();
+        let root = encoded.as_object().unwrap();
+        for legacy in ["session_id", "agent_id", "source", "message"] {
+            prop_assert!(!root.contains_key(legacy), "legacy root key {legacy}");
+        }
+        let turn = &root["turns"][0];
+        prop_assert!(turn.get("src").is_some());
+        prop_assert!(turn.get("msg").is_some());
+        prop_assert!(turn.get("source").is_none());
+        prop_assert!(turn.get("message").is_none());
+    }
 }

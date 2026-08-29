@@ -869,6 +869,10 @@ async fn load_trajectory(
     let event_provenance = bundle.event_view.provenance;
     let records = bundle.event_view.document.events;
     let document = bundle.storyline;
+    // ACTF step records carry the first user input at document level when it
+    // is the baseline prompt. Preserve it on the first turn so Explorer can
+    // render the user side of the conversation without changing storage.
+    let document_prompt = document.prompt.clone();
     let mut by_call = BTreeMap::<String, Vec<u64>>::new();
     for event in &records {
         if let Some(call_id) = event.call_id.as_ref().filter(|id| !id.is_empty()) {
@@ -878,7 +882,11 @@ async fn load_trajectory(
     let turns = document
         .turns
         .into_iter()
-        .map(|turn| {
+        .enumerate()
+        .map(|(turn_index, mut turn)| {
+            if turn_index == 0 && turn.source == "agent" && turn.prompt.is_none() {
+                turn.prompt = document_prompt.clone();
+            }
             let call_id = turn_call_id(&turn);
             let event_seqs = event_seqs_for_turn(&turn, &by_call);
             let mut wire_tool_calls = Vec::new();

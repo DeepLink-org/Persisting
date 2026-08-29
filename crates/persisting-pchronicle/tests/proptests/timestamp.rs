@@ -17,4 +17,13 @@ proptest! {
         prop_assert_eq!(timestamp.source_value(), &source);
         prop_assert_eq!(serde_json::to_value(&timestamp).unwrap(), source);
     }
+
+    #[test]
+    fn public_rfc3339_timestamps_preserve_arbitrary_instants(nanos in any::<i64>()) {
+        let instant = chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(nanos);
+        let timestamp = StorylineTimestamp::from_utc(instant).unwrap();
+        let reparsed = StorylineTimestamp::from_rfc3339(&timestamp.canonical_rfc3339()).unwrap();
+        prop_assert_eq!(reparsed.timestamp_nanos(), nanos);
+        prop_assert_eq!(reparsed.instant(), instant);
+    }
 }

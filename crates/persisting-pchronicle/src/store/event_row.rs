@@ -95,3 +95,82 @@ fn canonical_timestamp_ms(record: &EventRecord) -> Result<i64> {
             i64::try_from(timestamp).context("canonical event timestamp exceeds i64 milliseconds")
         })
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+    use serde_json::json;
+
+    fn identifier() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[A-Za-z0-9._-]{1,24}").unwrap()
+    }
+
+    proptest! {
+        #[test]
+        fn event_rows_roundtrip_canonical_records(
+            seq in 0i64..i64::MAX,
+            timestamp in 0u64..=i64::MAX as u64,
+            event_id in prop::option::of(identifier()),
+            source in identifier(),
+            kind in identifier(),
+            agent_id in prop::option::of(identifier()),
+            session_id in prop::option::of(identifier()),
+            call_id in prop::option::of(identifier()),
+            trace_id in prop::option::of(identifier()),
+            parent_call_id in prop::option::of(identifier()),
+            model in prop::option::of(identifier()),
+        ) {
+            let record = EventRecord {
+                identity: crate::formats::events::EventIdentity {
+                    event_id,
+                    timestamp_unix_ms: Some(timestamp),
+                    ..Default::default()
+                },
+                seq: seq as u64,
+                source,
+                kind,
+                timestamp: None,
+                session_id,
+                agent_id,
+                parent_uuid: None,
+                trace_id,
+                call_id,
+                subagent_id: None,
+                parent_agent_id: None,
+                branch: None,
+                parent_call_id,
+                payload: json!({"model": model, "nested": {"ok": true}}),
+            };
+            let row = event_record_to_event_row(&record).unwrap();
+            let decoded = event_row_to_event_record(&row).unwrap();
+            prop_assert_eq!(decoded, record);
+        }
+
+        #[test]
+        fn event_rows_require_a_canonical_timestamp(
+            seq in any::<u64>(),
+            source in identifier(),
+            kind in identifier(),
+        ) {
+            let record = EventRecord {
+                identity: Default::default(),
+                seq,
+                source,
+                kind,
+                timestamp: None,
+                session_id: None,
+                agent_id: None,
+                parent_uuid: None,
+                trace_id: None,
+                call_id: None,
+                subagent_id: None,
+                parent_agent_id: None,
+                branch: None,
+                parent_call_id: None,
+                payload: json!({}),
+            };
+            prop_assert!(event_record_to_event_row(&record).is_err());
+        }
+    }
+}

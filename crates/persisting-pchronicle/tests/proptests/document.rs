@@ -1,5 +1,5 @@
 use persisting_pchronicle::document::{
-    DocumentFormat, decode_json_storylines, encode_json_storylines,
+    DocumentFormat, InputIssueKind, decode_json_storylines, encode_json_storylines,
 };
 use persisting_pchronicle::model::{StorylineDocument, StorylineTurn};
 use proptest::prelude::*;
@@ -86,6 +86,20 @@ proptest! {
     }
 
     #[test]
+    fn public_storyline_codec_rejects_empty_collections(
+        stories in prop::collection::vec(story_strategy(), 0..1),
+    ) {
+        let encoded = encode_json_storylines(DocumentFormat::Storyline, &stories).unwrap();
+        let error = decode_json_storylines(
+            DocumentFormat::Storyline,
+            &encoded.to_string(),
+            "generated.storyline.json",
+        ).unwrap_err();
+        prop_assert_eq!(error.kind(), InputIssueKind::Unsupported);
+        prop_assert!(error.message().contains("cannot be empty"));
+    }
+
+    #[test]
     fn public_atif_object_and_singleton_array_have_identical_canonical_encoding(
         trajectory_id in proptest::string::string_regex("[a-zA-Z0-9._-]{1,32}").unwrap(),
     ) {
@@ -109,5 +123,32 @@ proptest! {
             encode_json_storylines(DocumentFormat::Atif, &from_object).unwrap(),
             encode_json_storylines(DocumentFormat::Atif, &from_array).unwrap(),
         );
+    }
+
+    #[test]
+    fn public_atif_jsonl_decodes_every_nonempty_generated_record(
+        sessions in proptest::collection::vec(
+            proptest::string::string_regex("[a-zA-Z0-9._-]{1,24}").unwrap(),
+            1..7,
+        ),
+    ) {
+        let input = sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| {
+                serde_json::json!({
+                    "schema_version": "ATIF-v1.7",
+                    "trajectory_id": format!("{session}-{index}"),
+                    "agent": {"name": "agent", "version": "1"},
+                    "steps": []
+                }).to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let decoded = decode_json_storylines(DocumentFormat::Atif, &input, "generated.jsonl").unwrap();
+        prop_assert_eq!(decoded.len(), sessions.len());
+        for (index, session) in sessions.iter().enumerate() {
+            prop_assert_eq!(&decoded[index].session_id, &format!("{session}-{index}"));
+        }
     }
 }

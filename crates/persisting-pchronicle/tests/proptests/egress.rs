@@ -38,4 +38,27 @@ proptest! {
         let sources = export_source_dirs(&coords, false).unwrap();
         prop_assert_eq!(sources, vec![sub]);
     }
+
+    #[test]
+    fn public_story_bundle_reports_every_copied_file(
+        file_names in proptest::collection::vec(
+            proptest::string::string_regex("[A-Za-z0-9_-]{1,16}\\.md").unwrap(),
+            1..8,
+        ),
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = temp.path().join("storage");
+        let session = storage.join("agent").join("session");
+        std::fs::create_dir_all(&session).unwrap();
+        for (index, file_name) in file_names.iter().enumerate() {
+            std::fs::write(session.join(format!("{index}-{file_name}")), "content").unwrap();
+        }
+        let coords = StoryCoords::new(storage.to_string_lossy(), "agent", "session", None);
+        let output = temp.path().join("out");
+        let report = persisting_pchronicle::storage::export_story_bundle(&coords, &output, false)
+            .unwrap();
+        prop_assert_eq!(report.files_copied, file_names.len());
+        prop_assert_eq!(report.source_paths.len(), 1);
+        prop_assert!(report.note.contains(&file_names.len().to_string()));
+    }
 }

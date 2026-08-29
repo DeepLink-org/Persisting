@@ -47,4 +47,27 @@ proptest! {
             prop_assert!(object.contains_key(field), "missing field {field}");
         }
     }
+
+    #[test]
+    fn public_event_fact_snapshot_json_is_deterministic(
+        source_uri in source_uri_strategy(),
+        fact_version in any::<u64>(),
+        fact_rows in any::<u64>(),
+        layout_revision in any::<u64>(),
+    ) {
+        let snapshot = EventFactSnapshot {
+            source_uri: source_uri.clone(),
+            fact_version,
+            fact_rows,
+            layout_revision,
+        };
+        let expected = format!(
+            "{{\"source_uri\":{},\"fact_version\":{},\"fact_rows\":{},\"layout_revision\":{}}}",
+            serde_json::to_string(&source_uri).unwrap(),
+            fact_version,
+            fact_rows,
+            layout_revision,
+        );
+        prop_assert_eq!(serde_json::to_string(&snapshot).unwrap(), expected);
+    }
 }

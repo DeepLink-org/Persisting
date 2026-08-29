@@ -49,4 +49,26 @@ proptest! {
             assert_eq!(current.owner, second_lease.owner);
         });
     }
+
+    #[test]
+    fn public_distinct_owner_cannot_acquire_an_unexpired_lease(
+        run in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+        owner in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+        other_owner in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+    ) {
+        prop_assume!(owner != other_owner);
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let store = RunControlStore::open(temp.path().to_string_lossy()).await.unwrap();
+            let run_id = RunId::new(run);
+            let first = store.acquire_lease(&run_id, Some("task"), &owner, 60_000).await.unwrap();
+            assert!(matches!(first, LeaseAcquireOutcome::Acquired(_)));
+            let second = store.acquire_lease(&run_id, Some("task"), &other_owner, 60_000).await.unwrap();
+            assert!(matches!(second, LeaseAcquireOutcome::Held(lease) if lease.owner == owner));
+        });
+    }
 }

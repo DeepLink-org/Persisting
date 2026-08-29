@@ -68,4 +68,14 @@ proptest! {
         let right = format!("{prefix}{second}x");
         prop_assert_ne!(session_filename_stem(&left), session_filename_stem(&right));
     }
+
+    #[test]
+    fn public_filename_encoding_stays_bounded_for_arbitrary_utf8_keys(
+        session_id in any::<String>(),
+    ) {
+        let stem = session_filename_stem(&session_id);
+        prop_assert!(stem.len() <= 128);
+        prop_assert!(!stem.contains(['/', '\\']));
+        prop_assert!(!stem.is_empty());
+    }
 }

@@ -53,6 +53,17 @@ pub fn group_chats(turns: &[TurnSummary]) -> Vec<TraceCard> {
                     replies,
                 });
             }
+            "agent"
+                if turns[index]
+                    .user_prompt
+                    .as_deref()
+                    .is_some_and(|prompt| !prompt.trim().is_empty()) =>
+            {
+                let user = prompt_turn(&turns[index]);
+                let replies = vec![turns[index].clone()];
+                index += 1;
+                cards.push(TraceCard::Chat { user, replies });
+            }
             _ => {
                 cards.push(TraceCard::Chat {
                     user: None,
@@ -63,6 +74,35 @@ pub fn group_chats(turns: &[TurnSummary]) -> Vec<TraceCard> {
         }
     }
     cards
+}
+
+/// Turn-level prompt is the canonical user input for formats (such as ACTF)
+/// that store one model response per step. Render it as a synthetic user row
+/// while keeping the persisted agent turn and its ID unchanged.
+pub fn prompt_turn(turn: &TurnSummary) -> Option<TurnSummary> {
+    let prompt = turn
+        .user_prompt
+        .as_deref()
+        .filter(|prompt| !prompt.trim().is_empty())?;
+    let mut user = turn.clone();
+    user.id = turn.id.saturating_neg();
+    user.source = "user".into();
+    user.kind = None;
+    user.call_id = None;
+    user.preview = prompt.to_string();
+    user.char_count = prompt.chars().count() as u64;
+    user.modalities = vec!["text".into()];
+    user.model_name = None;
+    user.latency_ms = None;
+    user.ttft_ms = None;
+    user.prompt_tokens = None;
+    user.completion_tokens = None;
+    user.total_tokens = None;
+    user.tool_names.clear();
+    user.event_seqs.clear();
+    user.has_error = false;
+    user.user_prompt = None;
+    Some(user)
 }
 
 pub fn source_class(source: &str) -> &'static str {
@@ -90,6 +130,10 @@ pub fn turn_matches_query(turn: &TurnSummary, query: &str) -> bool {
             .kind
             .as_deref()
             .is_some_and(|kind| kind.to_ascii_lowercase().contains(&needle))
+        || turn
+            .user_prompt
+            .as_deref()
+            .is_some_and(|prompt| prompt.to_ascii_lowercase().contains(&needle))
 }
 
 pub fn chat_row_visible(entries: &[TurnSummary], source: &str, query: &str) -> bool {
@@ -117,6 +161,7 @@ mod tests {
             timestamp: None,
             call_id: None,
             preview: format!("{source}-{id}"),
+            user_prompt: None,
             char_count: 0,
             modalities: Vec::new(),
             model_name: None,
@@ -163,6 +208,25 @@ mod tests {
         assert_eq!(chat_ids(&cards[1]), (Some(4), vec![5]));
         assert!(cards[0].contains_turn(3));
         assert!(!cards[0].contains_turn(4));
+    }
+
+    #[test]
+    fn turn_prompt_becomes_a_synthetic_user_without_replacing_agent() {
+        let mut agent = turn(2, "agent");
+        agent.user_prompt = Some("inspect the batch planner".into());
+        let cards = group_chats(&[agent, turn(3, "agent")]);
+        assert_eq!(cards.len(), 2);
+        let (user, replies) = chat_ids(&cards[0]);
+        assert_eq!(user, Some(-2));
+        assert_eq!(replies, vec![2]);
+        match &cards[0] {
+            TraceCard::Chat { user: Some(user), .. } => {
+                assert_eq!(user.source, "user");
+                assert_eq!(user.preview, "inspect the batch planner");
+            }
+            other => panic!("expected prompt user, got {other:?}"),
+        }
+        assert_eq!(chat_ids(&cards[1]), (None, vec![3]));
     }
 
     #[test]

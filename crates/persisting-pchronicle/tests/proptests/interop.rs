@@ -95,4 +95,42 @@ proptest! {
         prop_assert_eq!(entries[0]["time"].as_f64(), Some(duration_ms as f64));
         prop_assert_eq!(entries[0]["response"]["status"].as_u64(), Some(200));
     }
+
+    #[test]
+    fn public_otlp_export_preserves_lossless_payload_json(
+        seq in any::<u64>(),
+        value in token_strategy(),
+    ) {
+        let payload = json!({"value": value});
+        let record = EventRecord {
+            identity: EventIdentity::default(),
+            seq,
+            source: "gateway".into(),
+            kind: "note".into(),
+            timestamp: None,
+            session_id: None,
+            agent_id: None,
+            parent_uuid: None,
+            trace_id: None,
+            call_id: None,
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: payload.clone(),
+        };
+        let exported = events_to_otlp_json(&[record]);
+        let attrs = exported["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"]
+            .as_array()
+            .unwrap();
+        let payload_attr = attrs
+            .iter()
+            .find(|attribute| attribute["key"] == "pchronicle.payload")
+            .unwrap();
+        let expected_payload = payload.to_string();
+        prop_assert_eq!(
+            payload_attr["value"]["stringValue"].as_str(),
+            Some(expected_payload.as_str())
+        );
+    }
 }

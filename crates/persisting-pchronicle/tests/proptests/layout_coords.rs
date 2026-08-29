@@ -89,4 +89,29 @@ proptest! {
             story_lance_event_path("/store", &agent, &child, Some(&root)).unwrap(),
         );
     }
+
+    #[test]
+    fn public_explicit_root_equal_to_session_matches_flat_partition(
+        storage in prop_oneof![Just("/store".to_string()), Just("s3://bucket/prefix".to_string())],
+        agent in segment_strategy(),
+        session in segment_strategy(),
+    ) {
+        let flat = story_run_dir(&storage, &agent, &session, None).unwrap();
+        let explicit_root = story_run_dir(&storage, &agent, &session, Some(&session)).unwrap();
+        prop_assert_eq!(flat, explicit_root);
+    }
+
+    #[test]
+    fn public_storage_trailing_slashes_do_not_change_coordinates(
+        storage_base in prop_oneof![Just("/store".to_string()), Just("s3://bucket/prefix".to_string())],
+        trailing in 0usize..5,
+        agent in segment_strategy(),
+        session in segment_strategy(),
+    ) {
+        let padded = format!("{}{}", storage_base, "/".repeat(trailing));
+        let expected_run = story_run_dir(&storage_base, &agent, &session, None).unwrap();
+        let expected_events = story_lance_event_path(&storage_base, &agent, &session, None).unwrap();
+        prop_assert_eq!(story_run_dir(&padded, &agent, &session, None).unwrap(), expected_run);
+        prop_assert_eq!(story_lance_event_path(&padded, &agent, &session, None).unwrap(), expected_events);
+    }
 }

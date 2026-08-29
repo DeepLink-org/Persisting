@@ -175,4 +175,31 @@ proptest! {
         let decoded = serde_json::from_value::<Vec<LlmContentPart>>(encoded).unwrap();
         prop_assert_eq!(decoded, parts);
     }
+
+    #[test]
+    fn public_llm_roles_use_stable_snake_case_wire_names(role in role_strategy()) {
+        let expected = match role {
+            LlmRole::System => "system",
+            LlmRole::Developer => "developer",
+            LlmRole::User => "user",
+            LlmRole::Assistant => "assistant",
+            LlmRole::Tool => "tool",
+        };
+        prop_assert_eq!(serde_json::to_value(&role).unwrap(), serde_json::Value::String(expected.into()));
+    }
+
+    #[test]
+    fn public_usage_total_is_at_least_each_component(
+        input_tokens in 0u64..1_000_000,
+        output_tokens in 0u64..1_000_000,
+    ) {
+        let usage = LlmUsage {
+            input_tokens,
+            output_tokens,
+            total_tokens: input_tokens.saturating_add(output_tokens),
+            ..LlmUsage::default()
+        };
+        prop_assert!(usage.total_tokens >= usage.input_tokens);
+        prop_assert!(usage.total_tokens >= usage.output_tokens);
+    }
 }

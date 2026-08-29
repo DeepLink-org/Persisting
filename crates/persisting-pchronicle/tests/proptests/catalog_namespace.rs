@@ -62,4 +62,68 @@ proptest! {
         prop_assert_eq!(listed.len(), suffixes.len());
         prop_assert!(listed.windows(2).all(|pair| pair[0] < pair[1]));
     }
+
+    #[test]
+    fn public_namespace_listing_rejects_invalid_page_limits(
+        limit in prop_oneof![Just(0usize), 10_001usize..20_000usize],
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(async {
+            let mount = DatasetMount::namespaced(
+                NamespacePath::single("ns")?,
+                "dataset",
+                temp.path().to_string_lossy(),
+            )?;
+            DatasetCatalogSnapshot::discover(
+                vec![mount],
+                None,
+                CatalogSnapshotOptions::default(),
+            ).await
+        }).unwrap()
+            .list_namespaces(None, None, Some(limit));
+        prop_assert!(result.is_err());
+    }
+
+    #[test]
+    fn public_namespace_listing_groups_nested_mounts_by_their_parent(
+        suffixes in proptest::collection::vec(
+            proptest::string::string_regex("[A-Za-z0-9_-]{1,12}").unwrap(),
+            1..6,
+        ),
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let mounts = suffixes
+            .iter()
+            .enumerate()
+            .map(|(index, suffix)| {
+                DatasetMount::namespaced(
+                    NamespacePath::new(vec!["prod".into(), format!("region-{index}-{suffix}")])?,
+                    format!("dataset_{index}"),
+                    temp.path().to_string_lossy(),
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let names = runtime.block_on(async {
+            let snapshot = DatasetCatalogSnapshot::discover(
+                mounts,
+                None,
+                CatalogSnapshotOptions::default(),
+            ).await?;
+            let parent = NamespacePath::single("prod")?;
+            let page = snapshot.list_namespaces(Some(&parent), None, None)?;
+            anyhow::Result::<Vec<_>>::Ok(page.items.into_iter().map(|item| item.path.display_name()).collect())
+        }).unwrap();
+        prop_assert_eq!(names.len(), suffixes.len());
+        prop_assert!(names.iter().all(|name| name.starts_with("prod/region-")));
+        prop_assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
+    }
 }
