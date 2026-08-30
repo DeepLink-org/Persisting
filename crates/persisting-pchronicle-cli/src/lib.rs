@@ -3,6 +3,7 @@
 mod agent;
 mod control;
 mod exchange;
+mod find;
 mod gateway_capture;
 mod gateway_ingest;
 mod gateway_partition;
@@ -15,10 +16,13 @@ mod settings;
 #[cfg(test)]
 use exchange::rename_noreplace;
 use exchange::{run_export, run_import};
+use find::{
+    FindExpr, FindJsonOperator, FindJsonPredicate, FindTextPredicate, combine_match_expressions,
+};
 use output::*;
 use settings::*;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::CString;
 use std::fmt::Write as _;
 use std::io::{Error as IoError, Read, Write};
@@ -45,7 +49,7 @@ use persisting_pchronicle::storage::{
     EventFactSnapshot, ObjectStoreManifestWriteMode, StorylineLanceStore,
     StorylineProjectionBuildOutcome, automatic_projection_inventory, build_storyline_projection,
     inspect_automatic_storyline_projection, probe_canonical_event_store,
-    search_storyline_step_matches_fts,
+    search_storyline_step_matches_fts_in_columns,
 };
 use serde::{Deserialize, Serialize};
 
@@ -488,15 +492,10 @@ struct FindArgs {
     #[arg(long, requires = "session_id")]
     step_id: Option<i64>,
 
-    /// Search normalized Storyline step content. May be repeated; all terms
-    /// must match. Uses the same FTS path as the Web explorer.
-    #[arg(long = "match", value_name = "TEXT", action = clap::ArgAction::Append)]
+    /// Search with a unified expression. Plain terms are content FTS queries;
+    /// use #field(term), boolean AND/OR/NOT, or $.path=value for JSONB.
+    #[arg(long = "match", value_name = "EXPRESSION", action = clap::ArgAction::Append)]
     matches: Vec<String>,
-
-    /// Search a JSONPath in every JSONB column of the selected table. May be
-    /// repeated; syntax is `PATH=VALUE`, for example `--json '$.tags=important'`.
-    #[arg(long = "json", value_name = "PATH=VALUE", action = clap::ArgAction::Append)]
-    json: Vec<String>,
 
     /// Output format. Auto uses a table on a terminal and JSON when piped.
     #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
@@ -1118,13 +1117,14 @@ struct FindQueryResponse {
     step_id: Option<i64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     matches: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    json: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expression: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct FindSearchResponse {
     mode: &'static str,
+    scope: &'static str,
     fts_available: bool,
     tokenizer: Option<&'static str>,
 }
@@ -2617,16 +2617,13 @@ async fn run_find(
         anyhow::ensure!(!query.trim().is_empty(), "--match must not be empty");
         anyhow::ensure!(query.len() <= 4096, "--match must not exceed 4096 bytes");
     }
-    for spec in &args.json {
-        validate_find_json_spec(spec)?;
-    }
+    let expression = combine_match_expressions(&args.matches)?;
     anyhow::ensure!(
         args.document_id.is_some()
             || args.run_id.is_some()
             || args.session_id.is_some()
-            || !args.matches.is_empty()
-            || !args.json.is_empty(),
-        "find requires an identity predicate, --match, or --json"
+            || expression.is_some(),
+        "find requires an identity predicate or --match"
     );
     let dataset = resolve_dataset_uri(args.dataset_uri.as_deref(), settings_override)?;
     let (_, dataset_uris, snapshot) =
@@ -2638,15 +2635,15 @@ async fn run_find(
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
     let engine = snapshot.clone().query_engine(Default::default()).await?;
-    let (fts_predicate, fts_available, fts_errors) = if !args.matches.is_empty() {
-        find_fts_predicate(&snapshot, &args.matches, args.source.as_deref()).await?
+    let (search_predicate, fts_available, fts_errors) = if let Some(expression) = &expression {
+        find_expression_predicate(&snapshot, expression, args.source.as_deref()).await?
     } else {
         (None, false, Vec::new())
     };
     for error in fts_errors {
         writeln!(stderr, "pchronicle find: {error}").context("write FTS diagnostic")?;
     }
-    let sql = find_sql(&args, fts_predicate.as_deref())?;
+    let sql = find_sql(&args, expression.as_ref(), search_predicate.as_deref())?;
     let mut buffer = LimitedBuffer::new(args.max_output_bytes);
     let max_query_rows = args
         .max_results
@@ -2692,7 +2689,7 @@ async fn run_find(
         .collect::<Result<Vec<FindMatch>>>()?;
     for candidate in &mut matches {
         if let Some(preview) = candidate.preview.as_mut() {
-            *preview = truncate(preview, 320);
+            *preview = truncate(&find_preview_text(preview), 320);
         }
     }
     let truncated = matches.len() > args.max_results;
@@ -2707,14 +2704,23 @@ async fn run_find(
             session_id: args.session_id,
             step_id: args.step_id,
             matches: args.matches.clone(),
-            json: args.json.clone(),
+            expression: expression.as_ref().map(FindExpr::display),
         },
         search: FindSearchResponse {
-            mode: match (!args.matches.is_empty(), !args.json.is_empty()) {
-                (true, true) => "fts+json",
-                (true, false) => "fts",
-                (false, true) => "json",
-                (false, false) => "identity",
+            mode: match expression.as_ref() {
+                Some(value) if value.has_text() && value.has_json() => "fts+json",
+                Some(value) if value.has_text() => "fts",
+                Some(value) if value.has_json() => "json",
+                _ => "identity",
+            },
+            scope: if args.step_id.is_some()
+                || expression
+                    .as_ref()
+                    .is_some_and(|value| value.has_text() || value.has_step_json())
+            {
+                "steps"
+            } else {
+                "runs"
             },
             fts_available,
             tokenizer: fts_available.then_some("jieba"),
@@ -2759,6 +2765,61 @@ async fn run_find(
     Ok(())
 }
 
+/// Turn the normalized message envelope into a compact human-readable preview.
+/// Storyline stores multimodal messages as JSON arrays; printing the envelope
+/// itself hides the text that explains why a row matched.
+fn find_preview_text(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return raw.to_owned();
+    };
+    for _ in 0..2 {
+        let Some(nested) = value.as_str() else { break };
+        let Ok(decoded) = serde_json::from_str::<serde_json::Value>(nested) else {
+            break;
+        };
+        value = decoded;
+    }
+    let mut text = String::new();
+    collect_preview_text(&value, &mut text);
+    if text.is_empty() {
+        trimmed.to_owned()
+    } else {
+        text
+    }
+}
+
+fn collect_preview_text(value: &serde_json::Value, output: &mut String) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_preview_text(item, output);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for key in ["text", "content", "value"] {
+                if let Some(value) = map.get(key) {
+                    if let Some(value) = value.as_str() {
+                        if !output.is_empty() {
+                            output.push(' ');
+                        }
+                        output.push_str(value);
+                    } else {
+                        collect_preview_text(value, output);
+                    }
+                }
+            }
+        }
+        serde_json::Value::String(value) => {
+            if !output.is_empty() {
+                output.push(' ');
+            }
+            output.push_str(value);
+        }
+        _ => {}
+    }
+}
+
 fn ensure_output_byte_budget(size: usize, max_bytes: usize, label: &str) -> Result<()> {
     if size > max_bytes {
         return Err(cli_boundary_error(
@@ -2769,134 +2830,208 @@ fn ensure_output_byte_budget(size: usize, max_bytes: usize, label: &str) -> Resu
     Ok(())
 }
 
-async fn find_fts_predicate(
+async fn find_expression_predicate(
     snapshot: &DatasetCatalogSnapshot,
-    queries: &[String],
+    expression: &FindExpr,
     source_filter: Option<&str>,
 ) -> Result<(Option<String>, bool, Vec<String>)> {
-    let mut predicates = Vec::new();
+    let steps = expression.has_text() || expression.has_step_json();
+    let mut text_predicates = Vec::<FindTextPredicate>::new();
+    collect_text_predicates(expression, &mut text_predicates);
+    text_predicates.sort_by(|left, right| {
+        left.field
+            .display_name()
+            .cmp(right.field.display_name())
+            .then_with(|| left.query.cmp(&right.query))
+    });
+    text_predicates.dedup();
+
+    let mut text_sql = HashMap::<FindTextPredicate, String>::new();
     let mut available = false;
     let mut errors = Vec::new();
-    for dataset in snapshot.datasets() {
-        for source in &dataset.sources {
-            if source.status != CatalogSourceStatus::Ready
-                || source.kind != CatalogSourceKind::Store
-                || source_filter.is_some_and(|filter| filter != source.file)
-            {
-                continue;
-            }
-            let Some(paths) = snapshot.storyline_table_paths(&dataset.mount.name, &source.file)?
-            else {
-                continue;
-            };
-            let mut source_matches: Option<BTreeSet<(String, i64)>> = None;
-            for query in queries {
-                match search_storyline_step_matches_fts(&paths, query).await {
-                    Ok(step_matches) => {
-                        let step_matches = step_matches.into_iter().collect::<BTreeSet<_>>();
-                        source_matches = Some(match source_matches {
-                            Some(previous) => {
-                                previous.intersection(&step_matches).cloned().collect()
-                            }
-                            None => step_matches,
-                        });
-                        available = true;
-                    }
-                    Err(error) => {
-                        errors.push(format!(
-                            "FTS unavailable for {} / {}: {error:#}",
-                            dataset.mount.name, source.file
-                        ));
-                        source_matches = None;
-                        break;
-                    }
+    for predicate in text_predicates {
+        let mut matches = Vec::<String>::new();
+        for dataset in snapshot.datasets() {
+            for source in &dataset.sources {
+                if source.status != CatalogSourceStatus::Ready
+                    || source.kind != CatalogSourceKind::Store
+                    || source_filter.is_some_and(|filter| filter != source.file)
+                {
+                    continue;
                 }
-            }
-            if let Some(step_matches) = source_matches {
-                if !step_matches.is_empty() {
-                    let matches = step_matches
-                        .iter()
-                        .map(|(document_id, step_id)| {
+                let Some(paths) =
+                    snapshot.storyline_table_paths(&dataset.mount.name, &source.file)?
+                else {
+                    continue;
+                };
+                match search_storyline_step_matches_fts_in_columns(
+                    &paths,
+                    &predicate.query,
+                    predicate.field.columns(),
+                )
+                .await
+                {
+                    Ok(step_matches) => {
+                        available = true;
+                        let source_predicate = predicate
+                            .field
+                            .source_predicate()
+                            .map(|value| format!(" AND ({value})"))
+                            .unwrap_or_default();
+                        matches.extend(step_matches.into_iter().map(|(document_id, step_id)| {
                             format!(
-                                "(document_id = {} AND step_id = {})",
-                                sql_string(document_id),
-                                step_id
+                                "(_file_ = {} AND document_id = {} AND step_id = {}{})",
+                                sql_string(&source.file),
+                                sql_string(&document_id),
+                                step_id,
+                                source_predicate,
                             )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" OR ");
-                    predicates.push(format!(
-                        "(_file_ = {} AND ({}))",
-                        sql_string(&source.file),
-                        matches
-                    ));
+                        }));
+                    }
+                    Err(error) => errors.push(format!(
+                        "FTS unavailable for {} / {}: {error:#}",
+                        dataset.mount.name, source.file
+                    )),
                 }
             }
         }
+        text_sql.insert(predicate, balanced_sql_group(&matches, "OR"));
     }
-    Ok((
-        Some(if predicates.is_empty() {
-            "FALSE".into()
-        } else {
-            predicates.join(" OR ")
-        }),
-        available,
-        errors,
-    ))
+    let predicate = compile_find_expression(expression, &text_sql, steps)?;
+    Ok((Some(predicate), available, errors))
 }
 
-fn validate_find_json_spec(spec: &str) -> Result<()> {
-    let (path, value) = spec
-        .split_once('=')
-        .context("--json must use PATH=VALUE, for example $.tags=important")?;
-    anyhow::ensure!(path.starts_with('$'), "--json path must start with '$'");
-    anyhow::ensure!(
-        !path.contains('\0') && !value.contains('\0'),
-        "--json must not contain NUL bytes"
-    );
-    anyhow::ensure!(spec.len() <= 4096, "--json must not exceed 4096 bytes");
-    Ok(())
+fn collect_text_predicates(expression: &FindExpr, output: &mut Vec<FindTextPredicate>) {
+    match expression {
+        FindExpr::Text(predicate) => output.push(predicate.clone()),
+        FindExpr::Json(_) => {}
+        FindExpr::And(items) | FindExpr::Or(items) => {
+            for item in items {
+                collect_text_predicates(item, output);
+            }
+        }
+        FindExpr::Not(item) => collect_text_predicates(item, output),
+    }
 }
 
-fn find_json_predicates(specs: &[String], steps: bool) -> Result<Vec<String>> {
-    let columns = if steps {
-        ["metrics", "extra"].as_slice()
+fn compile_find_expression(
+    expression: &FindExpr,
+    text_sql: &HashMap<FindTextPredicate, String>,
+    steps: bool,
+) -> Result<String> {
+    match expression {
+        FindExpr::Text(predicate) => text_sql
+            .get(predicate)
+            .cloned()
+            .context("internal error: missing compiled FTS predicate"),
+        FindExpr::Json(predicate) => compile_json_predicate(predicate, steps),
+        FindExpr::And(items) => compile_find_expression_group(items, "AND", text_sql, steps),
+        FindExpr::Or(items) => compile_find_expression_group(items, "OR", text_sql, steps),
+        FindExpr::Not(item) => Ok(format!(
+            "NOT ({})",
+            compile_find_expression(item, text_sql, steps)?
+        )),
+    }
+}
+
+fn compile_find_expression_group(
+    items: &[FindExpr],
+    operator: &str,
+    text_sql: &HashMap<FindTextPredicate, String>,
+    steps: bool,
+) -> Result<String> {
+    let compiled = items
+        .iter()
+        .map(|item| compile_find_expression(item, text_sql, steps))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(balanced_sql_group(&compiled, operator))
+}
+
+/// Combine generated SQL predicates as a balanced tree.
+///
+/// FTS can return many thousands of `(source, document, step)` identities.
+/// Joining those predicates linearly creates a left-deep SQL AST, which can
+/// overflow DataFusion's stack while parsing or planning. A balanced tree has
+/// logarithmic nesting depth without changing the predicate semantics.
+fn balanced_sql_group(predicates: &[String], operator: &str) -> String {
+    if predicates.is_empty() {
+        return match operator {
+            "AND" => "TRUE".into(),
+            "OR" => "FALSE".into(),
+            _ => unreachable!("unsupported SQL boolean operator: {operator}"),
+        };
+    }
+    fn build(predicates: &[String], operator: &str) -> String {
+        if predicates.len() == 1 {
+            return predicates[0].clone();
+        }
+        let midpoint = predicates.len() / 2;
+        format!(
+            "({} {operator} {})",
+            build(&predicates[..midpoint], operator),
+            build(&predicates[midpoint..], operator)
+        )
+    }
+    build(predicates, operator)
+}
+
+fn compile_json_predicate(predicate: &FindJsonPredicate, steps: bool) -> Result<String> {
+    let available_columns: &[&str] = if steps {
+        &["metrics", "extra"]
     } else {
-        [
+        &[
             "agent_extra",
             "final_metrics",
             "extra",
             "meta",
             "unknown_fields",
         ]
-        .as_slice()
     };
-    specs
-        .iter()
-        .map(|spec| {
-            let (path, raw_value) = spec
-                .split_once('=')
-                .context("--json must use PATH=VALUE, for example $.tags=important")?;
-            let json_value = serde_json::from_str::<serde_json::Value>(raw_value)
-                .unwrap_or_else(|_| serde_json::Value::String(raw_value.to_string()));
-            let encoded_value = serde_json::to_string(&json_value)?;
-            let alternatives = columns
-                .iter()
-                .map(|column| {
-                    format!(
-                        "json_extract({column}, {}) = {}",
-                        sql_string(path),
-                        sql_string(&encoded_value)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" OR ");
-            Ok(format!("({alternatives})"))
+    let columns = match predicate.column.as_deref() {
+        Some(column) => {
+            anyhow::ensure!(
+                available_columns.contains(&column),
+                "JSON column '{column}' is not available for this find scope"
+            );
+            vec![column]
+        }
+        None => available_columns.to_vec(),
+    };
+    anyhow::ensure!(
+        predicate.path.starts_with('$'),
+        "JSON find path must start with '$'"
+    );
+    let encoded_value = serde_json::to_string(&predicate.value)?;
+    let alternatives = columns
+        .into_iter()
+        .map(|column| {
+            let extracted = format!("json_extract({column}, {})", sql_string(&predicate.path));
+            match predicate.operator {
+                FindJsonOperator::Eq => Ok(format!("{extracted} = {}", sql_string(&encoded_value))),
+                FindJsonOperator::NotEq => {
+                    Ok(format!("{extracted} <> {}", sql_string(&encoded_value)))
+                }
+                operator => {
+                    let number = predicate
+                        .value
+                        .as_f64()
+                        .context("JSON range comparisons require a numeric value")?;
+                    Ok(format!(
+                        "CAST({extracted} AS DOUBLE) {} {number}",
+                        operator.as_str()
+                    ))
+                }
+            }
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok(format!("({})", alternatives.join(" OR ")))
 }
 
-fn find_sql(args: &FindArgs, fts_predicate: Option<&str>) -> Result<String> {
+fn find_sql(
+    args: &FindArgs,
+    expression: Option<&FindExpr>,
+    search_predicate: Option<&str>,
+) -> Result<String> {
     let mut predicates = Vec::new();
     if let Some(source) = &args.source {
         predicates.push(format!("_file_ = {}", sql_string(source)));
@@ -2913,15 +3048,15 @@ fn find_sql(args: &FindArgs, fts_predicate: Option<&str>) -> Result<String> {
     if let Some(step_id) = args.step_id {
         predicates.push(format!("step_id = {step_id}"));
     }
-    if let Some(fts_predicate) = fts_predicate {
-        predicates.push(format!("({fts_predicate})"));
+    if let Some(search_predicate) = search_predicate {
+        predicates.push(format!("({search_predicate})"));
     }
-    let step_lookup = args.step_id.is_some() || !args.matches.is_empty();
-    predicates.extend(find_json_predicates(&args.json, step_lookup)?);
     anyhow::ensure!(
         !predicates.is_empty(),
-        "find requires an identity predicate, --match, or --json"
+        "find requires an identity predicate or --match"
     );
+    let step_lookup = args.step_id.is_some()
+        || expression.is_some_and(|value| value.has_text() || value.has_step_json());
     let table = if step_lookup { "steps" } else { "runs" };
     let projection = if step_lookup {
         "_file_ AS source_path, document_id, run_id, session_id, step_id, \
@@ -2979,7 +3114,7 @@ fn validate_find_id(flag: &str, value: &str) -> Result<()> {
 }
 
 fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<()> {
-    let step_lookup = response.query.step_id.is_some() || !response.query.matches.is_empty();
+    let step_lookup = response.search.scope == "steps";
     let mut rows = Vec::with_capacity(response.matches.len() + 1);
     if step_lookup {
         rows.push(

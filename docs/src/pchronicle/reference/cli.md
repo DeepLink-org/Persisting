@@ -65,22 +65,28 @@ Dataset.
 pchronicle ls [DATASET] [OPTIONS]
 pchronicle status [DATASET] [OPTIONS]
 pchronicle find [DATASET]
-  (--run-id ID|--document-id ID|--session-id ID|--match TEXT|--json PATH=VALUE) [OPTIONS]
+  (--run-id ID|--document-id ID|--session-id ID|--match EXPRESSION) [OPTIONS]
 ```
 
 ```bash
 pchronicle ls @prod --format json
 pchronicle find @prod --session-id session-42
 pchronicle find ./dataset --match "timeout" --match "retry" --format json
-pchronicle find ./dataset --json '$.tags=important' --json '$.priority=2' --format json
+pchronicle find ./dataset --match '$.tags=important' --match '$.priority=2' --format json
 ```
 
-`--match` searches Storyline Step content with the indexed FTS/Jieba path;
-repeat it to require all terms in one Step. `--json` performs exact JSONPath
-value matching across JSONB columns; repeat it to require all predicates. Do
-not use the removed `--query`, `--fts`, or `--jsonb` aliases.
+`--match` is the unified search expression. Plain terms search Storyline Step
+content with the indexed FTS/Jieba path; scoped forms such as `#system(prompt)`
+select a field, and `AND`/`OR`/`NOT` combine predicates. JSONB predicates use
+`$.path=value` (or `#json("$.path")=value`) and perform exact JSONPath value
+matching. Repeat `--match` to require all expressions. A JSON-only expression
+searches run-level JSONB columns; a mixed text/JSON expression searches step
+level JSONB columns. An explicit `#json.metrics(...)` selector also targets
+step-level JSONB without a text term.
 Each match includes a bounded `preview` field to make candidate selection
-possible before a follow-up query.
+possible before a follow-up query. JSON output also reports `search.mode`
+(`fts`, `json`, or `fts+json`), `search.scope` (`steps` or `runs`), and FTS
+availability/tokenizer metadata.
 
 ### Query
 

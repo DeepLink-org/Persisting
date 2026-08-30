@@ -1213,6 +1213,30 @@ async fn find_locates_runs_sessions_and_steps_in_example_datasets() -> Result<()
     Ok(())
 }
 
+#[test]
+fn find_fts_predicates_are_combined_as_a_balanced_sql_tree() {
+    let predicates = (0..16_384)
+        .map(|index| format!("step_id = {index}"))
+        .collect::<Vec<_>>();
+    let sql = super::balanced_sql_group(&predicates, "OR");
+
+    assert_eq!(sql.matches(" OR ").count(), predicates.len() - 1);
+    let mut depth = 0usize;
+    let mut max_depth = 0usize;
+    for character in sql.chars() {
+        match character {
+            '(' => {
+                depth += 1;
+                max_depth = max_depth.max(depth);
+            }
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    assert_eq!(depth, 0);
+    assert!(max_depth <= 16, "unexpectedly deep SQL tree: {max_depth}");
+}
+
 #[tokio::test]
 async fn find_discovers_candidates_and_source_narrows_them() -> Result<()> {
     let temp = tempfile::tempdir()?;
@@ -1388,7 +1412,8 @@ async fn find_enforces_output_byte_limit_without_partial_stdout() -> Result<()> 
 #[test]
 fn find_cli_requires_one_identity_and_session_for_steps() {
     assert!(Cli::try_parse_from(["pchronicle", "find", ".", "--match", "needle"]).is_ok());
-    assert!(Cli::try_parse_from(["pchronicle", "find", ".", "--json", "$.x=true"]).is_ok());
+    assert!(Cli::try_parse_from(["pchronicle", "find", ".", "--match", "$.x=true"]).is_ok());
+    assert!(Cli::try_parse_from(["pchronicle", "find", ".", "--json", "$.x=true"]).is_err());
     assert!(
         Cli::try_parse_from([
             "pchronicle",
@@ -1402,6 +1427,19 @@ fn find_cli_requires_one_identity_and_session_for_steps() {
         .is_err()
     );
     assert!(Cli::try_parse_from(["pchronicle", "find", ".", "--step-id", "1"]).is_err());
+}
+
+#[test]
+fn find_preview_extracts_message_text_from_json_envelope() {
+    assert_eq!(
+        find_preview_text(r#"[{"type":"text","text":"hello"}]"#),
+        "hello"
+    );
+    assert_eq!(
+        find_preview_text(r#""[{\"text\":\"nested hello\"}]""#),
+        "nested hello"
+    );
+    assert_eq!(find_preview_text("plain text"), "plain text");
 }
 
 #[tokio::test]

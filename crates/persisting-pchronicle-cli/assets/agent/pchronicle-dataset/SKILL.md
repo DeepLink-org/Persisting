@@ -47,6 +47,10 @@ Use `find` before SQL when the request is a text search, JSONB attribute lookup,
 or an identity lookup. `find` is read-only and returns source-local identities
 that can be used to narrow a follow-up query.
 
+`find` has exactly one search option: `--match`. Do not generate `--json`,
+`--jsonb`, `--query`, or `--fts`. Quote every expression containing `#`, `$`,
+parentheses, spaces, or boolean operators so the shell cannot reinterpret it.
+
 For full-text search over Storyline step content, use one or more repeated
 `--match` options. All terms must match the same step, and the command uses the
 same indexed FTS/Jieba path as the Web explorer:
@@ -57,24 +61,66 @@ same indexed FTS/Jieba path as the Web explorer:
   --format json --max-results 20
 ```
 
-For JSONB lookup, use repeated `--json 'PATH=VALUE'` options. The JSONPath must
-start with `$`; values are exact matches across the JSONB columns of the
-selected table. JSON literals such as `true`, `42`, and `null` keep their JSON
-types; unquoted values such as `important` are treated as strings:
+To avoid broad matches, scope text with selectors such as `#system(term)`,
+`#user(term)`, `#assistant(term)`, `#message(term)`, `#reasoning(term)`,
+`#observation(term)`, `#prompt(term)`, `#model(term)`, or `#env(term)`.
+`#content(term)` is the default broad content scope and `#all(term)` searches
+every indexed text column. Prefer a role or field selector when the user names
+one; this avoids system tool descriptions overwhelming actual conversation
+matches.
+
+Use `AND`, `OR`, and `NOT` (with parentheses) to combine selectors in one
+expression. Operator precedence is `NOT`, then `AND`, then `OR`:
 
 ```bash
 "$PCHRONICLE_BIN" find "$PCHRONICLE_DATASET_URI" \
-  --json '$.tags=important' --json '$.priority=2' \
+  --match '(#user("timeout") OR #assistant("retry")) AND NOT #system(ipython)' \
   --format json --max-results 20
 ```
 
-Combine identity, text, and JSON predicates to narrow a lookup. `--match`
-selects Storyline `steps`; `--json` alone searches run-level JSONB columns,
-while `--match` together with `--json` searches step-level `metrics` and
-`extra`. Use `--source` when a source-local identity or JSON attribute is
-ambiguous. Each match includes a bounded `preview` field (and the table output
-shows it) so you can identify the candidate before issuing a follow-up query.
-Do not use the removed `--query`, `--fts`, or `--jsonb` aliases.
+The same `--match` option also accepts JSONB predicates. A JSONPath must start
+with `$`; values are exact matches across the JSONB columns of the selected
+table. JSON literals such as `true`, `42`, and `null` keep their JSON types;
+unquoted values such as `important` are treated as strings:
+
+```bash
+"$PCHRONICLE_BIN" find "$PCHRONICLE_DATASET_URI" \
+  --match '$.tags=important' --match '$.priority=2' \
+  --format json --max-results 20
+```
+
+Unqualified `$.path=value` checks every JSONB column in the inferred scope.
+Use an explicit column only when the request or schema identifies it:
+
+- Run JSONB: `#json.agent_extra(...)`, `#json.final_metrics(...)`,
+  `#json.extra(...)`, `#json.meta(...)`, `#json.unknown_fields(...)`.
+- Step JSONB: `#json.metrics(...)`. A text predicate also makes unqualified
+  JSONB predicates operate on Step `metrics` and `extra`.
+
+Equality, inequality, and numeric comparisons are supported: `=`, `!=`, `>`,
+`>=`, `<`, and `<=`. Numeric comparisons require a JSON number.
+
+Combine identity, text, and JSON predicates to narrow a lookup. Plain text or
+scoped text makes the search operate on Storyline `steps`; a JSON-only
+expression searches run-level JSONB columns, while a mixed expression searches
+step-level `metrics` and `extra`; explicit `#json.metrics(...)` also selects
+Steps without a text predicate. Repeated `--match` options are combined with
+AND, preserving the simple human syntax.
+
+Read the JSON response before deciding what to do next:
+
+- `search.mode` reports `identity`, `fts`, `json`, or `fts+json`.
+- `search.scope` reports `runs` or `steps`.
+- `fts_available=false` means FTS could not be used; it is not evidence of zero
+  semantic matches. Report the diagnostic rather than silently claiming none.
+- `truncated=true` means the returned matches are incomplete; narrow the
+  expression or use an identity before drawing count conclusions.
+- `preview` is bounded identification evidence, not the complete message.
+
+Use `--source` when a source-local identity or JSON attribute is ambiguous.
+Only issue a follow-up SQL query when `preview` and the returned identities are
+insufficient; constrain it with `_file_`, `document_id`, `session_id`, and
+`step_id` as available.
 
 ## Common requests: shortest safe path
 
@@ -90,7 +136,7 @@ compact (normally at most 20 rows) and do not narrate the command itself:
   `--session-id`, then query only the returned identity.
 - “搜索消息 / 按关键词”: use repeated `find --match` options first; do not
   scan the complete `dataset.steps` relation.
-- “按 JSONB 字段筛选”: use repeated `find --json '$.path=value'` options first,
+- “按 JSONB 字段筛选”: use repeated `find --match '$.path=value'` options first,
   then use the returned `_file_`, document, session, and step identity in SQL
   if more detail is needed.
 - “失败 / 错误 / 延迟”: start with an aggregate or the relevant analysis

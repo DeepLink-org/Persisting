@@ -1877,11 +1877,23 @@ pub async fn search_storyline_step_matches_fts(
     paths: &StorylineTablePaths,
     query: &str,
 ) -> Result<Vec<(String, i64)>> {
+    search_storyline_step_matches_fts_in_columns(paths, query, STORYLINE_STEP_SEARCH_COLUMNS).await
+}
+
+/// Search Storyline steps through selected indexed text columns.
+///
+/// The field-aware `find` command uses this to keep logical selectors such as
+/// `#system(...)` and `#reasoning(...)` from widening into every text field.
+pub async fn search_storyline_step_matches_fts_in_columns(
+    paths: &StorylineTablePaths,
+    query: &str,
+    columns: &[&str],
+) -> Result<Vec<(String, i64)>> {
     let query = query.trim();
     anyhow::ensure!(!query.is_empty(), "Storyline FTS query must not be empty");
     ensure_default_jieba_model()?;
     let dataset = open_table_version(&paths.steps, paths.steps_version).await?;
-    let columns = STORYLINE_STEP_SEARCH_COLUMNS
+    let columns = columns
         .iter()
         .copied()
         .filter(|column| dataset.schema().field(column).is_some())

@@ -34,6 +34,21 @@ LIMIT 100
 Use `"$PCHRONICLE_BIN" find` with `--source` when a Source-local ID is
 ambiguous.
 
+## Search boundary
+
+Use the unified `find --match` expression before SQL for text and JSONB
+lookups. Plain terms and `#field(term)` selectors use the indexed Storyline
+Step search path; `$.path=value` is a typed JSONB predicate. There is no
+separate JSON search flag. A JSON-only expression searches Runs by default,
+while an expression containing text—or an explicit `#json.metrics(...)`
+selector—searches Steps.
+
+Treat `find` output as candidate evidence. `search.scope` identifies the
+relation, `fts_available` distinguishes an unavailable index from a true empty
+result, and `truncated` determines whether the returned count is complete.
+Use the returned `_file_`/`source_path`, document, session, and Step identities
+to bound any follow-up SQL.
+
 ## Read boundary
 
 `pchronicle query` accepts one read-only `SELECT`, `VALUES`, `DESCRIBE`, or

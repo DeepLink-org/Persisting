@@ -169,8 +169,8 @@ canonical Event Store 的 Storyline projection 状态。还可以用 `--max-file
 
 ```text
 pchronicle find [DATASET]
-  (--run-id ID|--document-id ID|--session-id ID|--match TEXT|--json PATH=VALUE)
-  [--source PATH] [--step-id N] [--match TEXT ...] [--json PATH=VALUE ...]
+  (--run-id ID|--document-id ID|--session-id ID|--match EXPRESSION)
+  [--source PATH] [--step-id N] [--match EXPRESSION ...]
   [--format auto|table|json] [--max-results N]
 ```
 
@@ -182,15 +182,18 @@ pchronicle find ./dataset \
 pchronicle find ./dataset \
   --match "timeout" --match "retry" --format json
 pchronicle find ./dataset \
-  --json '$.tags=important' --json '$.priority=2' --format json
+  --match '$.tags=important' --match '$.priority=2' --format json
 ```
 
 外部 ID 不保证在整个 Dataset 内唯一。没有 `--source` 时，同一个 ID 可以返回多个候选；结果中的
-`source_path` 可以供下一次查询消除歧义。`--match` 搜索 Storyline Step 内容，多个关键词必须同时
-命中同一个 Step，并使用 FTS/Jieba 索引。`--json` 按 JSONPath 对 JSONB 列做精确值匹配，多个条件
-同时生效。不要使用已移除的 `--query`、`--fts` 或 `--jsonb` 别名。使用 `--format` 和
-`--max-results` 控制结果形式和数量。每条结果还包含有界的 `preview` 摘要，便于在继续查询前
-判断候选是否正确。
+`source_path` 可以供下一次查询消除歧义。`--match` 是统一检索表达式：普通关键词搜索 Storyline
+Step 内容并使用 FTS/Jieba 索引，`#system(prompt)` 等形式可以限定字段，`AND`、`OR`、`NOT` 用于
+组合条件；`$.path=value`（或 `#json("$.path")=value`）按 JSONPath 对 JSONB 列做精确值匹配。仅
+JSON 表达式搜索 Run 级 JSONB，和文本混合时搜索 Step 级 JSONB。可以重复 `--match` 要求所有表达式
+同时满足；显式使用 `#json.metrics(...)` 时即使没有文本条件也会检索 Step 级 JSONB。使用 `--format` 和 `--max-results` 控制结果形式和数量。每条结果还包含有界的 `preview`
+摘要，便于在继续查询前判断候选是否正确。
+JSON 输出还会报告 `search.mode`（`fts`、`json` 或 `fts+json`）、`search.scope`（`steps` 或 `runs`）
+以及 FTS 可用性和分词器元数据。
 
 ### 2.7 `query`
 

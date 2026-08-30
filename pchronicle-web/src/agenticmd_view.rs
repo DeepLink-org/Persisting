@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::components::ToolCallCards;
 use crate::json_value::JsonValue;
-use crate::model::{StorylineTurn, ToolCall, WireToolCall};
+use crate::model::{StorylineTurn, ToolCall, WireToolCall, extract_message_text};
 
 #[derive(Clone, Debug, PartialEq)]
 enum BodyNode {
@@ -430,6 +430,11 @@ fn message_nodes(turn: &StorylineTurn) -> Vec<BodyNode> {
         Vec::new()
     } else if matches!(turn.message, Value::String(_)) {
         parse_body_nodes(&body)
+    } else if let Some(text) = extract_message_text(&turn.message) {
+        // OpenAI content parts are structured JSON, but their text payload is
+        // still the readable message. Render that payload as AgenticMD instead
+        // of exposing the transport envelope and its null-heavy fields.
+        parse_body_nodes(&text)
     } else {
         vec![BodyNode::Code {
             language: "json".into(),
@@ -726,6 +731,21 @@ mod tests {
             }]
         };
         assert!(matches!(&nodes[0], BodyNode::Code { language, .. } if language == "json"));
+    }
+
+    #[test]
+    fn structured_content_parts_render_their_text_payload() {
+        let value = turn(serde_json::json!([
+            {"type": "text", "text": "You are a helpful agent."},
+            {"type": "image_url", "image_url": {"url": "https://example.test/image.png"}}
+        ]));
+        let nodes = message_nodes(&value);
+        assert!(nodes.iter().any(|node| {
+            matches!(node, BodyNode::Text(text) if text.contains("helpful agent"))
+        }));
+        assert!(!nodes
+            .iter()
+            .any(|node| matches!(node, BodyNode::Code { language, .. } if language == "json")));
     }
 
     #[test]

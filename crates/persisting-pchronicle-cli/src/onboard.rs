@@ -709,7 +709,6 @@ async fn capture_find(dataset_uri: String, session_id: String, step_id: i64) -> 
             session_id: Some(session_id),
             step_id: Some(step_id),
             matches: Vec::new(),
-            json: Vec::new(),
             format: OutputFormat::Table,
             max_results: 100,
             max_output_bytes: 8 * 1024 * 1024,
