@@ -1,6 +1,6 @@
 site_name: Persisting
 site_description: Persistent infrastructure for the Agent era—from model parameters and KV caches to Agent trajectories
-site_url: https://github.com/DeepLink-org/Persisting
+site_url: https://deeplink-org.github.io/Persisting/
 docs_dir: src
 
 repo_name: DeepLink-org/Persisting
