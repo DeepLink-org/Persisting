@@ -437,6 +437,7 @@ fmt: fmt-rust fmt-py
 
 fmt-rust:
     cargo fmt --all
+    cargo fmt --manifest-path pchronicle-web/Cargo.toml
 
 fmt-py:
     uvx ruff format {{ ruff_paths }}
@@ -446,6 +447,7 @@ fmt-check: fmt-check-rust fmt-check-py
 
 fmt-check-rust:
     cargo fmt --all -- --check
+    cargo fmt --manifest-path pchronicle-web/Cargo.toml -- --check
 
 fmt-check-py:
     uvx ruff format --check {{ ruff_paths }}
@@ -453,7 +455,7 @@ fmt-check-py:
 # clippy + ruff（不改写）
 lint: lint-rust lint-py
 
-lint-rust: clippy-deny clippy-pchronicle-panics clippy-pchronicle-features
+lint-rust: clippy-deny clippy-pchronicle-web clippy-pchronicle-panics clippy-pchronicle-features
 
 lint-py:
     uvx ruff check {{ ruff_lint_paths }}
@@ -464,6 +466,11 @@ lint-py-all:
 
 clippy-deny:
     cargo clippy --workspace --exclude persisting-dlcapt --all-targets --locked -- -D warnings
+
+# pchronicle-web is a separate Cargo workspace and is not covered by the root
+# workspace Clippy invocation above.
+clippy-pchronicle-web:
+    cargo clippy --manifest-path pchronicle-web/Cargo.toml --all-targets --locked -- -D warnings
 
 clippy-pchronicle-panics:
     cargo clippy -p persisting-pchronicle --lib --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable

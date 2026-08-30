@@ -135,8 +135,8 @@ pub fn App() -> Element {
     let mut direction = use_signal(|| url_param("direction").unwrap_or_else(|| "asc".into()));
     let mut run_path = use_signal(|| url_param("path").unwrap_or_default());
     let mut file_prefix = use_signal(|| url_param("file_prefix").unwrap_or_default());
-    let mut catalog_dataset = use_signal(|| String::new());
-    let mut catalog_prefix = use_signal(|| String::new());
+    let mut catalog_dataset = use_signal(String::new);
+    let mut catalog_prefix = use_signal(String::new);
     let catalog_tree = use_signal(|| None::<CatalogTree>);
     let catalog_loading = use_signal(|| false);
     let mut offset = use_signal(|| 0usize);
@@ -208,37 +208,38 @@ pub fn App() -> Element {
     });
 
     use_effect(move || {
-        if analysis().is_none() {
-            if let Some(run) = selected_run() {
-                load_workspace(
-                    run,
-                    turn_query(),
-                    source(),
-                    analysis,
-                    turns,
-                    turn_search,
-                    detail_loading,
-                    error,
-                );
-            }
+        if analysis().is_none()
+            && let Some(run) = selected_run()
+        {
+            load_workspace(
+                run,
+                turn_query(),
+                source(),
+                analysis,
+                turns,
+                turn_search,
+                detail_loading,
+                error,
+            );
         }
     });
 
     use_effect(move || {
-        if analysis().is_some() && selected_turn().is_none() {
-            if let (Some(run), Some(turn_id)) = (
+        if analysis().is_some()
+            && selected_turn().is_none()
+            && let (Some(run), Some(turn_id)) = (
                 selected_run(),
                 url_param("turn").and_then(|value| value.parse::<i64>().ok()),
-            ) {
-                load_turn(
-                    run,
-                    turn_id,
-                    expanded_turn_id,
-                    selected_turn,
-                    turn_loading,
-                    error,
-                );
-            }
+            )
+        {
+            load_turn(
+                run,
+                turn_id,
+                expanded_turn_id,
+                selected_turn,
+                turn_loading,
+                error,
+            );
         }
     });
 
@@ -338,7 +339,8 @@ pub fn App() -> Element {
                         crate::analysis::AnalysisWorkspace {
                             catalog: catalog(),
                             initial_scope: analysis_seed_scope(),
-                            requested_session_id: (!analysis_session_id().is_empty()).then(|| analysis_session_id()),
+                            requested_session_id: (!analysis_session_id().is_empty())
+                                .then_some(analysis_session_id()),
                             on_session_change: move |session_id: String| {
                                 analysis_session_id.set(session_id);
                                 analysis_seed_scope.set(None);
@@ -397,18 +399,18 @@ pub fn App() -> Element {
                                         turn_query_debounce_id.set(request_id);
                                         spawn(async move {
                                             TimeoutFuture::new(SEARCH_DEBOUNCE_MS).await;
-                                            if turn_query_debounce_id() == request_id {
-                                                if let Some(run) = selected_run() {
-                                                    load_turns(
-                                                        run,
-                                                        value,
-                                                        source(),
-                                                        turns,
-                                                        turn_search,
-                                                        turn_loading,
-                                                        error,
-                                                    );
-                                                }
+                                            if turn_query_debounce_id() == request_id
+                                                && let Some(run) = selected_run()
+                                            {
+                                                load_turns(
+                                                    run,
+                                                    value,
+                                                    source(),
+                                                    turns,
+                                                    turn_search,
+                                                    turn_loading,
+                                                    error,
+                                                );
                                             }
                                         });
                                     },
@@ -832,6 +834,7 @@ fn load_catalog_tree(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn load_workspace(
     run: RunSummary,
     query: String,
@@ -981,10 +984,10 @@ fn load_conversation_turns(
                 }
             }
         }
-        if loaded.is_empty() {
-            if let Some(notice) = first_error {
-                error.set(Some(notice));
-            }
+        if loaded.is_empty()
+            && let Some(notice) = first_error
+        {
+            error.set(Some(notice));
         }
         loading.set(false);
     });
@@ -2394,7 +2397,7 @@ fn compact_mix(items: &[DimensionAggregate], limit: usize) -> Vec<MixSegment> {
         return Vec::new();
     }
     let mut ranked = items.to_vec();
-    ranked.sort_by(|left, right| right.turn_count.cmp(&left.turn_count));
+    ranked.sort_by_key(|item| std::cmp::Reverse(item.turn_count));
     let mut segments: Vec<MixSegment> = ranked
         .iter()
         .take(limit)
@@ -2426,6 +2429,7 @@ fn compact_mix(items: &[DimensionAggregate], limit: usize) -> Vec<MixSegment> {
     segments
 }
 
+#[allow(clippy::too_many_arguments)]
 fn coverage_points(
     latency_observed: usize,
     latency_total: usize,
@@ -2510,10 +2514,10 @@ fn turn_references(value: &str) -> Vec<i64> {
     let mut rest = value;
     while let Some((_, next)) = rest.split_once("[turn:") {
         if let Some((raw, after)) = next.split_once(']') {
-            if let Ok(id) = raw.parse() {
-                if !ids.contains(&id) {
-                    ids.push(id);
-                }
+            if let Ok(id) = raw.parse()
+                && !ids.contains(&id)
+            {
+                ids.push(id);
             }
             rest = after;
         } else {

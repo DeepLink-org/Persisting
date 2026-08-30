@@ -445,10 +445,10 @@ fn turn_expanded_facts(turn: &TurnSummary) -> String {
     if let Some(tokens) = turn.total_tokens {
         parts.push(format!("{tokens} tokens"));
     }
-    if let Some(call_id) = &turn.call_id {
-        if !call_id.is_empty() {
-            parts.push(format!("Call {call_id}"));
-        }
+    if let Some(call_id) = &turn.call_id
+        && !call_id.is_empty()
+    {
+        parts.push(format!("Call {call_id}"));
     }
     if let Some(timestamp) = &turn.timestamp {
         parts.push(timestamp.clone());
@@ -804,13 +804,12 @@ pub fn TrajectoryView(
         .collect::<Vec<_>>();
     if last_focus() != expanded_turn_id {
         last_focus.set(expanded_turn_id);
-        if let Some(id) = expanded_turn_id {
-            if let Some(group) = groups
+        if let Some(id) = expanded_turn_id
+            && let Some(group) = groups
                 .iter()
                 .find(|group| group.entries.iter().any(|turn| turn.id == id))
-            {
-                open_key.set(Some(group.key.clone()));
-            }
+        {
+            open_key.set(Some(group.key.clone()));
         }
     }
     // Visibility tracking is intentionally omitted here. Dioxus's synthetic
@@ -1195,35 +1194,33 @@ pub fn StepDrawer(
     if agenticmd_turns
         .first()
         .is_some_and(|item| item.source == "agent")
-    {
-        if let Some(prompt) = value
+        && let Some(prompt) = value
             .summary
             .user_prompt
             .as_deref()
             .filter(|prompt| !prompt.trim().is_empty())
-        {
-            let synthetic_id = value.summary.id.saturating_neg();
-            if !agenticmd_turns.iter().any(|item| item.id == synthetic_id) {
-                agenticmd_turns.insert(
-                    0,
-                    StorylineTurn {
-                        id: synthetic_id,
-                        kind: Some("llm.request".into()),
-                        timestamp: value.turn.timestamp.clone(),
-                        source: "user".into(),
-                        message: Value::String(prompt.to_string()),
-                        reasoning_content: None,
-                        tool_calls: None,
-                        observation: None,
-                        metrics: None,
-                        model_name: None,
-                        latency_ms: None,
-                        ttft_ms: None,
-                        extra: None,
-                    },
-                );
-                synthetic_user_added = true;
-            }
+    {
+        let synthetic_id = value.summary.id.saturating_neg();
+        if !agenticmd_turns.iter().any(|item| item.id == synthetic_id) {
+            agenticmd_turns.insert(
+                0,
+                StorylineTurn {
+                    id: synthetic_id,
+                    kind: Some("llm.request".into()),
+                    timestamp: value.turn.timestamp.clone(),
+                    source: "user".into(),
+                    message: Value::String(prompt.to_string()),
+                    reasoning_content: None,
+                    tool_calls: None,
+                    observation: None,
+                    metrics: None,
+                    model_name: None,
+                    latency_ms: None,
+                    ttft_ms: None,
+                    extra: None,
+                },
+            );
+            synthetic_user_added = true;
         }
     }
     let drawer_wire_tool_calls = agenticmd_turns
@@ -1656,7 +1653,7 @@ mod tests {
     fn long_detail_content_gets_an_expand_affordance() {
         assert!(!content_needs_expansion("short\nvalue"));
         assert!(content_needs_expansion(&"x".repeat(901)));
-        assert!(content_needs_expansion(&vec!["line"; 9].join("\n")));
+        assert!(content_needs_expansion(&["line"; 9].join("\n")));
     }
 
     #[test]

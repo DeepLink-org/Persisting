@@ -45,11 +45,11 @@ pub fn PhysicalWorkspace() -> Element {
         spawn(async move {
             match api::physical_sources().await {
                 Ok(value) => {
-                    if dataset().is_empty() {
-                        if let Some(source) = value.first() {
-                            dataset.set(source.dataset.clone());
-                            file.set(source.file.clone());
-                        }
+                    if dataset().is_empty()
+                        && let Some(source) = value.first()
+                    {
+                        dataset.set(source.dataset.clone());
+                        file.set(source.file.clone());
                     }
                     sources.set(value);
                     error.set(None);
@@ -71,14 +71,13 @@ pub fn PhysicalWorkspace() -> Element {
         spawn(async move {
             match api::physical_layout(&dataset, &file).await {
                 Ok(value) => {
-                    if table().is_empty() {
-                        if let Some((next_table, next_fragment, next_file)) =
+                    if table().is_empty()
+                        && let Some((next_table, next_fragment, next_file)) =
                             first_data_file(&value.tables)
-                        {
-                            table.set(next_table);
-                            fragment.set(Some(next_fragment));
-                            data_file.set(next_file);
-                        }
+                    {
+                        table.set(next_table);
+                        fragment.set(Some(next_fragment));
+                        data_file.set(next_file);
                     }
                     layout.set(Some(value));
                     error.set(None);
@@ -109,12 +108,12 @@ pub fn PhysicalWorkspace() -> Element {
         spawn(async move {
             match api::physical_file(&dataset, &file, &table, fragment_id, &data_file).await {
                 Ok(value) => {
-                    if column().is_empty() {
-                        if let Some(next) = value.columns.first() {
-                            column.set(next.name.clone());
-                            data_page.set(next.pages.first().map(|page| page.index).unwrap_or(0));
-                            preview_offset.set(0);
-                        }
+                    if column().is_empty()
+                        && let Some(next) = value.columns.first()
+                    {
+                        column.set(next.name.clone());
+                        data_page.set(next.pages.first().map(|page| page.index).unwrap_or(0));
+                        preview_offset.set(0);
                     }
                     file_layout.set(Some(value));
                     error.set(None);
@@ -844,6 +843,7 @@ pub fn physical_workspace_url(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn physical_workspace_url_with_preview_offset(
     dataset: &str,
     file: &str,
@@ -882,6 +882,7 @@ fn physical_workspace_url_with_preview_offset(
     format!("/?{}", params.join("&"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sync_physical_url(
     dataset: &str,
     file: &str,

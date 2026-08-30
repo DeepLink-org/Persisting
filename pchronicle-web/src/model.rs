@@ -383,10 +383,10 @@ pub fn extract_message_text(message: &Value) -> Option<String> {
         Value::Array(array) => {
             let mut parts = Vec::new();
             for item in array {
-                if let Some(text) = extract_message_text(item) {
-                    if !text.is_empty() {
-                        parts.push(text);
-                    }
+                if let Some(text) = extract_message_text(item)
+                    && !text.is_empty()
+                {
+                    parts.push(text);
                 }
             }
             if parts.is_empty() {

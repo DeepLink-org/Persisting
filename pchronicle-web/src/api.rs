@@ -1,3 +1,8 @@
+// ApiFailure intentionally preserves structured server diagnostics (including
+// the raw response) for the UI, so boxing it would add churn without changing
+// the request/error contract.
+#![allow(clippy::result_large_err)]
+
 use crate::analysis_session::{AnalysisScope, AnalysisSpec, CompileFailure, CompiledQuery};
 use crate::model::{
     CatalogTree, PhysicalFileLayout, PhysicalLayout, PhysicalPagePreview, PhysicalSource,
@@ -136,6 +141,7 @@ fn with_catalog_headers(builder: RequestBuilder) -> RequestBuilder {
         .header("x-pchronicle-secret-key", &secret_key)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn explorer_runs(
     q: &str,
     dataset: &str,
@@ -300,6 +306,7 @@ pub async fn physical_file(
     json_checked(with_catalog_headers(Request::get(&url)).send().await).await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn physical_page(
     dataset: &str,
     file: &str,

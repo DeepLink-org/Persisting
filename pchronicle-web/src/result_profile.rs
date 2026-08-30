@@ -654,9 +654,7 @@ mod tests {
     #[test]
     fn categorical_top_values_are_limited_to_ten_and_track_other_values() {
         let rows = (0..11)
-            .flat_map(|index| {
-                std::iter::repeat(json!({"kind": format!("kind-{index:02}")})).take(2)
-            })
+            .flat_map(|index| std::iter::repeat_n(json!({"kind": format!("kind-{index:02}")}), 2))
             .collect::<Vec<_>>();
         let profiles = profile_rows(&rows);
         let categorical = profile(&profiles, "kind");

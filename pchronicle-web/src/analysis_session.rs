@@ -1361,11 +1361,11 @@ fn fit_session_budget(session: &mut AnalysisSession) -> Result<(), String> {
 
 fn discard_oldest_derived_data(session: &mut AnalysisSession) -> bool {
     for revision in &mut session.revisions {
-        if let Some(execution) = &mut revision.execution {
-            if !execution.profiles.is_empty() {
-                execution.profiles.clear();
-                return true;
-            }
+        if let Some(execution) = &mut revision.execution
+            && !execution.profiles.is_empty()
+        {
+            execution.profiles.clear();
+            return true;
         }
         if revision.interpretation.take().is_some() {
             return true;

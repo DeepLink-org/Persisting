@@ -196,7 +196,7 @@ fn apply_manual_sql(revision: &mut AnalysisRevision, sql: String) -> Result<(), 
                 .scope
                 .items
                 .first()
-                .map(|item| scope_item_label(item))
+                .map(scope_item_label)
                 .unwrap_or_default(),
             filters: Vec::new(),
             groupings: Vec::new(),
@@ -911,14 +911,13 @@ pub fn AnalysisWorkspace(
     };
 
     let rewrite_problem = move |_| {
-        if let Some(current) = session() {
-            if let Some(revision) = current
+        if let Some(current) = session()
+            && let Some(revision) = current
                 .revisions
                 .iter()
                 .find(|revision| revision.id == current.active_revision_id)
-            {
-                question.set(revision.question.clone());
-            }
+        {
+            question.set(revision.question.clone());
         }
         session.set(None);
     };
@@ -949,11 +948,11 @@ pub fn AnalysisWorkspace(
 
     let catalog_for_recent = catalog.clone();
     let select_recent_session = EventHandler::new(move |session_id: String| {
-        if let Some(mut departing) = session() {
-            if departing.id != session_id {
-                departing.normalize_inflight_for_navigation();
-                persist_session(&departing, &mut recent_sessions, &mut storage_notice);
-            }
+        if let Some(mut departing) = session()
+            && departing.id != session_id
+        {
+            departing.normalize_inflight_for_navigation();
+            persist_session(&departing, &mut recent_sessions, &mut storage_notice);
         }
         let Some(mut selected) = recent_sessions()
             .into_iter()

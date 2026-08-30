@@ -113,6 +113,7 @@ pub fn source_class(source: &str) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub fn turn_matches_query(turn: &TurnSummary, query: &str) -> bool {
     let query = query.trim();
     if query.is_empty() {

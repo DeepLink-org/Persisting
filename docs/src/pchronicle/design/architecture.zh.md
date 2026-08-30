@@ -121,7 +121,7 @@ SPA fallback；只接受 loopback listener。未使用 `--catalog-config` 时没
 ## 相关设计
 
 - [Dataset Catalog](catalog.md)：discovery、Snapshot 构造、惰性 Source resolve 与裁剪。
-- [RFC-0013 Catalog Server](../../rfcs/0013-pchronicle-warehouse-catalog.md)：远程 library 目录、ACL、换票与 query worker。
+- [RFC-0013 Warehouse Catalog](../../rfcs/0013-pchronicle-warehouse-catalog.md)：远程 library 目录、ACL、换票与 query worker。
 - [运行存储](trajectory-storage.md)：canonical fact、存储布局与写入 ownership。
 - [Storyline Lance](storyline-lance.md)：三表 projection、内容层、发布与维护。
 - [记录数据、视图与版本](../concepts/facts-and-projections.md)：这些层次的用户心智模型。

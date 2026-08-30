@@ -140,7 +140,7 @@ Gateway composition belong to the [`pchronicle` reference](../reference/cli.md).
 
 - [Dataset Catalog](catalog.md): discovery, Snapshot construction, lazy Source
   resolution, and pruning.
-- [RFC-0013 Catalog Server](../../rfcs/0013-pchronicle-warehouse-catalog.md): remote
+- [RFC-0013 Warehouse Catalog](../../rfcs/0013-pchronicle-warehouse-catalog.md): remote
   library directory, ACL, tickets, and query workers.
 - [Run storage](trajectory-storage.md): canonical facts, storage layouts, and
   write ownership.

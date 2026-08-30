@@ -269,13 +269,7 @@ pub fn plan_system_prompt(
     previous_plan: Option<&AnalysisPlan>,
     refinement: Option<&AnalysisRefinement>,
 ) -> Result<String, AnalysisAgentError> {
-    spec_system_prompt(
-        catalog,
-        scope,
-        None,
-        previous_plan.and_then(|_| None),
-        refinement,
-    )
+    spec_system_prompt(catalog, scope, None, previous_plan.and(None), refinement)
 }
 
 pub fn interpretation_system_prompt() -> String {
@@ -651,10 +645,8 @@ fn has_at_most_one_sql_statement(sql: &str) -> bool {
             State::SingleQuoted => {
                 if character == '\\' {
                     let _ = characters.next();
-                } else if character == '\'' {
-                    if characters.next_if_eq(&'\'').is_none() {
-                        state = State::Normal;
-                    }
+                } else if character == '\'' && characters.next_if_eq(&'\'').is_none() {
+                    state = State::Normal;
                 }
             }
             State::DoubleQuoted => {
@@ -863,12 +855,13 @@ fn clamp_run_text(run: &mut crate::model::RunSummary, truncated: &mut bool) {
         &mut run.run_id,
         &mut run.model_name,
         &mut run.root_session_id,
-    ] {
-        if let Some(value) = value {
-            let (clamped, was_truncated) = clamp_text(value, SCOPE_TEXT_DIGEST_CHARS);
-            *value = clamped;
-            *truncated |= was_truncated;
-        }
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let (clamped, was_truncated) = clamp_text(value, SCOPE_TEXT_DIGEST_CHARS);
+        *value = clamped;
+        *truncated |= was_truncated;
     }
 }
 
@@ -932,13 +925,11 @@ fn clamp_text(value: &str, max_chars: usize) -> (String, bool) {
         return (value.into(), false);
     }
     let mut end = value.len();
-    let mut seen = 0;
-    for (index, _) in value.char_indices() {
+    for (seen, (index, _)) in value.char_indices().enumerate() {
         if seen == max_chars {
             end = index;
             break;
         }
-        seen += 1;
     }
     (value[..end].into(), true)
 }
@@ -1313,6 +1304,7 @@ mod tests {
                 "catalog": {
                     "tables": [{
                         "name": "default.runs",
+                        "kind": "table",
                         "description": "Recorded agent runs",
                         "grain": "one row per recorded run",
                         "fields": [

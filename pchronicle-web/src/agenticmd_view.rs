@@ -101,25 +101,25 @@ fn parse_body_nodes(body: &str) -> Vec<BodyNode> {
             cursor += consumed;
             continue;
         }
-        if rest.starts_with('<') {
-            if let Some(end) = rest.find('>') {
-                let tag = rest[1..end]
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("tag")
-                    .trim_end_matches('/');
-                let line_end = rest[end + 1..]
-                    .find('\n')
-                    .map(|offset| end + 1 + offset)
-                    .unwrap_or(rest.len());
-                nodes.push(BodyNode::Xml {
-                    tag: tag.to_string(),
-                    children: vec![BodyNode::Text(rest[..line_end].to_string())],
-                    self_closing: false,
-                });
-                cursor += line_end.max(1);
-                continue;
-            }
+        if rest.starts_with('<')
+            && let Some(end) = rest.find('>')
+        {
+            let tag = rest[1..end]
+                .split_whitespace()
+                .next()
+                .unwrap_or("tag")
+                .trim_end_matches('/');
+            let line_end = rest[end + 1..]
+                .find('\n')
+                .map(|offset| end + 1 + offset)
+                .unwrap_or(rest.len());
+            nodes.push(BodyNode::Xml {
+                tag: tag.to_string(),
+                children: vec![BodyNode::Text(rest[..line_end].to_string())],
+                self_closing: false,
+            });
+            cursor += line_end.max(1);
+            continue;
         }
         let next = [
             "```",
@@ -220,10 +220,8 @@ fn parse_xml_tag(input: &str, closing: bool) -> Option<(String, usize, bool)> {
     let end = input.find('>')?;
     let raw = &input[start..end];
     let trimmed = raw.trim();
-    if trimmed.is_empty() || (!closing && trimmed.ends_with('/')) {
-        if closing {
-            return None;
-        }
+    if trimmed.is_empty() && closing {
+        return None;
     }
     let name = trimmed
         .trim_end_matches('/')
@@ -269,9 +267,7 @@ fn take_tool_node(input: &str) -> Option<(BodyNode, usize)> {
     let name_end = after_open
         .find(['>', '\n', '<'])
         .unwrap_or(after_open.len());
-    let name = if open == "<function=" {
-        after_open[..name_end].trim().to_string()
-    } else if open == "<mcp_call>" {
+    let name = if open == "<function=" || open == "<mcp_call>" {
         after_open[..name_end].trim().to_string()
     } else if open == "<" {
         input[1..input.find('>')?].trim().to_string()

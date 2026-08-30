@@ -561,15 +561,15 @@ fn profile_stat_rows(profile: &ColumnProfile) -> Vec<(&'static str, String)> {
     if let Some(value) = profile.max {
         rows.push((max_label, format_profile_value(&profile.kind, value)));
     }
-    if !mean_label.is_empty() {
-        if let Some(value) = profile.mean {
-            rows.push((mean_label, format_profile_value(&profile.kind, value)));
-        }
+    if !mean_label.is_empty()
+        && let Some(value) = profile.mean
+    {
+        rows.push((mean_label, format_profile_value(&profile.kind, value)));
     }
-    if !median_label.is_empty() {
-        if let Some(value) = profile.median {
-            rows.push((median_label, format_profile_value(&profile.kind, value)));
-        }
+    if !median_label.is_empty()
+        && let Some(value) = profile.median
+    {
+        rows.push((median_label, format_profile_value(&profile.kind, value)));
     }
     rows
 }
