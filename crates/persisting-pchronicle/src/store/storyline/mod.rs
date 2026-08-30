@@ -363,7 +363,8 @@ static MAINTENANCE_AFTER_PUBLISH_PAUSE: std::sync::Mutex<Option<MaintenanceAfter
 
 #[cfg(test)]
 fn suppress_inverted_index_roots() -> std::sync::MutexGuard<'static, HashSet<String>> {
-    static ROOTS: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+    static ROOTS: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> =
+        std::sync::OnceLock::new();
     ROOTS
         .get_or_init(|| std::sync::Mutex::new(HashSet::new()))
         .lock()
