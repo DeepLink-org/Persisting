@@ -303,7 +303,10 @@ fn agent_skill_examples_match_the_live_cli_contract() -> Result<()> {
 
     let atif = format!("{}/../../examples/data/atif", env!("CARGO_MANIFEST_DIR"));
     let imported_store;
-    let dataset = if blocks.iter().any(|block| skill_example_needs_storyline(block)) {
+    let dataset = if blocks
+        .iter()
+        .any(|block| skill_example_needs_storyline(block))
+    {
         imported_store = tempfile::tempdir()?;
         let dataset = imported_store.path().join("dataset");
         let imported = Command::new(env!("CARGO_BIN_EXE_pchronicle"))
