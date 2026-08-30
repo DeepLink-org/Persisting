@@ -94,7 +94,7 @@ JOIN dataset.steps s
 | 仅 JSON，未指定 Step 列 | `runs` | `json` |
 | 仅 `#json.metrics(...)` | `steps` | `json` |
 | 文本加 JSON | `steps` | `fts+json` |
-| 仅身份标志 | 身份查找 | `identity` |
+| 仅身份标志 | `runs` | `identity` |
 
 不含 `#json.metrics(...)` 的纯 JSON 表达式搜索 Run 级 JSONB 列
 （`agent_extra`、`final_metrics`、`extra`、`meta`、`unknown_fields`）。

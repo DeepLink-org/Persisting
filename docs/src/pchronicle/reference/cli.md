@@ -119,7 +119,7 @@ expression, the reported `search.scope`, and `snapshot_id`. The Web UI may
 highlight and clip returned fields without changing the match set.
 Each match includes a bounded `preview` field to make candidate selection
 possible before a follow-up query. JSON output also reports `search.mode`
-(`fts`, `json`, or `fts+json`), `search.scope` (`steps` or `runs`), and FTS
+(`fts`, `json`, `fts+json`, or `identity`), `search.scope` (`steps` or `runs`), and FTS
 availability/tokenizer metadata.
 The current grammar is documented in the [query model](query-model.md).
 [RFC-0012](../../rfcs/0012-pchronicle-find-query-syntax.md) records the accepted

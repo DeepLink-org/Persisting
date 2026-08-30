@@ -103,7 +103,7 @@ The current implementation infers `search.scope` from the expression:
 | JSON only, no Step column | `runs` | `json` |
 | `#json.metrics(...)` only | `steps` | `json` |
 | Text plus JSON | `steps` | `fts+json` |
-| Identity flags only | identity lookup | `identity` |
+| Identity flags only | `runs` | `identity` |
 
 A JSON-only expression without `#json.metrics(...)` searches run-level JSONB
 columns (`agent_extra`, `final_metrics`, `extra`, `meta`, `unknown_fields`).

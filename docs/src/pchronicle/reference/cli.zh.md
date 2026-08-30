@@ -211,7 +211,7 @@ JSON 表达式当前搜索 Run 级 JSONB，和文本混合时搜索 Step 级 JSO
 共用该表达式、报告的 `search.scope` 和 `snapshot_id`；Web UI 可以对返回字段做高亮和截取，
 不改变命中集合。使用 `--format` 和 `--max-results` 控制结果形式和数量。每条结果还包含有界的 `preview`
 摘要，便于在继续查询前判断候选是否正确。
-JSON 输出还会报告 `search.mode`（`fts`、`json` 或 `fts+json`）、`search.scope`（`steps` 或 `runs`）
+JSON 输出还会报告 `search.mode`（`fts`、`json`、`fts+json` 或 `identity`）、`search.scope`（`steps` 或 `runs`）
 以及 FTS 可用性和分词器元数据。
 当前语法见 [Query Model](query-model.md)。
 [RFC-0012](../../rfcs/0012-pchronicle-find-query-syntax.md) 是已接受的决策记录；与已安装
