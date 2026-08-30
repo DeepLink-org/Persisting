@@ -45,7 +45,9 @@ when the request names a specific entity, field, time range, or comparison.
 
 Use `find` before SQL when the request is a text search, JSONB attribute lookup,
 or an identity lookup. `find` is read-only and returns source-local identities
-that can be used to narrow a follow-up query.
+that can be used to narrow a follow-up query. CLI `find` and Web `q` share the
+same expression, reported scope, and `snapshot_id`; do not treat a Web run list
+as a different query.
 
 `find` has exactly one search option: `--match`. Do not generate `--json`,
 `--jsonb`, `--query`, or `--fts`. Quote every expression containing `#`, `$`,

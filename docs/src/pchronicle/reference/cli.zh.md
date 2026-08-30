@@ -21,14 +21,11 @@ pchronicle onboard
 
 ### Dataset
 
-**Dataset 是 pChronicle 命令行操作的统一数据对象。** 它是一组可以被浏览、查询、分析、导入、
-导出或提供服务的 Agent Run 数据。
-
-一个 Dataset 可以表现为：
+**Dataset 就是 path。** pChronicle 打开这条 path 作为轨迹存储。它可以写成：
 
 - 本地目录或文件（`./local/path`）；
 - 对象存储中的 URI 前缀（`s3://bucket/prefix`）；
-- 指向上述位置的用户 alias（`@alias-name`）。
+- 解析到上述位置的用户 alias（`@alias-name`）。
 
 Dataset 内部可以保存一种或多种受支持的运行数据格式。pChronicle 负责发现和规范化这些数据；用户只需要
 向命令提供 Dataset，不需要先理解内部文件、分片、投影或版本布局。
@@ -145,9 +142,9 @@ Agent 会话目录。
 对于 MinIO 等 S3 兼容服务，可以通过 `--endpoint` 保存服务地址；使用 alias 时会自动设置为
 `AWS_ENDPOINT_URL_S3`。Dataset URI 仍应保持为 `s3://bucket/prefix`，不要把主机和端口写入 URI。
 当 endpoint 使用 `http://` 时，pChronicle 会自动设置 `AWS_ALLOW_HTTP`，适用于本地 MinIO 等服务。
-`catalog://127.0.0.1:PORT` alias 是命名空间：`@team/prod` 向 catalog 换取 library `prod` 的票，
-单独的 `@team` 不是 Dataset。catalog alias 必须提供 `--ak/--sk`，并拒绝 `--endpoint` 和 `--region`。
-后端对象存储密钥留在 catalog 服务端。命名空间、换票与进程模型见
+`catalog://127.0.0.1:PORT` alias 是 Directory locator：`@team/prod` 换票后打开票里的 path，
+单独的 `@team` 不是 Dataset。Directory alias 必须提供 `--ak/--sk`，并拒绝 `--endpoint` 和 `--region`。
+后端对象存储密钥留在 Directory 服务端。locator、换票与进程模型见
 [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。
 `alias set-url` 也支持相同的 `--endpoint` 参数；在两个 S3 URI 之间切换且未指定新 endpoint 时，
 会保留原有 endpoint。
@@ -209,8 +206,10 @@ pchronicle find ./dataset \
 `source_path` 可以供下一次查询消除歧义。`--match` 是统一检索表达式：普通关键词搜索 Storyline
 Step 内容并使用 FTS/Jieba 索引，`#system(prompt)` 等形式可以限定字段，`AND`、`OR`、`NOT` 用于
 组合条件；`$.path=value`（或 `#json("$.path")=value`）按 JSONPath 对 JSONB 列做精确值匹配。仅
-JSON 表达式搜索 Run 级 JSONB，和文本混合时搜索 Step 级 JSONB。可以重复 `--match` 要求所有表达式
-同时满足；显式使用 `#json.metrics(...)` 时即使没有文本条件也会检索 Step 级 JSONB。使用 `--format` 和 `--max-results` 控制结果形式和数量。每条结果还包含有界的 `preview`
+JSON 表达式当前搜索 Run 级 JSONB，和文本混合时搜索 Step 级 JSONB。可以重复 `--match` 要求所有表达式
+同时满足；显式使用 `#json.metrics(...)` 时即使没有文本条件也会检索 Step 级 JSONB。CLI 与 Web
+共用该表达式、报告的 `search.scope` 和 `snapshot_id`；Web UI 可以对返回字段做高亮和截取，
+不改变命中集合。使用 `--format` 和 `--max-results` 控制结果形式和数量。每条结果还包含有界的 `preview`
 摘要，便于在继续查询前判断候选是否正确。
 JSON 输出还会报告 `search.mode`（`fts`、`json` 或 `fts+json`）、`search.scope`（`steps` 或 `runs`）
 以及 FTS 可用性和分词器元数据。
@@ -341,6 +340,9 @@ pchronicle serve
   [--gateway-stream-markdown] [--gateway-debug]
   [--catalog-config FILE]
   [<[NAME=]DATASET> ...]
+pchronicle serve catalog issue  --catalog-config FILE NAME
+pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
+pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
 ```
 
 ```bash
@@ -353,8 +355,11 @@ pchronicle serve \
 
 未指定服务 flag 时，只读 Web/API 默认监听 `127.0.0.1:0`。多个 Dataset 使用
 `NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。`--catalog-config FILE`
-以 catalog 目录方式服务，父进程不打开 libraries；配合
-`alias add NAME catalog://127.0.0.1:PORT --ak --sk`。见
+以 Directory 方式服务，父进程不打开 libraries；配合
+`alias add NAME catalog://127.0.0.1:PORT --ak --sk`。
+`pchronicle serve catalog issue|grant|revoke` 只改该文件、不启动 HTTP；`issue` 把用户
+sk 只打印一次。改用户或授权后必须重启 serve。`catalog` 是 `serve` 的保留子命令，挂载同名
+路径请用 `./catalog`。见
 [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。无需配置的 `--gateway`
 在 `POST /v1/events` 接收 canonical trajectory events；`--gateway-dataset` 是自动挂载的
 输出 URI，不再是 mount name。`--gateway-split` 支持 `{user}`、`{date}`、`{hour}`。

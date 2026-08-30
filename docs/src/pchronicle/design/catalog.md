@@ -1,6 +1,10 @@
-# pChronicle Dataset Catalog 设计
+# pChronicle Snapshot 设计
 
-> 当前实现说明。Dataset 命令参数见 [`pchronicle` 命令参考](../reference/cli.md)；轨迹物理格式见
+> 当前实现说明。代码与历史文档称 Dataset Catalog；产品口径称 **Snapshot**：打开 **path**
+> 之后，写入与读取之间的同步协议。平台侧的名字→path 授权见
+> [RFC-0013 path Directory](../../rfcs/0013-pchronicle-warehouse-catalog.md)，不是本文。
+>
+> Dataset 命令参数见 [`pchronicle` 命令参考](../reference/cli.md)；轨迹物理格式见
 > [pChronicle 运行存储](trajectory-storage.md) 与
 > [Storyline 三表 Lance](storyline-lance.md)。
 
@@ -11,20 +15,20 @@
 
 ## 1. 定位
 
-pChronicle Dataset Catalog 面向由多个存储位置和多种轨迹格式共同组成的查询空间，主要
-覆盖以下场景：
+Snapshot 面向由**一条 path** 下多个存储位置和多种轨迹格式共同组成的查询空间（Warehouse
+可同时 pin 多条 path，每条仍是独立 Dataset）。主要覆盖：
 
 - 同时查询在线数据、历史归档和评测数据；
-- 一个逻辑数据集下包含多层目录、多个 Run 级 `events.lance`，以及若干外围 JSON 文件；
-- 不同数据集存在相同的 `run_id`、`session_id` 或文件名；
+- 一条 path 下包含多层目录、多个 Run 级 `events.lance`，以及若干外围 JSON 文件；
+- 不同 path 上存在相同的 `run_id`、`session_id` 或文件名；
 - Web 服务需要在多次请求之间复用同一份发现结果，并且只在显式刷新后切换视图。
 
-它位于存储 URI 与 DataFusion SQL 之间，提供轻量的命名和发现边界。用户把若干 URI
-挂载为 Dataset；pChronicle 对每个挂载递归发现轨迹源，将不同物理格式统一投影到稳定表，
-并在一次查询或一代 Web 快照内固定其成员与版本。
+它位于 path 与 DataFusion SQL 之间。用户打开一条 path（或经 Directory 换票得到 path）；
+pChronicle 递归发现轨迹源，将不同物理格式统一投影到稳定表，并在一次查询或一代 Web
+Snapshot 内固定其成员与版本。这是写/读同步协议，不是一份需要长期维护的元数据数据库。
 
-Catalog **不是**一份需要长期维护的元数据数据库。它不复制源数据、不接管对象存储目录、
-不声明外围 JSON 已成为 canonical 数据，也不要求后台同步任务。
+Snapshot **不是** Directory，也不复制源数据、不接管对象存储目录、不声明外围 JSON 已成为
+canonical 数据，也不要求后台同步任务。代码类型名 `DatasetCatalogSnapshot` 仍指本对象。
 
 ## 2. 目标与非目标
 
@@ -55,7 +59,7 @@ Catalog **不是**一份需要长期维护的元数据数据库。它不复制�
 
 ## 3. 核心模型
 
-![Dataset Catalog 查询路径](../../assets/diagrams/persisting/dataset-catalog.svg)
+![Snapshot 查询路径](../../assets/diagrams/persisting/dataset-catalog.svg)
 
 核心对象分为七层：
 
@@ -71,10 +75,10 @@ Catalog **不是**一份需要长期维护的元数据数据库。它不复制�
 
 ### 3.1 Namespace、Dataset 与 SQL alias
 
-Dataset 是用户命名的逻辑查询空间，不等于物理 Lance dataset。一个 Dataset 可以包含多个
-Storyline store、多个 `events.lance` 和多个外围文件；每个 Dataset 对应一个 DataFusion
-schema。Catalog 用 `NamespacePath` 表达层级身份，用独立的 SQL alias 注册 DataFusion
-schema；因此 `prod/agents` 与 `staging/agents` 可以同时存在，而无需把目录身份编码进表名。
+Dataset 身份是规范化 path，不等于物理 Lance dataset，也不等于 Warehouse mount 名。
+一条 path 可以包含多个 Storyline store、多个 `events.lance` 和多个外围文件。Warehouse
+用 SQL alias 把已打开的 path 注册为 DataFusion schema，因此 `prod` 与 `staging` 可以同时
+存在；alias 不是 Dataset 身份。实现仍用 `NamespacePath` 表达挂载层级。
 
 SQL alias 会去除首尾空白并转成小写，必须匹配 `[A-Za-z_][A-Za-z0-9_]*`。`public` 和
 `information_schema` 是保留名称。namespace component 允许字母、数字、`_`、`-`、`.`。

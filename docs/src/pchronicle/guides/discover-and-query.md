@@ -59,7 +59,20 @@ pchronicle query ./dataset \
 Use `--format jsonl|csv` and `--output` in pipelines. Queries are read-only and
 limited by explicit row, byte, discovery, and timeout budgets.
 
-## 5. Disambiguate repeated external IDs
+## 5. Locate, then analyze
+
+`ls` / `sources` discover what exists. `find` locates candidates inside a pinned
+Snapshot. `query` analyzes. CLI `--match` and Web `q` share the same expression,
+reported scope, and `snapshot_id`; the Web UI may highlight returned fields
+without changing the match set.
+
+```bash
+pchronicle find ./dataset --match "timeout" --format json
+```
+
+Use the returned `source_path`, session, and step identities to narrow SQL.
+
+## 6. Disambiguate repeated external IDs
 
 The same external ID may occur in more than one file. Locate candidates first,
 then retain `source_path` when you need a durable reference:
@@ -73,4 +86,4 @@ pchronicle find ./dataset --source nested/source.json \
 For exact flags, see the [`pchronicle` CLI reference](../reference/cli.md).
 For table fields and join rules, see the [query model](../reference/query-model.md).
 Internal discovery and versioning behavior belongs to
-[Dataset Catalog design](../design/catalog.md).
+[Snapshot design](../design/catalog.md).

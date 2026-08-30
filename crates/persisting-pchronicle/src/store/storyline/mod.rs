@@ -929,13 +929,12 @@ impl StorylineLanceStore {
                 .as_ref()
                 .context("missing streamed Storyline tables")?;
             let (runs_version, steps_version, tool_calls_version) =
-                // FTS is part of the Storyline read contract, including for
-                // small imports. Previously only multi-chunk imports entered
-                // this path, leaving the common small-corpus case without
-                // searchable indexes. Keep this maintenance pass lightweight
-                // (no compaction) while extending scalar, FTS, and JSON
-                // indexes for every non-empty import.
-                if report.storylines > 0 {
+                // Build indexes for a new store (including a small import),
+                // and periodically after a large streamed import. Replacing
+                // one small region in an existing store must not rebuild and
+                // optimize every FTS/JSON index on every write; callers that
+                // need to catch up appended fragments can invoke `maintain`.
+                if original.is_none() || report.storylines > STREAM_IMPORT_STORIES {
                     let maintenance = LanceMaintenanceOptions {
                         // Extend scalar, FTS, and JSON indices once after
                         // import, without putting compaction in the ingest

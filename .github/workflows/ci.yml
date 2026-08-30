@@ -241,13 +241,6 @@ jobs:
           RUST_MIN_STACK: "8388608"
         run: cargo nextest run --locked ${{ matrix.packages }}
 
-      # pChronicle's property tests are opt-in so the everyday package test
-      # stays lightweight. CI is the full regression path and enables them
-      # explicitly (including private inline property modules).
-      - name: Run pChronicle property-test regression
-        if: matrix.shard == 'pchronicle'
-        run: just proptest pchronicle
-
       - name: Test shared event control contract
         if: matrix.event_control
         run: cargo nextest run -p persisting-events --features control --locked
@@ -269,6 +262,30 @@ jobs:
       - name: Smoke pChronicle CLI
         if: matrix.smoke_pchronicle
         run: ./target/debug/pchronicle query --help
+
+  rust-proptest:
+    name: Rust Proptest / pChronicle
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-zig: "false"
+          components: ""
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-rust-proptest-pchronicle
+
+      # Keep property tests out of the regular pChronicle package shard so
+      # nextest can schedule the two workloads on separate runners.
+      - name: Run pChronicle property-test regression
+        env:
+          RUST_MIN_STACK: "8388608"
+        run: just proptest pchronicle
 
   pchronicle-web-test:
     name: pChronicle Web
@@ -464,6 +481,7 @@ jobs:
       - rust-clippy-pchronicle
       - python-lint
       - rust-test
+      - rust-proptest
       - pchronicle-web-test
       - pvisor-isolation-regression
       - s3-contract

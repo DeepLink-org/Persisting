@@ -57,7 +57,19 @@ pchronicle query ./dataset \
 数据管道使用 `--format jsonl|csv` 和 `--output`。Query 只读，并受行数、字节、发现规模与
 timeout 上限约束。
 
-## 5. 消除重复外部 ID 的歧义
+## 5. 先定位，再分析
+
+`ls` / `sources` 负责发现；`find` 在已 pin 的 Snapshot 内定位；`query` 负责分析。
+CLI `--match` 与 Web `q` 共用同一表达式、报告的 scope 和 `snapshot_id`；Web UI 可以对
+返回字段做高亮，不改变命中集合。
+
+```bash
+pchronicle find ./dataset --match "timeout" --format json
+```
+
+用返回的 `source_path`、session 和 step 身份去收窄 SQL。
+
+## 6. 消除重复外部 ID 的歧义
 
 同一个外部 ID 可能出现在多个文件中。先查找候选，需要持久引用时再保留 `source_path`：
 
@@ -69,4 +81,4 @@ pchronicle find ./dataset --source nested/source.json \
 
 精确参数见 [`pchronicle` 命令行参考](../reference/cli.md)，字段和 join 规则见
 [查询模型](../reference/query-model.md)。内部发现与版本固定机制属于
-[Dataset Catalog 设计](../design/catalog.md)。
+[Snapshot 设计](../design/catalog.md)。

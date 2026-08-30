@@ -20,7 +20,8 @@
 - `AND`、`OR`、`NOT` 与括号组合。
 
 CLI 和 Web Explorer MUST 使用同一个解析器、同一个表达式语义和同一个 FTS/JSONB
-执行路径。这样 CLI 可以作为 Web 搜索的可重复诊断入口。
+执行路径。共享契约是表达式、scope 与 snapshot_id；Web 前端匹配只做高亮与截取。
+这样 CLI 可以作为 Web 搜索的可重复诊断入口。
 
 ```text
 pchronicle find [DATASET]
@@ -85,9 +86,9 @@ timeout AND retry
 
 ### 快照一致性
 
-一次 `find` 调用只使用一个 Catalog Snapshot。JSON 输出 MUST 包含 `snapshot_id`；
-stderr 也输出该 ID、返回数量和 `truncated` 状态。后续 SQL 或 Web 钻取可以使用该
-Snapshot ID 进行结果追溯。
+一次 `find` 调用只使用一个 Snapshot（打开 path 之后写入与读取之间的同步协议）。
+JSON 输出 MUST 包含 `snapshot_id`；stderr 也输出该 ID、返回数量和 `truncated` 状态。
+后续 SQL 或 Web 钻取可以使用该 Snapshot ID 进行结果追溯。
 
 ## 表达式语法
 
@@ -214,7 +215,10 @@ Step 范围。
 | 文本 + JSONB | `steps` | `fts+json` |
 | 无 `--match`，仅身份条件 | 由身份条件决定 | `identity` |
 
-查询范围必须在结果中公开，避免用户把 Run 级命中误认为 Step 级命中。
+查询范围必须在结果的 `search.scope` 中公开，避免用户把 Run 级命中误认为 Step 级命中。
+范围是 find 契约的一部分：CLI 与 Web 必须使用同一 scope。规范意图是调用方显式指定
+`--scope runs|steps`（Web 同等控件）。当前实现仍按上表从表达式推断范围；隐式切表不得写成
+产品特性，也不得在 CLI 与 Web 之间使用不同推断规则。
 
 ## 输出契约
 
@@ -283,18 +287,19 @@ JSON 同时设置 `truncated: true`。
 
 ## CLI、Web 和 Agent 一致性
 
-规范实现提供一个共享的 `FindExpr` AST：
+共享契约是 **表达式 + scope + snapshot_id**，不是行形。规范实现提供一个共享的
+`FindExpr` AST：
 
-1. CLI 和 Web 将输入交给同一个 `parse_match_expression`；
-2. 重复的 CLI `--match` 通过 `combine_match_expressions` 组合为 AND；
-3. FTS 索引查询、JSONB 谓词编译和范围判断复用同一套函数；
-4. Web 搜索请求的 `q` 按单个 `--match` 表达式解析；
-5. Agent 只生成 `--match`，不生成已废弃的 `--fts`、`--jsonb`、`--query` 或兼容别名。
+1. CLI 的 `--match` 与 Web 的 `q` 交给同一个 `parse_match_expression`，执行同一套
+   FTS / JSONB 路径；重复的 CLI `--match` 通过 `combine_match_expressions` 组合为 AND。
+2. 两端报告同一 `search.scope` 与同一 `snapshot_id`。
+3. Web Explorer 可以把 step 命中折叠成 run 行，这是视图，不是第二种查询。
+4. Web 可以多一层**前端匹配**：对后端返回的完整字段用表达式中的文本谓词做高亮和可视截取。
+   前端匹配 MUST NOT 改变命中集合，MUST NOT 在浏览器里再求值 JSONB。
+5. 后端 MUST 返回命中字段的完整归一化文本，不得先截取固定前缀。
+6. Agent 只生成 `--match`，不生成已废弃的 `--fts`、`--jsonb`、`--query` 或兼容别名。
 
-Web 可以提供输入框、作用域提示、清除按钮和命中高亮，但这些只是交互层能力，不能
-改变表达式语义。Web 返回的轨迹集合 MUST 与等价的 CLI `find` 查询一致。
-Runs 页面接口返回命中字段的完整归一化文本，前端根据当前表达式截取可视上下文并
-高亮；后端不得先截取固定前缀，以免命中词位于字段后部时无法反馈给用户。
+输入框、作用域提示和清除按钮只是交互层，不能改变表达式语义。
 
 ## 示例
 

@@ -75,5 +75,5 @@ statements. CLI row, byte, discovery, and timeout limits still apply.
 
 Exact physical Storyline columns are documented by
 [Storyline Lance](../design/storyline-lance.md). Discovery and predicate-pruning
-mechanisms belong to [Dataset Catalog design](../design/catalog.md). Use the
+mechanisms belong to [Snapshot design](../design/catalog.md). Use the
 [query guide](../guides/discover-and-query.md) for a complete workflow.

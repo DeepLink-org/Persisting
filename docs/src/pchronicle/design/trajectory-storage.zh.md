@@ -174,7 +174,7 @@ OpenAI msg ┘
 
 ## 8. 相关文档
 
-- [Dataset Catalog](catalog.md)
+- [Snapshot](catalog.md)
 - [AgenticMD 格式](../reference/agenticmd.md)
 - [Gateway 架构](../../pvisor/design/gateway.md)
 - [pVisor 命令](../../pvisor/reference/cli.md)

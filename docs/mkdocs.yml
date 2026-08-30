@@ -141,7 +141,7 @@ plugins:
             Installation: 安装指南
             pChronicle CLI: pChronicle 命令参考
             Query model: Query Model
-            Dataset Catalog: 数据集目录
+            Snapshot: Snapshot
             Queue guide: Queue 指南
             Python API overview: Python API 概览
             Queue API: Queue API
@@ -202,7 +202,7 @@ nav:
           - Product architecture: pchronicle/design/architecture.md
           - Dataset discovery and versioning: pchronicle/concepts/dataset-and-source.md
           - Recorded data, views, and versions: pchronicle/concepts/facts-and-projections.md
-          - Dataset Catalog: pchronicle/design/catalog.md
+          - Snapshot: pchronicle/design/catalog.md
           - Run storage: pchronicle/design/trajectory-storage.md
           - Storyline Lance projection: pchronicle/design/storyline-lance.md
       - Reference:
@@ -236,7 +236,7 @@ nav:
           - 0009 OpenAI Messages format: rfcs/0009-openai-messages-format.md
           - 0010 Agent corpus Lance layout: rfcs/0010-agent-corpus-lance-layout.md
           - 0012 pChronicle find query syntax: rfcs/0012-pchronicle-find-query-syntax.md
-          - 0013 pChronicle Warehouse Catalog: rfcs/0013-pchronicle-warehouse-catalog.md
+          - 0013 pChronicle path Directory: rfcs/0013-pchronicle-warehouse-catalog.md
       - Standalone systems:
           - Queue guide: guide/queue.md
           - Python API overview: api/index.md

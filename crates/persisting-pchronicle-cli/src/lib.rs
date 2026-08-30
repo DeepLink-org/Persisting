@@ -289,10 +289,10 @@ HTTP endpoints automatically enable AWS_ALLOW_HTTP for local S3-compatible
 services such as MinIO.
 An optional `--region REGION` is stored per alias; when omitted, the client
 falls back to `us-west-2` only when it needs a region.
-A `catalog://127.0.0.1:PORT` alias is a namespace: `@team/prod` fetches a ticket
-for library `prod` from that loopback catalog. User `--ak/--sk` are required;
+A `catalog://127.0.0.1:PORT` alias is a Directory locator: `@team/prod` fetches a
+ticket and opens the ticket path. User `--ak/--sk` are required;
 `--endpoint` and `--region` are not accepted. Backend object-store keys stay on
-the catalog server and are not written to config.toml.
+the Directory server and are not written to config.toml.
 The built-in aliases `@codex`, `@claude`, and `@claude-code` are always listed
 and resolve to the corresponding local Agent session roots."#)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -752,7 +752,9 @@ struct ExportArgs {
 
 #[derive(Debug, Args)]
 #[command(
-    override_usage = "pchronicle serve [OPTIONS] <[NAME=]DATASET>...",
+    override_usage = "pchronicle serve [OPTIONS] <[NAME=]DATASET>...\n       pchronicle serve catalog <COMMAND>",
+    subcommand_negates_reqs = true,
+    args_conflicts_with_subcommands = true,
     group(
         ArgGroup::new("dataset_source")
             .required(true)
@@ -776,6 +778,10 @@ struct ExportArgs {
     )
 )]
 struct ServeArgs {
+    /// Issue catalog users or change grants without starting Warehouse.
+    #[command(subcommand)]
+    command: Option<ServeSubcommand>,
+
     /// Compatibility: static Warehouse configuration file.
     #[arg(
         long = "warehouse-config",
@@ -862,7 +868,7 @@ struct ServeArgs {
     #[arg(long = "gateway-debug", alias = "debug", requires = "gateway_config")]
     debug: bool,
 
-    /// Catalog ACL file (libraries + users). Enables catalog:// aliases and
+    /// Directory ACL file (libraries + users). Enables catalog:// locators and
     /// per-user query workers for the Web API.
     #[arg(
         long = "catalog-config",
@@ -874,6 +880,69 @@ struct ServeArgs {
     /// Internal: run one filtered Warehouse request from stdin and exit.
     #[arg(long = "catalog-query-worker", hide = true)]
     catalog_query_worker: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum ServeSubcommand {
+    /// Issue catalog users and grant libraries without starting HTTP.
+    Catalog(CatalogManageArgs),
+}
+
+#[derive(Debug, Args)]
+struct CatalogManageArgs {
+    #[command(subcommand)]
+    command: CatalogCommand,
+}
+
+#[derive(Debug, Args)]
+struct CatalogFileArg {
+    /// Directory ACL file to read and rewrite.
+    #[arg(long = "catalog-config", value_name = "FILE")]
+    catalog_config: PathBuf,
+}
+
+#[derive(Debug, Subcommand)]
+enum CatalogCommand {
+    /// Create a user with empty grants and print the secret once.
+    Issue(CatalogIssueArgs),
+    /// Add library names to a user's grants.
+    Grant(CatalogGrantArgs),
+    /// Remove library names from a user's grants.
+    Revoke(CatalogRevokeArgs),
+}
+
+#[derive(Debug, Args)]
+struct CatalogIssueArgs {
+    #[command(flatten)]
+    file: CatalogFileArg,
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
+    format: OutputFormat,
+}
+
+#[derive(Debug, Args)]
+struct CatalogGrantArgs {
+    #[command(flatten)]
+    file: CatalogFileArg,
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[arg(value_name = "DATASET", required = true, num_args = 1..)]
+    datasets: Vec<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
+    format: OutputFormat,
+}
+
+#[derive(Debug, Args)]
+struct CatalogRevokeArgs {
+    #[command(flatten)]
+    file: CatalogFileArg,
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[arg(value_name = "DATASET", required = true, num_args = 1..)]
+    datasets: Vec<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
+    format: OutputFormat,
 }
 
 fn parse_gateway_bind(value: &str) -> std::result::Result<SocketAddr, String> {
@@ -1339,6 +1408,9 @@ pub async fn run_with_stdio(
             if args.catalog_query_worker {
                 return server::catalog::run_catalog_query_worker().await;
             }
+            if let Some(command) = args.command {
+                return run_serve_catalog(command, stdout_is_terminal, stdout, &mut diagnostics);
+            }
             run_serve(args, config, cli.log_level, stdout, &mut diagnostics).await
         }
     }
@@ -1733,6 +1805,116 @@ fn warehouse_listen(args: &ServeArgs) -> Option<SocketAddr> {
             Some(SocketAddr::from(([127, 0, 0, 1], 0)))
         }
         None => None,
+    }
+}
+
+fn run_serve_catalog(
+    command: ServeSubcommand,
+    stdout_is_terminal: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    let ServeSubcommand::Catalog(args) = command;
+    match args.command {
+        CatalogCommand::Issue(issue) => {
+            let issued = server::catalog::issue_user(&issue.file.catalog_config, &issue.name)?;
+            write_catalog_updated(stderr, &issue.file.catalog_config)?;
+            write_issued_user(
+                stdout,
+                resolve_output_format(issue.format, stdout_is_terminal),
+                &issued,
+            )
+        }
+        CatalogCommand::Grant(grant) => {
+            let datasets = server::catalog::grant_datasets(
+                &grant.file.catalog_config,
+                &grant.name,
+                &grant.datasets,
+            )?;
+            write_catalog_updated(stderr, &grant.file.catalog_config)?;
+            write_user_grants(
+                stdout,
+                resolve_output_format(grant.format, stdout_is_terminal),
+                &grant.name,
+                &datasets,
+            )
+        }
+        CatalogCommand::Revoke(revoke) => {
+            let datasets = server::catalog::revoke_datasets(
+                &revoke.file.catalog_config,
+                &revoke.name,
+                &revoke.datasets,
+            )?;
+            write_catalog_updated(stderr, &revoke.file.catalog_config)?;
+            write_user_grants(
+                stdout,
+                resolve_output_format(revoke.format, stdout_is_terminal),
+                &revoke.name,
+                &datasets,
+            )
+        }
+    }
+}
+
+fn resolve_output_format(format: OutputFormat, stdout_is_terminal: bool) -> OutputFormat {
+    match format {
+        OutputFormat::Auto if stdout_is_terminal => OutputFormat::Table,
+        OutputFormat::Auto => OutputFormat::Json,
+        other => other,
+    }
+}
+
+fn write_catalog_updated(stderr: &mut dyn Write, path: &Path) -> Result<()> {
+    writeln!(stderr, "config={} updated=true", path.display())
+        .context("write catalog update diagnostic")
+}
+
+fn write_issued_user(
+    stdout: &mut dyn Write,
+    format: OutputFormat,
+    issued: &server::catalog::IssuedUser,
+) -> Result<()> {
+    match format {
+        OutputFormat::Table => {
+            writeln!(stdout, "NAME\tACCESS_KEY\tSECRET_KEY")?;
+            writeln!(
+                stdout,
+                "{}\t{}\t{}",
+                issued.name, issued.access_key, issued.secret_key
+            )
+            .context("write catalog issue table")
+        }
+        OutputFormat::Json => {
+            serde_json::to_writer(&mut *stdout, issued).context("write catalog issue JSON")?;
+            writeln!(stdout).context("finish catalog issue JSON")
+        }
+        OutputFormat::Auto => unreachable!("auto output format was resolved"),
+    }
+}
+
+fn write_user_grants(
+    stdout: &mut dyn Write,
+    format: OutputFormat,
+    name: &str,
+    datasets: &[String],
+) -> Result<()> {
+    match format {
+        OutputFormat::Table => {
+            writeln!(stdout, "NAME\tDATASETS")?;
+            writeln!(stdout, "{name}\t{}", datasets.join(",")).context("write catalog grant table")
+        }
+        OutputFormat::Json => {
+            serde_json::to_writer(
+                &mut *stdout,
+                &serde_json::json!({
+                    "name": name,
+                    "datasets": datasets,
+                }),
+            )
+            .context("write catalog grant JSON")?;
+            writeln!(stdout).context("finish catalog grant JSON")
+        }
+        OutputFormat::Auto => unreachable!("auto output format was resolved"),
     }
 }
 
@@ -2170,7 +2352,7 @@ async fn run_list(
         discover_snapshot(&dataset_uri, args.errors, args.max_files, args.max_entries).await?;
     let dataset = snapshot
         .dataset(DEFAULT_DATASET_NAME)
-        .context("default Dataset missing from Catalog Snapshot")?;
+        .context("default Dataset missing from Snapshot")?;
     let response = ListResponse {
         dataset_uri,
         snapshot_id: snapshot.snapshot_id().to_string(),
@@ -2267,7 +2449,7 @@ async fn run_status(
     projections.sort_by(|left, right| left.source_path.cmp(&right.source_path));
     let dataset = snapshot
         .dataset(DEFAULT_DATASET_NAME)
-        .context("default Dataset missing from Catalog Snapshot")?;
+        .context("default Dataset missing from Snapshot")?;
     let total_sources = dataset.sources.len();
     let mut source_errors = dataset
         .sources

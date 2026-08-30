@@ -1,13 +1,13 @@
 # Dataset
 
-**Dataset 是 pChronicle 面向用户的唯一数据对象。** 它是一组可以被浏览、查询、分析、导入、
-导出或提供服务的 Agent 运行数据。
+**Dataset 就是 path。** 它是 pChronicle 打开的 Agent 轨迹存储：本地目录或文件，或对象存储
+URI 前缀。alias（`@name`）是 locator；解析完成后引擎只看见 path。
 
-一个 Dataset 可以表现为：
+一个 Dataset 可以写成：
 
 - 本地目录或文件（`./local/path`）；
 - 对象存储中的 URI 前缀（`s3://bucket/prefix`）；
-- 指向上述位置的用户 alias（`@alias-name`）。
+- 解析到上述位置的用户 alias（`@alias-name`）。
 
 ## Dataset 的写法
 
@@ -27,8 +27,9 @@ pChronicle 会发现 Dataset 中受支持的 Run 数据，并把语义兼容的�
 和 `tool_calls` 等查询表。每条读取命令使用一个内部一致的视图；即使底层位置在命令执行期间
 发生变化，已经开始的读取也不会随之漂移。
 
-这就是使用命令行所需的完整用户模型。存储发现、版本固定、事实、projection 和 revision 属于
-实现与数据契约细节；只有集成确实依赖这些边界时，才需要继续阅读[设计](../design/index.md)。
+这就是使用命令行所需的完整用户模型。每条读取命令都会 pin 该 path 的一个 Snapshot。
+存储发现、版本固定、事实、projection 和 revision 属于实现与数据契约细节；只有集成确实
+依赖这些边界时，才需要继续阅读[设计](../design/index.md)。
 
 接下来可以进入[常见工作流](../guides/index.md)、[产品术语](../reference/terminology.zh.md)或
 [命令行参考](../reference/cli.md)。

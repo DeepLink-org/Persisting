@@ -494,5 +494,5 @@ benchmark 还单独输出 DataSource 冷打开并执行 SQL、`get_storyline_ful
 
 - [事实、Projection 与 Revision](../concepts/facts-and-projections.md)：解释 Storyline 为何是 projection。
 - [pChronicle 架构](architecture.md)：定义 publication 和 read consistency 保证。
-- [Dataset Catalog](catalog.md)：说明 Source discovery 与固定 Snapshot 如何打开本 Store。
+- [Snapshot](catalog.md)：说明 Source discovery 与固定 Snapshot 如何打开本 Store。
 - [`pchronicle` 参考](../reference/cli.md)：当前对外查询、导入导出与服务命令。

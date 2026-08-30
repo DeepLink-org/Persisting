@@ -6,7 +6,7 @@
 | 区域 | 文档 |
 | --- | --- |
 | 产品边界与运维保证 | [Architecture](architecture.md) |
-| Dataset discovery、snapshot 与惰性 Source resolve | [Dataset Catalog](catalog.md) |
+| Path 身份、Snapshot 同步与惰性 Source resolve | [Snapshot](catalog.md) |
 | Canonical event 与 projection ownership | [运行存储](trajectory-storage.md) |
 | Storyline 三表 projection 与内容层 | [Storyline Lance](storyline-lance.md) |
 

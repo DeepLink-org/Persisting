@@ -57,6 +57,6 @@ statements are rejected. Prefer aggregates and explicit columns. Retrieve
 message, reasoning, argument, result, or payload fields only after narrowing to
 specific evidence.
 
-Each command freezes its own Catalog Snapshot. Capture `snapshot_id` from
+Each command freezes its own Snapshot. Capture `snapshot_id` from
 stderr. If it changes between commands, disclose the change instead of silently
 combining the results as one consistent observation.

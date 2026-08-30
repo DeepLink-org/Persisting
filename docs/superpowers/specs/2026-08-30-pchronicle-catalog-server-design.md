@@ -1,15 +1,15 @@
-# pChronicle Catalog Server
+# pChronicle path Directory
 
 日期：2026-08-30  
 状态：已在对话中逐节确认，按用户要求直接进入实现  
-范围：`pchronicle serve` 上的 catalog 目录 + ACL；本机 `catalog://` alias；Web 用用户 ak/sk 查数  
+范围：`pchronicle serve` 上的 Directory（名字→path + ACL）；本机 `catalog://` alias；Web 用用户 ak/sk 查数  
 排除：STS、热加载 TOML、非环回 bind、独立 `catalog serve` 进程、`fork(2)` 已运行的 Tokio、Gateway/Control
 
 ## 目标
 
-Catalog 是第三种 Dataset 入口（本地路径、`s3://`、远程 catalog 命名空间）。服务端配置列出对象存储（或同机本地）库及后端 ak/sk；用户用另一对 ak/sk 登录后，只能看见被授权的库。
+Directory 是平台部署时打开 **path** 的一种方式，不是第三种 Dataset。Dataset 身份始终是 path（本地路径或 `s3://`）。服务端配置列出对象存储（或同机本地）库及后端 ak/sk；用户用另一对 ak/sk 登录后，只能看见被授权的 path。换票后的 `uri` 才是引擎打开的 Dataset。
 
-- **CLI**：`@team/prod` 向 catalog 换票，进程内缓存，客户端自己访问存储（透传后端密钥）。
+- **CLI**：`@team/prod` 向 Directory 换票，进程内缓存，客户端自己打开 path（透传后端密钥）。
 - **Web**：ak/sk 存在 `localStorage`，查询在 **spawn 出的降权 worker** 里执行；父进程不拿全量库密钥跑 DataFusion。
 
 ## 进程

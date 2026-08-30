@@ -21,7 +21,7 @@ Configured pVisor capture
   Gateway trajectory events ─┐
   pVisor lifecycle records ──┴─> canonical event Source ─┐
 Pinned external Sources                                  │
-  ATIF / ACTF / OpenAI Messages / Storyline ─────────────┴─> Catalog Snapshot
+  ATIF / ACTF / OpenAI Messages / Storyline ─────────────┴─> Snapshot
                                                                └─> normalized Dataset views
 ```
 

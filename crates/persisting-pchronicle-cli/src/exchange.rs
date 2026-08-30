@@ -628,7 +628,7 @@ async fn exact_local_file_export(
     anyhow::ensure!(
         sources[0].size_bytes == Some(input.len() as u64)
             && sources[0].snapshot_ref().as_deref() == Some(&local_file_snapshot_ref(&source_path)),
-        "export Source changed after the Catalog Snapshot was created"
+        "export Source changed after the Snapshot was created"
     );
     Ok(Some(EncodedExport {
         bytes: input,

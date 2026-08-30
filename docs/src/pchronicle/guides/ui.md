@@ -145,10 +145,10 @@ clears the setting. Assistant is labeled **Read-only · selected run data** and
 does not rewrite the Dataset.
 
 When `pchronicle serve --catalog-config` is used, open **Keys** on the left rail
-and enter the catalog user access key and secret key. Those values are stored in
+and enter the Directory user access key and secret key. Those values are stored in
 `localStorage` and sent to this pChronicle server as `x-pchronicle-access-key`
-and `x-pchronicle-secret-key` on data requests. They are not the object-store
-backend keys.
+and `x-pchronicle-secret-key` on data requests. They authorize which paths this
+browser may open; they are not the object-store backend keys.
 
 ## Troubleshooting
 

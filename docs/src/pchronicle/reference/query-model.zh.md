@@ -67,5 +67,5 @@ JOIN dataset.steps s
 修改函数和多语句。CLI 的行数、字节、discovery 与 timeout 上限仍然生效。
 
 Storyline 精确物理列见 [Storyline Lance](../design/storyline-lance.md)，discovery 与 predicate
-pruning 机制属于 [Dataset Catalog 设计](../design/catalog.md)，完整工作流见
+pruning 机制属于 [Snapshot 设计](../design/catalog.md)，完整工作流见
 [查询指南](../guides/discover-and-query.md)。

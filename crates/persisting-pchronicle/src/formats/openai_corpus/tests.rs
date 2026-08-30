@@ -370,6 +370,24 @@ fn openai_imports_first_row_context_once_and_offsets_step_ids() {
 }
 
 #[test]
+fn openai_empty_response_uses_latest_cumulative_assistant_message() {
+    let input = json!({"session_steps": [{
+        "session_id": "s",
+        "step_id": 1,
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "answer"}
+        ],
+        "response": {"role": "assistant", "content": ""}
+    }]});
+
+    let story = parse_openai_msg_corpus_value(&input, "cumulative.json")
+        .unwrap()
+        .remove(0);
+    assert_eq!(story.turns.last().unwrap().message, json!("answer"));
+}
+
+#[test]
 fn openai_logical_roundtrip_preserves_mapped_storyline_fields() {
     let input = json!({"session_steps": [
         {

@@ -1,23 +1,23 @@
 # pChronicle
 
-**pChronicle 用于浏览、查询、交换和服务 Agent 运行 Dataset。** 它既可以读取
-Persisting 产生的运行记录，也可以直接读取受支持的外部格式；使用 pChronicle 不要求先运行
-pVisor。
+**pChronicle 是 Agent 轨迹存储引擎。** 用于浏览、查询、交换和服务运行 Dataset；既可以读取
+Persisting 产生的运行记录，也可以直接读取受支持的外部格式；不要求先运行 pVisor。
 
-在 Persisting“从模型状态到 Agent 历史”的主线中，pChronicle 是持久、可查询的 Agent 历史层。
+在 Persisting“从模型状态到 Agent 历史”的主线中，pChronicle 是 Agent 历史的持久存储与查询引擎。
+它可以作为本地工具使用，也可以平台化部署在多条 path 前面。
 
 ## 你只需要面对 Dataset
 
-**Dataset 是 pChronicle 操作的统一数据对象。** 它是一组可以被浏览、查询、分析、导入、
-导出或提供服务的 Agent 运行数据。
+**Dataset 就是 path**：本地目录或文件，或对象存储 URI 前缀。pChronicle 发现并规范化该
+path 中受支持的数据。alias（`@name`）是 locator；解析完成后引擎只看见 path。
 
-一个 Dataset 可以表现为：
+一个 Dataset 可以写成：
 
 - 本地目录或文件（`./local/path`）；
 - 对象存储中的 URI 前缀（`s3://bucket/prefix`）；
-- 指向上述位置的用户 alias（`@alias-name`）。
+- 解析到上述位置的用户 alias（`@alias-name`）。
 
-pChronicle 会发现并规范化该位置中受支持的数据。开始使用命令行前，你不需要理解内部文件或
+pChronicle 会发现并规范化该 path 中受支持的数据。开始使用命令行前，你不需要理解内部文件或
 存储布局。
 
 ## 从这里开始
@@ -59,4 +59,4 @@ pChronicle 读取并组织运行历史，不执行或调度 Agent。要在受控
 - [查看完整命令行手册](reference/cli.md)
 - [使用统一产品术语](reference/terminology.zh.md)
 - [理解数据模型](concepts/index.md)
-- [了解存储与目录设计](design/index.md)
+- [了解存储与 Snapshot 设计](design/index.md)

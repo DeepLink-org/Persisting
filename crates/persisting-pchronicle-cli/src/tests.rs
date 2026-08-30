@@ -306,6 +306,26 @@ fn command_tree_contains_the_product_commands() {
             .contains("combine them into one Storyline Lance Store at the Dataset root")
     );
     assert!(Cli::try_parse_from(["pchronicle", "project", "status"]).is_err());
+
+    let serve = command
+        .get_subcommands()
+        .find(|command| command.get_name() == "serve")
+        .unwrap();
+    let catalog = serve
+        .get_subcommands()
+        .find(|command| command.get_name() == "catalog")
+        .unwrap();
+    let catalog_commands = catalog
+        .get_subcommands()
+        .map(|command| command.get_name())
+        .collect::<Vec<_>>();
+    assert_eq!(catalog_commands, ["issue", "grant", "revoke"]);
+    let mut serve_command = Cli::command();
+    let serve_help = serve_command.find_subcommand_mut("serve").unwrap();
+    let mut help = Vec::new();
+    serve_help.write_long_help(&mut help).unwrap();
+    let help = String::from_utf8(help).unwrap();
+    assert!(help.contains("pchronicle serve catalog"), "{help}");
 }
 
 #[test]
@@ -606,6 +626,110 @@ async fn catalog_alias_stores_user_keys_and_rejects_endpoint() -> Result<()> {
         .unwrap_err()
         .to_string();
     assert!(error.contains("requires a dataset"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn serve_catalog_issue_grant_revoke_rewrites_config() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let catalog = temporary.path().join("catalog.toml");
+    fs::write(
+        &catalog,
+        r#"
+[libraries.prod]
+uri = "s3://bucket/prod"
+access_key = "BACKEND_AK"
+secret_key = "BACKEND_SK"
+"#,
+    )?;
+    let catalog_arg = catalog.to_string_lossy().into_owned();
+
+    assert!(
+        Cli::try_parse_from([
+            "pchronicle",
+            "serve",
+            "catalog",
+            "issue",
+            "--catalog-config",
+            &catalog_arg,
+            "alice",
+        ])
+        .is_ok()
+    );
+    assert!(
+        Cli::try_parse_from([
+            "pchronicle",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "catalog",
+            "issue",
+            "--catalog-config",
+            &catalog_arg,
+            "alice",
+        ])
+        .is_err()
+    );
+
+    let issue = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "catalog",
+        "issue",
+        "--catalog-config",
+        &catalog_arg,
+        "alice",
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    run(issue, false, &mut stdout, &mut stderr).await?;
+    let issued: Value = serde_json::from_slice(&stdout)?;
+    let secret_key = issued["secret_key"].as_str().expect("secret_key");
+    assert!(
+        issued["access_key"]
+            .as_str()
+            .expect("access_key")
+            .starts_with("pcak_")
+    );
+    let stderr_text = String::from_utf8(stderr)?;
+    assert!(stderr_text.contains("updated=true"), "{stderr_text}");
+    assert!(!stderr_text.contains(secret_key), "{stderr_text}");
+
+    let grant = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "catalog",
+        "grant",
+        "--catalog-config",
+        &catalog_arg,
+        "alice",
+        "prod",
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(grant, false, &mut stdout, &mut Vec::new()).await?;
+    let granted: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(granted["datasets"], serde_json::json!(["prod"]));
+
+    let revoke = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "catalog",
+        "revoke",
+        "--catalog-config",
+        &catalog_arg,
+        "alice",
+        "prod",
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(revoke, false, &mut stdout, &mut Vec::new()).await?;
+    let revoked: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(revoked["datasets"], serde_json::json!([]));
     Ok(())
 }
 
@@ -3667,6 +3791,7 @@ fn normalize_and_validate_dataset_uri_expands_alias_and_rejects_unknown() {
 
 fn serve_args_with_storage(storage: Vec<String>) -> ServeArgs {
     ServeArgs {
+        command: None,
         config: None,
         storage,
         positional_storage: Vec::new(),

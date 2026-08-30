@@ -13,7 +13,7 @@ commands belong to each product's Reference.
 | `persisting-events` contract | storage-independent `EventRecord` identity/envelope and the optional versioned pChronicle control protocol | storage rows, storage engines, query, or projection |
 | pVisor | one Run, its Attempts, execution environment, capability admission, effects, and runtime evidence | many-Run scheduling or durable history queries |
 | pPilot | planning, bounded execution, leases, retry and recovery, reconciliation, result collection, and task-to-Run mapping for many Runs | Agent reasoning, provider enforcement, or trajectory formats and storage |
-| pChronicle | Dataset and Source discovery, canonical events and terminal facts, normalized projections, revision lineage, query, and exchange | starting, scheduling, or controlling a Run |
+| pChronicle | Agent trajectory storage engine: path identity, Snapshot, canonical events, projections, query, and exchange | starting, scheduling, or controlling a Run |
 | Runtime provider | one physical execution mechanism | logical Run identity or product policy |
 
 Gateway, OverlayFS, and OverlayNet are pVisor runtime mechanisms. They do not
@@ -27,7 +27,7 @@ Configured runtime capture
   Gateway trajectory events ─┐
   pVisor lifecycle records ──┴─> canonical event Source ──────────────┐
 Pinned external Sources                                                │
-  local/S3 ATIF, ACTF, OpenAI Messages files ──────────────────────────┼─> Catalog Snapshot
+  local/S3 ATIF, ACTF, OpenAI Messages files ──────────────────────────┼─> Snapshot
   local/S3 Storyline Sources ──────────────────────────────────────────┘
                                                                          └─> normalized Dataset views
 ```
@@ -127,20 +127,20 @@ all of these modes.
 ## Dataset path
 
 Canonical runtime writers and pinned external Sources are independent Source
-paths. They converge only at the Catalog Snapshot and normalized Dataset views:
+paths. They converge only at the Snapshot and normalized Dataset views:
 
 ```text
 configured Gateway and pVisor lifecycle writers
   → canonical event Source ────────────────────────────────┐
 pinned local/S3 external Sources                           │
-  → ATIF / ACTF / OpenAI Messages files ───────────────────┼─> Catalog Snapshot
+  → ATIF / ACTF / OpenAI Messages files ───────────────────┼─> Snapshot
   → Storyline Sources ─────────────────────────────────────┘     ├─> normalized Run / Step / ToolCall views
                                                                  └─> query / export / revision lineage
 ```
 
 Canonical facts are append-oriented. Storyline and other normalized views are
 rebuildable projections. Exchange files are interoperability boundaries, not a
-replacement source of truth. Each read operation fixes a Catalog Snapshot; it
+replacement source of truth. Each read operation fixes a Snapshot; it
 does not invent a global transaction across unrelated Sources. Pinning an
 external file does not convert it into a canonical runtime event Source.
 
@@ -211,7 +211,7 @@ See [Security and evidence](security-evidence.md) for evidence levels and
 | provider and runtime mechanisms | pVisor | [pVisor design](../pvisor/design/index.md) |
 | many-Run orchestration | pPilot within pVisor | [pPilot design](../pvisor/design/orchestration.md) |
 | Dataset, facts, and projections | pChronicle | [pChronicle concepts](../pchronicle/concepts/index.md) |
-| storage and Catalog implementation | pChronicle | [pChronicle design](../pchronicle/design/index.md) |
+| storage and Snapshot implementation | pChronicle | [pChronicle design](../pchronicle/design/index.md) |
 | stable command syntax and formats | each product | [pVisor reference](../pvisor/reference/index.md) and [pChronicle reference](../pchronicle/reference/index.md) |
 | normative ownership decisions | Project RFCs | [RFC index](../rfcs/index.md) |
 

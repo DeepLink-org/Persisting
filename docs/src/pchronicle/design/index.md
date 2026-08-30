@@ -7,7 +7,7 @@ history. Storage and API terms used below are defined in the
 | Area | Document |
 | --- | --- |
 | Product boundary and operational guarantees | [Architecture](architecture.md) |
-| Dataset discovery, snapshots, and lazy source resolution | [Dataset Catalog](catalog.md) |
+| Path identity, Snapshot sync, and lazy source resolution | [Snapshot](catalog.md) |
 | Canonical events and projection ownership | [Run storage](trajectory-storage.md) |
 | Three-table Storyline projection and content layer | [Storyline Lance](storyline-lance.md) |
 

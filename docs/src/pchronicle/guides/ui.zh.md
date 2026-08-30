@@ -123,10 +123,10 @@ Storage 是高级诊断页，不是日常浏览 Run 的必经步骤。左侧按 
 清除该站点的浏览器数据也会清除这份设置。Assistant 标记为 **Read-only · selected run data**，
 用于解释当前上下文，不会改写 Dataset。
 
-使用 `pchronicle serve --catalog-config` 时，从左侧 **Keys** 打开设置，填写 catalog 用户的
+使用 `pchronicle serve --catalog-config` 时，从左侧 **Keys** 打开设置，填写 Directory 用户的
 access key 和 secret key。它们保存在 `localStorage`，并作为
 `x-pchronicle-access-key` / `x-pchronicle-secret-key` 发给当前 pChronicle 服务端。
-这不是对象存储后端密钥。
+它们决定浏览器可以打开哪些 path，不是对象存储后端密钥。
 
 ## 常见问题
 

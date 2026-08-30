@@ -74,7 +74,7 @@ fn agent_help_explains_startup_controls() -> Result<()> {
             "agent help omits {option}: {stdout}"
         );
     }
-    assert!(stdout.contains("bounded Dataset status check"), "{stdout}");
+    assert!(stdout.contains("without querying the Dataset"), "{stdout}");
     assert!(
         stdout.contains("does not validate Agent installation"),
         "{stdout}"
@@ -104,6 +104,8 @@ fn serve_help_exposes_only_the_canonical_dataset_surface() -> Result<()> {
         stdout.contains("Usage: pchronicle serve [OPTIONS] <[NAME=]DATASET>..."),
         "{stdout}"
     );
+    assert!(stdout.contains("pchronicle serve catalog"), "{stdout}");
+    assert!(stdout.contains("catalog"), "{stdout}");
     for option in [
         "--listen",
         "--control",
@@ -133,6 +135,25 @@ fn serve_help_exposes_only_the_canonical_dataset_surface() -> Result<()> {
             "serve help exposes compatibility option {legacy}: {stdout}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn serve_catalog_help_lists_issue_grant_revoke() -> Result<()> {
+    let output = pchronicle(&["serve", "catalog", "--help"])?;
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout)?;
+    for command in ["issue", "grant", "revoke"] {
+        assert!(
+            stdout.contains(command),
+            "catalog help omits {command}: {stdout}"
+        );
+    }
+    let issue = pchronicle(&["serve", "catalog", "issue", "--help"])?;
+    assert!(issue.status.success());
+    let issue_help = String::from_utf8(issue.stdout)?;
+    assert!(issue_help.contains("--catalog-config"), "{issue_help}");
     Ok(())
 }
 
@@ -615,8 +636,8 @@ fn agent_dry_run_is_inspectable_and_has_no_launch_side_effects() -> Result<()> {
         Path::new(plan["working_directory"].as_str().unwrap()),
         fs::canonicalize(&caller)?
     );
-    assert_eq!(plan["startup_mode"], "health_then_answer");
-    assert_eq!(plan["bootstrap"]["run_status"], true);
+    assert_eq!(plan["startup_mode"], "interactive_with_question");
+    assert_eq!(plan["bootstrap"]["run_status"], false);
     assert_eq!(plan["bootstrap"]["run_overview"], false);
     assert_eq!(plan["initial_question"]["provided"], true);
     assert_eq!(
