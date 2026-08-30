@@ -21,12 +21,12 @@ use crate::copilot_sessions::{
 use crate::llm;
 use crate::llm_settings::LlmSettings;
 use crate::model::{
-    CatalogTree, DimensionAggregate, EventProvenance, HistogramBucket, QueryCatalog,
+    CatalogTree, DimensionAggregate, HistogramBucket, QueryCatalog,
     PageSnapshot, QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSearchStatus,
     RunSummary,
     ToolAggregate, TurnDetail, TurnSearchStatus, TurnSummary,
 };
-use crate::notice::{WorkspaceNotice, workspace_notice};
+use crate::notice::{ErrorNotice, WorkspaceNotice, workspace_notice};
 use crate::terminology::{ANALYSIS, ASSISTANT, DATASETS, RUNS, STEPS, STORAGE, TIMELINE};
 
 const SEARCH_DEBOUNCE_MS: u32 = 1_000;
@@ -37,6 +37,7 @@ fn evidence_notice(turn_id: i64, detail: &str) -> WorkspaceNotice {
         summary: format!("Step #{turn_id} · {}", type_mismatch_summary(detail)),
         action: String::new(),
         detail: detail.to_string(),
+        engine_detail: None,
         request_id: None,
         turn_id: Some(turn_id),
     }
@@ -305,25 +306,9 @@ pub fn App() -> Element {
 
             main { id: "pc2-main", class: "pc2-main", tabindex: "-1",
                 if let Some(notice) = error() {
-                    div { class: "pc2-workspace-notice", role: "alert",
-                        div { class: "pc2-workspace-notice-copy",
-                            strong { "{notice.title}" }
-                            span { "{notice.summary}" }
-                            if !notice.action.is_empty() {
-                                span { "{notice.action}" }
-                            }
-                            if let Some(request_id) = notice.request_id.as_ref() {
-                                p { class: "pc2-workspace-notice-request",
-                                    "Request ID "
-                                    code { "{request_id}" }
-                                }
-                            }
-                            details { class: "pc2-workspace-notice-details",
-                                summary { "Show technical details" }
-                                pre { "{notice.detail}" }
-                            }
-                        }
-                        button { aria_label: "Dismiss", onclick: move |_| error.set(None), "×" }
+                    ErrorNotice {
+                        notice,
+                        on_dismiss: Some(EventHandler::new(move |_| error.set(None))),
                     }
                 }
                 match page().as_str() {
@@ -1445,11 +1430,6 @@ fn RunDetailWorkspace(
                 div { class: "pc2-head-actions",
                     button { class: "button primary", onclick: on_open_copilot, "◇ Ask Assistant" }
                     button { class: "button", onclick: { let run = run.clone(); move |_| on_analyze.call(run.clone()) }, "Analyze this run" }
-                    if analysis.event_provenance == EventProvenance::Canonical {
-                        a { class: "button", href: "/api/export/otlp?{run.query()}", "OTLP" }
-                    } else {
-                        button { class: "button", disabled: true, title: "OTLP export requires recorded events", "OTLP unavailable · Reconstructed events" }
-                    }
                 }
             }
             MetricsStrip { analysis: analysis.clone() }

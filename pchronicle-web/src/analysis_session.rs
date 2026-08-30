@@ -367,6 +367,12 @@ pub struct AnalysisRevision {
     pub execution: Option<ExecutionSummary>,
     pub interpretation: Option<AnalysisInterpretation>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_engine_detail: Option<String>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     pub needs_rerun: bool,
@@ -400,6 +406,9 @@ impl AnalysisRevision {
             execution: None,
             interpretation: None,
             error: None,
+            error_code: None,
+            error_request_id: None,
+            error_engine_detail: None,
             created_at_ms: now,
             updated_at_ms: now,
             needs_rerun: false,
@@ -418,7 +427,7 @@ impl AnalysisRevision {
             | RevisionState::Stale
             | RevisionState::QueryError => {
                 self.state = RevisionState::GeneratingPlan;
-                self.error = None;
+                self.clear_error();
                 self.pending_effect = None;
                 self.repair_count = 0;
                 self.compiled_sql = None;
@@ -460,7 +469,7 @@ impl AnalysisRevision {
             &sql,
         ));
         self.state = RevisionState::PlanReady;
-        self.error = None;
+        self.clear_error();
         self.complete_trace_step(Some(&sql));
         self.touch();
         self.confirm_execution()?;
@@ -522,7 +531,7 @@ impl AnalysisRevision {
         self.plan = Some(plan);
         self.compiled_sql = self.plan.as_ref().map(|plan| plan.sql.clone());
         self.state = RevisionState::PlanReady;
-        self.error = None;
+        self.clear_error();
         self.pending_effect = None;
         self.active_operation_id = None;
         let sql = self.compiled_sql.clone();
@@ -550,7 +559,7 @@ impl AnalysisRevision {
         self.needs_rerun = false;
         let operation_id = self.begin_operation();
         self.state = RevisionState::Executing;
-        self.error = None;
+        self.clear_error();
         self.pending_effect = Some(AnalysisEffect::ExecuteSql {
             revision_id: self.id,
             operation_id,
@@ -581,7 +590,7 @@ impl AnalysisRevision {
         self.needs_rerun = false;
         let operation_id = self.begin_operation();
         self.state = RevisionState::Executing;
-        self.error = None;
+        self.clear_error();
         self.pending_effect = Some(AnalysisEffect::ExecuteSql {
             revision_id: self.id,
             operation_id,
@@ -620,7 +629,7 @@ impl AnalysisRevision {
         });
         self.evidence = Some(evidence);
         self.interpretation = None;
-        self.error = None;
+        self.clear_error();
         self.needs_rerun = false;
         self.complete_trace_step(Some(&summary));
         let effect = has_rows.then(|| AnalysisEffect::Interpret {
@@ -653,7 +662,7 @@ impl AnalysisRevision {
         }
         self.interpretation = Some(interpretation.clone());
         self.state = RevisionState::Complete;
-        self.error = None;
+        self.clear_error();
         self.pending_effect = None;
         self.active_operation_id = None;
         let output = serde_json::to_string_pretty(&interpretation).ok();
@@ -736,7 +745,7 @@ impl AnalysisRevision {
         }
         let operation_id = self.begin_operation();
         self.state = RevisionState::Interpreting;
-        self.error = None;
+        self.clear_error();
         let effect = AnalysisEffect::Interpret {
             revision_id: self.id,
             operation_id,
@@ -745,6 +754,24 @@ impl AnalysisRevision {
         self.start_trace_step(AnalyzeTraceKind::Interpret, Some("retry interpretation"));
         self.touch();
         Ok(effect)
+    }
+
+    pub fn clear_error(&mut self) {
+        self.error = None;
+        self.error_code = None;
+        self.error_request_id = None;
+        self.error_engine_detail = None;
+    }
+
+    pub fn set_api_error_meta(
+        &mut self,
+        code: Option<String>,
+        request_id: Option<String>,
+        engine_detail: Option<String>,
+    ) {
+        self.error_code = code.filter(|code| !code.is_empty());
+        self.error_request_id = request_id.filter(|id| !id.is_empty());
+        self.error_engine_detail = engine_detail.filter(|detail| !detail.is_empty());
     }
 
     fn accepts(&self, revision_id: u64, operation_id: AnalysisOperationId) -> bool {
@@ -2713,6 +2740,31 @@ mod tests {
         assert_eq!(revision.state, RevisionState::QueryError);
         assert!(revision.confirm_execution().is_err());
         assert!(revision.begin_plan_generation().is_ok());
+    }
+
+    #[test]
+    fn api_error_meta_round_trips_through_persist() {
+        let (mut revision, query_operation) = executing_revision();
+        revision
+            .fail_query(1, query_operation, "column does not exist")
+            .unwrap();
+        revision.set_api_error_meta(
+            Some("invalid_request".into()),
+            Some("rid-analysis".into()),
+            Some("engine boom".into()),
+        );
+        let restored = restored_revision(revision);
+        assert_eq!(restored.error_code.as_deref(), Some("invalid_request"));
+        assert_eq!(restored.error_request_id.as_deref(), Some("rid-analysis"));
+        assert_eq!(
+            restored.error_engine_detail.as_deref(),
+            Some("engine boom")
+        );
+        let mut retry = restored;
+        retry.begin_plan_generation().unwrap();
+        assert!(retry.error_code.is_none());
+        assert!(retry.error_request_id.is_none());
+        assert!(retry.error_engine_detail.is_none());
     }
 
     #[test]

@@ -80,9 +80,7 @@ The Run page has three layers:
   event references. **Analysis** opens the Run-level analysis view.
 
 Timeline bars show records at their positions in the Session sequence; they are
-not a wall-clock latency chart. `OTLP unavailable · Reconstructed events` means the
-events were reconstructed from imported Run data and no recorded OTLP events are available.
-Captured text, tool calls, and metrics remain usable.
+not a wall-clock latency chart. Captured text, tool calls, and metrics remain usable.
 
 ## Analyze Datasets
 

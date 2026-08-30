@@ -71,7 +71,7 @@ crate 级门面行为（格式往返、detect、frontmatter 解析）集中在 `
 `catalog_identity`（命名空间路径安全边界）。
 第十六批 5 个模块为：`claude_code`（工具调用结果关联）、`codex`（消息项文本保真）、
 `atif_codec`（ATIF turn 内容往返）、`events_convert`（请求/响应对话与延迟推导）以及
-`interop`（OTLP payload 无损导出）。
+`interop`（HAR 导出与 OTLP 输入解析）。
 第十七批 5 个模块为：`agenticmd_codec`（正数 turn ID 保真）、`analysis_compile`（未知 measure 错误结构）、
 `catalog_namespace`（分页大小边界）、`events_projection`（事件序列单调性）以及
 `run_control`（不同 owner 的租约互斥）。

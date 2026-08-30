@@ -22,7 +22,7 @@ use axum::{Json, Router};
 use persisting_pchronicle::analysis_compile::{
     AnalysisSpec, CompileError, CompileScope, CompiledQuery, TableSchema, compile,
 };
-use persisting_pchronicle::document::{InputIssue, events_to_otlp_json};
+use persisting_pchronicle::document::InputIssue;
 use persisting_pchronicle::model::{EventRecord, StorylineTurn};
 use persisting_pchronicle::query::ChronicleQueryEngine;
 #[cfg(test)]
@@ -227,7 +227,6 @@ fn api_routes() -> Router<AppState> {
         .route("/events", get(events))
         .route("/storyline", get(storyline))
         .route("/trajectory-view", get(trajectory_view))
-        .route("/export/otlp", get(export_otlp))
         .route("/catalog", get(catalog).post(refresh_catalog))
         .route("/physical/sources", get(physical::sources))
         .route("/physical/layout", get(physical::layout))
@@ -1513,21 +1512,6 @@ async fn explorer_turn(
         &loaded.records,
         loaded.event_provenance,
     )))
-}
-
-async fn export_otlp(
-    State(state): State<AppState>,
-    request_id: RequestId,
-    query: Result<Query<SessionQuery>, QueryRejection>,
-) -> Result<Json<Value>, ApiError> {
-    let query = api_query(query)?;
-    let event_view = load_events(&state, &query, &request_id).await?;
-    if !event_view.provenance.is_canonical() {
-        return Err(ApiError::unsupported(
-            "OTLP export requires recorded events; this run only has reconstructed events",
-        ));
-    }
-    Ok(Json(events_to_otlp_json(&event_view.records)))
 }
 
 #[derive(Debug, Serialize)]

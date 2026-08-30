@@ -237,6 +237,22 @@ impl tracing::Subscriber for CapturingSubscriber {
     fn enter(&self, _span: &tracing::span::Id) {}
 
     fn exit(&self, _span: &tracing::span::Id) {}
+
+    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+        Some(tracing::level_filters::LevelFilter::TRACE)
+    }
+}
+
+#[test]
+fn from_anyhow_fts_chain_attaches_4xx_root_cause() {
+    let cause = anyhow::anyhow!("index missing").context("FTS unavailable for dataset/file");
+    let response = ApiError::from_anyhow("rid", "explorer_runs", cause).into_response();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let root = response
+        .extensions()
+        .get::<super::problem::FourXxRootCause>()
+        .map(|value| value.0.as_str());
+    assert_eq!(root, Some("index missing"));
 }
 
 #[tokio::test]
@@ -355,26 +371,36 @@ async fn four_xx_warn_includes_root_cause_when_chain_is_deeper() {
     let logged = events.lock().unwrap().clone();
     let warn_events: Vec<_> = logged
         .into_iter()
-        .filter(|event| {
-            event.level == tracing::Level::WARN
-                && event.message.contains("warehouse request rejected")
-        })
+        .filter(|event| event.level == tracing::Level::WARN)
         .collect();
     assert_eq!(warn_events.len(), 1, "{warn_events:?}");
     assert_eq!(
-        warn_events[0].fields.get("root_cause").map(String::as_str),
-        Some("index missing")
+        warn_events[0]
+            .fields
+            .get("root_cause")
+            .map(|value| value.trim_matches('"')),
+        Some("index missing"),
+        "{:?}",
+        warn_events[0]
     );
     assert_eq!(
-        warn_events[0].fields.get("code").map(String::as_str),
+        warn_events[0]
+            .fields
+            .get("code")
+            .map(|value| value.trim_matches('"')),
         Some("invalid_request")
     );
     assert_eq!(
         warn_events[0]
             .fields
             .get("request_id")
-            .map(String::as_str),
+            .map(|value| value.trim_matches('"')),
         Some("rid-4xx-root")
+    );
+    assert!(
+        warn_events[0].message.contains("FTS unavailable"),
+        "{:?}",
+        warn_events[0]
     );
 }
 
@@ -1490,24 +1516,6 @@ async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
     );
     assert!(!events["records"].as_array().unwrap().is_empty());
 
-    let otlp = app
-        .oneshot(
-            axum::http::Request::builder()
-                .uri(format!("/api/export/otlp?{coordinates}"))
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(otlp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let otlp = response_json(otlp).await;
-    assert_eq!(otlp["code"], "unsupported");
-    assert!(
-        otlp["message"]
-            .as_str()
-            .unwrap()
-            .contains("reconstructed events")
-    );
     std::fs::remove_dir_all(root).unwrap();
 }
 

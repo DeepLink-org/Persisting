@@ -16,9 +16,7 @@ pub use crate::convert::{events_to_storyline, project_event_records, storyline_t
 pub use crate::format::DocumentFormat;
 pub use crate::formats::detect_format;
 pub use crate::input::{InputIssue, InputIssueKind, InputResult};
-pub use crate::interop::{
-    events_to_har, events_to_otlp_json, langfuse_otlp_json_to_events, otlp_json_to_events,
-};
+pub use crate::interop::{events_to_har, langfuse_otlp_json_to_events, otlp_json_to_events};
 
 pub type Result<T> = anyhow::Result<T>;
 

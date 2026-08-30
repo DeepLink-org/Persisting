@@ -88,30 +88,6 @@ fn body_text(value: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// Export one OTel span per correlated call. Wire-only fields remain in a
-/// pChronicle attribute so standard backends can coexist with lossless storage.
-pub fn events_to_otlp_json(records: &[EventRecord]) -> Value {
-    let spans = records
-        .iter()
-        .map(|record| {
-            json!({
-                "traceId": record.trace_id,
-                "spanId": record.call_id,
-                "name": record.kind,
-                "startTimeUnixNano": "0",
-                "endTimeUnixNano": "0",
-                "attributes": [
-                    {"key":"pchronicle.session_id","value":{"stringValue":record.session_id}},
-                    {"key":"pchronicle.event_id","value":{"stringValue":record.identity.event_id}},
-                    {"key":"pchronicle.seq","value":{"intValue":record.seq.to_string()}},
-                    {"key":"pchronicle.payload","value":{"stringValue":record.payload.to_string()}}
-                ]
-            })
-        })
-        .collect::<Vec<_>>();
-    json!({"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"pchronicle"}}]},"scopeSpans":[{"scope":{"name":"persisting-pchronicle"},"spans":spans}]}]})
-}
-
 /// Import OTLP JSON spans as explicitly degraded, non-replayable events.
 pub fn otlp_json_to_events(document: &Value) -> Vec<EventRecord> {
     let mut records = Vec::new();

@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use wasm_bindgen::JsValue;
 
 use crate::api;
-use crate::notice::{WorkspaceNotice, workspace_notice};
+use crate::notice::{ErrorNotice, WorkspaceNotice, workspace_notice};
 use crate::model::{
     PhysicalBucket, PhysicalColumn, PhysicalFileLayout, PhysicalFragment, PhysicalLayout,
     PhysicalPagePreview, PhysicalSource, PhysicalTable,
@@ -318,25 +318,9 @@ pub fn PhysicalWorkspace() -> Element {
                     }
                 }
                 if let Some(notice) = error() {
-                    div { class: "pc2-workspace-notice", role: "alert",
-                        div { class: "pc2-workspace-notice-copy",
-                            strong { "{notice.title}" }
-                            span { "{notice.summary}" }
-                            if !notice.action.is_empty() {
-                                span { "{notice.action}" }
-                            }
-                            if let Some(request_id) = notice.request_id.as_ref() {
-                                p { class: "pc2-workspace-notice-request",
-                                    "Request ID "
-                                    code { "{request_id}" }
-                                }
-                            }
-                            details { class: "pc2-workspace-notice-details",
-                                summary { "Show technical details" }
-                                pre { "{notice.detail}" }
-                            }
-                        }
-                        button { aria_label: "Dismiss", onclick: move |_| error.set(None), "×" }
+                    ErrorNotice {
+                        notice,
+                        on_dismiss: Some(EventHandler::new(move |_| error.set(None))),
                     }
                 }
                 if let Some(current_table) = selected_table_layout.clone() {
