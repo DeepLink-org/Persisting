@@ -1,7 +1,9 @@
 # Capture Agent Trajectories
 
 Gateway capture is a pVisor Run driver. It is started and stopped with the Run;
-there is no standalone Gateway command or daemon.
+there is no standalone Gateway command or daemon. The
+[capability and evidence model](../concepts/capabilities-and-evidence.md)
+explains what capture proves and what it does not enforce.
 
 ## Local walkthrough
 

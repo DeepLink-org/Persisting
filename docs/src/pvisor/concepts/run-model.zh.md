@@ -40,5 +40,6 @@ execute → inspect stage → apply selected paths zero or more times → drop s
 Checkpoint 记录 Provider 能保存状态的一致性前沿。Run 终态结果记录最终状态，以及 Evidence
 和 Artifact 的引用。两者都不应只从进程退出码推断。
 
-下一步阅读 [Capability 与 Evidence](capabilities-and-evidence.md)，再通过
+返回 [pVisor 核心概念](index.md)，或继续阅读
+[Capability 与 Evidence](capabilities-and-evidence.md)，再通过
 [执行指南](../guides/execution.md)选择 Provider。

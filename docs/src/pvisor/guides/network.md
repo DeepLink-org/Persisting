@@ -2,7 +2,8 @@
 
 OverlayNet lets pVisor apply allow, deny, and bandwidth rules to network
 egress. Host and container runs use its in-process HTTP proxy; libkrun VM runs
-use an in-process smoltcp data plane for IPv4 TCP and DNS.
+use an in-process smoltcp data plane for IPv4 TCP and DNS. Interpret these
+controls with the [capability and evidence model](../concepts/capabilities-and-evidence.md).
 
 !!! warning "Security boundary depends on the driver"
     The host/container explicit proxy is cooperative: a program can bypass it

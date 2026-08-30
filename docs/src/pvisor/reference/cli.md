@@ -28,8 +28,7 @@ pvisor review last
 `--safe` uses the current directory as the reusable project workspace and
 OverlayFS base, creates an independent Run and writable stage under
 `PERSISTING_RUN_HOME` (default `~/.persisting/runs`), retains changes for
-manual review, enables the explicit OverlayNet proxy on ephemeral loopback
-ports, and writes `run-bundle.json` with mode `0600`.
+manual review, and writes `run-bundle.json` with mode `0600`.
 On Linux, the default host executor self-executes through pVisor's rootless
 launcher before the async runtime reaches the Agent. User/mount/PID namespaces,
 an in-namespace PID 1 descendant reaper,
@@ -51,7 +50,7 @@ After completion:
 pvisor review last
 pvisor checkpoint last --name before-experiment
 pvisor fork last --checkpoint before-experiment -- codex
-pvisor apply last       # or: pvisor drop last
+pvisor apply last --all # or: pvisor drop last
 ```
 
 The CLI checkpoint is stopped-consistent. Embedded hosts can call
@@ -306,11 +305,12 @@ KVM and Apple Silicon macOS uses HVF through the same executor. libkrunfw is
 installed beside pVisor in wheels. Source builds otherwise download the pinned
 official release into a SHA-256-verified platform cache; on macOS `/usr/bin/cc`
 turns its prebuilt kernel bundle into the required dylib. A system directory can
-still be selected with `--vm-library-dir`. OverlayNet/Gateway is rejected for
-this executor until a cross-platform guest relay is available. Linux additionally confines the VMM
-with namespaces and Landlock. The macOS VMM still has the invoking user's host
-permissions, so the first OCI-image version must not be treated as a hostile
-multi-tenant boundary despite the guest-kernel isolation.
+still be selected with `--vm-library-dir`. OverlayNet `auto` uses the
+non-bypassable VM smoltcp IPv4 TCP/DNS driver, while Gateway capture uses an
+internal route through the guest virtual router. Linux additionally confines
+the VMM with namespaces and Landlock. The macOS VMM still has the invoking
+user's host permissions, so the first OCI-image version must not be treated as
+a hostile multi-tenant boundary despite the guest-kernel isolation.
 
 The four visible OverlayNet policy flags and Gateway capture automatically enable the
 proxy driver. Any `--overlayfs-base`, `--overlayfs-compose`,
@@ -364,10 +364,10 @@ Lifecycle commands accept a Run id, Run directory, project workspace,
 ```bash
 pvisor status /path/to/project
 pvisor inspect /path/to/project -- rg TODO .
-pvisor apply /path/to/project
+pvisor apply /path/to/project --all
 pvisor apply /path/to/project --path src --path tests/unit
 pvisor apply /path/to/project --include 'docs/**' --exclude 'docs/generated/**'
-pvisor apply /path/to/project --target /path/to/another-target
+pvisor apply /path/to/project --target /path/to/another-target --all
 pvisor drop /path/to/project
 ```
 

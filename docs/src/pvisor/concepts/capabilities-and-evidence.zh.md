@@ -22,6 +22,7 @@ Evidence 依次回答四个强度不同的问题：
 3. **Enforced**：在声明的 threat model 中阻断了哪些绕过路径？
 4. **Attested**：enforcement 是否绑定到这次 Run 和实际 Provider？
 
-具体执行的答案应从 Run Bundle 检查。执行、编排和历史之间的完整信任链见
-[安全与 Evidence](../../system-design/security-evidence.md)；平台机制见
-[pVisor 隔离设计](../design/isolation.md)。
+具体执行的答案应从 Run Bundle 检查。返回 [pVisor 核心概念](index.md)，通过
+[网络指南](../guides/network.md)配置一个 capability 维度，或阅读
+[pVisor 隔离设计](../design/isolation.md)了解平台机制。执行、编排和历史之间的完整
+信任链见[安全与 Evidence](../../system-design/security-evidence.md)。

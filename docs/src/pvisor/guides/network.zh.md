@@ -1,7 +1,8 @@
 # 使用 OverlayNet 控制网络访问
 
 OverlayNet 让 pVisor 对网络出口执行允许、拒绝和限速规则。Host/container Run 使用进程内
-HTTP proxy；libkrun VM Run 使用进程内 smoltcp 数据面处理 IPv4 TCP 和 DNS。
+HTTP proxy；libkrun VM Run 使用进程内 smoltcp 数据面处理 IPv4 TCP 和 DNS。请结合
+[Capability 与 Evidence 模型](../concepts/capabilities-and-evidence.md)理解这些控制。
 
 !!! warning "安全边界取决于 driver"
     Host/container 的显式 proxy 是 cooperative 的，程序可通过删除 proxy 变量或直接创建

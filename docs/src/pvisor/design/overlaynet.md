@@ -5,6 +5,11 @@ gates. User policy procedures belong to the
 [network guide](../guides/network.md); the capability model belongs to
 [Capabilities and evidence](../concepts/capabilities-and-evidence.md).
 
+!!! note "Target architecture"
+    The libkrun VM driver described first is implemented. Design A, Design B,
+    and delivery-plan items 1–5 describe target host/container interception
+    and acceptance gates; they are not current public capabilities.
+
 ## Implemented VM driver
 
 libkrun VM Attempts now use `vm-smoltcp` when `[overlaynet].mode = "auto"`.

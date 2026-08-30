@@ -5,15 +5,20 @@ properties. Choose a provider with the [execution guide](../guides/execution.md)
 and interpret guarantees with
 [Capabilities and evidence](../concepts/capabilities-and-evidence.md).
 
-> Status: implementation plus roadmap. Linux `pvisor run --safe` implements the
-> FUSE + synthetic root + rootless user/mount namespace + Landlock path
-> described in section 2. macOS `--safe` implements Seatbelt-enforced staged
-> writes and deny-all socket confinement; filesystem reads remain ambient and
-> are reported separately.
-> Docker and libkrun/KVM transports also exist. A Virtualization.framework
-> backend for transparent macOS executable isolation is a researched design,
-> not an implemented backend. Seccomp/resource enforcement, LiteBox VFS, and
-> Firecracker remain roadmap work unless stated otherwise.
+!!! note "Target architecture"
+    This document combines current implementation with explicitly identified
+    target architecture. Linux `pvisor run --safe` implements the FUSE +
+    synthetic root + rootless user/mount namespace + Landlock path described
+    in section 2. macOS `--safe` implements Seatbelt-enforced staged writes and
+    deny-all socket confinement; filesystem reads remain ambient and are
+    reported separately. Docker and libkrun/KVM transports also exist.
+    The Virtualization.framework backend in section 2.5, LiteBox VFS in
+    section 3, the Docker production profile in section 4.2, and the
+    Firecracker architecture in section 5 are targets, not implemented
+    backends. Seccomp, complete resource enforcement, and other statements
+    using "should", "must", "proposed", "intended", or "target" likewise
+    describe acceptance criteria or roadmap work unless explicitly marked as
+    current implementation.
 
 pVisor needs more than one isolation backend. A local coding Agent values fast
 startup and an exact view of the developer's workspace; an untrusted tenant
