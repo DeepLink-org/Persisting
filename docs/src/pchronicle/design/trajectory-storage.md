@@ -1,30 +1,37 @@
-# pChronicle 运行存储
+# pChronicle run storage
 
-> 当前实现说明。规范性所有权见 [RFC-0003](../../rfcs/0003-pchronicle-ownership.md)与
-> [RFC-0007](../../rfcs/0007-events-contract-pchronicle-sidecar.md)，
-> Dataset 命令见 [`pchronicle`](../reference/cli.md)。
+> Current implementation notes. Normative ownership is in
+> [RFC-0003](../../rfcs/0003-pchronicle-ownership.md) and
+> [RFC-0007](../../rfcs/0007-events-contract-pchronicle-sidecar.md).
+> Dataset commands are in [`pchronicle`](../reference/cli.md).
 
-交换格式 wire contract 与逐字段转换以 [RFC-0001 § Wire schema](../../rfcs/0001-storyline-format.md#wire-schema)、
-[RFC-0004 § ACTF 映射](../../rfcs/0004-actf-format.md#actf-storyline-json-pointer-mapping)、
-[RFC-0008 § ATIF 映射](../../rfcs/0008-atif-format.md#atif-storyline-json-pointer-mapping)和
-[RFC-0009 § OpenAI Messages 映射](../../rfcs/0009-openai-messages-format.md#openai-storyline-json-pointer-mapping)为准。
+Exchange-format wire contracts and field-by-field conversions follow
+[RFC-0001 § Wire schema](../../rfcs/0001-storyline-format.md#wire-schema),
+[RFC-0004 § ACTF mapping](../../rfcs/0004-actf-format.md#actf-storyline-json-pointer-mapping),
+[RFC-0008 § ATIF mapping](../../rfcs/0008-atif-format.md#atif-storyline-json-pointer-mapping),
+and
+[RFC-0009 § OpenAI Messages mapping](../../rfcs/0009-openai-messages-format.md#openai-storyline-json-pointer-mapping).
 
-## 1. 定位
+## 1. Role
 
-`persisting-pchronicle` 是 Agent 运行数据的结构化存储层，统一拥有：
+`persisting-pchronicle` is the structured store for Agent run data. It
+owns:
 
-- 公共 `persisting-events::EventRecord` 到 Lance `EventRow` 的映射与物理 schema；
-- Run / Story 坐标、目录布局和发现规则；
-- Lance canonical events 的读写、统计和维护；
-- AgenticMD 人读/调试视图的生成与宽松解析；
-- events、Storyline、ATIF、ACTF、OpenAI messages、AgenticMD 之间的格式转换；
-- materialize、revision lineage 和标准查询视图。
+- the mapping from the shared `persisting-events::EventRecord` to the Lance
+  `EventRow` and its physical schema;
+- Run / Story coordinates, directory layout, and discovery rules;
+- read, write, stats, and maintenance for Lance canonical events;
+- generation and tolerant parsing of the AgenticMD human/debug view;
+- conversion among events, Storyline, ATIF, ACTF, OpenAI messages, and
+  AgenticMD;
+- materialize, revision lineage, and the standard query views.
 
-`persisting-events` 拥有存储无关的逻辑事件信封。Gateway 与 pVisor 负责产出事件；CLI
-可以在进程内调用 pChronicle，pVisor 也可以通过 `pchronicle serve` 的 Control 服务提交。
-这些 producer 都不定义第二套运行数据落盘格式。
+`persisting-events` owns the storage-independent logical event envelope.
+Gateway and pVisor produce events. The CLI can call pChronicle in-process;
+pVisor can also submit through the Control service of `pchronicle serve`.
+None of those producers define a second on-disk run format.
 
-## 2. 逻辑坐标
+## 2. Logical coordinates
 
 ```text
 Run
@@ -34,68 +41,91 @@ Run
             └── EventRecord
 ```
 
-离线存储使用 `StoryCoords`：
+Offline storage uses `StoryCoords`:
 
-| 字段 | 含义 |
+| Field | Meaning |
 |---|---|
-| `storage` | pChronicle 根目录 |
-| `agent_id` | Agent 身份，单路径段 |
-| `root_session_id` | 可选 Run 身份；主 Agent 与 subagent 共用 |
-| `session_id` | Story 身份，也是 Lance 分区键 |
+| `storage` | pChronicle root directory |
+| `agent_id` | Agent identity; a single path segment |
+| `root_session_id` | optional Run identity; shared by the main Agent and subagents |
+| `session_id` | Story identity and the Lance partition key |
 
-有 `root_session_id` 时，多个 Story 共用一个 Run 级 `events.lance`；没有时，
-`session_id` 自身就是目录边界。
+When `root_session_id` is present, several Stories share one Run-level
+`events.lance`. Otherwise `session_id` is itself the directory boundary.
 
-## 3. 存储布局
+## 3. Storage layouts
 
 ### Lance events
 
-`events.lance/` 是完整事件表示的 Run 级容器：`_manifest.json` 保存 active writer fence
-和可见 segment version，每个 writer epoch 使用独立 Lance segment。它保留 HTTP/模型调用、
-时间、身份、payload 和顺序。
-Gateway 的 durable 微批写入每累计 8 个小 fragment 就 seal 一个 L0 segment；后台维护将
-连续 8 个同层 sealed segment 合并并晋升到下一层。合并使用 manifest 中的 `level` 与
-`sealed` 元数据，只替换精确匹配的连续 segment 区间，active tail 永不参与。由此 visible
-segment 数按层级增长而不是随事件线性增长；旧 version/file 仍按 maintenance 的保留期
-vacuum，避免破坏已经固定旧快照的 reader。
-物理 schema 把 `event_id` 提升为独立业务列，并把 `timestamp` 规范化为 UTC
-`Timestamp(Millisecond)`。新写入的 Gateway 与 pVisor `EventRecord` 会同时提供 RFC3339
-`timestamp` 和 `timestamp_unix_ms`；两者必须在毫秒级一致。admission 仍会为旧 producer
-或兼容导入根据 RFC3339 `timestamp` 或接收时间补齐缺失值。Storyline 投影也从
-`timestamp_unix_ms` 生成 UTC 毫秒文本，输入文本时间戳保存在 `payload_json`。事实层不检查
-`event_id` 唯一性，也不为它维护索引；
-重复 ID 和重试行是合法事实。完整 `EventRecord` 仍保存在 `payload_json`，因此回放不丢字段。
-需要审计保真度的工作流应使用 canonical events 层。
+`events.lance/` is the Run-level container for the complete event
+representation. `_manifest.json` holds the active writer fence and the
+visible segment versions. Each writer epoch uses its own Lance segment.
+The store keeps HTTP/model calls, time, identity, payload, and order.
+
+Gateway's durable micro-batches seal an L0 segment after every eight small
+fragments. Background maintenance merges eight consecutive sealed segments
+at the same level and promotes the result to the next level. The merge uses
+`level` and `sealed` metadata in the manifest, replaces only an exactly
+matching contiguous segment range, and never includes the active tail.
+Visible segment count therefore grows with the number of levels rather than
+linearly with events. Old versions and files are still vacuumed on the
+maintenance retention window so readers pinned to an older Snapshot are not
+broken.
+
+The physical schema lifts `event_id` into its own business column and
+normalizes `timestamp` to UTC `Timestamp(Millisecond)`. Newly written
+Gateway and pVisor `EventRecord`s supply both an RFC3339 `timestamp` and
+`timestamp_unix_ms`; the two values must agree at millisecond precision.
+Admission still fills missing values for older producers or compatibility
+imports from the RFC3339 `timestamp` or the receive time. Storyline
+projections also emit UTC millisecond text from `timestamp_unix_ms`; the
+original text timestamp stays in `payload_json`. The fact layer does not
+check `event_id` uniqueness and does not maintain an index on it. Duplicate
+IDs and retry rows are valid facts. The complete `EventRecord` remains in
+`payload_json`, so replay does not drop fields. Workflows that need audit
+fidelity should use the canonical events layer.
 
 ### AgenticMD
 
-AgenticMD 是面向人的 Markdown 调试视图。它保存可见对话块和会话摘要，适合实时查看、
-代码审阅与人工分析。它会省略协议噪声，字段也允许缺失或扩展，因此不是存储格式或
-原始 HTTP 事件的无损替代。
+AgenticMD is a human-facing Markdown debugging view. It keeps visible
+dialogue blocks and a session summary, which makes it useful for live
+inspection, code review, and manual analysis. It omits protocol noise and
+allows missing or extended fields, so it is not a lossless substitute for
+the storage format or the raw HTTP events.
 
-`pvisor run --record-format lance --record-destination WAREHOUSE` 启动 pChronicle sidecar，
-由 sidecar 写 canonical Lance events；pVisor 本身不打开 Lance。
-`--gateway-stream-markdown` 可同时维护 live AgenticMD。Markdown 是诊断投影，Dataset
-消费统一使用 pChronicle API 和 `pchronicle` 命令。
+`pvisor run --record-format lance --record-destination WAREHOUSE` starts a
+pChronicle sidecar that writes canonical Lance events. pVisor itself does
+not open Lance. `--gateway-stream-markdown` can maintain live AgenticMD at
+the same time. Markdown is a diagnostic projection. Dataset consumption
+always goes through the pChronicle API and the `pchronicle` commands.
 
-### Storyline 三表 Lance
+### Storyline three-table Lance
 
-`StorylineLanceStore` 提供面向分析和 ATIF 互操作的规范化存储表示：
-`runs.lance`、`steps.lance`、`tool_calls.lance`。它按 `source_call_id` 将 observation
-result 归并到 tool call 行，并通过 `CURRENT` 中的三表版本元组保证原子切换。超过阈值的
-UTF-8/JSON cell 以 BLAKE3 内容地址外置到共享 `objects.lance`，跨运行复用；公开 schema
-和 SQL 结果保持不变，查询只在真正引用内容列时延迟恢复 Blob。
+`StorylineLanceStore` is the normalized storage representation used for
+analysis and ATIF interop: `runs.lance`, `steps.lance`, and
+`tool_calls.lance`. It folds observation results onto tool-call rows by
+`source_call_id`, and it switches the three table versions atomically
+through the version tuple in `CURRENT`. UTF-8/JSON cells above the
+threshold are offloaded by BLAKE3 content address into a shared
+`objects.lance` and reused across Runs. The public schema and SQL results
+stay the same; queries restore Blobs lazily only when they actually
+reference a content column.
 
-ATIF object、array、pretty JSON 与 JSONL/NDJSON，以及 ACTF object/array 的 `steps` 临时查询还支持
-projection-aware 快路径：DataFusion 先传递所需列和安全谓词，reader 通过 seeded visitor
-跳过未引用大字段并直接构造窄 Arrow batch；JSONL/NDJSON 按资源限制逐记录读取，array 通过
-结构扫描器逐 element 提取并使用 slice decoder，单 object 从 reader 流式解码。
-`SELECT *`、其他表和 OpenAI-message 回退到完整 Storyline 规范化。详细协议、发布顺序和执行边界见
-[Storyline 三表 Lance 存储](storyline-lance.md)。
+Temporary `steps` queries over ATIF objects, arrays, pretty JSON, and
+JSONL/NDJSON, and over ACTF objects/arrays, also have a projection-aware
+fast path: DataFusion first passes the required columns and safe
+predicates; the reader uses a seeded visitor to skip unreferenced large
+fields and build a narrow Arrow batch directly. JSONL/NDJSON is read
+record-by-record under resource limits. Arrays use a structural scanner
+that extracts one element at a time and a slice decoder. A single object
+is decoded from the reader as a stream. `SELECT *`, the other tables, and
+OpenAI-message fall back to full Storyline normalization. Protocol,
+publication order, and execution bounds are in
+[Storyline three-table Lance](storyline-lance.md).
 
-## 4. 目录布局
+## 4. Directory layout
 
-扁平 Story：
+Flat Story:
 
 ```text
 storage/
@@ -107,7 +137,7 @@ storage/
         └── session_id.md
 ```
 
-包含 subagent 的 Run：
+A Run that contains subagents:
 
 ```text
 storage/
@@ -118,41 +148,60 @@ storage/
         └── agent-<id>.md
 ```
 
-独立的 Storyline 分析 store 使用 `CURRENT`、`generations/<id>/{runs,steps,tool_calls}.lance`
-和根级共享 `objects.lance`；`CURRENT` 的必需 `schema_version` 在打开表前验证整个四表物理
-布局。它不改变上面的 canonical event 目录。
+An independent Storyline analysis store uses `CURRENT`,
+`generations/<id>/{runs,steps,tool_calls}.lance`, and a root-level shared
+`objects.lance`. The required `schema_version` in `CURRENT` validates the
+entire four-table physical layout before any table is opened. It does not
+change the canonical event directory above.
 
-系统生成的 AgenticMD 使用 `{session_id}.md` 文件名和
-`<!-- persisting:block:{source} … -->` 块结构；读取器同时接受无 speaker 的块、旧
-`role/seq/session/agent` 字段和普通 Markdown 正文。
+System-generated AgenticMD uses the `{session_id}.md` filename and the
+`<!-- persisting:block:{source} … -->` block structure. The reader also
+accepts speaker-less blocks, the legacy `role/seq/session/agent` fields,
+and ordinary Markdown body text.
 
-## 5. 写入与一致性
+## 5. Writes and consistency
 
-1. `EventRecord` 进入 Lance 前转换为 Arrow 行，一个有界微批对应当前 epoch segment 的一次
-   Lance append，随后以 manifest CAS 发布精确 version。
-2. 热路径不读取旧行、row count 或 `event_id`，不执行查重、索引、压缩或 vacuum。
-3. producer 身份与写入坐标冲突时仍然 append；`payload_json` 保留原始声明，物理
-   `session_id` / `agent_id` 由调用方坐标决定并在 replay 时生效。投影对其余身份声明按
-   append order 采用最后一个非空值，不为冲突增加读前写、查重或索引成本。
-4. `seq` 是 producer 定义的 Storyline 序号；replay cursor 使用不可变的物理 append 顺序。
-5. Run bucket 中不同 Story 共享 manifest 和 epoch segment，但 replay/stats 按 `session_id` 隔离。
-6. live Markdown 以 `call_id + source`（兼容旧 role）定位块，允许流式 agent 原地更新。
-7. canonical append 与派生投影分别报告结果；投影失败不能伪装成事件已持久化。
-8. 一个微批中不同 root URI 的 segment/manifest 最多 16 路并行发布；同一 URI 仍按
-   batch 顺序串行，因此不放宽单 Story 的物理 append 顺序。
+1. An `EventRecord` is converted to Arrow rows before it enters Lance. One
+   bounded micro-batch is one Lance append to the current epoch segment,
+   then an exact version is published with a manifest CAS.
+2. The hot path does not read old rows, row counts, or `event_id`. It does
+   not deduplicate, index, compact, or vacuum.
+3. A conflict between producer identity and write coordinates still
+   appends. `payload_json` keeps the original claims. Physical
+   `session_id` / `agent_id` come from the caller coordinates and take
+   effect on replay. Projections take the last non-empty value for the
+   remaining identity claims in append order and do not add a
+   read-before-write, dedup, or index cost for the conflict.
+4. `seq` is a producer-defined Storyline ordinal. The replay cursor uses
+   the immutable physical append order.
+5. Distinct Stories in a Run bucket share the manifest and epoch segments,
+   but replay and stats isolate by `session_id`.
+6. Live Markdown locates blocks by `call_id + source` (with a legacy-role
+   alias) so a streaming agent can update in place.
+7. Canonical append and derived projections report results separately. A
+   projection failure must not be presented as a durable event write.
+8. Segment/manifest publication for distinct root URIs in one micro-batch
+   is at most 16-way parallel. The same URI stays serial in batch order,
+   so a single Story's physical append order is not relaxed.
 
-事件事实层提供 at-least-once append，不提供 exactly-once 或 ID 唯一性。truncate、overwrite
-和 retry dedup 不属于事实写路径；转换到已有 Run 会失败，裁剪应创建新 Run 或在派生
-Storyline 上完成。compaction、`session_id` 索引和 vacuum 是显式离线维护。
+The event fact layer provides at-least-once append. It does not provide
+exactly-once delivery or ID uniqueness. Truncate, overwrite, and retry
+dedup are not part of the fact write path. Conversion into an existing Run
+fails; trimming should create a new Run or happen on a derived Storyline.
+Compaction, a `session_id` index, and vacuum are explicit offline
+maintenance.
 
-上层 Run lease 产生单调 epoch；`EventWriterFence(epoch, writer_id)` 在新 writer 写数据前
-激活。reader 只读取 manifest 固定的 segment version，因此旧 writer 在 takeover 后完成的
-底层 append 不可见。相同 epoch 的另一个 writer_id 会被拒绝。该协议提供 writer fencing，
-不把并发多 writer 合并定义为支持的写入模式。
+The upper Run lease produces a monotonic epoch.
+`EventWriterFence(epoch, writer_id)` is activated before a new writer
+writes data. Readers only see the segment versions pinned by the
+manifest, so an underlying append finished by an old writer after takeover
+is invisible. Another `writer_id` in the same epoch is rejected. The
+protocol provides writer fencing. Concurrent multi-writer merge is not a
+supported write mode.
 
-## 6. 格式转换
+## 6. Format conversion
 
-通用外围格式通过 Storyline hub 转换：
+Generic peripheral formats convert through the Storyline hub:
 
 ```text
 AgenticMD ─┐
@@ -161,23 +210,24 @@ ACTF ──────┤
 OpenAI msg ┘
 ```
 
-需要保存原始 payload 的路径直接读写 events，不能经有损 Storyline roundtrip。
-外围交换格式由 `pchronicle import/export` 处理。
+Paths that must keep the original payload read and write events directly
+and must not go through a lossy Storyline roundtrip. Peripheral exchange
+formats are handled by `pchronicle import/export`.
 
-## 7. 组件边界
+## 7. Component boundaries
 
-| 组件 | 负责 | 不负责 |
+| Component | Owns | Does not own |
 |---|---|---|
-| Gateway | 协议解析、调用生命周期、采集顺序、live projection 策略 | 通用 store、格式 schema、离线转换 |
-| pChronicle | 格式、路径、落盘、读取、转换与 revision lineage | 网络转发、Agent 生命周期 |
-| pVisor | Run 生命周期及 Gateway/OverlayNet/OverlayFS 装配 | 长期运行数据 schema |
+| Gateway | protocol parsing, call lifecycle, capture order, live projection policy | generic store, format schema, offline conversion |
+| pChronicle | formats, paths, durability, reads, conversion, and revision lineage | network forwarding, Agent lifecycle |
+| pVisor | Run lifecycle and Gateway / OverlayNet / OverlayFS assembly | long-lived run-data schema |
 
-## 8. 相关文档
+## 8. Related documents
 
 - [Recorded data, views, and versions](../concepts/facts-and-projections.md)
-- [发现并查询](../guides/discover-and-query.md)
+- [Discover and query](../guides/discover-and-query.md)
 - [Snapshot](catalog.md)
-- [AgenticMD 格式](../reference/agenticmd.md)
-- [Gateway 架构](../../pvisor/design/gateway.md)
-- [pVisor 命令](../../pvisor/reference/cli.md)
-- [`pchronicle` Dataset 命令](../reference/cli.md)
+- [AgenticMD format](../reference/agenticmd.md)
+- [Gateway architecture](../../pvisor/design/gateway.md)
+- [pVisor CLI](../../pvisor/reference/cli.md)
+- [`pchronicle` Dataset commands](../reference/cli.md)

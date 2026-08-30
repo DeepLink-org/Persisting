@@ -1,21 +1,27 @@
-# Storyline 三表 Lance 存储
+# Storyline three-table Lance storage
 
-`StorylineLanceStore` 是 pChronicle 的 Storyline-native 规范化存储表示。它与
-`events.lance` 原始事件日志并列存在，不替代后者。
+`StorylineLanceStore` is pChronicle's Storyline-native normalized storage
+representation. It sits beside the raw `events.lance` event log and does
+not replace it.
 
-逻辑 wire schema 以 [RFC-0001 § Wire schema](../../rfcs/0001-storyline-format.md#wire-schema)
-为准；ACTF、ATIF 与 OpenAI Messages 的逐字段转换分别以
-[RFC-0004](../../rfcs/0004-actf-format.md#actf-storyline-json-pointer-mapping)、
-[RFC-0008](../../rfcs/0008-atif-format.md#atif-storyline-json-pointer-mapping)和
-[RFC-0009](../../rfcs/0009-openai-messages-format.md#openai-storyline-json-pointer-mapping)
-的映射章节为准。本设计只定义 Storyline 的 Lance 物理投影。
+The logical wire schema follows
+[RFC-0001 § Wire schema](../../rfcs/0001-storyline-format.md#wire-schema).
+Field-by-field conversions for ACTF, ATIF, and OpenAI Messages follow the
+mapping sections of
+[RFC-0004](../../rfcs/0004-actf-format.md#actf-storyline-json-pointer-mapping),
+[RFC-0008](../../rfcs/0008-atif-format.md#atif-storyline-json-pointer-mapping),
+and
+[RFC-0009](../../rfcs/0009-openai-messages-format.md#openai-storyline-json-pointer-mapping).
+This design defines only the Lance physical projection of Storyline.
 
 ## Projection contract and closed loop
 
-Storyline retains the Hub interchange contract (path A), while the three-table store is a
-rebuildable silver projection of canonical `events.lance` (path B). The two uses share a schema,
-but not write identity: interchange imports and direct `replace_storyline` calls carry no canonical
-lineage. Only the events projector may publish a `CURRENT` with projection lineage.
+Storyline retains the Hub interchange contract (path A), while the
+three-table store is a rebuildable silver projection of canonical
+`events.lance` (path B). The two uses share a schema, but not write
+identity: interchange imports and direct `replace_storyline` calls carry
+no canonical lineage. Only the events projector may publish a `CURRENT`
+with projection lineage.
 
 ```text
 events.lance (source of truth)
@@ -24,17 +30,22 @@ events.lance (source of truth)
   └─ Catalog fallback ──────► project a pinned events snapshot when missing or stale
 ```
 
-`CURRENT` pins exact Lance versions for all four tables and records the source URI and source
-identity, `fact_version`, `fact_rows`, the source layout revision at build time, projector and
-recipe identity, recipe hash, and completeness. `fact_version` and `fact_rows` are the
-freshness watermark. Compaction changes only the layout revision and does not stale a projection.
-Direct document writes clear lineage; maintenance preserves it.
+`CURRENT` pins exact Lance versions for all four tables and records the
+source URI and source identity, `fact_version`, `fact_rows`, the source
+layout revision at build time, projector and recipe identity, recipe hash,
+and completeness. `fact_version` and `fact_rows` are the freshness
+watermark. Compaction changes only the layout revision and does not stale
+a projection. Direct document writes clear lineage; maintenance preserves
+it.
 
-Incremental sync treats `[previous_fact_rows, fact_rows)` as an append range only because the
-canonical manifest validates `fact_rows == total_rows()`. Layout maintenance must preserve both
-replacement row count and segment order, so compaction cannot move that logical watermark. After
-reading the range, the projector also requires the returned record count to equal the exact range
-length; violating any of these proof obligations fails closed instead of silently skipping facts.
+Incremental sync treats `[previous_fact_rows, fact_rows)` as an append
+range only because the canonical manifest validates
+`fact_rows == total_rows()`. Layout maintenance must preserve both
+replacement row count and segment order, so compaction cannot move that
+logical watermark. After reading the range, the projector also requires
+the returned record count to equal the exact range length; violating any
+of these proof obligations fails closed instead of silently skipping
+facts.
 
 Operational commands:
 
@@ -43,142 +54,184 @@ pchronicle serve --control 127.0.0.1:0 ./trajectory-data
 pchronicle status ./trajectory-data --format json
 ```
 
-Before readiness, `serve` discovers every validated non-empty canonical Store and converges its
-deterministic sibling `storyline`. At runtime it discovers new Stores, performs append-compatible
-sync or full rebuild as required, and retries bounded failures without blocking durable canonical
-writes. A destination without matching lineage is foreign and is never overwritten. `status`
-reports `fresh`, `stale`, `missing`, or `error` plus the source watermark and selected generation.
+Before readiness, `serve` discovers every validated non-empty canonical
+Store and converges its deterministic sibling `storyline`. At runtime it
+discovers new Stores, performs append-compatible sync or full rebuild as
+required, and retries bounded failures without blocking durable canonical
+writes. A destination without matching lineage is foreign and is never
+overwritten. `status` reports `fresh`, `stale`, `missing`, or `error`
+plus the source watermark and selected generation.
 
-Catalog merges a lineage-linked sidecar with the events source into one logical source. When
-`sources.projection_status` is `fresh`, normalized queries use the three tables. When it is `stale`,
-Catalog hides the sidecar and falls back to a deterministic projection of the pinned events
-snapshot. `projection_generation` exposes the generation actually selected. A Storyline document
-store without lineage is never inferred to be a projection of canonical events.
+Catalog merges a lineage-linked sidecar with the events source into one
+logical source. When `sources.projection_status` is `fresh`, normalized
+queries use the three tables. When it is `stale`, Catalog hides the
+sidecar and falls back to a deterministic projection of the pinned events
+snapshot. `projection_generation` exposes the generation actually
+selected. A Storyline document store without lineage is never inferred to
+be a projection of canonical events.
 
-The Gateway-backed Warehouse has an explicit live-read path for point trace observation: after the
-Catalog resolves an already discovered canonical source, `/api/events`, `/api/storyline`, and
-`/api/trajectory-view` reopen its latest visible events manifest. This does not change the immutable
-snapshot semantics of broad SQL queries, and it does not make the derived Storyline sidecar
-authoritative.
+The Gateway-backed Warehouse has an explicit live-read path for point
+trace observation: after the Catalog resolves an already discovered
+canonical source, `/api/events`, `/api/storyline`, and
+`/api/trajectory-view` reopen its latest visible events manifest. This
+does not change the immutable snapshot semantics of broad SQL queries,
+and it does not make the derived Storyline sidecar authoritative.
 
-The projection supervisor is part of `serve`, applies bounded concurrency and retry, and shuts down
-with the process. It remains outside the Gateway capture write path, so projection or Catalog
-refresh failures cannot block canonical event writes.
+The projection supervisor is part of `serve`, applies bounded concurrency
+and retry, and shuts down with the process. It remains outside the
+Gateway capture write path, so projection or Catalog refresh failures
+cannot block canonical event writes.
 
-本文只负责三表物理 schema、内容层、Snapshot 发布、查询接入和维护语义。事实源与
-projection ownership 见[运行存储](trajectory-storage.md)，用户查询流程见
-[Dataset 查询指南](../guides/discover-and-query.md)。
+This page owns the three-table physical schema, the content layer,
+Snapshot publication, query integration, and maintenance semantics. Fact
+source and projection ownership are in
+[Run storage](trajectory-storage.md). The user query workflow is in
+[Discover and query](../guides/discover-and-query.md).
 
-这是 pChronicle 唯一的规范化三表模型。旧的 ATIF
-`sessions` / `steps` / `tool_calls`、`NormalizedStore` 和内存联表视图已经删除。ATIF
-仍作为输入输出格式存在，但查询时先转换为 Storyline，再投影到本页定义的
-`runs` / `steps` / `tool_calls` schema，不再维护第二套表结构。
+This is pChronicle's only normalized three-table model. The older ATIF
+`sessions` / `steps` / `tool_calls` layout, `NormalizedStore`, and
+in-memory joined views have been removed. ATIF still exists as an
+import/export format, but a query first converts it to Storyline and then
+projects it onto the `runs` / `steps` / `tool_calls` schema defined here.
+A second table structure is not maintained.
 
-## 表模型
+## Table model
 
-| 表 | 粒度 | 逻辑主键 | 外键 |
+| Table | Grain | Logical primary key | Foreign key |
 |---|---|---|---|
-| `runs.lance` | 每个 Storyline 一行 | `document_id` | — |
-| `steps.lance` | 每个 turn 一行 | (`document_id`, `step_id`) | `document_id` → runs |
-| `tool_calls.lance` | 每个 tool call 一行 | (`document_id`, `step_id`, `call_index`) | (`document_id`, `step_id`) → steps |
+| `runs.lance` | one row per Storyline | `document_id` | — |
+| `steps.lance` | one row per turn | (`document_id`, `step_id`) | `document_id` → runs |
+| `tool_calls.lance` | one row per tool call | (`document_id`, `step_id`, `call_index`) | (`document_id`, `step_id`) → steps |
 
-`run_id` 是 Run 分组键；一个 Run 可以包含主 Story 和多个 subagent Story，因此
-`runs.lance` 中可能有多行共享同一个 `run_id`。内部 `document_id` 使用显式
-`trajectory_id`，缺省时回落到 `session_id`，是三表 mutation 的文档作用域键。
+`run_id` is a Run grouping key. One Run can contain a main Story and
+several subagent Stories, so several rows in `runs.lance` may share the
+same `run_id`. The internal `document_id` uses an explicit
+`trajectory_id` and falls back to `session_id`. It is the document-scope
+key for three-table mutation.
 
-`steps.message` 使用 `message_kind` 与 `message_value` 两列保存：前者是固定枚举，标识
-`null`、`text`、`parts` 或 `json`，后者保存规范化 JSON 原始值，并继续受大对象
-offload 机制保护。`reasoning_effort` 同样拆为 `reasoning_effort_kind` 与
-`reasoning_effort_value`，前者是固定枚举，区分字符串、数字和 JSON escape。可能较大的
-`arguments`、`observation`、`result` 等 JSON 值仍以 UTF-8 JSON 列保存并受 content/offload
-层保护；身份、顺序、类型、时间和性能字段使用独立的
-Arrow 标量列，便于过滤和分析。
+`steps.message` is stored as `message_kind` plus `message_value`. The
+kind is a fixed enum for `null`, `text`, `parts`, or `json`. The value
+holds the normalized JSON raw value and remains protected by the large-
+object offload path. `reasoning_effort` is split the same way into
+`reasoning_effort_kind` and `reasoning_effort_value`; the kind is a
+fixed enum that distinguishes string, number, and JSON escape. Larger
+JSON values such as `arguments`, `observation`, and `result` stay as
+UTF-8 JSON columns and remain under the content/offload layer. Identity,
+order, type, time, and performance fields use independent Arrow scalar
+columns so they can be filtered and analyzed.
 
-`runs.schema_version` 与 `runs.origin` 保存严格 Storyline wire 版本和来源身份。
-`agent_extra`、`final_metrics`、`extra`、`meta`、`unknown_fields`、`metrics` 与 `response` 使用
-Lance `lance.json` 扩展类型（JSONB，物理为
-`LargeBinary`）；Lance/DataFusion 会在读取时暴露为 Arrow JSON 字符串，并支持 JSON
-路径函数与谓词下推。offload 不替换整个 JSON 单元，而是递归遍历对象/数组，把超过阈值的
-value 替换成 content descriptor；外层 envelope 仍可用 `json_get_*` 查询，完整读取时再递归
-恢复。`message_value`、`observation`、`arguments`、`result`、`results` 以及其他可能很大的字段继续使用 content/offload 层。
-`steps.turn_ordinal` 是 turn 数组顺序的权威列；`step_id` 只作身份，不参与重排。
-`had_tool_calls` 让显式空数组与字段缺失保持可区分。
+`runs.schema_version` and `runs.origin` store the strict Storyline wire
+version and origin identity. `runs.task` and `runs.prompt` store
+document-level `/task` and `/prompt`. `runs.started_at` and
+`runs.finished_at` are UTC nanosecond Timestamp columns. `runs.extra`
+and `runs.meta` store document-level `/extra` and `/meta`.
+`steps.finished_at` is also a UTC Timestamp column. `steps.env` and
+`steps.prompt` store turn env and turn `/prompt`. `tool_calls.kind` and
+`tool_calls.response` store the tool-event type and `response`.
+`agent_extra`, `final_metrics`, `extra`, `meta`, `unknown_fields`,
+`metrics`, and `response` use the Lance `lance.json` extension type
+(JSONB, physically `LargeBinary`). Lance/DataFusion expose them as Arrow
+JSON strings on read and support JSON path functions and predicate
+pushdown. Offload does not replace a whole JSON cell. It walks
+objects/arrays recursively and replaces values above the threshold with a
+content descriptor. The outer envelope remains queryable with
+`json_get_*`; a full read restores recursively. `message_value`,
+`observation`, `arguments`, `result`, `results`, and other potentially
+large fields continue to use the content/offload layer.
+`steps.turn_ordinal` is the authoritative turn-array order; `step_id` is
+identity only and does not participate in reordering. `had_tool_calls`
+keeps an explicit empty array distinguishable from a missing field.
+Missing columns in older tables decode as field absence.
+`message_kind`/`message_value` and
+`reasoning_effort_kind`/`reasoning_effort_value` exist together as grouped
+schema fields. These objects are not split into independent SQL columns.
 
-`runs.task`、`runs.prompt` 保存文档级 `/task`、`/prompt`；`runs.started_at` 与
-`runs.finished_at` 使用 UTC 纳秒 Timestamp 列。
-`runs.extra`、`runs.meta` 保存文档级 `/extra` 与
-`/meta`；`runs.finished_at` 与 `steps.finished_at` 使用 UTC Timestamp 列；
-`steps.env`、`steps.prompt` 保存 turn env 与 turn `/prompt`；
-`tool_calls.kind`、`tool_calls.response` 保存工具事件类型与 `response`。旧表缺列
-时按字段缺失解码；`message_kind`/`message_value` 与 `reasoning_effort_kind`/
-`reasoning_effort_value` 作为成组 schema 字段共同存在。
-这些对象不拆成独立 SQL 列。
+`steps.timestamp` is a UTC-normalized `Timestamp(Nanosecond, "UTC")`
+query column. The writer rejects a non-null time that is invalid, out of
+range, or not exactly representable as nanoseconds. SQL sort, range
+filters, and time aggregation use `timestamp` directly. Storyline
+reconstruction uses the normalized UTC time. The reader still accepts the
+older `Timestamp(Millisecond, "UTC")` layout.
 
-`steps.timestamp` 是规范化到 UTC 的 `Timestamp(Nanosecond, "UTC")` 查询列；写入端拒绝
-无效、越界或无法精确表示为纳秒的非空时间。SQL 排序、范围过滤和时间聚合直接使用
-`timestamp`，重建 Storyline 时使用规范化后的 UTC 时间。读取端继续兼容旧的
-`Timestamp(Millisecond, "UTC")` 布局。
+`steps.latency`, `steps.ttft`, and `tool_calls.duration` are nullable
+`BIGINT` columns in milliseconds. The unit comes from field semantics and
+query-field documentation; it is no longer encoded in a column-name
+suffix.
 
-`steps.latency`、`steps.ttft` 和 `tool_calls.duration` 是以毫秒计的可空 `BIGINT` 列；单位
-由字段语义和查询字段说明提供，不再编码在列名后缀中。
+`steps.observation` stores the complete, authoritative arbitrary JSON
+observation. `had_observation` stores presence semantics.
+`tool_calls.results` is only a query column derived from associable
+`observation.results[]` items. It does not rebuild observation in
+reverse. A read fails closed if the derived column disagrees with the
+authoritative observation. Turn ordinals and call indexes must also be
+unique and contiguous from zero.
 
-`steps.observation` 保存完整、权威的任意 JSON observation，`had_observation` 保存
-出现语义。`tool_calls.results` 只是从 `observation.results[]` 可关联项派生的查询列，
-不会反向重建 observation；读取时若派生列与权威 observation 不一致会 fail closed。
-turn ordinal、call index 也必须从零连续且唯一。
+## Large content layer
 
-## 大块内容层
+### Goals and bounds
 
-### 设计目标与边界
+Long reasoning, tool output, source code, logs, and multimodal payloads
+in Agent trajectories produce a few oversized cells in columnar tables.
+Inlining them next to identity, order, type, and metrics forces ordinary
+filters and aggregations to pay for larger fragments, page cache, and
+decode cost. pChronicle therefore adds a shared content layer beside the
+three tables, under three constraints:
 
-Agent 轨迹中的长 reasoning、工具输出、源代码、日志和多模态载荷会让列式表出现少量超大
-cell。若把它们与身份、顺序、类型和指标一起内联，常规过滤与聚合也要承受更大的 fragment、
-page cache 和解码开销。pChronicle 因此在三表之外增加共享内容层，但保持三个约束：
+1. Inside one schema version, the Arrow schema and SQL results of
+   `runs` / `steps` / `tool_calls` stay stable. Schema changes are
+   published explicitly through `CURRENT.schema_version`. The content
+   layer is an internal physical optimization.
+2. Small values stay inline. Only UTF-8/JSON cells that reach the
+   threshold are offloaded, so every read does not degrade into a KV
+   lookup.
+3. Content is addressed by raw bytes and reused across Storylines. The
+   content layer does not mix in trajectory primary keys, lifecycle, or
+   business-level deduplication.
 
-1. 在同一 schema 版本内，`runs` / `steps` / `tool_calls` 的 Arrow schema 和 SQL 结果稳定；
-   schema 变更通过 `CURRENT.schema_version` 显式发布，内容层是内部物理优化。
-2. 小值继续内联，只有达到阈值的 UTF-8/JSON cell 才外置，避免所有读取都退化成 KV lookup。
-3. 内容按原始字节寻址并跨 Storyline 复用；不把轨迹主键、生命周期或业务去重混入内容层。
+The current implementation does not invent a custom Lance file format or
+a private index type. It composes Lance Blob v2, ordinary BTree scalar
+indexes, and a DataFusion execution node. That gives the needed lazy
+materialization while keeping the maintenance surface inside
+pChronicle's own protocol and execution plan.
 
-当前实现没有定制 Lance 文件格式或私有索引类型，而是组合 Lance Blob v2、普通 BTree
-scalar index 和 DataFusion execution node。这样可以得到需要的延迟物化能力，同时把维护
-面限制在 pChronicle 自己的协议与执行计划中。
+### Internal descriptor protocol
 
-### 内部描述符协议
-
-超过默认 64 KiB 的内容列在三表中暂时编码为：
+Content columns above the default 64 KiB are temporarily encoded in the
+three tables as:
 
 ```text
 <RS>PCHRONICLE-CONTENT:<type>:<codec>:<blake3-256>:<raw_length>:<preview-base64url>
 ```
 
-| 字段 | 当前编码 | 作用 |
+| Field | Current encoding | Role |
 |---|---|---|
-| magic | `PCHRONICLE-CONTENT` | 严格识别内部引用 |
-| logical type | `u` / `j` / `b` | UTF-8、JSON；binary 标签已保留给后续二进制列 |
-| codec | `i` / `z` | identity 或 Zstd |
-| content id | 64 位十六进制 BLAKE3-256 | 对未压缩原始字节寻址、校验和跨轨迹复用 |
-| raw length | `u64` | 解压后长度校验，也允许无 payload 的代价判断 |
-| preview | URL-safe Base64 | 默认最多 256 个 UTF-8 字节的安全前缀 |
+| magic | `PCHRONICLE-CONTENT` | strict recognition of an internal reference |
+| logical type | `u` / `j` / `b` | UTF-8, JSON; the binary tag is reserved for later binary columns |
+| codec | `i` / `z` | identity or Zstd |
+| content id | 64-digit hex BLAKE3-256 | address, checksum, and cross-trajectory reuse of uncompressed raw bytes |
+| raw length | `u64` | post-decompress length check, and cost judgment without the payload |
+| preview | URL-safe Base64 | a safe prefix of at most 256 UTF-8 bytes by default |
 
-描述符只允许存在于内部物理列。用户原文若恰好以 magic 开头，也会被强制外置，读取时再
-恢复为原文，从而消除“用户字符串被误认为引用”的歧义。公开的读取、SQL、转换和导出 API
-必须返回完整值或显式 preview，不能泄露描述符。
+Descriptors may exist only in internal physical columns. User text that
+happens to start with the magic is forced offload and restored on read,
+so a user string cannot be mistaken for a reference. Public read, SQL,
+conversion, and export APIs must return the full value or an explicit
+preview. They must not leak the descriptor.
 
-`objects.lance` 使用以下物理列：
+`objects.lance` uses these physical columns:
 
-| 列 | 作用 |
+| Column | Role |
 |---|---|
-| `content_id` | BLAKE3 内容地址；建立 BTree index |
-| `logical_type`, `media_type` | 逻辑类型和 MIME 提示 |
-| `raw_length`, `stored_length`, `codec` | 完整性检查和存储代价 |
-| `preview` | 无 Blob I/O 的安全预览 |
-| `payload` | Lance Blob v2，保存 identity/Zstd 字节 |
-| `created_at_ms` | 对象创建时间 |
+| `content_id` | BLAKE3 content address; has a BTree index |
+| `logical_type`, `media_type` | logical type and MIME hint |
+| `raw_length`, `stored_length`, `codec` | integrity check and storage cost |
+| `preview` | safe preview with no Blob I/O |
+| `payload` | Lance Blob v2 holding identity/Zstd bytes |
+| `created_at_ms` | object creation time |
 
-### 写入、复用与发布
+### Write, reuse, and publication
 
-写入端对候选 cell 依次执行：
+The writer handles candidate cells in this order:
 
 ```text
 原始 UTF-8/JSON
@@ -191,31 +244,44 @@ scalar index 和 DataFusion execution node。这样可以得到需要的延迟�
        └─ 先提交对象 version，再写三表 descriptor，最后发布 CURRENT
 ```
 
-对象必须先于引用持久化；`CURRENT` 同时固定三张业务表和对象表的精确 Lance version。
-任一步骤失败都不会发布新快照：允许留下不可达对象，但不会发布悬空引用或跨表半提交。
-跨轨迹复用只依赖内容地址，不依赖 session 生命周期，因此同一长文本在不同 Run 中只保存
-一次。同一写入批次内若 content id 相同但 codec、原始长度或存储字节不一致，会拒绝写入。
+Objects must be durable before the reference. `CURRENT` pins the exact
+Lance versions of the three business tables and the object table
+together. Failure at any step does not publish a new Snapshot:
+unreachable objects may remain, but dangling references and half-commits
+across tables are not published. Cross-trajectory reuse depends only on
+the content address, not on session lifetime, so the same long text is
+stored once across Runs. A write is rejected if the same content id
+appears in one batch with disagreeing codec, raw length, or stored bytes.
 
-对象层在普通写入期间保持 append-only，GC 不进入写入热路径。显式 `maintain` 会只扫描三表
-的内容引用列，计算当前快照的可达 content id，并清理不可达 payload。生产环境仍需要把对象
-增长率、不可达字节和维护耗时纳入指标。
+The object layer stays append-only during ordinary writes. GC is not on
+the write hot path. Explicit `maintain` scans only the three tables'
+content-reference columns, computes the reachable content ids of the
+current Snapshot, and drops unreachable payloads. Production still needs
+metrics for object growth rate, unreachable bytes, and maintenance time.
 
-### 查询期延迟物化
+### Query-time lazy materialization
 
-`StorylineDataSource` 先让 Lance 完成业务表的 projection、可安全谓词、scalar index、limit
-和并行扫描，再在计划中插入 `ContentHydrationExec`：
+`StorylineDataSource` lets Lance finish business-table projection, safe
+predicates, scalar indexes, limit, and parallel scan first, then inserts
+`ContentHydrationExec` into the plan:
 
-- 查询不引用内容列时，不打开 `objects.lance` payload；
-- 只收集投影中实际出现的 content id，以最多 512 个为一组走 BTree lookup；
-- 根据 row address 批量读取 Blob，解压后验证长度与 BLAKE3，再恢复原 Utf8 列；
-- 内容列谓词不能作用于描述符，必须保留在 hydration 之后由 DataFusion 计算；
-- `Preview` 模式只返回描述符中的 UTF-8 前缀，零 payload I/O，并拒绝内容列谓词，避免把
-  preview 错当成完整值。
+- if the query does not reference a content column, `objects.lance`
+  payloads are not opened;
+- only content ids that actually appear in the projection are collected,
+  then looked up through BTree in groups of at most 512;
+- Blobs are read in batches by row address, decompressed, checked for
+  length and BLAKE3, then restored as the original Utf8 column;
+- content-column predicates must not run against the descriptor; they
+  stay after hydration for DataFusion to evaluate;
+- `Preview` mode returns only the UTF-8 prefix from the descriptor, does
+  zero payload I/O, and rejects content-column predicates so a preview
+  cannot be mistaken for the full value.
 
-因此大内容的成本只由真正读取这些内容的查询承担；身份过滤、计数、分组和指标分析仍沿用
-紧凑的三表列式路径。
+Large-content cost is therefore paid only by queries that actually read
+that content. Identity filters, counts, grouping, and metric analysis
+keep the compact three-table columnar path.
 
-## 提交布局
+## Commit layout
 
 ```text
 root/
@@ -228,28 +294,43 @@ root/
         └── tool_calls.lance/
 ```
 
-首次导入创建三张规范化 Lance dataset、共享的 `objects.lance` 和标量索引。后续
-`replace_storyline` 不再读取或重写全库，而是按各表主键执行 merge-upsert，并只删除指定
-`document_id` 中已经不再存在的旧键。每次替换
-会产生一个新的逻辑 snapshot；
-`CURRENT` 是一段 JSON，记录必需的 store `schema_version: 1`、逻辑 snapshot id、物理
-`table_generation`、三张表以及对象表各自精确的 Lance version id。对象先持久化，三张业务表随后写入，最后才更新 `CURRENT`；
-因此失败最多留下不可达对象，不会发布悬空引用或跨表半提交。
+The first import creates the three normalized Lance datasets, the shared
+`objects.lance`, and the scalar indexes. Later `replace_storyline` no
+longer reads or rewrites the whole store. It merge-upserts by each
+table's primary key and deletes only old keys that no longer exist under
+the specified `document_id`. Each replace produces a new logical
+snapshot. `CURRENT` is JSON that records the required store
+`schema_version: 1`, the logical snapshot id, the physical
+`table_generation`, and the exact Lance version id of each of the three
+tables plus the object table. Objects are persisted first, then the
+three business tables, and `CURRENT` is updated last. Failure can leave
+unreachable objects at worst; it does not publish dangling references or
+a half-commit across tables.
 
-阈值、preview 长度和 Zstd level 可通过 `StorylineContentOptions` 配置；当前三表 schema 固定在版本 1。
+Threshold, preview length, and Zstd level are configurable through
+`StorylineContentOptions`. The current three-table schema is fixed at
+version 1.
 
-Lance MVCC 的旧版本默认保留，便于已打开的 reader 固定快照及故障恢复。频繁增量更新
-会积累 fragment、delete file 和未合并的索引增量。普通 replace 不执行 index refresh 或
-compaction，避免某次写请求出现维护型长尾；生产环境通过 `maintain` 显式执行三表并行
-compaction、补齐/刷新索引、内容 GC 和按保留期 vacuum。维护产生的四个 dataset version
-仍先原子更新 `CURRENT`，之后才回收旧版本和过期的非当前 physical generation。
-`CURRENT` 必须是包含 schema version 和全部精确版本的 JSON 指针；缺失或未知 schema
-version 会在打开任何 Lance table 前 fail closed，也不读取旧的纯文本 generation 指针。
+Older Lance MVCC versions are retained by default so an already-open
+reader can pin a Snapshot and recover from failure. Frequent incremental
+updates accumulate fragments, delete files, and unmerged index deltas.
+Ordinary replace does not refresh indexes or compact, so one write
+request does not grow a maintenance tail. Production uses `maintain` to
+compact the three tables in parallel, fill/refresh indexes, GC content,
+and vacuum by retention window. The four dataset versions produced by
+maintenance still update `CURRENT` atomically first, then reclaim older
+versions and expired non-current physical generations. `CURRENT` must be
+a JSON pointer that contains the schema version and every exact version.
+A missing or unknown schema version fails closed before any Lance table
+is opened, and the old plain-text generation pointer is not read.
 
-本地写入通过进程内锁和文件锁串行化；对象存储通过 `CURRENT` 的 ETag/version 条件更新
-执行 optimistic CAS。stale commit 不能移动 `CURRENT`；`StorylineLanceStore` 在 CAS 冲突后
-直接返回错误，不会重新读取、merge 或自动重试。调用方若选择重试，必须从最新 snapshot 重新
-开始完整 replace。上层 lease 可减少冲突，但不改变这一失败语义。
+Local writes are serialized by an in-process lock and a file lock. Object
+stores use optimistic CAS through a conditional ETag/version update of
+`CURRENT`. A stale commit cannot move `CURRENT`. After a CAS conflict,
+`StorylineLanceStore` returns an error; it does not re-read, merge, or
+retry automatically. A caller that chooses to retry must start a complete
+replace from the latest snapshot. An upper lease can reduce conflicts; it
+does not change this failure semantic.
 
 ## Rust API
 
@@ -260,24 +341,33 @@ let restored = store.get_storyline_full("session-id").await?;
 let report = store.maintain(&LanceMaintenanceOptions::default()).await?;
 ```
 
-`replace_storyline` 以 `document_id` 为边界替换三张表中的相关行，同时保留同一 store
-内的其他 Storyline。
+`replace_storyline` replaces the related rows in the three tables at
+`document_id` granularity and keeps the other Storylines in the same
+store.
 
-`get_storyline_full` 明确表示会读取三表并恢复该 Storyline 的全部内容。未被 CLI 或 Web 使用的
-store-local 分页 API 已删除；产品层的列表、分页和投影统一由 Catalog、Warehouse API 和
-DataFusion query 承担，避免维护第二套不可达的读取协议。
+`get_storyline_full` means it will read the three tables and restore the
+full content of that Storyline. Store-local paging APIs that were unused
+by CLI or Web have been removed. Product-level listing, paging, and
+projection are owned by Catalog, the Warehouse API, and DataFusion query,
+so a second unreachable read protocol is not maintained.
 
-首次导入和替换都并行写三张表。Arrow 行按最多 8192 行一批懒编码并流入 Lance，避免
-导入大型语料时同时保留整表的 Arrow 副本。`CURRENT` 只解析一次；DataSource 随后把每张
-表直接打开到指针指定的 version，不再先验证、再重复打开同一 dataset。
+First import and replace both write the three tables in parallel. Arrow
+rows are lazily encoded in batches of at most 8192 and streamed into
+Lance, so a large import does not keep a full-table Arrow copy.
+`CURRENT` is parsed once. The DataSource then opens each table directly
+at the pointed-to version instead of validating and reopening the same
+dataset.
 
-生产环境通过 `StorylineLanceStore::maintain` Rust API 执行维护；公共 CLI 不提供维护命令。
+Production maintenance goes through the `StorylineLanceStore::maintain`
+Rust API. The public CLI does not expose a maintenance command.
 
 ## DataFusion datasource
 
-`StorylineDataSource` 在打开时固定 `CURRENT` 中的三个业务表 version 和对象表 version，并把三张
-dataset 注册为 `runs`、`steps`、`tool_calls`。即使写入端随后切换 `CURRENT`，已经打开
-的查询仍使用同一份三表快照。
+`StorylineDataSource` pins the three business-table versions and the
+object-table version from `CURRENT` at open time, and registers the three
+datasets as `runs`, `steps`, and `tool_calls`. Even if the writer later
+switches `CURRENT`, an already-open query keeps the same three-table
+Snapshot.
 
 ```rust
 let source = StorylineDataSource::open(path).await?;
@@ -289,41 +379,52 @@ let rows = ctx
     .await?;
 ```
 
-Datasource 使用 Lance 原生 DataFusion execution plan，支持列裁剪、谓词和 limit 下推，
-并采用 unordered physical scan 允许并行读取；有顺序要求的查询必须显式使用
-`ORDER BY step_id, call_index`。未引用大内容列的查询不会打开 Blob；引用内容列时在
-Lance 投影/安全谓词/limit 之后批量恢复。针对内容列的谓词不下推到内部引用，而是在恢复
-后由 DataFusion 求值，确保 SQL 语义不变。内部引用不会由 pChronicle 的读取、查询、导出
-API 返回；直接绕过 pChronicle 扫描底层 Lance 文件属于诊断接口，不在该保证内。
+The datasource uses Lance's native DataFusion execution plan. It supports
+column pruning, predicate and limit pushdown, and an unordered physical
+scan that allows parallel reads. Queries that need order must write
+`ORDER BY step_id, call_index` explicitly. Queries that do not reference
+large content columns do not open Blobs. When a content column is
+referenced, restoration happens in batches after Lance projection, safe
+predicates, and limit. Predicates on content columns are not pushed down
+onto the internal reference; DataFusion evaluates them after restoration
+so SQL semantics stay the same. Internal references are never returned by
+pChronicle read, query, or export APIs. Scanning the underlying Lance
+files while bypassing pChronicle is a diagnostic interface and is outside
+that guarantee.
 
-预览 UI 可把 `StorylineDataSourceOptions::content_read_mode` 设为
-`StorylineContentReadMode::Preview`。该模式直接从描述符返回 UTF-8 安全的短 preview，零
-Blob payload I/O；为避免把 preview 当成完整值产生错误结果，内容列谓词在 preview 模式
-下会被明确拒绝。
+A preview UI can set `StorylineDataSourceOptions::content_read_mode` to
+`StorylineContentReadMode::Preview`. That mode returns a short UTF-8-safe
+preview directly from the descriptor with zero Blob payload I/O. Content-
+column predicates are rejected in preview mode so a preview cannot be
+treated as the full value.
 
-首次创建 table generation 时建立以下标量索引：
+These scalar indexes are built when a table generation is first created:
 
-| 表 | BTree | Bitmap |
+| Table | BTree | Bitmap |
 |---|---|---|
 | runs | `document_id`, `session_id`, `run_id` | — |
 | steps | `document_id`, `session_id`, `timestamp` | `effective_kind`, `source` |
 | tool_calls | `document_id`, `session_id`, `tool_call_id` | `function_name` |
 
-这些索引针对按 Story/Run 定位、tool-call 查找和类型过滤。`step_id` 在每个 Storyline 内
-从小值重新计数，全局选择性低，因此不单独建立 BTree；组合条件先用 `session_id` 定位到
-单个 Storyline，再过滤很短的 step 范围。DataFusion 的索引谓词会下推为 Lance
-`ScalarIndexQuery`。
+The indexes target Story/Run location, tool-call lookup, and type
+filters. `step_id` recounts from small values inside each Storyline and
+has low global selectivity, so it does not get its own BTree. A combined
+predicate first locates one Storyline with `session_id`, then filters a
+short step range. DataFusion index predicates are pushed down as Lance
+`ScalarIndexQuery`.
 
-`StorylineDataSourceOptions` 可显式控制 `use_scalar_indexes` 与 `scan_in_order`；默认配置
-面向在线分析查询启用索引、关闭物理顺序。关闭索引主要用于 benchmark、诊断或极小表
-的全扫描对照。
+`StorylineDataSourceOptions` can set `use_scalar_indexes` and
+`scan_in_order` explicitly. The default enables indexes for online
+analytic queries and turns physical order off. Turning indexes off is
+mainly for benchmarks, diagnosis, or a full-scan control on a tiny table.
 
-## 统一查询引擎
+## Unified query engine
 
-`ChronicleQueryEngine` 是对外的只读 SQL 门面。All six disk formats (Canonical
-Event, Storyline Lance, AgenticMD, ATIF, OpenAI Msg, ACTF) open through the
-single entry `ChronicleQueryEngine::open(format, path, options)` and register
-the semantically matching query tables, so SQL does not change with the
+`ChronicleQueryEngine` is the public read-only SQL facade. All six disk
+formats (Canonical Event, Storyline Lance, AgenticMD, ATIF, OpenAI Msg,
+ACTF) open through the single entry
+`ChronicleQueryEngine::open(format, path, options)` and register the
+semantically matching query tables, so SQL does not change with the
 physical format:
 
 ```rust
@@ -350,33 +451,38 @@ let jsonl = atif.query_jsonl(
 ```
 
 `DocumentFormat::CanonicalEvent` registers the `events` table;
-`runs`/`steps`/`tool_calls` are not registered live by default — Storyline
-query surfaces prefer the lineage-fresh Storyline Lance projection, and
-without one a bounded row/byte-budget fallback runs (budget exhaustion is an
-explicit error, never a silent truncation). The other five formats register
-`runs`/`steps`/`tool_calls`.
+`runs`/`steps`/`tool_calls` are not registered live by default —
+Storyline query surfaces prefer the lineage-fresh Storyline Lance
+projection, and without one a bounded row/byte-budget fallback runs
+(budget exhaustion is an explicit error, never a silent truncation). The
+other five formats register `runs`/`steps`/`tool_calls`.
 
-`query` 返回 Arrow `RecordBatch`，适合服务端继续处理；`dataframe` 返回 lazy DataFrame，
-适合追加 DataFusion 变换或查看计划；`query_jsonl` 用于 CLI/API 边界。调用者也可通过
-`context()` 取得 `SessionContext` 注册 UDF 或额外表。`backend_info()` returns a
+`query` returns Arrow `RecordBatch` values, which suits further
+server-side processing. `dataframe` returns a lazy DataFrame for extra
+DataFusion transforms or plan inspection. `query_jsonl` is for CLI/API
+boundaries. Callers can also take the `SessionContext` from `context()`
+to register UDFs or extra tables. `backend_info()` returns a
 `QueryBackendInfo` that reports `format` / `tables` / `capabilities` /
-`snapshot` per the provider's real implementation; filter pushdown capability
-distinguishes `Unsupported` / `Inexact` / `Exact` / `ExpressionDependent` and
-is never overstated.
+`snapshot` per the provider's real implementation; filter pushdown
+capability distinguishes `Unsupported` / `Inexact` / `Exact` /
+`ExpressionDependent` and is never overstated.
 
 The unified document source entry `open_document(format, path)` accepts a
 single ATIF JSON object, a JSON array, JSONL/NDJSON with one complete
 trajectory per line, and directories containing such ATIF documents. File
-paths register as per-file lazy `StreamingTable`s by default: the manifest
-freezes paths and file identities at open time and scans read only the hit
-files; directories are discovered in stable order, each file is an
-independent partition, and fixed-size Arrow batches provide backpressure.
+paths register as per-file lazy `StreamingTable`s by default: the
+manifest freezes paths and file identities at open time and scans read
+only the hit files; directories are discovered in stable order, each file
+is an independent partition, and fixed-size Arrow batches provide
+backpressure.
 
-### pChronicle + JSON 投影查询快路径
+### pChronicle + JSON projection query fast path
 
-旧路径把每份 JSON 完整解析为格式对象，再执行 `ATIF → Storyline → 三表行 → 全宽 Arrow`
-后交给 SQL。即使查询只需要 `source` 或 `COUNT(*)`，也会构造 message、reasoning、metrics、
-tool calls 等未使用的大字段。新路径把优化边界前移到 `TableProvider::scan`：
+The old path fully parsed each JSON document into a format object, then
+ran `ATIF → Storyline → three-table rows → full-width Arrow` before SQL.
+Even a query that only needed `source` or `COUNT(*)` constructed unused
+large fields such as message, reasoning, metrics, and tool calls. The new
+path moves the optimization boundary forward to `TableProvider::scan`:
 
 ```text
 SQL / DataFrame
@@ -393,48 +499,63 @@ SQL / DataFrame
   → DataFusion 保留 inexact filter 再次校验
 ```
 
-当前 fast path 的适用范围是 ATIF 单对象、数组（包括 pretty JSON）和 JSONL/NDJSON，
-以及 ACTF 单对象和数组；目标表为 `steps`，并且物理计划存在严格列裁剪。它有意保持保守：
+The current fast path covers ATIF single objects, arrays (including
+pretty JSON), and JSONL/NDJSON, plus ACTF single objects and arrays. The
+target table is `steps`, and the physical plan must have strict column
+pruning. The path is intentionally conservative:
 
-| 输入/查询 | 执行路径 |
+| Input/query | Execution path |
 |---|---|
 | ATIF object/pretty object + projected `steps` | reader-backed seeded projected decoder |
-| ATIF array/pretty array + projected `steps` | `fill_buf` 结构扫描 + 有界 element buffer + seeded `from_slice` |
-| ATIF JSONL/NDJSON + projected `steps` | `BufRead` 逐记录、有界 record buffer |
+| ATIF array/pretty array + projected `steps` | `fill_buf` structural scan + bounded element buffer + seeded `from_slice` |
+| ATIF JSONL/NDJSON + projected `steps` | `BufRead` per record, bounded record buffer |
 | ACTF object/array + projected `steps` | reader/slice seeded projected decoder |
-| `_file_`、`session_id`、`step_id`、`source` 的安全简单谓词 | 可提前裁剪，DataFusion 仍复核 |
-| `SELECT *` | 完整规范化 fallback |
-| `runs` / `tool_calls` | 完整规范化 fallback |
-| OpenAI-message | 完整规范化 fallback |
-| 无法证明安全的表达式、OR/函数/跨列条件 | 不预裁剪，由 DataFusion 求值 |
+| Safe simple predicates on `_file_`, `session_id`, `step_id`, `source` | may prune early; DataFusion still rechecks |
+| `SELECT *` | full-normalization fallback |
+| `runs` / `tool_calls` | full-normalization fallback |
+| OpenAI-message | full-normalization fallback |
+| Unproven-safe expressions, OR/functions/cross-column conditions | no pre-prune; DataFusion evaluates |
 
-`DeserializeSeed` 把查询 projection 和安全谓词传入 `Visitor`；未引用字段交给
-`IgnoredAny` 做语法扫描，不构造 `Value`/Storyline。ATIF JSONL/NDJSON 以 `BufRead`
-逐记录读取；JSON array 的结构扫描器识别字符串和转义，在不构造 DOM 的情况下提取单个
-trajectory/document，再通过 slice decoder 执行投影解析。调用方可显式设置
-`max_record_bytes` 限制单个 document/record；默认不设单记录上限，只保留
-`max_file_bytes` 文件边界。三种路径都不先复制整文件。
-Arrow encoder 也只创建投影列，`COUNT(*)` 使用合法的零列 batch。轻量路径
-校验 JSON、必需字段、重复 session、命中文档内的重复 step 和当前表内约束；跨表引用
-完整性仍由导入路径或完整 fallback 负责。这一边界使临时查询不承担导入语义，同时不降低
-SQL 结果正确性。
+`DeserializeSeed` passes the query projection and safe predicates into
+the `Visitor`. Unreferenced fields go to `IgnoredAny` for a syntactic
+scan and do not construct a `Value`/Storyline. ATIF JSONL/NDJSON is read
+record-by-record with `BufRead`. The JSON-array structural scanner
+recognizes strings and escapes, extracts one trajectory/document without
+building a DOM, then runs projected parse through the slice decoder.
+Callers can set `max_record_bytes` to bound a single document/record.
+There is no default per-record cap; only the `max_file_bytes` file bound
+remains. None of the three paths copy the whole file first.
+The Arrow encoder also creates only projected columns. `COUNT(*)` uses a
+legal zero-column batch. The lightweight path checks JSON, required
+fields, duplicate sessions, duplicate steps inside a hit document, and
+in-table constraints. Cross-table referential integrity stays with the
+import path or the full fallback. That boundary keeps ad-hoc queries from
+taking on import semantics without lowering SQL result correctness.
 
-查询指标额外报告 `projected_files`、`streamed_records`、`streaming_buffer_peak_bytes`、
-scanned/pruned documents、scanned/pruned/emitted rows 和 `projected_arrow_bytes`，用来区分
-“源字节扫描”“输入缓冲”“JSON 字段物化”和“Arrow 输出”四个成本。仓库 benchmark 报告
-median/P95、rows/s、独立进程峰值 RSS，以及计数 allocator 观测到的 allocation calls/bytes；
-这些是指定 corpus、查询和机器的回归数据，不是跨环境 SLA。
+Query metrics additionally report `projected_files`, `streamed_records`,
+`streaming_buffer_peak_bytes`, scanned/pruned documents,
+scanned/pruned/emitted rows, and `projected_arrow_bytes`, so the four
+costs — source-byte scan, input buffer, JSON-field materialization, and
+Arrow output — can be distinguished. Repository benchmarks report
+median/P95, rows/s, independent-process peak RSS, and allocation
+calls/bytes observed by a counting allocator. Those are regression
+numbers for a specified corpus, query, and machine, not a cross-
+environment SLA.
 
-该路径仍需顺序扫描命中文件的全部 JSON 字节，不是文件内索引。一次性或受控批次查询可
-直接使用 JSON；超大、远端或反复查询的数据应先转换为 Lance，利用 snapshot、列裁剪、
-并行 fragment scan 和 scalar index。
+The path still sequentially scans every JSON byte of a hit file. It is
+not an in-file index. One-shot or controlled-batch queries can use JSON
+directly. Very large, remote, or repeated queries should convert to Lance
+first and use Snapshot, column pruning, parallel fragment scan, and
+scalar indexes.
 
-ATIF 导入同样默认走 `AtifReader`。空 store 使用一个 producer 单遍完成
-校验、Storyline 规范化和三表拆分，再经三条有界 Arrow channel 并行创建三个 Lance
-dataset；已有 store 则以最多 256 个 Storyline 为一个增量替换批次。两种路径都在所有
-输入和三表写入成功后才原子切换一次 `CURRENT`。
+ATIF import also defaults to `AtifReader`. An empty store uses one
+producer pass for validation, Storyline normalization, and three-table
+split, then creates the three Lance datasets in parallel over three
+bounded Arrow channels. An existing store replace in incremental batches
+of at most 256 Storylines. Both paths switch `CURRENT` atomically once,
+only after every input and three-table write succeeds.
 
-CLI 使用相同引擎，输出稳定的 JSONL：
+The CLI uses the same engine and emits stable JSONL:
 
 ```bash
 pchronicle query ./trajectories.ndjson \
@@ -449,14 +570,18 @@ pchronicle query ./openai-data \
   --sql "SELECT _file_, COUNT(*) FROM dataset.steps WHERE _file_ LIKE 'batch/%' GROUP BY _file_"
 ```
 
-查询是只读的；SQL 可以使用 SELECT、CTE、JOIN、聚合和 DataFusion 内置函数，但不通过
-这个门面执行 DDL/DML。Lance 引擎打开时固定 `CURRENT` 指向的三个版本，从而保证一次
-查询会话内三张表来自同一快照。
+Queries are read-only. SQL may use SELECT, CTE, JOIN, aggregation, and
+built-in DataFusion functions, but this facade does not run DDL/DML. When
+the Lance engine opens, it pins the three versions pointed to by
+`CURRENT`, so the three tables in one query session come from the same
+Snapshot.
 
-仓库使用 Criterion.rs + hyperfine 的统一 benchmark runner。Criterion 负责 CPU-bound
-转换、events→Storyline 和三表 split/reconstruct 微基准；canonical event append、投影
-build/sync/verify、Lance/DataFusion 生命周期、JSON streaming 与 RSS 场景由 hyperfine
-重复执行独立进程，最终生成统一 JSON、Markdown 和 HTML：
+The repository uses a unified Criterion.rs + hyperfine benchmark runner.
+Criterion owns CPU-bound conversion, events→Storyline, and three-table
+split/reconstruct microbenchmarks. Canonical event append, projection
+build/sync/verify, Lance/DataFusion lifetime, JSON streaming, and RSS
+scenarios are repeated by hyperfine in independent processes and then
+folded into unified JSON, Markdown, and HTML:
 
 ```bash
 # PR/local smoke workload
@@ -471,28 +596,45 @@ just benchmark-pchronicle-compare \
   target/pchronicle-benchmark/current/raw-report.json
 ```
 
-`raw-report.json` 以 `$["measurements"]...` JSONPath 地址保存原始指标和环境，
-`bencher.json` 是历史平台使用的扁平投影，
-`report.md` 写入 GitHub Actions Job Summary，`report.html` 与 Criterion 明细作为 artifact。
+`raw-report.json` stores raw metrics and environment at
+`$["measurements"]...` JSONPath addresses. `bencher.json` is the flat
+projection used by the historical platform. `report.md` is written to the
+GitHub Actions Job Summary. `report.html` and Criterion detail become
+artifacts.
 
-JSON 对照使用单个 NDJSON 文件，避免大量小文件打开开销。ATIF `steps` 直接查询会把
-DataFusion projection 和可安全预裁剪的 `session_id`、`step_id`、`source` 谓词传给
-projected decoder：未引用 JSON 字段只做语法扫描，不构造 Storyline/三表对象，Arrow
-batch 也只包含执行计划需要的列。object、array、pretty JSON 和 JSONL/NDJSON 共用流式
-projection decoder；ACTF `steps` 也使用对应的 projected decoder；`SELECT *`、其他表和
-OpenAI-message 仍走完整规范化 fallback。轻量路径执行 JSON、必需字段和表内约束校验，跨表引用完整性由导入或完整
-fallback 校验。预解析内存 JSON 对照只计算查询逻辑，用来区分产品工作流与纯内存遍历成本。
-benchmark 还单独输出 DataSource 冷打开并执行 SQL、`get_storyline_full` 点查和单 Storyline
-替换的延迟，避免 warm SQL 吞吐掩盖在线读写路径的写放大。
+JSON comparisons use a single NDJSON file to avoid the open cost of many
+tiny files. A direct ATIF `steps` query passes the DataFusion projection
+and the safely pre-prunable `session_id`, `step_id`, and `source`
+predicates to the projected decoder. Unreferenced JSON fields are scanned
+syntactically only; no Storyline/three-table object is constructed, and
+the Arrow batch contains only the columns the plan needs. Object, array,
+pretty JSON, and JSONL/NDJSON share the streaming projection decoder.
+ACTF `steps` uses the matching projected decoder. `SELECT *`, the other
+tables, and OpenAI-message still take the full-normalization fallback.
+The lightweight path checks JSON, required fields, and in-table
+constraints. Cross-table referential integrity is checked by import or
+the full fallback. A pre-parsed in-memory JSON control measures query
+logic only, so product workflow cost can be separated from pure in-memory
+traversal. The benchmark also reports DataSource cold-open-plus-SQL,
+`get_storyline_full` point-lookup, and single-Storyline replace latency,
+so warm SQL throughput does not hide write amplification on the online
+read/write path.
 
-性能结论不应写成“Lance 在所有规模和查询上必然更快”：显式构造的 `MemTable` 或预解析
-内存 JSON 在小数据下仍可能更快。默认 ATIF streaming 解决的是内存上界，不提供物理
-索引；Lance 的主要优势仍是更小的物理体积、近乎常数的 datasource 打开时间，以及列
-裁剪、并行扫描和选择性索引收益。
+Performance conclusions should not be written as "Lance is always faster
+at every scale and query". An explicitly constructed `MemTable` or
+pre-parsed in-memory JSON can still be faster on small data. Default ATIF
+streaming solves an upper memory bound; it does not provide a physical
+index. Lance's main advantages remain a smaller physical footprint,
+near-constant datasource open time, and the gains from column pruning,
+parallel scan, and selective indexes.
 
-## 相关文档
+## Related documents
 
-- [事实、Projection 与 Revision](../concepts/facts-and-projections.md)：解释 Storyline 为何是 projection。
-- [pChronicle 架构](architecture.md)：定义 publication 和 read consistency 保证。
-- [Snapshot](catalog.md)：说明 Source discovery 与固定 Snapshot 如何打开本 Store。
-- [`pchronicle` 参考](../reference/cli.md)：当前对外查询、导入导出与服务命令。
+- [Recorded data, views, and versions](../concepts/facts-and-projections.md):
+  why Storyline is a projection.
+- [pChronicle architecture](architecture.md): publication and read-
+  consistency guarantees.
+- [Snapshot](catalog.md): how Source discovery and a pinned Snapshot open
+  this store.
+- [`pchronicle` reference](../reference/cli.md): current public query,
+  import/export, and serve commands.

@@ -1,10 +1,12 @@
-# AgenticMD 运行数据格式
+# AgenticMD run format
 
-AgenticMD 是 pChronicle 的人读与调试视图：普通 Markdown 正文可以附带机器定位的块头。
-它不是存储协议或事实源；系统生成的文件使用 `{session_id}.md`，读取器对人工编辑、
-缺失字段和未知扩展保持宽容。
+AgenticMD is pChronicle's human-readable debugging view: ordinary Markdown
+body text with optional machine-locatable block headers. It is not a storage
+protocol or a source of truth. System-generated files use `{session_id}.md`.
+The reader stays tolerant of hand edits, missing fields, and unknown
+extensions.
 
-## 1. 文档结构
+## 1. Document structure
 
 ```markdown
 ---
@@ -22,65 +24,76 @@ turn_count: 1
 我先查看目录结构。
 ```
 
-Frontmatter 是可选会话摘要；块头也是可选的调试元数据。系统写入时会记录正文 UTF-8
-字节长度以支持 live upsert；读取时允许省略长度，并按下一块边界解析。没有块头的普通
-Markdown 会作为一个 `system` 调试块读取。
+Frontmatter is an optional session summary. Block headers are optional
+debugging metadata. System writes record the body's UTF-8 byte length so live
+upsert can locate a block; readers may omit the length and parse to the next
+block boundary. Plain Markdown with no block headers is read as a single
+`system` debugging block.
 
-## 2. 块头
+## 2. Block headers
 
 ```text
 <!-- persisting:block:{speaker} {json} -->
 ```
 
-新输出的 `source` 对齐 Storyline，通常为 `user`、`agent` 或 `system`。JSON 常用字段是：
+Newly written `source` values follow Storyline and are typically `user`,
+`agent`, or `system`. Common JSON fields:
 
-| 字段 | 含义 |
+| Field | Meaning |
 |---|---|
 | `source` | Storyline turn source |
-| `step_id` | Storyline turn 顺序 |
-| `call_id` | 模型调用身份，用于配对与 live upsert |
-| `type`, `length` | 生成器的展示/定位提示，不构成业务 schema |
+| `step_id` | Storyline turn order |
+| `call_id` | Model-call identity, used for pairing and live upsert |
+| `type`, `length` | Generator display and location hints; not a business schema |
 
-时间、模型、provider、token、工具和 subagent 引用可以作为扩展字段出现。消费者应忽略
-未知字段。旧 `role`、`seq`、`session`、`agent` 作为读取别名保留；speaker 与 JSON 字段
-不一致时不再拒绝整个文档。
+Time, model, provider, token, tool, and subagent references may appear as
+extension fields. Consumers should ignore unknown fields. Legacy `role`,
+`seq`, `session`, and `agent` remain read aliases. A mismatch between the
+speaker token and a JSON field no longer rejects the whole document.
 
 ## 3. Frontmatter
 
-pChronicle 定义并序列化 frontmatter，常用字段包括：
+pChronicle defines and serializes frontmatter. Common fields include:
 
-- `format`、`block`；
-- `session_id`、`agent_id`、`model_name`、`provider`；
-- `started_at`、`duration`、`turn_count`；
-- `total_tokens`、`estimated_cost_usd`；
-- `subagents` 与可选 `client` 来源信息。
+- `format`, `block`;
+- `session_id`, `agent_id`, `model_name`, `provider`;
+- `started_at`, `duration`, `turn_count`;
+- `total_tokens`, `estimated_cost_usd`;
+- `subagents` and optional `client` origin information.
 
-零值、未知值和整段 frontmatter 都可以省略。嵌套对象与未知字段会被保留，不建立独立
-于 Storyline 的强制 frontmatter schema。
+Zero values, unknown values, and the entire frontmatter block may be omitted.
+Nested objects and unknown fields are preserved. There is no mandatory
+frontmatter schema independent of Storyline.
 
-## 4. Live 更新
+## 4. Live updates
 
-启用 live Markdown 时，Gateway 在写入 canonical Lance 的同时将可见对话投影为 AgenticMD：
+When live Markdown is enabled, Gateway projects visible dialogue into
+AgenticMD while writing canonical Lance events:
 
-1. user 块按 `call_id` 写入；
-2. 流式 assistant 使用相同 `call_id` 原地更新；
-3. 重写一个 assistant 块时必须保留其后的 user 块；
-4. 内部探测、重复历史和不可见 thinking 不进入正文；
-5. 图片等多模态内容用稳定占位符表示，不内嵌大体积 base64。
+1. User blocks are written by `call_id`;
+2. A streaming assistant updates in place with the same `call_id`;
+3. Rewriting an assistant block must keep any following user blocks;
+4. Internal probes, repeated history, and invisible thinking stay out of the
+   body;
+5. Images and other multimodal content use stable placeholders rather than
+   inlined bulk base64.
 
-这些规则属于实时投影策略。AgenticMD 文件失败或缺失不改变 canonical append 结果。
+These rules are a live-projection policy. A missing or failed AgenticMD file
+does not change the canonical append result.
 
-## 5. 与 Lance 的关系
+## 5. Relationship to Lance
 
-Lance events 负责保真、replay、stats 和结构化查询。内部 trajectory operation 可以从
-Lance 重建 AgenticMD，但当前公共 `pchronicle` CLI 不提供 AgenticMD materialize 或 import
-子命令。AgenticMD 不会自动 compact 或恢复 canonical event；公共交换使用
-[`pchronicle import/export`](cli.md) 支持的格式。
+Lance events own fidelity, replay, stats, and structured query. Internal
+trajectory operations can rebuild AgenticMD from Lance, but the public
+`pchronicle` CLI does not expose AgenticMD materialize or import subcommands.
+AgenticMD does not compact or restore canonical events automatically. Public
+exchange uses the formats supported by
+[`pchronicle import/export`](cli.md).
 
-## 6. 示例与实现
+## 6. Examples and implementation
 
-- Gateway 端到端定量示例：`examples/pvisor/04-gateway-llm-control/`
-- Lance/ATIF 存储与分析示例：`examples/pchronicle/`
-- 格式与视图实现：`crates/persisting-pchronicle/src/formats/`、`src/projection/`
-- [pChronicle 运行存储](../design/trajectory-storage.md)
-- [运行数据格式与交换边界](formats/index.md)
+- Gateway end-to-end quantitative example: `examples/pvisor/04-gateway-llm-control/`
+- Lance/ATIF storage and analysis examples: `examples/pchronicle/`
+- Format and view implementation: `crates/persisting-pchronicle/src/formats/`, `src/projection/`
+- [pChronicle run storage](../design/trajectory-storage.md)
+- [Run data formats and exchange boundaries](formats/index.md)
