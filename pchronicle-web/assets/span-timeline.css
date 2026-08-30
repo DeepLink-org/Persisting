@@ -44,7 +44,8 @@
 .trace-root-summary,
 .span-row-summary {
   display: grid;
-  grid-template-columns: minmax(230px, 31%) minmax(230px, 31%) minmax(180px, 1fr) 110px;
+  /* Keep the run track and every conversation track on the exact same axis. */
+  grid-template-columns: minmax(0, 31%) minmax(0, 31%) minmax(0, 1fr) 110px;
   align-items: stretch;
 }
 
@@ -58,6 +59,7 @@
 }
 
 .span-table-head {
+  padding-right: 52px;
   border-bottom: 1px solid #dfe3e8;
   background: transparent;
   color: #667085;
@@ -108,6 +110,8 @@
 }
 
 .trace-root-summary {
+  position: relative;
+  padding-right: 52px;
   border-bottom: 1px solid #dfe3e8;
   background: transparent;
   cursor: default;
@@ -142,6 +146,7 @@
 
 .span-structure > div {
   min-width: 0;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -161,8 +166,14 @@
 }
 
 .span-structure-title > strong {
-  min-width: 0;
-  flex: 0 1 auto;
+  display: inline-block;
+  min-width: 112px;
+  max-width: 180px;
+  flex: 0 0 auto;
+  width: max-content;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .span-structure-title > .summary-chip,
@@ -170,6 +181,23 @@
 .span-structure-title > .phase-badge,
 .span-structure-title > .pc2-error-chip {
   flex: 0 0 auto;
+}
+
+.root-composition {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  color: #667085;
+  font: 9px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: nowrap;
+}
+
+.root-composition > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .span-structure-chips {

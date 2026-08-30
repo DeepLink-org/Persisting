@@ -119,12 +119,12 @@ receives a temporary plugin and appended system prompt. No persistent Agent
 configuration file is changed. Interactive launch requires terminal stdin and
 stdout; `--dry-run` remains available in pipes and CI.
 
-By default, pChronicle instructs the Agent to run a bounded `status` check and
-compact `analysis overview`, then ask what to investigate. `--ask` supplies that
-question at launch so analysis can continue without a second user turn.
-`--no-overview` asks the Agent to skip the automatic generic overview while
-retaining the bounded health check and any targeted queries needed to answer the
-question. `--dry-run` emits a JSON launch plan without creating a temporary
+By default, pChronicle launches the Agent immediately without querying the
+Dataset, then waits for an investigation request. `--ask` supplies that question
+at launch so analysis can continue without a second user turn; only the bounded
+queries needed for that request are run. `--no-overview` is retained for
+compatibility and has no effect because generic startup queries are deferred.
+`--dry-run` emits a JSON launch plan without creating a temporary
 injection, checking Agent installation or authentication, or launching a child.
 The plan marks the question as redacted and reports its byte length without
 echoing its content.

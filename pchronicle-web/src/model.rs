@@ -64,6 +64,18 @@ pub struct RunPage {
     pub snapshot: PageSnapshot,
     pub records: Vec<RunExplorerItem>,
     pub path_index: Vec<RunSummary>,
+    #[serde(default)]
+    pub search: RunSearchStatus,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct RunSearchStatus {
+    #[serde(default)]
+    pub fts_available: bool,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub tokenizer: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -528,6 +540,18 @@ pub struct TurnSummary {
 pub struct TurnPage {
     pub snapshot: PageSnapshot,
     pub records: Vec<TurnSummary>,
+    #[serde(default)]
+    pub search: TurnSearchStatus,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct TurnSearchStatus {
+    #[serde(default)]
+    pub fts_available: bool,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub tokenizer: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

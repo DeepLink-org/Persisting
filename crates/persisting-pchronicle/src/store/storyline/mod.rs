@@ -138,6 +138,15 @@ const STORYLINE_FTS_COLUMNS: &[&str] = &[
     "results",
 ];
 
+const STORYLINE_STEP_SEARCH_COLUMNS: &[&str] = &[
+    "message_value",
+    "reasoning_content",
+    "model_name",
+    "observation",
+    "env",
+    "prompt",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorylineTablePaths {
     /// Logical three-table snapshot id. Changes after every committed replace.
@@ -919,12 +928,17 @@ impl StorylineLanceStore {
                 .as_ref()
                 .context("missing streamed Storyline tables")?;
             let (runs_version, steps_version, tool_calls_version) =
-                if report.storylines > STREAM_IMPORT_STORIES {
+                // FTS is part of the Storyline read contract, including for
+                // small imports. Previously only multi-chunk imports entered
+                // this path, leaving the common small-corpus case without
+                // searchable indexes. Keep this maintenance pass lightweight
+                // (no compaction) while extending scalar, FTS, and JSON
+                // indexes for every non-empty import.
+                if report.storylines > 0 {
                     let maintenance = LanceMaintenanceOptions {
-                        // Extend scalar, FTS, and JSON indices once after a
-                        // genuinely multi-chunk import, without putting
-                        // compaction in the ingest path or rewriting corpus
-                        // data.
+                        // Extend scalar, FTS, and JSON indices once after
+                        // import, without putting compaction in the ingest
+                        // path or rewriting corpus data.
                         compact: false,
                         optimize_indices: true,
                         vacuum_older_than: None,
@@ -1853,18 +1867,12 @@ pub async fn search_storyline_steps_fts(
     anyhow::ensure!(!query.is_empty(), "Storyline FTS query must not be empty");
     ensure_default_jieba_model()?;
     let dataset = open_table_version(&paths.steps, paths.steps_version).await?;
-    let columns = [
-        "message_value",
-        "reasoning_content",
-        "model_name",
-        "observation",
-        "env",
-        "prompt",
-    ]
-    .into_iter()
-    .filter(|column| dataset.schema().field(column).is_some())
-    .map(str::to_string)
-    .collect::<Vec<_>>();
+    let columns = STORYLINE_STEP_SEARCH_COLUMNS
+        .iter()
+        .copied()
+        .filter(|column| dataset.schema().field(column).is_some())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
     anyhow::ensure!(
         !columns.is_empty(),
         "Storyline steps have no searchable text columns"
@@ -1883,6 +1891,67 @@ pub async fn search_storyline_steps_fts(
         .downcast_ref::<Int64Array>()
         .context("Storyline FTS step_id has an unexpected type")?;
     Ok(step_ids.values().to_vec())
+}
+
+/// Search Storyline steps and return the owning document ids. This is used by
+/// the runs explorer to promote content matches to their parent runs.
+pub async fn search_storyline_documents_fts(
+    paths: &StorylineTablePaths,
+    query: &str,
+) -> Result<Vec<String>> {
+    let query = query.trim();
+    anyhow::ensure!(!query.is_empty(), "Storyline FTS query must not be empty");
+    ensure_default_jieba_model()?;
+    let dataset = open_table_version(&paths.steps, paths.steps_version).await?;
+    let columns = STORYLINE_STEP_SEARCH_COLUMNS
+        .iter()
+        .copied()
+        .filter(|column| dataset.schema().field(column).is_some())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        !columns.is_empty(),
+        "Storyline steps have no searchable text columns"
+    );
+    let query = lance_index::scalar::FullTextSearchQuery::new(query.to_string())
+        .with_columns(&columns)
+        .map_err(anyhow::Error::from)?;
+    let mut scan = dataset.scan();
+    scan.full_text_search(query).map_err(anyhow::Error::from)?;
+    scan.project(&["document_id"])
+        .map_err(anyhow::Error::from)?;
+    let batch = scan.try_into_batch().await.map_err(anyhow::Error::from)?;
+    let documents = batch
+        .column_by_name("document_id")
+        .context("Storyline FTS result is missing document_id")?
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .context("Storyline FTS document_id has an unexpected type")?;
+    Ok(documents.iter().flatten().map(str::to_string).collect())
+}
+
+/// Report whether the pinned Storyline steps snapshot has all FTS indexes
+/// required by the explorer search surface.
+pub async fn storyline_steps_fts_available(paths: &StorylineTablePaths) -> Result<bool> {
+    ensure_default_jieba_model()?;
+    let dataset = open_table_version(&paths.steps, paths.steps_version).await?;
+    let columns = STORYLINE_STEP_SEARCH_COLUMNS
+        .iter()
+        .copied()
+        .filter(|column| dataset.schema().field(column).is_some())
+        .collect::<Vec<_>>();
+    if columns.is_empty() {
+        return Ok(false);
+    }
+    let names = dataset
+        .load_indices()
+        .await?
+        .iter()
+        .map(|index| index.name.clone())
+        .collect::<HashSet<_>>();
+    Ok(columns
+        .iter()
+        .all(|column| names.contains(&format!("pchronicle_fts_{column}_idx"))))
 }
 
 async fn ensure_named_index(

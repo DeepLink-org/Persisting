@@ -45,7 +45,8 @@ pub use crate::store::{
     StorylineProjectionLineage, StorylineStreamImportReport, StorylineTablePaths, TrajectoryStats,
     attempt_registry_now_ms, distinct_session_ids_in_run, export_source_dirs, export_story_bundle,
     inspect_physical_file, inspect_physical_layout, inspect_physical_page, list_physical_sources,
-    raw_event_lance_path, search_storyline_steps_fts,
+    raw_event_lance_path, search_storyline_documents_fts, search_storyline_steps_fts,
+    storyline_steps_fts_available,
 };
 
 #[cfg(feature = "lance-store")]

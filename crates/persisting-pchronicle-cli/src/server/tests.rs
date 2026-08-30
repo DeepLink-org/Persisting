@@ -1613,6 +1613,9 @@ async fn physical_api_inspects_storyline_lance_layout_file_and_page() {
     assert_eq!(status, StatusCode::OK, "{turns}");
     assert_eq!(turns["snapshot"]["total"], 1, "{turns}");
     assert_eq!(turns["records"][0]["id"], 1, "{turns}");
+    assert_eq!(turns["search"]["fts_available"], true, "{turns}");
+    assert_eq!(turns["search"]["mode"], "fts", "{turns}");
+    assert_eq!(turns["search"]["tokenizer"], "jieba", "{turns}");
 
     let (status, layout) = get_json(
         &app,

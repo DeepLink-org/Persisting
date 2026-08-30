@@ -223,10 +223,32 @@ pub(crate) struct ExplorerPage<T> {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub(crate) struct TurnSearchStatus {
+    pub(crate) fts_available: bool,
+    pub(crate) mode: &'static str,
+    pub(crate) tokenizer: Option<&'static str>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct TurnExplorerPage {
+    pub(crate) snapshot: PageSnapshot,
+    pub(crate) records: Vec<TurnSummary>,
+    pub(crate) search: TurnSearchStatus,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct RunExplorerPage {
     pub(crate) snapshot: PageSnapshot,
     pub(crate) records: Vec<RunExplorerItem>,
     pub(crate) path_index: Vec<RunSummary>,
+    pub(crate) search: RunSearchStatus,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct RunSearchStatus {
+    pub(crate) fts_available: bool,
+    pub(crate) mode: &'static str,
+    pub(crate) tokenizer: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -363,7 +385,22 @@ pub(crate) fn explorer_run_path(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn run_page(summaries: Vec<RunSummary>, query: &ExplorerRunsQuery) -> RunExplorerPage {
+    run_page_with_fts(
+        summaries,
+        query,
+        &BTreeSet::new(),
+        RunSearchStatus::default(),
+    )
+}
+
+pub(crate) fn run_page_with_fts(
+    summaries: Vec<RunSummary>,
+    query: &ExplorerRunsQuery,
+    fts_matches: &BTreeSet<String>,
+    search: RunSearchStatus,
+) -> RunExplorerPage {
     let needle = query
         .q
         .as_deref()
@@ -378,6 +415,7 @@ pub(crate) fn run_page(summaries: Vec<RunSummary>, query: &ExplorerRunsQuery) ->
         })
         .filter(|item| {
             (needle.is_empty()
+                || fts_matches.contains(&run_identity(&item.run))
                 || format!(
                     "{} {} {} {} {}",
                     item.run.agent_id,
@@ -438,7 +476,12 @@ pub(crate) fn run_page(summaries: Vec<RunSummary>, query: &ExplorerRunsQuery) ->
         snapshot: page.snapshot,
         records: page.records,
         path_index,
+        search,
     }
+}
+
+pub(crate) fn run_identity(run: &RunSummary) -> String {
+    format!("{}\u{1f}{}\u{1f}{}", run.dataset, run.file, run.document_id)
 }
 
 pub(crate) fn analyze(
@@ -640,6 +683,23 @@ pub(crate) fn turn_page(
         .map(|item| turn_summary(item, events))
         .collect();
     paginate(records, offset, limit.clamp(1, 500))
+}
+
+pub(crate) fn turn_page_with_search(
+    turns: &[TrajectoryTurnView],
+    events: &[EventRecord],
+    q: Option<&str>,
+    source: Option<&str>,
+    offset: usize,
+    limit: usize,
+    search: TurnSearchStatus,
+) -> TurnExplorerPage {
+    let page = turn_page(turns, events, q, source, offset, limit);
+    TurnExplorerPage {
+        snapshot: page.snapshot,
+        records: page.records,
+        search,
+    }
 }
 
 pub(crate) fn turn_detail(
@@ -1414,5 +1474,28 @@ mod tests {
                 .all(|item| item.run.file.starts_with("gsm8k"))
         );
         assert_eq!(page.path_index.len(), 2);
+    }
+
+    #[test]
+    fn run_page_promotes_storyline_fts_matches_into_results() {
+        let matched = sample_run("evals", "storyline", "completed", "matched");
+        let other = sample_run("evals", "storyline", "completed", "other");
+        let fts_matches = BTreeSet::from([run_identity(&matched)]);
+        let page = run_page_with_fts(
+            vec![matched, other],
+            &ExplorerRunsQuery {
+                q: Some("content from a step".into()),
+                ..ExplorerRunsQuery::default()
+            },
+            &fts_matches,
+            RunSearchStatus {
+                fts_available: true,
+                mode: "fts",
+                tokenizer: Some("jieba"),
+            },
+        );
+        assert_eq!(page.snapshot.total, 1);
+        assert_eq!(page.records[0].run.document_id, "matched");
+        assert_eq!(page.search.mode, "fts");
     }
 }

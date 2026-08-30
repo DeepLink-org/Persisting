@@ -8,7 +8,9 @@ use crate::agent::{self, ThreadMessage, ThreadRole};
 use crate::api;
 use crate::catalog::CatalogExplorer;
 use crate::chat_view::normalize_trace_view;
-use crate::components::{parse_rich_blocks, DataTable, RichBlock, StepDrawer, TrajectoryView};
+use crate::components::{
+    parse_rich_blocks, DataTable, HighlightedText, RichBlock, StepDrawer, TrajectoryView,
+};
 use crate::copilot_sessions::{
     can_start_new_chat, delete_session, empty_thread, load_index, load_session_thread,
     new_session_id, now_millis, page_after_history_switch, persist_indexed_thread, relative_time,
@@ -20,7 +22,7 @@ use crate::llm_settings::LlmSettings;
 use crate::model::{
     CatalogTree, DimensionAggregate, EventProvenance, HistogramBucket, QueryCatalog,
     QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary,
-    ToolAggregate, TurnDetail, TurnSummary,
+    ToolAggregate, TurnDetail, TurnSearchStatus, TurnSummary,
 };
 use crate::terminology::{ANALYSIS, ASSISTANT, DATASETS, RUNS, STEPS, STORAGE, TIMELINE};
 
@@ -146,6 +148,7 @@ pub fn App() -> Element {
     let mut selected_run = use_signal(move || initial_run);
     let mut analysis = use_signal(|| None::<RunAnalysis>);
     let mut turns = use_signal(Vec::<TurnSummary>::new);
+    let mut turn_search = use_signal(TurnSearchStatus::default);
     let mut selected_turn = use_signal(|| None::<TurnDetail>);
     let mut drawer_turn = use_signal(|| None::<TurnDetail>);
     let mut drawer_details = use_signal(Vec::<TurnDetail>::new);
@@ -205,7 +208,7 @@ pub fn App() -> Element {
     use_effect(move || {
         if analysis().is_none() {
             if let Some(run) = selected_run() {
-                load_workspace(run, analysis, turns, detail_loading, error);
+                load_workspace(run, analysis, turns, turn_search, detail_loading, error);
             }
         }
     });
@@ -343,13 +346,14 @@ pub fn App() -> Element {
                         rsx! { div { class: "pc2-detail-layout",
                             PathExplorer { runs: path_runs, selected_path, loading: runs_loading(), filter_folders: false,
                                 on_path: move |value| { run_path.set(value); offset.set(0); page.set("runs".into()); },
-                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); },
+                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); turn_search.set(TurnSearchStatus::default()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); },
                             }
                             if let (Some(_run), Some(value)) = (selected_run(), analysis()) {
                                 RunDetailWorkspace {
                                     run: value.run.clone(),
                                     analysis: value,
                                     turns: turns(),
+                                    search: turn_search(),
                                     selected: selected_turn(),
                                     drawer: drawer_turn(),
                                     drawer_details: drawer_details(),
@@ -369,7 +373,26 @@ pub fn App() -> Element {
                                         trace_mode.set(normalize_trace_view(&value).to_string());
                                     },
                                     on_source: move |value| source.set(value),
-                                    on_query: move |value| turn_query.set(value),
+                                    on_query: move |value: String| {
+                                        let cleared = value.trim().is_empty();
+                                        turn_query.set(value.clone());
+                                        // Clearing must restore the complete turn list immediately;
+                                        // otherwise the UI would keep showing the previous FTS subset
+                                        // until the user presses the search button again.
+                                        if cleared {
+                                            if let Some(run) = selected_run() {
+                                                load_turns(
+                                                    run,
+                                                    String::new(),
+                                                    source(),
+                                                    turns,
+                                                    turn_search,
+                                                    turn_loading,
+                                                    error,
+                                                );
+                                            }
+                                        }
+                                    },
                                     on_apply_filter: move |_| {
                                         let Some(run) = selected_run() else { return; };
                                         load_turns(
@@ -377,6 +400,7 @@ pub fn App() -> Element {
                                             turn_query(),
                                             source(),
                                             turns,
+                                            turn_search,
                                             turn_loading,
                                             error,
                                         );
@@ -392,7 +416,16 @@ pub fn App() -> Element {
                                         }
                                     },
                                     on_open_drawer: move |(id, title, ids): (i64, String, Vec<i64>)| {
-                                        let same = drawer_turn_id() == Some(id);
+                                        // The run-level action uses the first loaded turn as its
+                                        // anchor too, so the anchor id alone cannot tell a run
+                                        // drawer from a conversation drawer. Compare the complete
+                                        // requested id set before treating the click as a toggle.
+                                        let same = drawer_request_matches(
+                                            drawer_turn_id(),
+                                            &drawer_turn_ids(),
+                                            id,
+                                            &ids,
+                                        );
                                         if same {
                                             drawer_turn_id.set(None);
                                             drawer_turn.set(None);
@@ -448,7 +481,12 @@ pub fn App() -> Element {
                             file: file_prefix(),
                             datasets: catalog().map(|value| value.datasets).unwrap_or_default(),
                             dataset: dataset_filter(),
-                            on_query: move |value| query.set(value),
+                            on_query: move |value| {
+                                query.set(value);
+                                // A new search starts from the first page; retaining a
+                                // previous offset can make valid matches look absent.
+                                offset.set(0);
+                            },
                             on_dataset: move |value| { dataset_filter.set(value); run_path.set(String::new()); file_prefix.set(String::new()); offset.set(0); },
                             on_status: move |value| status.set(value),
                             on_sort: move |value| sort.set(value),
@@ -588,6 +626,7 @@ fn load_workspace(
     run: RunSummary,
     mut analysis: Signal<Option<RunAnalysis>>,
     mut turns: Signal<Vec<TurnSummary>>,
+    mut turn_search: Signal<TurnSearchStatus>,
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
@@ -601,6 +640,7 @@ fn load_workspace(
                 (Ok(next_analysis), Ok(next_turns)) => {
                     analysis.set(Some(next_analysis));
                     turns.set(next_turns.records);
+                    turn_search.set(next_turns.search);
                 }
                 (Err(message), _) | (_, Err(message)) => {
                     error.set(Some(workspace_notice(message)));
@@ -616,13 +656,17 @@ fn load_turns(
     query: String,
     source: String,
     mut turns: Signal<Vec<TurnSummary>>,
+    mut turn_search: Signal<TurnSearchStatus>,
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
     loading.set(true);
     spawn(async move {
         match api::turns(&run, &query, &source).await {
-            Ok(value) => turns.set(value.records),
+            Ok(value) => {
+                turns.set(value.records);
+                turn_search.set(value.search);
+            }
             Err(message) => error.set(Some(workspace_notice(message))),
         }
         loading.set(false);
@@ -652,6 +696,15 @@ fn load_turn(
 }
 
 const MAX_CONVERSATION_DRAWER_BLOCKS: usize = 64;
+
+fn drawer_request_matches(
+    active_id: Option<i64>,
+    active_ids: &[i64],
+    requested_id: i64,
+    requested_ids: &[i64],
+) -> bool {
+    active_id == Some(requested_id) && active_ids == requested_ids
+}
 
 fn load_conversation_turns(
     run: RunSummary,
@@ -700,7 +753,6 @@ fn load_conversation_turns(
                     if let Some(value) = ordered.first().cloned() {
                         primary.set(Some(value));
                         details.set(ordered);
-                        loading.set(false);
                     }
                 }
                 Err(message) => {
@@ -859,6 +911,17 @@ fn RunsExplorer(
     let page_limit = page.as_ref().map_or(50, |page| page.snapshot.limit);
     let page_next = page.as_ref().map_or(0, |page| page.snapshot.next_offset);
     let page_has_more = page.as_ref().is_some_and(|page| page.snapshot.has_more);
+    let search = page.as_ref().map(|page| page.search.clone()).unwrap_or_default();
+    let search_label = if search.fts_available {
+        "FTS available · Jieba"
+    } else {
+        "Metadata filter"
+    };
+    let search_placeholder = if search.fts_available {
+        "Search runs and content (FTS · Jieba)"
+    } else {
+        "Agent, session, root, or status"
+    };
     rsx! {
         section { class: "pc2-page",
             header { class: "pc2-page-head",
@@ -866,7 +929,7 @@ fn RunsExplorer(
                 button { class: "button", onclick: on_refresh, "↻ Refresh" }
             }
             div { class: "pc2-filterbar",
-                label { class: "pc2-filter-search", span { "⌕" } input { value: "{query}", placeholder: "Agent, session, root, or status", aria_label: "Search runs", oninput: move |event| on_query.call(event.value()) } }
+                label { class: "pc2-filter-search", span { "⌕" } input { value: "{query}", placeholder: "{search_placeholder}", aria_label: "Search runs and content", oninput: move |event| on_query.call(event.value()) } if !query.is_empty() { button { r#type: "button", class: "pc2-filter-clear", aria_label: "Clear run search", title: "Clear search", onclick: move |event| { event.prevent_default(); on_query.call(String::new()); }, "×" } } }
                 select { value: "{dataset}", aria_label: "Filter by Dataset", onchange: move |event| on_dataset.call(event.value()),
                     option { value: "all", "All Datasets" }
                     for mounted in datasets { option { value: "{mounted.name}", "{mounted.name}" } }
@@ -876,6 +939,7 @@ fn RunsExplorer(
                 button { class: "pc2-sort", aria_label: "Toggle sort direction", onclick: move |_| on_direction.call(if direction == "asc" { "desc".into() } else { "asc".into() }), if direction == "asc" { "↑ Asc" } else { "↓ Desc" } }
                 if !path.is_empty() { button { class: "pc2-path-filter", title: "{path}", onclick: move |_| on_path.call(String::new()), "⌁ {short(&path, 24)} ×" } }
                 if !file.is_empty() { button { class: "pc2-path-filter", title: "{file}", onclick: move |_| on_file.call(String::new()), "_file_ {short(&file, 24)} ×" } }
+                span { class: if search.fts_available { "pc2-search-mode available" } else { "pc2-search-mode unavailable" }, title: "{search_label}", "{search_label}" }
                 span { class: "pc2-result-count", "{total} runs" }
             }
             div { class: "pc2-table-wrap",
@@ -888,7 +952,7 @@ fn RunsExplorer(
                             tr { td { colspan: "5", div { class: "pc2-empty", strong { "No matching runs" } span { "Adjust the filters or refresh the datasets." } } } }
                         } else {
                             for item in page.as_ref().unwrap().records.iter() {
-                                RunTableRow { key: "{item.run.dataset}/{item.run.file}/{item.run.session_id}", item: item.clone(), on_select }
+                                RunTableRow { key: "{item.run.dataset}/{item.run.file}/{item.run.session_id}", item: item.clone(), query: query.clone(), on_select }
                             }
                         }
                     }
@@ -906,18 +970,22 @@ fn RunsExplorer(
 }
 
 #[component]
-fn RunTableRow(item: RunExplorerItem, on_select: EventHandler<RunSummary>) -> Element {
+fn RunTableRow(
+    item: RunExplorerItem,
+    #[props(default)] query: String,
+    on_select: EventHandler<RunSummary>,
+) -> Element {
     let run = item.run.clone();
     let keyboard_run = item.run.clone();
     let root_text = short(item.run.root_session_id.as_deref().unwrap_or("—"), 18);
     let model_text = item.model.clone().unwrap_or_else(|| "unavailable".into());
     rsx! {
         tr { tabindex: "0", onclick: move |_| on_select.call(run.clone()), onkeydown: move |event| if event.key() == Key::Enter { on_select.call(keyboard_run.clone()) },
-            td { div { class: "pc2-session-cell", strong { "{item.run.session_id}" } span { "{item.run.row_count} captured rows" } } }
-            td { div { class: "pc2-session-cell", strong { "{item.run.agent_id}" } span { "{model_text}" } } }
+            td { div { class: "pc2-session-cell", strong { HighlightedText { text: item.run.session_id.clone(), query: query.clone() } } span { "{item.run.row_count} captured rows" } } }
+            td { div { class: "pc2-session-cell", strong { HighlightedText { text: item.run.agent_id.clone(), query: query.clone() } } span { HighlightedText { text: model_text.clone(), query: query.clone() } } } }
             td { StatusBadge { value: item.run.status.clone() } }
             td { class: "pc2-number", "{item.run.row_count}" }
-            td { code { title: "{item.run.root_session_id.as_deref().unwrap_or_default()}", "{root_text}" } }
+            td { code { title: "{item.run.root_session_id.as_deref().unwrap_or_default()}", HighlightedText { text: root_text, query: query.clone() } } }
         }
     }
 }
@@ -939,6 +1007,7 @@ fn RunDetailWorkspace(
     run: RunSummary,
     analysis: RunAnalysis,
     turns: Vec<TurnSummary>,
+    search: TurnSearchStatus,
     selected: Option<TurnDetail>,
     drawer: Option<TurnDetail>,
     drawer_details: Vec<TurnDetail>,
@@ -981,6 +1050,18 @@ fn RunDetailWorkspace(
     let view_for_list = view.clone();
     let source_for_list = source.clone();
     let query_for_list = query.clone();
+    let search_label = match search.mode.as_str() {
+        "fts" => "FTS · Jieba",
+        "memory" if search.fts_available => "Memory fallback",
+        "memory" => "Memory filter",
+        _ if search.fts_available => "FTS available · Jieba",
+        _ => "FTS unavailable · Memory filter",
+    };
+    let search_placeholder = if search.fts_available {
+        "Search steps · FTS available (Jieba)"
+    } else {
+        "Search steps · memory filter"
+    };
     rsx! {
         section { class: if compact_header() { "pc2-detail is-condensed" } else { "pc2-detail" },
             header { class: "pc2-detail-head",
@@ -1028,7 +1109,8 @@ fn RunDetailWorkspace(
                                 button { class: if steps_active { "active" } else { "" }, onclick: move |_| on_view.call("steps".to_string()), {STEPS} }
                             }
                             select { value: "{source}", aria_label: "Filter steps by role", onchange: move |event| on_source.call(event.value()), option { value: "all", "All roles" } option { value: "user", "User" } option { value: "agent", "Agent" } option { value: "system", "System" } }
-                            input { value: "{query}", placeholder: "Search steps (Enter for full-text)", aria_label: "Filter steps", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| if event.key() == Key::Enter { on_apply_filter.call(()) } }
+                            span { class: if search.fts_available { "pc2-search-mode available" } else { "pc2-search-mode unavailable" }, title: "{search_label}", "{search_label}" }
+                            div { class: "pc2-filter-search pc2-detail-filter-search", input { value: "{query}", placeholder: "{search_placeholder}", aria_label: "Filter steps", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| if event.key() == Key::Enter { on_apply_filter.call(()) } } if !query.is_empty() { button { r#type: "button", class: "pc2-filter-clear", aria_label: "Clear step filter", title: "Clear filter", onclick: move |event| { event.prevent_default(); on_query.call(String::new()); }, "×" } } }
                             button { class: "pc2-icon", aria_label: "Apply step filter", onclick: move |_| on_apply_filter.call(()), "⌕" }
                         }
                     }
@@ -1040,7 +1122,7 @@ fn RunDetailWorkspace(
                 }
             }
             if drawer.is_some() || drawer_loading {
-                StepDrawer { detail: drawer, title: drawer_title, conversation_details: drawer_details, loading: drawer_loading, on_close: on_close_drawer }
+                StepDrawer { detail: drawer, title: drawer_title, conversation_details: drawer_details, requested_block_count: drawer_ids.len(), loading: drawer_loading, on_close: on_close_drawer }
             }
         }
     }
@@ -1296,9 +1378,10 @@ fn ToolAnalysis(tools: Vec<ToolAggregate>) -> Element {
     let mut tools = tools;
     tools.sort_by_key(|tool| std::cmp::Reverse(tool.count));
     let max_count = tools.iter().map(|tool| tool.count).max().unwrap_or(0);
+    let tool_noun = if tools.len() == 1 { "tool" } else { "tools" };
     rsx! { div { class: "pc2-analysis-grid tools",
         article { class: "pc2-analysis-card wide",
-            header { div { h3 { "Tool performance" } p { "Frequency, observed duration, and association with steps that reported errors" } } span { "{tools.len()} tools" } }
+            header { div { h3 { "Tool performance" } p { "Frequency, observed duration, and association with steps that reported errors" } } span { "{tools.len()} {tool_noun}" } }
             div { class: "pc2-tool-table",
                 div { class: "pc2-tool-head", span { "Tool" } span { "Calls" } span { "Observed duration" } span { "Average" } span { "Max" } span { "Error-linked" } }
                 if tools.is_empty() { EmptyAnalysis { label: "No tool calls captured" } }
@@ -2174,6 +2257,13 @@ fn sync_workspace_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drawer_toggle_distinguishes_run_from_first_conversation() {
+        assert!(drawer_request_matches(Some(1), &[1, 2], 1, &[1, 2]));
+        assert!(!drawer_request_matches(Some(1), &[1, 2], 1, &[1, 2, 3]));
+        assert!(!drawer_request_matches(Some(1), &[1, 2], 2, &[1, 2]));
+    }
 
     fn run_at(path: &str) -> RunSummary {
         RunSummary {

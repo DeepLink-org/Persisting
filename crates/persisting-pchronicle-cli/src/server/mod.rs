@@ -28,7 +28,8 @@ use persisting_pchronicle::query::ChronicleQueryEngine;
 use persisting_pchronicle::storage::StoryCoords;
 use persisting_pchronicle::storage::{
     CatalogErrorPolicy, CatalogEventProvenance, CatalogSnapshotOptions, CatalogStorylineKey,
-    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount, search_storyline_steps_fts,
+    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount, search_storyline_documents_fts,
+    search_storyline_steps_fts, storyline_steps_fts_available,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -438,7 +439,83 @@ async fn explorer_runs(
 ) -> Result<Json<explorer::RunExplorerPage>, ApiError> {
     let query = api_query(query)?;
     let summaries = load_run_summaries(&state).await?;
-    Ok(Json(explorer::run_page(summaries, &query)))
+    let needle = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    let mut fts_matches = BTreeSet::new();
+    let mut fts_available = false;
+    let mut search_mode = if needle.is_some() { "memory" } else { "none" };
+    if let Some(needle) = needle {
+        let runtime = current_catalog(&state).await?;
+        let mut document_matches_by_table = BTreeMap::<String, BTreeSet<String>>::new();
+        for run in &summaries {
+            let Some(paths) = runtime
+                .snapshot
+                .storyline_table_paths(&run.dataset, &run.file)
+                .map_err(ApiError::internal)?
+            else {
+                continue;
+            };
+            let table_key = format!("{}@{}", paths.steps.display(), paths.steps_version);
+            let documents = if let Some(documents) = document_matches_by_table.get(&table_key) {
+                documents.clone()
+            } else {
+                match search_storyline_documents_fts(&paths, needle).await {
+                    Ok(documents) => {
+                        fts_available = true;
+                        let documents = documents.into_iter().collect::<BTreeSet<_>>();
+                        document_matches_by_table.insert(table_key, documents.clone());
+                        documents
+                    }
+                    Err(error) => {
+                        tracing::debug!(
+                            target: "persisting_pchronicle",
+                            "Storyline run FTS unavailable; falling back to metadata filter: {error:#}"
+                        );
+                        BTreeSet::new()
+                    }
+                }
+            };
+            if documents.contains(&run.document_id) {
+                fts_matches.insert(explorer::run_identity(run));
+            }
+        }
+        if fts_available {
+            search_mode = "fts";
+        }
+    } else {
+        // The initial runs page has no query yet, but still advertises whether
+        // its mounted Storyline sources support indexed full-text search.
+        let runtime = current_catalog(&state).await?;
+        for run in &summaries {
+            let Some(paths) = runtime
+                .snapshot
+                .storyline_table_paths(&run.dataset, &run.file)
+                .map_err(ApiError::internal)?
+            else {
+                continue;
+            };
+            match storyline_steps_fts_available(&paths).await {
+                Ok(true) => {
+                    fts_available = true;
+                    break;
+                }
+                Ok(false) => {}
+                Err(error) => tracing::debug!(
+                    target: "persisting_pchronicle",
+                    "could not determine runs FTS availability: {error:#}"
+                ),
+            }
+        }
+    }
+    Ok(Json(explorer::run_page_with_fts(
+        summaries,
+        &query,
+        &fts_matches,
+        explorer::RunSearchStatus {
+            fts_available,
+            mode: search_mode,
+            tokenizer: fts_available.then_some("jieba"),
+        },
+    )))
 }
 
 async fn explorer_tree(
@@ -995,24 +1072,48 @@ impl TurnsQuery {
 async fn explorer_turns(
     State(state): State<AppState>,
     query: Result<Query<TurnsQuery>, QueryRejection>,
-) -> Result<Json<explorer::ExplorerPage<explorer::TurnSummary>>, ApiError> {
+) -> Result<Json<explorer::TurnExplorerPage>, ApiError> {
     let query = api_query(query)?;
     let session = query.session();
     let loaded = load_trajectory(&state, &session).await?;
+    let runtime = current_catalog(&state).await?;
+    let paths = runtime
+        .snapshot
+        .storyline_table_paths(&loaded.run.dataset, &loaded.run.file)
+        .map_err(ApiError::internal)?;
+    let fts_available = if let Some(paths) = paths.as_ref() {
+        match storyline_steps_fts_available(paths).await {
+            Ok(available) => available,
+            Err(error) => {
+                tracing::debug!(
+                    target: "persisting_pchronicle",
+                    "could not determine Storyline FTS availability: {error:#}"
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+    let mut search_mode = if query
+        .q
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        "memory"
+    } else {
+        "none"
+    };
     let (turns, search_query) = if let Some(needle) = query
         .q
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let runtime = current_catalog(&state).await?;
-        let paths = runtime
-            .snapshot
-            .storyline_table_paths(&loaded.run.dataset, &loaded.run.file)
-            .map_err(ApiError::internal)?;
         if let Some(paths) = paths {
             match search_storyline_steps_fts(&paths, needle).await {
                 Ok(step_ids) => {
+                    search_mode = "fts";
                     let step_ids = step_ids.into_iter().collect::<BTreeSet<_>>();
                     let turns = loaded
                         .turns
@@ -1036,13 +1137,18 @@ async fn explorer_turns(
     } else {
         (loaded.turns.clone(), query.q.as_deref())
     };
-    Ok(Json(explorer::turn_page(
+    Ok(Json(explorer::turn_page_with_search(
         &turns,
         &loaded.records,
         search_query,
         query.source.as_deref(),
         query.offset.unwrap_or(0),
         query.limit.unwrap_or(100),
+        explorer::TurnSearchStatus {
+            fts_available,
+            mode: search_mode,
+            tokenizer: fts_available.then_some("jieba"),
+        },
     )))
 }
 

@@ -372,6 +372,27 @@ fn structure_meta(group: &CompactSpanGroup) -> String {
     }
 }
 
+fn format_tool_count(count: usize) -> String {
+    format!("{count} {}", if count == 1 { "tool" } else { "tools" })
+}
+
+fn tool_summary_label(tool_count: usize, tool_names: &[String]) -> String {
+    if tool_count == 0 {
+        return String::new();
+    }
+    if tool_names.is_empty() {
+        return format_tool_count(tool_count);
+    }
+    let visible_names = tool_names.iter().take(2).cloned().collect::<Vec<_>>();
+    let hidden_name_count = tool_names.len().saturating_sub(visible_names.len());
+    let suffix = if hidden_name_count > 0 {
+        format!(" +{hidden_name_count}")
+    } else {
+        String::new()
+    };
+    format!("{} · {}{suffix}", format_tool_count(tool_count), visible_names.join(", "))
+}
+
 fn group_diagnostic(entries: &[TurnSummary]) -> String {
     let turns = entries.len();
     let tokens = entries
@@ -395,7 +416,7 @@ fn group_diagnostic(entries: &[TurnSummary]) -> String {
         composition_label(entries),
     ];
     if tools > 0 {
-        parts.push(format!("{tools} tool"));
+        parts.push(format_tool_count(tools));
     }
     if tokens > 0 {
         parts.push(format!("{tokens} tokens"));
@@ -470,7 +491,7 @@ fn turn_collapsed_meta(turn: &TurnSummary) -> String {
         parts.push(format_ms(latency));
     }
     if !turn.tool_names.is_empty() {
-        parts.push(format!("{} tool", turn.tool_names.len()));
+        parts.push(format_tool_count(turn.tool_names.len()));
     }
     parts.join(" · ")
 }
@@ -642,6 +663,74 @@ fn compact_preview(value: &str, limit: usize) -> String {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct HighlightPart {
+    text: String,
+    matched: bool,
+}
+
+fn highlight_parts(text: &str, query: &str) -> Vec<HighlightPart> {
+    let query = query.trim();
+    if query.is_empty() {
+        return vec![HighlightPart {
+            text: text.to_string(),
+            matched: false,
+        }];
+    }
+
+    // ASCII lower-casing preserves UTF-8 byte offsets, so the original text
+    // can be sliced safely while still making the common English search case
+    // insensitive. Non-ASCII terms (including Chinese) remain exact matches.
+    let lowered_text = text.to_ascii_lowercase();
+    let lowered_query = query.to_ascii_lowercase();
+    let mut parts = Vec::new();
+    let mut cursor = 0;
+    for (start, _) in lowered_text.match_indices(&lowered_query) {
+        if start < cursor {
+            continue;
+        }
+        if start > cursor {
+            parts.push(HighlightPart {
+                text: text[cursor..start].to_string(),
+                matched: false,
+            });
+        }
+        let end = start + lowered_query.len();
+        parts.push(HighlightPart {
+            text: text[start..end].to_string(),
+            matched: true,
+        });
+        cursor = end;
+    }
+    if cursor < text.len() {
+        parts.push(HighlightPart {
+            text: text[cursor..].to_string(),
+            matched: false,
+        });
+    }
+    if parts.is_empty() {
+        parts.push(HighlightPart {
+            text: text.to_string(),
+            matched: false,
+        });
+    }
+    parts
+}
+
+#[component]
+pub fn HighlightedText(text: String, #[props(default)] query: String) -> Element {
+    let parts = highlight_parts(&text, &query);
+    rsx! {
+        for (index, part) in parts.into_iter().enumerate() {
+            if part.matched {
+                mark { key: "hit-{index}", class: "pc2-search-hit", "{part.text}" }
+            } else {
+                span { key: "text-{index}", "{part.text}" }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn TrajectoryView(
     turns: Vec<TurnSummary>,
@@ -692,8 +781,15 @@ pub fn TrajectoryView(
         .iter()
         .map(|turn| turn.tool_names.len())
         .sum::<usize>();
+    let root_tool_label = format_tool_count(total_tools);
     let root_modalities = summary_modalities(&turns);
     let root_meta = composition_label(&turns);
+    let root_drawer_id = turns.iter().find(|turn| turn.id >= 0).map(|turn| turn.id);
+    let root_drawer_ids = turns
+        .iter()
+        .filter(|turn| turn.id >= 0)
+        .map(|turn| turn.id)
+        .collect::<Vec<_>>();
     if last_focus() != expanded_turn_id {
         last_focus.set(expanded_turn_id);
         if let Some(id) = expanded_turn_id {
@@ -729,7 +825,7 @@ pub fn TrajectoryView(
         div { class: "{table_class}", role: "tree", aria_label: "Run step hierarchy",
             div { class: "span-sticky-chrome",
                 div { class: "span-table-head", div { "Structure" } div { "Overview" } div { class: "span-axis-head", span { "Sequence / coverage" } div { class: "span-axis-ticks", span { "0" } span { "25%" } span { "50%" } span { "75%" } span { "{axis_len.saturating_sub(1)}" } } } div { "Details" } }
-                div { class: "trace-root-summary", div { class: "span-structure root", div { div { class: "span-structure-title", strong { "run" } span { "{groups.len()} {noun}" } } div { class: "span-structure-chips", for modality in root_modalities { span { class: "modality-chip {modality}", "{modality}" } } } span { "{root_meta}" } } } div { class: "span-row-copy root-copy" } OccupancyTrack { bars: root_bars.clone(), expose_range, focus_left, caption: root_caption, title: "Run coverage · {turns.len()} steps", exposed_ids: exposed_ids.clone(), expanded_turn_id, hovered_ids: hover_ids.clone() } div { class: "span-evidence-count", if total_refs > 0 { strong { "{total_refs} events" } } if total_tools > 0 { span { "{total_tools} tools" } } } }
+                div { class: "trace-root-summary", div { class: "span-structure root", div { div { class: "span-structure-title", strong { "run" } span { "{groups.len()} {noun}" } } div { class: "root-composition", if !root_meta.is_empty() { span { title: "{root_meta}", "{root_meta}" } } for modality in root_modalities { span { class: "modality-chip {modality}", "{modality}" } } } } } div { class: "span-row-copy root-copy" } OccupancyTrack { bars: root_bars.clone(), expose_range, focus_left, caption: root_caption, title: "Run coverage · {turns.len()} steps", exposed_ids: exposed_ids.clone(), expanded_turn_id, hovered_ids: hover_ids.clone() } div { class: "span-evidence-count", if total_refs > 0 { strong { "{total_refs} events" } } if total_tools > 0 { span { "{root_tool_label}" } } if !embedded { if let Some(id) = root_drawer_id { button { class: "pc2-conversation-drawer-button pc2-run-agenticmd-button", title: "Open run as AgenticMD", aria_label: "Open run as AgenticMD", onclick: move |event| { event.prevent_default(); event.stop_propagation(); on_open_drawer.call((id, "Run".to_string(), root_drawer_ids.clone())); }, "↗" } } } } }
             }
             div { class: "span-children", for group in groups {
                     CompactSpanRow {
@@ -749,6 +845,7 @@ pub fn TrajectoryView(
                         on_open_drawer,
                         on_open: move |key| open_key.set(key),
                         on_hover: move |ids| hovered_ids.set(ids),
+                        query: query.clone(),
                         group,
                     }
                 } }
@@ -774,6 +871,7 @@ fn CompactSpanRow(
     #[props(default)] on_open_drawer: EventHandler<(i64, String, Vec<i64>)>,
     on_open: EventHandler<Option<String>>,
     on_hover: EventHandler<Vec<i64>>,
+    #[props(default)] query: String,
 ) -> Element {
     let event_refs = group
         .entries
@@ -791,16 +889,9 @@ fn CompactSpanRow(
         .flat_map(|turn| turn.tool_names.iter())
         .cloned()
         .collect::<Vec<_>>();
-    tool_names.dedup();
-    let tool_summary = if group.tool_calls > 0 {
-        if tool_names.is_empty() {
-            format!("{} tools", group.tool_calls)
-        } else {
-            format!("{} tools · {}", group.tool_calls, tool_names.join(", "))
-        }
-    } else {
-        String::new()
-    };
+    let mut seen_tool_names = HashSet::new();
+    tool_names.retain(|name| !name.trim().is_empty() && seen_tool_names.insert(name.clone()));
+    let tool_summary = tool_summary_label(group.tool_calls, &tool_names);
     let kind = group.kind_chip;
     let kind_text = kind_label(kind);
     let bars = seq_bars(&group.entries, &session_index, axis_len);
@@ -838,7 +929,7 @@ fn CompactSpanRow(
                 }
             } }
             div { class: "span-row-copy",
-                strong { class: "overview-line", title: "{preview}", "{preview}" }
+                strong { class: "overview-line", title: "{preview}", HighlightedText { text: preview.clone(), query: query.clone() } }
                 if row_open { span { class: "span-row-diagnostic", title: "{diagnostic}", "{diagnostic}" } }
             }
             OccupancyTrack { bars, expose_range, focus_left, caption: caption.clone(), title: "{caption} · {meta}", exposed_ids, expanded_turn_id, hovered_ids }
@@ -858,6 +949,7 @@ fn CompactSpanRow(
                     detail: detail.clone(),
                     loading,
                     embedded,
+                    query: query.clone(),
                     on_turn,
                 }
             } }
@@ -907,6 +999,7 @@ fn CompactTurnRow(
     detail: Option<TurnDetail>,
     loading: bool,
     embedded: bool,
+    #[props(default)] query: String,
     on_turn: EventHandler<i64>,
 ) -> Element {
     let id = turn.id;
@@ -915,6 +1008,7 @@ fn CompactTurnRow(
     let collapsed_meta = turn_collapsed_meta(&turn);
     let expanded_facts = turn_expanded_facts(&turn);
     let tool_count = turn.tool_names.len();
+    let tool_label = format_tool_count(tool_count);
     let event_count = turn.event_seqs.len();
     if id < 0 {
         return rsx! {
@@ -922,22 +1016,23 @@ fn CompactTurnRow(
                 span { class: "compact-turn-chevron" }
                 span { class: "pc2-role user", "user" }
                 span { class: "synthetic-prompt-kind", "initial prompt" }
-                span { class: "compact-preview", title: "{preview}", "{preview}" }
+                span { class: "compact-preview", title: "{preview}", HighlightedText { text: preview.clone(), query: query.clone() } }
             }
         };
     }
     if embedded {
-        return rsx! { button { class: "compact-turn pc2-embedded-turn", onclick: move |_| on_turn.call(id), span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", "{preview}" } span { class: "compact-turn-stats", if tool_count > 0 { span { "{tool_count} tools" } } span { "{event_count} events" } } } };
+        return rsx! { button { class: "compact-turn pc2-embedded-turn", onclick: move |_| on_turn.call(id), span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", HighlightedText { text: preview.clone(), query: query.clone() } } span { class: "compact-turn-stats", if tool_count > 0 { span { "{tool_label}" } } span { "{event_count} events" } } } };
     }
     rsx! { details { class: if expanded { "compact-turn selected" } else { "compact-turn" }, open: expanded,
-        summary { aria_label: "Expand {turn.source} step {id}", onclick: move |event| { event.prevent_default(); on_turn.call(id); }, span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } if expanded { span { class: "compact-kind", "{expanded_facts}" } } else { span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", "{preview}" } span { class: "compact-turn-stats", if !collapsed_meta.is_empty() { span { "{collapsed_meta}" } } if tool_count > 0 { span { "{tool_count} tools" } } span { "{event_count} events" } } } }
-        if expanded { div { class: "compact-turn-body pc2-inline-detail", if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Loading full step…" } } else if let Some(value) = detail.filter(|value| value.summary.id == id) { InlineTurnDetail { value } } else { div { class: "pc2-inline-unavailable", "Details are unavailable for this step." } } } }
+        summary { aria_label: "Expand {turn.source} step {id}", onclick: move |event| { event.prevent_default(); on_turn.call(id); }, span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } if expanded { span { class: "compact-kind", "{expanded_facts}" } } else { span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", HighlightedText { text: preview.clone(), query: query.clone() } } span { class: "compact-turn-stats", if !collapsed_meta.is_empty() { span { "{collapsed_meta}" } } if tool_count > 0 { span { "{tool_label}" } } span { "{event_count} events" } } } }
+        if expanded { div { class: "compact-turn-body pc2-inline-detail", if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Loading full step…" } } else if let Some(value) = detail.filter(|value| value.summary.id == id) { InlineTurnDetail { value, query: query.clone() } } else { div { class: "pc2-inline-unavailable", "Details are unavailable for this step." } } } }
     } }
 }
 
 #[component]
 fn InlineTurnDetail(
     value: TurnDetail,
+    #[props(default)] query: String,
 ) -> Element {
     let message = value.turn.message.clone();
     let message_text = value.turn.text();
@@ -1018,12 +1113,12 @@ fn InlineTurnDetail(
                 InlineSection { title: "Message", JsonValue { value: message } }
             } else {
                 if !message_text.trim().is_empty() && message_text != "No text" {
-                    InlineSection { title: "Message", pre { "{message_text}" } }
+                    InlineSection { title: "Message", pre { HighlightedText { text: message_text.clone(), query: query.clone() } } }
                 }
             }
         }
         if let Some(reasoning) = &value.turn.reasoning_content {
-            InlineSection { title: "Reasoning", pre { "{reasoning.clone()}" } }
+            InlineSection { title: "Reasoning", pre { HighlightedText { text: reasoning.clone(), query: query.clone() } } }
         }
         if !has_any_tool_calls {
             if let Some(observation) = value.turn.observation.clone() {
@@ -1048,6 +1143,7 @@ pub fn StepDrawer(
     #[props(default = "Step details".to_string())] title: String,
     #[props(default)] conversation_turns: Vec<StorylineTurn>,
     #[props(default)] conversation_details: Vec<TurnDetail>,
+    #[props(default)] requested_block_count: usize,
     loading: bool,
     on_close: EventHandler<MouseEvent>,
 ) -> Element {
@@ -1112,20 +1208,33 @@ pub fn StepDrawer(
         .iter()
         .enumerate()
         .map(|(index, _)| {
-            let detail_index = if synthetic_user_added { index.saturating_sub(1) } else { index };
-            conversation_details
-                .get(detail_index)
+            let detail_index = drawer_detail_index(index, synthetic_user_added);
+            detail_index
+                .and_then(|index| conversation_details.get(index))
                 .map(|item| item.wire_tool_calls.clone())
                 .unwrap_or_default()
         })
         .collect::<Vec<_>>();
     let loaded_block_count = agenticmd_turns.len();
+    let total_block_count = requested_block_count.max(loaded_block_count);
+    let block_count_label = if total_block_count > loaded_block_count {
+        format!("{loaded_block_count} / {total_block_count} blocks")
+    } else {
+        format!(
+            "{loaded_block_count} {}",
+            if loaded_block_count == 1 { "block" } else { "blocks" }
+        )
+    };
     rsx! {
         div { class: "pc2-step-drawer-layer",
             button { class: "pc2-step-drawer-backdrop", aria_label: "Close step details", onclick: on_close }
             aside { class: "pc2-step-drawer", role: "dialog", aria_modal: "true", aria_label: "{title}",
                 header { class: "pc2-step-drawer-head",
-                    div { class: "pc2-step-drawer-title", strong { "AgenticMD" } span { class: "pc2-step-drawer-kind", "{loaded_block_count} blocks" } }
+                    div { class: "pc2-step-drawer-title",
+                        strong { "AgenticMD" }
+                        span { class: "pc2-step-drawer-kind", "{block_count_label}" }
+                        if loading { span { class: "pc2-step-drawer-loading-state", role: "status", "Loading…" } }
+                    }
                     button { class: "pc2-step-drawer-close", aria_label: "Close step details", onclick: on_close, "×" }
                 }
                 div { class: "pc2-step-drawer-scroll",
@@ -1145,6 +1254,14 @@ fn source_can_call_tools(source: &str) -> bool {
         source.trim().to_ascii_lowercase().as_str(),
         "agent" | "assistant" | "model"
     )
+}
+
+fn drawer_detail_index(index: usize, synthetic_user_added: bool) -> Option<usize> {
+    if synthetic_user_added {
+        index.checked_sub(1)
+    } else {
+        Some(index)
+    }
 }
 
 #[component]
@@ -1172,11 +1289,9 @@ fn InlineSection(
     let mut expanded = use_signal(move || default_expanded);
     rsx! {
         section { class: if expanded() { "pc2-inline-section expanded" } else { "pc2-inline-section" },
-            header { class: "pc2-inline-section-head",
-                strong { "{title}" }
-                button { class: "pc2-inline-section-toggle", aria_expanded: expanded(), onclick: move |_| expanded.set(!expanded()), if expanded() { "Less" } else { "More" } }
-            }
+            header { class: "pc2-inline-section-head", strong { "{title}" } }
             div { class: "pc2-inline-section-body", {children} }
+            button { class: "pc2-inline-section-reveal", aria_expanded: expanded(), aria_label: if expanded() { "Collapse section" } else { "Expand section" }, title: if expanded() { "Collapse" } else { "Expand truncated content" }, onclick: move |_| expanded.set(!expanded()), if expanded() { "⌃" } else { "⌄" } }
         }
     }
 }
@@ -1197,7 +1312,7 @@ pub(crate) fn ToolCallCards(calls: Vec<WireToolCall>, #[props(default)] observat
                         }
                         div { class: "pc2-tool-call-head-right",
                             if let Some(observation) = linked_observation {
-                                ObservationChips { value: observation.clone() }
+                                ObservationChips { value: observation.clone(), tone: tone.to_string() }
                             }
                             span { class: "pc2-tool-call-meta", "{argument_count_label(&call.arguments)}" }
                             if let Some(id) = &call.id {
@@ -1205,22 +1320,66 @@ pub(crate) fn ToolCallCards(calls: Vec<WireToolCall>, #[props(default)] observat
                             }
                         }
                     }
-                    div { class: "pc2-tool-call-body",
-                        if let Value::Object(args) = &call.arguments {
-                            for (key, val) in args {
-                                div { class: "pc2-tool-call-arg",
-                                    code { "{key}" }
-                                    span { "{format_tool_call_arg(val)}" }
-                                }
-                            }
-                        } else {
-                            pre { "{call.arguments}" }
-                        }
-                    }
+                    ToolCallBody { arguments: call.arguments.clone() }
                     if let Some(observation) = linked_observation {
                         ObservationBlock { value: observation.clone(), tone: tone.to_string() }
                     }
                 } } }
+            }
+        }
+    }
+}
+
+fn content_needs_expansion(value: &str) -> bool {
+    value.chars().count() > 900 || value.lines().count() > 8
+}
+
+#[component]
+fn ExpandableRegion(
+    clipped: bool,
+    #[props(default)] class: String,
+    children: Element,
+) -> Element {
+    let mut expanded = use_signal(|| false);
+    let state = if clipped {
+        if expanded() { "expanded" } else { "clipped" }
+    } else {
+        ""
+    };
+    rsx! {
+        div { class: "pc2-expandable-region {class} {state}",
+            div { class: "pc2-expandable-region-body", {children} }
+            if clipped {
+                button {
+                    class: "pc2-expandable-region-toggle",
+                    aria_expanded: expanded(),
+                    aria_label: if expanded() { "Collapse content" } else { "Expand truncated content" },
+                    title: if expanded() { "Collapse" } else { "Expand truncated content" },
+                    onclick: move |_| expanded.set(!expanded()),
+                    if expanded() { "⌃" } else { "⌄" }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn ToolCallBody(arguments: Value) -> Element {
+    let probe = format_tool_call_arg(&arguments);
+    let clipped = content_needs_expansion(&probe);
+    rsx! {
+        ExpandableRegion { clipped, class: "pc2-tool-call-body-region".to_string(),
+            div { class: "pc2-tool-call-body",
+                if let Value::Object(args) = &arguments {
+                    for (key, val) in args {
+                        div { class: "pc2-tool-call-arg",
+                            code { "{key}" }
+                            span { "{format_tool_call_arg(val)}" }
+                        }
+                    }
+                } else {
+                    pre { "{arguments}" }
+                }
             }
         }
     }
@@ -1255,21 +1414,33 @@ fn ObservationBlock(value: Value, tone: String) -> Element {
     let output = observation_output(&value);
     rsx! {
         div { class: "pc2-tool-observation pc2-tool-tone-{tone}",
-            if let Some(output) = output { pre { class: "pc2-tool-observation-output", "{output}" } }
+            if let Some(output) = output {
+                ExpandableRegion { clipped: content_needs_expansion(&output), class: "pc2-tool-observation-region".to_string(),
+                    pre { class: "pc2-tool-observation-output", "{output}" }
+                }
+            }
         }
     }
 }
 
 #[component]
-fn ObservationChips(value: Value) -> Element {
+fn ObservationChips(value: Value, #[props(default = "generic".to_string())] tone: String) -> Element {
     let exit_code = value.get("exit_code").and_then(Value::as_i64);
     let status = value.get("status").and_then(Value::as_str);
     let observed_type = value.get("type").and_then(Value::as_str);
+    let type_label = if tone == "generic" {
+        observed_type.unwrap_or("observation")
+    } else {
+        tone.as_str()
+    };
+    let show_type = observed_type.is_some() || tone != "generic";
     rsx! {
         div { class: "pc2-tool-observation-chips",
             if let Some(code) = exit_code { Fact { label: "exit_code", value: code.to_string() } }
             if let Some(status) = status { Fact { label: "status", value: status.to_string() } }
-            if let Some(kind) = observed_type { Fact { label: "type", value: kind.to_string() } }
+            if show_type {
+                span { class: "pc2-fact-chip pc2-tool-observation-type-chip pc2-tool-tone-{tone}", span { "type" } code { "{type_label}" } }
+            }
         }
     }
 }
@@ -1435,6 +1606,28 @@ mod tests {
         assert!(truncated);
     }
 
+    #[test]
+    fn long_detail_content_gets_an_expand_affordance() {
+        assert!(!content_needs_expansion("short\nvalue"));
+        assert!(content_needs_expansion(&"x".repeat(901)));
+        assert!(content_needs_expansion(&vec!["line"; 9].join("\n")));
+    }
+
+    #[test]
+    fn search_highlighting_is_case_insensitive_without_changing_unicode_offsets() {
+        let parts = highlight_parts("验证 FTS verification", "fts");
+        assert_eq!(
+            parts,
+            vec![
+                HighlightPart { text: "验证 ".into(), matched: false },
+                HighlightPart { text: "FTS".into(), matched: true },
+                HighlightPart { text: " verification".into(), matched: false },
+            ]
+        );
+        let chinese = highlight_parts("用于验证中文", "验证");
+        assert!(chinese.iter().any(|part| part.matched && part.text == "验证"));
+    }
+
     fn turn(id: i64, source: &str, seqs: &[u64]) -> TurnSummary {
         TurnSummary {
             id,
@@ -1517,6 +1710,32 @@ mod tests {
     }
 
     #[test]
+    fn tool_summary_is_compact_and_does_not_repeat_names() {
+        let names = vec![
+            "bash_command".to_string(),
+            "bash_command".to_string(),
+            " ".to_string(),
+            "mcp_search".to_string(),
+            "browser_open".to_string(),
+        ];
+        let mut unique = Vec::new();
+        let mut seen = HashSet::new();
+        for name in names {
+            if !name.trim().is_empty() && seen.insert(name.clone()) {
+                unique.push(name);
+            }
+        }
+        assert_eq!(
+            tool_summary_label(4, &unique),
+            "4 tools · bash_command, mcp_search +1"
+        );
+        assert_eq!(tool_summary_label(1, &["execute_bash".into()]), "1 tool · execute_bash");
+        assert_eq!(format_tool_count(1), "1 tool");
+        assert_eq!(format_tool_count(2), "2 tools");
+        assert_eq!(tool_summary_label(0, &unique), "");
+    }
+
+    #[test]
     fn chat_without_user_keeps_chat_kind_and_no_user_overview() {
         let mut agent = turn(2, "agent", &[0]);
         agent.modalities = vec!["text".into()];
@@ -1533,6 +1752,14 @@ mod tests {
         assert!(source_can_call_tools(" assistant "));
         assert!(!source_can_call_tools("user"));
         assert!(!source_can_call_tools("system"));
+    }
+
+    #[test]
+    fn synthetic_user_does_not_steal_agent_tool_calls() {
+        assert_eq!(drawer_detail_index(0, true), None);
+        assert_eq!(drawer_detail_index(1, true), Some(0));
+        assert_eq!(drawer_detail_index(2, true), Some(1));
+        assert_eq!(drawer_detail_index(0, false), Some(0));
     }
 
     #[test]

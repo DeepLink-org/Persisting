@@ -117,10 +117,11 @@ pub use storyline::{
     StorylineContentOptions, StorylineContentReadMode, StorylineDataFusionTableNames,
     StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
     StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
-    StorylineTableKind, StorylineTablePaths, search_storyline_steps_fts, story_runs_arrow_schema,
-    story_runs_from_batch, story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch,
-    story_steps_to_batch, story_tool_calls_arrow_schema, story_tool_calls_from_batch,
-    story_tool_calls_to_batch,
+    StorylineTableKind, StorylineTablePaths, search_storyline_documents_fts,
+    search_storyline_steps_fts, story_runs_arrow_schema, story_runs_from_batch,
+    story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch, story_steps_to_batch,
+    story_tool_calls_arrow_schema, story_tool_calls_from_batch, story_tool_calls_to_batch,
+    storyline_steps_fts_available,
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_model::{
