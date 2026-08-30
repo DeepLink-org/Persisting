@@ -265,6 +265,8 @@ pub(crate) struct RunExplorerItem {
     #[serde(flatten)]
     pub(crate) run: RunSummary,
     pub(crate) model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) search_preview: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -390,7 +392,7 @@ pub(crate) fn run_page(summaries: Vec<RunSummary>, query: &ExplorerRunsQuery) ->
     run_page_with_fts(
         summaries,
         query,
-        &BTreeSet::new(),
+        &BTreeMap::new(),
         RunSearchStatus::default(),
     )
 }
@@ -398,7 +400,7 @@ pub(crate) fn run_page(summaries: Vec<RunSummary>, query: &ExplorerRunsQuery) ->
 pub(crate) fn run_page_with_fts(
     summaries: Vec<RunSummary>,
     query: &ExplorerRunsQuery,
-    fts_matches: &BTreeSet<String>,
+    fts_matches: &BTreeMap<String, String>,
     search: RunSearchStatus,
 ) -> RunExplorerPage {
     let needle = query
@@ -411,10 +413,11 @@ pub(crate) fn run_page_with_fts(
         .into_iter()
         .map(|run| RunExplorerItem {
             model: run.model_name.clone(),
+            search_preview: fts_matches.get(&run_identity(&run)).cloned(),
             run,
         })
         .filter(|item| {
-            (needle.is_empty() || fts_matches.contains(&run_identity(&item.run)))
+            (needle.is_empty() || fts_matches.contains_key(&run_identity(&item.run)))
                 && matches_filter(&item.run.dataset, query.dataset.as_deref())
                 && matches_filter(&item.run.status, query.status.as_deref())
                 && matches_filter(&item.run.agent_id, query.agent.as_deref())
@@ -1469,7 +1472,7 @@ mod tests {
     fn run_page_promotes_storyline_fts_matches_into_results() {
         let matched = sample_run("evals", "storyline", "completed", "matched");
         let other = sample_run("evals", "storyline", "completed", "other");
-        let fts_matches = BTreeSet::from([run_identity(&matched)]);
+        let fts_matches = BTreeMap::from([(run_identity(&matched), "content from a step".into())]);
         let page = run_page_with_fts(
             vec![matched, other],
             &ExplorerRunsQuery {

@@ -28,6 +28,13 @@ pchronicle analysis overview ./trajectory-data
 
 `ls` 显示 pChronicle 可以使用的 Run 数据；`analysis overview` 无需编写 SQL，即可给出稳定汇总。
 
+需要定位具体内容时，使用统一的 `find --match` 语法：
+
+```bash
+pchronicle find ./trajectory-data --match "timeout" --format json
+pchronicle find ./trajectory-data --match '#system("retry")'
+```
+
 ## 3. 提出一个具体问题
 
 ```bash
@@ -43,7 +50,7 @@ pchronicle query ./trajectory-data \
 
 ## 你刚刚完成了什么
 
-你打开了一个 Dataset，运行了内建汇总，并查询了规范化表。整个过程没有修改 Dataset。
+你打开了一个 Dataset，运行了内建汇总，查询了规范化表，并可以用 FTS/JSONB 定位具体轨迹。整个过程没有修改 Dataset。
 
 按任务继续：
 

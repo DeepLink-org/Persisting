@@ -44,6 +44,7 @@ const EVENT_PARTITION_COLUMNS: &[&str] = &["session_id", "agent_id"];
 pub(crate) struct ServerAcceleration {
     build_gate: Mutex<()>,
     run_summaries: OnceCell<RequiredAcceleration<CachedRunSummaries>>,
+    run_summaries_by_dataset: Mutex<HashMap<String, CachedRunSummaries>>,
     runs: OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
     event_identities: OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
     event_partitions: OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
@@ -172,8 +173,34 @@ impl ServerAcceleration {
         snapshot: &DatasetCatalogSnapshot,
         engine: &ChronicleQueryEngine,
     ) -> Result<Arc<Vec<RunSummary>>> {
-        self.run_summaries_with(|| async { build_run_summaries(snapshot, engine).await })
+        self.run_summaries_with(|| async { build_run_summaries(snapshot, engine, None).await })
             .await
+    }
+
+    /// Build summaries for one Dataset without waiting for the all-Dataset
+    /// acceleration cell. This lets callers fan out expensive JSON sources
+    /// while a fast Lance source can complete independently.
+    pub(crate) async fn run_summaries_for_dataset(
+        &self,
+        snapshot: &DatasetCatalogSnapshot,
+        engine: &ChronicleQueryEngine,
+        dataset: &str,
+    ) -> Result<Arc<Vec<RunSummary>>> {
+        if let Some(summaries) = self
+            .run_summaries_by_dataset
+            .lock()
+            .await
+            .get(dataset)
+            .cloned()
+        {
+            return Ok(summaries);
+        }
+        let summaries = build_run_summaries(snapshot, engine, Some(dataset)).await?;
+        self.run_summaries_by_dataset
+            .lock()
+            .await
+            .insert(dataset.to_string(), summaries.clone());
+        Ok(summaries)
     }
 
     async fn run_summaries_with<F, Fut>(&self, build: F) -> Result<CachedRunSummaries>
@@ -866,9 +893,13 @@ fn value_fingerprint(state: &RandomState, value: &str) -> u64 {
 async fn build_run_summaries(
     snapshot: &DatasetCatalogSnapshot,
     engine: &ChronicleQueryEngine,
+    dataset_filter: Option<&str>,
 ) -> Result<Arc<Vec<RunSummary>>> {
     let mut summaries = Vec::new();
     for dataset in snapshot.datasets() {
+        if dataset_filter.is_some_and(|filter| dataset.mount.name != filter) {
+            continue;
+        }
         let name = &dataset.mount.name;
         let event_stats = build_event_stats(engine, name).await?;
         let sql = format!(

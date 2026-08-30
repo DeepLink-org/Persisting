@@ -48,6 +48,8 @@ mod storyline;
 #[cfg(feature = "lance-store")]
 #[path = "storyline/model.rs"]
 mod storyline_model;
+#[cfg(feature = "lance-store")]
+mod virtual_document;
 
 #[cfg(feature = "lance-store")]
 pub(crate) use agenticmd_datafusion::AgenticMdDataSource;

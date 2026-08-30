@@ -8,6 +8,9 @@ use persisting_pchronicle::document::{DocumentFormat, detect_format};
 use persisting_pchronicle::query::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, SOURCE_FILE_COLUMN,
 };
+use persisting_pchronicle::storage::{
+    CatalogSnapshotOptions, DatasetCatalogSnapshot, DatasetMount,
+};
 
 mod support;
 
@@ -66,6 +69,77 @@ async fn queries_one_openai_json_with_the_virtual_file_column() -> Result<()> {
     engine
         .query("SELECT _file_ FROM tool_calls LIMIT 1")
         .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn format_virtual_table_keeps_two_columns_and_jsonb_queries() -> Result<()> {
+    let input = atif_fixtures().join("dialogue_10.json");
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &input,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+
+    let rows = json_rows(
+        &engine
+            .query_jsonl(
+                "SELECT id, json_get_string(data, 'trajectory_id') AS trajectory_id FROM atif",
+            )
+            .await?,
+    )?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["trajectory_id"], "run-dialogue_10");
+    Ok(())
+}
+
+#[tokio::test]
+async fn catalog_exposes_dataset_format_virtual_table() -> Result<()> {
+    let input = atif_fixtures().join("dialogue_10.json");
+    let temp = tempfile::tempdir()?;
+    fs::copy(&input, temp.path().join("dialogue.json"))?;
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(temp.path().to_string_lossy())?],
+        Some("dataset".into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+    let engine = std::sync::Arc::new(snapshot)
+        .query_engine(ChronicleQueryExecutionOptions::default())
+        .await?;
+    let rows = json_rows(
+        &engine
+            .query_jsonl(
+                "SELECT id, json_get_string(data, 'trajectory_id') AS trajectory_id FROM dataset.atif",
+            )
+            .await?,
+    )?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["trajectory_id"], "run-dialogue_10");
+    Ok(())
+}
+
+#[tokio::test]
+async fn codex_virtual_table_exposes_jsonl_records_as_jsonb() -> Result<()> {
+    let input = tempfile::NamedTempFile::with_suffix(".jsonl")?;
+    fs::write(
+        input.path(),
+        "{\"timestamp\":\"2026-08-03T08:15:11.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"session-1\"}}\n",
+    )?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Codex,
+        input.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let rows = json_rows(
+        &engine
+            .query_jsonl("SELECT id, json_get_string(data, 'type') AS event_type FROM codex")
+            .await?,
+    )?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["event_type"], "session_meta");
     Ok(())
 }
 

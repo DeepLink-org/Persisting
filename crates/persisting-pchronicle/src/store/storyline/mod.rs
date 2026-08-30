@@ -509,9 +509,10 @@ impl StorylineLanceStore {
 
     pub(crate) async fn open_uri_unchecked(root: impl AsRef<str>) -> Result<Self> {
         let root_uri = normalize_root_uri(root.as_ref())?;
-        let (object_store, object_root) = ObjectStore::from_uri(&root_uri)
-            .await
-            .with_context(|| format!("open Storyline object store {root_uri}"))?;
+        let (object_store, object_root) =
+            ObjectStore::from_uri(&root_uri).await.map_err(|error| {
+                anyhow::anyhow!("open Storyline object store {root_uri}: {error:#}")
+            })?;
         Ok(Self {
             root: PathBuf::from(&root_uri),
             write_lock: root_write_lock::for_root(&root_uri),
@@ -1628,7 +1629,12 @@ fn normalize_root_uri(value: &str) -> Result<String> {
     while value.len() > minimum && value.ends_with('/') {
         value.pop();
     }
-    Ok(value)
+    // Validate object-store roots before opening Lance so malformed S3
+    // endpoint-in-URI forms produce an actionable error instead of a vague
+    // region-discovery failure from the underlying client.
+    Ok(crate::storage::DatasetLocation::parse(&value)?
+        .as_str()
+        .to_owned())
 }
 
 fn join_location(root: &str, parts: &[&str]) -> String {
@@ -1699,6 +1705,10 @@ fn sort_rows(
 fn storyline_inverted_index_params(lance_tokenizer: Option<&str>) -> InvertedIndexParams {
     let params = InvertedIndexParams::default()
         .base_tokenizer(DEFAULT_JIEBA_MODEL.to_string())
+        // Search in the Web explorer and `pchronicle find` is intentionally
+        // case-insensitive by default. Persist the setting in the index so
+        // readers get the same behavior without an in-memory fallback.
+        .lower_case(true)
         // Jieba already performs language-appropriate segmentation. The
         // English stemmer and stop-word list are not useful for these fields.
         .stem(false)
@@ -2002,16 +2012,15 @@ async fn ensure_named_index(
     if !existing.is_empty() {
         let is_jieba_index = index_type != IndexType::Inverted
             || existing.iter().all(|metadata| {
-                metadata
-                    .index_details
-                    .as_ref()
-                    .map(|details| {
-                        details
-                            .value
-                            .windows(DEFAULT_JIEBA_MODEL.len())
-                            .any(|window| window == DEFAULT_JIEBA_MODEL.as_bytes())
-                    })
-                    .unwrap_or(false)
+                metadata.index_details.as_ref().is_some_and(|details| {
+                    details
+                        .to_msg::<lance_index::pbold::InvertedIndexDetails>()
+                        .ok()
+                        .is_some_and(|details| {
+                            details.lower_case
+                                && details.base_tokenizer.as_deref() == Some(DEFAULT_JIEBA_MODEL)
+                        })
+                })
             });
         if is_jieba_index {
             return Ok(());

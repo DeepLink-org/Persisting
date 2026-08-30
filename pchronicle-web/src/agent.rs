@@ -445,7 +445,7 @@ fn format_catalog_schema(catalog: &QueryCatalog) -> String {
                 .map(|field| format!("{} {}", field.name, field.data_type))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{} ({fields})", table.name)
+            format!("{} [{}] ({fields})", table.name, table.kind)
         })
         .collect::<Vec<_>>()
         .join("\n")

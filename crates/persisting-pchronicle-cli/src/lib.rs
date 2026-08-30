@@ -281,6 +281,26 @@ enum DefaultCommand {
 }
 
 #[derive(Debug, Args)]
+#[command(after_help = r#"Examples:
+  pchronicle alias list
+  pchronicle alias add local ./trajectory-data
+  pchronicle alias add prod s3://bucket/evals
+  pchronicle alias add secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
+  pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --ak 123 --sk 123
+  pchronicle alias add regional s3://bucket/evals --region us-west-2
+  pchronicle alias get-url prod
+  pchronicle alias set-url prod s3://new-bucket/evals
+  pchronicle status @prod
+
+S3 credentials are stored separately from the URI and are never printed by
+`alias list` or `alias get-url`. Use the standard AWS credential environment
+variables when possible; `--ak` and `--sk` are intended for a configured alias.
+S3-compatible endpoints can be stored separately with `--endpoint URL` and are
+applied as AWS_ENDPOINT_URL_S3 when the alias is used.
+An optional `--region REGION` is stored per alias; when omitted, the client
+falls back to `us-west-2` only when it needs a region.
+The built-in aliases `@codex`, `@claude`, and `@claude-code` are always listed
+and resolve to the corresponding local Agent session roots."#)]
 #[command(args_conflicts_with_subcommands = true)]
 struct AliasArgs {
     #[command(subcommand)]
@@ -300,6 +320,28 @@ enum AliasCommand {
         name: String,
         #[arg(value_name = "DATASET")]
         dataset: String,
+        /// S3-compatible service endpoint, stored separately from the Dataset URI.
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+        /// S3 region. If omitted, the client default (`us-west-2`) is used when needed.
+        #[arg(long, value_name = "REGION")]
+        region: Option<String>,
+        /// S3 access key ID. Must be provided together with --sk.
+        #[arg(
+            long = "ak",
+            alias = "access-key",
+            value_name = "ACCESS_KEY",
+            requires = "secret_key"
+        )]
+        access_key: Option<String>,
+        /// S3 secret access key. Must be provided together with --ak.
+        #[arg(
+            long = "sk",
+            alias = "secret-key",
+            value_name = "SECRET_KEY",
+            requires = "access_key"
+        )]
+        secret_key: Option<String>,
     },
     /// Print an alias target.
     GetUrl {
@@ -312,6 +354,28 @@ enum AliasCommand {
         name: String,
         #[arg(value_name = "DATASET")]
         dataset: String,
+        /// Replace the S3-compatible service endpoint stored for this alias.
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+        /// Replace the S3 region stored for this alias.
+        #[arg(long, value_name = "REGION")]
+        region: Option<String>,
+        /// Replace the S3 access key ID stored for this alias.
+        #[arg(
+            long = "ak",
+            alias = "access-key",
+            value_name = "ACCESS_KEY",
+            requires = "secret_key"
+        )]
+        access_key: Option<String>,
+        /// Replace the S3 secret access key stored for this alias.
+        #[arg(
+            long = "sk",
+            alias = "secret-key",
+            value_name = "SECRET_KEY",
+            requires = "access_key"
+        )]
+        secret_key: Option<String>,
     },
     /// Rename an existing alias.
     Rename {
@@ -2768,7 +2832,7 @@ async fn run_find(
 /// Turn the normalized message envelope into a compact human-readable preview.
 /// Storyline stores multimodal messages as JSON arrays; printing the envelope
 /// itself hides the text that explains why a row matched.
-fn find_preview_text(raw: &str) -> String {
+pub(crate) fn find_preview_text(raw: &str) -> String {
     let trimmed = raw.trim();
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
         return raw.to_owned();
@@ -2835,6 +2899,15 @@ pub(crate) async fn find_expression_predicate(
     expression: &FindExpr,
     source_filter: Option<&str>,
 ) -> Result<(Option<String>, bool, Vec<String>)> {
+    find_expression_predicate_for_dataset(snapshot, expression, source_filter, None).await
+}
+
+pub(crate) async fn find_expression_predicate_for_dataset(
+    snapshot: &DatasetCatalogSnapshot,
+    expression: &FindExpr,
+    source_filter: Option<&str>,
+    dataset_filter: Option<&str>,
+) -> Result<(Option<String>, bool, Vec<String>)> {
     let steps = expression.has_text() || expression.has_step_json();
     let mut text_predicates = Vec::<FindTextPredicate>::new();
     collect_text_predicates(expression, &mut text_predicates);
@@ -2851,7 +2924,11 @@ pub(crate) async fn find_expression_predicate(
     let mut errors = Vec::new();
     for predicate in text_predicates {
         let mut matches = Vec::<String>::new();
+        let mut searched = false;
         for dataset in snapshot.datasets() {
+            if dataset_filter.is_some_and(|filter| dataset.mount.name != filter) {
+                continue;
+            }
             for source in &dataset.sources {
                 if source.status != CatalogSourceStatus::Ready
                     || source.kind != CatalogSourceKind::Store
@@ -2873,6 +2950,7 @@ pub(crate) async fn find_expression_predicate(
                 {
                     Ok(step_matches) => {
                         available = true;
+                        searched = true;
                         let source_predicate = predicate
                             .field
                             .source_predicate()
@@ -2895,7 +2973,16 @@ pub(crate) async fn find_expression_predicate(
                 }
             }
         }
-        text_sql.insert(predicate, balanced_sql_group(&matches, "OR"));
+        text_sql.insert(
+            predicate,
+            compiled_text_predicate_sql(&matches, searched).with_context(|| {
+                if errors.is_empty() {
+                    "no ready Storyline store was searched".to_string()
+                } else {
+                    errors.join("; ")
+                }
+            })?,
+        );
     }
     let predicate = compile_find_expression(expression, &text_sql, steps)?;
     Ok((Some(predicate), available, errors))
@@ -2945,6 +3032,20 @@ fn compile_find_expression_group(
         .map(|item| compile_find_expression(item, text_sql, steps))
         .collect::<Result<Vec<_>>>()?;
     Ok(balanced_sql_group(&compiled, operator))
+}
+
+/// Compile one FTS text clause to SQL.
+///
+/// A successful search with zero hits is `FALSE`. That is correct for a
+/// positive clause and makes `NOT (FALSE)` mean "every row" — only when FTS
+/// actually ran. If search never ran, compiling to `FALSE` would make `NOT`
+/// match the whole table.
+pub(crate) fn compiled_text_predicate_sql(matches: &[String], searched: bool) -> Result<String> {
+    anyhow::ensure!(
+        searched,
+        "FTS unavailable: no searchable Storyline source was found"
+    );
+    Ok(balanced_sql_group(matches, "OR"))
 }
 
 /// Combine generated SQL predicates as a balanced tree.
@@ -3305,7 +3406,13 @@ async fn discover_query_snapshot(
             .with_discovery_limits(max_files, max_entries),
     )
     .await
-    .context("discover query Dataset Sources")?;
+    .map_err(|error| {
+        let dataset_uri = dataset_uris
+            .first()
+            .map(String::as_str)
+            .unwrap_or("<mounted datasets>");
+        dataset_discovery_error(dataset_uri, format!("query discovery failed: {error:#}"))
+    })?;
     Ok((dataset_label, dataset_uris, snapshot))
 }
 
@@ -3325,8 +3432,20 @@ async fn discover_snapshot(
             .with_discovery_limits(max_files, max_entries),
     )
     .await
-    .with_context(|| "discover Dataset Sources")?;
+    .map_err(|error| dataset_discovery_error(&dataset_uri, error))?;
     Ok((dataset_uri, snapshot))
+}
+
+fn dataset_discovery_error(dataset_uri: &str, error: impl std::fmt::Display) -> anyhow::Error {
+    let detail = format!("{error:#}");
+    let endpoint_hint = if dataset_uri.starts_with("s3://") {
+        "; S3-compatible storage uses s3://<bucket>/<prefix>; configure the service endpoint \
+         separately with AWS_ENDPOINT_URL_S3 (or AWS_ENDPOINT), for example \
+         AWS_ENDPOINT_URL_S3=http://127.0.0.1:9000"
+    } else {
+        ""
+    };
+    anyhow::anyhow!("discover Dataset Sources at {dataset_uri}: {detail}{endpoint_hint}")
 }
 
 async fn query_status_counts(

@@ -33,6 +33,11 @@ pchronicle onboard
 pchronicle onboard query @prod
 ```
 
+The complete walkthrough covers Dataset discovery, health and built-in
+analysis, normalized SQL, unified FTS/JSONB `find` expressions, cross-format
+queries, Storyline Lance import/export, and the read-only Web/API boundary.
+Use `pchronicle onboard find DATASET` to inspect the search grammar directly.
+
 ### Default Dataset
 
 ```text
@@ -52,12 +57,27 @@ pchronicle alias [list|add|remove|rename|get-url|set-url] [ARGUMENTS]
 
 ```bash
 pchronicle alias add prod s3://bucket/evals
+pchronicle alias add secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
+pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --ak 123 --sk 123
+pchronicle alias add regional s3://bucket/evals --region us-west-2
 pchronicle alias set-url prod s3://new-bucket/evals
 pchronicle status @prod
 ```
 
 Alias operations only update user configuration; they do not move or delete a
-Dataset.
+Dataset. S3 credentials supplied with `--ak` and `--sk` are stored separately
+from the URI and applied through the standard AWS environment variables when
+the alias is used. They are not printed by `alias list` or `alias get-url`.
+`alias list` also includes the built-in `@codex`, `@claude`, and `@claude-code`
+aliases for the corresponding local Agent session roots.
+For S3-compatible services such as MinIO, pass the endpoint with `--endpoint`.
+It is stored separately and applied as `AWS_ENDPOINT_URL_S3` when the alias is
+used. Keep the Dataset URI in the form `s3://bucket/prefix`; do not put the
+service host and port in that URI.
+`alias set-url` accepts the same `--endpoint` option and preserves the existing
+endpoint when changing between two S3 URIs without specifying a new one.
+The optional `--region` is also stored per alias; when omitted, the S3 client
+uses its default region (`us-west-2` when a fallback is required).
 
 ### Inspect and find
 
@@ -87,6 +107,8 @@ Each match includes a bounded `preview` field to make candidate selection
 possible before a follow-up query. JSON output also reports `search.mode`
 (`fts`, `json`, or `fts+json`), `search.scope` (`steps` or `runs`), and FTS
 availability/tokenizer metadata.
+The normative grammar and execution semantics are specified in
+[RFC-0012](../../rfcs/0012-pchronicle-find-query-syntax.md).
 
 ### Query
 

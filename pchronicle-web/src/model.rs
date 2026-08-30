@@ -48,6 +48,8 @@ pub struct RunExplorerItem {
     #[serde(flatten)]
     pub run: RunSummary,
     pub model: Option<String>,
+    #[serde(default)]
+    pub search_preview: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -140,8 +142,14 @@ pub struct CatalogTreeChild {
 pub struct QueryTableSummary {
     pub name: String,
     pub description: String,
+    #[serde(default = "default_table_kind")]
+    pub kind: String,
     pub grain: String,
     pub fields: Vec<QueryFieldSummary>,
+}
+
+fn default_table_kind() -> String {
+    "table".into()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -721,12 +729,14 @@ mod tests {
                 QueryTableSummary {
                     name: "runs".into(),
                     description: "trajectories".into(),
+                    kind: "table".into(),
                     grain: "run".into(),
                     fields: Vec::new(),
                 },
                 QueryTableSummary {
                     name: "steps".into(),
                     description: "steps".into(),
+                    kind: "table".into(),
                     grain: "step".into(),
                     fields: Vec::new(),
                 },

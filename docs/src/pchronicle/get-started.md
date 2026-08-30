@@ -32,6 +32,13 @@ pchronicle analysis overview ./trajectory-data
 `ls` shows the run data pChronicle can use. `analysis overview` gives a
 stable summary without requiring SQL.
 
+To locate content, use the unified `find --match` syntax:
+
+```bash
+pchronicle find ./trajectory-data --match "timeout" --format json
+pchronicle find ./trajectory-data --match '#system("retry")'
+```
+
 ## 3. Ask a specific question
 
 ```bash
@@ -48,8 +55,8 @@ semantics align.
 
 ## What you completed
 
-You opened one Dataset, ran a built-in summary, and queried a normalized table.
-The Dataset was not modified.
+You opened one Dataset, ran a built-in summary, queried a normalized table, and
+can now locate specific trajectories with FTS/JSONB. The Dataset was not modified.
 
 Continue by task:
 

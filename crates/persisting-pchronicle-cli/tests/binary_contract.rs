@@ -148,6 +148,15 @@ fn piped_onboard_is_markdown_without_terminal_escapes() -> Result<()> {
     assert!(stdout.contains("## Inspect · 发现 Source"), "{stdout}");
     assert!(stdout.contains("## Query · 先看 Schema"), "{stdout}");
     assert!(stdout.contains("## Formats · 跨格式查询"), "{stdout}");
+    assert!(
+        stdout.contains("## Find · FTS、字段限定与 JSONB"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("--match '$.tags=\"important\"'"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("--output-format storyline"), "{stdout}");
     assert!(stdout.contains("## Exchange · 严格导出"), "{stdout}");
     assert!(stdout.contains("support-ticket.json"), "{stdout}");
     assert!(stdout.contains("support-001"), "{stdout}");

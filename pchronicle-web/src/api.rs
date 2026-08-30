@@ -29,9 +29,10 @@ pub async fn explorer_runs(
     path: &str,
     file: &str,
     offset: usize,
+    limit: usize,
 ) -> Result<RunPage, String> {
     let url = format!(
-        "/api/explorer/runs?q={}&dataset={}&status={}&sort={}&direction={}&path={}&file={}&offset={offset}&limit=50",
+        "/api/explorer/runs?q={}&dataset={}&status={}&sort={}&direction={}&path={}&file={}&offset={offset}&limit={limit}",
         urlencoding::encode(q),
         urlencoding::encode(dataset),
         urlencoding::encode(status),

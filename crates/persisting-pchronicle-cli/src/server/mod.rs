@@ -413,15 +413,29 @@ async fn refresh_catalog(State(state): State<AppState>) -> Result<Json<CatalogRe
 }
 
 async fn runs(State(state): State<AppState>) -> Result<Json<Vec<RunSummary>>, ApiError> {
-    Ok(Json(load_run_summaries(&state).await?))
+    Ok(Json(load_run_summaries(&state, None).await?))
 }
 
-async fn load_run_summaries(state: &AppState) -> Result<Vec<RunSummary>, ApiError> {
+async fn load_run_summaries(
+    state: &AppState,
+    dataset: Option<&str>,
+) -> Result<Vec<RunSummary>, ApiError> {
     let runtime = current_catalog_for_runs(state).await?;
-    runtime
-        .acceleration
-        .run_summaries(&runtime.snapshot, &runtime.engine)
-        .await
+    let summaries = match dataset {
+        Some(dataset) => {
+            runtime
+                .acceleration
+                .run_summaries_for_dataset(&runtime.snapshot, &runtime.engine, dataset)
+                .await
+        }
+        None => {
+            runtime
+                .acceleration
+                .run_summaries(&runtime.snapshot, &runtime.engine)
+                .await
+        }
+    };
+    summaries
         .map(|summaries| summaries.as_ref().clone())
         .map_err(ApiError::internal)
 }
@@ -432,12 +446,53 @@ fn api_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> 
         .map_err(|_| ApiError::invalid_request("query parameters must be valid"))
 }
 
+const EXPLORER_RUN_MATCH_IDENTITY_MAX_ROWS: u64 = 50_000;
+const EXPLORER_RUN_MATCH_PREVIEW_LIMIT: u64 = 512;
+
+fn explorer_run_identity_sql(dataset: &str, table: &str, predicate: &str) -> String {
+    format!(
+        "SELECT DISTINCT _file_ AS source_path, document_id FROM {dataset}.{table} WHERE ({predicate})"
+    )
+}
+
+fn explorer_run_preview_sql(
+    dataset: &str,
+    table: &str,
+    select: &str,
+    predicate: &str,
+    limit: u64,
+) -> String {
+    format!("SELECT {select} FROM {dataset}.{table} WHERE ({predicate}) LIMIT {limit}")
+}
+
+async fn explorer_query_jsonl(
+    engine: &ChronicleQueryEngine,
+    sql: &str,
+    max_rows: u64,
+) -> Result<String, ApiError> {
+    let mut buffer = Vec::new();
+    engine
+        .write_query_jsonl_with_max_rows(sql, &mut buffer, Some(max_rows))
+        .await
+        .map_err(ApiError::internal)?;
+    String::from_utf8(buffer).map_err(|error| {
+        ApiError::internal(anyhow::anyhow!(
+            "explorer search JSONL is not UTF-8: {error}"
+        ))
+    })
+}
+
 async fn explorer_runs(
     State(state): State<AppState>,
     query: Result<Query<explorer::ExplorerRunsQuery>, QueryRejection>,
 ) -> Result<Json<explorer::RunExplorerPage>, ApiError> {
     let query = api_query(query)?;
-    let summaries = load_run_summaries(&state).await?;
+    let dataset_filter = query
+        .dataset
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "all");
+    let summaries = load_run_summaries(&state, dataset_filter).await?;
     let (fts_matches, fts_available, search_mode) = if query
         .q
         .as_deref()
@@ -448,10 +503,21 @@ async fn explorer_runs(
         let expression = crate::combine_match_expressions(&[raw.to_owned()])
             .map_err(|error| ApiError::invalid_request(error.to_string()))?
             .ok_or_else(|| ApiError::invalid_request("search query must not be empty"))?;
-        let (predicate, fts_available, fts_errors) =
-            crate::find_expression_predicate(&runtime.snapshot, &expression, None)
-                .await
-                .map_err(ApiError::internal)?;
+        let (predicate, fts_available, fts_errors) = crate::find_expression_predicate_for_dataset(
+            &runtime.snapshot,
+            &expression,
+            None,
+            dataset_filter,
+        )
+        .await
+        .map_err(|error| {
+            let message = format!("{error:#}");
+            if message.contains("FTS unavailable") {
+                ApiError::invalid_request(message)
+            } else {
+                ApiError::internal(error)
+            }
+        })?;
         for error in fts_errors {
             tracing::debug!(target: "persisting_pchronicle", "Run search FTS diagnostic: {error}");
         }
@@ -465,18 +531,28 @@ async fn explorer_runs(
         } else {
             "runs"
         };
-        let mut matches = BTreeSet::new();
+        let mut matches = BTreeMap::new();
         for dataset in runtime.snapshot.datasets() {
-            let sql = format!(
-                "SELECT DISTINCT _file_ AS source_path, document_id FROM {}.{} WHERE ({predicate})",
-                dataset.mount.name, table
-            );
-            let jsonl = runtime
-                .engine
-                .query_jsonl(&sql)
-                .await
-                .map_err(ApiError::internal)?;
-            for line in jsonl.lines().filter(|line| !line.trim().is_empty()) {
+            if dataset_filter.is_some_and(|filter| dataset.mount.name != filter) {
+                continue;
+            }
+            let select = if table == "steps" {
+                // Keep all searchable step fields available to the preview
+                // selector.  A COALESCE expression would hide a hit in (for
+                // example) reasoning_content behind a non-empty message.
+                "_file_ AS source_path, document_id, message_value, reasoning_content, observation, prompt, model_name"
+            } else {
+                "_file_ AS source_path, document_id, task, prompt, notes, agent_name, agent_model_name"
+            };
+            let identity_sql =
+                explorer_run_identity_sql(&dataset.mount.name, table, &predicate);
+            let identity_jsonl = explorer_query_jsonl(
+                &runtime.engine,
+                &identity_sql,
+                EXPLORER_RUN_MATCH_IDENTITY_MAX_ROWS,
+            )
+            .await?;
+            for line in identity_jsonl.lines().filter(|line| !line.trim().is_empty()) {
                 let row: Value = serde_json::from_str(line).map_err(|error| {
                     ApiError::internal(anyhow::anyhow!("decode run search result: {error}"))
                 })?;
@@ -486,10 +562,44 @@ async fn explorer_runs(
                 let Some(document_id) = row.get("document_id").and_then(Value::as_str) else {
                     continue;
                 };
-                matches.insert(format!(
-                    "{}\u{1f}{}\u{1f}{}",
-                    dataset.mount.name, file, document_id
-                ));
+                let identity =
+                    format!("{}\u{1f}{}\u{1f}{}", dataset.mount.name, file, document_id);
+                matches.entry(identity).or_insert_with(String::new);
+            }
+            let preview_sql = explorer_run_preview_sql(
+                &dataset.mount.name,
+                table,
+                select,
+                &predicate,
+                EXPLORER_RUN_MATCH_PREVIEW_LIMIT,
+            );
+            let preview_jsonl = explorer_query_jsonl(
+                &runtime.engine,
+                &preview_sql,
+                EXPLORER_RUN_MATCH_PREVIEW_LIMIT,
+            )
+            .await?;
+            for line in preview_jsonl.lines().filter(|line| !line.trim().is_empty()) {
+                let row: Value = serde_json::from_str(line).map_err(|error| {
+                    ApiError::internal(anyhow::anyhow!("decode run search preview: {error}"))
+                })?;
+                let Some(file) = row.get("source_path").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(document_id) = row.get("document_id").and_then(Value::as_str) else {
+                    continue;
+                };
+                let identity =
+                    format!("{}\u{1f}{}\u{1f}{}", dataset.mount.name, file, document_id);
+                if !matches.contains_key(&identity) {
+                    continue;
+                }
+                let preview = search_preview_from_row(&row, raw, table);
+                if let Some(existing) = matches.get_mut(&identity) {
+                    if existing.is_empty() {
+                        *existing = preview;
+                    }
+                }
             }
         }
         let mode = if expression.has_text() && expression.has_json() {
@@ -525,7 +635,7 @@ async fn explorer_runs(
                 ),
             }
         }
-        (BTreeSet::new(), fts_available, "none")
+        (BTreeMap::new(), fts_available, "none")
     };
     Ok(Json(explorer::run_page_with_fts(
         summaries,
@@ -537,6 +647,76 @@ async fn explorer_runs(
             tokenizer: fts_available.then_some("jieba"),
         },
     )))
+}
+
+fn search_preview_text(raw: &str) -> String {
+    // The API deliberately returns the complete normalized field. The Web
+    // client owns the viewport-sized excerpt so it can guarantee that the
+    // matched term remains visible and highlighted.
+    crate::find_preview_text(raw)
+}
+
+fn search_preview_from_row(row: &Value, query: &str, table: &str) -> String {
+    let columns: &[&str] = if table == "steps" {
+        &[
+            "message_value",
+            "reasoning_content",
+            "observation",
+            "prompt",
+            "model_name",
+        ]
+    } else {
+        &["task", "prompt", "notes", "agent_name", "agent_model_name"]
+    };
+    let needle = preview_needle(query).to_ascii_lowercase();
+    let mut fallback = None;
+    for column in columns {
+        let Some(value) = row.get(*column).and_then(search_preview_raw_value) else {
+            continue;
+        };
+        let preview = search_preview_text(&value);
+        if fallback.is_none() && !preview.is_empty() {
+            fallback = Some(preview.clone());
+        }
+        if !needle.is_empty()
+            && crate::find_preview_text(&value)
+                .to_ascii_lowercase()
+                .contains(&needle)
+        {
+            return preview;
+        }
+    }
+    fallback.unwrap_or_default()
+}
+
+fn search_preview_raw_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(value) if value.trim().is_empty() => None,
+        Value::String(value) => Some(value.clone()),
+        value => serde_json::to_string(value).ok(),
+    }
+}
+
+fn preview_needle(query: &str) -> String {
+    let query = query.trim();
+    let candidate = if let Some(hash) = query.find('#') {
+        query[hash..]
+            .find('(')
+            .and_then(|offset| {
+                let start = hash + offset + 1;
+                query[start..]
+                    .find(')')
+                    .map(|end| &query[start..start + end])
+            })
+            .unwrap_or(query)
+    } else {
+        query
+    };
+    candidate
+        .trim()
+        .trim_matches(|character| character == '"' || character == '\'')
+        .to_owned()
 }
 
 async fn explorer_tree(
@@ -642,7 +822,12 @@ async fn resolve_run_summary(
     state: &AppState,
     query: &SessionQuery,
 ) -> Result<RunSummary, ApiError> {
-    let mut matches = load_run_summaries(state)
+    let dataset_filter = query
+        .dataset
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "all");
+    let mut matches = load_run_summaries(state, dataset_filter)
         .await?
         .into_iter()
         .filter(|run| {
@@ -1135,10 +1320,11 @@ async fn explorer_turns(
             .map_err(|error| ApiError::invalid_request(error.to_string()))?
             .ok_or_else(|| ApiError::invalid_request("search query must not be empty"))?;
         let runtime = current_catalog(&state).await?;
-        let (predicate, available, fts_errors) = crate::find_expression_predicate(
+        let (predicate, available, fts_errors) = crate::find_expression_predicate_for_dataset(
             &runtime.snapshot,
             &expression,
             Some(&loaded.run.file),
+            Some(&loaded.run.dataset),
         )
         .await
         .map_err(ApiError::internal)?;
@@ -1288,6 +1474,7 @@ struct QueryDatasetSummary {
 struct QueryTableSummary {
     name: &'static str,
     description: &'static str,
+    kind: &'static str,
     grain: &'static str,
     fields: Vec<QueryFieldSummary>,
 }
@@ -1499,6 +1686,13 @@ fn event_query_fields() -> Vec<QueryFieldSummary> {
     ]
 }
 
+fn format_query_fields() -> Vec<QueryFieldSummary> {
+    vec![
+        field("id", "TEXT", "Stable record identifier"),
+        field("data", "JSON", "Original format document encoded as JSONB"),
+    ]
+}
+
 async fn query_tables(State(state): State<AppState>) -> Result<Json<QueryCatalog>, ApiError> {
     let runtime = current_catalog(&state).await?;
     let database = runtime
@@ -1539,38 +1733,93 @@ async fn query_tables(State(state): State<AppState>) -> Result<Json<QueryCatalog
             QueryTableSummary {
                 name: "sources",
                 description: "One row per discovered run data source",
+                kind: "table",
                 grain: "source",
                 fields: source_query_fields(),
             },
             QueryTableSummary {
                 name: "runs",
                 description: "One row per run across the complete data path",
+                kind: "table",
                 grain: "run",
                 fields: run_query_fields(),
             },
             QueryTableSummary {
                 name: "steps",
                 description: "Ordered user, agent, and system steps for every run",
+                kind: "table",
                 grain: "step",
                 fields: step_query_fields(),
             },
             QueryTableSummary {
                 name: "tool_calls",
                 description: "Structured tool calls joined to their run and step",
+                kind: "table",
                 grain: "tool call",
                 fields: tool_call_query_fields(),
             },
             QueryTableSummary {
                 name: "trajectories",
                 description: "One complete run with ordered step and tool-call arrays",
+                kind: "view",
                 grain: "complete run",
                 fields: trajectory_query_fields(),
             },
             QueryTableSummary {
                 name: "events",
                 description: "Recorded events; empty for sources without recorded events",
+                kind: "table",
                 grain: "event",
                 fields: event_query_fields(),
+            },
+            QueryTableSummary {
+                name: "atif",
+                description: "ATIF documents exposed as id plus JSONB data",
+                kind: "view",
+                grain: "ATIF document",
+                fields: format_query_fields(),
+            },
+            QueryTableSummary {
+                name: "storyline",
+                description: "Storyline documents exposed as id plus JSONB data",
+                kind: "view",
+                grain: "Storyline document",
+                fields: format_query_fields(),
+            },
+            QueryTableSummary {
+                name: "actf",
+                description: "ACTF documents exposed as id plus JSONB data",
+                kind: "view",
+                grain: "ACTF document",
+                fields: format_query_fields(),
+            },
+            QueryTableSummary {
+                name: "openai_msg",
+                description: "OpenAI message documents exposed as id plus JSONB data",
+                kind: "view",
+                grain: "OpenAI message",
+                fields: format_query_fields(),
+            },
+            QueryTableSummary {
+                name: "codex",
+                description: "Codex documents exposed as id plus JSONB data",
+                kind: "view",
+                grain: "Codex document",
+                fields: format_query_fields(),
+            },
+            QueryTableSummary {
+                name: "markdown",
+                description: "Markdown/AgenticMD documents exposed as id plus JSONB data",
+                kind: "view",
+                grain: "Markdown document",
+                fields: format_query_fields(),
+            },
+            QueryTableSummary {
+                name: "claude",
+                description: "Claude Code documents exposed as id plus JSONB data",
+                kind: "view",
+                grain: "Claude Code document",
+                fields: format_query_fields(),
             },
         ],
     }))

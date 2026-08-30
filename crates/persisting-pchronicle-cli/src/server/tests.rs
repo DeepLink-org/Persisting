@@ -2,6 +2,67 @@ use super::*;
 use axum::http::header;
 use axum::response::Response;
 
+#[test]
+fn explorer_run_identity_sql_does_not_project_step_payloads() {
+    let sql = explorer_run_identity_sql("dataset", "steps", "step_id = 1");
+    let lowered = sql.to_ascii_lowercase();
+    assert!(lowered.contains("select distinct"), "{sql}");
+    assert!(lowered.contains("source_path"), "{sql}");
+    assert!(lowered.contains("document_id"), "{sql}");
+    assert!(
+        !lowered.contains("message_value"),
+        "identity query must not load step payloads: {sql}"
+    );
+    assert!(
+        !lowered.contains("observation"),
+        "identity query must not load step payloads: {sql}"
+    );
+}
+
+#[test]
+fn explorer_run_preview_sql_is_row_bounded() {
+    let sql = explorer_run_preview_sql(
+        "dataset",
+        "steps",
+        "_file_ AS source_path, document_id, message_value",
+        "step_id = 1",
+        512,
+    );
+    let lowered = sql.to_ascii_lowercase();
+    assert!(lowered.contains("limit 512"), "{sql}");
+    assert!(lowered.contains("message_value"), "{sql}");
+}
+
+#[test]
+fn search_preview_returns_the_complete_normalized_field() {
+    let raw = format!("{} ipython {}", "prefix ".repeat(80), "suffix ".repeat(80));
+    let preview = search_preview_text(&raw);
+    assert!(preview.contains("ipython"));
+    assert!(preview.starts_with("prefix prefix"));
+    assert!(preview.ends_with("suffix suffix "));
+}
+
+#[test]
+fn search_preview_uses_the_field_that_contains_the_hit() {
+    let row = json!({
+        "message_value": [{"role": "user", "content": "ordinary response"}],
+        "reasoning_content": "internal reasoning with needle",
+        "observation": null,
+    });
+    let preview = search_preview_from_row(&row, "needle", "steps");
+    assert_eq!(preview, "internal reasoning with needle");
+}
+
+#[test]
+fn search_preview_reads_json_message_values() {
+    let row = json!({
+        "message_value": [{"role": "user", "content": "please finish this task"}],
+        "reasoning_content": "unrelated reasoning",
+    });
+    let preview = search_preview_from_row(&row, "task", "steps");
+    assert!(preview.contains("finish this task"), "{preview}");
+}
+
 fn assert_problem(error: ApiError, status: StatusCode, code: BoundaryCode) {
     assert_eq!(error.status, status);
     assert_eq!(error.code, code);
@@ -435,6 +496,27 @@ async fn json_datasets_expose_tables_and_support_read_only_sql() {
     assert_eq!(tables["tables"][3]["name"], "tool_calls");
     assert_eq!(tables["tables"][4]["name"], "trajectories");
     assert_eq!(tables["tables"][5]["name"], "events");
+    assert_eq!(tables["tables"][4]["kind"], "view");
+    let view_names: Vec<_> = tables["tables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|table| table["kind"] == "view")
+        .map(|table| table["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        view_names,
+        vec![
+            "trajectories",
+            "atif",
+            "storyline",
+            "actf",
+            "openai_msg",
+            "codex",
+            "markdown",
+            "claude",
+        ]
+    );
 
     let response = app
             .oneshot(
@@ -1613,6 +1695,22 @@ async fn physical_api_inspects_storyline_lance_layout_file_and_page() {
         matched_runs["records"][0]["session_id"], "session-a",
         "{matched_runs}"
     );
+    assert!(
+        matched_runs["records"][0]["search_preview"]
+            .as_str()
+            .is_some_and(|preview| preview.contains("hello")),
+        "{matched_runs}"
+    );
+
+    // FTS matching is case-insensitive by default, just like the Web
+    // highlight path and the in-memory compatibility filter.
+    let (status, uppercase_runs) = get_json(
+        &app,
+        &format!("/api/explorer/runs?dataset={dataset}&q=HELLO&limit=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{uppercase_runs}");
+    assert_eq!(uppercase_runs["snapshot"]["total"], 1, "{uppercase_runs}");
 
     let (status, no_runs) = get_json(
         &app,

@@ -95,6 +95,8 @@ pchronicle onboard query @prod
 通过内建示例或自己的 Dataset 体验 pChronicle 工作流。`SECTION` 可以是 `all`、`concepts`、
 `inspect`、`analyze`、`query`、`formats`、`find`、`exchange` 或 `serve`，默认为 `all`。
 交互式终端会在章节之间暂停；pipe、重定向或 `--no-pause` 输出连续 Markdown。
+完整引导还会演示统一的 FTS/JSONB `find` 表达式、Storyline Lance 导入导出以及只读 Web/API
+边界；使用 `pchronicle onboard find DATASET` 可以直接查看检索语法。
 
 ### 2.2 `default`
 
@@ -120,6 +122,9 @@ pchronicle alias [list|add|remove|rename|get-url|set-url] [ARGUMENTS]
 ```bash
 pchronicle alias add local ./trajectory-data
 pchronicle alias add prod s3://bucket/evals
+pchronicle alias add secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
+pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --ak 123 --sk 123
+pchronicle alias add regional s3://bucket/evals --region us-west-2
 pchronicle alias
 ```
 
@@ -132,6 +137,15 @@ Alias 提供类似 `git remote` 的多 Dataset 管理方式，可以同时保存
 `alias list`，结果按名称排序。其他操作可用 `pchronicle alias --help` 查看。Alias 操作只修改用户配置，
 不移动或删除 Dataset；名称使用小写字母、数字、点、下划线和连字符，并以小写字母开头。
 `codex`、`claude`、`claude-code` 是保留名称。
+`alias list` 还会始终显示系统内置的 `@codex`、`@claude`、`@claude-code`，它们分别指向对应的本地
+Agent 会话目录。
+对于 S3 Dataset，可以通过 `--ak` 和 `--sk` 配置访问密钥与秘密密钥；凭证与 URI 分开保存，
+并在使用 alias 时通过标准 AWS 环境变量提供，不会由 `alias list` 或 `alias get-url` 输出。
+对于 MinIO 等 S3 兼容服务，可以通过 `--endpoint` 保存服务地址；使用 alias 时会自动设置为
+`AWS_ENDPOINT_URL_S3`。Dataset URI 仍应保持为 `s3://bucket/prefix`，不要把主机和端口写入 URI。
+`alias set-url` 也支持相同的 `--endpoint` 参数；在两个 S3 URI 之间切换且未指定新 endpoint 时，
+会保留原有 endpoint。
+可选的 `--region` 也会按 alias 保存；省略时由 S3 客户端自行处理，需要回退时默认使用 `us-west-2`。
 
 ### 2.4 `ls`
 
@@ -194,6 +208,7 @@ JSON 表达式搜索 Run 级 JSONB，和文本混合时搜索 Step 级 JSONB。�
 摘要，便于在继续查询前判断候选是否正确。
 JSON 输出还会报告 `search.mode`（`fts`、`json` 或 `fts+json`）、`search.scope`（`steps` 或 `runs`）
 以及 FTS 可用性和分词器元数据。
+规范语法和执行语义见 [RFC-0012](../../rfcs/0012-pchronicle-find-query-syntax.md)。
 
 ### 2.7 `query`
 

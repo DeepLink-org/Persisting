@@ -1048,7 +1048,16 @@ pub fn AnalysisWorkspace(
                                                 aria_pressed: selected,
                                                 onclick: move |_| selected_table.set(table_name.clone()),
                                                 strong { "{table.name}" }
-                                                small { "{table.grain}" }
+                                                small {
+                                                    if table.kind == "view" {
+                                                        span {
+                                                            class: "analyze-schema-kind view",
+                                                            "view"
+                                                        }
+                                                        " · "
+                                                    }
+                                                    "{table.grain}"
+                                                }
                                             }
                                         }
                                     }

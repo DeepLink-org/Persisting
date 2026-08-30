@@ -132,6 +132,7 @@ impl ChronicleQueryEngine {
         let source = crate::document::open_document(format, path.as_ref()).await?;
         let context = query_session_context(&options)?;
         let tables = source.register_datafusion(&context)?;
+        source.inner.register_virtual_tables(&context).await?;
         let capabilities = source.capabilities();
         let source_count = source.inner.source_count();
         let snapshot = if let Some(snapshot) = source.inner.event_snapshot() {

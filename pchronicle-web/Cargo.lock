@@ -2079,6 +2079,7 @@ dependencies = [
  "dioxus-web",
  "futures-util",
  "gloo-net",
+ "gloo-timers",
  "serde",
  "serde_json",
  "time",

@@ -46,6 +46,20 @@ impl DatasetLocation {
         );
         match url.scheme() {
             "s3" | "az" | "gs" | "memory" | "shared-memory" => {
+                if let Some(port) = url.port() {
+                    let endpoint_hint = if url.scheme() == "s3" {
+                        "; S3-compatible endpoints must be configured separately with \
+                         AWS_ENDPOINT_URL_S3 (or AWS_ENDPOINT), for example \
+                         AWS_ENDPOINT_URL_S3=http://127.0.0.1:9000 and s3://bucket/prefix"
+                    } else {
+                        "; configure the object-store endpoint separately instead of putting a \
+                         port in the Dataset URI"
+                    };
+                    return Err(anyhow!(
+                        "{} Dataset URI must use the bucket as host without port {port}{endpoint_hint}",
+                        url.scheme()
+                    ));
+                }
                 let bucket = url
                     .host_str()
                     .ok_or_else(|| anyhow!("object-store URI must name a bucket"))?;
@@ -338,6 +352,19 @@ mod tests {
             .to_string();
         assert!(error.contains("must be 3-63 characters"), "{error}");
         assert!(error.contains("'dd'"), "{error}");
+    }
+
+    #[test]
+    fn parse_rejects_s3_endpoint_port_in_dataset_uri() {
+        let error = DatasetLocation::parse("s3://127.0.0.1:9000/dd/test")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("must use the bucket as host without port 9000"),
+            "{error}"
+        );
+        assert!(error.contains("AWS_ENDPOINT_URL_S3"), "{error}");
+        assert!(error.contains("s3://bucket/prefix"), "{error}");
     }
 
     #[test]

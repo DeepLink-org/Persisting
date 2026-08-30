@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use datafusion::arrow::array::{StringArray, UInt64Array};
+use datafusion::arrow::array::{Array, StringArray, UInt64Array};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::Session;
@@ -689,6 +689,21 @@ impl DatasetCatalogSnapshot {
                     context,
                     &dataset.mount.name,
                     kind.table_name(),
+                    provider,
+                    is_default,
+                )?;
+            }
+            for format in super::virtual_document::formats() {
+                let provider: Arc<dyn TableProvider> =
+                    Arc::new(CatalogVirtualDocumentTableProvider::new(
+                        prepared.sources.clone(),
+                        format,
+                        prepared.max_concurrent_sources,
+                    ));
+                register_catalog_provider(
+                    context,
+                    &dataset.mount.name,
+                    super::virtual_document::table_name(format).expect("virtual table name"),
                     provider,
                     is_default,
                 )?;

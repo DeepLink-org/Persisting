@@ -163,6 +163,7 @@ struct FileTrajectoryQueryMetricCounters {
 #[derive(Debug)]
 pub struct FileTrajectoryDataSource {
     format: DocumentFormat,
+    manifest: Arc<LocalQueryManifest>,
     runs: Arc<dyn TableProvider>,
     steps: Arc<dyn TableProvider>,
     tool_calls: Arc<dyn TableProvider>,
@@ -200,6 +201,7 @@ impl FileTrajectoryDataSource {
         let metrics = runtime.metrics.clone();
         Ok(Self {
             format,
+            manifest,
             runs: Arc::new(FileTrajectoryTableProvider::new(
                 files.clone(),
                 runtime.clone(),
@@ -230,6 +232,18 @@ impl FileTrajectoryDataSource {
 
     pub fn file_count(&self) -> usize {
         self.file_count
+    }
+
+    pub(crate) fn virtual_document_rows_filtered(
+        &self,
+        candidate_ids: Option<&std::collections::BTreeSet<String>>,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        crate::store::document_source::virtual_rows_for_files(
+            self.format,
+            &self.manifest,
+            self.max_file_bytes,
+            candidate_ids,
+        )
     }
 
     pub(crate) fn max_file_bytes(&self) -> u64 {

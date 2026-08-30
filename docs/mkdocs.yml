@@ -235,7 +235,7 @@ nav:
           - 0008 ATIF format: rfcs/0008-atif-format.md
           - 0009 OpenAI Messages format: rfcs/0009-openai-messages-format.md
           - 0010 Agent corpus Lance layout: rfcs/0010-agent-corpus-lance-layout.md
-          - 0011 Storyline logical query model: rfcs/0011-storyline-logical-query-model.md
+          - 0012 pChronicle find query syntax: rfcs/0012-pchronicle-find-query-syntax.md
       - Standalone systems:
           - Queue guide: guide/queue.md
           - Python API overview: api/index.md

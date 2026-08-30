@@ -708,6 +708,7 @@ fn catalog_prompt_value(catalog: &QueryCatalog) -> Value {
     json!({
         "tables": crate::model::queryable_tables(catalog).iter().map(|table| json!({
             "name": table.name,
+            "kind": table.kind,
             "description": table.description,
             "grain": table.grain,
             "fields": table.fields.iter().map(|field| json!({
@@ -1469,6 +1470,7 @@ mod tests {
             tables: vec![QueryTableSummary {
                 name: "default.runs".into(),
                 description: "Recorded agent runs".into(),
+                kind: "table".into(),
                 grain: "one row per recorded run".into(),
                 fields: vec![
                     QueryFieldSummary {

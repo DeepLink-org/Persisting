@@ -431,8 +431,17 @@ async fn alias_lifecycle_resolves_dataset_references_without_moving_data() -> Re
     run(cli, false, &mut stdout, &mut Vec::new()).await?;
     let aliases: Value = serde_json::from_slice(&stdout)?;
     assert_eq!(aliases["schema_version"], "pchronicle-aliases/v1");
-    assert_eq!(aliases["aliases"][0]["name"], "archive");
-    assert_eq!(aliases["aliases"][1]["name"], "prod");
+    let names = aliases["aliases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|alias| alias["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"@codex"));
+    assert!(names.contains(&"@claude"));
+    assert!(names.contains(&"@claude-code"));
+    assert!(names.contains(&"archive"));
+    assert!(names.contains(&"prod"));
 
     let cli = Cli::try_parse_from([
         "pchronicle",
@@ -447,6 +456,84 @@ async fn alias_lifecycle_resolves_dataset_references_without_moving_data() -> Re
     assert!(resolve_dataset_uri(Some("@prod"), Some(&config)).is_err());
     assert!(resolve_dataset_uri(Some("@production/.."), Some(&config)).is_err());
     assert!(first.is_dir());
+    Ok(())
+}
+
+#[tokio::test]
+async fn alias_s3_credentials_are_stored_separately_and_applied_on_expansion() -> Result<()> {
+    let _env_guard = DATASET_ALIAS_ENV_LOCK.lock().await;
+    let temporary = tempfile::tempdir()?;
+    let config = temporary.path().join("config.toml");
+    let config_arg = config.to_string_lossy().into_owned();
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "add",
+        "prod",
+        "s3://example-bucket/evals",
+        "--endpoint",
+        "http://127.0.0.1:9000",
+        "--region",
+        "us-west-2",
+        "--ak",
+        "access-test",
+        "--sk",
+        "secret-test",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+
+    let config_text = fs::read_to_string(&config)?;
+    assert!(config_text.contains("[alias_credentials.prod]"));
+    assert!(config_text.contains("alias_endpoints"));
+    assert!(config_text.contains("prod = \"http://127.0.0.1:9000\""));
+    assert!(config_text.contains("[alias_regions]"));
+    assert!(config_text.contains("prod = \"us-west-2\""));
+    assert!(config_text.contains("access_key = \"access-test\""));
+    assert!(config_text.contains("secret_key = \"secret-test\""));
+
+    let _access = EnvGuard::unset("AWS_ACCESS_KEY_ID");
+    let _secret = EnvGuard::unset("AWS_SECRET_ACCESS_KEY");
+    let _endpoint = EnvGuard::unset("AWS_ENDPOINT_URL_S3");
+    let _generic_endpoint = EnvGuard::unset("AWS_ENDPOINT");
+    let _region = EnvGuard::unset("AWS_REGION");
+    assert_eq!(
+        expand_dataset_reference("@prod", Some(&config), false)?,
+        "s3://example-bucket/evals"
+    );
+    assert_eq!(
+        std::env::var("AWS_ACCESS_KEY_ID").as_deref(),
+        Ok("access-test")
+    );
+    assert_eq!(
+        std::env::var("AWS_SECRET_ACCESS_KEY").as_deref(),
+        Ok("secret-test")
+    );
+    assert_eq!(
+        std::env::var("AWS_ENDPOINT_URL_S3").as_deref(),
+        Ok("http://127.0.0.1:9000")
+    );
+    assert_eq!(
+        std::env::var("AWS_ENDPOINT").as_deref(),
+        Ok("http://127.0.0.1:9000")
+    );
+    assert_eq!(std::env::var("AWS_REGION").as_deref(), Ok("us-west-2"));
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "list",
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let output = String::from_utf8(stdout)?;
+    assert!(!output.contains("access-test"));
+    assert!(!output.contains("secret-test"));
     Ok(())
 }
 
@@ -1235,6 +1322,25 @@ fn find_fts_predicates_are_combined_as_a_balanced_sql_tree() {
     }
     assert_eq!(depth, 0);
     assert!(max_depth <= 16, "unexpectedly deep SQL tree: {max_depth}");
+}
+
+#[test]
+fn fts_text_clause_is_false_only_after_a_successful_empty_search() {
+    assert_eq!(
+        super::compiled_text_predicate_sql(&[], true).expect("zero hits"),
+        "FALSE"
+    );
+}
+
+#[test]
+fn fts_text_clause_is_not_false_when_search_never_ran() {
+    let error = super::compiled_text_predicate_sql(&[], false)
+        .expect_err("unsearched text must not compile to FALSE");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("FTS unavailable"),
+        "unexpected error: {message}"
+    );
 }
 
 #[tokio::test]

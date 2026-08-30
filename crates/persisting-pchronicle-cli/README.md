@@ -37,9 +37,9 @@ pchronicle onboard query ./my-trajectories
 ```
 
 The complete walkthrough covers concepts, catalog/status inspection, built-in
-analysis, schema discovery, Step and tool-call SQL, cross-format queries,
-Source-local ID lookup, an isolated local Warehouse, strict import/export, and
-the read-only server boundary. Jump directly to one section with:
+analysis, schema discovery, Step and tool-call SQL, unified FTS/JSONB `find`
+queries, cross-format queries, Source-local ID lookup, Storyline Lance import
+and export, and the read-only Web/API boundary. Jump directly to one section with:
 
 ```text
 concepts  inspect  analyze  query  formats  find  exchange  serve

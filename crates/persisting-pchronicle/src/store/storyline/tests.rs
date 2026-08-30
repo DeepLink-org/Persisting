@@ -2275,6 +2275,13 @@ fn joins_object_store_locations_without_losing_uri_scheme() {
     assert!(normalize_root_uri("  ").is_err());
 }
 
+#[test]
+fn storyline_fts_indexes_default_to_case_insensitive_matching() {
+    let params = storyline_inverted_index_params(None);
+    let encoded = serde_json::to_value(params).expect("FTS parameters should serialize");
+    assert_eq!(encoded["lower_case"], true);
+}
+
 #[cfg(feature = "proptest")]
 mod proptests {
     use proptest::prelude::*;
