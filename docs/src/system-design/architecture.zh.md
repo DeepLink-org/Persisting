@@ -106,7 +106,8 @@ job_id → task_id → run_id → attempt_id / lease_epoch → terminal result
 保存所选 coordination record。启用 `traj-sink` 构建并传入 `--traj` 时，pPilot 只额外发出
 终态 `ppilot.result` 或 `ppilot.failure` record；它不会捕获通用 Run 轨迹。Delegated pVisor
 Run 不会获得 Chronicle capture 配置。在所有模式中，编排决策与 task-to-Run mapping 仍归
-pPilot 所有。
+pPilot 所有。命令与 resume 行为见 [pPilot CLI](../ppilot/reference/cli.md) 与
+[编排设计](../ppilot/design/orchestration.md)。
 
 ## Dataset 路径
 
@@ -137,10 +138,11 @@ Source 的全局事务。固定外部文件不会把它转换为 canonical runti
 
 Ingestion 保留这些边界。规范化表示或 Snapshot 不会升级 Source 提供的 Evidence。
 
-pVisor 默认构建不链接 Lance/DataFusion。Chronicle mode 为 `spawn` 时，pVisor 启动
-`pchronicle serve --control 127.0.0.1:0 DATASET`，通过带认证的 loopback IPC
-提交生命周期与 Gateway 事件，并且只把 sidecar 成功响应视为 durable acknowledgement。
-旧模式名 `lance` 是 `spawn` 的兼容别名；pVisor 不再自行写 Lance。
+pVisor 默认构建不链接 Lance/DataFusion。配置后的 Chronicle 发布会通过带认证的
+loopback IPC 启动 pChronicle sidecar，并且只把 sidecar 成功响应视为 durable
+acknowledgement。旧模式名 `lance` 是 `spawn` 的兼容别名；pVisor 不再自行写 Lance。
+Sidecar 标志与模式名见 [pVisor CLI](../pvisor/reference/cli.md) 与
+[RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md)。
 
 ## 故障与恢复
 

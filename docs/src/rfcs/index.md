@@ -1,6 +1,9 @@
 # RFCs
 
-Persisting 格式与协议的 RFC 索引。
+RFCs are historical decision records for Persisting formats, ownership, and
+storage contracts. They preserve accepted or proposed decisions. They are not
+command references. Current syntax, schemas, and supported workflows live in
+each product's Reference and Guides.
 
 | RFC | Title | Status |
 |---|---|---|

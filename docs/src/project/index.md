@@ -2,7 +2,7 @@
 
 Persisting's public positioning spans model state and Agent history. This
 section records delivery state, durable decisions, contributor workflows, and
-systems outside the current pVisor → pChronicle product path.
+systems outside the current pVisor, pPilot, and pChronicle product path.
 
 ## Architecture
 
@@ -20,7 +20,7 @@ systems outside the current pVisor → pChronicle product path.
 ## Decisions
 
 - [RFC index](../rfcs/index.md)
-- [Implementation status](engineering.md)
+- [Contributor workflows](engineering.md)
 
 ## Standalone data systems
 

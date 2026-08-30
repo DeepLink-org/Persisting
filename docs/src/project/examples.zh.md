@@ -8,6 +8,7 @@
 just examples
 just examples-pvisor
 just examples-pchronicle
+just examples-ppilot
 ```
 
 ## pVisor
@@ -18,6 +19,13 @@ just examples-pchronicle
 | `02-changeset-management` | review、apply 与 drop |
 | `03-network-isolation` | 显式代理策略及其边界 |
 | `04-gateway-llm-control` | 内嵌 Gateway 路由与捕获 |
+
+## pPilot
+
+| 示例 | 可复现结论 |
+|---|---|
+| `01-run` | 并发执行 `plan()` / `execute()` 并将结果写入 durable sink |
+| `02-produce` | Python planner 生成多个独立、可审查的 pVisor Run |
 
 ## pChronicle
 
@@ -34,10 +42,13 @@ pChronicle 示例使用 `examples/data` 中的确定性 fixture。默认只输�
 stdout/stderr 保存在各场景的 `.work/run.*`，也可通过
 `PCHRONICLE_EXAMPLE_VERBOSE=1` 在终端展开。运行要求为 macOS 或 Linux、Cargo、
 Python 3 和 `jq` 等常见 POSIX 工具；pVisor 文件系统示例另需 macFUSE 或 FUSE3。
+`just examples-pvisor-filesystem` 运行依赖 FUSE 的 01/02；
+`just examples-pvisor-portable` 运行不需要 FUSE 的 03/04。
 
-建议从 `pvisor/01-filesystem-isolation` 开始，再进入 changeset management；准备从执行进入
-历史时，再运行 pChronicle 示例。
+建议从 `pvisor/01-filesystem-isolation` 开始，再进入 changeset management；需要多 Run
+生产时运行 pPilot 示例；准备从执行进入历史时，再运行 pChronicle 示例。
 
-任务解释见 [pVisor Guides](../pvisor/guides/index.md)，Dataset 工作流见
+任务解释见 [pVisor Guides](../pvisor/guides/index.md)，多 Run 工作流见
+[pPilot 编排](../ppilot/guides/orchestrate.md)，Dataset 工作流见
 [pChronicle Guides](../pchronicle/guides/index.md)。示例用于验证产品路径；精确命令语法仍以
 各产品 Reference 为准。

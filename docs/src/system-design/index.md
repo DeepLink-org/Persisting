@@ -2,9 +2,11 @@
 
 Persisting is persistent infrastructure for the Agent era, spanning model
 state—parameters and KV caches—and Agent history. This section focuses on the
-two current public product domains:
+current public product path:
 
-- [pVisor](../pvisor/index.md) virtualizes and governs Agent execution;
+- [pVisor](../pvisor/index.md) virtualizes and governs one Agent Run;
+- [pPilot](../ppilot/index.md) scales that Run model across many tasks and
+  remains inside the pVisor execution boundary;
 - [pChronicle](../pchronicle/index.md) organizes durable trajectory Sources into
   queryable Datasets.
 
@@ -40,6 +42,7 @@ not provide.
 | --- | --- |
 | One Run's execution boundary | pVisor |
 | Model, network, and filesystem runtime drivers | pVisor |
+| Many-Run planning, leases, and task-to-Run mapping | pPilot |
 | Canonical events, terminal facts, and Dataset history | pChronicle |
 | Query, exchange, and revision lineage | pChronicle |
 
@@ -49,6 +52,7 @@ not provide.
 - [Local-to-fleet continuity](local-to-fleet.md)
 - [Security and evidence model](security-evidence.md)
 - [pVisor implementation boundaries](../pvisor/design/index.md)
+- [pPilot orchestration](../ppilot/design/orchestration.md)
 - [pChronicle implementation boundaries](../pchronicle/design/index.md)
 
 Delivery state is reported in the product Design pages and

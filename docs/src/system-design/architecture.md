@@ -122,7 +122,9 @@ with `traj-sink` and invoked with `--traj`, pPilot additionally emits only
 terminal `ppilot.result` or `ppilot.failure` records; it does not capture a
 general Run trajectory. Delegated pVisor Runs do not receive Chronicle capture
 configuration. pPilot owns orchestration decisions and task-to-Run mapping in
-all of these modes.
+all of these modes. Command flags and resume behavior belong to the
+[pPilot CLI reference](../ppilot/reference/cli.md) and
+[orchestration design](../ppilot/design/orchestration.md).
 
 ## Dataset path
 
@@ -156,12 +158,13 @@ external file does not convert it into a canonical runtime event Source.
 Ingestion preserves these boundaries. A normalized representation or Catalog
 Snapshot does not upgrade the evidence supplied by its Source.
 
-The default pVisor build does not link Lance or DataFusion. With Chronicle mode
-`spawn`, pVisor starts `pchronicle serve --control 127.0.0.1:0 DATASET`,
-submits lifecycle and Gateway events over authenticated loopback
-IPC, and treats only a successful sidecar response as a durable
-acknowledgement. The legacy mode name `lance` is an alias for `spawn`; pVisor
-no longer writes Lance itself.
+The default pVisor build does not link Lance or DataFusion. Configured
+Chronicle publication starts a pChronicle sidecar over authenticated loopback
+IPC and treats only a successful sidecar acknowledgement as durable. The
+legacy mode name `lance` is an alias for `spawn`; pVisor no longer writes Lance
+itself. Sidecar flags and mode names belong to the
+[pVisor CLI reference](../pvisor/reference/cli.md) and
+[RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md).
 
 ## Failure and recovery
 
@@ -187,7 +190,9 @@ placement. Configured pChronicle capture stores lifecycle facts and only the
 Evidence carried by Gateway or lifecycle event records; the broader Run Bundle
 evidence inventory remains local unless moved separately.
 
-This produces a chain rather than a boolean label:
+This produces a chain rather than a boolean label. The local Run evidence
+chain does not mean every layer is automatically published into durable
+history:
 
 ```text
 requested policy
@@ -196,7 +201,11 @@ requested policy
   → provider-bound evidence
   → observed effects
   → terminal result
-  → durable history
+
+Optional configured persistence
+  Gateway trajectory events + pVisor lifecycle records
+    → event-carried Evidence only
+    → pChronicle durable history
 ```
 
 See [Security and evidence](security-evidence.md) for evidence levels and
