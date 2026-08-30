@@ -306,7 +306,26 @@ fn agent_skill_examples_match_the_live_cli_contract() -> Result<()> {
     assert!(current.is_none(), "unterminated bash block in Agent skill");
     assert_eq!(blocks.len(), 6, "Agent skill command examples changed");
 
-    let dataset = format!("{}/../../examples/data/atif", env!("CARGO_MANIFEST_DIR"));
+    let atif = format!("{}/../../examples/data/atif", env!("CARGO_MANIFEST_DIR"));
+    let temp = tempfile::tempdir()?;
+    let dataset = temp.path().join("dataset");
+    let imported = Command::new(env!("CARGO_BIN_EXE_pchronicle"))
+        .args([
+            "import",
+            "--from",
+            &atif,
+            "--output",
+            dataset.to_str().context("temporary Dataset path")?,
+            "--output-format",
+            "storyline",
+        ])
+        .output()?;
+    assert!(
+        imported.status.success(),
+        "import example Dataset for Agent skill examples:\n{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+
     for block in blocks {
         let output = Command::new("/bin/sh")
             .args(["-eu", "-c", &block])
