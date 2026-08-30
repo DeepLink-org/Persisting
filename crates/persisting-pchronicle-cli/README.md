@@ -71,6 +71,8 @@ pchronicle ls
 pchronicle status
 pchronicle query --sql "SELECT * FROM dataset.runs"
 pchronicle find --session-id session-42
+pchronicle find --match "timeout" --format json
+pchronicle find --json "$.answer=yes" --format json
 pchronicle export --from ./trajectory-data --to runs.json --output-format storyline
 ```
 

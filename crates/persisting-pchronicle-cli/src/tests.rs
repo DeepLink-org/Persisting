@@ -1386,7 +1386,8 @@ async fn find_enforces_output_byte_limit_without_partial_stdout() -> Result<()> 
 
 #[test]
 fn find_cli_requires_one_identity_and_session_for_steps() {
-    assert!(Cli::try_parse_from(["pchronicle", "find", "."]).is_err());
+    assert!(Cli::try_parse_from(["pchronicle", "find", ".", "--match", "needle"]).is_ok());
+    assert!(Cli::try_parse_from(["pchronicle", "find", ".", "--json", "$.x=true"]).is_ok());
     assert!(
         Cli::try_parse_from([
             "pchronicle",

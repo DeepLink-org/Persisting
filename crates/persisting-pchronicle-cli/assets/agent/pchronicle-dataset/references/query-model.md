@@ -23,7 +23,7 @@ entity kind, and original ID. When joining trajectory relations within one
 Dataset, join on `_file_` as well as the entity key:
 
 ```sql
-SELECT r._file_, r.run_id, s.step_id, s.message_json
+SELECT r._file_, r.run_id, s.step_id, s.message_kind, s.message_value
 FROM dataset.runs r
 JOIN dataset.steps s
   ON r._file_ = s._file_

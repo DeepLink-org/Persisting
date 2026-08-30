@@ -18,7 +18,7 @@ use exchange::{run_export, run_import};
 use output::*;
 use settings::*;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::CString;
 use std::fmt::Write as _;
 use std::io::{Error as IoError, Read, Write};
@@ -45,6 +45,7 @@ use persisting_pchronicle::storage::{
     EventFactSnapshot, ObjectStoreManifestWriteMode, StorylineLanceStore,
     StorylineProjectionBuildOutcome, automatic_projection_inventory, build_storyline_projection,
     inspect_automatic_storyline_projection, probe_canonical_event_store,
+    search_storyline_step_matches_fts,
 };
 use serde::{Deserialize, Serialize};
 
@@ -458,7 +459,7 @@ struct AnalysisOptions {
 #[derive(Debug, Args)]
 #[command(group(
     ArgGroup::new("identity")
-        .required(true)
+        .required(false)
         .multiple(false)
         .args(["document_id", "run_id", "session_id"])
 ))]
@@ -486,6 +487,16 @@ struct FindArgs {
     /// Find one Step within the selected Session.
     #[arg(long, requires = "session_id")]
     step_id: Option<i64>,
+
+    /// Search normalized Storyline step content. May be repeated; all terms
+    /// must match. Uses the same FTS path as the Web explorer.
+    #[arg(long = "match", value_name = "TEXT", action = clap::ArgAction::Append)]
+    matches: Vec<String>,
+
+    /// Search a JSONPath in every JSONB column of the selected table. May be
+    /// repeated; syntax is `PATH=VALUE`, for example `--json '$.tags=important'`.
+    #[arg(long = "json", value_name = "PATH=VALUE", action = clap::ArgAction::Append)]
+    json: Vec<String>,
 
     /// Output format. Auto uses a table on a terminal and JSON when piped.
     #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
@@ -1093,6 +1104,7 @@ struct FindResponse {
     dataset_uri: String,
     snapshot_id: String,
     query: FindQueryResponse,
+    search: FindSearchResponse,
     truncated: bool,
     matches: Vec<FindMatch>,
 }
@@ -1104,6 +1116,17 @@ struct FindQueryResponse {
     run_id: Option<String>,
     session_id: Option<String>,
     step_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    matches: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    json: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct FindSearchResponse {
+    mode: &'static str,
+    fts_available: bool,
+    tokenizer: Option<&'static str>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2586,6 +2609,21 @@ async fn run_find(
     if let Some(session_id) = &args.session_id {
         validate_find_id("--session-id", session_id)?;
     }
+    for query in &args.matches {
+        anyhow::ensure!(!query.trim().is_empty(), "--match must not be empty");
+        anyhow::ensure!(query.len() <= 4096, "--match must not exceed 4096 bytes");
+    }
+    for spec in &args.json {
+        validate_find_json_spec(spec)?;
+    }
+    anyhow::ensure!(
+        args.document_id.is_some()
+            || args.run_id.is_some()
+            || args.session_id.is_some()
+            || !args.matches.is_empty()
+            || !args.json.is_empty(),
+        "find requires an identity predicate, --match, or --json"
+    );
     let dataset = resolve_dataset_uri(args.dataset_uri.as_deref(), settings_override)?;
     let (_, dataset_uris, snapshot) =
         discover_query_snapshot(Some(&dataset), &[], args.max_files, args.max_entries).await?;
@@ -2595,8 +2633,16 @@ async fn run_find(
         .context("find Dataset URI missing after discovery")?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = snapshot.query_engine(Default::default()).await?;
-    let sql = find_sql(&args)?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
+    let (fts_predicate, fts_available, fts_errors) = if !args.matches.is_empty() {
+        find_fts_predicate(&snapshot, &args.matches, args.source.as_deref()).await?
+    } else {
+        (None, false, Vec::new())
+    };
+    for error in fts_errors {
+        writeln!(stderr, "pchronicle find: {error}").context("write FTS diagnostic")?;
+    }
+    let sql = find_sql(&args, fts_predicate.as_deref())?;
     let mut buffer = LimitedBuffer::new(args.max_output_bytes);
     let max_query_rows = args
         .max_results
@@ -2651,6 +2697,18 @@ async fn run_find(
             run_id: args.run_id,
             session_id: args.session_id,
             step_id: args.step_id,
+            matches: args.matches.clone(),
+            json: args.json.clone(),
+        },
+        search: FindSearchResponse {
+            mode: match (!args.matches.is_empty(), !args.json.is_empty()) {
+                (true, true) => "fts+json",
+                (true, false) => "fts",
+                (false, true) => "json",
+                (false, false) => "identity",
+            },
+            fts_available,
+            tokenizer: fts_available.then_some("jieba"),
         },
         truncated,
         matches,
@@ -2702,7 +2760,134 @@ fn ensure_output_byte_budget(size: usize, max_bytes: usize, label: &str) -> Resu
     Ok(())
 }
 
-fn find_sql(args: &FindArgs) -> Result<String> {
+async fn find_fts_predicate(
+    snapshot: &DatasetCatalogSnapshot,
+    queries: &[String],
+    source_filter: Option<&str>,
+) -> Result<(Option<String>, bool, Vec<String>)> {
+    let mut predicates = Vec::new();
+    let mut available = false;
+    let mut errors = Vec::new();
+    for dataset in snapshot.datasets() {
+        for source in &dataset.sources {
+            if source.status != CatalogSourceStatus::Ready
+                || source.kind != CatalogSourceKind::Store
+                || source_filter.is_some_and(|filter| filter != source.file)
+            {
+                continue;
+            }
+            let Some(paths) = snapshot.storyline_table_paths(&dataset.mount.name, &source.file)?
+            else {
+                continue;
+            };
+            let mut source_matches: Option<BTreeSet<(String, i64)>> = None;
+            for query in queries {
+                match search_storyline_step_matches_fts(&paths, query).await {
+                    Ok(step_matches) => {
+                        let step_matches = step_matches.into_iter().collect::<BTreeSet<_>>();
+                        source_matches = Some(match source_matches {
+                            Some(previous) => {
+                                previous.intersection(&step_matches).cloned().collect()
+                            }
+                            None => step_matches,
+                        });
+                        available = true;
+                    }
+                    Err(error) => {
+                        errors.push(format!(
+                            "FTS unavailable for {} / {}: {error:#}",
+                            dataset.mount.name, source.file
+                        ));
+                        source_matches = None;
+                        break;
+                    }
+                }
+            }
+            if let Some(step_matches) = source_matches {
+                if !step_matches.is_empty() {
+                    let matches = step_matches
+                        .iter()
+                        .map(|(document_id, step_id)| {
+                            format!(
+                                "(document_id = {} AND step_id = {})",
+                                sql_string(document_id),
+                                step_id
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" OR ");
+                    predicates.push(format!(
+                        "(_file_ = {} AND ({}))",
+                        sql_string(&source.file),
+                        matches
+                    ));
+                }
+            }
+        }
+    }
+    Ok((
+        Some(if predicates.is_empty() {
+            "FALSE".into()
+        } else {
+            predicates.join(" OR ")
+        }),
+        available,
+        errors,
+    ))
+}
+
+fn validate_find_json_spec(spec: &str) -> Result<()> {
+    let (path, value) = spec
+        .split_once('=')
+        .context("--json must use PATH=VALUE, for example $.tags=important")?;
+    anyhow::ensure!(path.starts_with('$'), "--json path must start with '$'");
+    anyhow::ensure!(
+        !path.contains('\0') && !value.contains('\0'),
+        "--json must not contain NUL bytes"
+    );
+    anyhow::ensure!(spec.len() <= 4096, "--json must not exceed 4096 bytes");
+    Ok(())
+}
+
+fn find_json_predicates(specs: &[String], steps: bool) -> Result<Vec<String>> {
+    let columns = if steps {
+        ["metrics", "extra"].as_slice()
+    } else {
+        [
+            "agent_extra",
+            "final_metrics",
+            "extra",
+            "meta",
+            "unknown_fields",
+        ]
+        .as_slice()
+    };
+    specs
+        .iter()
+        .map(|spec| {
+            let (path, raw_value) = spec
+                .split_once('=')
+                .context("--json must use PATH=VALUE, for example $.tags=important")?;
+            let json_value = serde_json::from_str::<serde_json::Value>(raw_value)
+                .unwrap_or_else(|_| serde_json::Value::String(raw_value.to_string()));
+            let encoded_value = serde_json::to_string(&json_value)?;
+            let alternatives = columns
+                .iter()
+                .map(|column| {
+                    format!(
+                        "json_extract({column}, {}) = {}",
+                        sql_string(path),
+                        sql_string(&encoded_value)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            Ok(format!("({alternatives})"))
+        })
+        .collect()
+}
+
+fn find_sql(args: &FindArgs, fts_predicate: Option<&str>) -> Result<String> {
     let mut predicates = Vec::new();
     if let Some(source) = &args.source {
         predicates.push(format!("_file_ = {}", sql_string(source)));
@@ -2719,16 +2904,17 @@ fn find_sql(args: &FindArgs) -> Result<String> {
     if let Some(step_id) = args.step_id {
         predicates.push(format!("step_id = {step_id}"));
     }
+    if let Some(fts_predicate) = fts_predicate {
+        predicates.push(format!("({fts_predicate})"));
+    }
+    let step_lookup = args.step_id.is_some() || !args.matches.is_empty();
+    predicates.extend(find_json_predicates(&args.json, step_lookup)?);
     anyhow::ensure!(
         !predicates.is_empty(),
-        "find requires an identity predicate"
+        "find requires an identity predicate, --match, or --json"
     );
-    let table = if args.step_id.is_some() {
-        "steps"
-    } else {
-        "runs"
-    };
-    let projection = if args.step_id.is_some() {
+    let table = if step_lookup { "steps" } else { "runs" };
+    let projection = if step_lookup {
         "_file_ AS source_path, document_id, run_id, session_id, step_id, \
          source AS step_source, effective_kind, timestamp"
     } else {
@@ -2746,11 +2932,7 @@ fn find_sql(args: &FindArgs) -> Result<String> {
         "SELECT {projection} FROM dataset.{table} WHERE {} \
          ORDER BY _file_, session_id{} LIMIT {limit}",
         predicates.join(" AND "),
-        if args.step_id.is_some() {
-            ", step_id"
-        } else {
-            ""
-        }
+        if step_lookup { ", step_id" } else { "" }
     ))
 }
 
@@ -2784,7 +2966,7 @@ fn validate_find_id(flag: &str, value: &str) -> Result<()> {
 }
 
 fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<()> {
-    let step_lookup = response.query.step_id.is_some();
+    let step_lookup = response.query.step_id.is_some() || !response.query.matches.is_empty();
     let mut rows = Vec::with_capacity(response.matches.len() + 1);
     if step_lookup {
         rows.push(

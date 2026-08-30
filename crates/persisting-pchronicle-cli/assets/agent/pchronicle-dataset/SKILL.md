@@ -41,6 +41,39 @@ For an explicitly requested overview, also run:
 Do not run either command merely as startup ceremony. Prefer a targeted query
 when the request names a specific entity, field, time range, or comparison.
 
+## Search with `find`
+
+Use `find` before SQL when the request is a text search, JSONB attribute lookup,
+or an identity lookup. `find` is read-only and returns source-local identities
+that can be used to narrow a follow-up query.
+
+For full-text search over Storyline step content, use one or more repeated
+`--match` options. All terms must match the same step, and the command uses the
+same indexed FTS/Jieba path as the Web explorer:
+
+```bash
+"$PCHRONICLE_BIN" find "$PCHRONICLE_DATASET_URI" \
+  --match "timeout" --match "retry" \
+  --format json --max-results 20
+```
+
+For JSONB lookup, use repeated `--json 'PATH=VALUE'` options. The JSONPath must
+start with `$`; values are exact matches across the JSONB columns of the
+selected table. JSON literals such as `true`, `42`, and `null` keep their JSON
+types; unquoted values such as `important` are treated as strings:
+
+```bash
+"$PCHRONICLE_BIN" find "$PCHRONICLE_DATASET_URI" \
+  --json '$.tags=important' --json '$.priority=2' \
+  --format json --max-results 20
+```
+
+Combine identity, text, and JSON predicates to narrow a lookup. `--match`
+selects Storyline `steps`; `--json` alone searches run-level JSONB columns,
+while `--match` together with `--json` searches step-level `metrics` and
+`extra`. Use `--source` when a source-local identity or JSON attribute is
+ambiguous. Do not use the removed `--query`, `--fts`, or `--jsonb` aliases.
+
 ## Common requests: shortest safe path
 
 Use these one-command paths before inspecting a schema. Keep the response
@@ -53,6 +86,11 @@ compact (normally at most 20 rows) and do not narrate the command itself:
   `analysis tools` with a small `--limit`.
 - “某个轨迹详情”: use `find` with the supplied `--document-id`, `--run-id`, or
   `--session-id`, then query only the returned identity.
+- “搜索消息 / 按关键词”: use repeated `find --match` options first; do not
+  scan the complete `dataset.steps` relation.
+- “按 JSONB 字段筛选”: use repeated `find --json '$.path=value'` options first,
+  then use the returned `_file_`, document, session, and step identity in SQL
+  if more detail is needed.
 - “失败 / 错误 / 延迟”: start with an aggregate or the relevant analysis
   command, then drill into matching runs or steps; never dump full messages in
   the first response.

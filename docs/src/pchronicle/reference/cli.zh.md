@@ -168,7 +168,9 @@ canonical Event Store 的 Storyline projection 状态。还可以用 `--max-file
 ### 2.6 `find`
 
 ```text
-pchronicle find [DATASET] (--run-id ID|--document-id ID|--session-id ID) [--source PATH] [--step-id N]
+pchronicle find [DATASET]
+  (--run-id ID|--document-id ID|--session-id ID|--match TEXT|--json PATH=VALUE)
+  [--source PATH] [--step-id N] [--match TEXT ...] [--json PATH=VALUE ...]
   [--format auto|table|json] [--max-results N]
 ```
 
@@ -177,10 +179,17 @@ pchronicle find @prod --session-id session-42
 pchronicle find ./dataset \
   --source nested/source.json \
   --session-id session-42 --step-id 7
+pchronicle find ./dataset \
+  --match "timeout" --match "retry" --format json
+pchronicle find ./dataset \
+  --json '$.tags=important' --json '$.priority=2' --format json
 ```
 
 外部 ID 不保证在整个 Dataset 内唯一。没有 `--source` 时，同一个 ID 可以返回多个候选；结果中的
-`source_path` 可以供下一次查询消除歧义。使用 `--format` 和 `--max-results` 控制结果形式和数量。
+`source_path` 可以供下一次查询消除歧义。`--match` 搜索 Storyline Step 内容，多个关键词必须同时
+命中同一个 Step，并使用 FTS/Jieba 索引。`--json` 按 JSONPath 对 JSONB 列做精确值匹配，多个条件
+同时生效。不要使用已移除的 `--query`、`--fts` 或 `--jsonb` 别名。使用 `--format` 和
+`--max-results` 控制结果形式和数量。
 
 ### 2.7 `query`
 

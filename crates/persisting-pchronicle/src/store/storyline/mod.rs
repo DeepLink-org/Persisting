@@ -1863,6 +1863,20 @@ pub async fn search_storyline_steps_fts(
     paths: &StorylineTablePaths,
     query: &str,
 ) -> Result<Vec<i64>> {
+    Ok(search_storyline_step_matches_fts(paths, query)
+        .await?
+        .into_iter()
+        .map(|(_, step_id)| step_id)
+        .collect())
+}
+
+/// Search normalized Storyline turns and retain the owning document id for
+/// each hit. Step ids are only unique within a document, so callers spanning
+/// multiple trajectories must keep both parts of this key.
+pub async fn search_storyline_step_matches_fts(
+    paths: &StorylineTablePaths,
+    query: &str,
+) -> Result<Vec<(String, i64)>> {
     let query = query.trim();
     anyhow::ensure!(!query.is_empty(), "Storyline FTS query must not be empty");
     ensure_default_jieba_model()?;
@@ -1882,15 +1896,26 @@ pub async fn search_storyline_steps_fts(
         .map_err(anyhow::Error::from)?;
     let mut scan = dataset.scan();
     scan.full_text_search(query).map_err(anyhow::Error::from)?;
-    scan.project(&["step_id"]).map_err(anyhow::Error::from)?;
+    scan.project(&["document_id", "step_id"])
+        .map_err(anyhow::Error::from)?;
     let batch = scan.try_into_batch().await.map_err(anyhow::Error::from)?;
+    let document_ids = batch
+        .column_by_name("document_id")
+        .context("Storyline FTS result is missing document_id")?
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .context("Storyline FTS document_id has an unexpected type")?;
     let step_ids = batch
         .column_by_name("step_id")
         .context("Storyline FTS result is missing step_id")?
         .as_any()
         .downcast_ref::<Int64Array>()
         .context("Storyline FTS step_id has an unexpected type")?;
-    Ok(step_ids.values().to_vec())
+    Ok(document_ids
+        .iter()
+        .zip(step_ids.values().iter())
+        .filter_map(|(document_id, step_id)| document_id.map(|id| (id.to_string(), *step_id)))
+        .collect())
 }
 
 /// Search Storyline steps and return the owning document ids. This is used by

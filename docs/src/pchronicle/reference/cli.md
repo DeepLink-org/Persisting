@@ -64,13 +64,21 @@ Dataset.
 ```text
 pchronicle ls [DATASET] [OPTIONS]
 pchronicle status [DATASET] [OPTIONS]
-pchronicle find [DATASET] (--run-id ID|--document-id ID|--session-id ID) [OPTIONS]
+pchronicle find [DATASET]
+  (--run-id ID|--document-id ID|--session-id ID|--match TEXT|--json PATH=VALUE) [OPTIONS]
 ```
 
 ```bash
 pchronicle ls @prod --format json
 pchronicle find @prod --session-id session-42
+pchronicle find ./dataset --match "timeout" --match "retry" --format json
+pchronicle find ./dataset --json '$.tags=important' --json '$.priority=2' --format json
 ```
+
+`--match` searches Storyline Step content with the indexed FTS/Jieba path;
+repeat it to require all terms in one Step. `--json` performs exact JSONPath
+value matching across JSONB columns; repeat it to require all predicates. Do
+not use the removed `--query`, `--fts`, or `--jsonb` aliases.
 
 ### Query
 

@@ -770,6 +770,14 @@ pub fn TrajectoryView(
     } else {
         "conversations"
     };
+    if groups.is_empty() {
+        return rsx! {
+            div { class: "pc2-empty pc2-trajectory-empty",
+                strong { "No visible {noun}" }
+                span { "No loaded {noun} match this filter." }
+            }
+        };
+    }
     let session_index = session_index_map(&turns);
     let axis_len = session_axis_len(&turns);
     let root_bars = seq_bars(&turns, &session_index, axis_len);

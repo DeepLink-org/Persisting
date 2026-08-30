@@ -15,7 +15,7 @@ use crate::copilot_sessions::{
     can_start_new_chat, delete_session, empty_thread, load_index, load_session_thread,
     new_session_id, now_millis, page_after_history_switch, persist_indexed_thread, relative_time,
     restore_for_run, save_index, session_storage_key, title_from_thread, AssistantSessionMeta,
-    BrowserStore, KvStore,
+    AssistantSessionIndex, BrowserStore, KvStore,
 };
 use crate::llm;
 use crate::llm_settings::LlmSettings;
@@ -171,6 +171,8 @@ pub fn App() -> Element {
     let mut selected_table = use_signal(String::new);
     let mut copilot_open = use_signal(|| false);
     let mut copilot_wide = use_signal(load_copilot_wide);
+    let mut assistant_index = use_signal(|| load_index(&BrowserStore));
+    let mut path_list_mode = use_signal(|| PathListMode::Flat);
     let mut analysis_session_id = use_signal(move || initial_analysis_session_id);
     let mut analysis_seed_scope = use_signal(move || initial_analysis_seed_scope);
 
@@ -208,7 +210,16 @@ pub fn App() -> Element {
     use_effect(move || {
         if analysis().is_none() {
             if let Some(run) = selected_run() {
-                load_workspace(run, analysis, turns, turn_search, detail_loading, error);
+                load_workspace(
+                    run,
+                    turn_query(),
+                    source(),
+                    analysis,
+                    turns,
+                    turn_search,
+                    detail_loading,
+                    error,
+                );
             }
         }
     });
@@ -344,9 +355,22 @@ pub fn App() -> Element {
                         let path_runs = runs().map(|page| page.path_index).unwrap_or_default();
                         let selected_path = analysis().map(|value| value.run.path).or_else(|| selected_run().map(|run| run.path)).unwrap_or_default();
                         rsx! { div { class: "pc2-detail-layout",
-                            PathExplorer { runs: path_runs, selected_path, loading: runs_loading(), filter_folders: false,
+                            PathExplorer { runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path, loading: runs_loading(),
                                 on_path: move |value| { run_path.set(value); offset.set(0); page.set("runs".into()); },
-                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); turn_search.set(TurnSearchStatus::default()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); },
+                                on_view_mode: move |mode| path_list_mode.set(mode),
+                                on_select: move |run: RunSummary| { turn_query.set(query()); selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); turn_search.set(TurnSearchStatus::default()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); },
+                                on_open_chat: move |run: RunSummary| {
+                                    turn_query.set(query());
+                                    selected_run.set(Some(run));
+                                    analysis.set(None);
+                                    turns.set(Vec::new());
+                                    turn_search.set(TurnSearchStatus::default());
+                                    selected_turn.set(None);
+                                    expanded_turn_id.set(None);
+                                    detail_mode.set("trace".into());
+                                    page.set("detail".into());
+                                    copilot_open.set(true);
+                                },
                             }
                             if let (Some(_run), Some(value)) = (selected_run(), analysis()) {
                                 RunDetailWorkspace {
@@ -466,9 +490,22 @@ pub fn App() -> Element {
                     _ => {
                         let path_runs = runs().map(|value| value.path_index).unwrap_or_default();
                         rsx! { div { class: "pc2-runs-layout",
-                        PathExplorer { runs: path_runs, selected_path: run_path(), loading: runs_loading(), filter_folders: true,
+                        PathExplorer { runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path: run_path(), loading: runs_loading(),
                             on_path: move |value| { run_path.set(value); offset.set(0); },
-                            on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); detail_mode.set("trace".into()); page.set("detail".into()); },
+                            on_view_mode: move |mode| path_list_mode.set(mode),
+                            on_select: move |run: RunSummary| { turn_query.set(query()); selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); turn_search.set(TurnSearchStatus::default()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); detail_mode.set("trace".into()); page.set("detail".into()); },
+                            on_open_chat: move |run: RunSummary| {
+                                turn_query.set(query());
+                                selected_run.set(Some(run));
+                                analysis.set(None);
+                                turns.set(Vec::new());
+                                turn_search.set(TurnSearchStatus::default());
+                                selected_turn.set(None);
+                                expanded_turn_id.set(None);
+                                detail_mode.set("trace".into());
+                                page.set("detail".into());
+                                copilot_open.set(true);
+                            },
                         }
                         RunsExplorer {
                             page: runs(),
@@ -481,6 +518,7 @@ pub fn App() -> Element {
                             file: file_prefix(),
                             datasets: catalog().map(|value| value.datasets).unwrap_or_default(),
                             dataset: dataset_filter(),
+                            chat_sessions: assistant_index().sessions.clone(),
                             on_query: move |value| {
                                 query.set(value);
                                 // A new search starts from the first page; retaining a
@@ -516,10 +554,24 @@ pub fn App() -> Element {
                                 });
                             },
                             on_page: move |value| offset.set(value),
+                            on_open_chat: move |run: RunSummary| {
+                                turn_query.set(query());
+                                selected_run.set(Some(run));
+                                analysis.set(None);
+                                turns.set(Vec::new());
+                                turn_search.set(TurnSearchStatus::default());
+                                selected_turn.set(None);
+                                expanded_turn_id.set(None);
+                                detail_mode.set("trace".into());
+                                page.set("detail".into());
+                                copilot_open.set(true);
+                            },
                             on_select: move |run: RunSummary| {
+                                turn_query.set(query());
                                 selected_run.set(Some(run.clone()));
                                 analysis.set(None);
                                 turns.set(Vec::new());
+                                turn_search.set(TurnSearchStatus::default());
                                 selected_turn.set(None);
                                 expanded_turn_id.set(None);
                                 detail_mode.set("trace".into());
@@ -532,6 +584,7 @@ pub fn App() -> Element {
             }
 
             if copilot_open() {
+                    div { class: "pc2-copilot-dismiss", aria_hidden: "true", onclick: move |_| copilot_open.set(false) }
                     AssistantPanel {
                         run: selected_run(),
                         analysis: analysis(),
@@ -544,6 +597,7 @@ pub fn App() -> Element {
                             save_copilot_wide(next);
                         },
                         on_close: move |_| copilot_open.set(false),
+                        on_sessions_changed: move |next: AssistantSessionIndex| assistant_index.set(next),
                         on_turn: move |id| {
                             if let Some(run) = selected_run() {
                                 expanded_turn_id.set(Some(id));
@@ -624,6 +678,8 @@ fn load_catalog_tree(
 
 fn load_workspace(
     run: RunSummary,
+    query: String,
+    source: String,
     mut analysis: Signal<Option<RunAnalysis>>,
     mut turns: Signal<Vec<TurnSummary>>,
     mut turn_search: Signal<TurnSearchStatus>,
@@ -635,7 +691,10 @@ fn load_workspace(
         let run = run.clone();
         async move {
             let (next_analysis, next_turns) =
-                futures_util::join!(api::run_analysis(&run), api::turns(&run, "", "all"),);
+                futures_util::join!(
+                    api::run_analysis(&run),
+                    api::turns(&run, &query, &source),
+                );
             match (next_analysis, next_turns) {
                 (Ok(next_analysis), Ok(next_turns)) => {
                     analysis.set(Some(next_analysis));
@@ -786,39 +845,44 @@ fn LoadingWorkspace(label: &'static str) -> Element {
     rsx! { div { class: "pc2-loading", span { class: "spinner" } "{label}" } }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PathListMode {
+    #[default]
+    Flat,
+    Tree,
+}
+
+fn has_chat_for_run(sessions: &[AssistantSessionMeta], run: &RunSummary) -> bool {
+    sessions.iter().any(|session| session.run.query() == run.query())
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
-struct PathTreeNode {
+struct ImportPathTreeNode {
     name: String,
-    full_path: String,
-    children: BTreeMap<String, PathTreeNode>,
+    children: BTreeMap<String, ImportPathTreeNode>,
     runs: Vec<RunSummary>,
 }
 
-fn build_path_tree(runs: &[RunSummary]) -> PathTreeNode {
-    let mut root = PathTreeNode {
-        name: "All runs".into(),
-        ..PathTreeNode::default()
-    };
+fn build_import_path_tree(runs: &[RunSummary]) -> ImportPathTreeNode {
+    let mut root = ImportPathTreeNode::default();
     for run in runs {
         let segments = run
             .path
             .split('/')
-            .filter(|value| !value.is_empty())
+            .filter(|segment| !segment.is_empty())
             .collect::<Vec<_>>();
         let mut node = &mut root;
-        let mut current = String::new();
-        for segment in segments {
-            if !current.is_empty() {
-                current.push('/');
-            }
-            current.push_str(segment);
+        for segment in if segments.is_empty() {
+            vec!["(unknown)"]
+        } else {
+            segments
+        } {
             node = node
                 .children
                 .entry(segment.into())
-                .or_insert_with(|| PathTreeNode {
+                .or_insert_with(|| ImportPathTreeNode {
                     name: segment.into(),
-                    full_path: current.clone(),
-                    ..PathTreeNode::default()
+                    ..ImportPathTreeNode::default()
                 });
         }
         node.runs.push(run.clone());
@@ -826,61 +890,149 @@ fn build_path_tree(runs: &[RunSummary]) -> PathTreeNode {
     root
 }
 
-fn subtree_run_count(node: &PathTreeNode) -> usize {
-    node.runs.len() + node.children.values().map(subtree_run_count).sum::<usize>()
+fn import_path_tree_run_count(node: &ImportPathTreeNode) -> usize {
+    node.runs.len()
+        + node
+            .children
+            .values()
+            .map(import_path_tree_run_count)
+            .sum::<usize>()
+}
+
+#[component]
+fn PathRunRow(
+    run: RunSummary,
+    name: String,
+    chat_sessions: Vec<AssistantSessionMeta>,
+    selected_path: String,
+    on_select: EventHandler<RunSummary>,
+    on_open_chat: EventHandler<RunSummary>,
+) -> Element {
+    let active = selected_path == run.path;
+    let tone = match run.status.as_str() {
+        "completed" | "ok" => "good",
+        "active" => "live",
+        "failed" | "error" => "bad",
+        _ => "",
+    };
+    let has_chat = has_chat_for_run(&chat_sessions, &run);
+    rsx! {
+        button {
+            class: if active { "pc2-path-row active" } else { "pc2-path-row" },
+            title: "{run.path}",
+            onclick: move |_| on_select.call(run.clone()),
+            span { class: "pc2-path-toggle leaf" }
+            span { class: "pc2-path-name", span { class: "pc2-path-icon run {tone}" } span { "{name}" } }
+            if has_chat { ChatMarker { run: run.clone(), on_open_chat } }
+            code { "1" }
+        }
+    }
+}
+
+#[component]
+fn ChatMarker(
+    run: RunSummary,
+    on_open_chat: EventHandler<RunSummary>,
+) -> Element {
+    let click_run = run.clone();
+    let key_run = run;
+    let marker_title = "Open Assistant chat for this run";
+    rsx! {
+        span {
+            class: "pc2-chat-dot",
+            role: "button",
+            tabindex: "0",
+            title: marker_title,
+            aria_label: marker_title,
+            onclick: move |event| {
+                event.stop_propagation();
+                on_open_chat.call(click_run.clone());
+            },
+            onkeydown: move |event| {
+                if event.key() == Key::Enter || event.key() == Key::Character(" ".to_string()) {
+                    event.stop_propagation();
+                    on_open_chat.call(key_run.clone());
+                }
+            },
+        }
+    }
 }
 
 #[component]
 fn PathExplorer(
     runs: Vec<RunSummary>,
+    chat_sessions: Vec<AssistantSessionMeta>,
+    view_mode: PathListMode,
     selected_path: String,
     loading: bool,
-    filter_folders: bool,
     on_path: EventHandler<String>,
+    on_view_mode: EventHandler<PathListMode>,
     on_select: EventHandler<RunSummary>,
+    on_open_chat: EventHandler<RunSummary>,
 ) -> Element {
-    let tree = build_path_tree(&runs);
+    let import_path_tree = build_import_path_tree(&runs);
     rsx! { aside { class: "pc2-path-explorer",
-        header { div { strong { "Run paths" } span { "Browse runs by source hierarchy" } } span { "{runs.len()}" } }
+        header {
+            div { strong { "Run paths" } span { if view_mode == PathListMode::Flat { "All runs in this dataset" } else { "Tree by import path" } } }
+            div { class: "pc2-path-view-toggle", role: "group", aria_label: "Run list view",
+                button { class: if view_mode == PathListMode::Flat { "active" } else { "" }, aria_pressed: view_mode == PathListMode::Flat, onclick: move |_| on_view_mode.call(PathListMode::Flat), "Flat" }
+                button { class: if view_mode == PathListMode::Tree { "active" } else { "" }, aria_pressed: view_mode == PathListMode::Tree, onclick: move |_| on_view_mode.call(PathListMode::Tree), "Tree" }
+            }
+            span { "{runs.len()}" }
+        }
         div { class: "pc2-path-tree",
             button { class: if selected_path.is_empty() { "pc2-path-all active" } else { "pc2-path-all" }, onclick: move |_| on_path.call(String::new()), span { class: "pc2-path-icon root", "⌂" } strong { "All runs" } code { "{runs.len()}" } }
             if loading && runs.is_empty() { div { class: "pc2-path-loading", span { class: "spinner" } "Loading paths…" } }
             else if runs.is_empty() { div { class: "pc2-path-empty", "No captured run paths." } }
-            else { for node in tree.children.into_values() { PathNode { key: "{node.full_path}", node, selected_path: selected_path.clone(), filter_folders, on_path, on_select } } }
+            else if view_mode == PathListMode::Flat {
+                for run in runs.iter() {
+                    PathRunRow { key: "flat-{run.path}", run: run.clone(), name: run.session_id.clone(), chat_sessions: chat_sessions.clone(), selected_path: selected_path.clone(), on_select, on_open_chat }
+                }
+            } else {
+                for node in import_path_tree.children.into_values() {
+                    ImportPathTreeNodeView { key: "{node.name}", node, chat_sessions: chat_sessions.clone(), selected_path: selected_path.clone(), on_select, on_open_chat }
+                }
+            }
         }
-        footer { "Folders follow agent / root / subagent / session coordinates." }
+        footer { if view_mode == PathListMode::Flat { "Showing all runs in this dataset." } else { "Tree follows the imported path." } }
     } }
 }
 
 #[component]
-fn PathNode(
-    node: PathTreeNode,
+fn ImportPathTreeNodeView(
+    node: ImportPathTreeNode,
+    chat_sessions: Vec<AssistantSessionMeta>,
     selected_path: String,
-    filter_folders: bool,
-    on_path: EventHandler<String>,
     on_select: EventHandler<RunSummary>,
+    on_open_chat: EventHandler<RunSummary>,
 ) -> Element {
-    let count = subtree_run_count(&node);
-    let is_leaf = node.children.is_empty() && node.runs.len() == 1;
-    if is_leaf {
+    let count = import_path_tree_run_count(&node);
+    if node.children.is_empty() && node.runs.len() == 1 {
         let run = node.runs[0].clone();
-        let active = selected_path == run.path;
-        let tone = match run.status.as_str() {
-            "completed" | "ok" => "good",
-            "active" => "live",
-            "failed" | "error" => "bad",
-            _ => "",
+        return rsx! {
+            PathRunRow {
+                run,
+                name: node.name,
+                chat_sessions,
+                selected_path,
+                on_select,
+                on_open_chat,
+            }
         };
-        return rsx! { button { class: if active { "pc2-path-row active" } else { "pc2-path-row" }, title: "{run.path}", onclick: move |_| on_select.call(run.clone()), span { class: "pc2-path-toggle leaf" } span { class: "pc2-path-name", span { class: "pc2-path-icon run" } span { "{node.name}" } } span { class: "pc2-path-health {tone}" } code { "1" } } };
     }
-    let folder_path = node.full_path.clone();
-    rsx! { details { open: true,
-        summary { class: if selected_path == node.full_path { "pc2-path-row branch active" } else { "pc2-path-row branch" }, span { class: "pc2-path-toggle", "›" } button { class: "pc2-path-name", onclick: move |event| { if filter_folders { event.prevent_default(); on_path.call(folder_path.clone()); } }, span { class: "pc2-path-icon folder" } span { "{node.name}" } } span {} code { "{count}" } }
-        div { class: "pc2-path-children",
-            for run in node.runs { button { class: if selected_path == run.path { "pc2-path-row active" } else { "pc2-path-row" }, onclick: move |_| on_select.call(run.clone()), span { class: "pc2-path-toggle leaf" } span { class: "pc2-path-name", span { class: "pc2-path-icon run" } span { "{run.session_id}" } } span {} code { "1" } } }
-            for child in node.children.into_values() { PathNode { key: "{child.full_path}", node: child, selected_path: selected_path.clone(), filter_folders, on_path, on_select } }
+    rsx! {
+        details { open: true,
+            summary { class: "pc2-path-row branch", span { class: "pc2-path-toggle", "›" } span { class: "pc2-path-name", span { class: "pc2-path-icon folder" } span { "{node.name}" } } span {} code { "{count}" } }
+            div { class: "pc2-path-children",
+                for run in node.runs {
+                    PathRunRow { key: "file-{run.path}", run: run.clone(), name: run.session_id.clone(), chat_sessions: chat_sessions.clone(), selected_path: selected_path.clone(), on_select, on_open_chat }
+                }
+                for child in node.children.into_values() {
+                    ImportPathTreeNodeView { key: "{child.name}", node: child, chat_sessions: chat_sessions.clone(), selected_path: selected_path.clone(), on_select, on_open_chat }
+                }
+            }
         }
-    } }
+    }
 }
 
 #[component]
@@ -889,6 +1041,7 @@ fn RunsExplorer(
     loading: bool,
     query: String,
     datasets: Vec<QueryDatasetSummary>,
+    chat_sessions: Vec<AssistantSessionMeta>,
     dataset: String,
     status: String,
     sort: String,
@@ -904,6 +1057,7 @@ fn RunsExplorer(
     on_file: EventHandler<String>,
     on_refresh: EventHandler<MouseEvent>,
     on_page: EventHandler<usize>,
+    on_open_chat: EventHandler<RunSummary>,
     on_select: EventHandler<RunSummary>,
 ) -> Element {
     let total = page.as_ref().map_or(0, |page| page.snapshot.total);
@@ -952,7 +1106,7 @@ fn RunsExplorer(
                             tr { td { colspan: "5", div { class: "pc2-empty", strong { "No matching runs" } span { "Adjust the filters or refresh the datasets." } } } }
                         } else {
                             for item in page.as_ref().unwrap().records.iter() {
-                                RunTableRow { key: "{item.run.dataset}/{item.run.file}/{item.run.session_id}", item: item.clone(), query: query.clone(), on_select }
+                                RunTableRow { key: "{item.run.dataset}/{item.run.file}/{item.run.session_id}", item: item.clone(), query: query.clone(), has_chat: has_chat_for_run(&chat_sessions, &item.run), on_select, on_open_chat }
                             }
                         }
                     }
@@ -973,6 +1127,8 @@ fn RunsExplorer(
 fn RunTableRow(
     item: RunExplorerItem,
     #[props(default)] query: String,
+    #[props(default)] has_chat: bool,
+    on_open_chat: EventHandler<RunSummary>,
     on_select: EventHandler<RunSummary>,
 ) -> Element {
     let run = item.run.clone();
@@ -981,7 +1137,7 @@ fn RunTableRow(
     let model_text = item.model.clone().unwrap_or_else(|| "unavailable".into());
     rsx! {
         tr { tabindex: "0", onclick: move |_| on_select.call(run.clone()), onkeydown: move |event| if event.key() == Key::Enter { on_select.call(keyboard_run.clone()) },
-            td { div { class: "pc2-session-cell", strong { HighlightedText { text: item.run.session_id.clone(), query: query.clone() } } span { "{item.run.row_count} captured rows" } } }
+            td { div { class: "pc2-session-cell", div { class: "pc2-session-heading", strong { HighlightedText { text: item.run.session_id.clone(), query: query.clone() } } if has_chat { ChatMarker { run: run.clone(), on_open_chat } } } span { "{item.run.row_count} captured rows" } } }
             td { div { class: "pc2-session-cell", strong { HighlightedText { text: item.run.agent_id.clone(), query: query.clone() } } span { HighlightedText { text: model_text.clone(), query: query.clone() } } } }
             td { StatusBadge { value: item.run.status.clone() } }
             td { class: "pc2-number", "{item.run.row_count}" }
@@ -1597,6 +1753,7 @@ fn AssistantPanel(
     wide: bool,
     on_toggle_wide: EventHandler<MouseEvent>,
     on_close: EventHandler<MouseEvent>,
+    on_sessions_changed: EventHandler<AssistantSessionIndex>,
     on_turn: EventHandler<i64>,
     on_open_session: EventHandler<AssistantSessionMeta>,
 ) -> Element {
@@ -1624,8 +1781,9 @@ fn AssistantPanel(
         let now = now_millis();
         let (next_index, id, next_thread) =
             restore_for_run(&BrowserStore, &current, &new_session_id(now), now);
-        index.set(next_index);
-        session_id.set(id);
+            index.set(next_index.clone());
+            on_sessions_changed.call(next_index);
+            session_id.set(id);
         thread.set(next_thread);
     });
     let focused_turn_id = selected.as_ref().map(|detail| detail.summary.id);
@@ -1725,7 +1883,8 @@ fn AssistantPanel(
                 &finished,
                 now,
             );
-            index.set(next_index);
+            index.set(next_index.clone());
+            on_sessions_changed.call(next_index);
             thread.set(finished);
             busy.set(false);
         });
@@ -1816,7 +1975,8 @@ fn AssistantPanel(
                                         let store = BrowserStore;
                                         store.remove(&session_storage_key(&delete_id));
                                         save_index(&BrowserStore, &next);
-                                        index.set(next);
+                                        index.set(next.clone());
+                                        on_sessions_changed.call(next);
                                         if session_id().as_deref() == Some(delete_id.as_str()) {
                                             if let Some(id) = fallback {
                                                 session_id.set(Some(id.clone()));
@@ -2306,14 +2466,21 @@ mod tests {
     }
 
     #[test]
-    fn path_tree_preserves_hierarchy_and_subtree_counts() {
-        let tree = build_path_tree(&[
-            run_at("agent/root/session-a"),
-            run_at("agent/root/subagents/session-b"),
-        ]);
-        let agent = tree.children.get("agent").unwrap();
-        assert_eq!(subtree_run_count(agent), 2);
-        assert!(agent.children["root"].children.contains_key("subagents"));
+    fn import_path_tree_groups_runs_by_original_path() {
+        let mut first = run_at("agent/root/session-a");
+        let mut second = run_at("agent/root/session-b");
+        let mut third = run_at("agent/root/session-c");
+        first.path = "dataset/batch/first/session-a".into();
+        second.path = "dataset/batch/first/session-b".into();
+        third.path = "dataset/batch/second/session-c".into();
+
+        let tree = build_import_path_tree(&[first, second, third]);
+        let dataset = tree.children.get("dataset").unwrap();
+        let batch = dataset.children.get("batch").unwrap();
+        assert_eq!(import_path_tree_run_count(batch), 3);
+        assert_eq!(batch.children["first"].children["session-a"].runs.len(), 1);
+        assert_eq!(batch.children["first"].children["session-b"].runs.len(), 1);
+        assert_eq!(batch.children["second"].children["session-c"].runs.len(), 1);
     }
 
     #[test]

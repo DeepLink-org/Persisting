@@ -20,6 +20,7 @@
 .pc2-chat-follow.jump:hover{background:#2563eb}
 
 /* copilot session shell — keep the original right-docked drawer */
+.pc2-copilot-dismiss{position:fixed;z-index:69;inset:0;background:transparent;cursor:default}
 .pc2-copilot-head{position:relative;gap:8px}
 .pc2-copilot-head-title{min-width:0;flex:1}
 .pc2-copilot-head-title strong{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -34,6 +35,8 @@
 .pc2-copilot-history-open strong{max-width:100%;overflow:hidden;color:#e5edf7;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
 .pc2-copilot-history-open span{color:#8291a5;font-size:9px}
 .pc2-copilot-history-delete{flex-shrink:0;width:30px;color:#94a3b8}
+
+.pc2-session-heading{display:flex;align-items:center;min-width:0}
 .pc2-composer-compact{grid-template-columns:minmax(0,1fr) 64px;padding:8px 10px 6px}
 .pc2-composer-compact textarea{min-height:44px;height:44px}
 .pc2-composer-compact button{min-height:44px;height:44px;padding:0 12px}
