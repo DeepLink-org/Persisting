@@ -6,7 +6,7 @@ Persisting 通过 Python wheel 发布，wheel 同时包含 Python 包和版本�
 
 | 安装物 | 内容 | 用途 |
 |---|---|---|
-| 宿主机 wheel | Python 包以及 `pvisor`、`pchronicle` 入口 | Python API、可控 Agent 执行与轨迹数据工作流 |
+| 宿主机 wheel | Python 包以及 `pvisor`、`ppilot`、`pchronicle` 入口 | Python API、可控 Agent 执行、Run 编排与轨迹数据工作流 |
 
 ## 环境要求
 
@@ -36,8 +36,8 @@ pip install persisting[lance]
 pip install persisting
 ```
 
-上面两种安装命令都会把版本匹配的 `pvisor` 与 `pchronicle` 入口安装到 Python 环境的
-scripts 目录。
+上面两种安装命令都会把版本匹配的 `pvisor`、`ppilot` 与 `pchronicle` 入口安装到
+Python 环境的 scripts 目录。
 
 ### Nightly wheel
 
@@ -57,8 +57,10 @@ pip install -e ".[lance]"
 
 ## CLI 组件集
 
-wheel 内是一组版本匹配的组件：单 Run 与执行环境使用 `pvisor`，Dataset 目录、SQL、分析、
-格式交换与只读服务使用 `pchronicle`。
+wheel 内是一组版本匹配的组件：单 Run 与执行环境使用 `pvisor`，成组 Run 的有界编排使用
+`ppilot`，Dataset 目录、SQL、分析、格式交换与只读服务使用 `pchronicle`。
+
+`ppilot` 也可通过 `just install-cli` 从源码安装。
 
 ### 通过 Cargo 从源码安装
 

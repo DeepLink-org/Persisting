@@ -26,6 +26,14 @@ other.
 | `pvisor` | run one existing Agent with explicit workspace and runtime controls | a Run result, private Run Bundle, and staged filesystem changes |
 | `pchronicle` | inspect or exchange Agent trajectory data | a browsable and queryable Dataset view |
 
+## Command ownership
+
+| Command | Primary responsibility |
+|---|---|
+| `pvisor` | One Run, environments, review, checkpoints, apply/drop |
+| `ppilot` | Bounded collections of Runs: planning, concurrency, recovery, sinks |
+| `pchronicle` | Dataset catalog, SQL, built-in analysis, find, import/export, read-only serving |
+
 pVisor works without pChronicle, and pChronicle can read external trajectories
 that never passed through pVisor.
 

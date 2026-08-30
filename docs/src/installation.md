@@ -8,7 +8,7 @@ durable trajectory history.
 
 | Distribution | Contents | Use case |
 |---|---|---|
-| Host wheel | Python package plus the `pvisor` and `pchronicle` entry points | Python APIs, controlled Agent execution, and trajectory data workflows |
+| Host wheel | Python package plus the `pvisor`, `ppilot`, and `pchronicle` entry points | Python APIs, controlled Agent execution, Run orchestration, and trajectory data workflows |
 
 ## Requirements
 
@@ -39,8 +39,8 @@ pip install persisting[lance]
 pip install persisting
 ```
 
-Both installation commands install the matching `pvisor` and `pchronicle`
-entry points into the Python environment's scripts directory.
+Both installation commands install the matching `pvisor`, `ppilot`, and
+`pchronicle` entry points into the Python environment's scripts directory.
 
 ### Nightly wheel
 
@@ -62,8 +62,10 @@ pip install -e ".[lance]"
 ## CLI component set
 
 The wheel bundles matched components. Use `pvisor` for one Run and its execution
-environment, and `pchronicle` for Dataset catalog, SQL, analysis, exchange, and
-read-only serving.
+environment, `ppilot` for bounded collections of Runs, and `pchronicle` for
+Dataset catalog, SQL, analysis, exchange, and read-only serving.
+
+`ppilot` is also installed from source through `just install-cli`.
 
 ### Cargo installation from source
 

@@ -24,6 +24,14 @@ Agent 做过什么所需的历史。
 | `pvisor` | 用明确的 workspace 和 runtime 控制运行一个现有 Agent | Run result、私有 Run Bundle 和 staged 文件修改 |
 | `pchronicle` | 检查或交换 Agent 轨迹数据 | 可浏览、可查询的 Dataset 视图 |
 
+## 命令分工
+
+| 命令 | 主要职责 |
+|---|---|
+| `pvisor` | 单个 Run、执行环境、审查、检查点、apply/drop |
+| `ppilot` | 成组的 Run：规划、并发、恢复、结果汇聚 |
+| `pchronicle` | Dataset 目录、SQL、内建分析、find、导入导出、只读服务 |
+
 pVisor 不依赖 pChronicle 也能独立工作；pChronicle 可以读取从未经过 pVisor 的外部轨迹。
 
 ## 工作流一：运行并审查一个 Agent
