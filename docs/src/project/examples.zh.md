@@ -24,7 +24,7 @@ just examples-ppilot
 
 | 示例 | 可复现结论 |
 |---|---|
-| `01-run` | 并发执行 `plan()` / `execute()` 并将结果写入 durable sink |
+| `01-run` | 并发执行 `plan()` / `execute()` 并将结果写入持久化 sink |
 | `02-produce` | Python planner 生成多个独立、可审查的 pVisor Run |
 
 ## pChronicle

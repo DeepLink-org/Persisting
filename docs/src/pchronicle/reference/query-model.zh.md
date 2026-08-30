@@ -23,7 +23,7 @@ DESCRIBE dataset.events;
 DESCRIBE dataset.trajectories;
 ```
 
-## Source Identity
+## Source 身份
 
 实体 ID 是 Source-local。`runs`、`steps`、`tool_calls` 与 `events` 保留 `_file_`，即
 Dataset-relative `source_path`。持久实体地址包含 Dataset URI、`_file_`、entity kind 和
@@ -101,7 +101,7 @@ JOIN dataset.steps s
 文本与 JSON 混合，以及显式 `#json.metrics(...)`，搜索 Step 级 JSONB
 （`metrics`、`extra`）。
 
-## Query 边界
+## 查询边界
 
 引擎接受单条只读 `SELECT`、`VALUES`、`DESCRIBE` 或 `EXPLAIN`，拒绝 DDL、DML、`COPY`、
 修改函数和多语句。CLI 的行数、字节、discovery 与 timeout 上限仍然生效。

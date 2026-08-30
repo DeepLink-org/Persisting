@@ -1,8 +1,10 @@
 # pChronicle design
 
 These pages explain the path from a run data source to durable, queryable
-history. Storage and API terms used below are defined in the
-[terminology guide](../reference/terminology.md).
+history. Dataset identity, Source membership, Snapshots, and the
+recorded-versus-derived distinction are in
+[Concepts](../concepts/index.md). Storage and API terms used below are defined
+in the [terminology guide](../reference/terminology.md).
 
 | Area | Document |
 | --- | --- |

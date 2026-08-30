@@ -9,7 +9,7 @@ It assumes macOS or Linux.
 The wheel installs the current Persisting command-line entry points together:
 
 ```bash
-pip install persisting
+pip install persisting[lance]
 ```
 
 To use the current nightly build instead:

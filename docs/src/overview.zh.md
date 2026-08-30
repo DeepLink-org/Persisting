@@ -58,7 +58,7 @@ pchronicle onboard
 pchronicle onboard query
 ```
 
-Walkthrough 会创建临时示例 Dataset。Dataset 可以是本地路径、对象存储 URI prefix 或配置好的
+本演练会创建临时示例 Dataset。Dataset 可以是本地路径、对象存储 URI prefix 或配置好的
 alias；其中的数据既可以由 Persisting capture，也可以来自支持的外部格式。
 
 [查看第一个 Dataset →](pchronicle/get-started.md)

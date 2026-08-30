@@ -59,4 +59,4 @@ pchronicle query ./trajectory-data \
 - [查看统一产品术语](reference/terminology.zh.md)
 - [使用 alias 并查阅完整命令行](reference/cli.md)
 - [使用 pVisor 采集新 Run](../pvisor/guides/capture.md)
-- [理解 Dataset 接口](concepts/index.md)
+- [理解 pChronicle 核心概念](concepts/index.md)

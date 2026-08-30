@@ -28,5 +28,5 @@ alias（`@name`）、Warehouse mount 名和 Directory library 名都是 locator�
 
 为保持兼容，旧 API 路径和 schema 字段可能继续使用技术名称；用户界面遵循上面的简化词表。
 
-这些词在工作流中的用法见 [Dataset 接口](../concepts/index.md) 和
+这些词在工作流中的用法见 [pChronicle 核心概念](../concepts/index.md) 和
 [发现并查询](../guides/discover-and-query.md)。

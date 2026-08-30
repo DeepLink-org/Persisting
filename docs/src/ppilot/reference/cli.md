@@ -25,6 +25,12 @@ concurrency and backpressure, writes terminal results to the durable sink, and
 uses stable task identity for resume and retry. `--check` validates the plan
 and a sample execution without running the full workload.
 
+`--results` selects the result stream on stdout: `ndjson` (one JSON object per
+completed task), `summary` (a JSON summary after the job; failed tasks also
+print NDJSON on stderr), or `quiet` (no result stream on stdout). The default
+is `ndjson`. With `--observe`, the default becomes `quiet` so progress lines
+are not drowned out; pass `--results ndjson` to keep both.
+
 ## `produce`
 
 ```bash

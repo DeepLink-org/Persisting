@@ -1,7 +1,9 @@
 # pChronicle Design
 
-这些页面解释运行数据源如何变成持久、可查询的历史。下文使用的存储和 API 术语见
-[术语指南](../reference/terminology.zh.md)。
+这些页面解释运行数据源如何变成持久、可查询的历史。Dataset 身份、Source 成员、
+Snapshot，以及记录事实与派生视图的区分见
+[核心概念](../concepts/index.md)。下文使用的存储和 API 术语见
+[术语指南](../reference/terminology.md)。
 
 | 区域 | 文档 |
 | --- | --- |

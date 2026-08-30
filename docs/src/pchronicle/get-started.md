@@ -65,4 +65,4 @@ Continue by task:
 - [Review the product terminology](reference/terminology.md)
 - [Use aliases and the complete CLI](reference/cli.md)
 - [Capture a new Run with pVisor](../pvisor/guides/capture.md)
-- [Understand the Dataset interface](concepts/index.md)
+- [Learn the pChronicle concepts](concepts/index.md)

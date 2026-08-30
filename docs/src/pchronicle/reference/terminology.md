@@ -35,6 +35,6 @@ locators. After resolution the engine only sees a path.
 Older API paths and schema fields may retain these technical names for
 compatibility. User-facing labels follow the simpler vocabulary above.
 
-See the [Dataset interface](../concepts/index.md) and
+See the [pChronicle concepts](../concepts/index.md) and
 [Discover and query](../guides/discover-and-query.md) for how these terms appear
 in workflows.

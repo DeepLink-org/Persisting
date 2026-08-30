@@ -24,6 +24,11 @@ ppilot run plan.py --pvisor-binary ./target/release/pvisor
 把终端结果写入 durable sink，并用稳定 task 身份做 resume 与 retry。`--check`
 校验 plan 和一次样例执行，而不跑完整工作负载。
 
+`--results` 选择 stdout 上的结果流：`ndjson`（每个完成的 task 一行 JSON）、
+`summary`（作业结束后输出 JSON 汇总；失败 task 还会在 stderr 打印 NDJSON）、
+或 `quiet`（stdout 不输出结果流）。默认是 `ndjson`。配合 `--observe` 时默认变为
+`quiet`，以免进度行被淹没；需要两者并存时传 `--results ndjson`。
+
 ## `produce`
 
 ```bash
@@ -52,7 +57,7 @@ def plan():
 `--cluster-network-limit` 把保守的聚合代理速率按请求的 parallelism 均分。
 它要求 Gateway capture，且不覆盖绕过显式代理的直接 socket。
 
-## Runtime ownership
+## 运行时所有权
 
 两条命令都启动进程内、作业范围的 Supervisor。pPilot 负责 planning、lease、
 重试、reconciliation 和收集。pVisor 负责 Run 执行和内嵌 Gateway。pPilot 为
