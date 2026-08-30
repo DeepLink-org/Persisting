@@ -540,6 +540,12 @@ git commit -m "docs: audit project, system-design, and RFC index pages"
 **Interfaces:**
 - Consumes: Task 2 的 `ppilot/index.md`、`ppilot/get-started.md` 英文定稿；Task 5–7 审计后的英文定稿。
 
+**反向对齐（Task 6 审计发现）**：以下 4 个页面的 `.md`（英文位）当前实为全中文内容，与 `.zh.md` 完全相同。本任务需将 `.md` **重写为地道英文**（以 `.zh.md` 为中文源，`.zh.md` 本身不动）：
+- `docs/src/pchronicle/design/catalog.md`
+- `docs/src/pchronicle/design/trajectory-storage.md`
+- `docs/src/pchronicle/design/storyline-lance.md`
+- `docs/src/pchronicle/reference/agenticmd.md`
+
 - [ ] **Step 1: 翻译 pPilot 与 pVisor 页面**
 
 翻译规范：

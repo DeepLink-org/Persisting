@@ -304,7 +304,7 @@ fn agent_skill_examples_match_the_live_cli_contract() -> Result<()> {
         }
     }
     assert!(current.is_none(), "unterminated bash block in Agent skill");
-    assert_eq!(blocks.len(), 3, "Agent skill command examples changed");
+    assert_eq!(blocks.len(), 6, "Agent skill command examples changed");
 
     let dataset = format!("{}/../../examples/data/atif", env!("CARGO_MANIFEST_DIR"));
     for block in blocks {
