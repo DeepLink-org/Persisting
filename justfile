@@ -675,6 +675,10 @@ docs-build:
 docs-links:
     cd "{{ docs_dir }}" && uv run mkdocs build --strict
 
+# Fail if a translatable English page lacks a Chinese counterpart (or vice versa).
+docs-i18n:
+    python3 "{{ repo }}/scripts/check-docs-i18n.py"
+
 # ── 数据与 fixture ───────────────────────────────────────────────────────────
 
 # 生成 search/traj 基准数据。
