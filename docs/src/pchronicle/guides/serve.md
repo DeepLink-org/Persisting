@@ -63,7 +63,7 @@ receives only that user's paths. From another terminal:
 
 ```bash
 pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
-pchronicle query @team/prod 'SELECT 1'
+pchronicle query @team/prod --sql 'SELECT 1'
 ```
 
 `@team` is a Directory locator, not a Dataset. `@team/prod` fetches a ticket and

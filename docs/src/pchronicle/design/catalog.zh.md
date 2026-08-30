@@ -4,7 +4,9 @@
 > 之后，写入与读取之间的同步协议。平台侧的名字→path 授权见
 > [RFC-0013 path Directory](../../rfcs/0013-pchronicle-warehouse-catalog.md)，不是本文。
 >
-> Dataset 命令参数见 [`pchronicle` 命令参考](../reference/cli.md)；轨迹物理格式见
+> Dataset 命令参数见 [`pchronicle` 命令参考](../reference/cli.md)；用户模型见
+> [Dataset、Source 与 Snapshot](../concepts/dataset-and-source.md)；查询工作流见
+> [发现并查询](../guides/discover-and-query.md)；轨迹物理格式见
 > [pChronicle 运行存储](trajectory-storage.md) 与
 > [Storyline 三表 Lance](storyline-lance.md)。
 
@@ -133,13 +135,9 @@ pchronicle query \
   --sql "SELECT * FROM current.runs"
 ```
 
-也可以从 TOML 读取：
-
-```toml
-[datasets]
-current = "local:///srv/pchronicle/current"
-archive = "s3://trajectory-bucket/archive"
-```
+`--mount` 与位置 Dataset 互斥。位置参数挂载为固定 schema `dataset`；只用
+`--mount` 时必须写 mount 名，没有隐式 `dataset` schema。用户配置文件（`-c`）只保存
+alias 与默认 Dataset，不提供 query 挂载表。
 
 ```bash
 pchronicle query --mount current=local:///srv/pchronicle/current \
@@ -147,16 +145,12 @@ pchronicle query --mount current=local:///srv/pchronicle/current \
   --sql "SELECT table_schema, table_name FROM information_schema.tables"
 ```
 
-位置参数、配置文件与重复 `--mount` 可以同时使用。三者中出现规范化重名时整体失败，
-不会按参数顺序覆盖。
-
 ### 4.2 默认选择规则
 
-| 输入 | 默认 Dataset | 不带 schema 的 `runs` 等表名 |
+| CLI 输入 | 默认 Dataset | 不带 schema 的 `runs` 等表名 |
 |---|---|---|
 | 有位置参数 `INPUT` | 固定为 `dataset` | 指向 `dataset.runs` 等默认 view |
-| 无位置参数且只有一个命名挂载 | 唯一挂载 | 指向该 Dataset 的默认 view |
-| 无位置参数且有多个命名挂载 | 无 | 必须写 `current.runs` 等限定名 |
+| 仅 `--mount`（一个或多个） | 无 | 必须写 `current.runs` 等限定名 |
 
 位置参数形式如下：
 
@@ -164,13 +158,8 @@ pchronicle query --mount current=local:///srv/pchronicle/current \
 pchronicle query ./capture --sql "SELECT * FROM dataset.runs"
 ```
 
-等价于把 `./capture` 挂载为 `dataset`，并查询 `dataset.runs`。它还可以追加其他挂载：
-
-```bash
-pchronicle query ./capture \
-  --mount archive=s3://trajectory-bucket/archive \
-  --sql "SELECT * FROM dataset.runs UNION ALL SELECT * FROM archive.runs"
-```
+等价于把 `./capture` 挂载为 `dataset`，并查询 `dataset.runs`。跨 Dataset 联查使用重复
+`--mount`，不要把位置 Dataset 和 `--mount` 写在同一条命令里。
 
 ## 5. 层级发现
 
@@ -232,8 +221,8 @@ Catalog 产生四个 source：
 ### 5.4 格式检测
 
 每个外围文件独立检测格式，因此同一个 Dataset 可以混合 ATIF、OpenAI messages 与 ACTF。
-位置参数配合显式 `--source` 时，该值作为默认 Dataset 的格式约束：复合 store 类型或文件
-检测结果不匹配会报错。命名 Dataset 当前使用自动检测。
+`pchronicle query` 不对 Dataset 施加格式约束。`find` 与 `export` 的 `--source` 只把查找
+收窄到一条 Dataset-relative Source path，不是格式提示。
 
 本地和远程外围文件都不会为了自动检测而在 Catalog 构建期读取内容；如果没有显式格式
 提示，`sources.format` 可以是 `NULL`。Catalog 会先冻结本地文件指纹或远程对象版本，等

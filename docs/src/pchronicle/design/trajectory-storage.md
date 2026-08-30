@@ -174,6 +174,8 @@ OpenAI msg ┘
 
 ## 8. 相关文档
 
+- [事实、视图与版本](../concepts/facts-and-projections.md)
+- [发现并查询](../guides/discover-and-query.md)
 - [Snapshot](catalog.md)
 - [AgenticMD 格式](../reference/agenticmd.md)
 - [Gateway 架构](../../pvisor/design/gateway.md)

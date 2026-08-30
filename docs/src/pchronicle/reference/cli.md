@@ -121,8 +121,9 @@ Each match includes a bounded `preview` field to make candidate selection
 possible before a follow-up query. JSON output also reports `search.mode`
 (`fts`, `json`, or `fts+json`), `search.scope` (`steps` or `runs`), and FTS
 availability/tokenizer metadata.
-The normative grammar and execution semantics are specified in
-[RFC-0012](../../rfcs/0012-pchronicle-find-query-syntax.md).
+The current grammar is documented in the [query model](query-model.md).
+[RFC-0012](../../rfcs/0012-pchronicle-find-query-syntax.md) records the accepted
+decision; where they disagree, the installed CLI wins.
 
 ### Query
 
@@ -156,7 +157,8 @@ pchronicle analysis tools @prod --format csv --limit 20
 
 ```text
 pchronicle import -f|--from SOURCE -t|--to NEW_DATASET
-  [-i|--input-format FORMAT] [-o|--output-format preserve|storyline] [OPTIONS]
+  [-i|--input-format auto|atif|actf|openai-messages|storyline|codex|claude-code]
+  [-o|--output-format preserve|storyline] [OPTIONS]
 ```
 
 ```bash
@@ -170,7 +172,8 @@ the selected operation succeeds.
 ### Export
 
 ```text
-pchronicle export -f|--from DATASET -t|--to TARGET -o|--output-format FORMAT [OPTIONS]
+pchronicle export -f|--from DATASET -t|--to TARGET
+  -o|--output-format atif|actf|openai-messages|storyline [OPTIONS]
 ```
 
 ```bash
@@ -243,3 +246,8 @@ stdout contains command results, exported content, or readiness JSON. stderr
 contains diagnostics. Stable boundary exit codes are: `0` success, `2` invalid
 input, `3` not found, `4` conflict, `5` resource limit, and `6` timeout or a
 temporarily unavailable dependency. Unclassified internal errors use `1`.
+
+Use [Discover and query](../guides/discover-and-query.md) for the locate-then-SQL
+workflow, [Import and export](../guides/exchange.md) for interchange, and
+[Serve Datasets locally](../guides/serve.md) for the read-only server. Snapshot
+construction is explained in [Snapshot design](../design/catalog.md).

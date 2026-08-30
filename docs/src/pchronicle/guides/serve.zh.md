@@ -57,7 +57,7 @@ worker 中执行，worker 只拿到该用户被授权的 path。另一终端：
 
 ```bash
 pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
-pchronicle query @team/prod 'SELECT 1'
+pchronicle query @team/prod --sql 'SELECT 1'
 ```
 
 `@team` 是 Directory locator，不是 Dataset。`@team/prod` 换票后打开票里的 `uri`（一条 path）。

@@ -1,7 +1,7 @@
 # 查看 Run Dataset
 
-pChronicle 使用同一套接口读取本地、对象存储或用户 alias 指向的 Agent 运行记录。除非显式运行带
-目标位置的 `import` 或 `export`，命令不会修改 Dataset。
+pChronicle 使用同一套接口读取本地、对象存储或用户 alias 指向的 Agent 运行记录。本页中的
+浏览、find、analysis 和 query 命令都是只读的。
 
 ## 1. 不准备数据，直接体验
 

@@ -54,11 +54,11 @@ namespace.
 | `format` | UTF-8, nullable | detected or declared representation |
 | `kind` | UTF-8, non-null | `store` or `file` |
 | `snapshot_ref` | UTF-8, nullable | generation, manifest revision, fingerprint, version, or ETag |
-| `size_bytes` | UInt64, nullable | candidate file or marker-object size |
-| `last_modified` | UTF-8, nullable | RFC 3339 timestamp when available |
 | `projection_status` | UTF-8, nullable | `fresh` or `stale` for a canonical events Source with a linked Storyline projection |
 | `projection_generation` | UTF-8, nullable | generation selected as the read acceleration projection |
 | `projection_candidates` | UInt64, non-null | number of linked projection candidates considered |
+| `size_bytes` | UInt64, nullable | candidate file or marker-object size |
+| `last_modified` | UTF-8, nullable | RFC 3339 timestamp when available |
 | `status` | UTF-8, non-null | `ready` or `error` |
 | `error` | UTF-8, nullable | sanitized discovery or resolution error |
 
@@ -66,6 +66,49 @@ namespace.
 Filtering `_file_` can prevent unrelated Sources from being opened.
 `snapshot_ref` is a display projection; Rust/API consumers use the typed
 `CatalogSourceRevision` for consistency decisions.
+
+## Find expressions
+
+`pchronicle find --match` is the current locate syntax. The installed CLI
+parser (`FindExpr`) is authoritative.
+[RFC-0012](../../rfcs/0012-pchronicle-find-query-syntax.md) records the accepted
+decision and is not a command reference.
+
+Plain terms search indexed Storyline Step content (FTS / Jieba). Scoped text
+uses `#field(term)`:
+
+| Selector | Meaning |
+| --- | --- |
+| `#content` | `message_value`, `observation`, and `prompt` |
+| `#message` | `message_value` |
+| `#user` | `message_value` where `source = 'user'` |
+| `#assistant` | `message_value` where `source = 'agent'` (`#agent` is an alias) |
+| `#system` | `prompt` and `message_value` where `source = 'system'` |
+| `#reasoning` | `reasoning_content` |
+| `#observation` | `observation` |
+| `#prompt` | `prompt` and `message_value` |
+| `#model` | `model_name` (`#model_name` is an alias) |
+| `#env` | `env` |
+| `#all` | all indexed Step text columns |
+
+`AND` / `OR` / `NOT` and parentheses combine predicates. JSONB uses
+`$.path OP value` or `#json.COLUMN("$.path") OP value`, where `OP` is
+`=`, `!=`, `>`, `>=`, `<`, or `<=`. Repeat `--match` to AND expressions.
+
+The current implementation infers `search.scope` from the expression:
+
+| Expression | `search.scope` | `search.mode` |
+| --- | --- | --- |
+| Text only | `steps` | `fts` |
+| JSON only, no Step column | `runs` | `json` |
+| `#json.metrics(...)` only | `steps` | `json` |
+| Text plus JSON | `steps` | `fts+json` |
+| Identity flags only | identity lookup | `identity` |
+
+A JSON-only expression without `#json.metrics(...)` searches run-level JSONB
+columns (`agent_extra`, `final_metrics`, `extra`, `meta`, `unknown_fields`).
+Mixed text/JSON and explicit `#json.metrics(...)` search step-level JSONB
+(`metrics`, `extra`).
 
 ## Query boundary
 

@@ -1,8 +1,8 @@
 # Explore a Run Dataset
 
 pChronicle gives you one interface for Agent runs stored locally, in
-object storage, or behind a configured alias. Commands are read-only unless you
-explicitly run `import` or `export` with a destination.
+object storage, or behind a configured alias. The inspect, find, analysis, and
+query commands in this walkthrough are read-only.
 
 ## 1. Try pChronicle without preparing data
 

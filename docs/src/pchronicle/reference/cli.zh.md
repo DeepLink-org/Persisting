@@ -213,7 +213,9 @@ JSON 表达式当前搜索 Run 级 JSONB，和文本混合时搜索 Step 级 JSO
 摘要，便于在继续查询前判断候选是否正确。
 JSON 输出还会报告 `search.mode`（`fts`、`json` 或 `fts+json`）、`search.scope`（`steps` 或 `runs`）
 以及 FTS 可用性和分词器元数据。
-规范语法和执行语义见 [RFC-0012](../../rfcs/0012-pchronicle-find-query-syntax.md)。
+当前语法见 [Query Model](query-model.md)。
+[RFC-0012](../../rfcs/0012-pchronicle-find-query-syntax.md) 是已接受的决策记录；与已安装
+CLI 不一致时以 CLI 为准。
 
 ### 2.7 `query`
 
@@ -459,3 +461,7 @@ pchronicle \
   --file checks.sql \
   --format jsonl > checks.jsonl
 ```
+
+定位后再写 SQL 见 [发现并查询](../guides/discover-and-query.md)，交换见
+[导入与导出](../guides/exchange.md)，只读服务见 [本地服务 Dataset](../guides/serve.md)。
+Snapshot 构造见 [Snapshot 设计](../design/catalog.md)。
