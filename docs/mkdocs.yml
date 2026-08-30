@@ -112,6 +112,9 @@ plugins:
             Local read-only Dataset server: 本地只读 Dataset 服务
             Local Dataset Web UI: 本地 Dataset Web UI
             Gateway forwarding, rewriting, and capture: Gateway 转发、改写与捕获
+            Orchestrate many Agent Runs: 编排多个 Agent Run
+            Orchestration architecture: 编排架构
+            pPilot CLI: pPilot CLI
             Product architecture: 产品架构
             Run storage: 运行存储
             Storyline Lance projection: Storyline Lance 投影
@@ -185,6 +188,15 @@ nav:
       - Reference:
           - Reference overview: pvisor/reference/index.md
           - pVisor CLI: pvisor/reference/cli.md
+  - pPilot:
+      - Overview: ppilot/index.md
+      - Get Started: ppilot/get-started.md
+      - Guides:
+          - Orchestrate many Agent Runs: ppilot/guides/orchestrate.md
+      - Design:
+          - Orchestration architecture: ppilot/design/orchestration.md
+      - Reference:
+          - pPilot CLI: ppilot/reference/cli.md
   - pChronicle:
       - Overview: pchronicle/index.md
       - Get Started: pchronicle/get-started.md

@@ -209,7 +209,7 @@ See [Security and evidence](security-evidence.md) for evidence levels and
 | logical runtime event and local Chronicle control protocol | `persisting-events` | [RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md) |
 | Agent execution and Effect review | pVisor | [pVisor concepts](../pvisor/concepts/index.md) and [guides](../pvisor/guides/index.md) |
 | provider and runtime mechanisms | pVisor | [pVisor design](../pvisor/design/index.md) |
-| many-Run orchestration | pPilot within pVisor | [pPilot design](../pvisor/design/orchestration.md) |
+| many-Run orchestration | pPilot within pVisor | [pPilot design](../ppilot/design/orchestration.md) |
 | Dataset, facts, and projections | pChronicle | [pChronicle concepts](../pchronicle/concepts/index.md) |
 | storage and Snapshot implementation | pChronicle | [pChronicle design](../pchronicle/design/index.md) |
 | stable command syntax and formats | each product | [pVisor reference](../pvisor/reference/index.md) and [pChronicle reference](../pchronicle/reference/index.md) |

@@ -6,7 +6,7 @@
 | **Date** | 2026-08-16 |
 | **Components** | `persisting-events` · pVisor · pPilot · pChronicle · Gateway |
 | **Amends** | [RFC-0002 Events](0002-events-format.md) · [RFC-0003 pChronicle ownership](0003-pchronicle-ownership.md) |
-| **Related** | [端到端架构](../system-design/architecture.md) · [pPilot architecture](../pvisor/design/orchestration.md) · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
+| **Related** | [端到端架构](../system-design/architecture.md) · [pPilot architecture](../ppilot/design/orchestration.md) · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
 
 ## 摘要
 

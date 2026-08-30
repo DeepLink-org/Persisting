@@ -70,5 +70,5 @@ The executable's `--help` is authoritative for flags and defaults.
 
 Use [Orchestrate many Agent Runs](../guides/orchestrate.md) for the complete
 workflow, [pPilot architecture](../design/orchestration.md) for leases and
-reconciliation, and [Run, Attempt, and Effect](../concepts/run-model.md) for the
+reconciliation, and [Run, Attempt, and Effect](../../pvisor/concepts/run-model.md) for the
 retry identity model.

@@ -192,7 +192,7 @@ Evidence 层级见[安全与 Evidence](security-evidence.md)，可迁移要求�
 | 逻辑运行事件与本地 Chronicle control 协议 | `persisting-events` | [RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md) |
 | Agent 执行与 Effect review | pVisor | [pVisor 概念](../pvisor/concepts/index.md)与[指南](../pvisor/guides/index.md) |
 | Provider 与运行时机制 | pVisor | [pVisor Design](../pvisor/design/index.md) |
-| 多 Run 编排 | pVisor 中的 pPilot | [pPilot Design](../pvisor/design/orchestration.md) |
+| 多 Run 编排 | pVisor 中的 pPilot | [pPilot Design](../ppilot/design/orchestration.md) |
 | Dataset、事实与 Projection | pChronicle | [pChronicle 概念](../pchronicle/concepts/index.md) |
 | 存储与 Snapshot 实现 | pChronicle | [pChronicle Design](../pchronicle/design/index.md) |
 | 稳定命令语法与格式 | 各产品 | [pVisor Reference](../pvisor/reference/index.md)与 [pChronicle Reference](../pchronicle/reference/index.md) |
