@@ -312,8 +312,9 @@ the VMM with namespaces and Landlock. The macOS VMM still has the invoking
 user's host permissions, so the first OCI-image version must not be treated as
 a hostile multi-tenant boundary despite the guest-kernel isolation.
 
-The four visible OverlayNet policy flags and Gateway capture automatically enable the
-proxy driver. Any `--overlayfs-base`, `--overlayfs-compose`,
+On host/container execution, the four visible OverlayNet policy flags and
+Gateway capture automatically enable the proxy driver. Any `--overlayfs-base`,
+`--overlayfs-compose`,
 `--overlayfs-stage`, `--overlayfs-backend`, or `--overlayfs-commit` option
 automatically enables OverlayFS; no separate mode switch exists. The base
 defaults to the workspace, and the stage defaults to the generated Run

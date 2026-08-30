@@ -15,10 +15,10 @@ and interpret guarantees with
     The Virtualization.framework backend in section 2.5, LiteBox VFS in
     section 3, the Docker production profile in section 4.2, and the
     Firecracker architecture in section 5 are targets, not implemented
-    backends. Seccomp, complete resource enforcement, and other statements
-    using "should", "must", "proposed", "intended", or "target" likewise
-    describe acceptance criteria or roadmap work unless explicitly marked as
-    current implementation.
+    backends. Within the Linux and macOS `--safe` current-implementation
+    sections identified above, normative language describes present behavior.
+    Outside those sections, statements using "should", "must", "proposed",
+    "intended", or "target" describe acceptance criteria or roadmap work.
 
 pVisor needs more than one isolation backend. A local coding Agent values fast
 startup and an exact view of the developer's workspace; an untrusted tenant
