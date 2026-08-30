@@ -702,6 +702,40 @@ git commit -m "docs: add i18n coverage check for documentation site"
 
 ---
 
+### Task 8b: 叙事对齐（宣发主角决策后的入口层修订）
+
+**背景**：用户在执行期间确认了宣发主角为**链路**——"从执行到可查询历史的完整基础设施"。叙事原则（来自用户提供的分析）：pVisor 对外一句话定位收敛为"产生可持久化、可审查事实的执行器"；不并列多个旗号；强调 run → review/apply → capture → 可查询 Dataset 的贯通路径，同时保留"两者可独立使用"的灵活性说明。
+
+**Files:**
+- Modify: `README.md`、`docs/src/overview.md(.zh.md)`、`docs/overrides/home.html`
+
+- [ ] **Step 1: README 叙事调整**
+
+保持 uv/Ruff 式简洁，仅调整叙事层：
+- 开篇定位段：从"two commands"并列改为链路叙事——pVisor 让 Agent 执行产生可审查的事实（staged Effects、执行记录），pChronicle 让这些事实成为可查询的历史；两者各自独立可用，连起来构成从执行到查询的完整路径；
+- 两个快速上手小节保留，在 pChronicle 小节末尾或其后增加一行贯通提示（capture 配置后 pVisor Run 事件可进入 pChronicle Dataset，链向 `pvisor/guides/capture/`）；
+- 不重排成熟度表、不动 benchmark 标记块。
+
+- [ ] **Step 2: overview.md 叙事调整**
+
+- "Optional integration" 一节升级表述：从"可选集成"改为"贯通路径"（the throughline），作为页面叙事收束而非附属说明；"两者独立可用"保留为灵活性说明而非开场主张；
+- 中英同步。
+
+- [ ] **Step 3: home.html hero 检查**
+
+hero 已有 "One persistence story, two ways to start" 与 "Composable, not a mandatory pipeline" 版块——按链路主角口径审视："Composable, not a mandatory pipeline" 的措辞强调"非强制流水线"，与链路主角叙事张力过大时，调整为"独立可用，连通更强"类表述（保持事实准确：两者确实可独立使用）。中英同步。
+
+- [ ] **Step 4: 验证 + Commit**
+
+Run: `just docs-build && just docs-links`
+
+```bash
+git add README.md docs/src/overview.md docs/src/overview.zh.md docs/overrides/home.html
+git commit -m "docs: align entry narrative on the execution-to-history throughline"
+```
+
+---
+
 ## Self-Review 记录
 
 - **Spec 覆盖**：规格第 3–8 节分别映射到 Task 3、1/2/4、5–7、8、9、10；规格第 9 节实施顺序与 Task 1–10 顺序一致。无遗漏。

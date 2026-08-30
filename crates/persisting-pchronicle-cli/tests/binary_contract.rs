@@ -9,7 +9,7 @@ use std::os::fd::FromRawFd;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Stdio;
 
@@ -289,42 +289,43 @@ fn successful_query_keeps_machine_output_on_stdout() -> Result<()> {
 #[test]
 fn agent_skill_examples_match_the_live_cli_contract() -> Result<()> {
     const SKILL: &str = include_str!("../assets/agent/pchronicle-dataset/SKILL.md");
-
-    let mut blocks = Vec::new();
-    let mut current = None::<String>;
-    for line in SKILL.lines() {
-        match (current.as_mut(), line) {
-            (None, "```bash") => current = Some(String::new()),
-            (Some(_), "```") => blocks.push(current.take().expect("bash block is active")),
-            (Some(block), line) => {
-                block.push_str(line);
-                block.push('\n');
-            }
-            (None, _) => {}
-        }
+    let blocks = skill_bash_blocks(SKILL)?;
+    assert!(
+        !blocks.is_empty(),
+        "Agent skill must include at least one executable bash example"
+    );
+    for block in &blocks {
+        assert!(
+            block.contains("$PCHRONICLE_BIN"),
+            "Agent skill bash example must invoke PCHRONICLE_BIN:\n{block}"
+        );
     }
-    assert!(current.is_none(), "unterminated bash block in Agent skill");
-    assert_eq!(blocks.len(), 6, "Agent skill command examples changed");
 
     let atif = format!("{}/../../examples/data/atif", env!("CARGO_MANIFEST_DIR"));
-    let temp = tempfile::tempdir()?;
-    let dataset = temp.path().join("dataset");
-    let imported = Command::new(env!("CARGO_BIN_EXE_pchronicle"))
-        .args([
-            "import",
-            "--from",
-            &atif,
-            "--output",
-            dataset.to_str().context("temporary Dataset path")?,
-            "--output-format",
-            "storyline",
-        ])
-        .output()?;
-    assert!(
-        imported.status.success(),
-        "import example Dataset for Agent skill examples:\n{}",
-        String::from_utf8_lossy(&imported.stderr)
-    );
+    let imported_store;
+    let dataset = if blocks.iter().any(|block| skill_example_needs_storyline(block)) {
+        imported_store = tempfile::tempdir()?;
+        let dataset = imported_store.path().join("dataset");
+        let imported = Command::new(env!("CARGO_BIN_EXE_pchronicle"))
+            .args([
+                "import",
+                "--from",
+                &atif,
+                "--output",
+                dataset.to_str().context("temporary Dataset path")?,
+                "--output-format",
+                "storyline",
+            ])
+            .output()?;
+        assert!(
+            imported.status.success(),
+            "import example Dataset for Agent skill examples:\n{}",
+            String::from_utf8_lossy(&imported.stderr)
+        );
+        dataset
+    } else {
+        PathBuf::from(atif)
+    };
 
     for block in blocks {
         let output = Command::new("/bin/sh")
@@ -339,6 +340,34 @@ fn agent_skill_examples_match_the_live_cli_contract() -> Result<()> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn skill_bash_blocks_are_discovered_without_a_fixed_count() -> Result<()> {
+    let skill = "\
+intro
+```bash
+\"$PCHRONICLE_BIN\" status \"$PCHRONICLE_DATASET_URI\"
+```
+
+```sql
+SELECT 1
+```
+
+```bash
+\"$PCHRONICLE_BIN\" find \"$PCHRONICLE_DATASET_URI\" --match timeout
+```
+";
+    let blocks = skill_bash_blocks(skill)?;
+    assert_eq!(
+        blocks.len(),
+        2,
+        "sql fences must not be treated as executable skill examples"
+    );
+    assert!(!skill_example_needs_storyline(&blocks[0]));
+    assert!(skill_example_needs_storyline(&blocks[1]));
     Ok(())
 }
 
@@ -953,4 +982,28 @@ printf '%s\n' fake-agent-ok
 #[cfg(unix)]
 fn read_record(record: &Path, name: &str) -> Result<String> {
     Ok(fs::read_to_string(record.join(name))?.trim_end().to_owned())
+}
+
+#[cfg(unix)]
+fn skill_bash_blocks(skill: &str) -> Result<Vec<String>> {
+    let mut blocks = Vec::new();
+    let mut current = None::<String>;
+    for line in skill.lines() {
+        match (current.as_mut(), line.trim()) {
+            (None, "```bash") => current = Some(String::new()),
+            (Some(_), "```") => blocks.push(current.take().expect("bash block is active")),
+            (Some(block), _) => {
+                block.push_str(line);
+                block.push('\n');
+            }
+            (None, _) => {}
+        }
+    }
+    anyhow::ensure!(current.is_none(), "unterminated bash block in Agent skill");
+    Ok(blocks)
+}
+
+#[cfg(unix)]
+fn skill_example_needs_storyline(block: &str) -> bool {
+    block.split_whitespace().any(|token| token == "find")
 }
