@@ -77,7 +77,7 @@ pvisor env delete dev --force
 Overlay generation。命令取得环境 lease 后会重新读取 generation，避免用 reset 前的
 metadata 覆盖新 stage。
 
-## 回放一条 Agent 轨迹
+## 回放一条 Agent 轨迹 {#replay-an-agent-trajectory}
 
 `pvisor replay` 假定调用方已经正常创建了新 sandbox。它通过 `after_step`
 回放完整 tool batch，用新鲜 observation 重建所选 Agent 原生上下文，然后
