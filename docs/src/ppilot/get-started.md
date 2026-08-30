@@ -5,15 +5,14 @@ executed by multiple workers, with terminal results written to a durable sink.
 
 ## Install
 
-pPilot ships in the same component set as `pvisor` and `pchronicle`. From a
-source checkout:
+`ppilot` ships in the same Python wheel as `pvisor` and `pchronicle`:
 
 ```bash
-git clone https://github.com/DeepLink-org/Persisting.git
-cd Persisting
-just install-cli
+pip install persisting[lance]
 ppilot --version
 ```
+
+From a source checkout, `just install-cli` installs the same component set.
 
 ## Define the work
 
