@@ -18,6 +18,12 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::Command;
 
+/// Serve prints readiness only after automatic Storyline projection converges,
+/// which builds FTS indexes. Ten seconds is enough locally, but Linux CI
+/// shards run hundreds of tests in parallel and the same projection can exceed
+/// that budget.
+const SERVE_PROJECTION_TIMEOUT: Duration = Duration::from_secs(60);
+
 async fn wait_until<F, Fut>(timeout: Duration, mut condition: F) -> Result<()>
 where
     F: FnMut() -> Fut,
@@ -34,6 +40,19 @@ where
     .await
     .context("timed out waiting for pChronicle state")??;
     Ok(())
+}
+
+async fn read_serve_ready<R>(stdout: &mut BufReader<R>) -> Result<ChronicleServeReady>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut ready_line = String::new();
+    let bytes = tokio::time::timeout(SERVE_PROJECTION_TIMEOUT, stdout.read_line(&mut ready_line))
+        .await
+        .context("serve readiness timeout")??;
+    anyhow::ensure!(bytes > 0, "serve exited before writing readiness");
+    serde_json::from_str(&ready_line)
+        .with_context(|| format!("decode serve readiness: {ready_line}"))
 }
 
 async fn append_note(
@@ -139,9 +158,7 @@ async fn serve_control_only_advertises_no_warehouse_and_accepts_ping() -> Result
         .kill_on_drop(true)
         .spawn()?;
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut ready_line = String::new();
-    assert!(stdout.read_line(&mut ready_line).await? > 0);
-    let ready: ChronicleServeReady = serde_json::from_str(&ready_line)?;
+    let ready = read_serve_ready(&mut stdout).await?;
     assert_eq!(ready.version, CHRONICLE_SERVE_READY_VERSION);
     assert!(ready.warehouse_endpoint.is_none());
     assert!(ready.gateway_endpoint.is_none());
@@ -191,11 +208,7 @@ async fn serve_ingest_gateway_only_advertises_no_warehouse_or_control() -> Resul
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
-    let mut ready_line = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut ready_line)
-        .await?;
-    let ready: ChronicleServeReady = serde_json::from_str(&ready_line)?;
+    let ready = read_serve_ready(&mut BufReader::new(child.stdout.take().unwrap())).await?;
     assert!(ready.warehouse_endpoint.is_none());
     assert!(ready.control.is_none());
     assert!(ready.gateway_endpoint.is_some());
@@ -221,11 +234,7 @@ async fn serve_can_host_warehouse_and_control_together() -> Result<()> {
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
-    let mut ready_line = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut ready_line)
-        .await?;
-    let ready: ChronicleServeReady = serde_json::from_str(&ready_line)?;
+    let ready = read_serve_ready(&mut BufReader::new(child.stdout.take().unwrap())).await?;
     assert!(ready.warehouse_endpoint.is_some());
     assert!(ready.gateway_endpoint.is_none());
     assert!(ready.gateway_admin_endpoint.is_none());
@@ -327,11 +336,7 @@ async fn serve_readiness_waits_for_projection_and_runtime_discovers_control_appe
         .kill_on_drop(true)
         .spawn()?;
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut ready_line = String::new();
-    tokio::time::timeout(Duration::from_secs(10), stdout.read_line(&mut ready_line))
-        .await
-        .context("serve readiness timeout")??;
-    let ready: ChronicleServeReady = serde_json::from_str(&ready_line)?;
+    let ready = read_serve_ready(&mut stdout).await?;
     let initial = target_for(&initial_source).await?;
     assert_eq!(
         inspect_automatic_storyline_projection(&initial)
@@ -375,7 +380,7 @@ async fn serve_readiness_waits_for_projection_and_runtime_discovers_control_appe
         ChronicleControlResponse::TrajectoryAppend(_)
     ));
     let runtime_source = root.path().join("agent/runtime/events.lance");
-    wait_until(Duration::from_secs(10), || {
+    wait_until(SERVE_PROJECTION_TIMEOUT, || {
         let runtime_source = runtime_source.clone();
         async move {
             let Ok(target) = target_for(&runtime_source).await else {
@@ -426,7 +431,7 @@ async fn serve_startup_foreign_destination_exits_without_readiness_or_mutation()
         .spawn()?;
     let mut ready_line = String::new();
     let bytes = tokio::time::timeout(
-        Duration::from_secs(10),
+        SERVE_PROJECTION_TIMEOUT,
         BufReader::new(child.stdout.take().unwrap()).read_line(&mut ready_line),
     )
     .await
@@ -458,14 +463,8 @@ async fn two_serve_processes_accept_one_fresh_projection_winner() -> Result<()> 
         children.push(child);
     }
     for child in &mut children {
-        let mut ready_line = String::new();
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            BufReader::new(child.stdout.take().unwrap()).read_line(&mut ready_line),
-        )
-        .await
-        .context("concurrent serve readiness timeout")??;
-        let ready: ChronicleServeReady = serde_json::from_str(&ready_line)?;
+        let ready =
+            read_serve_ready(&mut BufReader::new(child.stdout.take().unwrap())).await?;
         assert!(ready.control.is_some());
     }
     let target = target_for(&source).await?;
@@ -494,13 +493,7 @@ async fn runtime_projection_failure_does_not_stop_control() -> Result<()> {
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
-    let mut ready_line = String::new();
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        BufReader::new(child.stdout.take().unwrap()).read_line(&mut ready_line),
-    )
-    .await??;
-    let ready: ChronicleServeReady = serde_json::from_str(&ready_line)?;
+    let ready = read_serve_ready(&mut BufReader::new(child.stdout.take().unwrap())).await?;
     let control = ready.control.context("serve readiness omitted Control")?;
 
     let foreign = root.path().join("agent/bad/storyline");
@@ -546,7 +539,7 @@ async fn runtime_projection_failure_does_not_stop_control() -> Result<()> {
     ));
 
     let mut stderr = BufReader::new(child.stderr.take().unwrap()).lines();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(SERVE_PROJECTION_TIMEOUT, async {
         while let Some(line) = stderr.next_line().await? {
             if line.contains("projection source=agent/bad/events.lance") {
                 return Ok::<(), anyhow::Error>(());
@@ -571,7 +564,7 @@ async fn runtime_projection_failure_does_not_stop_control() -> Result<()> {
         ChronicleControlResponse::TrajectoryAppend(_)
     ));
     let healthy = root.path().join("agent/healthy/events.lance");
-    wait_until(Duration::from_secs(10), || {
+    wait_until(SERVE_PROJECTION_TIMEOUT, || {
         let healthy = healthy.clone();
         async move {
             let Ok(target) = target_for(&healthy).await else {
@@ -604,13 +597,7 @@ async fn warehouse_catalog_refreshes_after_control_append_projection() -> Result
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
-    let mut ready_line = String::new();
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        BufReader::new(child.stdout.take().unwrap()).read_line(&mut ready_line),
-    )
-    .await??;
-    let ready: ChronicleServeReady = serde_json::from_str(&ready_line)?;
+    let ready = read_serve_ready(&mut BufReader::new(child.stdout.take().unwrap())).await?;
     let control = ready.control.context("serve readiness omitted Control")?;
     let warehouse = ready
         .warehouse_endpoint
@@ -656,7 +643,7 @@ async fn warehouse_catalog_refreshes_after_control_append_projection() -> Result
         .await?,
         ChronicleControlResponse::TrajectoryAppend(_)
     ));
-    wait_until(Duration::from_secs(10), || {
+    wait_until(SERVE_PROJECTION_TIMEOUT, || {
         let client = client.clone();
         let catalog_url = catalog_url.clone();
         let initial_snapshot = initial_snapshot.clone();
