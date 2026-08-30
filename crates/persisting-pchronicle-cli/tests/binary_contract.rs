@@ -492,7 +492,7 @@ fn agent_launches_codex_and_claude_with_normalized_context() -> Result<()> {
         assert!(stderr.contains(&format!("target={target}")), "{stderr}");
         assert!(stderr.contains(&format!("launching {target}")), "{stderr}");
         assert!(
-            stderr.contains("bootstrap=status question=provided"),
+            stderr.contains("bootstrap=deferred question=provided"),
             "{stderr}"
         );
         assert!(
@@ -531,7 +531,7 @@ fn agent_launches_codex_and_claude_with_normalized_context() -> Result<()> {
         let args = fs::read_to_string(record.join("args"))?;
         assert!(args.contains(question), "{args}");
         assert!(
-            args.contains(r#"{"run_status":true,"run_overview":false}"#),
+            args.contains(r#"{"run_status":false,"run_overview":false}"#),
             "{args}"
         );
         match target {
