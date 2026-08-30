@@ -78,6 +78,21 @@ and arbitrary filesystem access are not exposed through the API. Refreshes
 replace the readable view only after the replacement is ready; a failed refresh
 keeps the previous view available.
 
+## Logs and failed requests
+
+`pchronicle serve` writes Warehouse request logs to stderr at `--log-level`
+(default `info`), tracing target `pchronicle.serve`. Startup logs the listen
+address, Dataset names, and catalog snapshot. Each `/api` request logs method,
+path, status, elapsed time, and a truncated query string. Query and compile
+handlers also log truncated SQL.
+
+Failed responses include `code`, `message`, and `request_id`. The Web banner
+shows the same `request_id`. Internal failures redact details in JSON; the
+stderr ERROR line has `root_cause` and `chain` for that id.
+
+`--log-level error` keeps only internal failures. `--log-level` does not read
+`RUST_LOG`.
+
 For Gateway behavior, continue with
 [Gateway forwarding, rewriting, and capture](serve-gateway.md). For exact
 flags, see the [`pchronicle` CLI reference](../reference/cli.md). Internal

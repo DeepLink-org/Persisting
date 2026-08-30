@@ -242,14 +242,22 @@ pub struct CompileFailure {
     pub field: Option<String>,
     #[serde(default)]
     pub engine_detail: Option<String>,
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 impl CompileFailure {
     pub fn summary(&self) -> String {
-        match self.field.as_deref() {
+        let mut text = match self.field.as_deref() {
             Some(field) => format!("{}: {}", field, self.message),
             None => self.message.clone(),
+        };
+        if let Some(id) = &self.request_id {
+            text.push_str(" [request_id=");
+            text.push_str(id);
+            text.push(']');
         }
+        text
     }
 }
 

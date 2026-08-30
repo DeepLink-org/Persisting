@@ -18,7 +18,9 @@ pchronicle [-c FILE] [--log-level error|warn|info|debug] <COMMAND> ...
 ```
 
 `-c, --config` selects the user configuration file. `--log-level` controls
-stderr diagnostics without changing stdout results or exit status.
+stderr diagnostics without changing stdout results or exit status. For
+`pchronicle serve`, the same flag also filters Warehouse request tracing
+(`pchronicle.serve`).
 
 ## Commands
 

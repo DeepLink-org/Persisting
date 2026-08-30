@@ -75,7 +75,7 @@ pchronicle [-c FILE] [--log-level LEVEL] <COMMAND> ...
 | 参数 | 默认值 | 用途 |
 |---|---:|---|
 | `-c, --config FILE` | 平台配置目录 | 使用另一份用户配置文件 |
-| `--log-level error|warn|info|debug` | `info` | 控制 stderr 诊断详细度 |
+| `--log-level error|warn|info|debug` | `info` | 控制 stderr 诊断详细度；`serve` 同时用它过滤 Warehouse tracing（`pchronicle.serve`） |
 | `-h, --help` | — | 查看当前层级帮助 |
 | `-V, --version` | — | 查看版本 |
 

@@ -538,15 +538,19 @@
 .pc2-code-token.punctuation { color: #cbd5e1; }
 
 .pc2-agenticmd-xml {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
+  display: block;
   padding: 8px 10px;
   border: 1px solid #e9d5ff;
   border-radius: 7px;
   background: #faf5ff;
   color: #581c87;
-  font-size: 10px;
+  font-size: 11px;
+}
+
+.pc2-agenticmd-xml-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .pc2-agenticmd-xml-tag {
@@ -557,11 +561,31 @@
   font: 800 9px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
-.pc2-agenticmd-xml code {
-  overflow: hidden;
+.pc2-agenticmd-xml-close {
+  color: #a855f7;
+  font: 600 10px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.pc2-agenticmd-xml-value {
+  display: block;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
   color: #6b21a8;
-  text-overflow: ellipsis;
+  font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   white-space: pre-wrap;
+}
+
+.pc2-agenticmd-xml-body {
+  display: grid;
+  gap: 6px;
+  margin-top: 7px;
+  padding-left: 12px;
+  border-left: 2px solid #e9d5ff;
+}
+
+.pc2-agenticmd-xml-body .pc2-agenticmd-xml {
+  padding: 6px 8px;
+  background: #fdfaff;
 }
 
 .pc2-agenticmd-tool-block {

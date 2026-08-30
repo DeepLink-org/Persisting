@@ -144,22 +144,18 @@ fn normalized_json_comparison(
         return None;
     };
     let (function_name, value) = if function.name() == "json_extract" {
-        let ScalarValue::Utf8(Some(encoded))
+        let (ScalarValue::Utf8(Some(encoded))
         | ScalarValue::Utf8View(Some(encoded))
-        | ScalarValue::LargeUtf8(Some(encoded)) = value
+        | ScalarValue::LargeUtf8(Some(encoded))) = value
         else {
             return None;
         };
         match serde_json::from_str::<serde_json::Value>(encoded).ok()? {
-            serde_json::Value::String(value) => {
-                ("json_get_string", ScalarValue::Utf8(Some(value)))
-            }
+            serde_json::Value::String(value) => ("json_get_string", ScalarValue::Utf8(Some(value))),
             serde_json::Value::Number(value) => {
                 ("json_get_int", ScalarValue::Int64(Some(value.as_i64()?)))
             }
-            serde_json::Value::Bool(value) => {
-                ("json_get_bool", ScalarValue::Boolean(Some(value)))
-            }
+            serde_json::Value::Bool(value) => ("json_get_bool", ScalarValue::Boolean(Some(value))),
             _ => return None,
         }
     } else {
@@ -185,8 +181,7 @@ fn normalized_json_comparison(
         return Some(vec![predicate]);
     }
     if matches!(format, DocumentFormat::Atif | DocumentFormat::Storyline)
-        && let Some(predicates) =
-            normalized_step_predicates(function_name, &segments, op, &value)
+        && let Some(predicates) = normalized_step_predicates(function_name, &segments, op, &value)
     {
         return Some(predicates);
     }
@@ -511,6 +506,23 @@ impl TableProvider for FileProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::logical_expr::ScalarUDF;
+    use datafusion::logical_expr::expr::ScalarFunction;
+    use lance_datafusion::udf::json::{json_extract_udf, json_get_string_udf};
+
+    fn json_call(function: ScalarUDF, path: &str) -> Expr {
+        Expr::ScalarFunction(ScalarFunction {
+            func: Arc::new(function),
+            args: vec![
+                Expr::Column(Column::new_unqualified("data")),
+                Expr::Literal(ScalarValue::Utf8(Some(path.to_owned())), None),
+            ],
+        })
+    }
+
+    fn string_literal(value: &str) -> Expr {
+        Expr::Literal(ScalarValue::Utf8(Some(value.to_owned())), None)
+    }
 
     #[test]
     fn virtual_table_names_use_query_friendly_aliases() {
@@ -518,5 +530,105 @@ mod tests {
         assert_eq!(table_name(DocumentFormat::AgenticMd), Some("markdown"));
         assert_eq!(table_name(DocumentFormat::ClaudeCode), Some("claude"));
         assert_eq!(table_name(DocumentFormat::Atif), Some("atif"));
+    }
+
+    #[test]
+    fn root_json_predicate_routes_to_runs() {
+        let filter = binary_expr(
+            json_call(json_get_string_udf(), "session_id"),
+            Operator::Eq,
+            string_literal("session-1"),
+        );
+        let predicates = normalized_json_predicates(DocumentFormat::Atif, &filter);
+
+        assert_eq!(predicates.len(), 1);
+        assert_eq!(predicates[0].table, NormalizedVirtualTable::Runs);
+        assert!(predicates[0].filter.to_string().contains("session_id"));
+    }
+
+    #[test]
+    fn nested_tool_json_predicate_routes_to_step_and_tool_call_tables() {
+        let filter = binary_expr(
+            json_call(json_extract_udf(), "$.steps[4].tool_calls[0].function_name"),
+            Operator::Eq,
+            string_literal("\"knowledge_search\""),
+        );
+        let predicates = normalized_json_predicates(DocumentFormat::Atif, &filter);
+
+        assert_eq!(predicates.len(), 2);
+        assert_eq!(predicates[0].table, NormalizedVirtualTable::Steps);
+        assert!(predicates[0].filter.to_string().contains("turn_ordinal"));
+        assert_eq!(predicates[1].table, NormalizedVirtualTable::ToolCalls);
+        let tool_filter = predicates[1].filter.to_string();
+        assert!(tool_filter.contains("call_index"));
+        assert!(tool_filter.contains("function_name"));
+    }
+
+    #[test]
+    fn nested_step_scalar_predicates_route_to_steps() {
+        let source_filter = binary_expr(
+            json_call(json_extract_udf(), "$.steps[4].source"),
+            Operator::Eq,
+            string_literal("\"agent\""),
+        );
+        let id_filter = binary_expr(
+            json_call(json_extract_udf(), "$.steps[4].step_id"),
+            Operator::Eq,
+            string_literal("5"),
+        );
+        let copied_filter = binary_expr(
+            json_call(json_extract_udf(), "$.steps[4].is_copied_context"),
+            Operator::Eq,
+            string_literal("false"),
+        );
+
+        for filter in [source_filter, id_filter, copied_filter] {
+            let predicates = normalized_json_predicates(DocumentFormat::Storyline, &filter);
+            assert_eq!(predicates.len(), 1);
+            assert_eq!(predicates[0].table, NormalizedVirtualTable::Steps);
+            assert!(predicates[0].filter.to_string().contains("turn_ordinal"));
+        }
+    }
+
+    #[test]
+    fn reversed_root_comparison_is_normalized() {
+        let filter = binary_expr(
+            string_literal("session-1"),
+            Operator::Eq,
+            json_call(json_get_string_udf(), "session_id"),
+        );
+        let predicates = normalized_json_predicates(DocumentFormat::Atif, &filter);
+
+        assert_eq!(predicates.len(), 1);
+        assert_eq!(predicates[0].table, NormalizedVirtualTable::Runs);
+    }
+
+    #[test]
+    fn or_predicate_is_left_for_exact_json_evaluation() {
+        let left = binary_expr(
+            json_call(json_get_string_udf(), "session_id"),
+            Operator::Eq,
+            string_literal("session-1"),
+        );
+        let right = binary_expr(
+            json_call(json_get_string_udf(), "session_id"),
+            Operator::Eq,
+            string_literal("session-2"),
+        );
+        let filter = binary_expr(left, Operator::Or, right);
+
+        assert!(normalized_json_predicates(DocumentFormat::Atif, &filter).is_empty());
+    }
+
+    #[test]
+    fn nested_predicates_are_not_pushed_for_non_row_formats() {
+        let filter = binary_expr(
+            json_call(json_extract_udf(), "$.steps[4].source"),
+            Operator::Eq,
+            string_literal("\"agent\""),
+        );
+
+        assert!(normalized_json_predicates(DocumentFormat::Codex, &filter).is_empty());
+        assert!(normalized_json_predicates(DocumentFormat::ClaudeCode, &filter).is_empty());
     }
 }

@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agenticmd_view::AgenticMdRenderer;
+use crate::agenticmd_view::{AgenticMdRenderer, compact_metric_value, metrics_are_renderable};
 use crate::chat_view::{
     chat_row_visible, group_chats, prompt_turn, source_class, step_row_visible, TraceCard,
 };
@@ -1104,10 +1104,11 @@ fn InlineTurnDetail(
                 calls: native_tool_calls
                     .into_iter()
                     .map(|call| WireToolCall {
-                    id: Some(call.tool_call_id),
-                    name: call.function_name,
-                    arguments: call.arguments,
-                })
+                        id: Some(call.tool_call_id),
+                        name: call.function_name,
+                        arguments: call.arguments,
+                        result: call.result,
+                    })
                 .collect()
             }
         }
@@ -1139,7 +1140,13 @@ fn InlineTurnDetail(
         if let Some(extra) = value.turn.extra.clone() {
             InlineSection { title: "Extra", JsonValue { value: extra } }
         }
-        if let Some(metrics) = value.turn.metrics.clone() {
+        if let Some(metrics) = value
+            .turn
+            .metrics
+            .as_ref()
+            .and_then(compact_metric_value)
+            .filter(metrics_are_renderable)
+        {
             InlineSection { title: "Metrics", JsonValue { value: metrics } }
         }
     }
@@ -1311,7 +1318,9 @@ pub(crate) fn ToolCallCards(calls: Vec<WireToolCall>, #[props(default)] observat
             for (index, call) in calls.into_iter().enumerate() {
                 {
                     let tone = tool_type_tone(&call.name);
-                    let linked_observation = observation_for_call(observation.as_ref(), call.id.as_deref(), index);
+                    let linked_observation = call.result.as_ref().or_else(|| {
+                        observation_for_call(observation.as_ref(), call.id.as_deref(), index)
+                    });
                     rsx! { div { class: "pc2-tool-call-card pc2-tool-tone-{tone}",
                     div { class: "pc2-tool-call-header",
                         div { class: "pc2-tool-call-head-left",
@@ -1454,7 +1463,12 @@ fn ObservationChips(value: Value, #[props(default = "generic".to_string())] tone
 }
 
 fn observation_output(value: &Value) -> Option<String> {
-    let object = value.as_object()?;
+    if let Value::String(text) = value {
+        return Some(text.clone());
+    }
+    let Some(object) = value.as_object() else {
+        return Some(serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()));
+    };
     for key in ["content", "aggregated_output", "output", "result"] {
         if let Some(output) = object.get(key) {
             return Some(match output {
@@ -1576,6 +1590,7 @@ fn parse_embedded_tool_calls_from_text(text: &str) -> Vec<WireToolCall> {
                 )),
                 name: name.to_string(),
                 arguments: Value::Object(arguments),
+                result: None,
             });
         }
         remaining = rest;
@@ -1923,5 +1938,11 @@ mod tests {
             calls[0].arguments,
             serde_json::json!({"command": "cat /workspace/README.md"})
         );
+    }
+
+    #[test]
+    fn observation_output_renders_scalar_tool_results() {
+        assert_eq!(observation_output(&serde_json::json!("command output")), Some("command output".into()));
+        assert_eq!(observation_output(&serde_json::json!(42)), Some("42".into()));
     }
 }

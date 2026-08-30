@@ -55,20 +55,7 @@ use serde::{Deserialize, Serialize};
 
 use server::problem::BoundaryCode;
 
-#[derive(Debug)]
-struct CliBoundaryError {
-    code: BoundaryCode,
-    message: String,
-}
-
-impl std::fmt::Display for CliBoundaryError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}: {}", self.code.as_str(), self.message)
-    }
-}
-
-impl std::error::Error for CliBoundaryError {}
-
+pub(crate) use server::problem::CliBoundaryError;
 fn cli_boundary_error(code: BoundaryCode, message: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(CliBoundaryError {
         code,
@@ -114,7 +101,7 @@ pub struct Cli {
     )]
     config: Option<PathBuf>,
 
-    /// Control stderr diagnostics without changing command results.
+    /// Control stderr diagnostics without changing command results. For serve, also filters Warehouse request logs (target pchronicle.serve).
     #[arg(long, global = true, value_enum, default_value_t = LogLevel::Info)]
     log_level: LogLevel,
 
@@ -1330,7 +1317,9 @@ pub async fn run_with_stdio(
         Command::Dev(DevArgs {
             command: DevCommand::Echo(args),
         }) => run_echo(args, &mut diagnostics).await,
-        Command::Serve(args) => run_serve(args, config, stdout, &mut diagnostics).await,
+        Command::Serve(args) => {
+            run_serve(args, config, cli.log_level, stdout, &mut diagnostics).await
+        }
     }
 }
 
@@ -1729,9 +1718,11 @@ fn warehouse_listen(args: &ServeArgs) -> Option<SocketAddr> {
 async fn run_serve(
     args: ServeArgs,
     settings_override: Option<&Path>,
+    log_level: LogLevel,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
+    server::request_log::init_warehouse_tracing(log_level);
     let gateway_dataset_uri = resolve_gateway_dataset_uri(&args, settings_override)?;
     if let Some(uri) = gateway_dataset_uri.as_deref() {
         prepare_local_gateway_dataset(uri).await?;
@@ -1800,6 +1791,14 @@ async fn run_serve(
         .map(|(_, listener)| listener.local_addr().map(|addr| addr.to_string()))
         .transpose()
         .context("read pChronicle Warehouse listen address")?;
+    if let Some((warehouse, _)) = warehouse.as_ref() {
+        let snapshot_id = warehouse.current_snapshot_id().await;
+        server::request_log::log_warehouse_startup(
+            warehouse_endpoint.as_deref().unwrap_or_default(),
+            &warehouse.dataset_names(),
+            snapshot_id.as_deref(),
+        );
+    }
     let control_ready = control.as_ref().map(control::PreparedControl::ready);
     let gateway_endpoint = gateway
         .as_ref()

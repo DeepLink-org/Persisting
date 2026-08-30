@@ -407,6 +407,8 @@ pub struct ToolCall {
     pub function_name: String,
     #[serde(rename = "args", alias = "arguments")]
     pub arguments: Value,
+    #[serde(default)]
+    pub result: Option<Value>,
     pub duration_ms: Option<i64>,
 }
 
@@ -415,6 +417,8 @@ pub struct WireToolCall {
     pub id: Option<String>,
     pub name: String,
     pub arguments: Value,
+    #[serde(default)]
+    pub result: Option<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]

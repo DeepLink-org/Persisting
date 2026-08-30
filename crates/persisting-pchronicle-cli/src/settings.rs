@@ -493,7 +493,7 @@ fn s3_credentials_for(
     }
 }
 
-fn s3_endpoint_for(dataset: &str, endpoint: Option<String>) -> Result<Option<String>> {
+pub(super) fn s3_endpoint_for(dataset: &str, endpoint: Option<String>) -> Result<Option<String>> {
     let Some(endpoint) = endpoint else {
         return Ok(None);
     };

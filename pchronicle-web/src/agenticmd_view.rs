@@ -21,7 +21,8 @@ enum BodyNode {
     },
     Xml {
         tag: String,
-        body: String,
+        children: Vec<BodyNode>,
+        self_closing: bool,
     },
     ToolCall {
         protocol: &'static str,
@@ -95,6 +96,11 @@ fn parse_body_nodes(body: &str) -> Vec<BodyNode> {
             cursor += consumed;
             continue;
         }
+        if let Some((node, consumed)) = take_xml_node(rest) {
+            nodes.push(node);
+            cursor += consumed;
+            continue;
+        }
         if rest.starts_with('<') {
             if let Some(end) = rest.find('>') {
                 let tag = rest[1..end]
@@ -108,7 +114,8 @@ fn parse_body_nodes(body: &str) -> Vec<BodyNode> {
                     .unwrap_or(rest.len());
                 nodes.push(BodyNode::Xml {
                     tag: tag.to_string(),
-                    body: rest[..line_end].to_string(),
+                    children: vec![BodyNode::Text(rest[..line_end].to_string())],
+                    self_closing: false,
                 });
                 cursor += line_end.max(1);
                 continue;
@@ -135,6 +142,102 @@ fn parse_body_nodes(body: &str) -> Vec<BodyNode> {
         cursor += next.max(1);
     }
     nodes
+}
+
+/// Parse a balanced XML-like element, retaining nested elements as a tree.
+/// AgenticMD tags are intentionally only XML-shaped (not full XML): values can
+/// contain arbitrary text, Markdown, code fences, or tool blocks.
+fn take_xml_node(input: &str) -> Option<(BodyNode, usize)> {
+    let (tag, open_end, self_closing) = parse_xml_tag(input, false)?;
+    if self_closing {
+        return Some((
+            BodyNode::Xml {
+                tag,
+                children: Vec::new(),
+                self_closing: true,
+            },
+            open_end,
+        ));
+    }
+
+    let mut children = Vec::new();
+    let mut cursor = open_end;
+    while cursor < input.len() {
+        let rest = &input[cursor..];
+        if let Some((closing_tag, consumed, _)) = parse_xml_tag(rest, true) {
+            if closing_tag != tag {
+                return None;
+            }
+            return Some((
+                BodyNode::Xml {
+                    tag,
+                    children,
+                    self_closing: false,
+                },
+                cursor + consumed,
+            ));
+        }
+        if let Some((language, body, consumed)) = take_code_fence(rest) {
+            children.push(BodyNode::Code { language, body });
+            cursor += consumed;
+            continue;
+        }
+        if let Some((node, consumed)) = take_tool_node(rest) {
+            children.push(node);
+            cursor += consumed;
+            continue;
+        }
+        if let Some((node, consumed)) = take_xml_node(rest) {
+            children.push(node);
+            cursor += consumed;
+            continue;
+        }
+
+        let next = rest.find('<').unwrap_or(rest.len());
+        let consumed = next.max(1);
+        children.push(BodyNode::Text(rest[..next].to_string()));
+        cursor += consumed;
+    }
+    None
+}
+
+fn parse_xml_tag(input: &str, closing: bool) -> Option<(String, usize, bool)> {
+    if !input.starts_with('<') || input.starts_with("<!--") || input.starts_with("<![") {
+        return None;
+    }
+    let mut start = 1;
+    if closing {
+        if !input[1..].starts_with('/') {
+            return None;
+        }
+        start += 1;
+    } else if input[1..].starts_with('/')
+        || input[1..].starts_with('!')
+        || input[1..].starts_with('?')
+    {
+        return None;
+    }
+    let end = input.find('>')?;
+    let raw = &input[start..end];
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || (!closing && trimmed.ends_with('/')) {
+        if closing {
+            return None;
+        }
+    }
+    let name = trimmed
+        .trim_end_matches('/')
+        .split_whitespace()
+        .next()?
+        .to_string();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':' | '.'))
+    {
+        return None;
+    }
+    Some((name, end + 1, !closing && trimmed.ends_with('/')))
 }
 
 fn take_code_fence(input: &str) -> Option<(String, String, usize)> {
@@ -470,6 +573,7 @@ fn AgenticMdStep(
                     id: None,
                     name: name.clone(),
                     arguments: parse_tool_arguments(arguments),
+                    result: None,
                 }),
                 _ => None,
             })
@@ -478,7 +582,10 @@ fn AgenticMdStep(
     }
     nodes.retain(|node| !matches!(node, BodyNode::ToolCall { .. }));
     let has_message = !body.trim().is_empty() && body.trim() != "No text";
-    let has_metrics = turn.metrics.as_ref().is_some_and(|value| !value.is_null());
+    let renderable_metrics = turn.metrics.as_ref().and_then(compact_metric_value);
+    let has_metrics = renderable_metrics
+        .as_ref()
+        .is_some_and(metrics_are_renderable);
     let has_tools = !timeline_calls.is_empty();
     let has_observation = turn.observation.as_ref().is_some_and(|value| !value.is_null());
     let has_reasoning = turn
@@ -526,7 +633,7 @@ fn AgenticMdStep(
                 if has_metrics {
                     section { class: "pc2-agenticmd-content-block pc2-agenticmd-metrics",
                         header { "Metrics" }
-                        JsonValue { value: turn.metrics.clone().unwrap_or(Value::Null), default_open: true }
+                        JsonValue { value: renderable_metrics.clone().unwrap_or(Value::Null), default_open: true }
                     }
                 }
             }
@@ -547,14 +654,107 @@ fn AgenticMdBody(nodes: Vec<BodyNode>) -> Element {
                     BodyNode::Text(text) => rsx! { MarkdownText { text } },
                     BodyNode::Comment(raw) => rsx! { CommentBlock { raw, chips: Vec::new() } },
                     BodyNode::Code { language, body } => rsx! { HighlightedCode { body, language } },
-                    BodyNode::Xml { tag, body } => {
-                        let display_tag = format!("<{tag}>");
-                        rsx! { div { class: "pc2-agenticmd-xml", span { class: "pc2-agenticmd-xml-tag", "{display_tag}" } code { "{body}" } } }
+                BodyNode::Xml {
+                    tag,
+                    children,
+                    self_closing,
+                } => {
+                        let display_tag = if self_closing {
+                            format!("<{tag} />")
+                        } else {
+                            format!("<{tag}>")
+                        };
+                        let closing_tag = if self_closing {
+                            String::new()
+                        } else {
+                            format!("</{tag}>")
+                        };
+                        let plain_text = xml_plain_text(&children);
+                        rsx! { div { class: "pc2-agenticmd-xml",
+                            div { class: "pc2-agenticmd-xml-header",
+                                span { class: "pc2-agenticmd-xml-tag", "{display_tag}" }
+                                span { class: "pc2-agenticmd-xml-close", "{closing_tag}" }
+                            }
+                            if let Some(text) = plain_text {
+                                code { class: "pc2-agenticmd-xml-value", "{text}" }
+                            } else if !children.is_empty() {
+                                div { class: "pc2-agenticmd-xml-body", AgenticMdBody { nodes: children } }
+                            }
+                        } }
                     },
                     BodyNode::ToolCall { .. } => rsx! {},
                 }
             }
         }
+    }
+}
+
+fn xml_plain_text(nodes: &[BodyNode]) -> Option<String> {
+    let mut text = String::new();
+    for node in nodes {
+        let BodyNode::Text(value) = node else {
+            return None;
+        };
+        text.push_str(value);
+    }
+    (!text.trim().is_empty()).then_some(text.trim().to_string())
+}
+
+pub(crate) fn metrics_are_renderable(value: &Value) -> bool {
+    if value.is_null() || value.as_object().is_some_and(|object| object.is_empty()) {
+        return false;
+    }
+    if value.get("type").and_then(Value::as_str) == Some("token_count") {
+        return has_positive_token_value(value);
+    }
+    true
+}
+
+pub(crate) fn compact_metric_value(value: &Value) -> Option<Value> {
+    match value {
+        Value::Null => None,
+        Value::Object(object) => {
+            let compacted = object
+                .iter()
+                .filter_map(|(key, value)| {
+                    compact_metric_value(value).map(|value| (key.clone(), value))
+                })
+                .collect::<serde_json::Map<_, _>>();
+            (!compacted.is_empty()).then_some(Value::Object(compacted))
+        }
+        Value::Array(values) => {
+            let compacted = values
+                .iter()
+                .filter_map(compact_metric_value)
+                .collect::<Vec<_>>();
+            (!compacted.is_empty()).then_some(Value::Array(compacted))
+        }
+        _ => Some(value.clone()),
+    }
+}
+
+fn has_positive_token_value(value: &Value) -> bool {
+    const TOKEN_KEYS: &[&str] = &[
+        "cached_input_tokens",
+        "completion_tokens",
+        "completion_tokens_len",
+        "input_tokens",
+        "output_tokens",
+        "prompt_tokens",
+        "prompt_tokens_len",
+        "reasoning_output_tokens",
+        "total_tokens",
+    ];
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            (TOKEN_KEYS.contains(&key.as_str())
+                && value
+                    .as_f64()
+                    .is_some_and(|count| count.is_finite() && count > 0.0))
+                || (!TOKEN_KEYS.contains(&key.as_str()) && has_positive_token_value(value))
+        }),
+        Value::Array(values) => values.iter().any(has_positive_token_value),
+        _ => false,
     }
 }
 
@@ -655,6 +855,7 @@ fn native_tool_call(call: &ToolCall) -> WireToolCall {
         id: Some(call.tool_call_id.clone()),
         name: call.function_name.clone(),
         arguments: call.arguments.clone(),
+        result: call.result.clone(),
     }
 }
 
@@ -681,6 +882,20 @@ mod tests {
     }
 
     #[test]
+    fn native_tool_call_keeps_imported_result_for_rendering() {
+        let call = ToolCall {
+            tool_call_id: "call-1".into(),
+            function_name: "exec_command".into(),
+            arguments: serde_json::json!({"cmd": "pwd"}),
+            result: Some(serde_json::json!({"content": "/tmp"})),
+            duration_ms: None,
+        };
+        let wire = native_tool_call(&call);
+        assert_eq!(wire.id.as_deref(), Some("call-1"));
+        assert_eq!(wire.result, call.result);
+    }
+
+    #[test]
     fn parses_code_comments_xml_and_dsml() {
         let body = "```rust\nlet value = 1;\n```\n<!-- note -->\n<runtime>ok</runtime>\n<tool_call>execute_bash<parameter=command>ls</parameter></tool_call>";
         let nodes = parse_body_nodes(body);
@@ -694,6 +909,29 @@ mod tests {
             .iter()
             .any(|node| matches!(node, BodyNode::Xml { tag, .. } if tag == "runtime")));
         assert!(nodes.iter().any(|node| matches!(node, BodyNode::ToolCall { protocol, name, .. } if *protocol == "DSML" && name == "execute_bash")));
+    }
+
+    #[test]
+    fn parses_balanced_xml_as_nested_nodes() {
+        let nodes = parse_body_nodes(
+            "<environment_context>\n  <cwd>/workspace</cwd>\n  <shell>zsh</shell>\n</environment_context>",
+        );
+        let BodyNode::Xml { tag, children, .. } = &nodes[0] else {
+            panic!("expected outer XML node")
+        };
+        assert_eq!(tag, "environment_context");
+        let nested = children
+            .iter()
+            .filter_map(|node| match node {
+                BodyNode::Xml { tag, children, .. } => Some((tag.as_str(), children)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(nested.len(), 2);
+        assert_eq!(nested[0].0, "cwd");
+        assert_eq!(xml_plain_text(nested[0].1).as_deref(), Some("/workspace"));
+        assert_eq!(nested[1].0, "shell");
+        assert_eq!(xml_plain_text(nested[1].1).as_deref(), Some("zsh"));
     }
 
     #[test]
@@ -766,6 +1004,39 @@ mod tests {
     fn empty_optional_message_produces_no_agenticmd_body_block() {
         let value = turn(Value::String("  \n".into()));
         assert!(message_nodes(&value).is_empty());
+    }
+
+    #[test]
+    fn empty_token_metrics_are_not_renderable() {
+        assert!(!metrics_are_renderable(&serde_json::json!({
+            "type": "token_count",
+            "info": {
+                "model_context_window": 258400,
+                "last_token_usage": {"input_tokens": 0, "output_tokens": 0},
+                "rate_limits": {"limit_id": "codex", "credits": null}
+            }
+        })));
+        assert!(metrics_are_renderable(&serde_json::json!({
+            "type": "token_count",
+            "info": {"last_token_usage": {"input_tokens": 12}}
+        })));
+    }
+
+    #[test]
+    fn compacts_null_metric_fields_before_rendering() {
+        assert_eq!(
+            compact_metric_value(&serde_json::json!({
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {"input_tokens": 12, "output_tokens": null},
+                    "rate_limits": {"credits": null}
+                }
+            })),
+            Some(serde_json::json!({
+                "type": "token_count",
+                "info": {"last_token_usage": {"input_tokens": 12}}
+            }))
+        );
     }
 
     #[test]

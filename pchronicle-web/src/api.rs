@@ -1,13 +1,106 @@
 use crate::analysis_session::{AnalysisScope, AnalysisSpec, CompileFailure, CompiledQuery};
 use crate::model::{
     CatalogTree, PhysicalFileLayout, PhysicalLayout, PhysicalPagePreview, PhysicalSource,
-    QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, TurnDetail,
-    TurnPage,
+    QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, TurnDetail, TurnPage,
 };
 use gloo_net::http::{Request, Response};
+use serde::de::DeserializeOwned;
 use serde_json::json;
 
-async fn checked(response: Response) -> Result<Response, String> {
+#[derive(Clone, Debug, PartialEq)]
+pub struct ApiFailure {
+    pub status: u16,
+    pub code: String,
+    pub message: String,
+    pub request_id: Option<String>,
+    pub field: Option<String>,
+    pub engine_detail: Option<String>,
+    pub raw: String,
+}
+
+impl ApiFailure {
+    pub fn network(message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self {
+            status: 0,
+            code: "unavailable".into(),
+            message: message.clone(),
+            request_id: None,
+            field: None,
+            engine_detail: None,
+            raw: message,
+        }
+    }
+}
+
+impl std::fmt::Display for ApiFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.request_id.as_deref() {
+            Some(id) => write!(f, "{} (request_id={id})", self.message),
+            None => write!(f, "{}", self.message),
+        }
+    }
+}
+
+impl From<ApiFailure> for CompileFailure {
+    fn from(failure: ApiFailure) -> Self {
+        Self {
+            code: failure.code,
+            message: failure.message,
+            field: failure.field,
+            engine_detail: failure.engine_detail,
+            request_id: failure.request_id,
+        }
+    }
+}
+
+pub(crate) fn parse_api_failure(status: u16, body: &str) -> ApiFailure {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+        let code = value
+            .get("code")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string();
+        let message = value
+            .get("message")
+            .and_then(|value| value.as_str())
+            .unwrap_or(body)
+            .to_string();
+        let request_id = value
+            .get("request_id")
+            .and_then(|value| value.as_str())
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
+        let field = value
+            .get("field")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
+        let engine_detail = value
+            .get("engine_detail")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
+        return ApiFailure {
+            status,
+            code,
+            message,
+            request_id,
+            field,
+            engine_detail,
+            raw: body.to_owned(),
+        };
+    }
+    ApiFailure {
+        status,
+        code: String::new(),
+        message: format!("HTTP {status}: {body}"),
+        request_id: None,
+        field: None,
+        engine_detail: None,
+        raw: body.to_owned(),
+    }
+}
+
+async fn checked(response: Response) -> Result<Response, ApiFailure> {
     if response.ok() {
         Ok(response)
     } else {
@@ -16,8 +109,22 @@ async fn checked(response: Response) -> Result<Response, String> {
             .text()
             .await
             .unwrap_or_else(|_| "Request failed".into());
-        Err(format!("HTTP {status}: {body}"))
+        Err(parse_api_failure(status, &body))
     }
+}
+
+async fn send_checked(send: Result<Response, gloo_net::Error>) -> Result<Response, ApiFailure> {
+    checked(send.map_err(|error| ApiFailure::network(error.to_string()))?).await
+}
+
+async fn json_checked<T: DeserializeOwned>(
+    send: Result<Response, gloo_net::Error>,
+) -> Result<T, ApiFailure> {
+    send_checked(send)
+        .await?
+        .json()
+        .await
+        .map_err(|error| ApiFailure::network(error.to_string()))
 }
 
 pub async fn explorer_runs(
@@ -30,7 +137,7 @@ pub async fn explorer_runs(
     file: &str,
     offset: usize,
     limit: usize,
-) -> Result<RunPage, String> {
+) -> Result<RunPage, ApiFailure> {
     let url = format!(
         "/api/explorer/runs?q={}&dataset={}&status={}&sort={}&direction={}&path={}&file={}&offset={offset}&limit={limit}",
         urlencoding::encode(q),
@@ -41,74 +148,54 @@ pub async fn explorer_runs(
         urlencoding::encode(path),
         urlencoding::encode(file),
     );
-    checked(Request::get(&url).send().await.map_err(|e| e.to_string())?)
-        .await?
-        .json()
-        .await
-        .map_err(|e| e.to_string())
+    json_checked(Request::get(&url).send().await).await
 }
 
-pub async fn explorer_tree(dataset: &str, prefix: &str) -> Result<CatalogTree, String> {
+pub async fn explorer_tree(dataset: &str, prefix: &str) -> Result<CatalogTree, ApiFailure> {
     let url = format!(
         "/api/explorer/tree?dataset={}&prefix={}",
         urlencoding::encode(dataset),
         urlencoding::encode(prefix),
     );
-    checked(Request::get(&url).send().await.map_err(|e| e.to_string())?)
-        .await?
-        .json()
-        .await
-        .map_err(|e| e.to_string())
+    json_checked(Request::get(&url).send().await).await
 }
 
-pub async fn run_analysis(run: &RunSummary) -> Result<RunAnalysis, String> {
-    checked(
+pub async fn run_analysis(run: &RunSummary) -> Result<RunAnalysis, ApiFailure> {
+    json_checked(
         Request::get(&format!("/api/explorer/run?{}", run.query()))
             .send()
-            .await
-            .map_err(|e| e.to_string())?,
+            .await,
     )
-    .await?
-    .json()
     .await
-    .map_err(|e| e.to_string())
 }
 
-pub async fn turns(run: &RunSummary, q: &str, source: &str) -> Result<TurnPage, String> {
+pub async fn turns(run: &RunSummary, q: &str, source: &str) -> Result<TurnPage, ApiFailure> {
     let url = format!(
         "/api/explorer/turns?{}&q={}&source={}&offset=0&limit=500",
         run.query(),
         urlencoding::encode(q),
         urlencoding::encode(source),
     );
-    checked(Request::get(&url).send().await.map_err(|e| e.to_string())?)
-        .await?
-        .json()
-        .await
-        .map_err(|e| e.to_string())
+    json_checked(Request::get(&url).send().await).await
 }
 
-pub async fn turn_detail(run: &RunSummary, turn_id: i64) -> Result<TurnDetail, String> {
-    checked(
+pub async fn turn_detail(run: &RunSummary, turn_id: i64) -> Result<TurnDetail, ApiFailure> {
+    json_checked(
         Request::get(&format!(
             "/api/explorer/turn?{}&turn_id={turn_id}",
             run.query()
         ))
         .send()
-        .await
-        .map_err(|e| e.to_string())?,
+        .await,
     )
-    .await?
-    .json()
     .await
-    .map_err(|e| e.to_string())
 }
 
-pub async fn query_evidence(sql: &str) -> Result<QueryEvidence, String> {
+pub async fn query_evidence(sql: &str) -> Result<QueryEvidence, ApiFailure> {
     query_evidence_with_budget(sql, 50, 64 * 1024).await
 }
 
-pub async fn query_evidence_interactive(sql: &str) -> Result<QueryEvidence, String> {
+pub async fn query_evidence_interactive(sql: &str) -> Result<QueryEvidence, ApiFailure> {
     query_evidence_with_budget(sql, 100, 4 * 1024 * 1024).await
 }
 
@@ -116,18 +203,11 @@ async fn query_evidence_with_budget(
     sql: &str,
     max_rows: usize,
     max_bytes: usize,
-) -> Result<QueryEvidence, String> {
-    let response = Request::post("/api/query/evidence")
+) -> Result<QueryEvidence, ApiFailure> {
+    let request = Request::post("/api/query/evidence")
         .json(&json!({ "sql": sql, "max_rows": max_rows, "max_bytes": max_bytes }))
-        .map_err(|e| e.to_string())?
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    checked(response)
-        .await?
-        .json()
-        .await
-        .map_err(|e| e.to_string())
+        .map_err(|error| ApiFailure::network(error.to_string()))?;
+    json_checked(request.send().await).await
 }
 
 pub async fn compile_analysis(
@@ -135,94 +215,48 @@ pub async fn compile_analysis(
     snapshot_id: &str,
     scope: &AnalysisScope,
 ) -> Result<CompiledQuery, CompileFailure> {
-    let response = Request::post("/api/analysis/compile")
+    let request = Request::post("/api/analysis/compile")
         .json(&json!({
             "spec": spec,
             "snapshot_id": snapshot_id,
             "scope": scope,
         }))
-        .map_err(|error| CompileFailure {
-            code: "invalid_request".into(),
-            message: error.to_string(),
-            field: None,
-            engine_detail: None,
-        })?
+        .map_err(|error| CompileFailure::from(ApiFailure::network(error.to_string())))?;
+    let response = request
         .send()
         .await
-        .map_err(|error| CompileFailure {
-            code: "unavailable".into(),
-            message: error.to_string(),
-            field: None,
-            engine_detail: None,
-        })?;
+        .map_err(|error| CompileFailure::from(ApiFailure::network(error.to_string())))?;
     if response.ok() {
-        return response.json().await.map_err(|error| CompileFailure {
-            code: "invalid_request".into(),
-            message: error.to_string(),
-            field: None,
-            engine_detail: None,
-        });
+        return response
+            .json()
+            .await
+            .map_err(|error| CompileFailure::from(ApiFailure::network(error.to_string())));
     }
     let status = response.status();
-    match response.json::<CompileFailure>().await {
-        Ok(failure) => Err(failure),
-        Err(_) => Err(CompileFailure {
-            code: "invalid_request".into(),
-            message: format!("HTTP {status}: compile failed"),
-            field: None,
-            engine_detail: None,
-        }),
-    }
+    let body = response.text().await.unwrap_or_default();
+    Err(CompileFailure::from(parse_api_failure(status, &body)))
 }
 
-pub async fn query_catalog() -> Result<QueryCatalog, String> {
-    checked(
-        Request::get("/api/query/tables")
-            .send()
-            .await
-            .map_err(|e| e.to_string())?,
-    )
-    .await?
-    .json()
-    .await
-    .map_err(|e| e.to_string())
+pub async fn query_catalog() -> Result<QueryCatalog, ApiFailure> {
+    json_checked(Request::get("/api/query/tables").send().await).await
 }
 
-pub async fn refresh_catalog() -> Result<(), String> {
-    checked(
-        Request::post("/api/catalog")
-            .send()
-            .await
-            .map_err(|e| e.to_string())?,
-    )
-    .await?;
+pub async fn refresh_catalog() -> Result<(), ApiFailure> {
+    send_checked(Request::post("/api/catalog").send().await).await?;
     Ok(())
 }
 
-pub async fn physical_sources() -> Result<Vec<PhysicalSource>, String> {
-    checked(
-        Request::get("/api/physical/sources")
-            .send()
-            .await
-            .map_err(|e| e.to_string())?,
-    )
-    .await?
-    .json()
-    .await
-    .map_err(|e| e.to_string())
+pub async fn physical_sources() -> Result<Vec<PhysicalSource>, ApiFailure> {
+    json_checked(Request::get("/api/physical/sources").send().await).await
 }
 
-pub async fn physical_layout(dataset: &str, file: &str) -> Result<PhysicalLayout, String> {
+pub async fn physical_layout(dataset: &str, file: &str) -> Result<PhysicalLayout, ApiFailure> {
     let url = format!(
         "/api/physical/layout?dataset={}&file={}",
         urlencoding::encode(dataset),
         urlencoding::encode(file),
     );
-    checked(Request::get(&url).send().await.map_err(|e| e.to_string())?)
-        .await?
-        .json()
-        .await
-        .map_err(|e| e.to_string())
+    json_checked(Request::get(&url).send().await).await
 }
 
 pub async fn physical_file(
@@ -231,7 +265,7 @@ pub async fn physical_file(
     table: &str,
     fragment: u64,
     data_file: &str,
-) -> Result<PhysicalFileLayout, String> {
+) -> Result<PhysicalFileLayout, ApiFailure> {
     let url = format!(
         "/api/physical/file?dataset={}&file={}&table={}&fragment={fragment}&data_file={}",
         urlencoding::encode(dataset),
@@ -239,11 +273,7 @@ pub async fn physical_file(
         urlencoding::encode(table),
         urlencoding::encode(data_file),
     );
-    checked(Request::get(&url).send().await.map_err(|e| e.to_string())?)
-        .await?
-        .json()
-        .await
-        .map_err(|e| e.to_string())
+    json_checked(Request::get(&url).send().await).await
 }
 
 pub async fn physical_page(
@@ -255,7 +285,7 @@ pub async fn physical_page(
     column: Option<&str>,
     offset: usize,
     limit: usize,
-) -> Result<PhysicalPagePreview, String> {
+) -> Result<PhysicalPagePreview, ApiFailure> {
     let mut url = format!(
         "/api/physical/page?dataset={}&file={}&table={}&fragment={fragment}&data_file={}&offset={offset}&limit={limit}",
         urlencoding::encode(dataset),
@@ -267,9 +297,36 @@ pub async fn physical_page(
         url.push_str("&column=");
         url.push_str(&urlencoding::encode(column));
     }
-    checked(Request::get(&url).send().await.map_err(|e| e.to_string())?)
-        .await?
-        .json()
-        .await
-        .map_err(|e| e.to_string())
+    json_checked(Request::get(&url).send().await).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_api_failure_reads_code_and_request_id() {
+        let failure = parse_api_failure(
+            400,
+            r#"{"code":"resource_exhausted","message":"limit","request_id":"abc123"}"#,
+        );
+        assert_eq!(failure.code, "resource_exhausted");
+        assert_eq!(failure.message, "limit");
+        assert_eq!(failure.request_id.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn parse_api_failure_falls_back_for_non_json() {
+        let failure = parse_api_failure(500, "not-json");
+        assert_eq!(failure.code, "");
+        assert_eq!(failure.message, "HTTP 500: not-json");
+        assert!(failure.request_id.is_none());
+    }
+
+    #[test]
+    fn network_failure_is_unavailable() {
+        let failure = ApiFailure::network("connection refused");
+        assert_eq!(failure.code, "unavailable");
+        assert!(failure.request_id.is_none());
+    }
 }

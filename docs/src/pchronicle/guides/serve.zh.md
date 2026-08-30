@@ -70,6 +70,18 @@ readiness 记录；Control 凭据不会写入 stderr。
 挂载的 Dataset 和 HTTP 操作均为只读。API 不暴露 import、export、maintenance 或任意文件
 访问。刷新只会在新视图准备完成后替换当前可读视图；刷新失败时，旧视图继续可用。
 
+## 日志与失败请求
+
+`pchronicle serve` 把 Warehouse 请求日志写到 stderr，级别由 `--log-level` 控制（默认
+`info`），tracing target 为 `pchronicle.serve`。启动时记录 listen 地址、Dataset 名和
+catalog snapshot。每个 `/api` 请求记录 method、path、status、耗时，以及截断后的 query
+string。query 和 compile handler 还会记录截断后的 SQL。
+
+失败响应包含 `code`、`message` 和 `request_id`。Web 横幅展示同一个 `request_id`。
+内部失败在 JSON 中脱敏；stderr 上对应 id 的 ERROR 行带有 `root_cause` 和 `chain`。
+
+`--log-level error` 只保留内部失败。`--log-level` 不读取 `RUST_LOG`。
+
 Gateway 行为见 [Gateway 转发、改写与捕获](serve-gateway.md)，精确参数见
 [`pchronicle` 命令行参考](../reference/cli.md)。内部刷新和版本固定机制属于
 [Dataset Catalog 设计](../design/catalog.md)。

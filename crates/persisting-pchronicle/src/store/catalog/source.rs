@@ -432,10 +432,10 @@ pub(super) struct ResolvedTable {
 }
 
 impl ResolvedSource {
-    /// Evaluate a virtual-table predicate against normalized run columns and
-    /// return the document identities that can possibly match.  `None` means
-    /// this source cannot provide the normalized projection (for example a
-    /// canonical event source), so callers should use the normal fallback.
+    /// Evaluate virtual-table predicates against normalized run, step, and
+    /// tool-call columns and return the document identities that can possibly
+    /// match. `None` means this source cannot provide a normalized projection,
+    /// so callers should use the normal fallback.
     pub(super) async fn document_ids_for_virtual_filters(
         &self,
         format: DocumentFormat,

@@ -26,36 +26,18 @@ use crate::model::{
     RunSummary,
     ToolAggregate, TurnDetail, TurnSearchStatus, TurnSummary,
 };
+use crate::notice::{WorkspaceNotice, workspace_notice};
 use crate::terminology::{ANALYSIS, ASSISTANT, DATASETS, RUNS, STEPS, STORAGE, TIMELINE};
 
-#[derive(Clone, Debug, PartialEq)]
-struct WorkspaceNotice {
-    title: String,
-    summary: String,
-    detail: String,
-    turn_id: Option<i64>,
-}
-
 const SEARCH_DEBOUNCE_MS: u32 = 1_000;
-
-fn workspace_notice(detail: String) -> WorkspaceNotice {
-    WorkspaceNotice {
-        title: "Workspace request failed".into(),
-        summary: detail
-            .lines()
-            .next()
-            .unwrap_or("Request failed")
-            .to_string(),
-        detail,
-        turn_id: None,
-    }
-}
 
 fn evidence_notice(turn_id: i64, detail: &str) -> WorkspaceNotice {
     WorkspaceNotice {
         title: "Step details could not be decoded".into(),
         summary: format!("Step #{turn_id} · {}", type_mismatch_summary(detail)),
+        action: String::new(),
         detail: detail.to_string(),
+        request_id: None,
         turn_id: Some(turn_id),
     }
 }
@@ -293,7 +275,7 @@ pub fn App() -> Element {
                         }
                         catalog.set(Some(value));
                     }
-                    Err(message) => error.set(Some(workspace_notice(message))),
+                    Err(failure) => error.set(Some(workspace_notice(&failure))),
                 }
             });
         }
@@ -327,6 +309,15 @@ pub fn App() -> Element {
                         div { class: "pc2-workspace-notice-copy",
                             strong { "{notice.title}" }
                             span { "{notice.summary}" }
+                            if !notice.action.is_empty() {
+                                span { "{notice.action}" }
+                            }
+                            if let Some(request_id) = notice.request_id.as_ref() {
+                                p { class: "pc2-workspace-notice-request",
+                                    "Request ID "
+                                    code { "{request_id}" }
+                                }
+                            }
                             details { class: "pc2-workspace-notice-details",
                                 summary { "Show technical details" }
                                 pre { "{notice.detail}" }
@@ -575,8 +566,8 @@ pub fn App() -> Element {
                                         offset: offset(),
                                     };
                                 spawn(async move {
-                                    if let Err(message) = api::refresh_catalog().await {
-                                        error.set(Some(workspace_notice(message)));
+                                    if let Err(failure) = api::refresh_catalog().await {
+                                        error.set(Some(workspace_notice(&failure)));
                                         return;
                                     }
                                     if let Ok(value) = api::query_catalog().await {
@@ -737,7 +728,7 @@ fn load_runs(
             .await
             {
                 Ok(value) => page.set(Some(value)),
-                Err(message) => error.set(Some(workspace_notice(first_error.unwrap_or(message)))),
+                Err(failure) => error.set(Some(workspace_notice(&first_error.unwrap_or(failure)))),
             }
         }
         loading.set(false);
@@ -827,7 +818,7 @@ fn load_catalog_tree(
     spawn(async move {
         match api::explorer_tree(&dataset, &prefix).await {
             Ok(value) => tree.set(Some(value)),
-            Err(message) => error.set(Some(workspace_notice(message))),
+            Err(failure) => error.set(Some(workspace_notice(&failure))),
         }
         loading.set(false);
     });
@@ -858,8 +849,8 @@ fn load_workspace(
                     turns.set(next_turns.records);
                     turn_search.set(next_turns.search);
                 }
-                (Err(message), _) | (_, Err(message)) => {
-                    error.set(Some(workspace_notice(message)));
+                (Err(failure), _) | (_, Err(failure)) => {
+                    error.set(Some(workspace_notice(&failure)));
                 }
             }
             loading.set(false);
@@ -883,7 +874,7 @@ fn load_turns(
                 turns.set(value.records);
                 turn_search.set(value.search);
             }
-            Err(message) => error.set(Some(workspace_notice(message))),
+            Err(failure) => error.set(Some(workspace_notice(&failure))),
         }
         loading.set(false);
     });
@@ -902,7 +893,7 @@ fn load_turn(
         match api::turn_detail(&run, id).await {
             Ok(value) if active() == Some(id) => selected.set(Some(value)),
             Ok(_) => {}
-            Err(message) if active() == Some(id) => error.set(Some(evidence_notice(id, &message))),
+            Err(failure) if active() == Some(id) => error.set(Some(workspace_notice(&failure))),
             Err(_) => {}
         }
         if active() == Some(id) {
@@ -971,9 +962,13 @@ fn load_conversation_turns(
                         details.set(ordered);
                     }
                 }
-                Err(message) => {
+                Err(failure) => {
                     if first_error.is_none() {
-                        first_error = Some(evidence_notice(id, &message));
+                        first_error = Some(if failure.message.contains("invalid type") {
+                            evidence_notice(id, &failure.message)
+                        } else {
+                            workspace_notice(&failure)
+                        });
                     }
                 }
             }

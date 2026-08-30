@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 use wasm_bindgen::JsValue;
 
 use crate::api;
+use crate::notice::{WorkspaceNotice, workspace_notice};
 use crate::model::{
     PhysicalBucket, PhysicalColumn, PhysicalFileLayout, PhysicalFragment, PhysicalLayout,
     PhysicalPagePreview, PhysicalSource, PhysicalTable,
@@ -15,7 +16,7 @@ pub fn PhysicalWorkspace() -> Element {
     let mut layout = use_signal(|| None::<PhysicalLayout>);
     let mut file_layout = use_signal(|| None::<PhysicalFileLayout>);
     let mut preview = use_signal(|| None::<PhysicalPagePreview>);
-    let mut error = use_signal(|| None::<String>);
+    let mut error = use_signal(|| None::<WorkspaceNotice>);
     let mut loading_sources = use_signal(|| true);
     let mut loading_layout = use_signal(|| false);
     let mut loading_file = use_signal(|| false);
@@ -53,7 +54,7 @@ pub fn PhysicalWorkspace() -> Element {
                     sources.set(value);
                     error.set(None);
                 }
-                Err(message) => error.set(Some(message)),
+                Err(failure) => error.set(Some(workspace_notice(&failure))),
             }
             loading_sources.set(false);
         });
@@ -82,9 +83,9 @@ pub fn PhysicalWorkspace() -> Element {
                     layout.set(Some(value));
                     error.set(None);
                 }
-                Err(message) => {
+                Err(failure) => {
                     layout.set(None);
-                    error.set(Some(message));
+                    error.set(Some(workspace_notice(&failure)));
                 }
             }
             loading_layout.set(false);
@@ -118,9 +119,9 @@ pub fn PhysicalWorkspace() -> Element {
                     file_layout.set(Some(value));
                     error.set(None);
                 }
-                Err(message) => {
+                Err(failure) => {
                     file_layout.set(None);
-                    error.set(Some(message));
+                    error.set(Some(workspace_notice(&failure)));
                 }
             }
             loading_file.set(false);
@@ -166,9 +167,9 @@ pub fn PhysicalWorkspace() -> Element {
                     preview.set(Some(value));
                     error.set(None);
                 }
-                Err(message) => {
+                Err(failure) => {
                     preview.set(None);
-                    error.set(Some(message));
+                    error.set(Some(workspace_notice(&failure)));
                 }
             }
             loading_preview.set(false);
@@ -316,8 +317,27 @@ pub fn PhysicalWorkspace() -> Element {
                         }
                     }
                 }
-                if let Some(message) = error() {
-                    div { class: "physical-error", "{message}" }
+                if let Some(notice) = error() {
+                    div { class: "pc2-workspace-notice", role: "alert",
+                        div { class: "pc2-workspace-notice-copy",
+                            strong { "{notice.title}" }
+                            span { "{notice.summary}" }
+                            if !notice.action.is_empty() {
+                                span { "{notice.action}" }
+                            }
+                            if let Some(request_id) = notice.request_id.as_ref() {
+                                p { class: "pc2-workspace-notice-request",
+                                    "Request ID "
+                                    code { "{request_id}" }
+                                }
+                            }
+                            details { class: "pc2-workspace-notice-details",
+                                summary { "Show technical details" }
+                                pre { "{notice.detail}" }
+                            }
+                        }
+                        button { aria_label: "Dismiss", onclick: move |_| error.set(None), "×" }
+                    }
                 }
                 if let Some(current_table) = selected_table_layout.clone() {
                     PhysicalFragmentStrip {

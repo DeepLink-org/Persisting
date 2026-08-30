@@ -12,9 +12,12 @@ async fn main() -> ExitCode {
     let debug_errors = cli.debug_errors();
     let stdin_is_terminal = io::stdin().is_terminal();
     let stdout_is_terminal = io::stdout().is_terminal();
-    let mut stdin = io::stdin().lock();
-    let mut stdout = io::stdout().lock();
-    let mut stderr = io::stderr().lock();
+    // Do not hold StdoutLock/StderrLock for the process lifetime. `pchronicle
+    // serve` logs from Tokio worker threads via tracing; on macOS those writes
+    // take the stdout lock, so a process-wide lock deadlocks the runtime.
+    let mut stdin = io::stdin();
+    let mut stdout = io::stdout();
+    let mut stderr = io::stderr();
 
     match run_with_stdio(
         cli,

@@ -447,8 +447,10 @@ fn apply_event_msg(
 ) {
     match payload.get("type").and_then(Value::as_str).unwrap_or("") {
         "token_count" => {
-            if let Some(index) = pending_agent {
-                turns[index].metrics = Some(payload.clone());
+            if let Some(index) = pending_agent
+                && has_meaningful_token_count(payload)
+            {
+                turns[index].metrics = compact_metric_value(payload);
             }
         }
         "task_complete" => *task_complete = true,
@@ -456,6 +458,58 @@ fn apply_event_msg(
         _ => {
             unknown.insert(format!("/events/{line_number}"), payload.clone());
         }
+    }
+}
+
+fn has_meaningful_token_count(value: &Value) -> bool {
+    const TOKEN_KEYS: &[&str] = &[
+        "cached_input_tokens",
+        "completion_tokens",
+        "completion_tokens_len",
+        "input_tokens",
+        "output_tokens",
+        "prompt_tokens",
+        "prompt_tokens_len",
+        "reasoning_output_tokens",
+        "total_tokens",
+    ];
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            if TOKEN_KEYS.contains(&key.as_str()) {
+                value.as_u64().is_some_and(|count| count > 0)
+                    || value.as_i64().is_some_and(|count| count > 0)
+                    || value
+                        .as_f64()
+                        .is_some_and(|count| count.is_finite() && count > 0.0)
+            } else {
+                has_meaningful_token_count(value)
+            }
+        }),
+        Value::Array(values) => values.iter().any(has_meaningful_token_count),
+        _ => false,
+    }
+}
+
+fn compact_metric_value(value: &Value) -> Option<Value> {
+    match value {
+        Value::Null => None,
+        Value::Object(object) => {
+            let compacted = object
+                .iter()
+                .filter_map(|(key, value)| {
+                    compact_metric_value(value).map(|value| (key.clone(), value))
+                })
+                .collect::<Map<_, _>>();
+            (!compacted.is_empty()).then_some(Value::Object(compacted))
+        }
+        Value::Array(values) => {
+            let compacted = values
+                .iter()
+                .filter_map(compact_metric_value)
+                .collect::<Vec<_>>();
+            (!compacted.is_empty()).then_some(Value::Array(compacted))
+        }
+        _ => Some(value.clone()),
     }
 }
 
@@ -531,7 +585,12 @@ fn attach_tool_output(
             .and_then(|calls| calls.get_mut(tool_idx))
     {
         call.result = Some(output);
-        *pending_agent_closed = true;
+        // A late result for an older call must not close a newer model
+        // response.  Only results belonging to the currently pending round
+        // establish the response boundary.
+        if *pending_agent == Some(turn_idx) {
+            *pending_agent_closed = true;
+        }
         return;
     }
     let index = ensure_agent_turn(
@@ -555,9 +614,14 @@ fn ensure_agent_turn(
     timestamp: Option<StorylineTimestamp>,
     model: Option<&str>,
 ) -> usize {
-    match (*pending_agent, *pending_agent_closed) {
-        (Some(index), false) => return index,
-        _ => {}
+    if let Some(index) = *pending_agent
+        && !*pending_agent_closed
+        && !matches!(
+            (pending_turn_key.as_ref(), turn_key.as_ref()),
+            (Some(current), Some(next)) if current != next
+        )
+    {
+        return index;
     }
     let index = turns.len();
     turns.push(agent_turn(next_turn_id(turns), timestamp, model));
@@ -765,23 +829,27 @@ mod tests {
                 .as_deref(),
             Some("/tmp/demo")
         );
-        assert_eq!(story.turns.len(), 2);
+        assert_eq!(story.turns.len(), 4);
         assert_eq!(story.turns[0].source, "user");
         assert_eq!(story.turns[0].message, json!("list files"));
         assert_eq!(story.turns[1].source, "agent");
-        assert_eq!(story.turns[1].message, json!("done"));
+        assert_eq!(story.turns[1].message, json!(""));
         assert_eq!(story.turns[1].reasoning_content.as_deref(), Some("need ls"));
         let tools = story.turns[1].tool_calls.as_ref().unwrap();
-        assert_eq!(tools.len(), 2);
+        assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool_call_id, "c1");
         assert_eq!(tools[0].function_name, "exec");
         assert_eq!(tools[0].arguments, json!({"cmd":"ls"}));
         assert_eq!(tools[0].result, Some(json!("a.rs")));
-        assert_eq!(tools[1].function_name, "apply_patch");
-        assert_eq!(tools[1].kind.as_deref(), Some("custom"));
-        assert_eq!(tools[1].result, Some(json!("ok")));
-        assert_eq!(story.turns[1].model_name.as_deref(), Some("gpt-5"));
-        assert!(story.turns[1].metrics.is_some());
+        assert_eq!(story.turns[2].source, "agent");
+        let second_tools = story.turns[2].tool_calls.as_ref().unwrap();
+        assert_eq!(second_tools.len(), 1);
+        assert_eq!(second_tools[0].function_name, "apply_patch");
+        assert_eq!(second_tools[0].kind.as_deref(), Some("custom"));
+        assert_eq!(second_tools[0].result, Some(json!("ok")));
+        assert_eq!(story.turns[3].message, json!("done"));
+        assert_eq!(story.turns[3].model_name.as_deref(), Some("gpt-5"));
+        assert!(story.turns[3].metrics.is_some());
         assert_eq!(
             story
                 .task
@@ -798,6 +866,75 @@ mod tests {
             story.unknown_fields.sources["codex"]
                 .fields
                 .contains_key("/events/12")
+        );
+    }
+
+    #[test]
+    fn starts_a_new_round_after_tool_results_but_keeps_parallel_calls_together() {
+        let input = r#"{"timestamp":"2026-08-03T08:15:11Z","type":"session_meta","payload":{"id":"sess-rounds"}}
+{"timestamp":"2026-08-03T08:15:12Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"inspect"}]}}
+{"timestamp":"2026-08-03T08:15:13Z","type":"response_item","payload":{"type":"function_call","name":"exec","arguments":"{\"cmd\":\"a\"}","call_id":"a"}}
+{"timestamp":"2026-08-03T08:15:13Z","type":"response_item","payload":{"type":"function_call","name":"exec","arguments":"{\"cmd\":\"b\"}","call_id":"b"}}
+{"timestamp":"2026-08-03T08:15:14Z","type":"response_item","payload":{"type":"function_call_output","call_id":"a","output":"a.out"}}
+{"timestamp":"2026-08-03T08:15:14Z","type":"response_item","payload":{"type":"function_call_output","call_id":"b","output":"b.out"}}
+{"timestamp":"2026-08-03T08:15:15Z","type":"response_item","payload":{"type":"function_call","name":"exec","arguments":"{\"cmd\":\"c\"}","call_id":"c"}}
+{"timestamp":"2026-08-03T08:15:16Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c","output":"c.out"}}
+{"timestamp":"2026-08-03T08:15:17Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}
+"#;
+        let story = &codex_to_storylines(input, "rollout-rounds.jsonl").unwrap()[0];
+        assert_eq!(story.turns.len(), 4);
+        assert_eq!(story.turns[0].source, "user");
+        assert_eq!(story.turns[1].tool_calls.as_ref().unwrap().len(), 2);
+        assert_eq!(
+            story.turns[1].tool_calls.as_ref().unwrap()[0].result,
+            Some(json!("a.out"))
+        );
+        assert_eq!(
+            story.turns[1].tool_calls.as_ref().unwrap()[1].result,
+            Some(json!("b.out"))
+        );
+        assert_eq!(story.turns[2].tool_calls.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            story.turns[2].tool_calls.as_ref().unwrap()[0].tool_call_id,
+            "c"
+        );
+        assert_eq!(story.turns[3].message, json!("done"));
+    }
+
+    #[test]
+    fn ignores_empty_codex_token_count_metadata() {
+        assert!(!has_meaningful_token_count(&json!({
+            "type": "token_count",
+            "info": {
+                "model_context_window": 258400,
+                "last_token_usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0
+                },
+                "rate_limits": {"limit_id": "codex", "credits": null}
+            }
+        })));
+        assert!(has_meaningful_token_count(&json!({
+            "type": "token_count",
+            "info": {"last_token_usage": {"input_tokens": 12}}
+        })));
+    }
+
+    #[test]
+    fn compacts_null_metric_fields_before_storage() {
+        assert_eq!(
+            compact_metric_value(&json!({
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {"input_tokens": 12, "output_tokens": null},
+                    "rate_limits": {"credits": null}
+                }
+            })),
+            Some(json!({
+                "type": "token_count",
+                "info": {"last_token_usage": {"input_tokens": 12}}
+            }))
         );
     }
 

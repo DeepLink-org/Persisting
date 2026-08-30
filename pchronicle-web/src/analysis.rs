@@ -659,7 +659,7 @@ pub fn AnalysisWorkspace(
                     .flatten()
                 }
                 Err(message) => {
-                    let _ = revision.fail_query(revision_id, operation_id, message);
+                    let _ = revision.fail_query(revision_id, operation_id, message.to_string());
                     None
                 }
             };
@@ -1638,7 +1638,7 @@ async fn run_spec_compile_execute(
                         .flatten()
                     }
                     Err(message) => {
-                        let _ = revision.fail_query(revision_id, operation_id, message);
+                        let _ = revision.fail_query(revision_id, operation_id, message.to_string());
                         None
                     }
                 };

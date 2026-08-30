@@ -8,6 +8,7 @@ use persisting_pchronicle::storage::{
 };
 use serde::Deserialize;
 
+use super::request_log::RequestId;
 use super::{ApiError, AppState, api_query, current_catalog};
 
 #[derive(Debug, Deserialize)]
@@ -39,29 +40,32 @@ pub(super) struct PageQuery {
 
 pub(super) async fn sources(
     State(state): State<AppState>,
+    request_id: RequestId,
 ) -> Result<Json<Vec<PhysicalSource>>, ApiError> {
-    let runtime = current_catalog(&state).await?;
+    let runtime = current_catalog(&state, &request_id).await?;
     Ok(Json(list_physical_sources(&runtime.snapshot)))
 }
 
 pub(super) async fn layout(
     State(state): State<AppState>,
+    request_id: RequestId,
     query: Result<Query<LayoutQuery>, QueryRejection>,
 ) -> Result<Json<PhysicalLayout>, ApiError> {
     let query = api_query(query)?;
-    let runtime = current_catalog(&state).await?;
+    let runtime = current_catalog(&state, &request_id).await?;
     inspect_physical_layout(&runtime.snapshot, &query.dataset, &query.file)
         .await
         .map(Json)
-        .map_err(map_inspect)
+        .map_err(|error| map_inspect(request_id.as_str(), "physical_layout", error))
 }
 
 pub(super) async fn file(
     State(state): State<AppState>,
+    request_id: RequestId,
     query: Result<Query<FileQuery>, QueryRejection>,
 ) -> Result<Json<PhysicalFileLayout>, ApiError> {
     let query = api_query(query)?;
-    let runtime = current_catalog(&state).await?;
+    let runtime = current_catalog(&state, &request_id).await?;
     inspect_physical_file(
         &runtime.snapshot,
         &query.dataset,
@@ -72,15 +76,16 @@ pub(super) async fn file(
     )
     .await
     .map(Json)
-    .map_err(map_inspect)
+    .map_err(|error| map_inspect(request_id.as_str(), "physical_file", error))
 }
 
 pub(super) async fn page(
     State(state): State<AppState>,
+    request_id: RequestId,
     query: Result<Query<PageQuery>, QueryRejection>,
 ) -> Result<Json<PhysicalPagePreview>, ApiError> {
     let query = api_query(query)?;
-    let runtime = current_catalog(&state).await?;
+    let runtime = current_catalog(&state, &request_id).await?;
     inspect_physical_page(
         &runtime.snapshot,
         PhysicalPageQuery {
@@ -96,16 +101,28 @@ pub(super) async fn page(
     )
     .await
     .map(Json)
-    .map_err(map_inspect)
+    .map_err(|error| map_inspect(request_id.as_str(), "physical_page", error))
 }
 
-fn map_inspect(error: anyhow::Error) -> ApiError {
-    let message = error.to_string();
-    if message.contains("physical source not found") || message.contains("not found") {
-        ApiError::not_found(message)
-    } else if message.contains("not a Lance dataset") {
-        ApiError::invalid_request(message)
-    } else {
-        ApiError::internal(error)
+pub(super) fn map_inspect(
+    request_id: &str,
+    handler: &'static str,
+    error: anyhow::Error,
+) -> ApiError {
+    // Documented inspect messages from `persisting_pchronicle::storage`.
+    // Classify by prefix of a chain layer's Display; do not use a generic
+    // `contains("not found")` check.
+    for message in error.chain().map(ToString::to_string) {
+        if message.starts_with("physical source not found") {
+            return ApiError::not_found(message)
+                .with_request_id(request_id)
+                .with_4xx_root_cause(&error);
+        }
+        if message.starts_with("physical source is not a Lance dataset") {
+            return ApiError::invalid_request(message)
+                .with_request_id(request_id)
+                .with_4xx_root_cause(&error);
+        }
     }
+    ApiError::from_anyhow(request_id, handler, error)
 }

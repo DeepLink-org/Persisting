@@ -314,8 +314,16 @@ impl ServerAcceleration {
                     Ok(index) => OptionalAcceleration::Ready(index),
                     Err(error) => {
                         tracing::error!(
-                            error = ?error,
+                            target: super::problem::LOG_TARGET,
                             acceleration_index = name,
+                            root_cause = %super::problem::truncate_utf8(
+                                &error.root_cause().to_string(),
+                                super::problem::ROOT_CAUSE_LIMIT,
+                            ),
+                            chain = %super::problem::truncate_utf8(
+                                &format!("{error:#}"),
+                                super::problem::CHAIN_LIMIT,
+                            ),
                             "pChronicle acceleration index build failed"
                         );
                         OptionalAcceleration::Unavailable
@@ -1484,6 +1492,8 @@ mod tests {
         }
 
         let response = super::super::problem::ApiError::internal(
+            "",
+            "run_summaries",
             failures.into_iter().next().unwrap().unwrap_err(),
         )
         .into_response();

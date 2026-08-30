@@ -128,12 +128,398 @@ async fn boundary_maps_explicit_results_and_redacts_failures() {
         BoundaryCode::Unavailable,
     );
 
-    let response = ApiError::internal(anyhow::anyhow!("/secret/backend")).into_response();
+    let response =
+        ApiError::internal("rid", "test", anyhow::anyhow!("/secret/backend")).into_response();
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let body = response_json(response).await;
     assert_eq!(body["code"], "internal");
     assert_eq!(body["message"], "internal server error");
+    assert_eq!(body["request_id"], "rid");
     assert!(!body.to_string().contains("/secret/backend"));
+}
+
+#[test]
+fn truncate_utf8_does_not_split_characters_and_marks_overflow() {
+    assert_eq!(super::problem::truncate_utf8("abcd", 4), "abcd");
+    assert_eq!(super::problem::truncate_utf8("abcdef", 4), "abcd…");
+    assert_eq!(super::problem::truncate_utf8("验证中文", 3), "验…");
+}
+
+#[test]
+fn incoming_request_id_rejects_blank_and_overlong() {
+    assert_eq!(
+        super::problem::parse_incoming_request_id("abc-1"),
+        Some("abc-1".into())
+    );
+    assert_eq!(super::problem::parse_incoming_request_id("has space"), None);
+    assert_eq!(
+        super::problem::parse_incoming_request_id(&"a".repeat(65)),
+        None
+    );
+    assert_eq!(super::problem::parse_incoming_request_id(""), None);
+}
+
+#[derive(Clone, Debug)]
+struct CapturedLogEvent {
+    level: tracing::Level,
+    message: String,
+    fields: std::collections::BTreeMap<String, String>,
+}
+
+struct CapturingSubscriber {
+    events: std::sync::Arc<std::sync::Mutex<Vec<CapturedLogEvent>>>,
+    next_span: std::sync::atomic::AtomicUsize,
+}
+
+impl CapturingSubscriber {
+    fn new(events: std::sync::Arc<std::sync::Mutex<Vec<CapturedLogEvent>>>) -> Self {
+        Self {
+            events,
+            next_span: std::sync::atomic::AtomicUsize::new(1),
+        }
+    }
+}
+
+impl tracing::Subscriber for CapturingSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(
+            self.next_span
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed) as u64,
+        )
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct FieldVisitor {
+            message: String,
+            fields: std::collections::BTreeMap<String, String>,
+        }
+
+        impl tracing::field::Visit for FieldVisitor {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "message" {
+                    self.message = value.to_owned();
+                } else {
+                    self.fields
+                        .insert(field.name().to_owned(), value.to_owned());
+                }
+            }
+
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.message = format!("{value:?}");
+                } else {
+                    self.fields
+                        .insert(field.name().to_owned(), format!("{value:?}"));
+                }
+            }
+        }
+
+        let mut visitor = FieldVisitor {
+            message: String::new(),
+            fields: std::collections::BTreeMap::new(),
+        };
+        event.record(&mut visitor);
+        self.events.lock().unwrap().push(CapturedLogEvent {
+            level: *event.metadata().level(),
+            message: visitor.message,
+            fields: visitor.fields,
+        });
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+#[tokio::test]
+async fn internal_error_logs_root_cause_and_redacts_json() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CapturedLogEvent>::new()));
+    let _guard = tracing::subscriber::set_default(CapturingSubscriber::new(events.clone()));
+    let cause = anyhow::anyhow!("disk-sentinel").context("open table");
+    let response = ApiError::internal("rid-internal-1", "query_evidence", cause).into_response();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "internal");
+    assert_eq!(body["message"], "internal server error");
+    assert_eq!(body["request_id"], "rid-internal-1");
+    assert!(!body.to_string().contains("disk-sentinel"));
+
+    let logged = events.lock().unwrap().clone();
+    let error_events: Vec<_> = logged
+        .into_iter()
+        .filter(|event| event.level == tracing::Level::ERROR)
+        .collect();
+    assert_eq!(error_events.len(), 1, "{error_events:?}");
+    assert!(
+        error_events[0].message.contains("warehouse request failed"),
+        "{:?}",
+        error_events[0]
+    );
+    assert!(!error_events[0].message.contains("internal server error"));
+    assert_eq!(
+        error_events[0].fields.get("root_cause").map(String::as_str),
+        Some("disk-sentinel")
+    );
+    assert_eq!(
+        error_events[0].fields.get("request_id").map(String::as_str),
+        Some("rid-internal-1")
+    );
+    assert_eq!(
+        error_events[0].fields.get("handler").map(String::as_str),
+        Some("query_evidence")
+    );
+    assert!(
+        error_events[0]
+            .fields
+            .get("chain")
+            .unwrap()
+            .contains("open table"),
+        "{:?}",
+        error_events[0].fields
+    );
+}
+
+#[tokio::test]
+async fn middleware_echoes_request_id_on_json_errors() {
+    use tower::ServiceExt;
+
+    async fn boom() -> Result<(), ApiError> {
+        Err(ApiError::invalid_request("bad input"))
+    }
+    let app = axum::Router::new()
+        .route("/api/boom", axum::routing::get(boom))
+        .layer(axum::middleware::from_fn(
+            crate::server::request_log::warehouse_request_layer,
+        ));
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/boom")
+                .header("x-request-id", "client-id-123")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.headers().get("x-request-id").unwrap(),
+        "client-id-123"
+    );
+    let body = response_json(response).await;
+    assert_eq!(body["request_id"], "client-id-123");
+    assert_eq!(body["code"], "invalid_request");
+}
+
+#[tokio::test]
+async fn four_xx_warn_includes_root_cause_when_chain_is_deeper() {
+    use tower::ServiceExt;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CapturedLogEvent>::new()));
+    let _guard = tracing::subscriber::set_default(CapturingSubscriber::new(events.clone()));
+    async fn boom() -> Result<(), ApiError> {
+        Err(ApiError::from_anyhow(
+            "rid-4xx-root",
+            "explorer_runs",
+            anyhow::anyhow!("index missing").context("FTS unavailable for dataset/file"),
+        ))
+    }
+    let app = axum::Router::new()
+        .route("/api/boom", axum::routing::get(boom))
+        .layer(axum::middleware::from_fn(
+            crate::server::request_log::warehouse_request_layer,
+        ));
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/boom")
+                .header("x-request-id", "rid-4xx-root")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "invalid_request");
+    assert_eq!(body["request_id"], "rid-4xx-root");
+    assert!(body.get("root_cause").is_none());
+
+    let logged = events.lock().unwrap().clone();
+    let warn_events: Vec<_> = logged
+        .into_iter()
+        .filter(|event| {
+            event.level == tracing::Level::WARN
+                && event.message.contains("warehouse request rejected")
+        })
+        .collect();
+    assert_eq!(warn_events.len(), 1, "{warn_events:?}");
+    assert_eq!(
+        warn_events[0].fields.get("root_cause").map(String::as_str),
+        Some("index missing")
+    );
+    assert_eq!(
+        warn_events[0].fields.get("code").map(String::as_str),
+        Some("invalid_request")
+    );
+    assert_eq!(
+        warn_events[0]
+            .fields
+            .get("request_id")
+            .map(String::as_str),
+        Some("rid-4xx-root")
+    );
+}
+
+#[tokio::test]
+async fn middleware_rejects_illegal_incoming_id() {
+    use tower::ServiceExt;
+
+    async fn boom() -> Result<(), ApiError> {
+        Err(ApiError::invalid_request("bad input"))
+    }
+    let app = axum::Router::new()
+        .route("/api/boom", axum::routing::get(boom))
+        .layer(axum::middleware::from_fn(
+            crate::server::request_log::warehouse_request_layer,
+        ));
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/boom")
+                .header("x-request-id", "bad id")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let echoed = response
+        .headers()
+        .get("x-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(echoed, "bad id");
+    assert_eq!(echoed.len(), 16);
+    assert!(echoed.chars().all(|ch| ch.is_ascii_hexdigit()));
+    let body = response_json(response).await;
+    assert_eq!(body["request_id"], echoed);
+}
+
+#[tokio::test]
+async fn middleware_does_not_info_log_static_assets() {
+    use tower::ServiceExt;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CapturedLogEvent>::new()));
+    let _guard = tracing::subscriber::set_default(CapturingSubscriber::new(events.clone()));
+    async fn missing() -> StatusCode {
+        StatusCode::NOT_FOUND
+    }
+    let app = axum::Router::new()
+        .route("/assets/app.css", axum::routing::get(missing))
+        .layer(axum::middleware::from_fn(
+            crate::server::request_log::warehouse_request_layer,
+        ));
+    let _ = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/assets/app.css")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let logged = events.lock().unwrap().clone();
+    assert!(
+        !logged.iter().any(|event| {
+            event.level == tracing::Level::INFO
+                && event
+                    .fields
+                    .get("path")
+                    .is_some_and(|path| path.contains("/assets/app.css"))
+        }),
+        "{logged:?}"
+    );
+}
+
+#[test]
+fn map_inspect_unknown_errors_are_internal() {
+    let error = ApiError::from_anyhow("rid", "physical_page", anyhow::anyhow!("lance exploded"));
+    assert_eq!(error.code, BoundaryCode::Internal);
+}
+
+#[test]
+fn map_inspect_maps_documented_physical_prefixes() {
+    let missing = physical::map_inspect(
+        "rid",
+        "physical_page",
+        anyhow::anyhow!("physical source not found: ds/file"),
+    );
+    assert_eq!(missing.code, BoundaryCode::NotFound);
+    let not_lance = physical::map_inspect(
+        "rid",
+        "physical_layout",
+        anyhow::anyhow!("physical source is not a Lance dataset: ds/file"),
+    );
+    assert_eq!(not_lance.code, BoundaryCode::InvalidRequest);
+}
+
+#[tokio::test]
+async fn query_evidence_info_truncates_sql() {
+    use tower::ServiceExt as _;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CapturedLogEvent>::new()));
+    let _guard = tracing::subscriber::set_default(CapturingSubscriber::new(events.clone()));
+    let root = json_dataset_root();
+    let sql = format!("SELECT '{}'", "a".repeat(600));
+    let _response = router(root.to_string_lossy().to_string())
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/query/evidence")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(json!({ "sql": sql }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let logged = events.lock().unwrap().clone();
+    let query_logs: Vec<_> = logged
+        .iter()
+        .filter(|event| event.message.contains("warehouse query"))
+        .collect();
+    assert_eq!(query_logs.len(), 1, "{logged:?}");
+    let sql_field = query_logs[0]
+        .fields
+        .get("sql")
+        .expect("sql field on warehouse query");
+    assert!(sql_field.ends_with('…'), "{sql_field}");
+    assert!(
+        sql_field.len() <= super::problem::QUERY_LOG_LIMIT + "…".len(),
+        "{} bytes",
+        sql_field.len()
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn warehouse_tracing_filter_matches_log_level() {
+    assert_eq!(
+        super::request_log::tracing_filter(crate::LogLevel::Info),
+        "pchronicle.serve=info"
+    );
+    assert_eq!(
+        super::request_log::tracing_filter(crate::LogLevel::Error),
+        "pchronicle.serve=error"
+    );
 }
 
 #[test]
@@ -382,6 +768,7 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
                 id: Some("tool-call-1".into()),
                 name: "lookup".into(),
                 arguments: json!({"q": "x"}),
+                result: None,
             }],
         },
         TrajectoryTurnView {
@@ -392,6 +779,7 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
                 id: Some("tool-call-1".into()),
                 name: "lookup".into(),
                 arguments: json!({"q": "x"}),
+                result: None,
             }],
         },
     ];

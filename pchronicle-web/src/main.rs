@@ -14,6 +14,7 @@ mod json_value;
 mod llm;
 mod llm_settings;
 mod model;
+mod notice;
 mod physical;
 mod result_explorer;
 mod result_profile;

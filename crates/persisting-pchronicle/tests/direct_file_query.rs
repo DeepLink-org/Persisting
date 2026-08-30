@@ -121,7 +121,7 @@ async fn catalog_exposes_dataset_format_virtual_table() -> Result<()> {
 }
 
 #[tokio::test]
-async fn catalog_pushes_virtual_json_identity_filters_through_normalized_runs() -> Result<()> {
+async fn virtual_json_filters_push_through_normalized_tables() -> Result<()> {
     let temp = tempfile::tempdir()?;
     fs::copy(
         atif_fixtures().join("dialogue_10.json"),
@@ -146,6 +146,52 @@ async fn catalog_pushes_virtual_json_identity_filters_through_normalized_runs() 
             .await?,
     )?;
     assert_eq!(direct_rows.len(), 1);
+
+    let and_rows = json_rows(
+        &direct
+            .query_jsonl(
+                "SELECT id FROM atif \
+                 WHERE json_get_string(data, 'session_id') = 'fixture-long_context_20' \
+                   AND json_extract(data, '$.steps[4].tool_calls[0].function_name') \
+                         = '\"knowledge_search\"'",
+            )
+            .await?,
+    )?;
+    assert_eq!(and_rows.len(), 1);
+    assert_eq!(and_rows[0]["id"], "run-long_context_20");
+
+    let reverse_rows = json_rows(
+        &direct
+            .query_jsonl(
+                "SELECT id FROM atif \
+                 WHERE 'fixture-long_context_20' = json_get_string(data, 'session_id')",
+            )
+            .await?,
+    )?;
+    assert_eq!(reverse_rows.len(), 1);
+
+    let or_rows = json_rows(
+        &direct
+            .query_jsonl(
+                "SELECT id FROM atif \
+                 WHERE json_get_string(data, 'session_id') = 'fixture-dialogue_10' \
+                    OR json_get_string(data, 'session_id') = 'fixture-long_context_20' \
+                 ORDER BY id",
+            )
+            .await?,
+    )?;
+    assert_eq!(or_rows.len(), 2);
+
+    let missing_rows = json_rows(
+        &direct
+            .query_jsonl(
+                "SELECT id FROM atif \
+                 WHERE json_get_string(data, 'session_id') = 'does-not-exist'",
+            )
+            .await?,
+    )?;
+    assert!(missing_rows.is_empty());
+
     let tool_rows = json_rows(
         &direct
             .query_jsonl(
@@ -183,6 +229,21 @@ async fn catalog_pushes_virtual_json_identity_filters_through_normalized_runs() 
         rows[0]["id"]
             .as_str()
             .is_some_and(|id| id.ends_with("::run-dialogue_10"))
+    );
+    let catalog_tool_rows = json_rows(
+        &engine
+            .query_jsonl(
+                "SELECT id FROM dataset.atif \
+                 WHERE json_extract(data, '$.steps[4].tool_calls[0].function_name') \
+                       = '\"knowledge_search\"'",
+            )
+            .await?,
+    )?;
+    assert_eq!(catalog_tool_rows.len(), 1);
+    assert!(
+        catalog_tool_rows[0]["id"]
+            .as_str()
+            .is_some_and(|id| id.ends_with("::run-long_context_20"))
     );
     Ok(())
 }
