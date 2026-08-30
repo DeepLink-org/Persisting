@@ -234,14 +234,14 @@ preview. They must not leak the descriptor.
 The writer handles candidate cells in this order:
 
 ```text
-原始 UTF-8/JSON
-  ├─ 小于阈值 ───────────────────────────────► 原值内联
-  └─ 达到阈值 / 命中 magic
+raw UTF-8/JSON
+  ├─ below threshold ───────────────────────────────► inline original
+  └─ at threshold / magic hit
        ├─ BLAKE3(raw bytes) + UTF-8 preview
-       ├─ Zstd；没有净收益则保留 identity
-       ├─ batch 内按 content_id 合并并检查碰撞
-       ├─ BTree 批量查询 objects.lance，跳过已存在对象
-       └─ 先提交对象 version，再写三表 descriptor，最后发布 CURRENT
+       ├─ Zstd; keep identity if there is no net gain
+       ├─ merge by content_id inside the batch and check collisions
+       ├─ BTree batch lookup in objects.lance; skip existing objects
+       └─ commit object version first, then write three-table descriptors, then publish CURRENT
 ```
 
 Objects must be durable before the reference. `CURRENT` pins the exact
@@ -488,15 +488,15 @@ path moves the optimization boundary forward to `TableProvider::scan`:
 SQL / DataFrame
   → DataFusion projection + filters
   → FileScanSpec
-      ├─ _file_ = / IN / LIKE：manifest 文件裁剪
-      ├─ session_id：trajectory 裁剪
-      ├─ step_id / source：step 裁剪
+      ├─ _file_ = / IN / LIKE: manifest file prune
+      ├─ session_id: trajectory prune
+      ├─ step_id / source: step prune
       └─ projected column set
   → BufRead / serde streaming decoder
       └─ DeserializeSeed + Visitor + IgnoredAny
-  → 只为命中行解码被引用字段
+  → decode only referenced fields of hit rows
   → projected Arrow RecordBatch
-  → DataFusion 保留 inexact filter 再次校验
+  → DataFusion keeps the inexact filter and rechecks
 ```
 
 The current fast path covers ATIF single objects, arrays (including
@@ -561,11 +561,11 @@ The CLI uses the same engine and emits stable JSONL:
 pchronicle query ./trajectories.ndjson \
   --sql 'SELECT source, COUNT(*) AS steps FROM dataset.steps GROUP BY source ORDER BY source'
 
-# 含 CURRENT 的三表 store 根目录会被 auto 识别为 Lance
+# A three-table store root that contains CURRENT is auto-detected as Lance
 pchronicle query ./storyline-store \
   --sql 'SELECT step_id, source FROM dataset.steps WHERE session_id = '\''s-1'\'' ORDER BY step_id'
 
-# OpenAI/ACTF 目录直接查询；_file_ 为查询期相对路径列，不写入 Lance
+# Query an OpenAI/ACTF directory directly; _file_ is a query-time relative path column and is not written to Lance
 pchronicle query ./openai-data \
   --sql "SELECT _file_, COUNT(*) FROM dataset.steps WHERE _file_ LIKE 'batch/%' GROUP BY _file_"
 ```

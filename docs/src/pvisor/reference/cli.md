@@ -1,8 +1,10 @@
-# `pvisor` 命令参考
+# `pvisor` command reference
 
-`pvisor` 是单个 Run 和持久环境的产品命令。
-Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
-[使用 pVisor 运行工作负载](../guides/execution.md)。
+`pvisor` is the product command for a single Run and for durable
+environments.
+Full command examples for Host, OCI VM, and transparent host-rootfs VM
+are in
+[Run workloads with pVisor](../guides/execution.md).
 
 ```text
 pvisor
@@ -60,7 +62,7 @@ quiesced state, snapshots the raw upper, then publishes `continue`. Logical
 checkpoints preserve filesystem and cooperative client safe-point boundaries,
 not process memory.
 
-持久环境拥有稳定名称和可复用 OverlayFS upper：
+A durable environment has a stable name and a reusable OverlayFS upper:
 
 ```bash
 pvisor env create dev --target ./project
@@ -69,18 +71,21 @@ pvisor env shell dev
 pvisor env inspect dev -- git status --short
 pvisor env stop dev
 pvisor env start dev
-pvisor env apply dev --path src   # 提交选中部分，其余继续 staged
-pvisor env apply dev --all        # 提交剩余修改并重置为空 stage
-pvisor env drop dev        # 丢弃修改并重置为空 stage
+pvisor env apply dev --path src   # commit the selection; the rest stays staged
+pvisor env apply dev --all        # commit remaining changes and reset to an empty stage
+pvisor env drop dev        # discard changes and reset to an empty stage
 pvisor env delete dev --force
 ```
 
-默认元数据位于 `~/.persisting/envs`，可用 `--root` 或 `PERSISTING_ENV_HOME`
-覆盖。`start` / `stop` 控制是否接受新会话，并不表示常驻虚拟机；每次 `exec` / `shell`
-都会挂载同一个 writable upper，所以修改会跨命令保留。`inspect` 使用内核强制的只读视图。
-`apply --all` 或 `drop` 不会把 terminal Overlay 原地改回 `staged`；它们会创建单调递增的
-Overlay generation。命令取得环境 lease 后会重新读取 generation，避免用 reset 前的
-metadata 覆盖新 stage。
+Default metadata lives in `~/.persisting/envs` and can be overridden
+with `--root` or `PERSISTING_ENV_HOME`. `start` / `stop` control whether
+new sessions are accepted; they do not mean a resident VM. Each
+`exec` / `shell` mounts the same writable upper, so changes persist
+across commands. `inspect` uses a kernel-enforced read-only view.
+`apply --all` or `drop` do not flip a terminal Overlay back to `staged`
+in place; they create a monotonically increasing Overlay generation.
+After a command takes the environment lease it re-reads the generation
+so metadata from before the reset cannot overwrite the new stage.
 
 ## Replay an Agent trajectory
 

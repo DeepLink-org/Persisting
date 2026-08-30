@@ -396,13 +396,13 @@ SQL.
 One Catalog build completes in this order:
 
 ```text
-解析并校验挂载
-  → 冻结每个根的候选成员
-  → 固定每个候选的 identity / CURRENT / manifest / object metadata
-  → 构造 sources 元数据
-  → 计算 snapshot_id
-  → 注册 Dataset schema、CatalogTableProvider 与默认 view
-  → 发布给查询或 Server
+parse and validate mounts
+  → freeze candidate members of each root
+  → pin identity / CURRENT / manifest / object metadata of each candidate
+  → build sources metadata
+  → compute snapshot_id
+  → register Dataset schema, CatalogTableProvider, and default views
+  → publish to query or Server
 ```
 
 Only a fully successful `DatasetCatalogSnapshot` is handed to the query
@@ -459,9 +459,9 @@ resolve cell. On first hit:
 ```text
 CatalogTableProvider source pruning
   → LazySource::resolve
-  → 打开固定 Lance 版本，或校验/物化固定文件
-  → 创建原生 TableProvider
-  → 缓存 Result<ResolvedSource>
+  → open the pinned Lance version, or verify/materialize the pinned file
+  → create the native TableProvider
+  → cache Result<ResolvedSource>
 ```
 
 Laziness therefore does not change the Snapshot boundary: resolve happens
