@@ -147,6 +147,25 @@ impl Drop for MaintenanceAfterPublishPause {
     }
 }
 
+struct SuppressInvertedIndexes {
+    root_uri: String,
+}
+
+impl SuppressInvertedIndexes {
+    fn install(root_uri: &str) -> Self {
+        install_inverted_index_suppression(root_uri);
+        Self {
+            root_uri: root_uri.to_string(),
+        }
+    }
+}
+
+impl Drop for SuppressInvertedIndexes {
+    fn drop(&mut self) {
+        remove_inverted_index_suppression(&self.root_uri);
+    }
+}
+
 fn story(session_id: &str) -> StorylineDocument {
     StorylineDocument {
         schema_version: crate::model::STORYLINE_SCHEMA_VERSION.into(),
@@ -1513,6 +1532,7 @@ async fn invalid_storyline_does_not_move_current_generation() {
 async fn replace_defers_compaction_until_explicit_maintenance() {
     let dir = tempfile::tempdir().unwrap();
     let store = StorylineLanceStore::open(dir.path()).await.unwrap();
+    let _suppress = SuppressInvertedIndexes::install(store.root_uri());
     let expected = story("a");
     store
         .replace_storylines(&[expected.clone(), story("b")])
@@ -1536,6 +1556,8 @@ async fn replace_defers_compaction_until_explicit_maintenance() {
     );
     let report = store
         .maintain(&LanceMaintenanceOptions {
+            compact: true,
+            optimize_indices: false,
             vacuum_older_than: None,
             ..Default::default()
         })

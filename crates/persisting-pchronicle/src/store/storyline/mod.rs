@@ -362,6 +362,45 @@ static MAINTENANCE_AFTER_PUBLISH_PAUSE: std::sync::Mutex<Option<MaintenanceAfter
     std::sync::Mutex::new(None);
 
 #[cfg(test)]
+fn suppress_inverted_index_roots() -> std::sync::MutexGuard<'static, HashSet<String>> {
+    static ROOTS: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+    ROOTS
+        .get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+fn dataset_is_under_root(dataset_uri: &str, root: &str) -> bool {
+    let dataset = dataset_uri
+        .strip_prefix("file://")
+        .unwrap_or(dataset_uri)
+        .trim_end_matches('/');
+    let root = root
+        .strip_prefix("file://")
+        .unwrap_or(root)
+        .trim_end_matches('/');
+    dataset == root || dataset.starts_with(&format!("{root}/"))
+}
+
+#[cfg(test)]
+fn inverted_indexes_suppressed_for(dataset: &Dataset) -> bool {
+    suppress_inverted_index_roots()
+        .iter()
+        .any(|root| dataset_is_under_root(dataset.uri(), root))
+}
+
+#[cfg(test)]
+fn install_inverted_index_suppression(root_uri: &str) {
+    suppress_inverted_index_roots().insert(root_uri.to_string());
+}
+
+#[cfg(test)]
+fn remove_inverted_index_suppression(root_uri: &str) {
+    suppress_inverted_index_roots().remove(root_uri);
+}
+
+#[cfg(test)]
 async fn wait_after_empty_current_read(root_uri: &str) {
     let barrier = CREATE_AFTER_EMPTY_READ_BARRIER
         .lock()
@@ -1816,6 +1855,16 @@ async fn ensure_table_indexes(dataset: &mut Dataset, indexes: &[(&str, IndexType
             &ScalarIndexParams::for_builtin(builtin),
         )
         .await?;
+    }
+
+    // Compaction tests can suppress inverted FTS/JSON indexes: building Jieba
+    // inverted indexes on a new store, then remapping them during compact, is
+    // the dominant cost of Storyline lib tests on macOS CI. Other unit tests
+    // still build them; integration coverage lives in
+    // `tests/atif_lance_corpus.rs`.
+    #[cfg(test)]
+    if inverted_indexes_suppressed_for(dataset) {
+        return Ok(());
     }
 
     let schema = ArrowSchema::from(dataset.schema());
