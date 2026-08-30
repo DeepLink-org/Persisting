@@ -57,7 +57,25 @@ async fn warehouse_read_route_matrix_exposes_the_documented_surface() -> Result<
             "tables" => {
                 assert_eq!(body["read_only"], true);
                 assert_eq!(body["datasets"].as_array().map(Vec::len), Some(3));
-                assert_eq!(body["tables"].as_array().map(Vec::len), Some(6));
+                let names: Vec<_> = body["tables"]
+                    .as_array()
+                    .context("/api/query/tables omitted tables")?
+                    .iter()
+                    .filter_map(|table| table["name"].as_str())
+                    .collect();
+                for name in [
+                    "sources",
+                    "runs",
+                    "steps",
+                    "tool_calls",
+                    "events",
+                    "trajectories",
+                ] {
+                    assert!(
+                        names.contains(&name),
+                        "query tables omit documented relation {name}: {names:?}"
+                    );
+                }
             }
             _ => unreachable!(),
         }
