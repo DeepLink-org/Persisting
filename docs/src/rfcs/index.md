@@ -14,3 +14,4 @@ Persisting 格式与协议的 RFC 索引。
 | [0008](0008-atif-format.md) | ATIF v1.7 轨迹格式 | Accepted |
 | [0009](0009-openai-messages-format.md) | OpenAI Messages 轨迹语料格式 | Accepted |
 | [0010](0010-agent-corpus-lance-layout.md) | Agent 评测语料的分层 Lance 布局 | Proposed |
+| [0011](0011-storyline-logical-query-model.md) | Storyline 逻辑查询模型 | Proposed |

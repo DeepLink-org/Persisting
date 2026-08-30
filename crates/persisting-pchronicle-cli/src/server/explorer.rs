@@ -414,18 +414,7 @@ pub(crate) fn run_page_with_fts(
             run,
         })
         .filter(|item| {
-            (needle.is_empty()
-                || fts_matches.contains(&run_identity(&item.run))
-                || format!(
-                    "{} {} {} {} {}",
-                    item.run.agent_id,
-                    item.run.session_id,
-                    item.run.root_session_id.as_deref().unwrap_or_default(),
-                    item.run.status,
-                    item.run.path,
-                )
-                .to_ascii_lowercase()
-                .contains(&needle))
+            (needle.is_empty() || fts_matches.contains(&run_identity(&item.run)))
                 && matches_filter(&item.run.dataset, query.dataset.as_deref())
                 && matches_filter(&item.run.status, query.status.as_deref())
                 && matches_filter(&item.run.agent_id, query.agent.as_deref())

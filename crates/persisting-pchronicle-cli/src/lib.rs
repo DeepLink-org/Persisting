@@ -2830,7 +2830,7 @@ fn ensure_output_byte_budget(size: usize, max_bytes: usize, label: &str) -> Resu
     Ok(())
 }
 
-async fn find_expression_predicate(
+pub(crate) async fn find_expression_predicate(
     snapshot: &DatasetCatalogSnapshot,
     expression: &FindExpr,
     source_filter: Option<&str>,

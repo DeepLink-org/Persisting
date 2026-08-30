@@ -1597,6 +1597,46 @@ async fn physical_api_inspects_storyline_lance_layout_file_and_page() {
         "{explorer}"
     );
 
+    let (status, matched_runs) = get_json(
+        &app,
+        &format!("/api/explorer/runs?dataset={dataset}&q=hello&limit=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{matched_runs}");
+    assert_eq!(matched_runs["search"]["mode"], "fts", "{matched_runs}");
+    assert_eq!(
+        matched_runs["search"]["fts_available"], true,
+        "{matched_runs}"
+    );
+    assert_eq!(matched_runs["snapshot"]["total"], 1, "{matched_runs}");
+    assert_eq!(
+        matched_runs["records"][0]["session_id"], "session-a",
+        "{matched_runs}"
+    );
+
+    let (status, no_runs) = get_json(
+        &app,
+        &format!("/api/explorer/runs?dataset={dataset}&q=does-not-exist&limit=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{no_runs}");
+    assert_eq!(no_runs["snapshot"]["total"], 0, "{no_runs}");
+    assert!(
+        no_runs["records"].as_array().is_some_and(Vec::is_empty),
+        "{no_runs}"
+    );
+
+    let (status, scoped_no_runs) = get_json(
+        &app,
+        &format!(
+            "/api/explorer/runs?dataset={dataset}&q={}&limit=10",
+            encode_query("#system(hello)")
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{scoped_no_runs}");
+    assert_eq!(scoped_no_runs["snapshot"]["total"], 0, "{scoped_no_runs}");
+
     let (status, sources) = get_json(&app, "/api/physical/sources").await;
     assert_eq!(status, StatusCode::OK, "{sources}");
     assert_eq!(sources.as_array().map(Vec::len), Some(1));
@@ -1616,6 +1656,17 @@ async fn physical_api_inspects_storyline_lance_layout_file_and_page() {
     assert_eq!(turns["search"]["fts_available"], true, "{turns}");
     assert_eq!(turns["search"]["mode"], "fts", "{turns}");
     assert_eq!(turns["search"]["tokenizer"], "jieba", "{turns}");
+
+    let (status, scoped_turns) = get_json(
+        &app,
+        &format!(
+            "/api/explorer/turns?dataset={dataset}&file=story&run_id=run-a&agent_id=agent&session_id=session-a&q={}&limit=10",
+            encode_query("#system(hello)")
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{scoped_turns}");
+    assert_eq!(scoped_turns["snapshot"]["total"], 0, "{scoped_turns}");
 
     // A non-matching FTS query must stay empty; it must not fall back to the
     // complete trajectory after the detail view inherits a Runs-page query.

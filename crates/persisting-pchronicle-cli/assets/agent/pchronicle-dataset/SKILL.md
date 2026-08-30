@@ -52,8 +52,9 @@ that can be used to narrow a follow-up query.
 parentheses, spaces, or boolean operators so the shell cannot reinterpret it.
 
 For full-text search over Storyline step content, use one or more repeated
-`--match` options. All terms must match the same step, and the command uses the
-same indexed FTS/Jieba path as the Web explorer:
+`--match` options. A plain phrase such as `--match "ipython task"` is treated as
+one Content FTS query; repeated options require every query to match the same
+step. The command uses the same indexed FTS/Jieba path as the Web explorer:
 
 ```bash
 "$PCHRONICLE_BIN" find "$PCHRONICLE_DATASET_URI" \

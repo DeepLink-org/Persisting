@@ -214,6 +214,13 @@ pub fn combine_match_expressions(expressions: &[String]) -> Result<Option<FindEx
 }
 
 pub fn parse_match_expression(input: &str) -> Result<FindExpr> {
+    let trimmed = input.trim();
+    if is_plain_text_query(trimmed) {
+        return Ok(FindExpr::Text(FindTextPredicate {
+            field: FindTextField::Content,
+            query: unquote(trimmed)?,
+        }));
+    }
     let mut parser = Parser { input, offset: 0 };
     parser.skip_ws();
     if parser.is_eof() {
@@ -228,6 +235,25 @@ pub fn parse_match_expression(input: &str) -> Result<FindExpr> {
         );
     }
     Ok(expression)
+}
+
+fn is_plain_text_query(input: &str) -> bool {
+    if input.len() >= 2 {
+        let bytes = input.as_bytes();
+        if matches!(
+            (bytes[0], bytes[input.len() - 1]),
+            (b'"', b'"') | (b'\'', b'\'')
+        ) {
+            return true;
+        }
+    }
+    !input.is_empty()
+        && !input
+            .chars()
+            .any(|character| matches!(character, '#' | '$' | '(' | ')'))
+        && !input
+            .split_whitespace()
+            .any(|token| matches!(token.to_ascii_uppercase().as_str(), "AND" | "OR" | "NOT"))
 }
 
 struct Parser<'a> {
@@ -539,6 +565,13 @@ mod tests {
     fn parses_plain_terms_and_repeated_terms() {
         let expression = combine_match_expressions(&["ipython".into(), "task".into()]).unwrap();
         assert!(matches!(expression, Some(FindExpr::And(items)) if items.len() == 2));
+    }
+
+    #[test]
+    fn parses_unquoted_plain_phrases_as_one_content_query() {
+        let expression = parse_match_expression("ipython task").unwrap();
+        assert!(matches!(expression, FindExpr::Text(predicate)
+            if predicate.field == FindTextField::Content && predicate.query == "ipython task"));
     }
 
     #[test]

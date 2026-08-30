@@ -28,8 +28,7 @@ use persisting_pchronicle::query::ChronicleQueryEngine;
 use persisting_pchronicle::storage::StoryCoords;
 use persisting_pchronicle::storage::{
     CatalogErrorPolicy, CatalogEventProvenance, CatalogSnapshotOptions, CatalogStorylineKey,
-    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount, search_storyline_documents_fts,
-    search_storyline_steps_fts, storyline_steps_fts_available,
+    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount, storyline_steps_fts_available,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -439,52 +438,73 @@ async fn explorer_runs(
 ) -> Result<Json<explorer::RunExplorerPage>, ApiError> {
     let query = api_query(query)?;
     let summaries = load_run_summaries(&state).await?;
-    let needle = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
-    let mut fts_matches = BTreeSet::new();
-    let mut fts_available = false;
-    let mut search_mode = if needle.is_some() { "memory" } else { "none" };
-    if let Some(needle) = needle {
+    let (fts_matches, fts_available, search_mode) = if query
+        .q
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
         let runtime = current_catalog(&state).await?;
-        let mut document_matches_by_table = BTreeMap::<String, BTreeSet<String>>::new();
-        for run in &summaries {
-            let Some(paths) = runtime
-                .snapshot
-                .storyline_table_paths(&run.dataset, &run.file)
-                .map_err(ApiError::internal)?
-            else {
-                continue;
-            };
-            let table_key = format!("{}@{}", paths.steps.display(), paths.steps_version);
-            let documents = if let Some(documents) = document_matches_by_table.get(&table_key) {
-                documents.clone()
-            } else {
-                match search_storyline_documents_fts(&paths, needle).await {
-                    Ok(documents) => {
-                        fts_available = true;
-                        let documents = documents.into_iter().collect::<BTreeSet<_>>();
-                        document_matches_by_table.insert(table_key, documents.clone());
-                        documents
-                    }
-                    Err(error) => {
-                        tracing::debug!(
-                            target: "persisting_pchronicle",
-                            "Storyline run FTS unavailable; falling back to metadata filter: {error:#}"
-                        );
-                        BTreeSet::new()
-                    }
-                }
-            };
-            if documents.contains(&run.document_id) {
-                fts_matches.insert(explorer::run_identity(run));
+        let raw = query.q.as_deref().unwrap_or_default().trim();
+        let expression = crate::combine_match_expressions(&[raw.to_owned()])
+            .map_err(|error| ApiError::invalid_request(error.to_string()))?
+            .ok_or_else(|| ApiError::invalid_request("search query must not be empty"))?;
+        let (predicate, fts_available, fts_errors) =
+            crate::find_expression_predicate(&runtime.snapshot, &expression, None)
+                .await
+                .map_err(ApiError::internal)?;
+        for error in fts_errors {
+            tracing::debug!(target: "persisting_pchronicle", "Run search FTS diagnostic: {error}");
+        }
+        let predicate = predicate.ok_or_else(|| {
+            ApiError::internal(anyhow::anyhow!(
+                "run search expression did not produce a predicate"
+            ))
+        })?;
+        let table = if expression.has_text() || expression.has_step_json() {
+            "steps"
+        } else {
+            "runs"
+        };
+        let mut matches = BTreeSet::new();
+        for dataset in runtime.snapshot.datasets() {
+            let sql = format!(
+                "SELECT DISTINCT _file_ AS source_path, document_id FROM {}.{} WHERE ({predicate})",
+                dataset.mount.name, table
+            );
+            let jsonl = runtime
+                .engine
+                .query_jsonl(&sql)
+                .await
+                .map_err(ApiError::internal)?;
+            for line in jsonl.lines().filter(|line| !line.trim().is_empty()) {
+                let row: Value = serde_json::from_str(line).map_err(|error| {
+                    ApiError::internal(anyhow::anyhow!("decode run search result: {error}"))
+                })?;
+                let Some(file) = row.get("source_path").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(document_id) = row.get("document_id").and_then(Value::as_str) else {
+                    continue;
+                };
+                matches.insert(format!(
+                    "{}\u{1f}{}\u{1f}{}",
+                    dataset.mount.name, file, document_id
+                ));
             }
         }
-        if fts_available {
-            search_mode = "fts";
-        }
+        let mode = if expression.has_text() && expression.has_json() {
+            "fts+json"
+        } else if expression.has_text() {
+            "fts"
+        } else {
+            "json"
+        };
+        (matches, fts_available, mode)
     } else {
         // The initial runs page has no query yet, but still advertises whether
         // its mounted Storyline sources support indexed full-text search.
         let runtime = current_catalog(&state).await?;
+        let mut fts_available = false;
         for run in &summaries {
             let Some(paths) = runtime
                 .snapshot
@@ -505,7 +525,8 @@ async fn explorer_runs(
                 ),
             }
         }
-    }
+        (BTreeSet::new(), fts_available, "none")
+    };
     Ok(Json(explorer::run_page_with_fts(
         summaries,
         &query,
@@ -1081,7 +1102,7 @@ async fn explorer_turns(
         .snapshot
         .storyline_table_paths(&loaded.run.dataset, &loaded.run.file)
         .map_err(ApiError::internal)?;
-    let fts_available = if let Some(paths) = paths.as_ref() {
+    let mut fts_available = if let Some(paths) = paths.as_ref() {
         match storyline_steps_fts_available(paths).await {
             Ok(available) => available,
             Err(error) => {
@@ -1110,30 +1131,69 @@ async fn explorer_turns(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        if let Some(paths) = paths {
-            match search_storyline_steps_fts(&paths, needle).await {
-                Ok(step_ids) => {
-                    search_mode = "fts";
-                    let step_ids = step_ids.into_iter().collect::<BTreeSet<_>>();
-                    let turns = loaded
-                        .turns
-                        .iter()
-                        .filter(|item| step_ids.contains(&item.turn.id))
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    (turns, None)
-                }
-                Err(error) => {
-                    tracing::debug!(
-                        target: "persisting_pchronicle",
-                        "Storyline FTS unavailable; falling back to in-memory turn search: {error:#}"
-                    );
-                    (loaded.turns.clone(), query.q.as_deref())
-                }
-            }
-        } else {
-            (loaded.turns.clone(), query.q.as_deref())
+        let expression = crate::combine_match_expressions(&[needle.to_owned()])
+            .map_err(|error| ApiError::invalid_request(error.to_string()))?
+            .ok_or_else(|| ApiError::invalid_request("search query must not be empty"))?;
+        let runtime = current_catalog(&state).await?;
+        let (predicate, available, fts_errors) = crate::find_expression_predicate(
+            &runtime.snapshot,
+            &expression,
+            Some(&loaded.run.file),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+        for error in fts_errors {
+            tracing::debug!(target: "persisting_pchronicle", "Turn search FTS diagnostic: {error}");
         }
+        fts_available = fts_available || available;
+        let turns = if expression.has_text() || expression.has_step_json() {
+            let predicate = predicate.ok_or_else(|| {
+                ApiError::internal(anyhow::anyhow!(
+                    "turn search expression did not produce a predicate"
+                ))
+            })?;
+            let sql = format!(
+                "SELECT DISTINCT step_id FROM {}.steps WHERE _file_ = {} AND document_id = {} AND session_id = {} AND ({predicate})",
+                loaded.run.dataset,
+                crate::sql_string(&loaded.run.file),
+                crate::sql_string(&loaded.run.document_id),
+                crate::sql_string(&loaded.run.session_id),
+            );
+            let jsonl = runtime
+                .engine
+                .query_jsonl(&sql)
+                .await
+                .map_err(ApiError::internal)?;
+            let step_ids = jsonl
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .filter_map(|line| {
+                    serde_json::from_str::<Value>(line)
+                        .ok()
+                        .and_then(|row| row.get("step_id").and_then(Value::as_i64))
+                })
+                .collect::<BTreeSet<_>>();
+            search_mode = if expression.has_text() && expression.has_json() {
+                "fts+json"
+            } else if expression.has_text() {
+                "fts"
+            } else {
+                "json"
+            };
+            loaded
+                .turns
+                .iter()
+                .filter(|item| step_ids.contains(&item.turn.id))
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            // Run-level JSON predicates have no step identity to display in
+            // this view. Keep the detail search scoped to Step expressions,
+            // matching the CLI find scope instead of applying an ad-hoc
+            // in-memory text filter.
+            Vec::new()
+        };
+        (turns, None)
     } else {
         (loaded.turns.clone(), query.q.as_deref())
     };

@@ -1066,15 +1066,19 @@ fn RunsExplorer(
     let page_next = page.as_ref().map_or(0, |page| page.snapshot.next_offset);
     let page_has_more = page.as_ref().is_some_and(|page| page.snapshot.has_more);
     let search = page.as_ref().map(|page| page.search.clone()).unwrap_or_default();
-    let search_label = if search.fts_available {
-        "FTS available · Jieba"
-    } else {
-        "Metadata filter"
+    let search_label = match search.mode.as_str() {
+        "fts" if search.fts_available => "FTS · Jieba",
+        "fts+json" if search.fts_available => "FTS + JSONB · Jieba",
+        "json" => "JSONB",
+        "none" if search.fts_available => "FTS available · Jieba",
+        "none" => "FTS unavailable",
+        _ if search.fts_available => "FTS · Jieba",
+        _ => "FTS unavailable",
     };
     let search_placeholder = if search.fts_available {
-        "Search runs and content (FTS · Jieba)"
+        "Search runs/content or JSONB (find syntax)"
     } else {
-        "Agent, session, root, or status"
+        "Search unavailable for this Dataset"
     };
     rsx! {
         section { class: "pc2-page",
@@ -1207,7 +1211,7 @@ fn RunDetailWorkspace(
     let source_for_list = source.clone();
     let query_for_list = query.clone();
     let search_label = match search.mode.as_str() {
-        "fts" => "FTS · Jieba",
+        "fts" if search.fts_available => "FTS · Jieba",
         "memory" if search.fts_available => "Memory fallback",
         "memory" => "Memory filter",
         _ if search.fts_available => "FTS available · Jieba",
