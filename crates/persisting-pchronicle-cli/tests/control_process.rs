@@ -463,8 +463,7 @@ async fn two_serve_processes_accept_one_fresh_projection_winner() -> Result<()> 
         children.push(child);
     }
     for child in &mut children {
-        let ready =
-            read_serve_ready(&mut BufReader::new(child.stdout.take().unwrap())).await?;
+        let ready = read_serve_ready(&mut BufReader::new(child.stdout.take().unwrap())).await?;
         assert!(ready.control.is_some());
     }
     let target = target_for(&source).await?;
