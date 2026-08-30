@@ -1209,6 +1209,7 @@ async fn find_locates_runs_sessions_and_steps_in_example_datasets() -> Result<()
     assert_eq!(value["matches"][0]["step_id"], 2);
     assert_eq!(value["matches"][0]["step_source"], "agent");
     assert_eq!(value["matches"][0]["effective_kind"], "autonomous");
+    assert!(value["matches"][0]["preview"].as_str().is_some());
     Ok(())
 }
 

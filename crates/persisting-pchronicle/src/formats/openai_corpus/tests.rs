@@ -847,6 +847,44 @@ fn canonical_export_preserves_message_and_argument_semantics() {
 }
 
 #[test]
+fn stringified_openai_content_is_restored_to_structured_values() {
+    let parts = json!([
+        {"type": "text", "text": "hello"},
+        {"type": "image", "image_url": {"url": "https://example.test/image.png"}}
+    ]);
+    let input = json!({"session_steps": [{
+        "session_id": "s",
+        "step_id": 1,
+        "messages": [{"role": "user", "content": parts.to_string()}],
+        "response": {"role": "assistant", "content": parts.to_string()}
+    }]});
+
+    let stories = parse_openai_msg_corpus_value(&input, "stringified.json").unwrap();
+    assert!(stories[0].turns[0].message.is_array());
+    assert!(stories[0].turns[1].message.is_array());
+    assert_eq!(stories[0].turns[0].message, parts);
+    assert_eq!(stories[0].turns[1].message, parts);
+
+    let recovered = recover_openai_msg_files(&stories).unwrap();
+    assert_eq!(
+        recovered[0].document["session_steps"][0]["messages"][0]["content"],
+        parts
+    );
+    assert_eq!(
+        recovered[0].document["session_steps"][0]["response"]["content"],
+        parts
+    );
+}
+
+#[test]
+fn ordinary_json_text_content_remains_text() {
+    let array_text = json!("[not valid JSON]");
+    let object_text = json!(r#"{"kind":"plain text"}"#);
+    assert_eq!(restore_openai_content(&array_text), array_text);
+    assert_eq!(restore_openai_content(&object_text), object_text);
+}
+
+#[test]
 fn envelope_roundtrip_preserves_root_metadata() {
     let input = json!({
         "session_id": "s-1",

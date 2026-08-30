@@ -1025,7 +1025,7 @@ fn ImportPathTreeNodeView(
             summary { class: "pc2-path-row branch", span { class: "pc2-path-toggle", "›" } span { class: "pc2-path-name", span { class: "pc2-path-icon folder" } span { "{node.name}" } } span {} code { "{count}" } }
             div { class: "pc2-path-children",
                 for run in node.runs {
-                    PathRunRow { key: "file-{run.path}", run: run.clone(), name: run.session_id.clone(), chat_sessions: chat_sessions.clone(), selected_path: selected_path.clone(), on_select, on_open_chat }
+                    PathRunRow { key: "path-{run.path}", run: run.clone(), name: run.session_id.clone(), chat_sessions: chat_sessions.clone(), selected_path: selected_path.clone(), on_select, on_open_chat }
                 }
                 for child in node.children.into_values() {
                     ImportPathTreeNodeView { key: "{child.name}", node: child, chat_sessions: chat_sessions.clone(), selected_path: selected_path.clone(), on_select, on_open_chat }

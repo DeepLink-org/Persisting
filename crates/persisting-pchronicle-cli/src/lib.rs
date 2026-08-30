@@ -1144,6 +1144,10 @@ struct FindMatch {
     effective_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timestamp: Option<String>,
+    /// A bounded piece of source content so a match can be identified without
+    /// issuing a second query immediately.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2686,6 +2690,11 @@ async fn run_find(
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).context("decode pChronicle find match"))
         .collect::<Result<Vec<FindMatch>>>()?;
+    for candidate in &mut matches {
+        if let Some(preview) = candidate.preview.as_mut() {
+            *preview = truncate(preview, 320);
+        }
+    }
     let truncated = matches.len() > args.max_results;
     matches.truncate(args.max_results);
     let response = FindResponse {
@@ -2916,13 +2925,17 @@ fn find_sql(args: &FindArgs, fts_predicate: Option<&str>) -> Result<String> {
     let table = if step_lookup { "steps" } else { "runs" };
     let projection = if step_lookup {
         "_file_ AS source_path, document_id, run_id, session_id, step_id, \
-         source AS step_source, effective_kind, timestamp"
+         source AS step_source, effective_kind, timestamp, \
+         COALESCE(NULLIF(message_value, ''), NULLIF(reasoning_content, ''), \
+                  NULLIF(observation, ''), NULLIF(prompt, ''), model_name) AS preview"
     } else {
         "_file_ AS source_path, document_id, run_id, session_id, \
          CAST(NULL AS BIGINT) AS step_id, \
          CAST(NULL AS VARCHAR) AS step_source, \
          CAST(NULL AS VARCHAR) AS effective_kind, \
-         CAST(NULL AS VARCHAR) AS timestamp"
+         CAST(NULL AS VARCHAR) AS timestamp, \
+         COALESCE(NULLIF(task, ''), NULLIF(prompt, ''), NULLIF(notes, ''), \
+                  NULLIF(agent_name, ''), agent_model_name) AS preview"
     };
     let limit = args
         .max_results
@@ -2979,6 +2992,7 @@ fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<(
                 "STEP SOURCE",
                 "KIND",
                 "TIMESTAMP",
+                "PREVIEW",
             ]
             .into_iter()
             .map(str::to_string)
@@ -2986,7 +3000,7 @@ fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<(
         );
     } else {
         rows.push(
-            ["SOURCE", "DOCUMENT ID", "RUN ID", "SESSION ID"]
+            ["SOURCE", "DOCUMENT ID", "RUN ID", "SESSION ID", "PREVIEW"]
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
@@ -2999,6 +3013,15 @@ fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<(
             candidate.run_id.as_deref().unwrap_or("-").to_string(),
             candidate.session_id.clone(),
         ];
+        if !step_lookup {
+            row.push(
+                candidate
+                    .preview
+                    .as_deref()
+                    .map(|value| truncate(value, 96))
+                    .unwrap_or_else(|| "-".into()),
+            );
+        }
         if step_lookup {
             row.extend([
                 candidate
@@ -3012,6 +3035,11 @@ fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<(
                     .unwrap_or("-")
                     .to_string(),
                 candidate.timestamp.as_deref().unwrap_or("-").to_string(),
+                candidate
+                    .preview
+                    .as_deref()
+                    .map(|value| truncate(value, 96))
+                    .unwrap_or_else(|| "-".into()),
             ]);
         }
         rows.push(row);

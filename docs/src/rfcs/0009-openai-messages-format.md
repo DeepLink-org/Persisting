@@ -45,6 +45,11 @@ OpenaiToolCall
 └── function: { name: string?, arguments: any?, ... }
 ```
 
+`content` 保留 OpenAI 的原始 JSON 类型。对于少数把 content parts 数组再次编码为字符串的
+生产者，reader 会在其字符串内容是合法 JSON 数组（或已知 content-part 对象）时还原为结构化
+值；普通文本字符串保持不变。encoder 使用同一规则写回 `content`，避免把 `message_value`
+中的 parts 退化为不可读的 JSON 字符串。
+
 每个 row 必须有非空 `session_id`、正整数且在 session 内唯一的 `step_id`，并且必须能从
 `response` 或 `messages` 选出一个有效 assistant output。相同 session 中非空 run identity
 必须一致；turn id 计算不得溢出。未知字段不扩张 Storyline schema，按本 RFC 进入

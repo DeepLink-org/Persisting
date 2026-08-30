@@ -72,7 +72,9 @@ Combine identity, text, and JSON predicates to narrow a lookup. `--match`
 selects Storyline `steps`; `--json` alone searches run-level JSONB columns,
 while `--match` together with `--json` searches step-level `metrics` and
 `extra`. Use `--source` when a source-local identity or JSON attribute is
-ambiguous. Do not use the removed `--query`, `--fts`, or `--jsonb` aliases.
+ambiguous. Each match includes a bounded `preview` field (and the table output
+shows it) so you can identify the candidate before issuing a follow-up query.
+Do not use the removed `--query`, `--fts`, or `--jsonb` aliases.
 
 ## Common requests: shortest safe path
 

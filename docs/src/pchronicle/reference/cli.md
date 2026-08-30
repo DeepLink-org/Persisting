@@ -79,6 +79,8 @@ pchronicle find ./dataset --json '$.tags=important' --json '$.priority=2' --form
 repeat it to require all terms in one Step. `--json` performs exact JSONPath
 value matching across JSONB columns; repeat it to require all predicates. Do
 not use the removed `--query`, `--fts`, or `--jsonb` aliases.
+Each match includes a bounded `preview` field to make candidate selection
+possible before a follow-up query.
 
 ### Query
 

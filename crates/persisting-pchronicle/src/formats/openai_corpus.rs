@@ -449,6 +449,46 @@ fn into_openai_object(value: Value) -> std::result::Result<Map<String, Value>, V
     }
 }
 
+/// Restore OpenAI content that some producers serialize twice.
+///
+/// OpenAI content is either text or a structured value (most commonly an
+/// array of content parts). A few exporters write the latter as a JSON string;
+/// keeping that string would make the canonical Storyline message lose its
+/// native type and would render the whole escaped document as text. Arrays are
+/// unambiguous OpenAI content values, while objects are decoded only when they
+/// have a known content-part shape so ordinary JSON text remains text.
+fn restore_openai_content(value: &Value) -> Value {
+    let Value::String(text) = value else {
+        return value.clone();
+    };
+    let trimmed = text.trim();
+    let looks_structured = trimmed.starts_with('[')
+        || (trimmed.starts_with('{')
+            && serde_json::from_str::<Value>(trimmed)
+                .ok()
+                .is_some_and(|value| openai_content_object(&value)));
+    if !looks_structured {
+        return value.clone();
+    }
+    serde_json::from_str(trimmed).unwrap_or_else(|_| value.clone())
+}
+
+fn openai_content_object(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    [
+        "type",
+        "text",
+        "image_url",
+        "image_bytes",
+        "input_audio",
+        "media_type",
+    ]
+    .iter()
+    .any(|key| object.contains_key(*key))
+}
+
 fn remove_matching_string(object: &mut Map<String, Value>, key: &str, expected: &str) {
     if object.get(key).and_then(Value::as_str) == Some(expected) {
         object.remove(key);
@@ -748,7 +788,7 @@ pub(crate) fn has_openai_provenance(story: &StorylineDocument) -> bool {
 fn encode_agent_message(turn: &StorylineTurn) -> Result<Value> {
     let mut message = json!({
         "role": "assistant",
-        "content": turn.message,
+        "content": restore_openai_content(&turn.message),
     });
     if let Some(reasoning) = &turn.reasoning_content {
         message["reasoning_content"] = Value::String(reasoning.clone());
@@ -771,7 +811,10 @@ fn encode_context_turns(turns: &[StorylineTurn]) -> Result<Vec<Value>> {
                 turn.id
             ),
         };
-        let mut message = json!({"role": role, "content": turn.message});
+        let mut message = json!({
+            "role": role,
+            "content": restore_openai_content(&turn.message),
+        });
         if role == "assistant" {
             if let Some(reasoning) = &turn.reasoning_content {
                 message["reasoning_content"] = Value::String(reasoning.clone());
@@ -995,7 +1038,12 @@ pub(crate) fn synthesize_openai_msg_corpus_value(stories: &[StorylineDocument]) 
             let step_id =
                 encoded_openai_step_id(story, context_count, interaction_index, user, agent)?;
             let mut messages = history.clone();
-            let user_message = user.map(|user| json!({"role": "user", "content": user.message}));
+            let user_message = user.map(|user| {
+                json!({
+                    "role": "user",
+                    "content": restore_openai_content(&user.message),
+                })
+            });
             if let Some(user_message) = &user_message {
                 messages.push(user_message.clone());
             }
@@ -1189,7 +1237,10 @@ fn openai_context_turn(id: i64, message: &Map<String, Value>) -> Option<Storylin
         }),
         timestamp: None,
         source: source.into(),
-        message: message.get("content").cloned().unwrap_or(Value::Null),
+        message: message
+            .get("content")
+            .map(restore_openai_content)
+            .unwrap_or(Value::Null),
         reasoning_content: None,
         reasoning_effort: None,
         tool_calls,
@@ -1407,8 +1458,13 @@ fn rows_to_storyline(
                     .get("refusal")
                     .filter(|value| content_has_value(value))
             })
-            .cloned()
-            .unwrap_or_else(|| output.get("content").cloned().unwrap_or(Value::Null));
+            .map(restore_openai_content)
+            .unwrap_or_else(|| {
+                output
+                    .get("content")
+                    .map(restore_openai_content)
+                    .unwrap_or(Value::Null)
+            });
         let reasoning_content = output
             .get("reasoning_content")
             .and_then(Value::as_str)
@@ -1581,7 +1637,12 @@ fn last_user_message(messages: Option<&Value>) -> Option<(usize, Value)> {
         .enumerate()
         .rev()
         .find(|(_, message)| message.get("role").and_then(Value::as_str) == Some("user"))
-        .and_then(|(index, message)| message.get("content").cloned().map(|value| (index, value)))
+        .and_then(|(index, message)| {
+            message
+                .get("content")
+                .map(restore_openai_content)
+                .map(|value| (index, value))
+        })
 }
 
 fn distribute_tool_results(
@@ -1602,7 +1663,10 @@ fn distribute_tool_results(
         }
         let result = json!({
             "source_call_id": source_call_id,
-            "content": message.get("content").cloned().unwrap_or(Value::Null),
+            "content": message
+                .get("content")
+                .map(restore_openai_content)
+                .unwrap_or(Value::Null),
         });
         let previous = previous_turns.iter_mut().rev().find(|turn| {
             turn.tool_calls
@@ -1644,7 +1708,10 @@ fn encode_tool_results(observation: Option<&Value>) -> Vec<Value> {
             Some(json!({
                 "role": "tool",
                 "tool_call_id": source_call_id,
-                "content": result.get("content").cloned().unwrap_or(Value::Null),
+                "content": result
+                    .get("content")
+                    .map(restore_openai_content)
+                    .unwrap_or(Value::Null),
             }))
         })
         .collect()

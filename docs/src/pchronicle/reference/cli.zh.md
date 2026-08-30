@@ -189,7 +189,8 @@ pchronicle find ./dataset \
 `source_path` 可以供下一次查询消除歧义。`--match` 搜索 Storyline Step 内容，多个关键词必须同时
 命中同一个 Step，并使用 FTS/Jieba 索引。`--json` 按 JSONPath 对 JSONB 列做精确值匹配，多个条件
 同时生效。不要使用已移除的 `--query`、`--fts` 或 `--jsonb` 别名。使用 `--format` 和
-`--max-results` 控制结果形式和数量。
+`--max-results` 控制结果形式和数量。每条结果还包含有界的 `preview` 摘要，便于在继续查询前
+判断候选是否正确。
 
 ### 2.7 `query`
 
