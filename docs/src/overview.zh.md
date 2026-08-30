@@ -16,8 +16,7 @@ Agent 做过什么所需的历史。
 
 ## 当前用户工作流
 
-当前产品从 Agent 执行与历史进入。直接选择当前任务对应的入口；两者都不是另一个产品的
-准备步骤。
+当前产品是从执行到可查询历史的路径。直接选择当前任务对应的入口。
 
 | 命令 | 适用任务 | 持久产物 |
 | --- | --- | --- |
@@ -64,9 +63,9 @@ alias；其中的数据既可以由 Persisting capture，也可以来自支持�
 
 [查看第一个 Dataset →](pchronicle/get-started.md)
 
-## 可选集成
+## 贯通路径：从执行到可查询历史
 
-执行路径与历史路径可以通过显式配置的 capture 连接：
+配置 capture 后，两条工作流连成一条路径：
 
 ```text
 pVisor Run ── configured Gateway/lifecycle capture ──> pChronicle Dataset
@@ -76,9 +75,13 @@ External trajectory files ──────────────────
 
 当前交接会发布 Gateway 轨迹 event 和选定的 lifecycle record，但不会自动发布完整的私有
 Run Bundle、全部 staged effect 或所有 provider 特定 evidence。类似地，导入外部轨迹不会
-事后补造原始记录中从未存在的执行控制。
+事后补造原始记录中从未存在的执行控制。详见
+[捕获 Agent 轨迹](pvisor/guides/capture.md)。
 
-![Persisting 当前工作流与可选集成](assets/diagrams/persisting/system-products.svg)
+两者仍可独立使用：pVisor 可以在没有 pChronicle 的情况下完成一次 Run；pChronicle 也可以
+查询从未经过 pVisor 的 Dataset。
+
+![Persisting 当前工作流与从执行到历史的贯通路径](assets/diagrams/persisting/system-products.svg)
 
 ## 下一步
 

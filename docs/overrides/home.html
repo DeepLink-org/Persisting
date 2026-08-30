@@ -116,26 +116,29 @@ pchronicle onboard query</code></pre>
       <div class="persisting-shell">
         {% if config.theme.language == "zh" %}
         <p class="persisting-kicker">整体关系</p>
-        <h2>可以组合，但不是强制流水线</h2>
+        <h2>独立可用，连通更强</h2>
         <p class="persisting-lead">
-          pVisor 负责执行路径，pChronicle 负责历史路径。配置 capture 后，部分运行事件可以进入
-          pChronicle；外部轨迹也可以直接成为 Dataset。
+          pVisor 从一次 Agent Run 产生可持久化、可审查的事实；pChronicle 让轨迹历史可查询。
+          配置 capture 后，部分运行事件可以进入 pChronicle Dataset；外部轨迹也可以直接成为
+          Dataset。两者仍可单独使用。
         </p>
         {% else %}
         <p class="persisting-kicker">HOW IT FITS TOGETHER</p>
-        <h2>Composable, not a mandatory pipeline</h2>
+        <h2>Use either. Connect both.</h2>
         <p class="persisting-lead">
-          pVisor owns the execution path; pChronicle owns the history path.
-          Configured capture can connect selected runtime events to pChronicle,
-          while external trajectories can enter as Datasets directly.
+          pVisor produces persistable, reviewable facts from one Agent Run;
+          pChronicle makes trajectory history queryable. Configured capture
+          connects selected runtime events to a pChronicle Dataset; external
+          trajectories can enter as Datasets directly. Each product also works
+          on its own.
         </p>
         {% endif %}
 
         <figure class="persisting-architecture-figure">
           {% if config.theme.language == "zh" %}
-          <img src="{{ base_url }}/assets/diagrams/persisting/system-products.svg" alt="Persisting 执行路径、历史路径与可选集成" />
+          <img src="{{ base_url }}/assets/diagrams/persisting/system-products.svg" alt="Persisting 从执行到可查询历史的贯通路径" />
           {% else %}
-          <img src="{{ base_url }}/assets/diagrams/persisting/system-products.svg" alt="Persisting execution path, history path, and optional integration" />
+          <img src="{{ base_url }}/assets/diagrams/persisting/system-products.svg" alt="Persisting throughline from execution to queryable history" />
           {% endif %}
         </figure>
       </div>
@@ -153,7 +156,7 @@ pchronicle onboard query</code></pre>
 
         <div class="persisting-link-grid">
           <a href="overview/">
-            {% if config.theme.language == "zh" %}<strong>选择工作流</strong><span>理解两个产品入口和可选集成</span>{% else %}<strong>Choose a workflow</strong><span>Understand the two product entry points and optional integration</span>{% endif %}
+            {% if config.theme.language == "zh" %}<strong>选择工作流</strong><span>理解两个产品入口与贯通路径</span>{% else %}<strong>Choose a workflow</strong><span>Understand the two product entry points and the connected path</span>{% endif %}
           </a>
           <a href="pvisor/guides/review-apply/">
             {% if config.theme.language == "zh" %}<strong>审查 Agent 修改</strong><span>理解 staged Effect 与选择性 apply</span>{% else %}<strong>Review Agent changes</strong><span>Understand staged Effects and selective apply</span>{% endif %}

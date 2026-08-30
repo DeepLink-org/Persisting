@@ -7,17 +7,17 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Persisting connects durable model state—parameters and KV caches—with durable
-Agent history—trajectories and execution records. The current product provides
-two commands:
+Agent history—trajectories and execution records. The current product is the
+path from execution to queryable history:
 
-- **`pvisor`** runs one Agent in a controlled environment and lets you review
-  its effects before accepting them;
+- **`pvisor`** is an executor that produces persistable, reviewable facts:
+  staged Effects and execution records from one Agent Run;
 - **`pchronicle`** browses, queries, exchanges, and serves trajectory Datasets.
 
-Each works on its own; together they preserve a path from execution to
-queryable history.
+Each command works on its own. Connected, they cover `pvisor run --safe` →
+review/apply → configured capture → a queryable Dataset.
 
-![Current Persisting workflows and optional integration](docs/src/assets/diagrams/persisting/system-products.svg)
+![Current Persisting workflows and the execution-to-history throughline](docs/src/assets/diagrams/persisting/system-products.svg)
 
 ## Install
 
@@ -60,6 +60,9 @@ pchronicle agent codex ./trajectory-data --ask "Which tools fail most often?"
 The onboarding flow creates a temporary example Dataset—no source checkout
 required. `pchronicle import` accepts ATIF, ACTF, and OpenAI Messages;
 `pchronicle serve` starts a loopback-only, read-only Dataset UI and API.
+
+After capture is configured, selected pVisor Run events can enter a pChronicle
+Dataset. See the [capture guide](https://deeplink-org.github.io/Persisting/pvisor/guides/capture/).
 
 ## Current maturity
 
