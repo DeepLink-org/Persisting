@@ -19,7 +19,9 @@ pChronicle 是 path-first 的 Agent 历史层。它发现本地目录和对象�
 | 只读 Warehouse | 为 Web/API review 静态挂载 Dataset | 配置与可重建 cache |
 
 pChronicle 不是 scheduler、Agent runtime、全局 Dataset 控制面、分布式 SQL 服务或时序数据库。
-Loopback server 没有 authentication，也不是生产多租户 endpoint。
+Warehouse 只接受 loopback bind。未使用 `--catalog-config` 时没有用户鉴权；启用后 catalog
+与数据面路由要求用户 ak/sk 请求头，这仍不是公网多租户服务。见
+[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。
 
 ## 数据层次与 Ownership
 
@@ -99,7 +101,8 @@ Dataset table 先按 Source 裁剪，再打开命中的固定 version；cache �
 generation 绑定。
 
 Web 与 API 是同一读取模型的 consumer，不形成新事实源。未知 API route 保持 error，不进入
-SPA fallback；没有 authentication 时只接受 loopback listener。
+SPA fallback；只接受 loopback listener。未使用 `--catalog-config` 时没有用户鉴权；catalog
+模式见 [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。
 
 用户配置见 [Warehouse 指南](../guides/serve.md)，精确 route 与 Gateway 组合见
 [`pchronicle` 参考](../reference/cli.md)。
@@ -113,11 +116,12 @@ SPA fallback；没有 authentication 时只接受 loopback listener。
 | 发布 | 新发布成功前旧 Snapshot 保持可读 | 所有 writer 自动 merge retry |
 | 查询 | 有资源限制的只读执行 | 任意 mutation 或无限制服务查询 |
 | projection | 声明范围内的 lineage 与可重建性 | 没有 generation 记录的 freshness |
-| 服务 | loopback-only 静态读取面 | 带认证的多租户 Warehouse |
+| 服务 | loopback-only 静态读取面；catalog 模式下数据面用用户钥鉴权 | 公网多租户 Warehouse |
 
 ## 相关设计
 
 - [Dataset Catalog](catalog.md)：discovery、Snapshot 构造、惰性 Source resolve 与裁剪。
+- [RFC-0013 Catalog Server](../../rfcs/0013-pchronicle-warehouse-catalog.md)：远程 library 目录、ACL、换票与 query worker。
 - [运行存储](trajectory-storage.md)：canonical fact、存储布局与写入 ownership。
 - [Storyline Lance](storyline-lance.md)：三表 projection、内容层、发布与维护。
 - [记录数据、视图与版本](../concepts/facts-and-projections.md)：这些层次的用户心智模型。

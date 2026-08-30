@@ -539,6 +539,76 @@ async fn alias_s3_credentials_are_stored_separately_and_applied_on_expansion() -
     Ok(())
 }
 
+#[tokio::test]
+async fn catalog_alias_stores_user_keys_and_rejects_endpoint() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let config = temporary.path().join("config.toml");
+    let config_arg = config.to_string_lossy().into_owned();
+
+    let missing_keys = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "add",
+        "team",
+        "catalog://127.0.0.1:8081",
+    ])?;
+    let error = run(missing_keys, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("require --ak and --sk"), "{error}");
+
+    let with_endpoint = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "add",
+        "team",
+        "catalog://127.0.0.1:8081",
+        "--endpoint",
+        "http://127.0.0.1:9000",
+        "--ak",
+        "USER_AK",
+        "--sk",
+        "USER_SK",
+    ])?;
+    let error = run(with_endpoint, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("do not accept --endpoint"), "{error}");
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "add",
+        "team",
+        "catalog://127.0.0.1:8081",
+        "--ak",
+        "USER_AK",
+        "--sk",
+        "USER_SK",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+    let config_text = fs::read_to_string(&config)?;
+    assert!(config_text.contains("team = \"catalog://127.0.0.1:8081\""));
+    assert!(config_text.contains("access_key = \"USER_AK\""));
+    assert!(config_text.contains("secret_key = \"USER_SK\""));
+    assert!(!config_text.contains("alias_endpoints"));
+    assert!(!config_text.contains("BACKEND"));
+
+    let error = expand_dataset_reference("@team", Some(&config), false)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("requires a dataset"), "{error}");
+    Ok(())
+}
+
 #[test]
 fn alias_rejects_markdown_endpoint_links() {
     let error = super::s3_endpoint_for(
@@ -3612,6 +3682,8 @@ fn serve_args_with_storage(storage: Vec<String>) -> ServeArgs {
         gateway_object_store_manifest_mode: GatewayObjectStoreManifestMode::default(),
         gateway_stream_markdown: false,
         debug: false,
+        catalog_config: None,
+        catalog_query_worker: false,
     }
 }
 

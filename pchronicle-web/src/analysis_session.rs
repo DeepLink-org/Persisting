@@ -2756,10 +2756,7 @@ mod tests {
         let restored = restored_revision(revision);
         assert_eq!(restored.error_code.as_deref(), Some("invalid_request"));
         assert_eq!(restored.error_request_id.as_deref(), Some("rid-analysis"));
-        assert_eq!(
-            restored.error_engine_detail.as_deref(),
-            Some("engine boom")
-        );
+        assert_eq!(restored.error_engine_detail.as_deref(), Some("engine boom"));
         let mut retry = restored;
         retry.begin_plan_generation().unwrap();
         assert!(retry.error_code.is_none());

@@ -62,6 +62,7 @@ pchronicle alias add prod s3://bucket/evals
 pchronicle alias add secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
 pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --ak 123 --sk 123
 pchronicle alias add regional s3://bucket/evals --region us-west-2
+pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 pchronicle alias set-url prod s3://new-bucket/evals
 pchronicle status @prod
 ```
@@ -76,6 +77,12 @@ For S3-compatible services such as MinIO, pass the endpoint with `--endpoint`.
 It is stored separately and applied as `AWS_ENDPOINT_URL_S3` when the alias is
 used. Keep the Dataset URI in the form `s3://bucket/prefix`; do not put the
 service host and port in that URI.
+A `catalog://127.0.0.1:PORT` alias is a namespace. `@team/prod` fetches a ticket
+for library `prod`; `@team` by itself is not a Dataset. Catalog aliases require
+`--ak` and `--sk` and reject `--endpoint` and `--region`. Backend object-store
+keys stay on the catalog server. The catalog namespace, ticket, and process
+model are specified in
+[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md).
 For `http://` endpoints, pChronicle also enables `AWS_ALLOW_HTTP` automatically
 for local S3-compatible services such as MinIO.
 `alias set-url` accepts the same `--endpoint` option and preserves the existing
@@ -192,6 +199,7 @@ pchronicle serve
    [--gateway-split-idle DURATION]]
   [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
   [--gateway-stream-markdown] [--gateway-debug]
+  [--catalog-config FILE]
   [<[NAME=]DATASET> ...]
 ```
 
@@ -206,6 +214,9 @@ pchronicle serve \
 Every listener must use a loopback address. A bare single Dataset is mounted as
 `default`; with several Datasets, use `NAME=DATASET` when a stable mount name is
 needed. Control requires a mount named `default`.
+`--catalog-config FILE` serves a catalog directory instead of opening libraries
+in the parent process. Pair it with `alias add NAME catalog://127.0.0.1:PORT --ak --sk`.
+See [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md).
 The config-free Gateway accepts canonical trajectory events at
 `POST /v1/events`. `--gateway-dataset` is an output URI and is auto-mounted;
 it is no longer a mounted Dataset name. Split templates accept the exact

@@ -12,6 +12,7 @@ pchronicle serve
    [--gateway-split-idle DURATION]]
   [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
   [--gateway-stream-markdown] [--gateway-debug]
+  [--catalog-config FILE]
   [<[NAME=]DATASET> ...]
 ```
 
@@ -37,6 +38,25 @@ pchronicle serve \
 Mount name 会成为 SQL schema 和 API 名称。需要稳定名称时使用 `NAME=DATASET`。
 挂载多个裸路径时，pChronicle 会从各路径末段生成名称；这些名称可能随路径变化，因此可复用的
 命令仍应显式指定 mount name。
+
+## 启动 catalog
+
+```bash
+pchronicle serve --catalog-config catalog.toml --listen 127.0.0.1:8081
+```
+
+`catalog.toml` 列出 libraries 和 users。父进程不打开这些库。Web UI 通过请求头发送用户
+ak/sk；查询在一次性 worker 中执行，worker 只拿到该用户被授权的 mounts。另一终端：
+
+```bash
+pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
+pchronicle query @team/prod 'SELECT 1'
+```
+
+`@team` 是 catalog 命名空间，不是 Dataset。`@team/prod` 向 catalog 换取 `prod` 的票。
+同一 catalog 文件里所有 `s3://` 库必须共用同一组 endpoint、region 和后端密钥。
+listener 仍只允许 loopback。设计见
+[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。
 
 ## 启用 Control 或 Gateway 集成
 

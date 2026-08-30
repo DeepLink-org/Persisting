@@ -3,7 +3,7 @@ use crate::model::{
     CatalogTree, PhysicalFileLayout, PhysicalLayout, PhysicalPagePreview, PhysicalSource,
     QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, TurnDetail, TurnPage,
 };
-use gloo_net::http::{Request, Response};
+use gloo_net::http::{Request, RequestBuilder, Response};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -127,6 +127,15 @@ async fn json_checked<T: DeserializeOwned>(
         .map_err(|error| ApiFailure::network(error.to_string()))
 }
 
+fn with_catalog_headers(builder: RequestBuilder) -> RequestBuilder {
+    let Some((access_key, secret_key)) = crate::catalog_auth::credentials() else {
+        return builder;
+    };
+    builder
+        .header("x-pchronicle-access-key", &access_key)
+        .header("x-pchronicle-secret-key", &secret_key)
+}
+
 pub async fn explorer_runs(
     q: &str,
     dataset: &str,
@@ -148,7 +157,7 @@ pub async fn explorer_runs(
         urlencoding::encode(path),
         urlencoding::encode(file),
     );
-    json_checked(Request::get(&url).send().await).await
+    json_checked(with_catalog_headers(Request::get(&url)).send().await).await
 }
 
 pub async fn explorer_tree(dataset: &str, prefix: &str) -> Result<CatalogTree, ApiFailure> {
@@ -157,12 +166,12 @@ pub async fn explorer_tree(dataset: &str, prefix: &str) -> Result<CatalogTree, A
         urlencoding::encode(dataset),
         urlencoding::encode(prefix),
     );
-    json_checked(Request::get(&url).send().await).await
+    json_checked(with_catalog_headers(Request::get(&url)).send().await).await
 }
 
 pub async fn run_analysis(run: &RunSummary) -> Result<RunAnalysis, ApiFailure> {
     json_checked(
-        Request::get(&format!("/api/explorer/run?{}", run.query()))
+        with_catalog_headers(Request::get(&format!("/api/explorer/run?{}", run.query())))
             .send()
             .await,
     )
@@ -176,15 +185,15 @@ pub async fn turns(run: &RunSummary, q: &str, source: &str) -> Result<TurnPage, 
         urlencoding::encode(q),
         urlencoding::encode(source),
     );
-    json_checked(Request::get(&url).send().await).await
+    json_checked(with_catalog_headers(Request::get(&url)).send().await).await
 }
 
 pub async fn turn_detail(run: &RunSummary, turn_id: i64) -> Result<TurnDetail, ApiFailure> {
     json_checked(
-        Request::get(&format!(
+        with_catalog_headers(Request::get(&format!(
             "/api/explorer/turn?{}&turn_id={turn_id}",
             run.query()
-        ))
+        )))
         .send()
         .await,
     )
@@ -204,7 +213,7 @@ async fn query_evidence_with_budget(
     max_rows: usize,
     max_bytes: usize,
 ) -> Result<QueryEvidence, ApiFailure> {
-    let request = Request::post("/api/query/evidence")
+    let request = with_catalog_headers(Request::post("/api/query/evidence"))
         .json(&json!({ "sql": sql, "max_rows": max_rows, "max_bytes": max_bytes }))
         .map_err(|error| ApiFailure::network(error.to_string()))?;
     json_checked(request.send().await).await
@@ -215,7 +224,7 @@ pub async fn compile_analysis(
     snapshot_id: &str,
     scope: &AnalysisScope,
 ) -> Result<CompiledQuery, CompileFailure> {
-    let request = Request::post("/api/analysis/compile")
+    let request = with_catalog_headers(Request::post("/api/analysis/compile"))
         .json(&json!({
             "spec": spec,
             "snapshot_id": snapshot_id,
@@ -238,16 +247,31 @@ pub async fn compile_analysis(
 }
 
 pub async fn query_catalog() -> Result<QueryCatalog, ApiFailure> {
-    json_checked(Request::get("/api/query/tables").send().await).await
+    json_checked(
+        with_catalog_headers(Request::get("/api/query/tables"))
+            .send()
+            .await,
+    )
+    .await
 }
 
 pub async fn refresh_catalog() -> Result<(), ApiFailure> {
-    send_checked(Request::post("/api/catalog").send().await).await?;
+    send_checked(
+        with_catalog_headers(Request::post("/api/catalog"))
+            .send()
+            .await,
+    )
+    .await?;
     Ok(())
 }
 
 pub async fn physical_sources() -> Result<Vec<PhysicalSource>, ApiFailure> {
-    json_checked(Request::get("/api/physical/sources").send().await).await
+    json_checked(
+        with_catalog_headers(Request::get("/api/physical/sources"))
+            .send()
+            .await,
+    )
+    .await
 }
 
 pub async fn physical_layout(dataset: &str, file: &str) -> Result<PhysicalLayout, ApiFailure> {
@@ -256,7 +280,7 @@ pub async fn physical_layout(dataset: &str, file: &str) -> Result<PhysicalLayout
         urlencoding::encode(dataset),
         urlencoding::encode(file),
     );
-    json_checked(Request::get(&url).send().await).await
+    json_checked(with_catalog_headers(Request::get(&url)).send().await).await
 }
 
 pub async fn physical_file(
@@ -273,7 +297,7 @@ pub async fn physical_file(
         urlencoding::encode(table),
         urlencoding::encode(data_file),
     );
-    json_checked(Request::get(&url).send().await).await
+    json_checked(with_catalog_headers(Request::get(&url)).send().await).await
 }
 
 pub async fn physical_page(
@@ -297,7 +321,7 @@ pub async fn physical_page(
         url.push_str("&column=");
         url.push_str(&urlencoding::encode(column));
     }
-    json_checked(Request::get(&url).send().await).await
+    json_checked(with_catalog_headers(Request::get(&url)).send().await).await
 }
 
 #[cfg(test)]

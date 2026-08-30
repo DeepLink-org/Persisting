@@ -215,7 +215,9 @@ mod tests {
         assert_eq!(user, Some(-2));
         assert_eq!(replies, vec![2]);
         match &cards[0] {
-            TraceCard::Chat { user: Some(user), .. } => {
+            TraceCard::Chat {
+                user: Some(user), ..
+            } => {
                 assert_eq!(user.source, "user");
                 assert_eq!(user.preview, "inspect the batch planner");
             }

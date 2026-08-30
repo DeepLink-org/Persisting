@@ -586,7 +586,7 @@ fn test_router_with_catalog_refresh_interval(
     config: ChronicleServerConfig,
     interval: std::time::Duration,
 ) -> Router {
-    read_routes().with_state(app_state_with_catalog_refresh_interval(config, interval))
+    finish_routes(app_state_with_catalog_refresh_interval(config, interval))
 }
 
 fn json_dataset_root() -> std::path::PathBuf {

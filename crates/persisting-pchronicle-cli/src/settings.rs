@@ -275,9 +275,18 @@ pub(super) fn run_alias(
                 ));
             }
             let dataset = normalize_alias_target(&dataset)?;
+            let catalog = dataset.starts_with("catalog://");
+            anyhow::ensure!(
+                !catalog || (endpoint.is_none() && region.is_none()),
+                "catalog aliases do not accept --endpoint or --region"
+            );
             let endpoint = s3_endpoint_for(&dataset, endpoint)?;
             let region = s3_region_for(&dataset, region)?;
             let credentials = s3_credentials_for(&dataset, access_key, secret_key)?;
+            anyhow::ensure!(
+                !catalog || credentials.is_some(),
+                "catalog aliases require --ak and --sk"
+            );
             settings.aliases.insert(name.clone(), dataset.clone());
             if let Some(endpoint) = endpoint {
                 settings.alias_endpoints.insert(name.clone(), endpoint);
@@ -320,9 +329,18 @@ pub(super) fn run_alias(
                 ));
             }
             let dataset = normalize_alias_target(&dataset)?;
+            let catalog = dataset.starts_with("catalog://");
+            anyhow::ensure!(
+                !catalog || (endpoint.is_none() && region.is_none()),
+                "catalog aliases do not accept --endpoint or --region"
+            );
             let endpoint = s3_endpoint_for(&dataset, endpoint)?;
             let region = s3_region_for(&dataset, region)?;
             let credentials = s3_credentials_for(&dataset, access_key, secret_key)?;
+            anyhow::ensure!(
+                !catalog || credentials.is_some(),
+                "catalog aliases require --ak and --sk"
+            );
             settings.aliases.insert(name.clone(), dataset.clone());
             match endpoint {
                 Some(endpoint) => {
@@ -451,6 +469,9 @@ fn normalize_alias_target(dataset: &str) -> Result<String> {
         !dataset.starts_with('@'),
         "an alias cannot point to another alias"
     );
+    if dataset.starts_with("catalog://") {
+        return crate::server::catalog::parse_catalog_alias_target(dataset);
+    }
     let location = DatasetLocation::parse(dataset)?;
     if location.is_object_store() || dataset.contains("://") {
         return Ok(location.as_str().to_owned());
@@ -477,8 +498,8 @@ fn s3_credentials_for(
         (None, None) => Ok(None),
         (Some(access_key), Some(secret_key)) => {
             anyhow::ensure!(
-                dataset.starts_with("s3://"),
-                "--ak/--sk can only be used with an s3:// Dataset"
+                dataset.starts_with("s3://") || dataset.starts_with("catalog://"),
+                "--ak/--sk can only be used with an s3:// Dataset or a catalog:// alias"
             );
             let access_key = access_key.trim().to_string();
             let secret_key = secret_key.trim().to_string();
@@ -582,6 +603,120 @@ fn apply_alias_region(settings: &LocalSettings, name: &str) {
     }
 }
 
+fn expand_catalog_alias(
+    settings: &LocalSettings,
+    name: &str,
+    root: &str,
+    suffix: &str,
+    require_existing: bool,
+) -> Result<String> {
+    anyhow::ensure!(
+        !suffix.is_empty(),
+        "catalog alias '@{name}' requires a dataset, for example '@{name}/prod'"
+    );
+    let (dataset, path) = suffix.split_once('/').unwrap_or((suffix, ""));
+    if !path.is_empty() {
+        validate_alias_suffix(path)?;
+    }
+    let credentials = settings.alias_credentials.get(name).ok_or_else(|| {
+        cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            format!("catalog alias '@{name}' requires --ak and --sk"),
+        )
+    })?;
+    let ticket = fetch_catalog_ticket(
+        root,
+        &credentials.access_key,
+        &credentials.secret_key,
+        dataset,
+    )?;
+    crate::server::catalog::apply_library_env(&ticket);
+    let expanded = join_alias_target(&ticket.uri, path)?;
+    let location = DatasetLocation::parse(&expanded)?;
+    if require_existing {
+        if location.local_path().is_some_and(|path| !path.exists()) {
+            return Err(cli_boundary_error(
+                BoundaryCode::NotFound,
+                format!(
+                    "catalog dataset '{dataset}' is a local path that does not exist on this machine: {}",
+                    location.as_str()
+                ),
+            ));
+        }
+        return Ok(location.into_existing()?.as_str().to_owned());
+    }
+    Ok(location.as_str().to_owned())
+}
+
+thread_local! {
+    static CATALOG_TICKETS: std::cell::RefCell<
+        HashMap<(String, String, String), crate::server::catalog::CatalogLibrary>,
+    > = std::cell::RefCell::new(HashMap::new());
+}
+
+fn fetch_catalog_ticket(
+    catalog_url: &str,
+    access_key: &str,
+    secret_key: &str,
+    dataset: &str,
+) -> Result<crate::server::catalog::CatalogLibrary> {
+    use crate::server::catalog::{ACCESS_KEY_HEADER, SECRET_KEY_HEADER, catalog_http_base};
+
+    let cache_key = (
+        catalog_url.to_owned(),
+        access_key.to_owned(),
+        dataset.to_owned(),
+    );
+    if let Some(ticket) = CATALOG_TICKETS.with(|tickets| tickets.borrow().get(&cache_key).cloned())
+    {
+        return Ok(ticket);
+    }
+    let base = catalog_http_base(catalog_url)?;
+    let url = format!(
+        "{base}/api/v1/catalog/datasets/{}",
+        urlencoding_dataset(dataset)
+    );
+    let response = reqwest::blocking::Client::new()
+        .get(&url)
+        .header(ACCESS_KEY_HEADER, access_key)
+        .header(SECRET_KEY_HEADER, secret_key)
+        .send()
+        .with_context(|| format!("request catalog dataset '{dataset}'"))?;
+    let status = response.status();
+    let body = response.text().context("read catalog dataset response")?;
+    if !status.is_success() {
+        return Err(cli_boundary_error(
+            if status.as_u16() == 404 {
+                BoundaryCode::NotFound
+            } else if status.as_u16() == 401 {
+                BoundaryCode::InvalidRequest
+            } else {
+                BoundaryCode::Unavailable
+            },
+            format!("catalog dataset '{dataset}' failed: HTTP {status} {body}"),
+        ));
+    }
+    let ticket: crate::server::catalog::CatalogLibrary =
+        serde_json::from_str(&body).context("decode catalog dataset ticket")?;
+    CATALOG_TICKETS.with(|tickets| {
+        tickets.borrow_mut().insert(cache_key, ticket.clone());
+    });
+    Ok(ticket)
+}
+
+fn urlencoding_dataset(dataset: &str) -> String {
+    dataset
+        .bytes()
+        .flat_map(|byte| {
+            if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' {
+                vec![byte as char]
+            } else {
+                format!("%{byte:02X}").chars().collect()
+            }
+        })
+        .collect()
+}
+
 pub(super) fn expand_dataset_reference(
     input: &str,
     settings_override: Option<&Path>,
@@ -606,11 +741,15 @@ pub(super) fn expand_dataset_reference(
                     format!("unknown Dataset alias '@{name}'"),
                 )
             })?;
-            let expanded = join_alias_target(root, suffix)?;
-            apply_alias_credentials(&settings, name);
-            apply_alias_endpoint(&settings, name);
-            apply_alias_region(&settings, name);
-            expanded
+            if root.starts_with("catalog://") {
+                expand_catalog_alias(&settings, name, root, suffix, require_existing)?
+            } else {
+                let expanded = join_alias_target(root, suffix)?;
+                apply_alias_credentials(&settings, name);
+                apply_alias_endpoint(&settings, name);
+                apply_alias_region(&settings, name);
+                expanded
+            }
         }
     };
     let location = DatasetLocation::parse(&expanded)?;

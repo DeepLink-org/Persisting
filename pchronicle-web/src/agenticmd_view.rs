@@ -569,7 +569,9 @@ fn AgenticMdStep(
         let parsed_calls = nodes
             .iter()
             .filter_map(|node| match node {
-                BodyNode::ToolCall { name, arguments, .. } => Some(WireToolCall {
+                BodyNode::ToolCall {
+                    name, arguments, ..
+                } => Some(WireToolCall {
                     id: None,
                     name: name.clone(),
                     arguments: parse_tool_arguments(arguments),
@@ -587,7 +589,10 @@ fn AgenticMdStep(
         .as_ref()
         .is_some_and(metrics_are_renderable);
     let has_tools = !timeline_calls.is_empty();
-    let has_observation = turn.observation.as_ref().is_some_and(|value| !value.is_null());
+    let has_observation = turn
+        .observation
+        .as_ref()
+        .is_some_and(|value| !value.is_null());
     let has_reasoning = turn
         .reasoning_content
         .as_deref()
@@ -642,7 +647,11 @@ fn AgenticMdStep(
 }
 
 fn role_heading(source: &str) -> &'static str {
-    if source == "system" { "System" } else { "Agent" }
+    if source == "system" {
+        "System"
+    } else {
+        "Agent"
+    }
 }
 
 #[component]
@@ -899,15 +908,21 @@ mod tests {
     fn parses_code_comments_xml_and_dsml() {
         let body = "```rust\nlet value = 1;\n```\n<!-- note -->\n<runtime>ok</runtime>\n<tool_call>execute_bash<parameter=command>ls</parameter></tool_call>";
         let nodes = parse_body_nodes(body);
-        assert!(nodes
-            .iter()
-            .any(|node| matches!(node, BodyNode::Code { language, .. } if language == "rust")));
-        assert!(nodes
-            .iter()
-            .any(|node| matches!(node, BodyNode::Comment(value) if value.contains("note"))));
-        assert!(nodes
-            .iter()
-            .any(|node| matches!(node, BodyNode::Xml { tag, .. } if tag == "runtime")));
+        assert!(
+            nodes
+                .iter()
+                .any(|node| matches!(node, BodyNode::Code { language, .. } if language == "rust"))
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|node| matches!(node, BodyNode::Comment(value) if value.contains("note")))
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|node| matches!(node, BodyNode::Xml { tag, .. } if tag == "runtime"))
+        );
         assert!(nodes.iter().any(|node| matches!(node, BodyNode::ToolCall { protocol, name, .. } if *protocol == "DSML" && name == "execute_bash")));
     }
 
@@ -937,15 +952,21 @@ mod tests {
     #[test]
     fn code_highlighter_marks_keywords_strings_and_numbers() {
         let tokens = highlight_code("let x = 42;\n\"ok\"", "rust");
-        assert!(tokens
-            .iter()
-            .any(|token| token.class == "keyword" && token.text == "let"));
-        assert!(tokens
-            .iter()
-            .any(|token| token.class == "number" && token.text == "42"));
-        assert!(tokens
-            .iter()
-            .any(|token| token.class == "string" && token.text == "\"ok\""));
+        assert!(
+            tokens
+                .iter()
+                .any(|token| token.class == "keyword" && token.text == "let")
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|token| token.class == "number" && token.text == "42")
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|token| token.class == "string" && token.text == "\"ok\"")
+        );
     }
 
     #[test]
@@ -981,9 +1002,11 @@ mod tests {
         assert!(nodes.iter().any(|node| {
             matches!(node, BodyNode::Text(text) if text.contains("helpful agent"))
         }));
-        assert!(!nodes
-            .iter()
-            .any(|node| matches!(node, BodyNode::Code { language, .. } if language == "json")));
+        assert!(
+            !nodes
+                .iter()
+                .any(|node| matches!(node, BodyNode::Code { language, .. } if language == "json"))
+        );
     }
 
     #[test]
@@ -995,7 +1018,10 @@ mod tests {
         agent.id = 7;
         let steps = conversation_steps(vec![user, agent], vec![Vec::new(), Vec::new()]);
         assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].0.as_ref().map(|turn| turn.source.as_str()), Some("user"));
+        assert_eq!(
+            steps[0].0.as_ref().map(|turn| turn.source.as_str()),
+            Some("user")
+        );
         assert_eq!(steps[0].1.source, "agent");
         assert_eq!(steps[0].1.id, 7);
     }

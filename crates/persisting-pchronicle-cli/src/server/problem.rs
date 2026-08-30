@@ -162,6 +162,14 @@ impl ApiError {
         )
     }
 
+    pub(super) fn unauthorized(message: impl Into<String>) -> Self {
+        Self::public(
+            StatusCode::UNAUTHORIZED,
+            BoundaryCode::InvalidRequest,
+            message,
+        )
+    }
+
     pub(super) fn not_found(message: impl Into<String>) -> Self {
         Self::public(StatusCode::NOT_FOUND, BoundaryCode::NotFound, message)
     }
@@ -234,7 +242,9 @@ impl IntoResponse for ApiError {
         let root_cause = self.root_cause.clone();
         let mut response = (self.status, Json(self)).into_response();
         if let Some(root_cause) = root_cause {
-            response.extensions_mut().insert(FourXxRootCause(root_cause));
+            response
+                .extensions_mut()
+                .insert(FourXxRootCause(root_cause));
         }
         response
     }

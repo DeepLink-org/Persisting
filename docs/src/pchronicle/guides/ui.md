@@ -144,6 +144,12 @@ untrusted or shared browser profile. Clearing this site's browser data also
 clears the setting. Assistant is labeled **Read-only · selected run data** and
 does not rewrite the Dataset.
 
+When `pchronicle serve --catalog-config` is used, open **Keys** on the left rail
+and enter the catalog user access key and secret key. Those values are stored in
+`localStorage` and sent to this pChronicle server as `x-pchronicle-access-key`
+and `x-pchronicle-secret-key` on data requests. They are not the object-store
+backend keys.
+
 ## Troubleshooting
 
 ### `127.0.0.1:9980` is already in use

@@ -115,6 +115,7 @@ fn serve_help_exposes_only_the_canonical_dataset_surface() -> Result<()> {
         "--gateway-state",
         "--gateway-stream-markdown",
         "--gateway-debug",
+        "--catalog-config",
     ] {
         assert!(
             stdout.contains(option),
@@ -125,6 +126,7 @@ fn serve_help_exposes_only_the_canonical_dataset_surface() -> Result<()> {
         "--warehouse-config",
         "--storage",
         "--gateway-object-store-manifest-mode",
+        "--catalog-query-worker",
     ] {
         assert!(
             !stdout.contains(legacy),

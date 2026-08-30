@@ -120,10 +120,7 @@ mod tests {
         );
         let notice = workspace_notice(&failure);
         assert_eq!(notice.title, "Something went wrong");
-        assert_eq!(
-            notice.request_id.as_deref(),
-            Some("deadbeefdeadbeef")
-        );
+        assert_eq!(notice.request_id.as_deref(), Some("deadbeefdeadbeef"));
         assert!(!notice.detail.contains("secret"));
         assert!(!notice.summary.contains("secret"));
         assert!(notice.engine_detail.is_none());

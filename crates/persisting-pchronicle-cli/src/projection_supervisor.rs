@@ -111,6 +111,9 @@ impl ProjectionSupervisor {
     }
 
     pub(crate) async fn converge_before_readiness(&mut self) -> Result<()> {
+        if self.config.datasets.is_empty() {
+            return Ok(());
+        }
         let snapshot = self.discover().await?;
         let inventory = automatic_projection_inventory(&snapshot)?;
         let initial_watermarks = inventory
@@ -280,6 +283,10 @@ impl ProjectionSupervisor {
     }
 
     pub(crate) async fn run(mut self, mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
+        if self.config.datasets.is_empty() {
+            let _ = stop.changed().await;
+            return Ok(());
+        }
         loop {
             tokio::select! {
                 changed = stop.changed() => {

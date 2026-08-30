@@ -694,6 +694,9 @@ impl DatasetCatalogSnapshot {
                 )?;
             }
             for format in super::virtual_document::formats() {
+                let Some(table_name) = super::virtual_document::table_name(format) else {
+                    continue;
+                };
                 let provider: Arc<dyn TableProvider> =
                     Arc::new(CatalogVirtualDocumentTableProvider::new(
                         prepared.sources.clone(),
@@ -703,7 +706,7 @@ impl DatasetCatalogSnapshot {
                 register_catalog_provider(
                     context,
                     &dataset.mount.name,
-                    super::virtual_document::table_name(format).expect("virtual table name"),
+                    table_name,
                     provider,
                     is_default,
                 )?;

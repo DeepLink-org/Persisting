@@ -275,6 +275,7 @@ enum DefaultCommand {
   pchronicle alias add secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
   pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --ak 123 --sk 123
   pchronicle alias add regional s3://bucket/evals --region us-west-2
+  pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
   pchronicle alias get-url prod
   pchronicle alias set-url prod s3://new-bucket/evals
   pchronicle status @prod
@@ -288,6 +289,10 @@ HTTP endpoints automatically enable AWS_ALLOW_HTTP for local S3-compatible
 services such as MinIO.
 An optional `--region REGION` is stored per alias; when omitted, the client
 falls back to `us-west-2` only when it needs a region.
+A `catalog://127.0.0.1:PORT` alias is a namespace: `@team/prod` fetches a ticket
+for library `prod` from that loopback catalog. User `--ak/--sk` are required;
+`--endpoint` and `--region` are not accepted. Backend object-store keys stay on
+the catalog server and are not written to config.toml.
 The built-in aliases `@codex`, `@claude`, and `@claude-code` are always listed
 and resolve to the corresponding local Agent session roots."#)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -752,7 +757,7 @@ struct ExportArgs {
         ArgGroup::new("dataset_source")
             .required(true)
             .multiple(true)
-            .args(["config", "storage", "positional_storage", "gateway_dataset"])
+            .args(["config", "storage", "positional_storage", "gateway_dataset", "catalog_config", "catalog_query_worker"])
     ),
     group(
         ArgGroup::new("storage_source")
@@ -856,6 +861,19 @@ struct ServeArgs {
     /// Print Gateway diagnostics, including size-limited request/response bodies, to stderr.
     #[arg(long = "gateway-debug", alias = "debug", requires = "gateway_config")]
     debug: bool,
+
+    /// Catalog ACL file (libraries + users). Enables catalog:// aliases and
+    /// per-user query workers for the Web API.
+    #[arg(
+        long = "catalog-config",
+        value_name = "FILE",
+        conflicts_with_all = ["config", "storage", "positional_storage"]
+    )]
+    catalog_config: Option<PathBuf>,
+
+    /// Internal: run one filtered Warehouse request from stdin and exit.
+    #[arg(long = "catalog-query-worker", hide = true)]
+    catalog_query_worker: bool,
 }
 
 fn parse_gateway_bind(value: &str) -> std::result::Result<SocketAddr, String> {
@@ -1318,6 +1336,9 @@ pub async fn run_with_stdio(
             command: DevCommand::Echo(args),
         }) => run_echo(args, &mut diagnostics).await,
         Command::Serve(args) => {
+            if args.catalog_query_worker {
+                return server::catalog::run_catalog_query_worker().await;
+            }
             run_serve(args, config, cli.log_level, stdout, &mut diagnostics).await
         }
     }
@@ -1727,7 +1748,12 @@ async fn run_serve(
     if let Some(uri) = gateway_dataset_uri.as_deref() {
         prepare_local_gateway_dataset(uri).await?;
     }
-    let config = resolve_serve_config_with_settings(&args, settings_override)?;
+    let catalog_only = args.catalog_config.is_some();
+    let config = if catalog_only {
+        server::ChronicleServerConfig::front_only()
+    } else {
+        resolve_serve_config_with_settings(&args, settings_override)?
+    };
     let control_uri = args
         .control
         .is_some()
@@ -1758,7 +1784,10 @@ async fn run_serve(
             let listener = tokio::net::TcpListener::bind(listen)
                 .await
                 .with_context(|| format!("bind pChronicle Warehouse to {listen}"))?;
-            let warehouse = if args.gateway.is_some() {
+            let warehouse = if let Some(path) = args.catalog_config.as_ref() {
+                let acl = server::catalog::CatalogAcl::load(path)?;
+                server::PreparedWarehouse::prepare_catalog_front(acl).await?
+            } else if args.gateway.is_some() {
                 server::PreparedWarehouse::prepare_live(config.clone()).await?
             } else {
                 server::PreparedWarehouse::prepare(config.clone()).await?

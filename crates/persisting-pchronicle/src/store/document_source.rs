@@ -172,6 +172,9 @@ impl DocumentSourceImpl {
     /// queries keep their schema and performance characteristics.
     pub(crate) async fn register_virtual_tables(&self, context: &SessionContext) -> Result<()> {
         for format in super::virtual_document::formats() {
+            let Some(table_name) = super::virtual_document::table_name(format) else {
+                continue;
+            };
             let provider: std::sync::Arc<dyn datafusion::datasource::TableProvider> = match self {
                 Self::Files {
                     format: source_format,
@@ -194,10 +197,7 @@ impl DocumentSourceImpl {
                 }
             };
             context
-                .register_table(
-                    super::virtual_document::table_name(format).expect("virtual table name"),
-                    provider,
-                )
+                .register_table(table_name, provider)
                 .map_err(|error| from_datafusion("register format virtual table", error))?;
         }
         Ok(())

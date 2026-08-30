@@ -125,6 +125,7 @@ pchronicle alias add prod s3://bucket/evals
 pchronicle alias add secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
 pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --ak 123 --sk 123
 pchronicle alias add regional s3://bucket/evals --region us-west-2
+pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 pchronicle alias
 ```
 
@@ -144,6 +145,10 @@ Agent 会话目录。
 对于 MinIO 等 S3 兼容服务，可以通过 `--endpoint` 保存服务地址；使用 alias 时会自动设置为
 `AWS_ENDPOINT_URL_S3`。Dataset URI 仍应保持为 `s3://bucket/prefix`，不要把主机和端口写入 URI。
 当 endpoint 使用 `http://` 时，pChronicle 会自动设置 `AWS_ALLOW_HTTP`，适用于本地 MinIO 等服务。
+`catalog://127.0.0.1:PORT` alias 是命名空间：`@team/prod` 向 catalog 换取 library `prod` 的票，
+单独的 `@team` 不是 Dataset。catalog alias 必须提供 `--ak/--sk`，并拒绝 `--endpoint` 和 `--region`。
+后端对象存储密钥留在 catalog 服务端。命名空间、换票与进程模型见
+[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。
 `alias set-url` 也支持相同的 `--endpoint` 参数；在两个 S3 URI 之间切换且未指定新 endpoint 时，
 会保留原有 endpoint。
 可选的 `--region` 也会按 alias 保存；省略时由 S3 客户端自行处理，需要回退时默认使用 `us-west-2`。
@@ -334,6 +339,7 @@ pchronicle serve
    [--gateway-split-idle DURATION]]
   [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
   [--gateway-stream-markdown] [--gateway-debug]
+  [--catalog-config FILE]
   [<[NAME=]DATASET> ...]
 ```
 
@@ -346,7 +352,10 @@ pchronicle serve \
 ```
 
 未指定服务 flag 时，只读 Web/API 默认监听 `127.0.0.1:0`。多个 Dataset 使用
-`NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。无需配置的 `--gateway`
+`NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。`--catalog-config FILE`
+以 catalog 目录方式服务，父进程不打开 libraries；配合
+`alias add NAME catalog://127.0.0.1:PORT --ak --sk`。见
+[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。无需配置的 `--gateway`
 在 `POST /v1/events` 接收 canonical trajectory events；`--gateway-dataset` 是自动挂载的
 输出 URI，不再是 mount name。`--gateway-split` 支持 `{user}`、`{date}`、`{hour}`。
 已有 canonical source 默认在最后一条事件后空闲 30 分钟才自动刷新 Storyline projection；

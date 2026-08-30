@@ -23,8 +23,11 @@ It has four deployment shapes:
 | read-only Warehouse | mount static Datasets for Web and API review | configuration and rebuildable cache |
 
 pChronicle is not a scheduler, Agent runtime, global Dataset control plane,
-distributed SQL service, or time-series database. The loopback server has no
-authentication and is not a production multi-tenant endpoint.
+distributed SQL service, or time-series database. The loopback Warehouse does
+not accept non-loopback binds. Without `--catalog-config` it has no user
+authentication. With `--catalog-config`, catalog and data-plane routes require
+user access/secret headers; this is still not a public multi-tenant service.
+See [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md).
 
 ## Data layers and ownership
 
@@ -115,8 +118,9 @@ Snapshot generation.
 
 The Web application and API are consumers of the same read model. They do not
 become another source of truth. Unknown API routes remain errors rather than SPA
-fallbacks, and only loopback listeners are accepted while authentication is
-absent.
+fallbacks. Only loopback listeners are accepted. Without `--catalog-config`
+there is no user authentication; catalog mode is specified in
+[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md).
 
 User setup belongs to the [Warehouse guide](../guides/serve.md). Exact routes and
 Gateway composition belong to the [`pchronicle` reference](../reference/cli.md).
@@ -130,12 +134,14 @@ Gateway composition belong to the [`pchronicle` reference](../reference/cli.md).
 | publication | previous Snapshot remains readable until new publication succeeds | automatic merge retry for every writer |
 | query | resource-limited, read-only execution | arbitrary mutation or unlimited service query |
 | projection | lineage and rebuildability where declared | projection freshness without a recorded generation |
-| service | loopback-only static read surface | authenticated multi-tenant Warehouse |
+| service | loopback-only static read surface; catalog mode authenticates the data plane with user keys | public multi-tenant Warehouse |
 
 ## Related design documents
 
 - [Dataset Catalog](catalog.md): discovery, Snapshot construction, lazy Source
   resolution, and pruning.
+- [RFC-0013 Catalog Server](../../rfcs/0013-pchronicle-warehouse-catalog.md): remote
+  library directory, ACL, tickets, and query workers.
 - [Run storage](trajectory-storage.md): canonical facts, storage layouts, and
   write ownership.
 - [Storyline Lance](storyline-lance.md): three-table projection, content layer,

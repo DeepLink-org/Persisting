@@ -58,7 +58,7 @@ impl TableProvider for CatalogVirtualDocumentTableProvider {
                     let resolved = source
                         .resolve()
                         .await
-                        .map_err(|error| crate::store::datafusion_bridge::into_datafusion(error))?;
+                        .map_err(crate::store::datafusion_bridge::into_datafusion)?;
                     let candidate_ids = if normalized_predicates.is_empty() {
                         None
                     } else {
@@ -79,7 +79,7 @@ impl TableProvider for CatalogVirtualDocumentTableProvider {
                                 .map(|(id, data)| (format!("{}::{id}", source.file()), data))
                                 .collect::<Vec<_>>()
                         })
-                        .map_err(|error| crate::store::datafusion_bridge::into_datafusion(error))
+                        .map_err(crate::store::datafusion_bridge::into_datafusion)
                 }
             })
             .buffered(self.max_concurrent_sources)
@@ -89,7 +89,7 @@ impl TableProvider for CatalogVirtualDocumentTableProvider {
             .flatten()
             .collect::<Vec<_>>();
         let table = crate::store::virtual_document::provider(&rows)
-            .map_err(|error| crate::store::datafusion_bridge::into_datafusion(error))?;
+            .map_err(crate::store::datafusion_bridge::into_datafusion)?;
         table.scan(state, projection, filters, limit).await
     }
 

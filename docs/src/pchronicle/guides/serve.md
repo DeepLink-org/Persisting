@@ -13,6 +13,7 @@ pchronicle serve
    [--gateway-split-idle DURATION]]
   [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
   [--gateway-stream-markdown] [--gateway-debug]
+  [--catalog-config FILE]
   [<[NAME=]DATASET> ...]
 ```
 
@@ -41,6 +42,28 @@ name matters.
 With several bare paths, pChronicle derives names from their last path
 components. Those names can change with the paths, so reusable commands should
 still set mount names explicitly.
+
+## Serve a catalog
+
+```bash
+pchronicle serve --catalog-config catalog.toml --listen 127.0.0.1:8081
+```
+
+`catalog.toml` lists libraries and users. The parent process does not open those
+libraries itself. The Web UI sends user access/secret keys as headers; queries
+run in a one-shot worker that receives only that user's mounts. From another
+terminal:
+
+```bash
+pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
+pchronicle query @team/prod 'SELECT 1'
+```
+
+`@team` is a catalog namespace, not a Dataset. `@team/prod` fetches a ticket for
+library `prod`. All `s3://` libraries in one catalog file must share the same
+endpoint, region, and backend keys. The listener remains loopback-only.
+The design is specified in
+[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md).
 
 ## Enable Control or Gateway integration
 

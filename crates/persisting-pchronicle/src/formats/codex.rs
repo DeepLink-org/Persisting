@@ -420,16 +420,7 @@ fn apply_response_item(
             }
         }
         "function_call_output" | "custom_tool_call_output" | "tool_search_output" => {
-            attach_tool_output(
-                payload,
-                turns,
-                call_index,
-                pending_agent,
-                pending_turn_key,
-                pending_agent_closed,
-                timestamp,
-                model,
-            );
+            attach_tool_output(payload, timestamp, model, sink);
         }
         _ => {
             unknown.insert(format!("/events/{line_number}"), payload.clone());
@@ -568,14 +559,18 @@ fn tool_call_from_payload(payload: &Value, item_type: &str) -> StorylineToolCall
 
 fn attach_tool_output(
     payload: &Value,
-    turns: &mut Vec<StorylineTurn>,
-    call_index: &mut HashMap<String, (usize, usize)>,
-    pending_agent: &mut Option<usize>,
-    pending_turn_key: &mut Option<String>,
-    pending_agent_closed: &mut bool,
     timestamp: Option<StorylineTimestamp>,
     model: Option<&str>,
+    sink: &mut ResponseItemSink<'_>,
 ) {
+    let ResponseItemSink {
+        turns,
+        pending_agent,
+        pending_turn_key,
+        pending_agent_closed,
+        call_index,
+        ..
+    } = sink;
     let output = payload.get("output").cloned().unwrap_or(Value::Null);
     if let Some(call_id) = payload.get("call_id").and_then(Value::as_str)
         && let Some(&(turn_idx, tool_idx)) = call_index.get(call_id)
@@ -588,8 +583,8 @@ fn attach_tool_output(
         // A late result for an older call must not close a newer model
         // response.  Only results belonging to the currently pending round
         // establish the response boundary.
-        if *pending_agent == Some(turn_idx) {
-            *pending_agent_closed = true;
+        if **pending_agent == Some(turn_idx) {
+            **pending_agent_closed = true;
         }
         return;
     }

@@ -6,12 +6,12 @@ use serde_json::Value;
 
 use crate::agenticmd_view::{AgenticMdRenderer, compact_metric_value, metrics_are_renderable};
 use crate::chat_view::{
-    chat_row_visible, group_chats, prompt_turn, source_class, step_row_visible, TraceCard,
+    TraceCard, chat_row_visible, group_chats, prompt_turn, source_class, step_row_visible,
 };
-use crate::json_value::{is_structured_json, JsonValue};
+use crate::json_value::{JsonValue, is_structured_json};
 use crate::model::{
-    extract_message_text, EventProvenance, QueryEvidence, StorylineTurn, TurnDetail, TurnSummary,
-    WireToolCall,
+    EventProvenance, QueryEvidence, StorylineTurn, TurnDetail, TurnSummary, WireToolCall,
+    extract_message_text,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -390,7 +390,11 @@ fn tool_summary_label(tool_count: usize, tool_names: &[String]) -> String {
     } else {
         String::new()
     };
-    format!("{} · {}{suffix}", format_tool_count(tool_count), visible_names.join(", "))
+    format!(
+        "{} · {}{suffix}",
+        format_tool_count(tool_count),
+        visible_names.join(", ")
+    )
 }
 
 fn group_diagnostic(entries: &[TurnSummary]) -> String {
@@ -1038,10 +1042,7 @@ fn CompactTurnRow(
 }
 
 #[component]
-fn InlineTurnDetail(
-    value: TurnDetail,
-    #[props(default)] query: String,
-) -> Element {
+fn InlineTurnDetail(value: TurnDetail, #[props(default)] query: String) -> Element {
     let message = value.turn.message.clone();
     let message_text = value.turn.text();
     let message_is_text_bearing = extract_message_text(&message).is_some();
@@ -1178,7 +1179,10 @@ pub fn StepDrawer(
     };
     let turn = value.turn.clone();
     let mut agenticmd_turns = if !conversation_details.is_empty() {
-        conversation_details.iter().map(|item| item.turn.clone()).collect::<Vec<_>>()
+        conversation_details
+            .iter()
+            .map(|item| item.turn.clone())
+            .collect::<Vec<_>>()
     } else if !conversation_turns.is_empty() {
         conversation_turns
     } else {
@@ -1188,7 +1192,10 @@ pub fn StepDrawer(
     // from an agent turn's `user_prompt`. It cannot be loaded through the
     // turn-detail API, so reconstruct it locally for the AgenticMD drawer.
     let mut synthetic_user_added = false;
-    if agenticmd_turns.first().is_some_and(|item| item.source == "agent") {
+    if agenticmd_turns
+        .first()
+        .is_some_and(|item| item.source == "agent")
+    {
         if let Some(prompt) = value
             .summary
             .user_prompt
@@ -1237,7 +1244,11 @@ pub fn StepDrawer(
     } else {
         format!(
             "{loaded_block_count} {}",
-            if loaded_block_count == 1 { "block" } else { "blocks" }
+            if loaded_block_count == 1 {
+                "block"
+            } else {
+                "blocks"
+            }
         )
     };
     rsx! {
@@ -1312,7 +1323,10 @@ fn InlineSection(
 }
 
 #[component]
-pub(crate) fn ToolCallCards(calls: Vec<WireToolCall>, #[props(default)] observation: Option<Value>) -> Element {
+pub(crate) fn ToolCallCards(
+    calls: Vec<WireToolCall>,
+    #[props(default)] observation: Option<Value>,
+) -> Element {
     rsx! {
         div { class: "pc2-tool-call-stack",
             for (index, call) in calls.into_iter().enumerate() {
@@ -1352,11 +1366,7 @@ fn content_needs_expansion(value: &str) -> bool {
 }
 
 #[component]
-fn ExpandableRegion(
-    clipped: bool,
-    #[props(default)] class: String,
-    children: Element,
-) -> Element {
+fn ExpandableRegion(clipped: bool, #[props(default)] class: String, children: Element) -> Element {
     let mut expanded = use_signal(|| false);
     let state = if clipped {
         if expanded() { "expanded" } else { "clipped" }
@@ -1404,7 +1414,8 @@ fn ToolCallBody(arguments: Value) -> Element {
 
 fn tool_type_tone(name: &str) -> &'static str {
     let normalized = name.to_ascii_lowercase();
-    if normalized.contains("command") || normalized.contains("bash") || normalized.contains("shell") {
+    if normalized.contains("command") || normalized.contains("bash") || normalized.contains("shell")
+    {
         "command_execution"
     } else if normalized.starts_with("mcp") || normalized.contains("browser") {
         "mcp"
@@ -1413,7 +1424,11 @@ fn tool_type_tone(name: &str) -> &'static str {
     }
 }
 
-fn observation_for_call<'a>(value: Option<&'a Value>, call_id: Option<&str>, index: usize) -> Option<&'a Value> {
+fn observation_for_call<'a>(
+    value: Option<&'a Value>,
+    call_id: Option<&str>,
+    index: usize,
+) -> Option<&'a Value> {
     let value = value?;
     let items = value
         .as_object()
@@ -1422,7 +1437,12 @@ fn observation_for_call<'a>(value: Option<&'a Value>, call_id: Option<&str>, ind
         .map(Vec::as_slice)
         .or_else(|| value.as_array().map(Vec::as_slice))
         .unwrap_or_else(|| std::slice::from_ref(value));
-    call_id.and_then(|id| items.iter().find(|item| item.get("source_call_id").and_then(Value::as_str) == Some(id)))
+    call_id
+        .and_then(|id| {
+            items
+                .iter()
+                .find(|item| item.get("source_call_id").and_then(Value::as_str) == Some(id))
+        })
         .or_else(|| items.get(index))
 }
 
@@ -1441,7 +1461,10 @@ fn ObservationBlock(value: Value, tone: String) -> Element {
 }
 
 #[component]
-fn ObservationChips(value: Value, #[props(default = "generic".to_string())] tone: String) -> Element {
+fn ObservationChips(
+    value: Value,
+    #[props(default = "generic".to_string())] tone: String,
+) -> Element {
     let exit_code = value.get("exit_code").and_then(Value::as_i64);
     let status = value.get("status").and_then(Value::as_str);
     let observed_type = value.get("type").and_then(Value::as_str);
@@ -1642,13 +1665,26 @@ mod tests {
         assert_eq!(
             parts,
             vec![
-                HighlightPart { text: "验证 ".into(), matched: false },
-                HighlightPart { text: "FTS".into(), matched: true },
-                HighlightPart { text: " verification".into(), matched: false },
+                HighlightPart {
+                    text: "验证 ".into(),
+                    matched: false
+                },
+                HighlightPart {
+                    text: "FTS".into(),
+                    matched: true
+                },
+                HighlightPart {
+                    text: " verification".into(),
+                    matched: false
+                },
             ]
         );
         let chinese = highlight_parts("用于验证中文", "验证");
-        assert!(chinese.iter().any(|part| part.matched && part.text == "验证"));
+        assert!(
+            chinese
+                .iter()
+                .any(|part| part.matched && part.text == "验证")
+        );
     }
 
     fn turn(id: i64, source: &str, seqs: &[u64]) -> TurnSummary {
@@ -1752,7 +1788,10 @@ mod tests {
             tool_summary_label(4, &unique),
             "4 tools · bash_command, mcp_search +1"
         );
-        assert_eq!(tool_summary_label(1, &["execute_bash".into()]), "1 tool · execute_bash");
+        assert_eq!(
+            tool_summary_label(1, &["execute_bash".into()]),
+            "1 tool · execute_bash"
+        );
         assert_eq!(format_tool_count(1), "1 tool");
         assert_eq!(format_tool_count(2), "2 tools");
         assert_eq!(tool_summary_label(0, &unique), "");
@@ -1942,7 +1981,13 @@ mod tests {
 
     #[test]
     fn observation_output_renders_scalar_tool_results() {
-        assert_eq!(observation_output(&serde_json::json!("command output")), Some("command output".into()));
-        assert_eq!(observation_output(&serde_json::json!(42)), Some("42".into()));
+        assert_eq!(
+            observation_output(&serde_json::json!("command output")),
+            Some("command output".into())
+        );
+        assert_eq!(
+            observation_output(&serde_json::json!(42)),
+            Some("42".into())
+        );
     }
 }

@@ -7,6 +7,7 @@ mod analysis_agent;
 mod analysis_session;
 mod api;
 mod catalog;
+mod catalog_auth;
 mod chat_view;
 mod components;
 mod copilot_sessions;

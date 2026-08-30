@@ -166,8 +166,7 @@ fn normalized_json_comparison(
         .trim_start_matches("$.")
         .trim_start_matches('$')
         .trim_start_matches('.')
-        .replace('/', ".")
-        .replace('[', ".")
+        .replace(['/', '['], ".")
         .replace(']', "");
     let segments = path
         .split('.')

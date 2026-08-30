@@ -10,21 +10,22 @@ use crate::api;
 use crate::catalog::CatalogExplorer;
 use crate::chat_view::normalize_trace_view;
 use crate::components::{
-    parse_rich_blocks, DataTable, HighlightedText, RichBlock, StepDrawer, TrajectoryView,
+    DataTable, HighlightedText, RichBlock, StepDrawer, TrajectoryView, parse_rich_blocks,
 };
 use crate::copilot_sessions::{
-    can_start_new_chat, delete_session, empty_thread, load_index, load_session_thread,
-    new_session_id, now_millis, page_after_history_switch, persist_indexed_thread, relative_time,
-    restore_for_run, save_index, session_storage_key, title_from_thread, AssistantSessionMeta,
-    AssistantSessionIndex, BrowserStore, KvStore,
+    AssistantSessionIndex, AssistantSessionMeta, BrowserStore, KvStore, can_start_new_chat,
+    delete_session, empty_thread, load_index, load_session_thread, new_session_id, now_millis,
+    page_after_history_switch, persist_indexed_thread, relative_time, restore_for_run, save_index,
+    session_storage_key, title_from_thread,
 };
 use crate::llm;
 use crate::llm_settings::LlmSettings;
+#[cfg(test)]
+use crate::model::RunSearchStatus;
 use crate::model::{
-    CatalogTree, DimensionAggregate, HistogramBucket, QueryCatalog,
-    PageSnapshot, QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSearchStatus,
-    RunSummary,
-    ToolAggregate, TurnDetail, TurnSearchStatus, TurnSummary,
+    CatalogTree, DimensionAggregate, HistogramBucket, PageSnapshot, QueryCatalog,
+    QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary, ToolAggregate,
+    TurnDetail, TurnSearchStatus, TurnSummary,
 };
 use crate::notice::{ErrorNotice, WorkspaceNotice, workspace_notice};
 use crate::terminology::{ANALYSIS, ASSISTANT, DATASETS, RUNS, STEPS, STORAGE, TIMELINE};
@@ -172,6 +173,8 @@ pub fn App() -> Element {
     let mut path_list_mode = use_signal(|| PathListMode::Flat);
     let mut analysis_session_id = use_signal(move || initial_analysis_session_id);
     let mut analysis_seed_scope = use_signal(move || initial_analysis_seed_scope);
+    let mut settings_open = use_signal(|| false);
+    let mut llm_config = use_signal(llm::load_config);
 
     use_effect(move || {
         load_runs(
@@ -301,6 +304,7 @@ pub fn App() -> Element {
                 RailButton { active: page() == "physical", icon: "▤", label: STORAGE, onclick: move |_| page.set("physical".into()) }
                 div { class: "rail-spacer" }
                 button { class: if copilot_open() { "rail-button active" } else { "rail-button" }, aria_label: "Toggle Assistant", onclick: move |_| copilot_open.set(!copilot_open()), span { class: "rail-icon", "◇" } span { {ASSISTANT} } }
+                button { class: if settings_open() { "rail-button active" } else { "rail-button" }, aria_label: "Settings", onclick: move |_| settings_open.set(true), span { class: "rail-icon", "⚙" } span { "Keys" } }
                 div { class: "rail-status", span { class: "live-dot" } "Local" }
             }
 
@@ -599,12 +603,14 @@ pub fn App() -> Element {
                         turns: turns(),
                         selected: selected_turn(),
                         wide: copilot_wide(),
+                        llm_config: llm_config(),
                         on_toggle_wide: move |_| {
                             let next = !copilot_wide();
                             copilot_wide.set(next);
                             save_copilot_wide(next);
                         },
                         on_close: move |_| copilot_open.set(false),
+                        on_open_settings: move |_| settings_open.set(true),
                         on_sessions_changed: move |next: AssistantSessionIndex| assistant_index.set(next),
                         on_turn: move |id| {
                             if let Some(run) = selected_run() {
@@ -635,6 +641,17 @@ pub fn App() -> Element {
                         },
                     }
             }
+            if settings_open() {
+                LlmSettings {
+                    config: llm_config(),
+                    on_close: move |_| settings_open.set(false),
+                    on_save: move |value| {
+                        llm::save_config(&value);
+                        llm_config.set(value);
+                        settings_open.set(false);
+                    },
+                }
+            }
 
         }
     }
@@ -653,7 +670,13 @@ fn load_runs(
         let dataset_names = if all_datasets {
             api::query_catalog()
                 .await
-                .map(|catalog| catalog.datasets.into_iter().map(|dataset| dataset.name).collect::<Vec<_>>())
+                .map(|catalog| {
+                    catalog
+                        .datasets
+                        .into_iter()
+                        .map(|dataset| dataset.name)
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default()
         } else {
             vec![filters.dataset.clone()]
@@ -824,10 +847,7 @@ fn load_workspace(
         let run = run.clone();
         async move {
             let (next_analysis, next_turns) =
-                futures_util::join!(
-                    api::run_analysis(&run),
-                    api::turns(&run, &query, &source),
-                );
+                futures_util::join!(api::run_analysis(&run), api::turns(&run, &query, &source),);
             match (next_analysis, next_turns) {
                 (Ok(next_analysis), Ok(next_turns)) => {
                     analysis.set(Some(next_analysis));
@@ -907,7 +927,10 @@ fn load_conversation_turns(
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
-    let requested = ids.into_iter().take(MAX_CONVERSATION_DRAWER_BLOCKS).collect::<Vec<_>>();
+    let requested = ids
+        .into_iter()
+        .take(MAX_CONVERSATION_DRAWER_BLOCKS)
+        .collect::<Vec<_>>();
     let Some(first_id) = requested.first().copied() else {
         loading.set(false);
         return;
@@ -990,7 +1013,9 @@ enum PathListMode {
 }
 
 fn has_chat_for_run(sessions: &[AssistantSessionMeta], run: &RunSummary) -> bool {
-    sessions.iter().any(|session| session.run.query() == run.query())
+    sessions
+        .iter()
+        .any(|session| session.run.query() == run.query())
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1067,10 +1092,7 @@ fn PathRunRow(
 }
 
 #[component]
-fn ChatMarker(
-    run: RunSummary,
-    on_open_chat: EventHandler<RunSummary>,
-) -> Element {
+fn ChatMarker(run: RunSummary, on_open_chat: EventHandler<RunSummary>) -> Element {
     let click_run = run.clone();
     let key_run = run;
     let marker_title = "Open Assistant chat for this run";
@@ -1203,7 +1225,10 @@ fn RunsExplorer(
     let page_limit = page.as_ref().map_or(50, |page| page.snapshot.limit);
     let page_next = page.as_ref().map_or(0, |page| page.snapshot.next_offset);
     let page_has_more = page.as_ref().is_some_and(|page| page.snapshot.has_more);
-    let search = page.as_ref().map(|page| page.search.clone()).unwrap_or_default();
+    let search = page
+        .as_ref()
+        .map(|page| page.search.clone())
+        .unwrap_or_default();
     let search_label = match search.mode.as_str() {
         "fts" if search.fts_available => "FTS · Jieba",
         "fts+json" if search.fts_available => "FTS + JSONB · Jieba",
@@ -1302,7 +1327,9 @@ fn search_highlight_query(query: &str) -> String {
             .find('(')
             .and_then(|offset| {
                 let start = hash + offset + 1;
-                query[start..].find(')').map(|end| &query[start..start + end])
+                query[start..]
+                    .find(')')
+                    .map(|end| &query[start..start + end])
             })
             .unwrap_or(query)
     } else {
@@ -1950,8 +1977,10 @@ fn AssistantPanel(
     turns: Vec<TurnSummary>,
     selected: Option<TurnDetail>,
     wide: bool,
+    llm_config: llm::LlmConfig,
     on_toggle_wide: EventHandler<MouseEvent>,
     on_close: EventHandler<MouseEvent>,
+    on_open_settings: EventHandler<()>,
     on_sessions_changed: EventHandler<AssistantSessionIndex>,
     on_turn: EventHandler<i64>,
     on_open_session: EventHandler<AssistantSessionMeta>,
@@ -1962,9 +1991,7 @@ fn AssistantPanel(
     let mut thread = use_signal(empty_thread);
     let mut input = use_signal(String::new);
     let mut busy = use_signal(|| false);
-    let mut settings = use_signal(|| false);
     let mut history_open = use_signal(|| false);
-    let mut config = use_signal(llm::load_config);
     let mut step = use_signal(|| "Working…".to_string());
     let mut following = use_signal(|| true);
     let run_for_effect = run.clone();
@@ -1980,15 +2007,17 @@ fn AssistantPanel(
         let now = now_millis();
         let (next_index, id, next_thread) =
             restore_for_run(&BrowserStore, &current, &new_session_id(now), now);
-            index.set(next_index.clone());
-            on_sessions_changed.call(next_index);
-            session_id.set(id);
+        index.set(next_index.clone());
+        on_sessions_changed.call(next_index);
+        session_id.set(id);
         thread.set(next_thread);
     });
     let focused_turn_id = selected.as_ref().map(|detail| detail.summary.id);
     let update_step = Callback::new(move |next: String| step.set(next));
     let submit_run = run.clone();
     let submit_analysis = analysis.clone();
+    let submit_config = llm_config.clone();
+    let submit_open_settings = on_open_settings;
     let submit_copilot = Callback::new(move |()| {
         let question = input().trim().to_string();
         let Some(submit_run) = submit_run.clone() else {
@@ -2000,11 +2029,11 @@ fn AssistantPanel(
         if question.is_empty() || busy() {
             return;
         }
-        let config_value = config();
+        let config_value = submit_config.clone();
         if !config_value.is_configured() {
             const CONFIGURE_MESSAGE: &str =
                 "Configure an OpenAI-compatible model in Settings before asking Assistant.";
-            settings.set(true);
+            submit_open_settings.call(());
             let mut next_thread = thread();
             let already_shown = next_thread.messages.last().is_some_and(|message| {
                 message.role == ThreadRole::Assistant && message.text == CONFIGURE_MESSAGE
@@ -2130,7 +2159,7 @@ fn AssistantPanel(
                     onclick: move |_| history_open.set(!history_open()),
                     "◷"
                 }
-                button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" }
+                button { aria_label: "LLM settings", onclick: move |_| on_open_settings.call(()), "⚙" }
                 AssistantWideToggle { wide, on_toggle: on_toggle_wide }
                 button { aria_label: "Close Assistant", onclick: on_close, "×" }
             }
@@ -2205,7 +2234,7 @@ fn AssistantPanel(
                     div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Assistant" }
                         if run.is_none() {
                             p { "Open a run, or select a previous chat from history." }
-                        } else if config().is_configured() {
+                        } else if llm_config.is_configured() {
                             p { "Assistant can inspect this analysis, examine a step, or run read-only SQL." }
                         } else {
                             p { "Configure an OpenAI-compatible model in Settings before asking Assistant." }
@@ -2260,7 +2289,6 @@ fn AssistantPanel(
             button { class: "button primary", disabled: !composer_enabled || input().trim().is_empty(), "Send" }
         }
         div { class: "pc2-composer-context", "{context_line}" }
-        if settings() { LlmSettings { config: config(), on_close: move |_| settings.set(false), on_save: move |value| { llm::save_config(&value); config.set(value); settings.set(false); } } }
     } }
 }
 #[component]
@@ -2730,7 +2758,16 @@ mod tests {
     fn merge_run_pages_keeps_a_server_paged_dataset() {
         let page = server_page(50, 100, &["run-50", "run-51"]);
         let merged = merge_run_pages(&[page], &run_filters("dataset", 50));
-        assert_eq!(merged.records.len(), 2, "{:?}", merged.records.iter().map(|item| item.run.session_id.clone()).collect::<Vec<_>>());
+        assert_eq!(
+            merged.records.len(),
+            2,
+            "{:?}",
+            merged
+                .records
+                .iter()
+                .map(|item| item.run.session_id.clone())
+                .collect::<Vec<_>>()
+        );
         assert_eq!(merged.snapshot.total, 100);
         assert_eq!(merged.snapshot.offset, 50);
         assert!(merged.snapshot.has_more);

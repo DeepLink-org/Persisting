@@ -1716,11 +1716,8 @@ async fn run_spec_compile_execute(
             }
             Err(failure) => {
                 let summary = failure.summary();
-                let _ = revision.fail_compile(
-                    revision_id,
-                    operation_id,
-                    compile_error_text(&failure),
-                );
+                let _ =
+                    revision.fail_compile(revision_id, operation_id, compile_error_text(&failure));
                 record_compile_failure(revision, &failure);
                 let stopped = revision.state == RevisionState::PlanError;
                 persist_session(&current, &mut recent_sessions, &mut storage_notice);

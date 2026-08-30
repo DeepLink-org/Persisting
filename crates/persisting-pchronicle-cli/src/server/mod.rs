@@ -2,6 +2,7 @@
 
 mod acceleration;
 mod asset;
+pub(crate) mod catalog;
 mod explorer;
 mod physical;
 pub(crate) mod problem;
@@ -57,6 +58,8 @@ struct AppState {
     /// Gateway-backed Warehouses read canonical events from the latest
     /// manifest for single-trace observation, independent of projection idle.
     live_reads: bool,
+    catalog_acl: Option<Arc<catalog::CatalogAcl>>,
+    catalog_query_worker: bool,
 }
 
 const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -85,6 +88,14 @@ impl ChronicleServerConfig {
             default_dataset,
             catalog_options: CatalogSnapshotOptions::default(),
         })
+    }
+
+    pub fn front_only() -> Self {
+        Self {
+            datasets: Vec::new(),
+            default_dataset: None,
+            catalog_options: CatalogSnapshotOptions::default(),
+        }
     }
 }
 
@@ -126,8 +137,7 @@ pub(crate) struct SessionQuery {
 
 /// Build the read-only Warehouse API and Web UI.
 pub fn warehouse_router(config: ChronicleServerConfig) -> Router {
-    let state = app_state(config);
-    read_routes().with_state(state)
+    finish_routes(app_state(config))
 }
 
 fn app_state(config: ChronicleServerConfig) -> AppState {
@@ -145,6 +155,8 @@ fn app_state_with_catalog_refresh_interval(
         catalog_refresh_interval,
         trajectory_cache: Arc::new(tokio::sync::RwLock::new(None)),
         live_reads: false,
+        catalog_acl: None,
+        catalog_query_worker: false,
     }
 }
 
@@ -158,20 +170,41 @@ impl PreparedWarehouse {
         let warehouse = Self {
             state: app_state(config),
         };
-        let runtime = build_catalog_runtime(&warehouse.state.config).await?;
-        warehouse.install_catalog_runtime(runtime).await;
+        warehouse.install_initial_runtime().await?;
         Ok(warehouse)
     }
 
-    /// Prepare a Warehouse paired with a Gateway. Single-trace reads bypass
-    /// the pinned event snapshot and reopen the latest canonical manifest.
     pub(crate) async fn prepare_live(config: ChronicleServerConfig) -> anyhow::Result<Self> {
         let mut state = app_state(config);
         state.live_reads = true;
         let warehouse = Self { state };
-        let runtime = build_catalog_runtime(&warehouse.state.config).await?;
-        warehouse.install_catalog_runtime(runtime).await;
+        warehouse.install_initial_runtime().await?;
         Ok(warehouse)
+    }
+
+    pub(crate) async fn prepare_catalog_front(acl: catalog::CatalogAcl) -> anyhow::Result<Self> {
+        let mut state = app_state(ChronicleServerConfig::front_only());
+        state.catalog_acl = Some(Arc::new(acl));
+        Ok(Self { state })
+    }
+
+    pub(crate) async fn prepare_query_worker(
+        config: ChronicleServerConfig,
+    ) -> anyhow::Result<Self> {
+        let mut state = app_state(config);
+        state.catalog_query_worker = true;
+        let warehouse = Self { state };
+        warehouse.install_initial_runtime().await?;
+        Ok(warehouse)
+    }
+
+    async fn install_initial_runtime(&self) -> anyhow::Result<()> {
+        if self.state.config.datasets.is_empty() {
+            return Ok(());
+        }
+        let runtime = build_catalog_runtime(&self.state.config).await?;
+        self.install_catalog_runtime(runtime).await;
+        Ok(())
     }
 
     async fn install_catalog_runtime(&self, runtime: Arc<CatalogRuntime>) -> String {
@@ -193,7 +226,7 @@ impl PreparedWarehouse {
     }
 
     pub(crate) fn router(&self) -> Router {
-        read_routes().with_state(self.state.clone())
+        finish_routes(self.state.clone())
     }
 
     pub(crate) fn dataset_names(&self) -> Vec<String> {
@@ -235,6 +268,8 @@ fn api_routes() -> Router<AppState> {
         .route("/query/tables", get(query_tables))
         .route("/query/evidence", post(query_evidence))
         .route("/analysis/compile", post(compile_analysis))
+        .route("/catalog/datasets", get(catalog::list_datasets))
+        .route("/catalog/datasets/{name}", get(catalog::get_dataset))
 }
 
 fn read_routes() -> Router<AppState> {
@@ -244,9 +279,18 @@ fn read_routes() -> Router<AppState> {
         .nest("/api", api_routes())
         .nest("/api/v1", api_routes())
         .fallback(asset_fallback)
+}
+
+fn finish_routes(state: AppState) -> Router {
+    read_routes()
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            catalog::catalog_data_plane_layer,
+        ))
         .layer(axum::middleware::from_fn(
             request_log::warehouse_request_layer,
         ))
+        .with_state(state)
 }
 
 /// Serve statically mounted Datasets through the read-only Warehouse surface.
@@ -639,10 +683,10 @@ async fn explorer_runs(
                     continue;
                 }
                 let preview = search_preview_from_row(&row, raw, table);
-                if let Some(existing) = matches.get_mut(&identity) {
-                    if existing.is_empty() {
-                        *existing = preview;
-                    }
+                if let Some(existing) = matches.get_mut(&identity)
+                    && existing.is_empty()
+                {
+                    *existing = preview;
                 }
             }
         }
@@ -1105,10 +1149,7 @@ fn parse_wire_tool_call(value: &Value) -> Option<WireToolCall> {
         id,
         name,
         arguments,
-        result: map
-            .get("result")
-            .or_else(|| map.get("output"))
-            .cloned(),
+        result: map.get("result").or_else(|| map.get("output")).cloned(),
     })
 }
 

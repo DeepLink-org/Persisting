@@ -2,11 +2,11 @@ use dioxus::prelude::*;
 use wasm_bindgen::JsValue;
 
 use crate::api;
-use crate::notice::{ErrorNotice, WorkspaceNotice, workspace_notice};
 use crate::model::{
     PhysicalBucket, PhysicalColumn, PhysicalFileLayout, PhysicalFragment, PhysicalLayout,
     PhysicalPagePreview, PhysicalSource, PhysicalTable,
 };
+use crate::notice::{ErrorNotice, WorkspaceNotice, workspace_notice};
 
 const PHYSICAL_PREVIEW_LIMIT: usize = 32;
 
@@ -520,8 +520,7 @@ fn PhysicalSampleDrawer(
         .as_ref()
         .and_then(|column| usize::try_from(column.row_count).ok());
     let page_number = page_offset / page_limit + 1;
-    let page_count = total_rows
-        .map(|total| total.div_ceil(page_limit).max(1));
+    let page_count = total_rows.map(|total| total.div_ceil(page_limit).max(1));
     let can_previous = page_offset >= page_limit && !loading;
     let can_next = !loading
         && preview.as_ref().is_some_and(|page| {
@@ -841,14 +840,7 @@ pub fn physical_workspace_url(
     data_page: u32,
 ) -> String {
     physical_workspace_url_with_preview_offset(
-        dataset,
-        file,
-        table,
-        fragment,
-        data_file,
-        column,
-        data_page,
-        0,
+        dataset, file, table, fragment, data_file, column, data_page, 0,
     )
 }
 
