@@ -143,7 +143,7 @@ A Run that contains subagents:
 storage/
 └── agent_id/
     └── root_session_id/
-        ├── events.lance/          # manifest + writer segments，按 session_id 过滤
+        ├── events.lance/          # manifest + writer segments, filtered by session_id
         ├── root_session_id.md
         └── agent-<id>.md
 ```
