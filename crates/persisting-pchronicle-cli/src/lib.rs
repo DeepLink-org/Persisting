@@ -297,6 +297,8 @@ S3 credentials are stored separately from the URI and are never printed by
 variables when possible; `--ak` and `--sk` are intended for a configured alias.
 S3-compatible endpoints can be stored separately with `--endpoint URL` and are
 applied as AWS_ENDPOINT_URL_S3 when the alias is used.
+HTTP endpoints automatically enable AWS_ALLOW_HTTP for local S3-compatible
+services such as MinIO.
 An optional `--region REGION` is stored per alias; when omitted, the client
 falls back to `us-west-2` only when it needs a region.
 The built-in aliases `@codex`, `@claude`, and `@claude-code` are always listed

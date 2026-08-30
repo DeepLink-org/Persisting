@@ -503,6 +503,10 @@ fn s3_endpoint_for(dataset: &str, endpoint: Option<String>) -> Result<Option<Str
     );
     let endpoint = endpoint.trim().trim_end_matches('/').to_owned();
     anyhow::ensure!(!endpoint.is_empty(), "S3 endpoint must not be empty");
+    anyhow::ensure!(
+        !endpoint.starts_with('[') && !endpoint.contains("](") && !endpoint.ends_with(')'),
+        "S3 endpoint must be a plain URL, not a Markdown link"
+    );
     let parsed = url::Url::parse(&endpoint).context("parse S3 endpoint URL")?;
     anyhow::ensure!(
         matches!(parsed.scheme(), "http" | "https"),
@@ -561,6 +565,11 @@ fn apply_alias_endpoint(settings: &LocalSettings, name: &str) {
     unsafe {
         std::env::set_var("AWS_ENDPOINT", endpoint);
         std::env::set_var("AWS_ENDPOINT_URL_S3", endpoint);
+        if endpoint.starts_with("http://") {
+            // object_store rejects plaintext HTTP by default. Local MinIO and
+            // other development S3-compatible services commonly use it.
+            std::env::set_var("AWS_ALLOW_HTTP", "true");
+        }
     }
 }
 

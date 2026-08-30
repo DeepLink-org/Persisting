@@ -121,6 +121,73 @@ async fn catalog_exposes_dataset_format_virtual_table() -> Result<()> {
 }
 
 #[tokio::test]
+async fn catalog_pushes_virtual_json_identity_filters_through_normalized_runs() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    fs::copy(
+        atif_fixtures().join("dialogue_10.json"),
+        temp.path().join("dialogue.json"),
+    )?;
+    fs::copy(
+        atif_fixtures().join("long_context_20.json"),
+        temp.path().join("long-context.json"),
+    )?;
+    let direct = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        temp.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let direct_rows = json_rows(
+        &direct
+            .query_jsonl(
+                "SELECT id FROM atif \
+                 WHERE json_get_string(data, 'session_id') = 'fixture-long_context_20'",
+            )
+            .await?,
+    )?;
+    assert_eq!(direct_rows.len(), 1);
+    let tool_rows = json_rows(
+        &direct
+            .query_jsonl(
+                "SELECT id FROM atif \
+                 WHERE json_extract(data, '$.steps[4].tool_calls[0].function_name') \
+                       = '\"knowledge_search\"'",
+            )
+            .await?,
+    )?;
+    assert_eq!(tool_rows.len(), 1);
+    assert_eq!(tool_rows[0]["id"], "run-long_context_20");
+
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(temp.path().to_string_lossy())?],
+        Some("dataset".into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+    let engine = std::sync::Arc::new(snapshot)
+        .query_engine(ChronicleQueryExecutionOptions::default())
+        .await?;
+
+    let rows = json_rows(
+        &engine
+            .query_jsonl(
+                "SELECT id, json_get_string(data, 'session_id') AS session_id \
+                 FROM dataset.atif \
+                 WHERE json_get_string(data, 'trajectory_id') = 'run-dialogue_10'",
+            )
+            .await?,
+    )?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["session_id"], "fixture-dialogue_10");
+    assert!(
+        rows[0]["id"]
+            .as_str()
+            .is_some_and(|id| id.ends_with("::run-dialogue_10"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn codex_virtual_table_exposes_jsonl_records_as_jsonb() -> Result<()> {
     let input = tempfile::NamedTempFile::with_suffix(".jsonl")?;
     fs::write(

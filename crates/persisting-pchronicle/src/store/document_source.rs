@@ -183,6 +183,9 @@ impl DocumentSourceImpl {
                         format,
                         std::sync::Arc::new(manifest.clone()),
                         source.max_file_bytes(),
+                        source.provider(super::StorylineTableKind::Runs),
+                        source.provider(super::StorylineTableKind::Steps),
+                        source.provider(super::StorylineTableKind::ToolCalls),
                     ))
                 }
                 _ => {
@@ -523,14 +526,14 @@ pub(crate) fn virtual_rows_for_files(
             max_file_bytes,
             |story| {
                 ordinal += 1;
+                if candidate_ids.is_some_and(|ids| !ids.contains(story.document_id())) {
+                    return Ok(());
+                }
                 let row_id = if ordinal == 1 {
                     story.document_id().to_string()
                 } else {
                     format!("{file_id}#{ordinal}")
                 };
-                if candidate_ids.is_some_and(|ids| !ids.contains(&row_id)) {
-                    return Ok(());
-                }
                 let value = encode_json_storylines(format, std::slice::from_ref(&story))
                     .map_err(|e| anyhow::anyhow!(e));
                 match value {

@@ -436,46 +436,47 @@ impl ResolvedSource {
     /// return the document identities that can possibly match.  `None` means
     /// this source cannot provide the normalized projection (for example a
     /// canonical event source), so callers should use the normal fallback.
-    pub(super) async fn document_ids_for_virtual_filter(
+    pub(super) async fn document_ids_for_virtual_filters(
         &self,
         format: DocumentFormat,
-        filter: &Expr,
+        predicates: &[crate::store::virtual_document::NormalizedJsonPredicate],
     ) -> Result<Option<BTreeSet<String>>> {
-        if format == DocumentFormat::CanonicalEvent {
+        if matches!(
+            format,
+            DocumentFormat::CanonicalEvent | DocumentFormat::Codex | DocumentFormat::ClaudeCode
+        ) {
             return Ok(None);
         }
-        let Some(table) = self.table(CatalogTableKind::Runs, None).await? else {
-            return Ok(None);
-        };
-        if table.provider.schema().index_of("document_id").is_err() {
-            return Ok(None);
-        }
-        // Go through a DataFrame instead of invoking `TableProvider::scan`
-        // directly.  Providers are allowed to report a predicate as
-        // unsupported and rely on DataFusion's FilterExec above their scan;
-        // the DataFrame preserves that contract while still forwarding any
-        // native pushdown the provider does support.
-        let context = SessionContext::new();
-        let batches = context
-            .read_table(table.provider)?
-            .filter(filter.clone())?
-            .select_columns(&["document_id"])?
-            .collect()
-            .await?;
-        let mut ids = BTreeSet::new();
-        for batch in batches {
-            let values = batch
-                .column(0)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .with_context(|| "normalized document_id is not Utf8")?;
-            for row in 0..values.len() {
-                if !values.is_null(row) {
-                    ids.insert(values.value(row).to_string());
+        let mut candidates: Option<BTreeSet<String>> = None;
+        for predicate in predicates {
+            let kind = match predicate.table {
+                crate::store::virtual_document::NormalizedVirtualTable::Runs => {
+                    CatalogTableKind::Runs
                 }
+                crate::store::virtual_document::NormalizedVirtualTable::Steps => {
+                    CatalogTableKind::Steps
+                }
+                crate::store::virtual_document::NormalizedVirtualTable::ToolCalls => {
+                    CatalogTableKind::ToolCalls
+                }
+            };
+            let Some(table) = self.table(kind, None).await? else {
+                return Ok(None);
+            };
+            if table.provider.schema().index_of("document_id").is_err() {
+                return Ok(None);
             }
+            let matching = crate::store::virtual_document::matching_document_ids(
+                table.provider,
+                &predicate.filter,
+            )
+            .await?;
+            candidates = Some(match candidates {
+                Some(current) => current.intersection(&matching).cloned().collect(),
+                None => matching,
+            });
         }
-        Ok(Some(ids))
+        Ok(candidates)
     }
 
     pub(super) async fn virtual_document_rows_filtered(

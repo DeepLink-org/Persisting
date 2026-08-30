@@ -1,122 +1,5 @@
 use super::*;
 
-/// A small, conservative subset of JSONB predicates that can be evaluated on
-/// the normalized `runs` table before a virtual row is assembled.  The
-/// original predicate is still forwarded to the virtual provider afterwards;
-/// this is therefore an optimization, not a semantic rewrite.
-fn normalized_json_filter(expr: &Expr) -> Option<Expr> {
-    match expr {
-        Expr::BinaryExpr(binary) if binary.op == Operator::And => {
-            let left = normalized_json_filter(binary.left.as_ref());
-            let right = normalized_json_filter(binary.right.as_ref());
-            match (left, right) {
-                (Some(left), Some(right)) => Some(Expr::BinaryExpr(
-                    datafusion::logical_expr::BinaryExpr::new(
-                        Box::new(left),
-                        Operator::And,
-                        Box::new(right),
-                    ),
-                )),
-                (Some(expr), None) | (None, Some(expr)) => Some(expr),
-                (None, None) => None,
-            }
-        }
-        Expr::BinaryExpr(binary) => normalized_json_comparison(
-            binary.left.as_ref(),
-            binary.op,
-            binary.right.as_ref(),
-        ),
-        _ => None,
-    }
-}
-
-fn normalized_json_comparison(left: &Expr, op: Operator, right: &Expr) -> Option<Expr> {
-    let Expr::ScalarFunction(function) = left else {
-        return None;
-    };
-    if !matches!(
-        function.name(),
-        "json_get_string" | "json_get_int" | "json_get_float" | "json_get_bool"
-    ) || function.args.len() != 2
-    {
-        return None;
-    }
-    let Expr::Column(column) = &function.args[0] else {
-        return None;
-    };
-    if column.name != "data" {
-        return None;
-    }
-    let Expr::Literal(ScalarValue::Utf8(Some(path)), _) = &function.args[1] else {
-        return None;
-    };
-    let Expr::Literal(value, _) = right else {
-        return None;
-    };
-
-    // Keep this mapping intentionally limited to fields whose virtual JSON
-    // representation is sourced directly from the run row.  Step/tool-call
-    // paths and arbitrary `extra` values still use the exact virtual-table
-    // predicate after materialization.
-    let path = path
-        .trim()
-        .trim_start_matches("$.")
-        .trim_start_matches('$')
-        .trim_start_matches('.')
-        .replace('/', ".");
-    let normalized_column = match path.as_str() {
-        "document_id" => "document_id",
-        "session" | "session_id" => "session_id",
-        "run" | "run_id" => "run_id",
-        "attempt" | "attempt_id" => "attempt_id",
-        "agent.id" | "agent_id" => "agent_id",
-        "agent.name" | "agent_name" => "agent_name",
-        "agent.ver" | "agent.version" | "agent_version" => "agent_version",
-        "agent.model" | "agent.model_name" | "agent_model_name" => "agent_model_name",
-        // ATIF's trajectory_id is the normalized document identity only when
-        // it was explicitly present.  The extra predicate preserves the
-        // distinction between a missing trajectory_id and a session fallback.
-        "trajectory" | "trajectory_id" => {
-            if op != Operator::Eq {
-                return None;
-            }
-            return Some(Expr::BinaryExpr(
-                datafusion::logical_expr::BinaryExpr::new(
-                    Box::new(Expr::BinaryExpr(
-                        datafusion::logical_expr::BinaryExpr::new(
-                            Box::new(Expr::Column(datafusion::common::Column::new_unqualified(
-                                "trajectory_id_explicit",
-                            ))),
-                            Operator::Eq,
-                            Box::new(Expr::Literal(ScalarValue::Boolean(Some(true)), None)),
-                        ),
-                    )),
-                    Operator::And,
-                    Box::new(Expr::BinaryExpr(
-                        datafusion::logical_expr::BinaryExpr::new(
-                            Box::new(Expr::Column(datafusion::common::Column::new_unqualified(
-                                "document_id",
-                            ))),
-                            op,
-                            Box::new(Expr::Literal(value.clone(), None)),
-                        ),
-                    )),
-                ),
-            ));
-        }
-        _ => return None,
-    };
-    Some(Expr::BinaryExpr(
-        datafusion::logical_expr::BinaryExpr::new(
-            Box::new(Expr::Column(datafusion::common::Column::new_unqualified(
-                normalized_column,
-            ))),
-            op,
-            Box::new(Expr::Literal(value.clone(), None)),
-        ),
-    ))
-}
-
 #[derive(Debug)]
 pub(super) struct CatalogVirtualDocumentTableProvider {
     sources: Vec<Arc<LazySource>>,
@@ -162,44 +45,41 @@ impl TableProvider for CatalogVirtualDocumentTableProvider {
             .cloned()
             .collect::<Vec<_>>();
         let format = self.format;
-        let normalized_filter = filters
+        let normalized_predicates = filters
             .iter()
-            .filter_map(normalized_json_filter)
-            .reduce(|left, right| {
-                Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr::new(
-                    Box::new(left),
-                    Operator::And,
-                    Box::new(right),
-                ))
-            });
+            .flat_map(|filter| {
+                crate::store::virtual_document::normalized_json_predicates(format, filter)
+            })
+            .collect::<Vec<_>>();
         let rows = stream::iter(selected)
             .map(|source| {
-                let normalized_filter = normalized_filter.clone();
+                let normalized_predicates = normalized_predicates.clone();
                 async move {
-                let resolved = source
-                    .resolve()
-                    .await
-                    .map_err(|error| crate::store::datafusion_bridge::into_datafusion(error))?;
-                let candidate_ids = match normalized_filter.as_ref() {
-                    Some(filter) => resolved
-                        .document_ids_for_virtual_filter(format, filter)
+                    let resolved = source
+                        .resolve()
                         .await
-                        .map_err(|error| {
-                            crate::store::datafusion_bridge::into_datafusion(
-                                error.context("push down virtual JSON filter"),
-                            )
-                        })?,
-                    None => None,
-                };
-                resolved
-                    .virtual_document_rows_filtered(format, candidate_ids.as_ref())
-                    .await
-                    .map(|rows| {
-                        rows.into_iter()
-                            .map(|(id, data)| (format!("{}::{id}", source.file()), data))
-                            .collect::<Vec<_>>()
-                    })
-                    .map_err(|error| crate::store::datafusion_bridge::into_datafusion(error))
+                        .map_err(|error| crate::store::datafusion_bridge::into_datafusion(error))?;
+                    let candidate_ids = if normalized_predicates.is_empty() {
+                        None
+                    } else {
+                        resolved
+                            .document_ids_for_virtual_filters(format, &normalized_predicates)
+                            .await
+                            .map_err(|error| {
+                                crate::store::datafusion_bridge::into_datafusion(
+                                    error.context("push down virtual JSON filter"),
+                                )
+                            })?
+                    };
+                    resolved
+                        .virtual_document_rows_filtered(format, candidate_ids.as_ref())
+                        .await
+                        .map(|rows| {
+                            rows.into_iter()
+                                .map(|(id, data)| (format!("{}::{id}", source.file()), data))
+                                .collect::<Vec<_>>()
+                        })
+                        .map_err(|error| crate::store::datafusion_bridge::into_datafusion(error))
                 }
             })
             .buffered(self.max_concurrent_sources)

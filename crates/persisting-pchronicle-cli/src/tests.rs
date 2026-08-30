@@ -497,6 +497,7 @@ async fn alias_s3_credentials_are_stored_separately_and_applied_on_expansion() -
     let _secret = EnvGuard::unset("AWS_SECRET_ACCESS_KEY");
     let _endpoint = EnvGuard::unset("AWS_ENDPOINT_URL_S3");
     let _generic_endpoint = EnvGuard::unset("AWS_ENDPOINT");
+    let _allow_http = EnvGuard::unset("AWS_ALLOW_HTTP");
     let _region = EnvGuard::unset("AWS_REGION");
     assert_eq!(
         expand_dataset_reference("@prod", Some(&config), false)?,
@@ -518,6 +519,7 @@ async fn alias_s3_credentials_are_stored_separately_and_applied_on_expansion() -
         std::env::var("AWS_ENDPOINT").as_deref(),
         Ok("http://127.0.0.1:9000")
     );
+    assert_eq!(std::env::var("AWS_ALLOW_HTTP").as_deref(), Ok("true"));
     assert_eq!(std::env::var("AWS_REGION").as_deref(), Ok("us-west-2"));
 
     let cli = Cli::try_parse_from([
@@ -535,6 +537,17 @@ async fn alias_s3_credentials_are_stored_separately_and_applied_on_expansion() -
     assert!(!output.contains("access-test"));
     assert!(!output.contains("secret-test"));
     Ok(())
+}
+
+#[test]
+fn alias_rejects_markdown_endpoint_links() {
+    let error = super::s3_endpoint_for(
+        "s3://example-bucket/evals",
+        Some("[http://127.0.0.1:9000](http://127.0.0.1:9000)".to_owned()),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("plain URL"), "{error}");
 }
 
 #[tokio::test]

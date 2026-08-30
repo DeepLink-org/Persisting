@@ -544,15 +544,17 @@ async fn explorer_runs(
             } else {
                 "_file_ AS source_path, document_id, task, prompt, notes, agent_name, agent_model_name"
             };
-            let identity_sql =
-                explorer_run_identity_sql(&dataset.mount.name, table, &predicate);
+            let identity_sql = explorer_run_identity_sql(&dataset.mount.name, table, &predicate);
             let identity_jsonl = explorer_query_jsonl(
                 &runtime.engine,
                 &identity_sql,
                 EXPLORER_RUN_MATCH_IDENTITY_MAX_ROWS,
             )
             .await?;
-            for line in identity_jsonl.lines().filter(|line| !line.trim().is_empty()) {
+            for line in identity_jsonl
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+            {
                 let row: Value = serde_json::from_str(line).map_err(|error| {
                     ApiError::internal(anyhow::anyhow!("decode run search result: {error}"))
                 })?;
@@ -562,8 +564,7 @@ async fn explorer_runs(
                 let Some(document_id) = row.get("document_id").and_then(Value::as_str) else {
                     continue;
                 };
-                let identity =
-                    format!("{}\u{1f}{}\u{1f}{}", dataset.mount.name, file, document_id);
+                let identity = format!("{}\u{1f}{}\u{1f}{}", dataset.mount.name, file, document_id);
                 matches.entry(identity).or_insert_with(String::new);
             }
             let preview_sql = explorer_run_preview_sql(
@@ -589,8 +590,7 @@ async fn explorer_runs(
                 let Some(document_id) = row.get("document_id").and_then(Value::as_str) else {
                     continue;
                 };
-                let identity =
-                    format!("{}\u{1f}{}\u{1f}{}", dataset.mount.name, file, document_id);
+                let identity = format!("{}\u{1f}{}\u{1f}{}", dataset.mount.name, file, document_id);
                 if !matches.contains_key(&identity) {
                     continue;
                 }

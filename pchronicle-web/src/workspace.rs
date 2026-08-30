@@ -22,7 +22,8 @@ use crate::llm;
 use crate::llm_settings::LlmSettings;
 use crate::model::{
     CatalogTree, DimensionAggregate, EventProvenance, HistogramBucket, QueryCatalog,
-    PageSnapshot, QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary,
+    PageSnapshot, QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSearchStatus,
+    RunSummary,
     ToolAggregate, TurnDetail, TurnSearchStatus, TurnSummary,
 };
 use crate::terminology::{ANALYSIS, ASSISTANT, DATASETS, RUNS, STEPS, STORAGE, TIMELINE};
@@ -757,11 +758,35 @@ fn merge_run_pages(pages: &[RunPage], filters: &RunFilters) -> RunPage {
     if filters.direction == "desc" {
         records.reverse();
     }
-    let total = records.len();
-    let limit = 50;
-    let offset = filters.offset.min(total);
-    let next_offset = (offset + limit).min(total);
-    let records = records.into_iter().skip(offset).take(limit).collect();
+
+    let all_datasets = filters.dataset.is_empty() || filters.dataset == "all";
+    let snapshot = if all_datasets {
+        let total = records.len();
+        let limit = 50;
+        let offset = filters.offset.min(total);
+        let next_offset = (offset + limit).min(total);
+        records = records.into_iter().skip(offset).take(limit).collect();
+        PageSnapshot {
+            offset,
+            next_offset,
+            total,
+            has_more: next_offset < total,
+            limit,
+        }
+    } else {
+        // A single Dataset is already sliced by the server. Skipping again
+        // here empties page 2 because the client offset matches the request.
+        pages
+            .first()
+            .map(|page| page.snapshot.clone())
+            .unwrap_or(PageSnapshot {
+                offset: filters.offset,
+                next_offset: filters.offset,
+                total: records.len(),
+                has_more: false,
+                limit: 50,
+            })
+    };
 
     let mut path_index = pages
         .iter()
@@ -784,13 +809,7 @@ fn merge_run_pages(pages: &[RunPage], filters: &RunFilters) -> RunPage {
         }
     }
     RunPage {
-        snapshot: PageSnapshot {
-            offset,
-            next_offset,
-            total,
-            has_more: next_offset < total,
-            limit,
-        },
+        snapshot,
         records,
         path_index,
         search,
@@ -2693,6 +2712,64 @@ mod tests {
         assert_eq!(percent(25.0, 100.0), 25.0);
         assert_eq!(percent(10.0, 0.0), 0.0);
         assert_eq!(percent(150.0, 100.0), 100.0);
+    }
+
+    fn explorer_item(session: &str) -> RunExplorerItem {
+        RunExplorerItem {
+            run: run_at(session),
+            model: None,
+            search_preview: None,
+        }
+    }
+
+    fn server_page(offset: usize, total: usize, sessions: &[&str]) -> RunPage {
+        let limit = 50;
+        RunPage {
+            snapshot: PageSnapshot {
+                offset,
+                next_offset: (offset + sessions.len()).min(total),
+                total,
+                has_more: offset + sessions.len() < total,
+                limit,
+            },
+            records: sessions.iter().copied().map(explorer_item).collect(),
+            path_index: Vec::new(),
+            search: RunSearchStatus::default(),
+        }
+    }
+
+    fn run_filters(dataset: &str, offset: usize) -> RunFilters {
+        RunFilters {
+            query: String::new(),
+            dataset: dataset.into(),
+            status: String::new(),
+            sort: "session".into(),
+            direction: "asc".into(),
+            path: String::new(),
+            file: String::new(),
+            offset,
+        }
+    }
+
+    #[test]
+    fn merge_run_pages_keeps_a_server_paged_dataset() {
+        let page = server_page(50, 100, &["run-50", "run-51"]);
+        let merged = merge_run_pages(&[page], &run_filters("dataset", 50));
+        assert_eq!(merged.records.len(), 2, "{:?}", merged.records.iter().map(|item| item.run.session_id.clone()).collect::<Vec<_>>());
+        assert_eq!(merged.snapshot.total, 100);
+        assert_eq!(merged.snapshot.offset, 50);
+        assert!(merged.snapshot.has_more);
+    }
+
+    #[test]
+    fn merge_run_pages_pages_all_datasets_locally() {
+        let first = server_page(0, 2, &["a-1", "a-2"]);
+        let second = server_page(0, 2, &["b-1", "b-2"]);
+        let merged = merge_run_pages(&[first, second], &run_filters("all", 2));
+        assert_eq!(merged.records.len(), 2);
+        assert_eq!(merged.snapshot.total, 4);
+        assert_eq!(merged.snapshot.offset, 2);
+        assert!(!merged.snapshot.has_more);
     }
 
     #[test]

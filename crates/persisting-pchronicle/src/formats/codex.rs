@@ -133,6 +133,9 @@ fn decode_from_reader<R: BufRead>(
     let mut turns: Vec<StorylineTurn> = Vec::new();
     let mut pending_agent: Option<usize> = None;
     let mut pending_turn_key: Option<String> = None;
+    // Tool results close the model response that issued the call.  The next
+    // model-produced item is therefore a new response round.
+    let mut pending_agent_closed = false;
     let mut call_index: HashMap<String, (usize, usize)> = HashMap::new();
     let mut unknown = Map::new();
     let mut saw_fingerprint = false;
@@ -191,6 +194,7 @@ fn decode_from_reader<R: BufRead>(
                     turns: &mut turns,
                     pending_agent: &mut pending_agent,
                     pending_turn_key: &mut pending_turn_key,
+                    pending_agent_closed: &mut pending_agent_closed,
                     call_index: &mut call_index,
                     prompt_system: &mut prompt_system,
                     unknown: &mut unknown,
@@ -280,6 +284,7 @@ struct ResponseItemSink<'a> {
     turns: &'a mut Vec<StorylineTurn>,
     pending_agent: &'a mut Option<usize>,
     pending_turn_key: &'a mut Option<String>,
+    pending_agent_closed: &'a mut bool,
     call_index: &'a mut HashMap<String, (usize, usize)>,
     prompt_system: &'a mut String,
     unknown: &'a mut Map<String, Value>,
@@ -296,6 +301,7 @@ fn apply_response_item(
         turns,
         pending_agent,
         pending_turn_key,
+        pending_agent_closed,
         call_index,
         prompt_system,
         unknown,
@@ -309,7 +315,7 @@ fn apply_response_item(
     match item_type {
         "message" => match payload.get("role").and_then(Value::as_str) {
             Some("user") => {
-                flush_agent(pending_agent, pending_turn_key);
+                flush_agent(pending_agent, pending_turn_key, pending_agent_closed);
                 turns.push(user_turn(
                     next_turn_id(turns),
                     timestamp,
@@ -322,6 +328,7 @@ fn apply_response_item(
                     turns,
                     pending_agent,
                     pending_turn_key,
+                    pending_agent_closed,
                     turn_key,
                     timestamp,
                     model,
@@ -346,6 +353,7 @@ fn apply_response_item(
                 turns,
                 pending_agent,
                 pending_turn_key,
+                pending_agent_closed,
                 turn_key,
                 timestamp,
                 model,
@@ -379,6 +387,7 @@ fn apply_response_item(
                     turns,
                     pending_agent,
                     pending_turn_key,
+                    pending_agent_closed,
                     turn_key,
                     timestamp,
                     model,
@@ -395,6 +404,7 @@ fn apply_response_item(
                 turns,
                 pending_agent,
                 pending_turn_key,
+                pending_agent_closed,
                 turn_key,
                 timestamp,
                 model,
@@ -416,6 +426,7 @@ fn apply_response_item(
                 call_index,
                 pending_agent,
                 pending_turn_key,
+                pending_agent_closed,
                 timestamp,
                 model,
             );
@@ -507,6 +518,7 @@ fn attach_tool_output(
     call_index: &mut HashMap<String, (usize, usize)>,
     pending_agent: &mut Option<usize>,
     pending_turn_key: &mut Option<String>,
+    pending_agent_closed: &mut bool,
     timestamp: Option<StorylineTimestamp>,
     model: Option<&str>,
 ) {
@@ -519,12 +531,14 @@ fn attach_tool_output(
             .and_then(|calls| calls.get_mut(tool_idx))
     {
         call.result = Some(output);
+        *pending_agent_closed = true;
         return;
     }
     let index = ensure_agent_turn(
         turns,
         pending_agent,
         pending_turn_key,
+        pending_agent_closed,
         None,
         timestamp,
         model,
@@ -536,26 +550,31 @@ fn ensure_agent_turn(
     turns: &mut Vec<StorylineTurn>,
     pending_agent: &mut Option<usize>,
     pending_turn_key: &mut Option<String>,
+    pending_agent_closed: &mut bool,
     turn_key: Option<String>,
     timestamp: Option<StorylineTimestamp>,
     model: Option<&str>,
 ) -> usize {
-    match (*pending_agent, pending_turn_key.as_ref(), turn_key.as_ref()) {
-        (Some(index), Some(current), Some(next)) if current == next => return index,
-        (Some(index), _, None) => return index,
-        (Some(index), None, _) => return index,
+    match (*pending_agent, *pending_agent_closed) {
+        (Some(index), false) => return index,
         _ => {}
     }
     let index = turns.len();
     turns.push(agent_turn(next_turn_id(turns), timestamp, model));
     *pending_agent = Some(index);
     *pending_turn_key = turn_key;
+    *pending_agent_closed = false;
     index
 }
 
-fn flush_agent(pending_agent: &mut Option<usize>, pending_turn_key: &mut Option<String>) {
+fn flush_agent(
+    pending_agent: &mut Option<usize>,
+    pending_turn_key: &mut Option<String>,
+    pending_agent_closed: &mut bool,
+) {
     *pending_agent = None;
     *pending_turn_key = None;
+    *pending_agent_closed = false;
 }
 
 fn next_turn_id(turns: &[StorylineTurn]) -> i64 {

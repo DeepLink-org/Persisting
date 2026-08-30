@@ -143,6 +143,7 @@ Agent 会话目录。
 并在使用 alias 时通过标准 AWS 环境变量提供，不会由 `alias list` 或 `alias get-url` 输出。
 对于 MinIO 等 S3 兼容服务，可以通过 `--endpoint` 保存服务地址；使用 alias 时会自动设置为
 `AWS_ENDPOINT_URL_S3`。Dataset URI 仍应保持为 `s3://bucket/prefix`，不要把主机和端口写入 URI。
+当 endpoint 使用 `http://` 时，pChronicle 会自动设置 `AWS_ALLOW_HTTP`，适用于本地 MinIO 等服务。
 `alias set-url` 也支持相同的 `--endpoint` 参数；在两个 S3 URI 之间切换且未指定新 endpoint 时，
 会保留原有 endpoint。
 可选的 `--region` 也会按 alias 保存；省略时由 S3 客户端自行处理，需要回退时默认使用 `us-west-2`。

@@ -136,17 +136,12 @@ pub fn turn_matches_query(turn: &TurnSummary, query: &str) -> bool {
             .is_some_and(|prompt| prompt.to_ascii_lowercase().contains(&needle))
 }
 
-pub fn chat_row_visible(entries: &[TurnSummary], source: &str, query: &str) -> bool {
-    let source_ok =
-        source == "all" || source.is_empty() || entries.iter().any(|turn| turn.source == source);
-    let query_ok =
-        query.trim().is_empty() || entries.iter().any(|turn| turn_matches_query(turn, query));
-    source_ok && query_ok
+pub fn chat_row_visible(entries: &[TurnSummary], source: &str, _query: &str) -> bool {
+    source == "all" || source.is_empty() || entries.iter().any(|turn| turn.source == source)
 }
 
-pub fn step_row_visible(turn: &TurnSummary, source: &str, query: &str) -> bool {
-    (source == "all" || source.is_empty() || turn.source == source)
-        && turn_matches_query(turn, query)
+pub fn step_row_visible(turn: &TurnSummary, source: &str, _query: &str) -> bool {
+    source == "all" || source.is_empty() || turn.source == source
 }
 
 #[cfg(test)]
@@ -267,8 +262,28 @@ mod tests {
         assert!(chat_row_visible(&entries, "agent", ""));
         assert!(chat_row_visible(&entries, "user", "googl"));
         assert!(!chat_row_visible(&entries, "system", ""));
-        assert!(!chat_row_visible(&entries, "all", "missing"));
         assert!(step_row_visible(&entries[1], "agent", "googl"));
         assert!(!step_row_visible(&entries[0], "agent", ""));
+    }
+
+    #[test]
+    fn expression_queries_do_not_hide_server_filtered_turns() {
+        let mut user = turn(1, "user");
+        user.preview = "Please investigate the worker".into();
+        assert!(step_row_visible(&user, "all", r#"#user("timeout")"#));
+        assert!(chat_row_visible(
+            std::slice::from_ref(&user),
+            "all",
+            r#"#user("timeout")"#
+        ));
+        assert!(step_row_visible(&user, "all", "timeout AND retry"));
+    }
+
+    #[test]
+    fn turn_matches_query_is_substring_only() {
+        let mut user = turn(1, "user");
+        user.preview = "Please investigate the worker".into();
+        assert!(turn_matches_query(&user, "investigate"));
+        assert!(!turn_matches_query(&user, r#"#user("timeout")"#));
     }
 }

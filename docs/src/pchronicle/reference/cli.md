@@ -74,6 +74,8 @@ For S3-compatible services such as MinIO, pass the endpoint with `--endpoint`.
 It is stored separately and applied as `AWS_ENDPOINT_URL_S3` when the alias is
 used. Keep the Dataset URI in the form `s3://bucket/prefix`; do not put the
 service host and port in that URI.
+For `http://` endpoints, pChronicle also enables `AWS_ALLOW_HTTP` automatically
+for local S3-compatible services such as MinIO.
 `alias set-url` accepts the same `--endpoint` option and preserves the existing
 endpoint when changing between two S3 URIs without specifying a new one.
 The optional `--region` is also stored per alias; when omitted, the S3 client
