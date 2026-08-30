@@ -1,8 +1,10 @@
 # Gateway Python SDK regression
 
-This scenario starts the real Gateway, pChronicle Warehouse, and deterministic
-Echo upstream, then exercises the Gateway through pinned versions of three
-official Python SDKs:
+**Starts the real Gateway, pChronicle Warehouse, and deterministic Echo
+upstream, then exercises Gateway through pinned official Python SDKs.**
+
+Owns this black-box scenario and its per-session comparison logs. Does not
+compile Rust and does not own Gateway or pChronicle.
 
 | Client | Client protocol | Upstream path |
 |---|---|---|
@@ -11,9 +13,10 @@ official Python SDKs:
 | Anthropic | Messages | Native Anthropic Messages with a Base64 Echo response |
 | Google Gen AI | Gemini | Native `generateContent` |
 
-Run it directly:
+## Run
 
 ```bash
+cargo build --release --locked -p persisting-pchronicle-cli --bin pchronicle
 tests/regression/gateway-echo/run.sh
 ```
 
@@ -22,13 +25,6 @@ binds port zero and publishes its selected loopback address. Configuration,
 SDK calls, durable queries, cleanup, and assertions live in `regression.py`
 and its focused Python modules; process lifecycle and readiness helpers are
 shared with `gateway-fuzz` through `tests/regression/gateway_harness.py`.
-
-The scenario never compiles Rust code. Build the normal pChronicle binary
-before running it:
-
-```bash
-cargo build --release --locked -p persisting-pchronicle-cli
-```
 
 By default it uses `target/release/pchronicle` for both `pchronicle echo` and
 `pchronicle serve`. Set `PERSISTING_PCHRONICLE_BIN` to test another prebuilt
@@ -46,3 +42,9 @@ The scenario creates these logs before comparing them:
 
 Logs are retained automatically on failure. Set
 `PERSISTING_KEEP_TEST_ARTIFACTS=1` to retain them after a successful run.
+
+## Links
+
+- [Regression tests](../README.md)
+- [Gateway architecture](../../../docs/src/pvisor/design/gateway.md)
+- [`persisting-gateway`](../../../crates/persisting-gateway/README.md)

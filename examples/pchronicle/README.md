@@ -1,7 +1,9 @@
 # pChronicle：Dataset 管理与分析
 
-首次上手请运行 `pchronicle onboard`；以下示例直接使用 `pchronicle` 产品命令和
-[`examples/data`](../data/) 中的确定性 Dataset。
+**问题：产品 CLI 能否在确定性 Dataset 上走完导入、分析、跨库查询与格式往返？可复现结论：六个场景各自打印可核对的事实，并由 `just examples-pchronicle` 统一构建并验证。**
+
+首次上手请运行 `pchronicle onboard`。以下示例直接使用 `pchronicle` 产品命令和
+[`examples/data`](../data/) 中的确定性 Dataset。这里不拥有存储引擎或 CLI 实现。
 
 | 示例 | 可复现结论 |
 |---|---|
@@ -12,7 +14,7 @@
 | [05-format-roundtrip](05-format-roundtrip/) | 严格 ATIF 导入导出后，统一 JSON 格式化的输出按字节相等 |
 | [06-query-openai-actf-directly](06-query-openai-actf-directly/) | OpenAI Messages 与 ACTF Dataset 可直接映射为统一 SQL 表 |
 
-运行全部示例：
+## Run
 
 ```bash
 just examples-pchronicle
@@ -20,3 +22,10 @@ just examples-pchronicle
 
 默认输出只显示关键事实和结论；每次运行的完整 stdout/stderr 保存在对应场景的
 `.work/run.*`。设置 `PCHRONICLE_EXAMPLE_VERBOSE=1` 可在终端同时展开原始日志。
+
+## Links
+
+- [Reproducible examples](../../docs/src/project/examples.md)
+- [pChronicle get started](../../docs/src/pchronicle/get-started.zh.md)
+- [Discover and query](../../docs/src/pchronicle/guides/discover-and-query.zh.md)
+- [`examples/data`](../data/README.md)

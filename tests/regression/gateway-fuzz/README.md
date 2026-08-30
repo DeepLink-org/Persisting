@@ -1,8 +1,11 @@
 # Gateway fuzz regressions
 
-Gateway fuzzing is split by contract so a failure identifies the broken layer
-instead of collapsing format, routing, persistence, and policy into one result.
-Every scenario uses prebuilt `target/release/pchronicle`; none compiles Rust.
+**Contract-split Gateway fuzz: format, routing, persistence, and policy fail
+independently.**
+
+Owns the four fuzz scenarios and their artifact layout. Every scenario uses
+prebuilt `target/release/pchronicle`; none compiles Rust. Does not own Gateway
+or pChronicle.
 
 | Scenario | Contract | Command |
 |---|---|---|
@@ -11,7 +14,7 @@ Every scenario uses prebuilt `target/release/pchronicle`; none compiles Rust.
 | `storage` | graceful queue drain, session-level Lance durability, ordered lifecycle pairing, canonical tools/reasoning/multimodal/error bodies, and bounded multi-source queries | `just gateway-fuzz-storage` |
 | `network-policy` | local-only allowlist and no-network decisions for absolute-URI HTTP, CONNECT, host/port denial, and model-owned relative LLM routes | `just gateway-fuzz-network` |
 
-Run all four:
+## Run
 
 ```bash
 just gateway-fuzz
@@ -99,3 +102,9 @@ address. The harness never reserves a port by bind-close-rebind.
 
 The parent directory contains `.long-running`, so `just regression` skips this
 suite.
+
+## Links
+
+- [Regression tests](../README.md)
+- [Gateway architecture](../../../docs/src/pvisor/design/gateway.md)
+- [`persisting-gateway`](../../../crates/persisting-gateway/README.md)

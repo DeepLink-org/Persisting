@@ -1,8 +1,9 @@
 # Gateway benchmark
 
-这个黑盒 benchmark 使用本地 `pchronicle echo` 作为确定性 upstream，测量完整 Gateway
-请求路径：HTTP 转发、OpenAI Chat payload 处理、WAL、Typed LLM capture，以及
-pChronicle Lance durable append。它不会访问外部模型服务。
+**使用本地 `pchronicle echo` 测量完整 Gateway 路径：HTTP 转发、Typed LLM capture、WAL 与 Lance durable append。**
+
+拥有黑盒压测、并发 sweep 和 example-data replay。不访问外部模型服务，也不隐式
+`cargo build`；首次运行或代码变更后请先显式构建 release binary。
 
 默认先压测 Echo 直连作为本机 HTTP 基线，再以相同并发压测 Gateway。Gateway 进程会优雅
 退出，脚本随后逐个读取 capture session 的 canonical manifest，确认 published event 总数
@@ -16,10 +17,9 @@ version/file 不会在写入路径立即删除；磁盘回收仍由显式 mainte
 sealed segment 自动晋升到下一层。因此 visible segment 数随数据量近似对数增长，而不是
 持续按事件数线性增长；JSON 结果中的 `max_segment_level` 可用于观察是否发生层级晋升。
 
-## 运行
+## Run
 
-从仓库根目录运行。benchmark 只使用已有的 release binary，不会隐式执行
-`cargo build`；首次运行或代码变更后请先显式构建：
+从仓库根目录运行：
 
 ```bash
 cargo build --release --locked -p persisting-pchronicle-cli --bin pchronicle
@@ -112,3 +112,9 @@ just benchmark-gateway-replay examples/data /tmp/gateway-replay-review
 这里的 source response 只作为人工 review 的参考，不参与相等性断言。本地 Echo 固定返回
 最后一条 user message，因此这个 replay 验证的是 Gateway wire handling、事件配对和 capture
 保真度，不声称能够复现原始模型回答。
+
+## Links
+
+- [Gateway architecture](../../docs/src/pvisor/design/gateway.md)
+- [`persisting-gateway`](../../crates/persisting-gateway/README.md)
+- [Regression tests](../../tests/regression/README.md)
