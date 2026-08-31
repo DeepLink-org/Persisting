@@ -136,6 +136,53 @@ def test_drop_and_recreate_does_not_reuse_stale_wrapper(session):
     assert list(rows["id"]) == [2]
 
 
+def test_new_session_reopens_unpartitioned_table(tmp_path):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("name", pa.string()),
+        ]
+    )
+    session = _reconnect(tmp_path)
+    session.create_table("t", schema)
+    session.add("t", pd.DataFrame({"id": [1], "name": ["a"]}))
+    assert session.schema_table.get("t").partition_column == ""
+    assert session.schema_table.get("t").partition_type == ""
+
+    other = _reconnect(tmp_path)
+    assert other.count_rows("t") == 1
+    rows = other.filter("t", query="id IS NOT NULL")
+    assert list(rows["name"]) == ["a"]
+    other.add("t", pd.DataFrame({"id": [2], "name": ["b"]}))
+    assert other.count_rows("t") == 2
+
+
+def test_new_session_reopens_legacy_value_type_without_partition_column(tmp_path):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("name", pa.string()),
+        ]
+    )
+    session = _reconnect(tmp_path)
+    session.create_table("t", schema)
+    session.add("t", pd.DataFrame({"id": [1], "name": ["a"]}))
+    session.schema_table.table.update(
+        where="table_name = 't'",
+        values={"partition_column": "", "partition_type": "VALUE"},
+    )
+
+    other = _reconnect(tmp_path)
+    record = other.schema_table.get("t")
+    assert record.partition_type == "VALUE"
+    assert record.partition_column == ""
+    assert other.count_rows("t") == 1
+    rows = other.filter("t", query="id IS NOT NULL")
+    assert list(rows["name"]) == ["a"]
+    other.add("t", pd.DataFrame({"id": [2], "name": ["b"]}))
+    assert other.count_rows("t") == 2
+
+
 def test_missing_logical_table_does_not_open_physical_name(session):
     session.create_table(
         "ht",

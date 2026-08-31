@@ -291,6 +291,10 @@ class InformationSchemaTable:
         partitions: int = None,
     ):
         schema_str = schema_to_string(schema)
+        if not partition_column:
+            partition_column = ""
+            partition_type = ""
+            partitions = -1
         record = {
             "table_name": table_name,
             "schema_str": schema_str,
@@ -1692,6 +1696,10 @@ def open_table_by_partition_type(
     partition_type: str,
     partition=None,
 ) -> BaseTable:
+    record = schema_table.get(table_name)
+    if record is not None and not record.partition_column:
+        return SimpleTable.from_table_name(db_conn, schema_table, table_name)
+
     if partition_type == "VALUE":
         return ValuePartitionTable.from_table_name(db_conn, schema_table, table_name, partition)
     if partition_type == "HASH":
