@@ -23,6 +23,11 @@ use tokio::process::Command;
 /// shards run hundreds of tests in parallel and the same projection can exceed
 /// that budget.
 const SERVE_PROJECTION_TIMEOUT: Duration = Duration::from_secs(60);
+/// Per-poll HTTP bound. Catalog rebuild shares the serve Tokio runtime with
+/// Warehouse HTTP, so a single GET can exceed this under Linux CI load.
+/// Callers must treat a timeout as "not yet" and keep waiting until
+/// [`SERVE_PROJECTION_TIMEOUT`].
+const CATALOG_POLL_TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn wait_until<F, Fut>(timeout: Duration, mut condition: F) -> Result<()>
 where
@@ -40,6 +45,18 @@ where
     .await
     .context("timed out waiting for pChronicle state")??;
     Ok(())
+}
+
+async fn catalog_snapshot_id(client: &reqwest::Client, url: &str) -> Option<String> {
+    let catalog = client
+        .get(url)
+        .send()
+        .await
+        .ok()?
+        .json::<serde_json::Value>()
+        .await
+        .ok()?;
+    catalog["snapshot_id"].as_str().map(str::to_owned)
 }
 
 async fn read_serve_ready<R>(stdout: &mut BufReader<R>) -> Result<ChronicleServeReady>
@@ -603,11 +620,19 @@ async fn warehouse_catalog_refreshes_after_control_append_projection() -> Result
         .context("serve readiness omitted Warehouse")?;
     let client = reqwest::Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(5))
+        .timeout(CATALOG_POLL_TIMEOUT)
         .build()?;
     let catalog_url = format!("http://{warehouse}/api/catalog");
-    let initial: serde_json::Value = client.get(&catalog_url).send().await?.json().await?;
-    let initial_snapshot = initial["snapshot_id"].as_str().unwrap().to_string();
+    let initial_snapshot = tokio::time::timeout(SERVE_PROJECTION_TIMEOUT, async {
+        loop {
+            if let Some(snapshot) = catalog_snapshot_id(&client, &catalog_url).await {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .context("timed out waiting for initial catalog")?;
 
     let request = TrajectoryAppendRequest {
         storage: root.path().to_string_lossy().into_owned(),
@@ -642,17 +667,29 @@ async fn warehouse_catalog_refreshes_after_control_append_projection() -> Result
         .await?,
         ChronicleControlResponse::TrajectoryAppend(_)
     ));
+    let runtime_source = root.path().join("agent/runtime/events.lance");
     wait_until(SERVE_PROJECTION_TIMEOUT, || {
         let client = client.clone();
         let catalog_url = catalog_url.clone();
         let initial_snapshot = initial_snapshot.clone();
+        let runtime_source = runtime_source.clone();
         async move {
-            let catalog: serde_json::Value = client.get(catalog_url).send().await?.json().await?;
-            Ok(catalog["snapshot_id"].as_str() != Some(initial_snapshot.as_str()))
+            let Ok(target) = target_for(&runtime_source).await else {
+                return Ok(false);
+            };
+            if !inspect_automatic_storyline_projection(&target)
+                .await
+                .is_ok_and(|inspection| inspection.state == AutomaticProjectionState::Fresh)
+            {
+                return Ok(false);
+            }
+            Ok(catalog_snapshot_id(&client, &catalog_url)
+                .await
+                .is_some_and(|snapshot| snapshot != initial_snapshot))
         }
     })
     .await?;
-    let runtime = target_for(&root.path().join("agent/runtime/events.lance")).await?;
+    let runtime = target_for(&runtime_source).await?;
     assert_eq!(
         inspect_automatic_storyline_projection(&runtime)
             .await?
