@@ -8,6 +8,8 @@ task-to-Run mapping for many independent Runs. pVisor owns each Run and its
 workspace. pChronicle owns durable canonical trajectory storage and Dataset
 discovery, query, conversion, analysis, and exchange.
 
+## Use
+
 ```bash
 cargo build -p persisting-pvisor --bin pvisor
 cargo build -p persisting-pchronicle-cli --bin pchronicle
@@ -50,3 +52,20 @@ protocol; pPilot itself still does not link pVisor.
 
 The CLI intentionally contains no Dataset catalog, query, conversion, or
 analysis commands. Use `pchronicle` for those operations.
+
+## Develop
+
+```bash
+just test persisting-ppilot
+# or: just test-crate ppilot
+just examples-ppilot
+```
+
+## Links
+
+- [pPilot overview](../../docs/src/ppilot/index.md)
+- [Orchestration architecture](../../docs/src/ppilot/design/orchestration.md)
+- [pPilot CLI](../../docs/src/ppilot/reference/cli.md)
+- [System architecture](../../docs/src/system-design/architecture.md)
+- [`persisting-pvisor`](../persisting-pvisor/README.md)
+- [`persisting-pchronicle-cli`](../persisting-pchronicle-cli/README.md)

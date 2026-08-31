@@ -2,7 +2,8 @@
 
 An Agent can work freely inside a staged workspace without receiving automatic
 permission to modify the base project. After the Run, you decide which effects
-cross that boundary.
+cross that boundary. This workflow applies the filesystem
+[Effect model](../concepts/run-model.md).
 
 ## Run with a manual stage
 

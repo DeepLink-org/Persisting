@@ -1,126 +1,175 @@
-# pChronicle Dataset Catalog 设计
+# pChronicle Snapshot design
 
-> 当前实现说明。Dataset 命令参数见 [`pchronicle` 命令参考](../reference/cli.md)；轨迹物理格式见
-> [pChronicle 运行存储](trajectory-storage.md) 与
-> [Storyline 三表 Lance](storyline-lance.md)。
+> Current implementation notes. Code and historical docs call this the
+> Dataset Catalog. The product name is **Snapshot**: the write/read sync
+> protocol after a **path** is opened. Platform name-to-path authorization
+> is [RFC-0013 path Directory](../../rfcs/0013-pchronicle-warehouse-catalog.md),
+> not this page.
+>
+> Dataset command arguments are in the [`pchronicle` command reference](../reference/cli.md).
+> The user model is [Dataset, Source, and Snapshot](../concepts/dataset-and-source.md).
+> The query workflow is [Discover and query](../guides/discover-and-query.md).
+> Physical trajectory formats are [pChronicle run storage](trajectory-storage.md)
+> and [Storyline three-table Lance](storyline-lance.md).
 
-格式 wire contract 与逐字段转换以 [RFC-0001 § Wire schema](../../rfcs/0001-storyline-format.md#wire-schema)、
-[RFC-0004 § ACTF 映射](../../rfcs/0004-actf-format.md#actf-storyline-json-pointer-mapping)、
-[RFC-0008 § ATIF 映射](../../rfcs/0008-atif-format.md#atif-storyline-json-pointer-mapping)和
-[RFC-0009 § OpenAI Messages 映射](../../rfcs/0009-openai-messages-format.md#openai-storyline-json-pointer-mapping)为准。
+Format wire contracts and field-by-field conversions follow
+[RFC-0001 § Wire schema](../../rfcs/0001-storyline-format.md#wire-schema),
+[RFC-0004 § ACTF mapping](../../rfcs/0004-actf-format.md#actf-storyline-json-pointer-mapping),
+[RFC-0008 § ATIF mapping](../../rfcs/0008-atif-format.md#atif-storyline-json-pointer-mapping),
+and
+[RFC-0009 § OpenAI Messages mapping](../../rfcs/0009-openai-messages-format.md#openai-storyline-json-pointer-mapping).
 
-## 1. 定位
+## 1. Role
 
-pChronicle Dataset Catalog 面向由多个存储位置和多种轨迹格式共同组成的查询空间，主要
-覆盖以下场景：
+Snapshot addresses a query space composed of multiple storage locations and
+trajectory formats under **one path**. A Warehouse can pin several paths at
+once; each path remains an independent Dataset. The main cases are:
 
-- 同时查询在线数据、历史归档和评测数据；
-- 一个逻辑数据集下包含多层目录、多个 Run 级 `events.lance`，以及若干外围 JSON 文件；
-- 不同数据集存在相同的 `run_id`、`session_id` 或文件名；
-- Web 服务需要在多次请求之间复用同一份发现结果，并且只在显式刷新后切换视图。
+- querying live data, historical archives, and evaluation data together;
+- one path that contains nested directories, several Run-level
+  `events.lance` stores, and peripheral JSON files;
+- the same `run_id`, `session_id`, or filename appearing on different paths;
+- a Web service that must reuse one discovery result across requests and
+  switch views only after an explicit refresh.
 
-它位于存储 URI 与 DataFusion SQL 之间，提供轻量的命名和发现边界。用户把若干 URI
-挂载为 Dataset；pChronicle 对每个挂载递归发现轨迹源，将不同物理格式统一投影到稳定表，
-并在一次查询或一代 Web 快照内固定其成员与版本。
+It sits between a path and DataFusion SQL. The user opens a path (or
+receives one after a Directory ticket). pChronicle recursively discovers
+trajectory sources, projects the different physical formats onto stable
+tables, and pins members and versions for one query or one generation of
+Web Snapshot. This is a write/read sync protocol, not a metadata database
+that must be maintained over time.
 
-Catalog **不是**一份需要长期维护的元数据数据库。它不复制源数据、不接管对象存储目录、
-不声明外围 JSON 已成为 canonical 数据，也不要求后台同步任务。
+Snapshot is **not** Directory. It does not copy source data, take over
+object-store directories, declare that peripheral JSON has become canonical,
+or require a background sync job. The code type name
+`DatasetCatalogSnapshot` still refers to this object.
 
-## 2. 目标与非目标
+## 2. Goals and non-goals
 
-### 2.1 目标
+### 2.1 Goals
 
-1. **多 Dataset 联查**：一次 SQL 可以访问多个具名本地目录或对象存储前缀。
-2. **层级发现**：一个 Dataset 的 URI 可以指向存储根、Run 根、复合 store 或单个文件。
-3. **统一表模型**：Storyline、canonical events、ATIF、OpenAI messages 和 ACTF 使用相同
-   的查询表名。
-4. **稳定身份**：任何 Storyline 都能用 `(dataset, _file_, session_id)` 唯一定位到快照内的物理源。
-5. **快照一致性**：一条查询不会在执行中混入新发现的文件或新的 Lance generation。
-6. **稳定默认入口**：位置参数固定挂载为名为 `dataset` 的默认 Dataset。
-7. **有界失败**：发现、格式检测、单文件大小、解析并发和查询内存都有显式限制与错误策略。
-8. **安全写入**：命名挂载默认只读；服务端写操作只能落到显式选定的 canonical events
-   Dataset。
-9. **Catalog-aware 裁剪**：先用 Dataset 和 `_file_` 条件选出 source，再构造物理扫描计划。
-10. **惰性解析**：Catalog 快照只固定成员和版本描述；Lance dataset、远程对象和文件
-    datasource 在查询确实需要时才打开，并在快照内 single-flight 复用。
+1. **Multi-Dataset joins**: one SQL statement can reach several named local
+   directories or object-store prefixes.
+2. **Hierarchical discovery**: a Dataset URI can point at a storage root, a
+   Run root, a composite store, or a single file.
+3. **Unified table model**: Storyline, canonical events, ATIF, OpenAI
+   messages, and ACTF use the same query table names.
+4. **Stable identity**: any Storyline can be located to a physical source
+   inside the Snapshot with `(dataset, _file_, session_id)`.
+5. **Snapshot consistency**: a query never mixes newly discovered files or
+   a new Lance generation into an in-flight execution.
+6. **Stable default entry**: a positional argument is always mounted as
+   the default Dataset named `dataset`.
+7. **Bounded failure**: discovery, format detection, per-file size, parse
+   concurrency, and query memory all have explicit limits and error
+   policies.
+8. **Safe writes**: named mounts are read-only by default. Server-side
+   writes can land only on an explicitly chosen canonical events Dataset.
+9. **Catalog-aware pruning**: Dataset and `_file_` predicates select
+   sources first; the physical scan plan is built after that.
+10. **Lazy resolution**: a Catalog Snapshot pins only member and version
+    descriptions. Lance datasets, remote objects, and file datasources
+    open when a query actually needs them, and are single-flight reused
+    inside the Snapshot.
 
-### 2.2 非目标
+### 2.2 Non-goals
 
-- 不提供 Hive Metastore、Glue Catalog 一类持久化 catalog service。
-- 不在 Catalog 中建立跨文件索引、统计信息仓库或 materialized view。
-- 不把不同源中的同名 `run_id` 或 `session_id` 自动合并。
-- 不为多个独立物理源提供分布式事务或全局时间点读。
-- 不通过 Catalog 修改、搬运或转换外围 JSON；需要长期列式分析时仍应显式导入 Lance。
-- 不在 URI 参数中管理密钥；对象存储认证继续使用对应 SDK 的标准凭证链。
+- No persistent catalog service in the style of Hive Metastore or Glue
+  Catalog.
+- No cross-file index, statistics warehouse, or materialized view inside
+  the Catalog.
+- No automatic merge of the same `run_id` or `session_id` from different
+  sources.
+- No distributed transaction or global point-in-time read across
+  independent physical sources.
+- No Catalog-driven rewrite, move, or conversion of peripheral JSON.
+  Long-lived columnar analysis still requires an explicit Lance import.
+- No secret management in URI parameters. Object-store authentication
+  continues to use each SDK's standard credential chain.
 
-## 3. 核心模型
+## 3. Core model
 
-![Dataset Catalog 查询路径](../../assets/diagrams/persisting/dataset-catalog.svg)
+![Snapshot query path](../../assets/diagrams/persisting/dataset-catalog.svg)
 
-核心对象分为七层：
+The core objects have seven layers:
 
-| 对象 | 作用 | 生命周期 |
+| Object | Role | Lifetime |
 |---|---|---|
-| `DatasetMount` | 保存层级 namespace、SQL alias、根 URI 和可选格式提示 | 配置期 |
-| `CatalogDataset` | 一个 Dataset 及其 `DiscoveredSource` 列表 | 快照期 |
-| `DiscoveredSource` | 描述一个复合 store 或外围文件的逻辑路径、格式、版本和状态 | 快照期 |
-| `DatasetCatalogSnapshot` | 固定全部挂载的成员、源版本和临时对象文件 | 一条 CLI 查询或一代 Server Catalog |
-| `LazySource` | 保存固定 source 描述，并并发安全地缓存首次解析结果或错误 | 与快照相同 |
-| `CatalogTableProvider` | 在 DataFusion `scan` 边界执行 source 裁剪并组合命中的物理计划 | 每个 Dataset 稳定表 |
-| `ChronicleQueryEngine` | 把快照注册为 DataFusion schema，并执行只读 SQL | 与快照相同 |
+| `DatasetMount` | holds hierarchical namespace, SQL alias, root URI, and optional format hint | configuration |
+| `CatalogDataset` | one Dataset and its `DiscoveredSource` list | Snapshot |
+| `DiscoveredSource` | logical path, format, version, and status of a composite store or peripheral file | Snapshot |
+| `DatasetCatalogSnapshot` | pins members, source versions, and temporary object files for every mount | one CLI query or one Server Catalog generation |
+| `LazySource` | holds the pinned source description and caches the first resolve result or error, concurrency-safe | same as the Snapshot |
+| `CatalogTableProvider` | prunes sources at the DataFusion `scan` boundary and composes the matching physical plans | each Dataset stable table |
+| `ChronicleQueryEngine` | registers the Snapshot as a DataFusion schema and runs read-only SQL | same as the Snapshot |
 
-### 3.1 Namespace、Dataset 与 SQL alias
+### 3.1 Namespace, Dataset, and SQL alias
 
-Dataset 是用户命名的逻辑查询空间，不等于物理 Lance dataset。一个 Dataset 可以包含多个
-Storyline store、多个 `events.lance` 和多个外围文件；每个 Dataset 对应一个 DataFusion
-schema。Catalog 用 `NamespacePath` 表达层级身份，用独立的 SQL alias 注册 DataFusion
-schema；因此 `prod/agents` 与 `staging/agents` 可以同时存在，而无需把目录身份编码进表名。
+Dataset identity is a normalized path. It is not a physical Lance dataset
+and not a Warehouse mount name. One path can contain several Storyline
+stores, several `events.lance` stores, and several peripheral files. The
+Warehouse registers an opened path as a DataFusion schema through a SQL
+alias, so `prod` and `staging` can exist at the same time. The alias is
+not Dataset identity. The implementation still uses `NamespacePath` for
+mount hierarchy.
 
-SQL alias 会去除首尾空白并转成小写，必须匹配 `[A-Za-z_][A-Za-z0-9_]*`。`public` 和
-`information_schema` 是保留名称。namespace component 允许字母、数字、`_`、`-`、`.`。
-完整 namespace 或 SQL alias 重名都会在发现前失败。
+A SQL alias is trimmed and lowercased and must match
+`[A-Za-z_][A-Za-z0-9_]*`. `public` and `information_schema` are reserved.
+A namespace component may contain letters, digits, `_`, `-`, and `.`. A
+duplicate full namespace or SQL alias fails before discovery.
 
-### 3.2 Source 与 `_file_`
+### 3.2 Source and `_file_`
 
-Source 是 Catalog 的最小发现单元：
+A Source is the Catalog's smallest discovery unit:
 
-- Storyline `CURRENT` 根是一个 `store` source；
-- canonical `events.lance` 根是一个 `store` source；
-- 每个 JSON、JSONL 或 NDJSON 文件是一个 `file` source。
+- a Storyline `CURRENT` root is a `store` source;
+- a canonical `events.lance` root is a `store` source;
+- each JSON, JSONL, or NDJSON file is a `file` source.
 
-`_file_` 是 source 相对 Dataset 根的 UTF-8 逻辑路径，统一使用 `/` 分隔。挂载根自身作为
-source 时使用 `.`。它不是源表的持久字段，也不会写回 Lance。
+`_file_` is the source's UTF-8 logical path relative to the Dataset root,
+always separated by `/`. When the mount root itself is the source, the
+value is `.`. It is not a persistent column of the source table and is
+never written back to Lance.
 
-### 3.3 Storyline 与 Run 身份
+### 3.3 Storyline and Run identity
 
-`session_id` 是 Storyline 的逻辑主键，但只在一个 source 内保证唯一；外围文件或不同归档
-中可以出现相同值。因此 Catalog 和 Server 使用以下复合键：
+`session_id` is the logical primary key of a Storyline, but uniqueness is
+guaranteed only inside one source. The same value can appear in a
+peripheral file or another archive. Catalog and Server therefore use this
+composite key:
 
 ```text
 (dataset, _file_, session_id)
 ```
 
-`run_id` 是 Run 分组键，一个物理 Run 可以包含主 Storyline 与多个 subagent Storyline，
-所以同一 source 内多行可以共享一个 `run_id`。canonical events 规范化时按事件的
-Storyline/session 身份分组，并保留实际 `events.lance` URI，避免后续读写根据挂载根猜测
-物理位置。
+`run_id` is a Run grouping key. One physical Run can contain a main
+Storyline and several subagent Storylines, so many rows in the same source
+can share one `run_id`. Canonical-event normalization groups by the
+event's Storyline/session identity and keeps the actual `events.lance`
+URI, so later reads and writes do not guess a physical location from the
+mount root.
 
 ### 3.4 Source revision
 
-内部用 `CatalogSourceRevision` 保存类型化 revision，而不是让一个字符串同时表示 Storyline
-generation、event fact/layout 水位、本地文件指纹与对象版本。`sources.snapshot_ref` 仍是便于
-SQL 展示和筛选的字符串投影；一致性判断、快照摘要和 API 描述使用类型化 revision。
+Internally, `CatalogSourceRevision` stores a typed revision. A single
+string is not asked to represent a Storyline generation, an event
+fact/layout watermark, a local file fingerprint, and an object version at
+once. `sources.snapshot_ref` remains a string projection that is convenient
+for SQL display and filtering. Consistency checks, Snapshot summaries, and
+API descriptions use the typed revision.
 
-一个 canonical events source 可以关联多个派生 Storyline 投影。Catalog 不因此隐藏或拒绝
-canonical source，而按 `fresh → last_modified → generation → path` 的稳定顺序选出一个读取
-加速投影；`projection_candidates` 暴露候选数。所有候选都不新鲜时，查询回退到固定的
-canonical events 快照。
+One canonical events source can be linked to several derived Storyline
+projections. The Catalog does not hide or reject the canonical source
+because of that. It selects one read-acceleration projection in the stable
+order `fresh → last_modified → generation → path`.
+`projection_candidates` exposes the candidate count. When no candidate is
+fresh, the query falls back to the pinned canonical events Snapshot.
 
-## 4. 挂载与默认 Dataset
+## 4. Mounts and the default Dataset
 
-### 4.1 CLI 形式
+### 4.1 CLI form
 
-`--mount NAME=DATASET` 可以重复：
+`--mount NAME=DATASET` may be repeated:
 
 ```bash
 pchronicle query \
@@ -129,13 +178,11 @@ pchronicle query \
   --sql "SELECT * FROM current.runs"
 ```
 
-也可以从 TOML 读取：
-
-```toml
-[datasets]
-current = "local:///srv/pchronicle/current"
-archive = "s3://trajectory-bucket/archive"
-```
+`--mount` and a positional Dataset are mutually exclusive. A positional
+argument is mounted as the fixed schema `dataset`. With only `--mount`,
+the caller must write the mount name; there is no implicit `dataset`
+schema. The user config file (`-c`) stores aliases and a default Dataset
+only. It does not provide a query mount table.
 
 ```bash
 pchronicle query --mount current=local:///srv/pchronicle/current \
@@ -143,36 +190,28 @@ pchronicle query --mount current=local:///srv/pchronicle/current \
   --sql "SELECT table_schema, table_name FROM information_schema.tables"
 ```
 
-位置参数、配置文件与重复 `--mount` 可以同时使用。三者中出现规范化重名时整体失败，
-不会按参数顺序覆盖。
+### 4.2 Default selection
 
-### 4.2 默认选择规则
-
-| 输入 | 默认 Dataset | 不带 schema 的 `runs` 等表名 |
+| CLI input | Default Dataset | Unqualified names such as `runs` |
 |---|---|---|
-| 有位置参数 `INPUT` | 固定为 `dataset` | 指向 `dataset.runs` 等默认 view |
-| 无位置参数且只有一个命名挂载 | 唯一挂载 | 指向该 Dataset 的默认 view |
-| 无位置参数且有多个命名挂载 | 无 | 必须写 `current.runs` 等限定名 |
+| positional `INPUT` | fixed as `dataset` | resolve to `dataset.runs` and the other default views |
+| `--mount` only (one or more) | none | must use a qualified name such as `current.runs` |
 
-位置参数形式如下：
+Positional form:
 
 ```bash
 pchronicle query ./capture --sql "SELECT * FROM dataset.runs"
 ```
 
-等价于把 `./capture` 挂载为 `dataset`，并查询 `dataset.runs`。它还可以追加其他挂载：
+This is equivalent to mounting `./capture` as `dataset` and querying
+`dataset.runs`. Cross-Dataset joins use repeated `--mount`. Do not put a
+positional Dataset and `--mount` on the same command.
 
-```bash
-pchronicle query ./capture \
-  --mount archive=s3://trajectory-bucket/archive \
-  --sql "SELECT * FROM dataset.runs UNION ALL SELECT * FROM archive.runs"
-```
+## 5. Hierarchical discovery
 
-## 5. 层级发现
+### 5.1 Example
 
-### 5.1 示例
-
-假设挂载目录如下：
+Assume this mounted directory:
 
 ```text
 capture-root/
@@ -189,80 +228,105 @@ capture-root/
         └── session.json
 ```
 
-Catalog 产生四个 source：
+The Catalog produces four sources:
 
-| `_file_` | `kind` | 可能的 `format` |
+| `_file_` | `kind` | Possible `format` |
 |---|---|---|
 | `live` | `store` | `storyline` |
 | `agents/codex/run-001/events.lance` | `store` | `events` |
 | `imports/batch-a.atif.jsonl` | `file` | `atif` |
-| `imports/nested/session.json` | `file` | 按文件检测 |
+| `imports/nested/session.json` | `file` | detected from the file |
 
-`live` 和 `events.lance` 的内部文件不会再次成为 source。这一“识别复合根后停止下探”的规则
-避免把 manifest、generation、segment 或 `objects.lance` 错当成用户输入。
+Internal files of `live` and `events.lance` do not become sources again.
+Stopping descent after a composite root is recognized keeps manifests,
+generations, segments, and `objects.lance` from being treated as user
+input.
 
-### 5.2 本地发现
+### 5.2 Local discovery
 
-本地 URI 支持普通路径、`local://` 和 `file://`：
+Local URIs accept ordinary paths, `local://`, and `file://`:
 
-1. 如果根是 `.json`、`.jsonl` 或 `.ndjson` 文件，直接建立单个 source。
-2. 如果根目录包含 `CURRENT`，整个根是一个 Storyline source。
-3. 如果根名为 `events.lance` 且包含 `_manifest.json`，整个根是一个 events source。
-4. 否则按稳定路径顺序递归目录：识别复合根，或收集支持的外围文件。
-5. 符号链接不会跟随，避免循环、越界读取和同一物理文件的重复身份。
+1. If the root is a `.json`, `.jsonl`, or `.ndjson` file, create a single
+   source.
+2. If the root directory contains `CURRENT`, the whole root is one
+   Storyline source.
+3. If the root is named `events.lance` and contains `_manifest.json`, the
+   whole root is one events source.
+4. Otherwise recurse in stable path order: recognize composite roots, or
+   collect supported peripheral files.
+5. Symbolic links are not followed, which avoids cycles, out-of-tree
+   reads, and duplicate identities for the same physical file.
 
-### 5.3 对象存储发现
+### 5.3 Object-store discovery
 
-对象 URI 通过 Lance/object-store 适配层解析。Catalog 流式消费前缀 listing，并在读取
-`max_entries + 1` 个对象前失败；不会先把无界 listing 收进内存再检查。随后：
+Object URIs are resolved through the Lance/object-store adapter. The
+Catalog consumes a prefix listing as a stream and fails before it reads
+`max_entries + 1` objects. It does not collect an unbounded listing into
+memory and check afterwards. Then:
 
-1. 用 `CURRENT` 对象识别 Storyline 根；
-2. 用 `events.lance/_manifest.json` 识别 canonical events 根；
-3. 排除所有复合根内部对象；
-4. 把剩余 `.json`、`.jsonl` 和 `.ndjson` 对象作为独立 source；
-5. 按 Dataset 相对 object key 排序。
+1. recognize Storyline roots from a `CURRENT` object;
+2. recognize canonical events roots from `events.lance/_manifest.json`;
+3. exclude every object inside a composite root;
+4. treat remaining `.json`, `.jsonl`, and `.ndjson` objects as independent
+   sources;
+5. sort by Dataset-relative object key.
 
-当前对象后端沿用 pChronicle/Lance 支持的 URI scheme，例如 `s3://`、`az://` 和 `gs://`。
-挂载或 listing 本身失败意味着无法建立可信成员集，即使使用 `report` 模式也会失败。
+Current object backends reuse the URI schemes that pChronicle/Lance
+already support, such as `s3://`, `az://`, and `gs://`. A failed mount or
+listing means a trusted member set cannot be built, so even `report` mode
+fails.
 
-### 5.4 格式检测
+### 5.4 Format detection
 
-每个外围文件独立检测格式，因此同一个 Dataset 可以混合 ATIF、OpenAI messages 与 ACTF。
-位置参数配合显式 `--source` 时，该值作为默认 Dataset 的格式约束：复合 store 类型或文件
-检测结果不匹配会报错。命名 Dataset 当前使用自动检测。
+Each peripheral file is detected independently, so one Dataset can mix
+ATIF, OpenAI messages, and ACTF. `pchronicle query` does not impose a
+format constraint on the Dataset. `--source` on `find` and `export` only
+narrows the search to one Dataset-relative Source path; it is not a
+format hint.
 
-本地和远程外围文件都不会为了自动检测而在 Catalog 构建期读取内容；如果没有显式格式
-提示，`sources.format` 可以是 `NULL`。Catalog 会先冻结本地文件指纹或远程对象版本，等
-`_file_` 裁剪选中该 source 后才做有界格式检测。检测结果与 datasource 解析结果一起缓存
-在快照的 `LazySource` 中。
+Neither local nor remote peripheral files are read at Catalog-build time
+for autodetection. Without an explicit format hint, `sources.format` may
+be `NULL`. The Catalog first freezes the local file fingerprint or remote
+object version, then runs bounded format detection after `_file_` pruning
+selects that source. The detection result is cached on the Snapshot's
+`LazySource` together with the datasource resolve result.
 
-## 6. SQL Provider
+## 6. SQL provider
 
-Dataset 的稳定公共关系、精确 `sources` column、Source-local identity 与 join 规则属于
-[Query Model Reference](../reference/query-model.md)。本节只解释 Catalog 如何为这些关系
-构造执行计划。
+The Dataset's stable public relations, exact `sources` columns,
+Source-local identity, and join rules belong to the
+[Query Model Reference](../reference/query-model.md). This section only
+explains how the Catalog builds execution plans for those relations.
 
-外围文件不会生成伪造的原始 event 行；它们只能通过 Storyline 规范化关系查询。Catalog
-为实体关系增加常量 `_file_`，把公开 Source identity 连接到惰性物理 Source。
+Peripheral files do not synthesize fake raw event rows. They are queried
+only through Storyline-normalized relations. The Catalog adds a constant
+`_file_` to entity relations so the public Source identity connects to the
+lazy physical Source.
 
 ### 6.1 Catalog-aware source pruning
 
-`runs`、`steps`、`tool_calls` 和 `events` 各自由一个 Dataset 级
-`CatalogTableProvider` 提供。DataFusion 把投影、过滤条件和 limit 交给 provider 后，
-provider 按以下顺序构造物理计划：
+`runs`, `steps`, `tool_calls`, and `events` are each provided by a
+Dataset-level `CatalogTableProvider`. After DataFusion hands projection,
+filters, and limit to the provider, the provider builds the physical plan
+in this order:
 
-1. 先排除不能提供目标表的 source，例如 `events` 自动排除 Storyline 和外围文件；
-2. 在每个 source 的常量 `_file_` 上求值可识别的过滤表达式；
-3. 完全不可能匹配的 source 直接跳过，不调用 `LazySource::resolve`；
-4. 以 `max_concurrent_sources` 为上限、按稳定 source 顺序解析候选，并把业务列投影、业务
-   谓词和 limit 继续交给其原生 provider；
-5. 零个命中 source 生成 `EmptyExec`，一个命中 source 直接使用其计划，多个命中 source
-   才生成 `UnionExec`，最后在需要时应用全局 limit。
+1. drop sources that cannot provide the target table — for example
+   `events` automatically excludes Storyline and peripheral files;
+2. evaluate recognizable filter expressions against each source's constant
+   `_file_`;
+3. skip sources that cannot match, without calling `LazySource::resolve`;
+4. resolve candidates in stable source order, capped by
+   `max_concurrent_sources`, and pass business-column projection, business
+   predicates, and limit on to each native provider;
+5. zero hits produce `EmptyExec`; one hit uses that plan directly; several
+   hits produce `UnionExec`; a global limit is applied last when needed.
 
-可精确用于 source 裁剪的 `_file_` 谓词包括 `=`、`!=`、`IN`、`NOT IN`、大小写敏感的
-`LIKE`/`NOT LIKE`，以及由 `AND`、`OR`、`NOT` 组成且能安全求值的组合。对同时包含 source
-条件和业务条件的表达式采取保守三值判断：只有能证明该 source 不可能匹配时才跳过。
-例如：
+`_file_` predicates that can prune exactly include `=`, `!=`, `IN`,
+`NOT IN`, case-sensitive `LIKE`/`NOT LIKE`, and combinations of `AND`,
+`OR`, and `NOT` that can be evaluated safely. Expressions that mix source
+conditions with business conditions use conservative three-valued logic:
+a source is skipped only when it can be proved impossible to match. For
+example:
 
 ```sql
 SELECT run_id, session_id
@@ -271,38 +335,48 @@ WHERE _file_ LIKE '2026/08/%'
   AND session_id = 'session-42';
 ```
 
-这里 `LIKE` 在 Catalog 层裁剪 source，`session_id` 则下推到命中 source 的 Lance 或文件
-provider。没有 `_file_` 条件时，Catalog 没有跨 source 的 `run_id`/时间统计信息，必须把
-目标表的全部兼容 source 视为候选；业务谓词仍可在每个原生 provider 内下推。
+Here `LIKE` prunes sources at the Catalog layer. `session_id` is pushed
+into the Lance or file provider of each hit. Without a `_file_`
+predicate, the Catalog has no cross-source `run_id` or time statistics, so
+every compatible source of the target table is a candidate. Business
+predicates can still be pushed down inside each native provider.
 
-`LazySource` 使用异步 `OnceCell` 缓存解析结果，多个并发查询命中同一个 source 时只执行
-一次打开、远程物化或格式解析。source 解析阶段的失败也会缓存，以保证同一快照内行为
-稳定。canonical events 的原始 `events` 表可以直接扫描固定 segment。没有 fresh 投影时，
-带可证明 `session_id = ...` 或 `session_id IN (...)` 的查询只读取目标 Storyline 的完整历史；
-宽查询读取固定 snapshot。两种 fallback 都受 `max_event_fallback_rows` 和
-`max_event_fallback_bytes` 约束，且只物化当前查询请求的关系表；超限时要求 build/sync
-Storyline 投影。
-`load_events` 点查直接读取目标 session，不构造 DataFusion MemTable，但使用相同的行数和
-字节预算。
+`LazySource` caches the resolve result in an async `OnceCell`. Concurrent
+queries that hit the same source open, remotely materialize, or parse the
+format only once. Resolve-phase failures are cached too, so behavior is
+stable inside one Snapshot. The raw `events` table of canonical events
+can scan pinned segments directly. Without a fresh projection, a query
+with a provable `session_id = ...` or `session_id IN (...)` reads only
+the full history of the target Storyline. Wide queries read the pinned
+snapshot. Both fallbacks are bounded by `max_event_fallback_rows` and
+`max_event_fallback_bytes`, and they materialize only the relation tables
+the current query asked for. Over-budget cases require a build/sync of
+the Storyline projection.
+`load_events` point lookups read the target session directly and do not
+build a DataFusion MemTable, but they use the same row and byte budgets.
 
-可以用 `EXPLAIN` 检查裁剪后的物理计划：精确命中一个 source 时，计划中不应出现
-`UnionExec`。
+`EXPLAIN` can inspect the pruned physical plan. An exact single-source
+hit should not contain `UnionExec`.
 
-### 6.2 联查规则
+### 6.2 Join rules
 
-同一 Dataset 可以包含多个物理 source，而 `run_id`/`session_id` 只保证在单个 source 中
-有效。两个内建轨迹表跨多个同 Dataset source 联接时，必须显式加入 `_file_` 等值：
+One Dataset can contain several physical sources, and `run_id`/`session_id`
+are valid only inside a single source. When two built-in trajectory tables
+join across several same-Dataset sources, an explicit `_file_` equality
+is required:
 
 ```sql
-SELECT r.run_id, s.step_id, s.message_json
+SELECT r.run_id, s.step_id, s.message_kind, s.message_value
 FROM archive.runs r
 JOIN archive.steps s
   ON r._file_ = s._file_
  AND r.session_id = s.session_id;
 ```
 
-遗漏 `_file_` 会在执行前被拒绝。跨 Dataset 联接不要求 `_file_` 相同，因为左右命名空间
-已经不同，通常也不会拥有相同的目录布局：
+Omitting `_file_` is rejected before execution. Cross-Dataset joins do
+not require matching `_file_` values, because the left and right
+namespaces are already different and usually do not share a directory
+layout:
 
 ```sql
 SELECT c.run_id, a.run_id AS archived_run
@@ -310,165 +384,218 @@ FROM current.runs c
 JOIN archive.runs a ON c.session_id = a.session_id;
 ```
 
-校验作用于 `runs`、`steps` 和 `tool_calls` 的内建联接。查询引擎只接受单条只读
-`SELECT`、`VALUES`、`DESCRIBE` 或
-`EXPLAIN`，拒绝 DDL、DML、`COPY` 和多语句。
+The check applies to built-in joins of `runs`, `steps`, and `tool_calls`.
+The query engine accepts a single read-only `SELECT`, `VALUES`,
+`DESCRIBE`, or `EXPLAIN`. It rejects DDL, DML, `COPY`, and multi-statement
+SQL.
 
-## 7. 快照与一致性
+## 7. Snapshots and consistency
 
-### 7.1 构建过程
+### 7.1 Build process
 
-一次 Catalog 构建按以下顺序完成：
+One Catalog build completes in this order:
 
 ```text
-解析并校验挂载
-  → 冻结每个根的候选成员
-  → 固定每个候选的 identity / CURRENT / manifest / object metadata
-  → 构造 sources 元数据
-  → 计算 snapshot_id
-  → 注册 Dataset schema、CatalogTableProvider 与默认 view
-  → 发布给查询或 Server
+parse and validate mounts
+  → freeze candidate members of each root
+  → pin identity / CURRENT / manifest / object metadata of each candidate
+  → build sources metadata
+  → compute snapshot_id
+  → register Dataset schema, CatalogTableProvider, and default views
+  → publish to query or Server
 ```
 
-只有完整构建成功的 `DatasetCatalogSnapshot` 才会交给查询引擎。构建过程不打开 Lance
-dataset、不把远程 JSON 复制到本地，也不把 canonical events 规范化为 Storyline 三表。
+Only a fully successful `DatasetCatalogSnapshot` is handed to the query
+engine. The build does not open Lance datasets, copy remote JSON locally,
+or normalize canonical events into Storyline three-table form.
 
-### 7.2 不同源的固定方式
+### 7.2 How each source is pinned
 
-| 源 | 成员固定 | 内容/版本固定 |
+| Source | Member pin | Content/version pin |
 |---|---|---|
-| 本地外围文件 | 发现时冻结路径列表 | 记录路径、size、mtime，以及 Unix 上的 device/inode；命中后读取前后再次校验 |
-| 远程外围对象 | 冻结 listing 的 `ObjectMeta` | 命中后按固定 version/ETag 条件读取，流式复制到快照临时目录，并校验最终大小 |
-| Storyline store | 发现并读取 `CURRENT` 描述 | 冻结 generation 与三张表的精确版本；命中后才打开 Lance dataset |
-| canonical events | 发现并读取 `_manifest.json` | 冻结 manifest revision 和可见 segment version；命中后才打开 segment |
+| local peripheral file | freeze the path list at discovery | record path, size, mtime, and device/inode on Unix; re-check before and after the first read |
+| remote peripheral object | freeze listing `ObjectMeta` | after a hit, read with the pinned version/ETag, stream-copy into the Snapshot temp directory, and verify the final size |
+| Storyline store | discover and read the `CURRENT` description | freeze the generation and the exact versions of the three tables; open the Lance dataset only after a hit |
+| canonical events | discover and read `_manifest.json` | freeze the manifest revision and visible segment versions; open segments only after a hit |
 
-只有被查询选中的远程对象才会复制。复制按 chunk 写入受快照持有的临时文件，不把整个
-对象一次性读入内存；快照释放后临时目录随之清理。本地 fingerprint 是变化检测，不是
-内容哈希：如果攻击者保留相同文件身份、大小和修改时间进行原地改写，不在保证范围内。
+Only remote objects selected by a query are copied. Copies write chunks
+into a temporary file held by the Snapshot; the whole object is never
+read into memory at once. The temporary directory is removed when the
+Snapshot is dropped. A local fingerprint is change detection, not a
+content hash: an attacker who rewrites a file in place while keeping the
+same identity, size, and mtime is outside the guarantee.
 
-### 7.3 一致性边界
+### 7.3 Consistency bounds
 
-快照保证：
+A Snapshot guarantees:
 
-- 查询计划和执行看到相同的 source 成员集；
-- Storyline/events 即使延迟打开，也只能打开快照已经固定的 generation、manifest 和
-  segment version，不会重新读取最新指针；
-- 后端提供 version/ETag 时，远程外围对象固定到 listing 时对应的版本；
-- 新文件、新 generation 或新 manifest 只有下一条 CLI 查询或显式刷新后可见。
+- query planning and execution see the same source member set;
+- even a late-opened Storyline/events store can open only the generation,
+  manifest, and segment versions already pinned by the Snapshot — it does
+  not re-read the latest pointers;
+- when the backend provides a version or ETag, a remote peripheral object
+  is pinned to the version observed at listing time;
+- new files, generations, or manifests become visible only on the next
+  CLI query or an explicit refresh.
 
-快照不保证多个彼此独立的 URI 来自同一个全局事务时刻，也不阻止源系统删除已经固定但
-尚未读取的数据。本地文件在发现与首次读取之间发生可检测变化时，查询会失败而不是混读。
-若对象后端既不提供 version 也不提供 ETag，Catalog 只能以 key、size 和修改时间描述
-`snapshot_ref` 并校验传输大小，不能提供相同强度的对象版本固定保证。
+A Snapshot does not claim that several independent URIs come from one
+global transaction instant, and it cannot stop a source system from
+deleting data that was pinned but not yet read. If a local file changes
+detectably between discovery and first read, the query fails rather than
+mixing versions. If an object backend provides neither version nor ETag,
+the Catalog can only describe `snapshot_ref` with key, size, and mtime
+and verify transfer size. That is a weaker object-version pin.
 
-`snapshot_id` 是 Dataset 名称、URI、格式提示、source 相对路径、固定引用与候选错误的
-BLAKE3 摘要截断值，用于标识成员/版本视图；它不是内容校验和，也不代表业务提交 ID。
+`snapshot_id` is a truncated BLAKE3 digest of Dataset names, URIs, format
+hints, source-relative paths, pinned references, and candidate errors. It
+identifies a member/version view. It is not a content checksum and not a
+business commit ID.
 
-### 7.4 解析生命周期
+### 7.4 Resolve lifetime
 
-快照中的每个 ready source 都持有一个固定描述和一个解析 cell。首次命中时：
+Each ready source in the Snapshot holds a pinned description and a
+resolve cell. On first hit:
 
 ```text
 CatalogTableProvider source pruning
   → LazySource::resolve
-  → 打开固定 Lance 版本，或校验/物化固定文件
-  → 创建原生 TableProvider
-  → 缓存 Result<ResolvedSource>
+  → open the pinned Lance version, or verify/materialize the pinned file
+  → create the native TableProvider
+  → cache Result<ResolvedSource>
 ```
 
-因此“惰性”不改变快照边界：解析发生得晚，但解析目标在 Catalog 发布前已经固定。未被任何
-查询命中的 source 在整个快照生命周期中可以始终保持未打开状态。
+Laziness therefore does not change the Snapshot boundary: resolve happens
+late, but the resolve target was pinned before the Catalog was published.
+A source that no query hits can stay unopened for the whole Snapshot
+lifetime.
 
-## 8. 错误策略与资源边界
+## 8. Error policy and resource bounds
 
-`ls` 和 `status` 通过 `--errors` 提供两种策略：
+`ls` and `status` expose two strategies through `--errors`:
 
-| 策略 | 单个候选无法固定描述或通过初始校验 | Dataset 根不存在、listing/遍历失败或超过全局限制 |
+| Strategy | One candidate cannot pin a description or pass initial validation | Dataset root missing, listing/walk failed, or a global limit exceeded |
 |---|---|---|
-| `strict` | Catalog 构建失败 | Catalog 构建失败 |
-| `report` | 写入 `<dataset>.sources`，状态为 `error`，跳过数据表注册 | Catalog 构建失败 |
+| `strict` | Catalog build fails | Catalog build fails |
+| `report` | write `<dataset>.sources` with status `error` and skip data-table registration | Catalog build fails |
 
-`report` 的目标是容忍一个可信成员集中的坏文件，不是把不完整 listing 伪装成成功。候选
-错误写入公开 Catalog 前会去掉错误文本中 URI query 部分，避免反射可能存在的临时签名；
-生产配置仍不应把凭证直接放进 URI。延迟到 SQL 扫描期才出现的 Lance 打开、远程条件
-读取、格式检测或记录解析错误在 `strict` 和 `report` 下都会让该查询失败，既不会静默
-漏掉 ready source，也不会追溯修改不可变快照中的 `sources.status`。
+`report` is meant to tolerate a bad file inside a trusted member set. It
+is not meant to disguise an incomplete listing as success. Candidate
+errors strip the URI query string before they enter the public Catalog,
+so a temporary signature is not reflected. Production configuration
+should still keep credentials out of URIs. Lance open, remote conditional
+read, format detection, or record-parse errors that appear only at SQL
+scan time fail that query under both `strict` and `report`. They never
+silently drop a ready source, and they never rewrite `sources.status` on
+the immutable Snapshot after the fact.
 
-Catalog 复用直接文件查询的资源参数：
+The Catalog reuses the resource parameters of direct file query:
 
-- `max_files`：候选 source 数上限；
-- `max_entries`：目录项或 object listing 数上限；
-- `max_detection_bytes`：格式检测输入上限；
-- `max_file_bytes`：外围文件/对象大小上限；
-- 可选的 `max_record_bytes`、`max_concurrent_files`、cache 参数：解析期边界；默认不设置
-  单记录大小上限，由 `max_file_bytes` 限制 source；
-- `max_concurrent_sources`：单次物理 scan 同时解析的 source 上限；
-- `max_event_fallback_rows`、`max_event_fallback_bytes`：无 fresh 投影时单次定向
-  canonical→Storyline fallback 的内存边界；
-- DataFusion memory pool、spill path、spill bytes、timeout 与输出行数：查询期边界。
+- `max_files`: upper bound on candidate sources;
+- `max_entries`: upper bound on directory entries or object listing
+  items;
+- `max_detection_bytes`: upper bound on format-detection input;
+- `max_file_bytes`: upper bound on peripheral file/object size;
+- optional `max_record_bytes`, `max_concurrent_files`, and cache
+  parameters: resolve-time bounds. There is no default per-record size
+  limit; `max_file_bytes` limits the source;
+- `max_concurrent_sources`: how many sources one physical scan may
+  resolve at once;
+- `max_event_fallback_rows`, `max_event_fallback_bytes`: memory bound
+  for one directed canonical→Storyline fallback when no fresh
+  projection exists;
+- DataFusion memory pool, spill path, spill bytes, timeout, and output
+  row count: query-time bounds.
 
-## 9. Server、刷新与 Web
+## 9. Server, refresh, and Web
 
-`pchronicle serve` 通过一个或多个位置参数 `[NAME=]DATASET` 挂载 Dataset。启动流程先收敛
-canonical Storyline 投影，再构建初始 Catalog，随后由所有 REST 和 SQL 请求共享。
+`pchronicle serve` mounts Datasets through one or more positional
+`[NAME=]DATASET` arguments. Startup first converges canonical Storyline
+projections, then builds the initial Catalog. Every later REST and SQL
+request shares that Catalog.
 
-| API | 语义 |
+| API | Semantics |
 |---|---|
-| `GET /api/catalog` | 返回当前 `snapshot_id`、创建时间、默认 Dataset、错误策略和 source 列表 |
-| `POST /api/catalog` | 在锁外完整构建新快照，成功后原子替换，并清空轨迹缓存 |
+| `GET /api/catalog` | current `snapshot_id`, creation time, default Dataset, error policy, and source list |
+| `POST /api/catalog` | build a complete new Snapshot off the lock, replace atomically on success, and clear the trajectory cache |
 
-投影 supervisor 在运行期发现新的 canonical Store 或 projection 发布后，会标记 Catalog
-dirty，随后在锁外完整重建并原子切换。已经发现的 `events.lance` 继续追加时只推进 source
-watermark，不触发全局 Catalog 重建。Gateway 配套的单 trace 查询会先由 Catalog 定位 source，
-再重新打开最新 canonical manifest，因此 Storyline projection 等待 idle 窗口时，正在进行的
-trace 仍然可见。刷新失败不会清空或部分更新旧 Catalog，而会保留 dirty 状态并有界重试；正在
-处理的请求持有旧快照的 `Arc`，可以继续完成。
-Web Explorer 从 Catalog 获取 Dataset 列表，服务端过滤、URL 状态和 Storyline 列表
-均携带完整 `(dataset, _file_, session_id)`；`run_id` 作为物理 Run 分组信息
-单独返回。Catalog 是不可变快照；`POST /api/catalog` 仍可显式刷新，但位置 Dataset 形式的 `serve`
-维护的 canonical 更新会自动产生新快照。
+When the projection supervisor discovers a new canonical Store at
+runtime, or a projection is published, it marks the Catalog dirty, then
+rebuilds completely off the lock and switches atomically. Further
+appends to an already discovered `events.lance` only advance the source
+watermark; they do not trigger a global Catalog rebuild. A Gateway-backed
+single-trace query first locates the source through the Catalog, then
+reopens the latest canonical manifest, so an in-flight trace stays
+visible while the Storyline projection waits for an idle window. A failed
+refresh does not clear or partially update the old Catalog. It keeps the
+dirty flag and retries within a bound. In-flight requests hold an `Arc`
+to the old Snapshot and can finish.
+Web Explorer takes the Dataset list from the Catalog. Server-side
+filters, URL state, and Storyline lists all carry the full
+`(dataset, _file_, session_id)`. `run_id` is returned separately as
+physical Run grouping. The Catalog is an immutable Snapshot.
+`POST /api/catalog` can still refresh explicitly, but canonical updates
+maintained by positional-Dataset `serve` produce a new Snapshot
+automatically.
 
-### 9.1 Server source-routing 加速
+### 9.1 Server source-routing acceleration
 
-Server 在每一代 `CatalogRuntime` 内持有可重建的内存加速结构，但不改变
-`DatasetCatalogSnapshot`、`CatalogDataset` 或 `DiscoveredSource` 的定义。索引按需从当前
-快照的稳定表派生：
+The Server holds a rebuildable in-memory acceleration structure inside
+each `CatalogRuntime` generation. It does not change the definitions of
+`DatasetCatalogSnapshot`, `CatalogDataset`, or `DiscoveredSource`.
+Indexes are derived on demand from the current Snapshot's stable tables:
 
-- `runs` 索引保存 `run_id`、`session_id`、`agent_id`、`agent_model_name` 到 source id 的
-  多值映射；
-- `events` 使用两级 lazy index：identity 层保存 `event_id`、`trace_id`，partition 层保存
-  `session_id`、`agent_id`；项目列表不会为高基数 event identity 付出内存成本；
-- source 路径只在每个 Dataset 内保存一次，值键使用每代随机 keyed 64-bit fingerprint，单 source 命中
-  内联保存整数 source id；hash collision 只会扩大候选集，原 SQL 谓词仍负责最终过滤；
-- Run 列表另行惰性缓存，不让 SQL point query 为 Explorer 的 `row_count` 聚合付费。
+- the `runs` index maps `run_id`, `session_id`, `agent_id`, and
+  `agent_model_name` to source ids as a multi-value map;
+- `events` uses a two-level lazy index: the identity layer holds
+  `event_id` and `trace_id`; the partition layer holds `session_id` and
+  `agent_id`. Project lists do not pay memory cost for high-cardinality
+  event identities;
+- source paths are stored once per Dataset. Value keys use a
+  per-generation keyed 64-bit fingerprint. A single-source hit inlines
+  the integer source id. A hash collision only widens the candidate set;
+  the original SQL predicates still do the final filter;
+- Run lists are cached lazily on a separate path so SQL point queries do
+  not pay for Explorer `row_count` aggregation.
 
-索引只在首个包含可路由条件的单表查询到达时构建，并由 async single-flight 防止并发重复
-扫描。构建使用 Arrow batch stream，不收集完整结果；单层索引最多接受 100 万行和 100 万
-distinct value，超过边界即丢弃未发布的临时索引并回退原查询。Server 只从顶层 `AND` 中
-提取必然成立的字符串等值或 `IN` 条件；联接、CTE、析取、
-复杂表达式、已有 `_file_` 条件、过多候选 source 或索引构建失败都保留原 SQL。命中时只向
-SQL 增加 `_file_ = ...` 或 `_file_ IN (...)`，原业务谓词仍由 DataFusion 执行。因此索引
-只能缩小物理 source 候选，不能改变结果语义。
+An index is built only when the first single-table query with a routable
+predicate arrives. Async single-flight prevents concurrent duplicate
+scans. Construction uses an Arrow batch stream and does not collect the
+full result. One index layer accepts at most 1,000,000 rows and
+1,000,000 distinct values. Crossing that bound discards the unpublished
+temporary index and falls back to the original query. The Server extracts
+only string equalities or `IN` predicates that must hold from the top-level
+`AND`. Joins, CTEs, disjunctions, complex expressions, an existing
+`_file_` predicate, too many candidate sources, or an index-build failure
+all keep the original SQL. On a hit, the Server only adds `_file_ = ...`
+or `_file_ IN (...)`; DataFusion still evaluates the original business
+predicates. The index can only shrink physical source candidates. It
+cannot change result semantics.
 
-`GET /api/catalog` 的 `acceleration` 字段报告索引是否已经构建及其行、source、distinct
-value 数，并通过 `failed` 列出本 generation 已缓存的构建失败，避免每个请求重复全表扫描；
-`POST /api/query/evidence` 用 `source_routing` 响应字段报告 `applied`、
-`already_pruned`、`not_applicable`、`not_selective` 或 `index_unavailable`。Catalog 刷新会把
-新快照、查询引擎和空加速结构作为同一个 runtime 原子发布；旧请求继续持有旧 runtime，
-索引不会跨 `snapshot_id` 复用。
+The `acceleration` field of `GET /api/catalog` reports whether indexes
+are built and their row, source, and distinct-value counts. `failed`
+lists build failures already cached for this generation so later requests
+do not rescan the whole table. `POST /api/query/evidence` reports
+`applied`, `already_pruned`, `not_applicable`, `not_selective`, or
+`index_unavailable` in the `source_routing` response field. A Catalog
+refresh publishes the new Snapshot, query engine, and empty acceleration
+structure as one runtime. Old requests keep the old runtime. Indexes are
+not reused across `snapshot_id` values.
 
-首次索引构建仍需扫描对应稳定表，主要收益来自同一 Server 生命周期内的后续 point/project
-查询。CLI 的一次性 SQL 不使用这层状态，也不会让 Catalog 变成持久化元数据服务。
+The first index build still scans the corresponding stable table. The
+main gain is later point/project queries in the same Server lifetime.
+One-shot CLI SQL does not use this state and does not turn the Catalog
+into a persistent metadata service.
 
-### 9.2 写入边界
+### 9.2 Write boundary
 
-`pchronicle serve` 只提供读取、Catalog 刷新和有界 evidence query，不暴露 maintenance、
-导入或任意 SQL 写接口。服务强制限制为 loopback；Gateway 和原生 writer
-直接写 Dataset，不经过 Warehouse API。
+`pchronicle serve` exposes reads, Catalog refresh, and bounded evidence
+query only. It does not expose maintenance, import, or arbitrary SQL
+writes. The service is forced to loopback. Gateway and native writers
+write the Dataset directly and do not go through the Warehouse API.
 
-## 10. Rust API 边界
+## 10. Rust API boundary
 
-核心 API 由 `persisting-pchronicle` 提供：
+The core API is provided by `persisting-pchronicle`:
 
 ```rust
 use std::sync::Arc;
@@ -489,100 +616,146 @@ let rows = engine
     .await?;
 ```
 
-需要按 Storyline 读取完整轨迹时使用 `CatalogStorylineKey` 调用快照的 `load_storyline`、`load_events`
-或 `canonical_event_uri`。控制面可用 `list_namespaces`、`list_sources` 和 `describe_source`
-分页浏览同一快照；page token 与 `snapshot_id` 绑定，刷新后不能复用。调用方不应绕过快照
-重新发现 source，否则可能把不同成员或版本拼进同一个响应。
+To read a complete trajectory by Storyline, call the Snapshot's
+`load_storyline`, `load_events`, or `canonical_event_uri` with a
+`CatalogStorylineKey`. The control plane can page through the same
+Snapshot with `list_namespaces`, `list_sources`, and `describe_source`.
+Page tokens are bound to `snapshot_id` and cannot be reused after a
+refresh. Callers must not rediscover sources around the Snapshot; that
+can splice different members or versions into one response.
 
-## 11. 关键不变量
+## 11. Key invariants
 
-实现和后续扩展必须保持以下不变量：
+Implementation and later extensions must keep these invariants:
 
-1. Namespace 是层级逻辑身份；SQL alias 是独立且唯一的小写 schema 名，二者不得混作一个字段。
-2. `_file_` 在一个快照内稳定、相对 Dataset 根，根 source 固定表示为 `.`。
-3. Catalog Storyline 的完整身份始终是 `(dataset, _file_, session_id)`；`run_id` 只用于 Run 分组。
-4. 识别复合 store 后不得继续把其内部文件注册为独立 source。
-5. 六张表即使为空也必须存在，并保持固定 schema。
-6. `events` 只能包含 canonical events，不能由有损 Storyline 反向伪造。
-7. 同 Dataset 多 source 的轨迹表联接必须携带 `_file_` 等值。
-8. 查询期 source 不能脱离持有它的快照生命周期。
-9. Server 只原子发布完整新快照；失败时继续提供旧快照。
-10. Warehouse Server 不得把任何 Dataset 或 source 作为写目标。
-11. `_file_` source pruning 必须发生在 `LazySource::resolve` 之前；不能为了判断是否命中而
-    打开 source。
-12. 延迟解析只能使用快照固定的版本描述，并在同一快照内 single-flight；不得在解析时
-    重新跟随 `CURRENT` 或最新 manifest。
-13. 多个投影关联同一 canonical events source 时必须保留 canonical source，并稳定选择最多
-    一个 fresh 投影；冲突只能形成诊断信息，不能阻断事实读取。
-14. Server routing index 必须与 snapshot 同代发布；构建或分析不确定时只能回退原查询，
-    不得用不完整索引排除 source。
+1. Namespace is hierarchical logical identity. A SQL alias is an
+   independent, unique lowercase schema name. The two must not be mixed
+   into one field.
+2. `_file_` is stable inside one Snapshot and relative to the Dataset
+   root. The root source is always `.`.
+3. A Catalog Storyline's full identity is always
+   `(dataset, _file_, session_id)`. `run_id` is only for Run grouping.
+4. After a composite store is recognized, its internal files must not be
+   registered as independent sources.
+5. The six tables must exist even when empty, and they keep a fixed
+   schema.
+6. `events` can contain only canonical events. It must not be forged
+   backwards from a lossy Storyline.
+7. Trajectory-table joins across several sources in the same Dataset must
+   carry `_file_` equality.
+8. A query-time source cannot outlive the Snapshot that holds it.
+9. The Server publishes only a complete new Snapshot atomically. On
+   failure it keeps serving the old Snapshot.
+10. The Warehouse Server must not treat any Dataset or source as a write
+    target.
+11. `_file_` source pruning must happen before `LazySource::resolve`. A
+    source must not be opened just to decide whether it hits.
+12. Late resolve may use only the version description pinned by the
+    Snapshot, and it must single-flight inside that Snapshot. It must
+    not re-follow `CURRENT` or the latest manifest at resolve time.
+13. When several projections attach to the same canonical events source,
+    the canonical source must remain visible and at most one fresh
+    projection is chosen stably. Conflicts can only become diagnostics;
+    they must not block fact reads.
+14. The Server routing index must be published with the same Snapshot
+    generation. Uncertain build or analysis can only fall back to the
+    original query. An incomplete index must not exclude a source.
 
-## 12. 取舍与备选方案
+## 12. Trade-offs and alternatives
 
-### 12.1 持久化元数据服务
+### 12.1 A persistent metadata service
 
-持久化 Catalog 能缓存 listing 和统计信息，但会引入一致性协议、迁移、后台同步、权限与
-灾难恢复问题。当前工作负载更需要“对这一条查询看到什么”的确定边界，因此选择查询期
-快照。若未来 listing 成本成为主瓶颈，可以在不改变 SQL 模型的前提下增加可验证缓存。
+A persistent Catalog can cache listings and statistics, but it introduces
+consistency protocols, migrations, background sync, authorization, and
+disaster recovery. The current workload needs a definite bound on "what
+this one query sees", so the design uses a query-time Snapshot. If
+listing cost becomes the main bottleneck later, a verifiable cache can be
+added without changing the SQL model.
 
-### 12.2 把所有挂载平铺到 `public`
+### 12.2 Flattening every mount into `public`
 
-平铺表无法区分在线与归档边界，也会让 `_file_` 必须编码 URI 或 Dataset 名称。使用
-DataFusion schema 保留用户给出的 Dataset 语义，并让跨 Dataset SQL 显式可审查。
+Flattened tables cannot tell live data from archives, and `_file_` would
+have to encode a URI or Dataset name. DataFusion schemas keep the Dataset
+semantics the user supplied and make cross-Dataset SQL explicitly
+reviewable.
 
-### 12.3 用目录 basename 作为默认名称
+### 12.3 Using the directory basename as the default name
 
-basename 会受路径拼写、对象前缀和部署目录影响，不带 schema 的 SQL 也无法获得稳定解析结果。位置参数入口
-因此始终使用固定名称 `dataset`，而不是从 URI 猜名字。
+A basename depends on path spelling, object prefixes, and deployment
+directories. Unqualified SQL would not get a stable resolution. The
+positional entry therefore always uses the fixed name `dataset` instead
+of guessing a name from the URI.
 
-### 12.4 发现时统一导入 Lance
+### 12.4 Importing everything to Lance at discovery
 
-外围 JSON 的自动导入会改变查询的延迟、容量和失败语义，还会制造新的持久状态，因此
-Catalog 对它只做虚拟规范化。canonical `events.lance` 是例外：位置 Dataset 形式的 `serve` 在 Catalog
-之外维护确定的同级 Storyline 投影；查询仍按 lineage 和 freshness 选择投影或固定快照 fallback。
+Automatic import of peripheral JSON would change query latency, capacity,
+and failure semantics, and it would create new persistent state. The
+Catalog therefore only virtualizes those files. Canonical `events.lance`
+is the exception: positional-Dataset `serve` maintains a deterministic
+sibling Storyline projection outside the Catalog. Queries still choose a
+projection or a pinned-snapshot fallback by lineage and freshness.
 
-### 12.5 只使用 `run_id`
+### 12.5 Using only `run_id`
 
-`run_id` 是分组键，不是 Storyline 主键；同一物理 Run 内的主 Agent 与 subagent 可以共享
-该值。用 `(dataset, _file_, session_id)` 定位既能保留物理来源，也能支持无歧义的读写路由。
+`run_id` is a grouping key, not the Storyline primary key. The main Agent
+and subagents in one physical Run can share it. Locating by
+`(dataset, _file_, session_id)` keeps the physical origin and supports
+unambiguous read/write routing.
 
-## 13. 测试与演进
+## 13. Tests and evolution
 
-当前测试覆盖：
+Current tests cover:
 
-- Dataset 名称规范化、保留名与重名拒绝；
-- 本地混合格式递归发现、默认 view 和空 Dataset schema；
-- `strict`/`report` 候选错误行为；
-- Catalog 和查询引擎构建后 source 解析计数仍为零；
-- `_file_` 与业务谓词组合只解析命中的本地、远程和 Storyline source；
-- 单 source 物理计划没有 `UnionExec`，未命中的远程对象不会下载；
-- 延迟错误不会在 `report` 下被静默跳过；
-- canonical `events` 原始扫描和 session 点查不会触发全量 Storyline 规范化；
-- 多 fresh 投影稳定选出一个且 canonical events 始终可见；
-- 层级 namespace 分页、source describe 和跨快照 page-token 拒绝；
-- 同 Dataset 危险联接拒绝与跨 Dataset 联接；
-- 一个 canonical events source 中多个 Storyline 的独立读取；
-- CLI 位置参数、单/多命名挂载、TOML 与帮助文本；
-- Server 惰性 Catalog、Dataset 过滤、失败刷新保留旧快照和物理写入坐标；
-- Server routing index 的多条件交集、单 source SQL 注入、结果等价、显式 `_file_` 保留与
-  refresh 后清空；
-- Web Dataset 选择与完整 Run 坐标编码。
+- Dataset name normalization, reserved names, and duplicate rejection;
+- local mixed-format recursive discovery, default views, and empty
+  Dataset schema;
+- `strict`/`report` candidate-error behavior;
+- source-resolve counts remaining zero after Catalog and query-engine
+  construction;
+- `_file_` plus business predicates resolving only the hit local, remote,
+  and Storyline sources;
+- single-source physical plans with no `UnionExec`, and no download of
+  unhit remote objects;
+- late errors not being silently skipped under `report`;
+- raw canonical `events` scans and session point lookups not triggering
+  full Storyline normalization;
+- stable selection of one among several fresh projections, with canonical
+  events always visible;
+- hierarchical namespace paging, source describe, and cross-Snapshot
+  page-token rejection;
+- dangerous same-Dataset joins rejected and cross-Dataset joins allowed;
+- independent reads of several Storylines in one canonical events source;
+- CLI positional arguments, single/multi named mounts, TOML, and help
+  text;
+- Server lazy Catalog, Dataset filtering, failed refresh keeping the old
+  Snapshot, and physical write coordinates;
+- Server routing-index multi-predicate intersection, single-source SQL
+  injection, result equivalence, explicit `_file_` preservation, and
+  clear-on-refresh;
+- Web Dataset selection and full Run-coordinate encoding.
 
-后续扩展新格式或新后端时，应先定义它如何产生稳定 `_file_`、如何固定版本、能投影哪些
-表、是否允许写入，再接入发现器。不能固定成员或版本的后端必须显式降低一致性承诺，不能
-复用现有 `snapshot_ref` 暗示更强保证。
+When a new format or backend is added later, define first how it produces
+a stable `_file_`, how it pins versions, which tables it can project, and
+whether writes are allowed, then attach a discoverer. A backend that
+cannot pin members or versions must lower its consistency claim
+explicitly. It must not reuse the existing `snapshot_ref` to imply a
+stronger guarantee.
 
-## 14. 相关实现
+## 14. Related implementation
 
-- `crates/persisting-pchronicle/src/store/catalog/`：发现、固定、惰性 source、Catalog
-  provider、source pruning 和 Run 路由；
-- `crates/persisting-pchronicle/src/store/query_engine.rs`：Catalog DataFusion backend 与联接校验；
-- `crates/persisting-pchronicle/src/store/storyline/datafusion.rs`：Storyline 描述固定与按固定
-  generation 延迟打开；
-- `crates/persisting-pchronicle/src/store/events/datafusion.rs`：canonical event manifest
-  固定与按固定 segment 延迟打开；
-- `crates/persisting-pchronicle-cli/src/lib.rs`：查询 CLI 挂载与默认 Dataset 解析；
-- `crates/persisting-pchronicle-cli/src/server/mod.rs`：惰性构建、原子刷新、读写路由；
-- `crates/persisting-pchronicle-cli/src/server/acceleration.rs`：同代内存 source-routing index、
-  保守 SQL 分析与 `_file_` 注入；
-- `pchronicle-web/src/`：Dataset 选择和完整 Run identity。
+- `crates/persisting-pchronicle/src/store/catalog/`: discovery, pinning,
+  lazy sources, Catalog provider, source pruning, and Run routing;
+- `crates/persisting-pchronicle/src/store/query_engine.rs`: Catalog
+  DataFusion backend and join checks;
+- `crates/persisting-pchronicle/src/store/storyline/datafusion.rs`:
+  Storyline description pinning and late open of a pinned generation;
+- `crates/persisting-pchronicle/src/store/events/datafusion.rs`:
+  canonical event manifest pinning and late open of pinned segments;
+- `crates/persisting-pchronicle-cli/src/lib.rs`: query CLI mounts and
+  default Dataset resolution;
+- `crates/persisting-pchronicle-cli/src/server/mod.rs`: lazy build,
+  atomic refresh, and read/write routing;
+- `crates/persisting-pchronicle-cli/src/server/acceleration.rs`:
+  same-generation in-memory source-routing index, conservative SQL
+  analysis, and `_file_` injection;
+- `pchronicle-web/src/`: Dataset selection and full Run identity.

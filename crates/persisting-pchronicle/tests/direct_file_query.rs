@@ -8,6 +8,9 @@ use persisting_pchronicle::document::{DocumentFormat, detect_format};
 use persisting_pchronicle::query::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, SOURCE_FILE_COLUMN,
 };
+use persisting_pchronicle::storage::{
+    CatalogSnapshotOptions, DatasetCatalogSnapshot, DatasetMount,
+};
 
 mod support;
 
@@ -66,6 +69,205 @@ async fn queries_one_openai_json_with_the_virtual_file_column() -> Result<()> {
     engine
         .query("SELECT _file_ FROM tool_calls LIMIT 1")
         .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn format_virtual_table_keeps_two_columns_and_jsonb_queries() -> Result<()> {
+    let input = atif_fixtures().join("dialogue_10.json");
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &input,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+
+    let rows = json_rows(
+        &engine
+            .query_jsonl(
+                "SELECT id, json_get_string(data, 'trajectory_id') AS trajectory_id FROM atif",
+            )
+            .await?,
+    )?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["trajectory_id"], "run-dialogue_10");
+    Ok(())
+}
+
+#[tokio::test]
+async fn catalog_exposes_dataset_format_virtual_table() -> Result<()> {
+    let input = atif_fixtures().join("dialogue_10.json");
+    let temp = tempfile::tempdir()?;
+    fs::copy(&input, temp.path().join("dialogue.json"))?;
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(temp.path().to_string_lossy())?],
+        Some("dataset".into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+    let engine = std::sync::Arc::new(snapshot)
+        .query_engine(ChronicleQueryExecutionOptions::default())
+        .await?;
+    let rows = json_rows(
+        &engine
+            .query_jsonl(
+                "SELECT id, json_get_string(data, 'trajectory_id') AS trajectory_id FROM dataset.atif",
+            )
+            .await?,
+    )?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["trajectory_id"], "run-dialogue_10");
+    Ok(())
+}
+
+#[tokio::test]
+async fn virtual_json_filters_push_through_normalized_tables() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    fs::copy(
+        atif_fixtures().join("dialogue_10.json"),
+        temp.path().join("dialogue.json"),
+    )?;
+    fs::copy(
+        atif_fixtures().join("long_context_20.json"),
+        temp.path().join("long-context.json"),
+    )?;
+    let direct = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        temp.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let direct_rows = json_rows(
+        &direct
+            .query_jsonl(
+                "SELECT id FROM atif \
+                 WHERE json_get_string(data, 'session_id') = 'fixture-long_context_20'",
+            )
+            .await?,
+    )?;
+    assert_eq!(direct_rows.len(), 1);
+
+    let and_rows = json_rows(
+        &direct
+            .query_jsonl(
+                "SELECT id FROM atif \
+                 WHERE json_get_string(data, 'session_id') = 'fixture-long_context_20' \
+                   AND json_extract(data, '$.steps[4].tool_calls[0].function_name') \
+                         = '\"knowledge_search\"'",
+            )
+            .await?,
+    )?;
+    assert_eq!(and_rows.len(), 1);
+    assert_eq!(and_rows[0]["id"], "run-long_context_20");
+
+    let reverse_rows = json_rows(
+        &direct
+            .query_jsonl(
+                "SELECT id FROM atif \
+                 WHERE 'fixture-long_context_20' = json_get_string(data, 'session_id')",
+            )
+            .await?,
+    )?;
+    assert_eq!(reverse_rows.len(), 1);
+
+    let or_rows = json_rows(
+        &direct
+            .query_jsonl(
+                "SELECT id FROM atif \
+                 WHERE json_get_string(data, 'session_id') = 'fixture-dialogue_10' \
+                    OR json_get_string(data, 'session_id') = 'fixture-long_context_20' \
+                 ORDER BY id",
+            )
+            .await?,
+    )?;
+    assert_eq!(or_rows.len(), 2);
+
+    let missing_rows = json_rows(
+        &direct
+            .query_jsonl(
+                "SELECT id FROM atif \
+                 WHERE json_get_string(data, 'session_id') = 'does-not-exist'",
+            )
+            .await?,
+    )?;
+    assert!(missing_rows.is_empty());
+
+    let tool_rows = json_rows(
+        &direct
+            .query_jsonl(
+                "SELECT id FROM atif \
+                 WHERE json_extract(data, '$.steps[4].tool_calls[0].function_name') \
+                       = '\"knowledge_search\"'",
+            )
+            .await?,
+    )?;
+    assert_eq!(tool_rows.len(), 1);
+    assert_eq!(tool_rows[0]["id"], "run-long_context_20");
+
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(temp.path().to_string_lossy())?],
+        Some("dataset".into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+    let engine = std::sync::Arc::new(snapshot)
+        .query_engine(ChronicleQueryExecutionOptions::default())
+        .await?;
+
+    let rows = json_rows(
+        &engine
+            .query_jsonl(
+                "SELECT id, json_get_string(data, 'session_id') AS session_id \
+                 FROM dataset.atif \
+                 WHERE json_get_string(data, 'trajectory_id') = 'run-dialogue_10'",
+            )
+            .await?,
+    )?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["session_id"], "fixture-dialogue_10");
+    assert!(
+        rows[0]["id"]
+            .as_str()
+            .is_some_and(|id| id.ends_with("::run-dialogue_10"))
+    );
+    let catalog_tool_rows = json_rows(
+        &engine
+            .query_jsonl(
+                "SELECT id FROM dataset.atif \
+                 WHERE json_extract(data, '$.steps[4].tool_calls[0].function_name') \
+                       = '\"knowledge_search\"'",
+            )
+            .await?,
+    )?;
+    assert_eq!(catalog_tool_rows.len(), 1);
+    assert!(
+        catalog_tool_rows[0]["id"]
+            .as_str()
+            .is_some_and(|id| id.ends_with("::run-long_context_20"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn codex_virtual_table_exposes_jsonl_records_as_jsonb() -> Result<()> {
+    let input = tempfile::NamedTempFile::with_suffix(".jsonl")?;
+    fs::write(
+        input.path(),
+        "{\"timestamp\":\"2026-08-03T08:15:11.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"session-1\"}}\n",
+    )?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Codex,
+        input.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let rows = json_rows(
+        &engine
+            .query_jsonl("SELECT id, json_get_string(data, 'type') AS event_type FROM codex")
+            .await?,
+    )?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["event_type"], "session_meta");
     Ok(())
 }
 
@@ -341,9 +543,9 @@ async fn atif_steps_projection_matches_full_normalization_and_prunes_rows() -> R
          ORDER BY step_id",
         "SELECT step_id FROM steps WHERE source = 'agent' ORDER BY session_id, step_id",
         "SELECT run_id, session_id, step_id, kind, effective_kind, timestamp, source, \
-                message_json, reasoning_content, reasoning_effort_json, metrics_json, \
-                model_name, llm_call_count, is_copied_context, latency_ms, ttft_ms, \
-                had_observation, extra_json \
+                message_json, reasoning_content, reasoning_effort_json, metrics, \
+                model_name, llm_call_count, is_copied_context, latency, ttft, \
+                had_observation, extra \
          FROM steps WHERE session_id = 'fixture-dialogue_10' AND step_id = 5",
     ];
     for query in queries {

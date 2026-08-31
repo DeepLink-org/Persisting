@@ -159,3 +159,76 @@ pub fn decode_all_with(
     })?;
     Ok((stories, report))
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use std::path::PathBuf;
+
+    use proptest::prelude::*;
+    use serde_json::json;
+
+    use super::*;
+
+    fn path_component_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[a-zA-Z0-9_-]{1,24}").unwrap()
+    }
+
+    fn minimal_story(session: &str) -> StorylineDocument {
+        serde_json::from_value(json!({
+            "schema_version": "storyline/v1",
+            "session": session,
+            "agent": {"id": "agent"},
+            "turns": []
+        }))
+        .expect("minimal storyline is valid")
+    }
+
+    proptest! {
+        #[test]
+        fn candidate_paths_are_case_insensitive_but_meta_sidecars_are_excluded(
+            directory in proptest::collection::vec(path_component_strategy(), 0..3),
+            stem in path_component_strategy(),
+            extension in prop_oneof![Just("json".to_string()), Just("JSONL".to_string()), Just("Md".to_string())],
+            sidecar in any::<bool>(),
+        ) {
+            let filename = if sidecar {
+                format!("{stem}.meta.json")
+            } else {
+                format!("{stem}.{extension}")
+            };
+            let path = directory.into_iter().fold(PathBuf::new(), |mut path, component| {
+                path.push(component);
+                path
+            }).join(filename);
+            let is_candidate = is_candidate_path(&path, &["json", "jsonl", "md"]);
+            prop_assert_eq!(is_candidate, !sidecar);
+        }
+
+        #[test]
+        fn emit_stories_reports_and_forwards_every_story(
+            sessions in proptest::collection::vec(path_component_strategy(), 0..16),
+        ) {
+            let stories = sessions.iter().map(|session| minimal_story(session)).collect::<Vec<_>>();
+            let expected = stories.clone();
+            let expected_len = expected.len();
+            let mut emitted = Vec::new();
+            let report = emit_stories(stories, &mut |story| {
+                emitted.push(story);
+                Ok(())
+            }).expect("emission succeeds");
+            prop_assert_eq!(emitted, expected);
+            prop_assert_eq!(report.documents, expected_len);
+            prop_assert_eq!(report.peak_record_bytes, 0);
+        }
+
+        #[test]
+        fn candidate_detection_rejects_non_registered_extensions(
+            stem in path_component_strategy(),
+            extension in proptest::string::string_regex("[a-z]{1,8}").unwrap(),
+        ) {
+            prop_assume!(!matches!(extension.as_str(), "json" | "jsonl" | "md"));
+            let path = PathBuf::from(format!("{stem}.{extension}"));
+            prop_assert!(!is_candidate_path(&path, &["json", "jsonl", "md"]));
+        }
+    }
+}

@@ -1,5 +1,13 @@
 # Langfuse → pChronicle backend feasibility probe
 
+**Review-only probe: replace Langfuse's ClickHouse analytics backend with
+pChronicle, without changing Langfuse's public API or pChronicle storage
+formats.**
+
+Owns the adapter experiment, deterministic fixture, and recorded verdicts.
+Postgres, Redis, and object storage remain unchanged. TTAS, Queue/Sampler,
+Search, and `persisting-dlcapt` are outside this probe.
+
 The original recorded verdict and evidence are in [REPORT.zh.md](REPORT.zh.md).
 The lazy-catalog retest is in
 [RETEST-2026-08-12.zh.md](RETEST-2026-08-12.zh.md), with machine-readable
@@ -12,20 +20,12 @@ with machine-readable results in
 original run remains in
 [recorded-results-2026-08-11.json](recorded-results-2026-08-11.json).
 
-This probe evaluates replacing only Langfuse's ClickHouse analytics backend.
-Postgres, Redis, and object storage remain unchanged. It is intentionally an
-adapter experiment, not a Langfuse public-API change or a pChronicle storage
-format change.
-
 Pinned review baselines:
 
 - Langfuse: `d18a59ad663ffc7c04afc61354186c141b3ec0f3` (v4.7.1)
 - Persisting: `94531cf903e5abc336de347588fb1858e9d52b6a` plus the local,
   uncommitted catalog/query-engine work present during the review
 - ClickHouse: 25.12.x; the recorded run used 25.12.11.4
-
-The pChronicle catalog used here is experimental. TTAS, Queue/Sampler, Search,
-and `persisting-dlcapt` are outside this probe.
 
 ## Workload
 
@@ -48,7 +48,7 @@ health. Update and delete methods deliberately return unsupported errors. An
 implementation that hides those errors behind a new mutable projection engine
 would exceed the bounded-integration decision rule.
 
-## Run pChronicle probe
+## Run
 
 Use an empty temporary directory; the fixture is about 238 MB.
 
@@ -74,8 +74,6 @@ Useful scale controls are `PCHRONICLE_LANGFUSE_EVENTS`,
 `PCHRONICLE_LANGFUSE_BLOB_LOG_ROWS`, `PCHRONICLE_LANGFUSE_TRACES`,
 `PCHRONICLE_LANGFUSE_PRELOAD_BATCH_ROWS`, and
 `PCHRONICLE_LANGFUSE_LOAD_SECONDS`.
-
-## Run ClickHouse comparison
 
 Start an isolated ClickHouse 25.12 instance. One Docker example is:
 
@@ -105,8 +103,6 @@ tables with an incremental materialized view, text and skipping indexes,
 async inserts with acknowledgement, and separate score/dataset/blob tables.
 It samples visibility after every acknowledged 10-row load batch.
 
-## Fault and regression probes
-
 ```bash
 cargo test -p persisting-pchronicle --test langfuse_backend_faults -- --nocapture
 cargo test -p persisting-pchronicle --test production_scale --test query_engine
@@ -129,3 +125,8 @@ read-only query boundary, and catalog refresh behavior.
 
 Isolation, durability, mutation, or public-semantic failure is an immediate
 NO-GO. A localized performance-only miss may be conditional.
+
+## Links
+
+- [pChronicle design](../../docs/src/pchronicle/design/index.md)
+- [`persisting-pchronicle`](../../crates/persisting-pchronicle/README.md)

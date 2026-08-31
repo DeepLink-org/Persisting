@@ -82,21 +82,37 @@ projection ownership 见[运行存储](trajectory-storage.md)，用户查询流�
 `runs.lance` 中可能有多行共享同一个 `run_id`。内部 `document_id` 使用显式
 `trajectory_id`，缺省时回落到 `session_id`，是三表 mutation 的文档作用域键。
 
-常用 JSON 值（message、arguments、metrics、extra 等）以 UTF-8 JSON 列保存；身份、
-顺序、类型、时间和性能字段使用独立的 Arrow 标量列，便于过滤和分析。
+`steps.message` 使用 `message_kind` 与 `message_value` 两列保存：前者是固定枚举，标识
+`null`、`text`、`parts` 或 `json`，后者保存规范化 JSON 原始值，并继续受大对象
+offload 机制保护。`reasoning_effort` 同样拆为 `reasoning_effort_kind` 与
+`reasoning_effort_value`，前者是固定枚举，区分字符串、数字和 JSON escape。可能较大的
+`arguments`、`observation`、`result` 等 JSON 值仍以 UTF-8 JSON 列保存并受 content/offload
+层保护；身份、顺序、类型、时间和性能字段使用独立的
+Arrow 标量列，便于过滤和分析。
 
-`runs.schema_version` 与 `runs.origin_json` 保存严格 Storyline wire 版本和来源身份。
+`runs.schema_version` 与 `runs.origin` 保存严格 Storyline wire 版本和来源身份。
+`runs.started_at` 与 `runs.finished_at` 使用 UTC 纳秒 Timestamp 列。
+`agent_extra`、`final_metrics`、`extra`、`meta`、`unknown_fields`、`metrics` 与 `response` 使用
+Lance `lance.json` 扩展类型（JSONB，物理为
+`LargeBinary`）；Lance/DataFusion 会在读取时暴露为 Arrow JSON 字符串，并支持 JSON
+路径函数与谓词下推。offload 不替换整个 JSON 单元，而是递归遍历对象/数组，把超过阈值的
+value 替换成 content descriptor；外层 envelope 仍可用 `json_get_*` 查询，完整读取时再递归
+恢复。`message_value`、`observation`、`arguments`、`result`、`results` 以及其他可能很大的字段继续使用 content/offload 层。
 `steps.turn_ordinal` 是 turn 数组顺序的权威列；`step_id` 只作身份，不参与重排。
 `had_tool_calls` 让显式空数组与字段缺失保持可区分。
+旧表缺列时按字段缺失解码；`message_kind`/`message_value` 与 `reasoning_effort_kind`/
+`reasoning_effort_value` 作为成组 schema 字段共同存在。
 
-`steps.timestamp` 是规范化到 UTC 的 `Timestamp(Nanosecond, "UTC")` 查询列；
-`timestamp_source_json` 保存权威 JSON 标量，因此 RFC3339 字符串和 Unix epoch 秒数值
-都能无损恢复。写入端拒绝无效、越界或无法精确表示为纳秒的非空时间。SQL 排序、范围
-过滤和时间聚合使用 `timestamp`，重建 Storyline 时使用权威源标量。读取端继续兼容旧的
-`Timestamp(Millisecond, "UTC")` 与 `timestamp_rfc3339` 布局。
+`steps.timestamp` 是规范化到 UTC 的 `Timestamp(Nanosecond, "UTC")` 查询列；写入端拒绝
+无效、越界或无法精确表示为纳秒的非空时间。SQL 排序、范围过滤和时间聚合直接使用
+`timestamp`，重建 Storyline 时使用规范化后的 UTC 时间。读取端继续兼容旧的
+`Timestamp(Millisecond, "UTC")` 布局。
 
-`steps.observation_json` 保存完整、权威的任意 JSON observation，`had_observation` 保存
-出现语义。`tool_calls.results_json` 只是从 `observation.results[]` 可关联项派生的查询列，
+`steps.latency`、`steps.ttft` 和 `tool_calls.duration` 是以毫秒计的可空 `BIGINT` 列；单位
+由字段语义和查询字段说明提供，不再编码在列名后缀中。
+
+`steps.observation` 保存完整、权威的任意 JSON observation，`had_observation` 保存
+出现语义。`tool_calls.results` 只是从 `observation.results[]` 可关联项派生的查询列，
 不会反向重建 observation；读取时若派生列与权威 observation 不一致会 fail closed。
 turn ordinal、call index 也必须从零连续且唯一。
 
@@ -108,7 +124,8 @@ Agent 轨迹中的长 reasoning、工具输出、源代码、日志和多模态�
 cell。若把它们与身份、顺序、类型和指标一起内联，常规过滤与聚合也要承受更大的 fragment、
 page cache 和解码开销。pChronicle 因此在三表之外增加共享内容层，但保持三个约束：
 
-1. `runs` / `steps` / `tool_calls` 的 Arrow schema 和 SQL 结果不变；内容层是内部物理优化。
+1. 在同一 schema 版本内，`runs` / `steps` / `tool_calls` 的 Arrow schema 和 SQL 结果稳定；
+   schema 变更通过 `CURRENT.schema_version` 显式发布，内容层是内部物理优化。
 2. 小值继续内联，只有达到阈值的 UTF-8/JSON cell 才外置，避免所有读取都退化成 KV lookup。
 3. 内容按原始字节寻址并跨 Storyline 复用；不把轨迹主键、生命周期或业务去重混入内容层。
 
@@ -204,11 +221,11 @@ root/
 `replace_storyline` 不再读取或重写全库，而是按各表主键执行 merge-upsert，并只删除指定
 `document_id` 中已经不再存在的旧键。每次替换
 会产生一个新的逻辑 snapshot；
-`CURRENT` 是一段 JSON，记录必需的 store `schema_version: 2`、逻辑 snapshot id、物理
+`CURRENT` 是一段 JSON，记录必需的 store `schema_version: 1`、逻辑 snapshot id、物理
 `table_generation`、三张表以及对象表各自精确的 Lance version id。对象先持久化，三张业务表随后写入，最后才更新 `CURRENT`；
 因此失败最多留下不可达对象，不会发布悬空引用或跨表半提交。
 
-阈值、preview 长度和 Zstd level 可通过 `StorylineContentOptions` 配置；三表 schema 不变。
+阈值、preview 长度和 Zstd level 可通过 `StorylineContentOptions` 配置；当前三表 schema 固定在版本 1。
 
 Lance MVCC 的旧版本默认保留，便于已打开的 reader 固定快照及故障恢复。频繁增量更新
 会积累 fragment、delete file 和未合并的索引增量。普通 replace 不执行 index refresh 或
@@ -460,5 +477,5 @@ benchmark 还单独输出 DataSource 冷打开并执行 SQL、`get_storyline_ful
 
 - [事实、Projection 与 Revision](../concepts/facts-and-projections.md)：解释 Storyline 为何是 projection。
 - [pChronicle 架构](architecture.md)：定义 publication 和 read consistency 保证。
-- [Dataset Catalog](catalog.md)：说明 Source discovery 与固定 Snapshot 如何打开本 Store。
+- [Snapshot](catalog.md)：说明 Source discovery 与固定 Snapshot 如何打开本 Store。
 - [`pchronicle` 参考](../reference/cli.md)：当前对外查询、导入导出与服务命令。

@@ -318,31 +318,32 @@ async fn write_record_batch_reader(
         .execute_stream(reader)
         .await
         .with_context(|| format!("stream ATIF into Storyline table {}", path.display()))?;
-    if dataset.count_rows(None).await? > 0 {
-        for (column, index_type) in indexes {
-            let builtin = match index_type {
-                IndexType::Bitmap => BuiltinIndexType::Bitmap,
-                _ => BuiltinIndexType::BTree,
-            };
-            let _admission = super::super::index_build_gate::acquire().await;
-            dataset
-                .create_index(
-                    &[*column],
-                    *index_type,
-                    Some(format!("pchronicle_{column}_idx")),
-                    &ScalarIndexParams::for_builtin(builtin),
-                    false,
-                )
-                .await
-                .with_context(|| {
-                    format!(
-                        "create {:?} index on {}.{}",
-                        index_type,
-                        path.display(),
-                        column
-                    )
-                })?;
+    super::ensure_table_indexes(&mut dataset, indexes)
+        .await
+        .with_context(|| format!("ensure Storyline indexes for {}", path.display()))?;
+    Ok(dataset.version_id())
+}
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn chunk_limit_helpers_share_the_same_strict_boundary(
+            actual in any::<usize>(),
+            limit in prop::option::of(any::<usize>()),
+        ) {
+            let exceeded = limit.is_some_and(|value| actual > value);
+            prop_assert_eq!(exceeds_limit(actual, limit), exceeded);
+            prop_assert_eq!(enforce_limit("generated", actual, limit).is_ok(), !exceeded);
+        }
+
+        #[test]
+        fn unlimited_chunk_limits_accept_every_generated_size(actual in any::<usize>()) {
+            prop_assert!(!exceeds_limit(actual, None));
+            prop_assert!(enforce_limit("generated", actual, None).is_ok());
         }
     }
-    Ok(dataset.version_id())
 }

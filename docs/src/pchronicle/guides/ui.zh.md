@@ -68,9 +68,7 @@ Run 详情页从上到下分为三层：
 - **Timeline** 展示记录详情。可在 **Conversations / Steps** 两种组织方式之间切换，按角色或关键字过滤，
   并展开任意一行查看完整文本、工具调用和事件引用。**Analysis** 则查看该 Run 的分析视图。
 
-时间条表示各条记录在 Session 序列中的位置，不等同于真实的墙上时钟耗时。界面显示
-`OTLP unavailable · Reconstructed events` 时，说明事件由导入的 Run 数据重建，没有直接记录的 OTLP 事件；
-这不影响阅读已有的文本、工具调用和统计信息。
+时间条表示各条记录在 Session 序列中的位置，不等同于真实的墙上时钟耗时；这不影响阅读已有的文本、工具调用和统计信息。
 
 ## 分析 Dataset
 
@@ -124,6 +122,11 @@ Storage 是高级诊断页，不是日常浏览 Run 的必经步骤。左侧按 
 模型端点，pChronicle 服务端不会收到密钥。不要在不受信任或多人共用的浏览器配置中保存密钥；
 清除该站点的浏览器数据也会清除这份设置。Assistant 标记为 **Read-only · selected run data**，
 用于解释当前上下文，不会改写 Dataset。
+
+使用 `pchronicle serve --catalog-config` 时，从左侧 **Keys** 打开设置，填写 Directory 用户的
+access key 和 secret key。它们保存在 `localStorage`，并作为
+`x-pchronicle-access-key` / `x-pchronicle-secret-key` 发给当前 pChronicle 服务端。
+它们决定浏览器可以打开哪些 path，不是对象存储后端密钥。
 
 ## 常见问题
 

@@ -337,6 +337,52 @@ fn ensure_format_hint(mount: &DatasetMount, actual: DocumentFormat, file: &str) 
     Ok(())
 }
 
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn token_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[A-Za-z0-9._/-]{1,32}").unwrap()
+    }
+
+    proptest! {
+        #[test]
+        fn storyline_and_event_candidates_expose_stable_source_stubs(
+            file in token_strategy(),
+            uri in token_strategy(),
+            size in prop::option::of(0u64..1_000_000),
+            modified in prop::option::of(token_strategy()),
+            is_events in any::<bool>(),
+        ) {
+            let candidate = if is_events {
+                Candidate::Events { file: file.clone(), uri, size_bytes: size, last_modified: modified.clone() }
+            } else {
+                Candidate::Storyline { file: file.clone(), uri, size_bytes: size, last_modified: modified.clone() }
+            };
+            let source = candidate.source_stub();
+            prop_assert_eq!(source.file, file);
+            prop_assert_eq!(source.size_bytes, size);
+            prop_assert_eq!(source.last_modified, modified);
+            prop_assert_eq!(source.kind, CatalogSourceKind::Store);
+            prop_assert_eq!(source.status, CatalogSourceStatus::Ready);
+            prop_assert_eq!(source.format.as_deref(), Some(if is_events { DocumentFormat::CanonicalEvent.as_str() } else { DocumentFormat::StorylineLance.as_str() }));
+        }
+
+        #[test]
+        fn source_format_hints_must_match_the_candidate_format(
+            name in proptest::string::string_regex("[A-Za-z_][A-Za-z0-9_]{0,19}").unwrap(),
+        ) {
+            let mount = DatasetMount::new(name, "memory://catalog/source").unwrap();
+            prop_assert!(ensure_format_hint(&mount, DocumentFormat::CanonicalEvent, "events.lance").is_ok());
+            let hinted = mount.with_format_hint(DocumentFormat::StorylineLance);
+            prop_assert!(ensure_format_hint(&hinted, DocumentFormat::StorylineLance, "storyline").is_ok());
+            prop_assert!(ensure_format_hint(&hinted, DocumentFormat::CanonicalEvent, "events").is_err());
+        }
+    }
+}
+
 pub(super) async fn normalize_event_storylines(
     source: &RawEventDataSource,
     session_ids: Option<&BTreeSet<String>>,

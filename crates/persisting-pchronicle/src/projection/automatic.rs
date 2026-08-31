@@ -479,6 +479,35 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn local_projection_uris_replace_only_the_canonical_leaf(
+                parent in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+                nested in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+            ) {
+                let source = format!("/datasets/{parent}/{nested}/events.lance");
+                let projection = automatic_storyline_projection_uri(&source).unwrap();
+                prop_assert_eq!(projection, format!("/datasets/{parent}/{nested}/storyline"));
+            }
+
+            #[test]
+            fn remote_projection_uris_preserve_scheme_and_bucket(
+                bucket in proptest::string::string_regex("[a-z0-9-]{1,16}").unwrap(),
+                prefix in proptest::string::string_regex("[a-z0-9/_-]{1,32}").unwrap(),
+            ) {
+                let source = format!("s3://{bucket}/{prefix}/events.lance");
+                let projection = automatic_storyline_projection_uri(&source).unwrap();
+                prop_assert_eq!(projection, format!("s3://{bucket}/{prefix}/storyline"));
+            }
+        }
+    }
+
     #[tokio::test]
     async fn inventory_is_sorted_and_uses_pinned_event_snapshots() -> Result<()> {
         let temp = tempfile::tempdir()?;

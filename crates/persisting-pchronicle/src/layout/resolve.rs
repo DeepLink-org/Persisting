@@ -822,3 +822,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn component_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[A-Za-z0-9._-]{1,32}").unwrap()
+    }
+
+    proptest! {
+        #[test]
+        fn normalized_path_arguments_trim_outer_space_and_trailing_slashes(
+            component in component_strategy(),
+            trailing in proptest::collection::vec(Just('/'), 0..8),
+        ) {
+            let input = format!("  {component}{}  ", trailing.into_iter().collect::<String>());
+            prop_assert_eq!(normalized_path_arg(&input), component.clone());
+            prop_assert_eq!(normalized_path_arg(&normalized_path_arg(&input)), component);
+        }
+    }
+}

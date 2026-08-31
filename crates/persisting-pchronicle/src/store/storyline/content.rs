@@ -1,9 +1,9 @@
 //! Content-addressed storage for large Storyline cells.
 //!
-//! The normalized Storyline schemas remain unchanged. Large UTF-8 / JSON cells
-//! are replaced internally with a compact descriptor and stored once
-//! in `objects.lance`. Public pChronicle readers hydrate descriptors before they
-//! return data.
+//! Large UTF-8 / JSON cells are replaced internally with a compact descriptor
+//! and stored once in `objects.lance`. Native Lance JSON columns keep their
+//! outer JSONB envelope and only replace oversized nested values. Public
+//! pChronicle readers hydrate descriptors before they return data.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -15,7 +15,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use futures::TryStreamExt;
 use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
 use lance::deps::arrow_array::{
-    Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray, UInt8Array, UInt64Array,
+    Array, Int64Array, LargeBinaryArray, RecordBatch, RecordBatchIterator, StringArray, UInt8Array,
+    UInt64Array,
 };
 use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, SchemaRef};
 use lance::index::DatasetIndexExt;
@@ -39,6 +40,22 @@ const CONTENT_ID_COLUMN: &str = "content_id";
 const PAYLOAD_COLUMN: &str = "payload";
 const ROW_ADDRESS_COLUMN: &str = "_rowaddr";
 const LOOKUP_CHUNK_SIZE: usize = 512;
+
+fn json_text_values(column: &dyn Array, name: &str) -> Result<Vec<Option<String>>> {
+    if let Some(values) = column.as_any().downcast_ref::<StringArray>() {
+        return Ok(values
+            .iter()
+            .map(|value| value.map(ToOwned::to_owned))
+            .collect());
+    }
+    if let Some(values) = column.as_any().downcast_ref::<LargeBinaryArray>() {
+        return Ok(values
+            .iter()
+            .map(|value| value.map(lance_arrow::json::decode_json))
+            .collect());
+    }
+    anyhow::bail!("Storyline JSON column '{name}' is neither Utf8 nor Lance JSONB")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StorylineContentOptions {
@@ -305,36 +322,44 @@ pub(crate) fn externalize_unknown_field_values(
 pub(crate) fn content_columns(kind: StorylineTableKind) -> &'static [(&'static str, bool)] {
     match kind {
         StorylineTableKind::Runs => &[
-            ("agent_tool_definitions_json", true),
-            ("agent_extra_json", true),
-            ("parent_json", true),
-            ("child_session_ids_json", true),
+            ("origin", true),
+            ("agent_tool_definitions", true),
+            ("parent", true),
+            ("child_session_ids", true),
             ("notes", false),
-            ("final_metrics_json", true),
+            ("unknown_key_counts", true),
+            ("task", true),
             ("continued_trajectory_ref", false),
-            ("extra_json", true),
-            ("meta_json", true),
-            ("task_json", true),
-            ("started_at_json", true),
-            ("finished_at_json", true),
-            ("prompt_json", true),
+            ("prompt", true),
         ],
         StorylineTableKind::Steps => &[
-            ("message_json", true),
+            ("message_value", true),
             ("reasoning_content", false),
-            ("reasoning_effort_json", true),
-            ("metrics_json", true),
-            ("extra_json", true),
-            ("env_json", true),
-            ("finished_at_json", true),
-            ("prompt_json", true),
+            ("reasoning_effort_value", true),
+            ("observation", true),
+            ("env", true),
+            ("prompt", true),
         ],
-        StorylineTableKind::ToolCalls => &[
-            ("arguments_json", true),
-            ("results_json", true),
-            ("extra_json", true),
-            ("response_json", true),
+        StorylineTableKind::ToolCalls => {
+            &[("arguments", true), ("result", true), ("results", true)]
+        }
+    }
+}
+
+/// Native Lance JSON columns are kept queryable as JSONB envelopes. Large
+/// values inside these envelopes are replaced by content descriptors instead
+/// of offloading the whole cell.
+pub(crate) fn native_json_columns(kind: StorylineTableKind) -> &'static [&'static str] {
+    match kind {
+        StorylineTableKind::Runs => &[
+            "agent_extra",
+            "final_metrics",
+            "extra",
+            "meta",
+            "unknown_fields",
         ],
+        StorylineTableKind::Steps => &["metrics", "extra"],
+        StorylineTableKind::ToolCalls => &["extra", "response"],
     }
 }
 
@@ -357,6 +382,30 @@ fn externalize_batch(
     pending: &mut PendingContent,
 ) -> Result<RecordBatch> {
     let mut columns = batch.columns().to_vec();
+    for name in native_json_columns(kind) {
+        let Ok(index) = batch.schema().index_of(name) else {
+            continue;
+        };
+        let values = json_text_values(columns[index].as_ref(), name)?;
+        let mut encoded = Vec::with_capacity(values.len());
+        for value in values {
+            let Some(value) = value else {
+                encoded.push(None);
+                continue;
+            };
+            let mut json_value: serde_json::Value = serde_json::from_str(&value)
+                .with_context(|| format!("decode native Storyline JSON column '{name}'"))?;
+            externalize_nested_json_values(&mut json_value, options, pending)?;
+            encoded.push(Some(serde_json::to_string(&json_value).with_context(
+                || format!("encode native Storyline JSON column '{name}'"),
+            )?));
+        }
+        columns[index] = Arc::new(
+            lance_arrow::json::JsonArray::try_from_iter(encoded)
+                .context("encode native Storyline JSONB column")?
+                .into_inner(),
+        );
+    }
     for (name, is_json) in content_columns(kind) {
         let Ok(index) = batch.schema().index_of(name) else {
             continue;
@@ -394,6 +443,51 @@ fn externalize_batch(
         columns[index] = Arc::new(StringArray::from(encoded));
     }
     RecordBatch::try_new(batch.schema(), columns).context("externalize Storyline content batch")
+}
+
+fn externalize_nested_json_values(
+    value: &mut serde_json::Value,
+    options: StorylineContentOptions,
+    pending: &mut PendingContent,
+) -> Result<()> {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for child in fields.values_mut() {
+                externalize_nested_json_slot(child, options, pending)?;
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                externalize_nested_json_slot(child, options, pending)?;
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
+    Ok(())
+}
+
+fn externalize_nested_json_slot(
+    value: &mut serde_json::Value,
+    options: StorylineContentOptions,
+    pending: &mut PendingContent,
+) -> Result<()> {
+    if let Some(existing) = value.as_str()
+        && ContentRef::parse(existing)?.is_some()
+    {
+        return Ok(());
+    }
+    let encoded = serde_json::to_vec(value).context("serialize nested Storyline JSON value")?;
+    if encoded.len() >= options.offload_threshold {
+        let object = build_object(&encoded, LogicalType::Json, options)?;
+        let descriptor = object.reference.encode();
+        pending.insert(object)?;
+        *value = serde_json::Value::String(descriptor);
+        return Ok(());
+    }
+    externalize_nested_json_values(value, options, pending)
 }
 
 fn build_object(
@@ -672,37 +766,24 @@ pub(crate) fn collect_content_ids(
             let Some(column) = batch.column_by_name(name) else {
                 continue;
             };
-            let values = column
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .with_context(|| format!("Storyline content column '{name}' is not Utf8"))?;
+            let values = json_text_values(column.as_ref(), name)?;
             for value in values.iter().flatten() {
                 if let Some(reference) = ContentRef::parse(value)? {
                     ids.insert(reference.content_id);
                 }
             }
         }
-        if kind == StorylineTableKind::Runs {
-            let Some(column) = batch.column_by_name("unknown_fields_json") else {
+        for name in native_json_columns(kind) {
+            let Some(column) = batch.column_by_name(name) else {
                 continue;
             };
-            let values = column
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .context("Storyline unknown_fields_json is not Utf8")?;
-            for encoded_fields in values.iter().flatten() {
-                let fields: StorylineUnknownFields = serde_json::from_str(encoded_fields)
-                    .context("decode Storyline unknown_fields_json for content collection")?;
-                for source in fields.sources.values() {
-                    for value in source.fields.values() {
-                        let Some(encoded) = value.as_str() else {
-                            continue;
-                        };
-                        if let Some(reference) = ContentRef::parse(encoded)? {
-                            ids.insert(reference.content_id);
-                        }
-                    }
-                }
+            for encoded in json_text_values(column.as_ref(), name)?
+                .into_iter()
+                .flatten()
+            {
+                let value: serde_json::Value = serde_json::from_str(&encoded)
+                    .with_context(|| format!("decode native Storyline JSON column '{name}'"))?;
+                collect_nested_content_ids(&value, &mut ids)?;
             }
         }
     }
@@ -752,54 +833,53 @@ pub(crate) async fn hydrate_batches(
         .map(|(name, _)| *name)
         .collect::<HashSet<_>>();
     let batches = hydrate_selected_batches(dataset, batches, &selected).await?;
-    if kind == StorylineTableKind::Runs {
-        hydrate_unknown_field_values(dataset, batches).await
-    } else {
-        Ok(batches)
-    }
+    hydrate_native_json_values(dataset, batches, kind).await
 }
 
-async fn hydrate_unknown_field_values(
+fn collect_nested_content_ids(value: &serde_json::Value, ids: &mut HashSet<String>) -> Result<()> {
+    if let Some(encoded) = value.as_str() {
+        if let Some(reference) = ContentRef::parse(encoded)? {
+            ids.insert(reference.content_id);
+        }
+        return Ok(());
+    }
+    match value {
+        serde_json::Value::Object(fields) => {
+            for child in fields.values() {
+                collect_nested_content_ids(child, ids)?;
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                collect_nested_content_ids(child, ids)?;
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
+    Ok(())
+}
+
+async fn hydrate_native_json_values(
     dataset: &Arc<Dataset>,
     batches: Vec<RecordBatch>,
+    kind: StorylineTableKind,
 ) -> Result<Vec<RecordBatch>> {
-    const COLUMN: &str = "unknown_fields_json";
     let mut references = HashMap::<String, ContentRef>::new();
     for batch in &batches {
-        let Some(column) = batch.column_by_name(COLUMN) else {
-            continue;
-        };
-        let values = column
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .context("Storyline unknown_fields_json is not Utf8")?;
-        for encoded_fields in values.iter().flatten() {
-            let fields: StorylineUnknownFields = serde_json::from_str(encoded_fields)
-                .context("decode Storyline unknown_fields_json for hydration")?;
-            for source in fields.sources.values() {
-                for value in source.fields.values() {
-                    let Some(encoded) = value.as_str() else {
-                        continue;
-                    };
-                    let Some(reference) = ContentRef::parse(encoded)
-                        .context("invalid internal unknown-field content descriptor")?
-                    else {
-                        continue;
-                    };
-                    anyhow::ensure!(
-                        reference.logical_type == LogicalType::Json,
-                        "unknown-field content descriptor is not JSON"
-                    );
-                    if let Some(existing) = references.get(&reference.content_id) {
-                        anyhow::ensure!(
-                            existing == &reference,
-                            "conflicting Storyline content descriptors for '{}'",
-                            reference.content_id
-                        );
-                    } else {
-                        references.insert(reference.content_id.clone(), reference);
-                    }
-                }
+        for name in native_json_columns(kind) {
+            let Some(column) = batch.column_by_name(name) else {
+                continue;
+            };
+            for encoded in json_text_values(column.as_ref(), name)?
+                .into_iter()
+                .flatten()
+            {
+                let value: serde_json::Value = serde_json::from_str(&encoded)
+                    .with_context(|| format!("decode native Storyline JSON column '{name}'"))?;
+                collect_nested_content_refs(&value, &mut references)?;
             }
         }
     }
@@ -809,74 +889,134 @@ async fn hydrate_unknown_field_values(
     let resolved = resolve_objects(dataset, &references).await?;
     batches
         .into_iter()
-        .map(|batch| hydrate_unknown_field_batch(batch, &resolved))
+        .map(|batch| hydrate_native_json_batch(batch, kind, &resolved))
         .collect()
 }
 
-fn hydrate_unknown_field_batch(
+fn collect_nested_content_refs(
+    value: &serde_json::Value,
+    references: &mut HashMap<String, ContentRef>,
+) -> Result<()> {
+    if let Some(encoded) = value.as_str() {
+        if let Some(reference) = ContentRef::parse(encoded)? {
+            if let Some(existing) = references.get(&reference.content_id) {
+                anyhow::ensure!(
+                    existing == &reference,
+                    "conflicting Storyline content descriptors for '{}'",
+                    reference.content_id
+                );
+            } else {
+                references.insert(reference.content_id.clone(), reference);
+            }
+        }
+        return Ok(());
+    }
+    match value {
+        serde_json::Value::Object(fields) => {
+            for child in fields.values() {
+                collect_nested_content_refs(child, references)?;
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                collect_nested_content_refs(child, references)?;
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
+    Ok(())
+}
+
+fn hydrate_native_json_batch(
     batch: RecordBatch,
+    kind: StorylineTableKind,
     resolved: &HashMap<String, ResolvedObject>,
 ) -> Result<RecordBatch> {
-    const COLUMN: &str = "unknown_fields_json";
-    let Ok(index) = batch.schema().index_of(COLUMN) else {
-        return Ok(batch);
-    };
-    let values = batch
-        .column(index)
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .context("Storyline unknown_fields_json is not Utf8")?;
-    let hydrated = values
-        .iter()
-        .map(|encoded_fields| {
-            let Some(encoded_fields) = encoded_fields else {
-                return Ok(None);
-            };
-            let mut fields: StorylineUnknownFields = serde_json::from_str(encoded_fields)
-                .context("decode Storyline unknown_fields_json for hydration")?;
-            for source in fields.sources.values_mut() {
-                for value in source.fields.values_mut() {
-                    let Some(encoded) = value.as_str() else {
-                        continue;
-                    };
-                    let Some(reference) = ContentRef::parse(encoded)
-                        .context("invalid internal unknown-field content descriptor")?
-                    else {
-                        continue;
-                    };
-                    let object = resolved.get(&reference.content_id).with_context(|| {
-                        format!(
-                            "Storyline content object '{}' is missing from the committed snapshot",
-                            reference.content_id
-                        )
-                    })?;
-                    anyhow::ensure!(
-                        reference.logical_type == LogicalType::Json,
-                        "unknown-field content descriptor is not JSON"
-                    );
-                    anyhow::ensure!(
-                        object.codec == reference.codec
-                            && object.raw_length == reference.raw_length,
-                        "Storyline content descriptor metadata mismatch for '{}'",
-                        reference.content_id
-                    );
-                    *value = serde_json::from_slice(&object.bytes).with_context(|| {
-                        format!(
-                            "Storyline unknown-field object '{}' is invalid JSON",
-                            reference.content_id
-                        )
-                    })?;
-                }
-            }
-            serde_json::to_string(&fields)
-                .map(Some)
-                .context("encode hydrated Storyline unknown_fields_json")
-        })
-        .collect::<Result<Vec<_>>>()?;
     let mut columns = batch.columns().to_vec();
-    columns[index] = Arc::new(StringArray::from(hydrated));
+    for name in native_json_columns(kind) {
+        let Ok(index) = batch.schema().index_of(name) else {
+            continue;
+        };
+        let values = json_text_values(batch.column(index).as_ref(), name)?;
+        let hydrated = values
+            .into_iter()
+            .map(|encoded| {
+                let Some(encoded) = encoded else {
+                    return Ok(None);
+                };
+                let mut value: serde_json::Value = serde_json::from_str(&encoded)
+                    .with_context(|| format!("decode native Storyline JSON column '{name}'"))?;
+                hydrate_nested_json_values(&mut value, resolved)?;
+                serde_json::to_string(&value)
+                    .map(Some)
+                    .with_context(|| format!("encode native Storyline JSON column '{name}'"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        columns[index] = if lance_arrow::json::is_json_field(batch.schema().field(index)) {
+            Arc::new(
+                lance_arrow::json::JsonArray::try_from_iter(hydrated)
+                    .context("encode hydrated native Storyline JSONB column")?
+                    .into_inner(),
+            )
+        } else {
+            Arc::new(StringArray::from(hydrated))
+        };
+    }
     RecordBatch::try_new(batch.schema(), columns)
-        .context("hydrate Storyline unknown-field content batch")
+        .context("hydrate native Storyline JSON content batch")
+}
+
+fn hydrate_nested_json_values(
+    value: &mut serde_json::Value,
+    resolved: &HashMap<String, ResolvedObject>,
+) -> Result<()> {
+    if let Some(encoded) = value.as_str() {
+        let Some(reference) = ContentRef::parse(encoded)? else {
+            return Ok(());
+        };
+        let object = resolved.get(&reference.content_id).with_context(|| {
+            format!(
+                "Storyline content object '{}' is missing from the committed snapshot",
+                reference.content_id
+            )
+        })?;
+        anyhow::ensure!(
+            reference.logical_type == LogicalType::Json,
+            "native JSON content descriptor is not JSON"
+        );
+        anyhow::ensure!(
+            object.codec == reference.codec && object.raw_length == reference.raw_length,
+            "Storyline content descriptor metadata mismatch for '{}'",
+            reference.content_id
+        );
+        *value = serde_json::from_slice(&object.bytes).with_context(|| {
+            format!(
+                "Storyline native JSON content object '{}' is invalid JSON",
+                reference.content_id
+            )
+        })?;
+        return Ok(());
+    }
+    match value {
+        serde_json::Value::Object(fields) => {
+            for child in fields.values_mut() {
+                hydrate_nested_json_values(child, resolved)?;
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                hydrate_nested_json_values(child, resolved)?;
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
+    Ok(())
 }
 
 pub(crate) async fn hydrate_selected_batches(
@@ -1117,5 +1257,84 @@ mod tests {
     #[test]
     fn preview_does_not_split_utf8() {
         assert_eq!(utf8_preview("你好abc".as_bytes(), 4).unwrap(), "你");
+    }
+}
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn content_id_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[0-9a-f]{64}").unwrap()
+    }
+
+    proptest! {
+        #[test]
+        fn content_descriptors_roundtrip_all_logical_types_and_codecs(
+            logical_type in prop_oneof![Just(LogicalType::Utf8), Just(LogicalType::Json), Just(LogicalType::Binary)],
+            codec in prop_oneof![Just(ContentCodec::Identity), Just(ContentCodec::Zstd)],
+            content_id in content_id_strategy(),
+            raw_length in any::<u64>(),
+            preview in proptest::string::string_regex("[A-Za-z0-9 .,!?_:/\\n]{0,96}").unwrap(),
+        ) {
+            let reference = ContentRef { logical_type, codec, content_id, raw_length, preview };
+            let encoded = reference.encode();
+            prop_assert_eq!(ContentRef::parse(&encoded).expect("encoded descriptor parses"), Some(reference));
+        }
+
+        #[test]
+        fn utf8_previews_never_split_a_codepoint(
+            text in proptest::string::string_regex("[A-Za-z0-9你好世界🌍]{0,96}").unwrap(),
+            maximum in 0usize..128,
+        ) {
+            let preview = utf8_preview(text.as_bytes(), maximum).expect("valid UTF-8 preview");
+            prop_assert!(preview.len() <= maximum);
+            prop_assert!(text.starts_with(&preview));
+            prop_assert_eq!(preview.as_bytes(), &text.as_bytes()[..preview.len()]);
+        }
+
+        #[test]
+        fn content_options_validate_exactly_the_documented_bounds(
+            offload_threshold in 0usize..100_000,
+            preview_bytes in 0usize..5_001,
+            max_document_rows in prop::option::of(0usize..1_000),
+            max_document_bytes in prop::option::of(0usize..1_000),
+            max_chunk_rows in prop::option::of(0usize..1_000),
+            max_chunk_bytes in prop::option::of(0usize..1_000),
+            max_import_documents in prop::option::of(0usize..1_000),
+            max_unknown_fields in 0usize..1_000,
+            max_unknown_bytes in 0usize..1_000,
+        ) {
+            let options = StorylineContentOptions {
+                offload_threshold,
+                preview_bytes,
+                max_document_rows,
+                max_document_bytes,
+                max_chunk_rows,
+                max_chunk_bytes,
+                max_import_documents,
+                max_unknown_fields,
+                max_unknown_bytes,
+                ..StorylineContentOptions::default()
+            };
+            let optional_limits_valid = [
+                max_document_rows,
+                max_document_bytes,
+                max_chunk_rows,
+                max_chunk_bytes,
+                max_import_documents,
+            ]
+            .into_iter()
+            .flatten()
+            .all(|value| value > 0);
+            let expected = offload_threshold > 0
+                && preview_bytes <= 4_096
+                && optional_limits_valid
+                && max_unknown_fields > 0
+                && max_unknown_bytes > 0;
+            prop_assert_eq!(options.validate().is_ok(), expected);
+        }
     }
 }

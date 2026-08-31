@@ -82,7 +82,7 @@ fn projected_read_falls_back_for_lossless_only_step_columns() {
     let safe = vec![index("session_id")];
     assert!(FileScanSpec::new(Some(&safe), &[], &schema).can_project_steps(&schema));
 
-    for name in ["turn_ordinal", "had_tool_calls", "observation_json"] {
+    for name in ["turn_ordinal", "had_tool_calls", "observation"] {
         let projection = vec![index(name)];
         assert!(
             !FileScanSpec::new(Some(&projection), &[], &schema).can_project_steps(&schema),
@@ -354,4 +354,66 @@ async fn projected_atif_pushdown_matches_session_id_not_document_id() {
         .unwrap();
 
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+}
+
+#[cfg(feature = "proptest")]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn exact_file_filters_match_only_their_target(
+            path in proptest::string::string_regex("[A-Za-z0-9_./-]{1,64}").unwrap(),
+            other in proptest::string::string_regex("[A-Za-z0-9_./-]{1,64}").unwrap(),
+        ) {
+            let expression = col(SOURCE_FILE_COLUMN).eq(lit(path.clone()));
+            prop_assert_eq!(matches_file_filter(&expression, &path), Some(true));
+            if path != other {
+                prop_assert_eq!(matches_file_filter(&expression, &other), Some(false));
+            }
+        }
+
+        #[test]
+        fn filters_on_non_file_columns_are_conservative(
+            name in proptest::string::string_regex("[A-Za-z0-9_]{1,32}").unwrap(),
+        ) {
+            let expression = col(name).eq(lit("value"));
+            prop_assert_eq!(matches_file_filter(&expression, "source.json"), None);
+        }
+
+        #[test]
+        fn wildcard_file_filters_match_embedded_literal_paths(
+            value in proptest::string::string_regex("[A-Za-z0-9_./-]{0,48}").unwrap(),
+        ) {
+            let candidate = format!("prefix/{value}/suffix");
+            let pattern = format!("%{value}%");
+            prop_assert_eq!(sql_like_matches(&candidate, &pattern, None), Some(true));
+        }
+
+        #[test]
+        fn sql_like_single_character_wildcards_match_exactly_one_character(
+            prefix in proptest::string::string_regex("[A-Za-z0-9/-]{0,16}").unwrap(),
+            suffix in proptest::string::string_regex("[A-Za-z0-9/-]{0,16}").unwrap(),
+            middle in proptest::string::string_regex("[A-Za-z0-9]").unwrap(),
+        ) {
+            let pattern = format!("{prefix}_{suffix}");
+            let one = format!("{prefix}{middle}{suffix}");
+            let two = format!("{prefix}{middle}{middle}{suffix}");
+            prop_assert_eq!(sql_like_matches(&one, &pattern, None), Some(true));
+            prop_assert_eq!(sql_like_matches(&two, &pattern, None), Some(false));
+        }
+
+        #[test]
+        fn sql_like_escape_turns_wildcards_into_literals(
+            prefix in proptest::string::string_regex("[A-Za-z0-9/-]{0,16}").unwrap(),
+            suffix in proptest::string::string_regex("[A-Za-z0-9/-]{0,16}").unwrap(),
+            wildcard in prop::sample::select(vec!['%', '_']),
+        ) {
+            let value = format!("{prefix}{wildcard}{suffix}");
+            let pattern = format!(r#"{prefix}\{wildcard}{suffix}"#);
+            prop_assert_eq!(sql_like_matches(&value, &pattern, Some('\\')), Some(true));
+        }
+    }
 }

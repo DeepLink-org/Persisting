@@ -49,5 +49,6 @@ can preserve. The terminal Run result records the final status and references
 to evidence and artifacts. Neither should be inferred from a process exit code
 alone.
 
-Next, read [Capabilities and evidence](capabilities-and-evidence.md), then use
-the [execution guide](../guides/execution.md) to choose a provider.
+Return to [pVisor concepts](index.md), or continue with
+[Capabilities and evidence](capabilities-and-evidence.md), then use the
+[execution guide](../guides/execution.md) to choose a provider.

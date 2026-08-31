@@ -11,8 +11,11 @@ readme = "README.md"
 default = ["lance-store", "s3-store"]
 lance-store = [
     "dep:datafusion",
+    "dep:dirs",
     "dep:futures",
     "dep:lance",
+    "dep:lance-arrow",
+    "dep:lance-datafusion",
     "dep:lance-file",
     "dep:lance-index",
     "dep:object_store",
@@ -26,10 +29,13 @@ oss-store = ["lance-store", "lance/oss"]
 search = [
     "lance-store",
     "dep:lance-core",
-    "dep:lance-datafusion",
     "dep:lance-linalg",
     "dep:lance-table",
 ]
+# Property-based tests are opt-in so normal package tests do not compile the
+# growing proptest target set. The dependency remains a dev-dependency and is
+# available whenever these targets are explicitly enabled.
+proptest = ["lance-store"]
 
 [dependencies]
 anyhow.workspace = true
@@ -38,9 +44,11 @@ base64.workspace = true
 blake3.workspace = true
 chrono.workspace = true
 datafusion = { workspace = true, features = ["sql"], optional = true }
+dirs = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 fs2.workspace = true
 lance = { workspace = true, optional = true }
+lance-arrow = { workspace = true, optional = true }
 lance-core = { workspace = true, optional = true }
 lance-file = { workspace = true, optional = true }
 lance-datafusion = { workspace = true, optional = true }
@@ -137,3 +145,228 @@ required-features = ["lance-store"]
 [[test]]
 name = "s3_storage"
 required-features = ["s3-store"]
+
+[[test]]
+name = "proptest_openai_corpus"
+path = "tests/proptests/openai_corpus.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_atif_codec"
+path = "tests/proptests/atif_codec.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_storyline_codec"
+path = "tests/proptests/storyline_codec.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_events_projection"
+path = "tests/proptests/events_projection.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_storage_layout"
+path = "tests/proptests/storage_layout.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_timestamp"
+path = "tests/proptests/timestamp.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_interop"
+path = "tests/proptests/interop.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_format"
+path = "tests/proptests/format.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_storyline_model"
+path = "tests/proptests/storyline_model.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_agenticmd_codec"
+path = "tests/proptests/agenticmd_codec.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_document"
+path = "tests/proptests/document.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_input"
+path = "tests/proptests/input.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_llm"
+path = "tests/proptests/llm.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_events_model"
+path = "tests/proptests/events_model.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_unknown_fields"
+path = "tests/proptests/unknown_fields.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_detect"
+path = "tests/proptests/detect.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_analysis_compile"
+path = "tests/proptests/analysis_compile.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_revision"
+path = "tests/proptests/revision.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_storage_location"
+path = "tests/proptests/storage_location.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_catalog_identity"
+path = "tests/proptests/catalog_identity.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_attempt_registry"
+path = "tests/proptests/attempt_registry.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_egress"
+path = "tests/proptests/egress.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_run_control"
+path = "tests/proptests/run_control.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_catalog_namespace"
+path = "tests/proptests/catalog_namespace.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_layout_resolve"
+path = "tests/proptests/layout_resolve.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_agenticmd_layout"
+path = "tests/proptests/agenticmd_layout.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_event_manifest"
+path = "tests/proptests/event_manifest.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_projection_automatic"
+path = "tests/proptests/projection_automatic.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_storyline_store"
+path = "tests/proptests/storyline_store.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_discovery"
+path = "tests/proptests/discovery.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_layout_coords"
+path = "tests/proptests/layout_coords.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_event_snapshot"
+path = "tests/proptests/event_snapshot.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_catalog_provenance"
+path = "tests/proptests/catalog_provenance.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_storyline_metadata"
+path = "tests/proptests/storyline_metadata.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_agenticmd_convert"
+path = "tests/proptests/agenticmd_convert.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_claude_code"
+path = "tests/proptests/claude_code.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_codex"
+path = "tests/proptests/codex.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_events_convert"
+path = "tests/proptests/events_convert.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_storyline_datafusion"
+path = "tests/proptests/storyline_datafusion.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_public_api"
+path = "tests/proptests/public_api.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_document_source"
+path = "tests/proptests/document_source.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_query_engine"
+path = "tests/proptests/query_engine.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_direct_file_query"
+path = "tests/proptests/direct_file_query.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_storyline_lance"
+path = "tests/proptests/storyline_lance.rs"
+required-features = ["proptest"]
+
+[[test]]
+name = "proptest_unknown_fields_roundtrip"
+path = "tests/proptests/unknown_fields_roundtrip.rs"
+required-features = ["proptest"]

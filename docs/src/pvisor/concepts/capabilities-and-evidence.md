@@ -26,6 +26,9 @@ Evidence answers four progressively stronger questions:
 4. **Attested** — is that enforcement bound to this exact Run and provider?
 
 The Run Bundle is the place to inspect the answer for a concrete execution.
-For the end-to-end trust chain across execution, orchestration, and history,
-read [Security and evidence](../../system-design/security-evidence.md). For
-platform mechanisms, read [pVisor isolation design](../design/isolation.md).
+Return to [pVisor concepts](index.md), use the
+[network guide](../guides/network.md) to configure one capability dimension,
+or read [pVisor isolation design](../design/isolation.md) for platform
+mechanisms. For the end-to-end trust chain across execution, orchestration,
+and history, read
+[Security and evidence](../../system-design/security-evidence.md).

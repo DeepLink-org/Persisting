@@ -523,4 +523,59 @@ mod tests {
         let listed = store.list::<Rec>().await.unwrap();
         assert_eq!(listed.len(), 1);
     }
+
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn decode_id(encoded: &str) -> Vec<u8> {
+            let bytes = encoded.as_bytes();
+            let mut decoded = Vec::new();
+            let mut index = 0;
+            while index < bytes.len() {
+                if bytes[index] == b'~' {
+                    let value = u8::from_str_radix(
+                        std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap(),
+                        16,
+                    )
+                    .unwrap();
+                    decoded.push(value);
+                    index += 3;
+                } else {
+                    decoded.push(bytes[index]);
+                    index += 1;
+                }
+            }
+            decoded
+        }
+
+        proptest! {
+            #[test]
+            fn encoded_ids_roundtrip_arbitrary_utf8(value in any::<String>()) {
+                let encoded = encoded_id(&value);
+                let decoded = String::from_utf8(decode_id(&encoded)).unwrap();
+                prop_assert_eq!(decoded, value);
+            }
+
+            #[test]
+            fn encoded_ids_use_only_safe_filename_alphabet(value in any::<String>()) {
+                let encoded = encoded_id(&value);
+                let bytes = encoded.as_bytes();
+                let mut index = 0;
+                while index < bytes.len() {
+                    if bytes[index] == b'~' {
+                        prop_assert!(index + 2 < bytes.len());
+                        prop_assert!(bytes[index + 1].is_ascii_hexdigit());
+                        prop_assert!(bytes[index + 2].is_ascii_hexdigit());
+                        index += 3;
+                    } else {
+                        prop_assert!(bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'-' | b'_' | b'.'));
+                        index += 1;
+                    }
+                }
+            }
+        }
+    }
 }

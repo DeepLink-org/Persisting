@@ -1004,3 +1004,33 @@ mod tests {
         assert!(store.inner.get(&visible).await.is_ok());
     }
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn manifest_total_rows_sums_segment_rows_without_reordering(
+            rows in proptest::collection::vec(0u64..1_000_000, 0..16),
+        ) {
+            let segments = rows.iter().enumerate().map(|(index, rows)| EventSegment {
+                id: format!("segment-{index}"),
+                version: index as u64 + 1,
+                rows: *rows,
+                level: (index % 4) as u8,
+                sealed: index % 2 == 0,
+            }).collect::<Vec<_>>();
+            let manifest = EventManifest {
+                revision: 1,
+                fact_version: 1,
+                fact_rows: rows.iter().sum(),
+                active_writer: EventWriterFence::new(1, "writer").unwrap(),
+                segments,
+            };
+            prop_assert_eq!(manifest.total_rows(), rows.iter().sum::<u64>());
+        }
+    }
+}

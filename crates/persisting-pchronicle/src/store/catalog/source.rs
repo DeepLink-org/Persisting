@@ -130,6 +130,52 @@ impl std::error::Error for SharedResolutionFailure {
     }
 }
 
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+    use std::error::Error;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn shared_resolution_failures_preserve_a_source_error(
+            message in proptest::string::string_regex("[A-Za-z0-9 .,!?]{1,64}").unwrap(),
+        ) {
+            let failure = SharedResolutionFailure::new(anyhow::anyhow!("{}", message.clone()));
+            prop_assert_eq!(failure.to_string(), "cached Dataset source resolution failure");
+            prop_assert_eq!(failure.source().map(ToString::to_string), Some(message));
+        }
+
+        #[test]
+        fn storyline_lazy_sources_support_normalized_tables_but_not_events(
+            file in proptest::string::string_regex("[A-Za-z0-9._-]{1,24}").unwrap(),
+            generation in proptest::string::string_regex("gen-[A-Za-z0-9_-]{1,16}").unwrap(),
+        ) {
+            let temp = Arc::new(SnapshotTempDir::new().unwrap());
+            let paths = StorylineTablePaths {
+                generation: generation.clone(),
+                table_generation: generation.clone(),
+                runs: PathBuf::from("runs.lance"),
+                steps: PathBuf::from("steps.lance"),
+                tool_calls: PathBuf::from("tool_calls.lance"),
+                objects: PathBuf::from("objects.lance"),
+                runs_version: 1,
+                steps_version: 1,
+                tool_calls_version: 1,
+                objects_version: 1,
+                projection: None,
+            };
+            let source = LazySource::new(file, LazySourceSpec::Storyline { paths }, CatalogSnapshotOptions::default(), temp);
+            prop_assert!(source.supports(CatalogTableKind::Runs));
+            prop_assert!(source.supports(CatalogTableKind::Steps));
+            prop_assert!(source.supports(CatalogTableKind::ToolCalls));
+            prop_assert!(!source.supports(CatalogTableKind::Events));
+            prop_assert!(source.canonical_event_uri().is_none());
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct LazySource {
     pub(super) file: String,
@@ -189,6 +235,15 @@ impl LazySource {
             (LazySourceSpec::Events { .. }, _) => true,
             (_, CatalogTableKind::Events) => false,
             _ => true,
+        }
+    }
+
+    pub(super) fn format_hint(&self) -> Option<DocumentFormat> {
+        match &self.spec {
+            LazySourceSpec::Storyline { .. } => Some(DocumentFormat::StorylineLance),
+            LazySourceSpec::Events { .. } => Some(DocumentFormat::CanonicalEvent),
+            LazySourceSpec::LocalFile { format_hint, .. }
+            | LazySourceSpec::RemoteFile { format_hint, .. } => *format_hint,
         }
     }
 
@@ -377,6 +432,127 @@ pub(super) struct ResolvedTable {
 }
 
 impl ResolvedSource {
+    /// Evaluate virtual-table predicates against normalized run, step, and
+    /// tool-call columns and return the document identities that can possibly
+    /// match. `None` means this source cannot provide a normalized projection,
+    /// so callers should use the normal fallback.
+    pub(super) async fn document_ids_for_virtual_filters(
+        &self,
+        format: DocumentFormat,
+        predicates: &[crate::store::virtual_document::NormalizedJsonPredicate],
+    ) -> Result<Option<BTreeSet<String>>> {
+        if matches!(
+            format,
+            DocumentFormat::CanonicalEvent | DocumentFormat::Codex | DocumentFormat::ClaudeCode
+        ) {
+            return Ok(None);
+        }
+        let mut candidates: Option<BTreeSet<String>> = None;
+        for predicate in predicates {
+            let kind = match predicate.table {
+                crate::store::virtual_document::NormalizedVirtualTable::Runs => {
+                    CatalogTableKind::Runs
+                }
+                crate::store::virtual_document::NormalizedVirtualTable::Steps => {
+                    CatalogTableKind::Steps
+                }
+                crate::store::virtual_document::NormalizedVirtualTable::ToolCalls => {
+                    CatalogTableKind::ToolCalls
+                }
+            };
+            let Some(table) = self.table(kind, None).await? else {
+                return Ok(None);
+            };
+            if table.provider.schema().index_of("document_id").is_err() {
+                return Ok(None);
+            }
+            let matching = crate::store::virtual_document::matching_document_ids(
+                table.provider,
+                &predicate.filter,
+            )
+            .await?;
+            candidates = Some(match candidates {
+                Some(current) => current.intersection(&matching).cloned().collect(),
+                None => matching,
+            });
+        }
+        Ok(candidates)
+    }
+
+    pub(super) async fn virtual_document_rows_filtered(
+        &self,
+        format: DocumentFormat,
+        candidate_ids: Option<&BTreeSet<String>>,
+    ) -> Result<Vec<(String, String)>> {
+        match self {
+            Self::File(source) if source.format() == format => {
+                source.virtual_document_rows_filtered(candidate_ids)
+            }
+            Self::Storyline(source) if format == DocumentFormat::Storyline => {
+                let context = SessionContext::new();
+                source.register(&context)?;
+                let batches = context
+                    .sql("SELECT document_id FROM runs ORDER BY storage_ordinal, document_id")
+                    .await?
+                    .collect()
+                    .await?;
+                let mut rows = Vec::new();
+                for batch in &batches {
+                    let index = batch.schema().index_of("document_id")?;
+                    let values = batch
+                        .column(index)
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .with_context(|| "Storyline document_id is not Utf8")?;
+                    for row in 0..values.len() {
+                        if values.is_null(row) {
+                            continue;
+                        }
+                        let document_id = values.value(row).to_string();
+                        if candidate_ids.is_some_and(|ids| !ids.contains(&document_id)) {
+                            continue;
+                        }
+                        let key = CatalogStorylineKey {
+                            dataset: String::new(),
+                            file: String::new(),
+                            document_id: document_id.clone(),
+                            session_id: String::new(),
+                        };
+                        let story = load_storyline_from_source(self, &key)
+                            .await?
+                            .with_context(|| format!("missing Storyline document {document_id}"))?;
+                        let value = crate::document::encode_json_storylines(
+                            DocumentFormat::Storyline,
+                            std::slice::from_ref(&story),
+                        )?;
+                        rows.push((document_id, value.to_string()));
+                    }
+                }
+                Ok(rows)
+            }
+            Self::Events(source) if format == DocumentFormat::CanonicalEvent => {
+                let context = SessionContext::new();
+                source.source.register(&context)?;
+                let batches = context
+                    .sql("SELECT * FROM events ORDER BY seq")
+                    .await?
+                    .collect()
+                    .await?;
+                let mut rows = Vec::new();
+                for batch in &batches {
+                    for row in super::super::event_rows_from_batch(batch)? {
+                        rows.push((
+                            row.event_id.unwrap_or_else(|| row.seq.to_string()),
+                            row.payload_json,
+                        ));
+                    }
+                }
+                Ok(rows)
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+
     pub(super) async fn table(
         &self,
         kind: CatalogTableKind,

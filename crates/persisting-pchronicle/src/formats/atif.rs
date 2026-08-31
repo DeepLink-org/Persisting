@@ -895,6 +895,43 @@ mod tests {
     use crate::StorylineDocument;
     use crate::atif::AtifTrajectory;
 
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+        use serde_json::Value;
+
+        use super::super::timing_from_metrics;
+
+        proptest! {
+            #[test]
+            fn timing_metrics_use_the_documented_alias_precedence(
+                latency in prop::option::of(any::<i64>()),
+                elapsed in prop::option::of(any::<i64>()),
+                duration in prop::option::of(any::<i64>()),
+                ttft in prop::option::of(any::<i64>()),
+            ) {
+                let mut metrics = serde_json::Map::new();
+                if let Some(value) = latency {
+                    metrics.insert("latency_ms".into(), Value::from(value));
+                }
+                if let Some(value) = elapsed {
+                    metrics.insert("elapsed_ms".into(), Value::from(value));
+                }
+                if let Some(value) = duration {
+                    metrics.insert("duration_ms".into(), Value::from(value));
+                }
+                if let Some(value) = ttft {
+                    metrics.insert("ttft_ms".into(), Value::from(value));
+                }
+                prop_assert_eq!(
+                    timing_from_metrics(&Some(Value::Object(metrics))),
+                    (latency.or(elapsed).or(duration), ttft),
+                );
+            }
+
+        }
+    }
+
     #[test]
     fn atif_observation_unknown_fields_roundtrip_at_exact_pointer() {
         let input = serde_json::json!({

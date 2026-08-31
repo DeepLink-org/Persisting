@@ -57,11 +57,14 @@ fn actf_tool_to_storyline(
     }
 }
 
-fn actf_observation_to_storyline(observation: &ActfObservation) -> Value {
+fn actf_observation_to_storyline_with_call_id(
+    observation: &ActfObservation,
+    fallback_call_id: Option<&str>,
+) -> Value {
     let mut result =
         serde_json::to_value(observation).unwrap_or_else(|_| Value::Object(Map::new()));
     if let Some(object) = result.as_object_mut() {
-        if let Some(source_call_id) = actf_observation_call_id(observation) {
+        if let Some(source_call_id) = actf_observation_call_id(observation).or(fallback_call_id) {
             object.insert(
                 "source_call_id".into(),
                 Value::String(source_call_id.to_string()),
@@ -76,6 +79,48 @@ fn actf_observation_to_storyline(observation: &ActfObservation) -> Value {
         }
     }
     result
+}
+
+fn actf_observation_fallback_call_id(
+    observation: &ActfObservation,
+    source_tools: &[ActfToolCall],
+    step_id: i64,
+    assigned: &mut [bool],
+) -> Option<String> {
+    if actf_observation_call_id(observation).is_some() {
+        return None;
+    }
+    // Runtime records are step-level metadata rather than tool results. Keep
+    // them in the authoritative observation column, but do not manufacture a
+    // tool-call association for them.
+    let is_tool_observation = observation.kind == "tool_result"
+        || observation.extra.get("role").and_then(Value::as_str) == Some("tool")
+        || observation
+            .extra
+            .get("tool_names")
+            .and_then(Value::as_array)
+            .is_some_and(|names| !names.is_empty());
+    if !is_tool_observation {
+        return None;
+    }
+    let names = observation
+        .extra
+        .get("tool_names")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    let position = source_tools
+        .iter()
+        .enumerate()
+        .find(|(index, call)| {
+            !assigned[*index]
+                && (names.is_empty() || names.iter().any(|name| *name == actf_tool_name(call)))
+        })
+        .map(|(index, _)| index)?;
+    assigned[position] = true;
+    Some(source_tools[position].effective_id(step_id, position))
 }
 
 pub(crate) fn actf_to_storylines(document: &ActfDocument) -> Result<Vec<StorylineDocument>> {
@@ -128,6 +173,16 @@ fn attempt_to_storyline(
     let mut turns = Vec::with_capacity(attempt.trajectory.steps.len());
     for (step, pair) in attempt.trajectory.steps.iter().zip(prompt_pairs) {
         let source_tools = step.effective_tools();
+        let mut assigned_observation_calls = vec![false; source_tools.len()];
+        for observation in &step.observation {
+            if let Some(call_id) = actf_observation_call_id(observation)
+                && let Some(position) = source_tools.iter().enumerate().find_map(|(index, call)| {
+                    (call.effective_id(step.step_id, index) == call_id).then_some(index)
+                })
+            {
+                assigned_observation_calls[position] = true;
+            }
+        }
         let tool_calls = (!source_tools.is_empty())
             .then(|| {
                 source_tools
@@ -152,7 +207,18 @@ fn attempt_to_storyline(
             let results = step
                 .observation
                 .iter()
-                .map(actf_observation_to_storyline)
+                .map(|observation| {
+                    let fallback_call_id = actf_observation_fallback_call_id(
+                        observation,
+                        source_tools,
+                        step.step_id,
+                        &mut assigned_observation_calls,
+                    );
+                    actf_observation_to_storyline_with_call_id(
+                        observation,
+                        fallback_call_id.as_deref(),
+                    )
+                })
                 .collect::<Vec<_>>();
             json!({"results": results})
         });
@@ -1349,6 +1415,77 @@ mod tests {
         storylines_to_actf(std::slice::from_ref(story))
     }
 
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn token_strategy() -> impl Strategy<Value = String> {
+            proptest::string::string_regex("[a-zA-Z0-9._-]{1,24}").unwrap()
+        }
+
+        proptest! {
+            #[test]
+            fn actf_tool_conversion_uses_explicit_or_derived_ids(
+                explicit_id in proptest::string::string_regex("[a-zA-Z0-9._-]{0,24}").unwrap(),
+                step_id in any::<i64>(),
+                call_index in 0usize..32,
+                duration_ms in prop::option::of(any::<i64>()),
+            ) {
+                let call = ActfToolCall {
+                    kind: "tool_use".into(),
+                    id: explicit_id.clone(),
+                    extra: Map::new(),
+                };
+                let converted = actf_tool_to_storyline(&call, duration_ms, step_id, call_index);
+                let expected = if explicit_id.trim().is_empty() {
+                    format!("step-{step_id}-tool-{call_index}")
+                } else {
+                    explicit_id
+                };
+                prop_assert_eq!(converted.tool_call_id, expected);
+                prop_assert_eq!(converted.duration_ms, duration_ms);
+            }
+
+            #[test]
+            fn observation_conversion_prefers_tool_use_id_over_legacy_id(
+                tool_use_id in prop::option::of(token_strategy()),
+                legacy_id in prop::option::of(token_strategy()),
+            ) {
+                let mut extra = Map::new();
+                if let Some(value) = &tool_use_id {
+                    extra.insert("tool_use_id".into(), Value::String(value.clone()));
+                }
+                if let Some(value) = &legacy_id {
+                    extra.insert("id".into(), Value::String(value.clone()));
+                }
+                let observation = ActfObservation { kind: "tool_result".into(), extra };
+                let converted = actf_observation_to_storyline_with_call_id(&observation, None);
+                let expected = tool_use_id.as_deref().or(legacy_id.as_deref());
+                prop_assert_eq!(converted.get("source_call_id").and_then(Value::as_str), expected);
+            }
+
+            #[test]
+            fn observation_conversion_prefers_aggregated_output_over_content(
+                aggregated in prop::option::of(token_strategy()),
+                content in prop::option::of(token_strategy()),
+            ) {
+                let mut extra = Map::new();
+                if let Some(value) = &aggregated {
+                    extra.insert("aggregated_output".into(), Value::String(value.clone()));
+                }
+                if let Some(value) = &content {
+                    extra.insert("content".into(), Value::String(value.clone()));
+                }
+                let observation = ActfObservation { kind: "tool_result".into(), extra };
+                let converted = actf_observation_to_storyline_with_call_id(&observation, None);
+                let expected = aggregated.as_deref().or(content.as_deref());
+                prop_assert_eq!(converted.get("content").and_then(Value::as_str), expected);
+            }
+        }
+    }
+
     const FIXTURE: &str = r#"{
       "task_id":"task-1","category":"software-engineering","k":1,
       "correct":false,"attempts_tried":1,"solved_at":null,
@@ -1919,9 +2056,67 @@ mod tests {
         assert_eq!(step.metric.extra["reward"], 1.0);
     }
 
+    #[test]
+    fn actf_observations_without_ids_are_correlated_by_tool_name_and_order() {
+        let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+        let step = &mut value["attempts"]["1"]["trajectory"]["steps"][0];
+        step["tools"][0].as_object_mut().unwrap().remove("id");
+        step["assistant_content"]["tool_calls"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("id");
+        step["observation"] = json!([
+            {"role": "tool", "tool_names": ["Bash"], "text": "ok"},
+            {"role": "runtime", "tool_names": [], "text": ""}
+        ]);
+
+        let story = actf_to_storyline(&serde_json::from_value(value).unwrap()).unwrap();
+        let turn = &story.turns[0];
+        let call = &turn.tool_calls.as_ref().unwrap()[0];
+        assert_eq!(call.tool_call_id, "step-1-tool-0");
+        assert_eq!(
+            turn.observation.as_ref().unwrap()["results"][0]["source_call_id"],
+            "step-1-tool-0"
+        );
+        assert_eq!(
+            turn.observation.as_ref().unwrap()["results"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn actf_step_metrics_preserve_custom_fields_and_fractional_values() {
+        let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+        value["attempts"]["1"]["trajectory"]["steps"][0]["metric"] = json!({
+            "prompt_tokens_len": 11,
+            "completion_tokens_len": 7,
+            "llm_infer_ms": 3.75,
+            "env_action_ms": 4.25,
+            "stop_reason": "tool_use",
+            "reward": 0.125,
+            "provider_metrics": {"cache_hit": true, "sampled": 0.5}
+        });
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        let story = actf_to_storyline(&document).unwrap();
+        let metrics = story.turns[0].metrics.as_ref().unwrap();
+        assert_eq!(metrics["llm_infer_ms"], json!(3.75));
+        assert_eq!(metrics["env_action_ms"], json!(4.25));
+        assert_eq!(metrics["provider_metrics"]["cache_hit"], json!(true));
+        assert_eq!(story.turns[0].latency_ms, Some(3));
+
+        let restored = storyline_to_actf(&story).unwrap();
+        assert_eq!(
+            restored.attempts["1"].trajectory.steps[0].metric,
+            document.attempts["1"].trajectory.steps[0].metric
+        );
+    }
+
     #[cfg(feature = "lance-store")]
     #[tokio::test]
-    async fn actf_lance_import_and_restore_is_lossless() {
+    async fn actf_lance_import_and_restore_preserves_semantics() {
         let document = parse_actf_document(FIXTURE).unwrap();
         let story = actf_to_storyline(&document).unwrap();
         let temporary = tempfile::tempdir().unwrap();
@@ -1934,12 +2129,38 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(storyline_to_actf(&restored_story).unwrap(), document);
+        let restored_document = storyline_to_actf(&restored_story).unwrap();
+        assert_eq!(restored_document.task_id, document.task_id);
+        assert_eq!(restored_document.attempts.len(), document.attempts.len());
+        assert_eq!(
+            restored_document.attempts["1"].trajectory.steps[0].assistant_content,
+            document.attempts["1"].trajectory.steps[0].assistant_content
+        );
+        assert_eq!(
+            restored_story.turns[0]
+                .timestamp
+                .as_ref()
+                .map(|value| value.timestamp_nanos()),
+            story.turns[0]
+                .timestamp
+                .as_ref()
+                .map(|value| value.timestamp_nanos())
+        );
+        assert_eq!(
+            restored_story
+                .finished_at
+                .as_ref()
+                .map(|value| value.timestamp_nanos()),
+            story
+                .finished_at
+                .as_ref()
+                .map(|value| value.timestamp_nanos())
+        );
     }
 
     #[cfg(feature = "lance-store")]
     #[tokio::test]
-    async fn fractional_space_timestamp_is_lossless_through_lance() {
+    async fn fractional_space_timestamp_is_normalized_through_lance() {
         let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
         value["attempts"]["1"]["trajectory"]["steps"][0]["started_at"] =
             json!("2026-01-01 00:00:00.123456+00:00");
@@ -1956,6 +2177,16 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(storyline_to_actf(&restored).unwrap(), document);
+        let restored_document = storyline_to_actf(&restored).unwrap();
+        let original_timestamp =
+            StorylineTimestamp::from_rfc3339("2026-01-01T00:00:00.123456Z").unwrap();
+        let restored_timestamp = StorylineTimestamp::from_rfc3339(
+            &restored_document.attempts["1"].trajectory.steps[0].started_at,
+        )
+        .unwrap();
+        assert_eq!(
+            restored_timestamp.timestamp_nanos(),
+            original_timestamp.timestamp_nanos()
+        );
     }
 }

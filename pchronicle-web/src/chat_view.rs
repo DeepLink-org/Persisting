@@ -53,6 +53,17 @@ pub fn group_chats(turns: &[TurnSummary]) -> Vec<TraceCard> {
                     replies,
                 });
             }
+            "agent"
+                if turns[index]
+                    .user_prompt
+                    .as_deref()
+                    .is_some_and(|prompt| !prompt.trim().is_empty()) =>
+            {
+                let user = prompt_turn(&turns[index]);
+                let replies = vec![turns[index].clone()];
+                index += 1;
+                cards.push(TraceCard::Chat { user, replies });
+            }
             _ => {
                 cards.push(TraceCard::Chat {
                     user: None,
@@ -65,6 +76,35 @@ pub fn group_chats(turns: &[TurnSummary]) -> Vec<TraceCard> {
     cards
 }
 
+/// Turn-level prompt is the canonical user input for formats (such as ACTF)
+/// that store one model response per step. Render it as a synthetic user row
+/// while keeping the persisted agent turn and its ID unchanged.
+pub fn prompt_turn(turn: &TurnSummary) -> Option<TurnSummary> {
+    let prompt = turn
+        .user_prompt
+        .as_deref()
+        .filter(|prompt| !prompt.trim().is_empty())?;
+    let mut user = turn.clone();
+    user.id = turn.id.saturating_neg();
+    user.source = "user".into();
+    user.kind = None;
+    user.call_id = None;
+    user.preview = prompt.to_string();
+    user.char_count = prompt.chars().count() as u64;
+    user.modalities = vec!["text".into()];
+    user.model_name = None;
+    user.latency_ms = None;
+    user.ttft_ms = None;
+    user.prompt_tokens = None;
+    user.completion_tokens = None;
+    user.total_tokens = None;
+    user.tool_names.clear();
+    user.event_seqs.clear();
+    user.has_error = false;
+    user.user_prompt = None;
+    Some(user)
+}
+
 pub fn source_class(source: &str) -> &'static str {
     match source {
         "user" => "user",
@@ -73,6 +113,7 @@ pub fn source_class(source: &str) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub fn turn_matches_query(turn: &TurnSummary, query: &str) -> bool {
     let query = query.trim();
     if query.is_empty() {
@@ -90,19 +131,18 @@ pub fn turn_matches_query(turn: &TurnSummary, query: &str) -> bool {
             .kind
             .as_deref()
             .is_some_and(|kind| kind.to_ascii_lowercase().contains(&needle))
+        || turn
+            .user_prompt
+            .as_deref()
+            .is_some_and(|prompt| prompt.to_ascii_lowercase().contains(&needle))
 }
 
-pub fn chat_row_visible(entries: &[TurnSummary], source: &str, query: &str) -> bool {
-    let source_ok =
-        source == "all" || source.is_empty() || entries.iter().any(|turn| turn.source == source);
-    let query_ok =
-        query.trim().is_empty() || entries.iter().any(|turn| turn_matches_query(turn, query));
-    source_ok && query_ok
+pub fn chat_row_visible(entries: &[TurnSummary], source: &str, _query: &str) -> bool {
+    source == "all" || source.is_empty() || entries.iter().any(|turn| turn.source == source)
 }
 
-pub fn step_row_visible(turn: &TurnSummary, source: &str, query: &str) -> bool {
-    (source == "all" || source.is_empty() || turn.source == source)
-        && turn_matches_query(turn, query)
+pub fn step_row_visible(turn: &TurnSummary, source: &str, _query: &str) -> bool {
+    source == "all" || source.is_empty() || turn.source == source
 }
 
 #[cfg(test)]
@@ -117,6 +157,7 @@ mod tests {
             timestamp: None,
             call_id: None,
             preview: format!("{source}-{id}"),
+            user_prompt: None,
             char_count: 0,
             modalities: Vec::new(),
             model_name: None,
@@ -166,6 +207,27 @@ mod tests {
     }
 
     #[test]
+    fn turn_prompt_becomes_a_synthetic_user_without_replacing_agent() {
+        let mut agent = turn(2, "agent");
+        agent.user_prompt = Some("inspect the batch planner".into());
+        let cards = group_chats(&[agent, turn(3, "agent")]);
+        assert_eq!(cards.len(), 2);
+        let (user, replies) = chat_ids(&cards[0]);
+        assert_eq!(user, Some(-2));
+        assert_eq!(replies, vec![2]);
+        match &cards[0] {
+            TraceCard::Chat {
+                user: Some(user), ..
+            } => {
+                assert_eq!(user.source, "user");
+                assert_eq!(user.preview, "inspect the batch planner");
+            }
+            other => panic!("expected prompt user, got {other:?}"),
+        }
+        assert_eq!(chat_ids(&cards[1]), (None, vec![3]));
+    }
+
+    #[test]
     fn leading_agents_and_mid_system_stay_separate() {
         let cards = group_chats(&[
             turn(1, "agent"),
@@ -203,8 +265,28 @@ mod tests {
         assert!(chat_row_visible(&entries, "agent", ""));
         assert!(chat_row_visible(&entries, "user", "googl"));
         assert!(!chat_row_visible(&entries, "system", ""));
-        assert!(!chat_row_visible(&entries, "all", "missing"));
         assert!(step_row_visible(&entries[1], "agent", "googl"));
         assert!(!step_row_visible(&entries[0], "agent", ""));
+    }
+
+    #[test]
+    fn expression_queries_do_not_hide_server_filtered_turns() {
+        let mut user = turn(1, "user");
+        user.preview = "Please investigate the worker".into();
+        assert!(step_row_visible(&user, "all", r#"#user("timeout")"#));
+        assert!(chat_row_visible(
+            std::slice::from_ref(&user),
+            "all",
+            r#"#user("timeout")"#
+        ));
+        assert!(step_row_visible(&user, "all", "timeout AND retry"));
+    }
+
+    #[test]
+    fn turn_matches_query_is_substring_only() {
+        let mut user = turn(1, "user");
+        user.preview = "Please investigate the worker".into();
+        assert!(turn_matches_query(&user, "investigate"));
+        assert!(!turn_matches_query(&user, r#"#user("timeout")"#));
     }
 }

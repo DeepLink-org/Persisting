@@ -156,4 +156,43 @@ mod tests {
             "{error:#}"
         );
     }
+
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+        use serde_json::json;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn reader_roundtrips_valid_single_step_documents(
+                message in proptest::string::string_regex("[A-Za-z0-9 .,!?_-]{0,64}").unwrap(),
+            ) {
+                let document = json!({
+                    "schema_version": "ATIF-v1.7",
+                    "session_id": "session",
+                    "trajectory_id": "trajectory",
+                    "agent": {"name": "agent", "version": "1"},
+                    "steps": [{
+                        "step_id": 1,
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "source": "user",
+                        "message": message,
+                    }]
+                });
+                let raw = serde_json::to_vec(&document).unwrap();
+                let path = Path::new("generated.atif.json");
+                let mut reader = Cursor::new(raw);
+                let stories = parse_atif_storylines_from_reader(
+                    path,
+                    &mut reader,
+                    DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES,
+                ).unwrap();
+                prop_assert_eq!(stories.len(), 1);
+                prop_assert_eq!(stories[0].turns.len(), 1);
+                prop_assert_eq!(&stories[0].turns[0].message, &json!(message));
+            }
+        }
+    }
 }

@@ -1,7 +1,8 @@
 # 捕获 Agent 轨迹
 
 Gateway capture 是 pVisor 的 Run 驱动，由 Run 启停；系统不再提供独立 Gateway 命令或
-守护进程。
+守护进程。[Capability 与 Evidence 模型](../concepts/capabilities-and-evidence.md)解释
+Capture 能证明什么，以及它不负责 enforce 什么。
 
 ```bash
 cargo build --release -p persisting-pvisor --bin pvisor

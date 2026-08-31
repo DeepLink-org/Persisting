@@ -1,9 +1,9 @@
 # pChronicle benchmarks
 
-pChronicle uses Criterion.rs for CPU-bound microbenchmarks and hyperfine for
-process-level storage, query, and memory scenarios. One runner produces the raw
-JSON evidence, a Bencher-compatible metric projection, Markdown, and an HTML
-report.
+**Criterion.rs 微基准加上 hyperfine 进程级存储/查询/内存场景，输出一份稳定报告。**
+
+拥有 smoke / nightly 套件、JSONPath 测量契约和 compare 入口。不拥有 pChronicle
+存储格式或查询引擎。
 
 The guarded paths are:
 
@@ -15,37 +15,39 @@ The guarded paths are:
 - Storyline point reads, replacement, indexed SQL, and group-by queries;
 - projected JSON streaming latency, throughput, allocations, and peak RSS.
 
-## Run locally
+One runner produces `raw-report.json`, a Bencher-compatible `bencher.json`,
+`report.md`, and `report.html`. Criterion's detailed HTML and sample data stay
+under the `criterion/` artifact directory.
 
-Install `hyperfine`, then run the smoke suite from the repository root:
+## Run
+
+Install `hyperfine`, then run from the repository root:
 
 ```bash
+just benchmark-pchronicle
+just benchmark-pchronicle nightly target/pchronicle-benchmark/nightly
+
 python3 benchmark/pchronicle/bench.py run \
   --suite smoke \
   --output target/pchronicle-benchmark/current
 ```
 
-The nightly workload uses larger fixtures and more repetitions:
-
-```bash
-python3 benchmark/pchronicle/bench.py run \
-  --suite nightly \
-  --output target/pchronicle-benchmark/nightly
-```
-
 Compare two reports generated on the same testbed:
 
 ```bash
+just benchmark-pchronicle-compare \
+  target/pchronicle-benchmark/main/raw-report.json \
+  target/pchronicle-benchmark/current/raw-report.json
+
 python3 benchmark/pchronicle/bench.py compare \
   --baseline target/pchronicle-benchmark/main/raw-report.json \
   --candidate target/pchronicle-benchmark/current/raw-report.json \
   --output target/pchronicle-benchmark/comparison
 ```
 
-`raw-report.json` is the evidence record. `bencher.json` is a flattened
-Bencher Metric Format projection for optional historical dashboards;
-`report.md` and `report.html` are generated views. Criterion's detailed HTML
-and sample data are retained below the `criterion/` artifact directory.
+`just benchmark-pchronicle` defaults to `--suite smoke` and
+`--output target/pchronicle-benchmark/current`. `just benchmark-pchronicle-compare`
+takes baseline then candidate.
 
 ## JSONPath measurement contract
 
@@ -110,3 +112,8 @@ under `$["latest"]` in `nightly.json`, and updates the generated benchmark block
 in the repository README from that stored value. Per-run raw reports and
 Criterion/Hyperfine details remain workflow artifacts rather than growing an
 unbounded repository history.
+
+## Links
+
+- [pChronicle design](../../docs/src/pchronicle/design/index.md)
+- [`persisting-pchronicle`](../../crates/persisting-pchronicle/README.md)

@@ -77,8 +77,12 @@ pub struct StoryStepRow {
     pub model_name: Option<String>,
     pub llm_call_count: Option<i64>,
     pub is_copied_context: Option<bool>,
-    pub latency_ms: Option<i64>,
-    pub ttft_ms: Option<i64>,
+    /// Latency in milliseconds. The unit is implied by the Lance schema's
+    /// integer type, so the storage-facing row uses the concise `latency`
+    /// name.
+    pub latency: Option<i64>,
+    /// Time to first token in milliseconds.
+    pub ttft: Option<i64>,
     /// Keeps `tool_calls: []` distinct from no `tool_calls` member.
     pub had_tool_calls: bool,
     /// Keeps `observation: {"results": []}` distinct from no observation.
@@ -105,7 +109,8 @@ pub struct StoryToolCallRow {
     pub arguments: Value,
     pub result: Option<Value>,
     pub results: Vec<Value>,
-    pub duration_ms: Option<i64>,
+    /// Tool-call duration in milliseconds.
+    pub duration: Option<i64>,
     pub extra: Option<Value>,
     pub kind: Option<String>,
     pub response: Option<StorylineToolResponse>,
@@ -201,8 +206,8 @@ pub(crate) fn split_storyline_with_unknown_limits(
             model_name: turn.model_name.clone(),
             llm_call_count: turn.llm_call_count,
             is_copied_context: turn.is_copied_context,
-            latency_ms: turn.latency_ms,
-            ttft_ms: turn.ttft_ms,
+            latency: turn.latency_ms,
+            ttft: turn.ttft_ms,
             had_tool_calls: turn.tool_calls.is_some(),
             had_observation: turn.observation.is_some(),
             observation: turn.observation.clone(),
@@ -241,7 +246,7 @@ pub(crate) fn split_storyline_with_unknown_limits(
                 arguments: call.arguments.clone(),
                 result: call.result.clone(),
                 results: Vec::new(),
-                duration_ms: call.duration_ms,
+                duration: call.duration_ms,
                 extra: call.extra.clone(),
                 kind: call.kind.clone(),
                 response: call.response.clone(),
@@ -300,7 +305,7 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
         }
         if step.had_observation != step.observation.is_some() {
             anyhow::bail!(
-                "step {} observation presence does not match observation_json",
+                "step {} observation presence does not match observation",
                 step.step_id
             );
         }
@@ -369,7 +374,7 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
                 .collect::<Vec<_>>();
         anyhow::ensure!(
             call.results == expected_results,
-            "derived results for tool_call '{}' do not match observation_json",
+            "derived results for tool_call '{}' do not match observation",
             call.tool_call_id
         );
     }
@@ -399,7 +404,7 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
                     function_name: call.function_name,
                     arguments: call.arguments,
                     result: call.result,
-                    duration_ms: call.duration_ms,
+                    duration_ms: call.duration,
                     extra: call.extra,
                     kind: call.kind,
                     response: call.response,
@@ -419,8 +424,8 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
                 model_name: step.model_name,
                 llm_call_count: step.llm_call_count,
                 is_copied_context: step.is_copied_context,
-                latency_ms: step.latency_ms,
-                ttft_ms: step.ttft_ms,
+                latency_ms: step.latency,
+                ttft_ms: step.ttft,
                 extra: step.extra,
                 env: step.env,
                 prompt: step.prompt,
@@ -467,6 +472,93 @@ mod tests {
     use super::*;
     use crate::StorylineAgent;
     use serde_json::json;
+
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn token_strategy() -> impl Strategy<Value = String> {
+            proptest::string::string_regex("[a-zA-Z0-9._-]{1,24}").unwrap()
+        }
+
+        fn text_strategy() -> impl Strategy<Value = String> {
+            proptest::string::string_regex("[a-zA-Z0-9 _.,:/-]{0,96}").unwrap()
+        }
+
+        proptest! {
+            #[test]
+            fn generated_storylines_roundtrip_through_three_normalized_tables(
+                session_id in token_strategy(),
+                agent_id in token_strategy(),
+                run_id in prop::option::of(token_strategy()),
+                messages in prop::collection::vec(
+                    (prop::sample::select(vec!["user", "agent", "system"]), text_strategy()),
+                    0..12,
+                ),
+            ) {
+                let mut story = StorylineDocument::new(session_id, agent_id);
+                story.run_id = run_id;
+                story.turns = messages.into_iter().enumerate().map(|(id, (source, message))| StorylineTurn {
+                    id: id as i64,
+                    kind: None,
+                    timestamp: None,
+                    source: source.into(),
+                    message: Value::String(message),
+                    reasoning_content: None,
+                    reasoning_effort: None,
+                    tool_calls: None,
+                    observation: None,
+                    metrics: None,
+                    model_name: None,
+                    llm_call_count: None,
+                    is_copied_context: None,
+                    latency_ms: None,
+                    ttft_ms: None,
+                    extra: None,
+                    env: None,
+                    prompt: None,
+                    finished_at: None,
+                }).collect();
+
+                let tables = split_storyline(&story).unwrap();
+                let restored = reconstruct_storyline(tables).unwrap();
+                prop_assert_eq!(restored, story);
+            }
+
+            #[test]
+            fn reconstruction_rejects_duplicate_turn_ordinals(
+                messages in proptest::collection::vec(text_strategy(), 2..12),
+            ) {
+                let mut story = StorylineDocument::new("session", "agent");
+                story.turns = messages.into_iter().enumerate().map(|(id, message)| StorylineTurn {
+                    id: id as i64,
+                    kind: None,
+                    timestamp: None,
+                    source: "agent".into(),
+                    message: Value::String(message),
+                    reasoning_content: None,
+                    reasoning_effort: None,
+                    tool_calls: None,
+                    observation: None,
+                    metrics: None,
+                    model_name: None,
+                    llm_call_count: None,
+                    is_copied_context: None,
+                    latency_ms: None,
+                    ttft_ms: None,
+                    extra: None,
+                    env: None,
+                    prompt: None,
+                    finished_at: None,
+                }).collect();
+                let mut tables = split_storyline(&story).unwrap();
+                tables.steps[1].turn_ordinal = tables.steps[0].turn_ordinal;
+                prop_assert!(reconstruct_storyline(tables).is_err());
+            }
+        }
+    }
 
     fn turn(id: i64, source: &str) -> StorylineTurn {
         StorylineTurn {
@@ -706,7 +798,7 @@ mod tests {
             reconstruct_storyline(stale_derived_results)
                 .unwrap_err()
                 .to_string()
-                .contains("do not match observation_json")
+                .contains("do not match observation")
         );
 
         let mut mismatched_result = valid;

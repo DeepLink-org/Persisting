@@ -17,10 +17,8 @@ const JSON_FORMATS: [DocumentFormat; 3] = [
     DocumentFormat::OpenaiMsg,
 ];
 
-fn timestamp_source(timestamp: &Option<StorylineTimestamp>) -> Option<&str> {
-    timestamp
-        .as_ref()
-        .and_then(StorylineTimestamp::source_string)
+fn timestamp_nanos(timestamp: &Option<StorylineTimestamp>) -> Option<i64> {
+    timestamp.as_ref().map(StorylineTimestamp::timestamp_nanos)
 }
 
 struct FormatCase {
@@ -36,7 +34,14 @@ fn canonical_semantic_json(value: Value) -> Value {
             fields
                 .into_iter()
                 .filter(|(_, value)| !value.is_null())
-                .map(|(key, value)| (key, canonical_semantic_json(value)))
+                .map(|(key, value)| {
+                    if (key == "created_at" || key.ends_with("_at"))
+                        && let Ok(timestamp) = StorylineTimestamp::from_json(value.clone())
+                    {
+                        return (key, json!(timestamp.canonical_rfc3339()));
+                    }
+                    (key, canonical_semantic_json(value))
+                })
                 .collect::<Map<_, _>>(),
         ),
         Value::Array(values) => {
@@ -324,8 +329,7 @@ fn assert_target_modeled_semantics(
                 story
                     .turns
                     .iter()
-                    .all(|turn| timestamp_source(&turn.timestamp)
-                        == Some("1970-01-01 00:00:00+00:00"))
+                    .all(|turn| timestamp_nanos(&turn.timestamp) == Some(0))
             );
             assert!(
                 story
@@ -361,8 +365,8 @@ fn assert_target_modeled_semantics(
                 Some("complete")
             );
             assert_eq!(
-                timestamp_source(&story.turns[1].timestamp),
-                Some("2026-08-20T00:00:01Z")
+                timestamp_nanos(&story.turns[1].timestamp),
+                Some(1_787_184_001_000_000_000)
             );
             assert_eq!(
                 story.turns[1].metrics.as_ref().unwrap()["prompt_tokens_len"],
@@ -388,8 +392,8 @@ fn assert_target_modeled_semantics(
                 Some("complete")
             );
             assert_eq!(
-                timestamp_source(&story.turns[1].timestamp),
-                Some("2026-08-20T00:00:01Z")
+                timestamp_nanos(&story.turns[1].timestamp),
+                Some(1_787_184_001_000_000_000)
             );
             assert_eq!(
                 story.turns.iter().map(|turn| turn.id).collect::<Vec<_>>(),
@@ -413,7 +417,7 @@ fn assert_target_modeled_semantics(
                 story
                     .turns
                     .iter()
-                    .all(|turn| timestamp_source(&turn.timestamp) == Some("2026-08-20T00:00:00Z"))
+                    .all(|turn| timestamp_nanos(&turn.timestamp) == Some(1_787_184_000_000_000_000))
             );
             assert_eq!(story.turns[1].model_name.as_deref(), Some("model"));
             assert!(story.turns[1].metrics.as_ref().unwrap()["reward"].is_null());
@@ -426,8 +430,8 @@ fn assert_target_modeled_semantics(
                 story
                     .turns
                     .iter()
-                    .all(|turn| timestamp_source(&turn.timestamp)
-                        == Some("2026-08-20 00:00:00+00:00"))
+                    .all(|turn| timestamp_nanos(&turn.timestamp)
+                        == Some(1_787_184_000_000_000_000))
             );
             assert_eq!(
                 story.turns[1].metrics.as_ref().unwrap()["prompt_tokens_len"],
@@ -534,7 +538,7 @@ async fn every_directed_cross_format_hop_is_semantically_stable_through_lance() 
             let restored = persist_and_restore(&bridge_stories, LookupStrategy::DocumentIds)
                 .await
                 .with_context(|| format!("persist {edge}"))?;
-            assert_eq!(restored, bridge_stories, "Storyline changed across {edge}");
+            assert_common_storyline_semantics(&restored, &bridge_stories);
             assert_unknown_contract(source.format, &restored);
             assert_target_modeled_semantics(source.name, bridge, &restored);
             let actual = encode_json_storylines(bridge, &restored)

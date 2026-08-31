@@ -998,4 +998,43 @@ mod tests {
         assert_eq!(sum_known_sizes([None, None]), None);
         assert_eq!(sum_known_sizes([Some(2), None, Some(3)]), Some(5));
     }
+
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn size_buckets_are_monotonic_and_bounded(bytes in any::<u64>()) {
+                prop_assert!(size_bucket(bytes) < SIZE_BUCKET_LABELS.len());
+                if bytes < u64::MAX {
+                    prop_assert!(size_bucket(bytes) <= size_bucket(bytes.saturating_add(1)));
+                }
+            }
+
+            #[test]
+            fn short_digests_are_lowercase_hex_prefixes(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
+                let digest = short_digest(&bytes);
+                prop_assert_eq!(digest.len(), bytes.len().min(8) * 2);
+                prop_assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+                prop_assert_eq!(&digest, &short_digest(&bytes));
+            }
+
+            #[test]
+            fn truncation_never_exceeds_the_configured_utf8_limit(
+                value in proptest::string::string_regex("[A-Za-z0-9一二三四五六七八九十]{0,512}").unwrap(),
+            ) {
+                let (preview, truncated) = truncate_cell(&value);
+                prop_assert!(preview.is_char_boundary(preview.len()));
+                if truncated {
+                    prop_assert!(preview.ends_with('…'));
+                    prop_assert!(preview.len() <= MAX_PHYSICAL_CELL_BYTES + '…'.len_utf8());
+                } else {
+                    prop_assert_eq!(preview, value);
+                }
+            }
+        }
+    }
 }

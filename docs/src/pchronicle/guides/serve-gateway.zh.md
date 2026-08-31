@@ -372,13 +372,13 @@ pchronicle serve \
 ## 查看新捕获
 
 Gateway writer 排空后，events 会持久写入目标 Dataset。已有 `events.lance` 追加不会触发
-完整 Catalog 重建；单 trace 的 `/api/events`、`/api/storyline` 和 `/api/trajectory-view`
+完整 Snapshot 重建；单 trace 的 `/api/events`、`/api/storyline` 和 `/api/trajectory-view`
 会重新打开该文件的最新 manifest，因此可以实时观察正在进行中的 trace。只有发现新的
 canonical source（例如新的 split 文件）或 Storyline projection 发布时，才需要刷新全局
-Catalog。projection 或 refresh 失败会有界重试并保留旧的可查询 Catalog；两者都不阻塞
+Snapshot。projection 或 refresh 失败会有界重试并保留旧的可查询 Snapshot；两者都不阻塞
 durable capture write。`POST /api/catalog` 仍可用于显式手工刷新。
 收到 `SIGINT` 或 `SIGTERM` 时，
 `pchronicle serve` 会停止两个服务，并在退出前完成 Gateway capture writer。
 
 精确命令参数见 [`pchronicle` CLI 参考](../reference/cli.md)；刷新背后的存储模型见
-[Dataset Catalog 设计](../design/catalog.md)。
+[Snapshot 设计](../design/catalog.md)。

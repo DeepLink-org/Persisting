@@ -13,6 +13,22 @@ struct LocalSettings {
     default_warehouse: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     aliases: BTreeMap<String, String>,
+    /// Credentials are deliberately kept out of the alias URI so they cannot
+    /// leak through `alias list`, logs, or generated Dataset paths.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    alias_credentials: BTreeMap<String, S3Credentials>,
+    /// S3-compatible endpoints are kept separate from the canonical s3:// URI.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    alias_endpoints: BTreeMap<String, String>,
+    /// Optional S3 regions are kept separate from the canonical s3:// URI.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    alias_regions: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct S3Credentials {
+    access_key: String,
+    secret_key: String,
 }
 
 pub(super) fn default_settings_path() -> Result<PathBuf> {
@@ -223,15 +239,15 @@ pub(super) fn run_alias(
             match format {
                 OutputFormat::Table => {
                     writeln!(stdout, "NAME\tDATASET")?;
-                    for (name, dataset) in &settings.aliases {
+                    for (name, dataset) in alias_list_entries(&settings)? {
                         writeln!(stdout, "{name}\t{dataset}")?;
                     }
                 }
                 OutputFormat::Json => {
+                    let entries = alias_list_entries(&settings)?;
                     let response = AliasListResponse {
                         schema_version: "pchronicle-aliases/v1",
-                        aliases: settings
-                            .aliases
+                        aliases: entries
                             .iter()
                             .map(|(name, dataset)| AliasResponse { name, dataset })
                             .collect(),
@@ -243,7 +259,14 @@ pub(super) fn run_alias(
             }
             Ok(())
         }
-        AliasCommand::Add { name, dataset } => {
+        AliasCommand::Add {
+            name,
+            dataset,
+            endpoint,
+            region,
+            access_key,
+            secret_key,
+        } => {
             validate_alias_name(&name)?;
             if settings.aliases.contains_key(&name) {
                 return Err(cli_boundary_error(
@@ -252,7 +275,28 @@ pub(super) fn run_alias(
                 ));
             }
             let dataset = normalize_alias_target(&dataset)?;
+            let catalog = dataset.starts_with("catalog://");
+            anyhow::ensure!(
+                !catalog || (endpoint.is_none() && region.is_none()),
+                "catalog aliases do not accept --endpoint or --region"
+            );
+            let endpoint = s3_endpoint_for(&dataset, endpoint)?;
+            let region = s3_region_for(&dataset, region)?;
+            let credentials = s3_credentials_for(&dataset, access_key, secret_key)?;
+            anyhow::ensure!(
+                !catalog || credentials.is_some(),
+                "catalog aliases require --ak and --sk"
+            );
             settings.aliases.insert(name.clone(), dataset.clone());
+            if let Some(endpoint) = endpoint {
+                settings.alias_endpoints.insert(name.clone(), endpoint);
+            }
+            if let Some(region) = region {
+                settings.alias_regions.insert(name.clone(), region);
+            }
+            if let Some(credentials) = credentials {
+                settings.alias_credentials.insert(name.clone(), credentials);
+            }
             write_local_settings(&path, &settings)?;
             writeln!(stderr, "config={} updated=true", path.display())?;
             writeln!(stdout, "{name}\t{dataset}")?;
@@ -269,7 +313,14 @@ pub(super) fn run_alias(
             writeln!(stdout, "{dataset}")?;
             Ok(())
         }
-        AliasCommand::SetUrl { name, dataset } => {
+        AliasCommand::SetUrl {
+            name,
+            dataset,
+            endpoint,
+            region,
+            access_key,
+            secret_key,
+        } => {
             validate_alias_name(&name)?;
             if !settings.aliases.contains_key(&name) {
                 return Err(cli_boundary_error(
@@ -278,7 +329,46 @@ pub(super) fn run_alias(
                 ));
             }
             let dataset = normalize_alias_target(&dataset)?;
+            let catalog = dataset.starts_with("catalog://");
+            anyhow::ensure!(
+                !catalog || (endpoint.is_none() && region.is_none()),
+                "catalog aliases do not accept --endpoint or --region"
+            );
+            let endpoint = s3_endpoint_for(&dataset, endpoint)?;
+            let region = s3_region_for(&dataset, region)?;
+            let credentials = s3_credentials_for(&dataset, access_key, secret_key)?;
+            anyhow::ensure!(
+                !catalog || credentials.is_some(),
+                "catalog aliases require --ak and --sk"
+            );
             settings.aliases.insert(name.clone(), dataset.clone());
+            match endpoint {
+                Some(endpoint) => {
+                    settings.alias_endpoints.insert(name.clone(), endpoint);
+                }
+                None if !dataset.starts_with("s3://") => {
+                    settings.alias_endpoints.remove(&name);
+                }
+                None => {}
+            }
+            match region {
+                Some(region) => {
+                    settings.alias_regions.insert(name.clone(), region);
+                }
+                None if !dataset.starts_with("s3://") => {
+                    settings.alias_regions.remove(&name);
+                }
+                None => {}
+            }
+            match credentials {
+                Some(credentials) => {
+                    settings.alias_credentials.insert(name.clone(), credentials);
+                }
+                None if !dataset.starts_with("s3://") => {
+                    settings.alias_credentials.remove(&name);
+                }
+                None => {}
+            }
             write_local_settings(&path, &settings)?;
             writeln!(stderr, "config={} updated=true", path.display())?;
             writeln!(stdout, "{name}\t{dataset}")?;
@@ -300,6 +390,15 @@ pub(super) fn run_alias(
                 )
             })?;
             settings.aliases.insert(new.clone(), dataset);
+            if let Some(credentials) = settings.alias_credentials.remove(&old) {
+                settings.alias_credentials.insert(new.clone(), credentials);
+            }
+            if let Some(endpoint) = settings.alias_endpoints.remove(&old) {
+                settings.alias_endpoints.insert(new.clone(), endpoint);
+            }
+            if let Some(region) = settings.alias_regions.remove(&old) {
+                settings.alias_regions.insert(new.clone(), region);
+            }
             write_local_settings(&path, &settings)?;
             writeln!(stderr, "config={} updated=true", path.display())?;
             writeln!(stdout, "{new}")?;
@@ -313,12 +412,30 @@ pub(super) fn run_alias(
                     format!("alias '{name}' does not exist"),
                 ));
             }
+            settings.alias_credentials.remove(&name);
+            settings.alias_endpoints.remove(&name);
+            settings.alias_regions.remove(&name);
             write_local_settings(&path, &settings)?;
             writeln!(stderr, "config={} updated=true", path.display())?;
             writeln!(stdout, "{name}")?;
             Ok(())
         }
     }
+}
+
+fn alias_list_entries(settings: &LocalSettings) -> Result<Vec<(String, String)>> {
+    let mut entries = Vec::with_capacity(settings.aliases.len() + RESERVED_ALIASES.len());
+    for name in RESERVED_ALIASES {
+        let dataset = expand_dataset_alias(&format!("@{name}"))?;
+        entries.push((format!("@{name}"), dataset));
+    }
+    entries.extend(
+        settings
+            .aliases
+            .iter()
+            .map(|(name, dataset)| (name.clone(), dataset.clone())),
+    );
+    Ok(entries)
 }
 
 fn validate_alias_name(name: &str) -> Result<()> {
@@ -352,6 +469,9 @@ fn normalize_alias_target(dataset: &str) -> Result<String> {
         !dataset.starts_with('@'),
         "an alias cannot point to another alias"
     );
+    if dataset.starts_with("catalog://") {
+        return crate::server::catalog::parse_catalog_alias_target(dataset);
+    }
     let location = DatasetLocation::parse(dataset)?;
     if location.is_object_store() || dataset.contains("://") {
         return Ok(location.as_str().to_owned());
@@ -367,6 +487,234 @@ fn normalize_alias_target(dataset: &str) -> Result<String> {
             .join(path)
     };
     Ok(absolute.to_string_lossy().into_owned())
+}
+
+fn s3_credentials_for(
+    dataset: &str,
+    access_key: Option<String>,
+    secret_key: Option<String>,
+) -> Result<Option<S3Credentials>> {
+    match (access_key, secret_key) {
+        (None, None) => Ok(None),
+        (Some(access_key), Some(secret_key)) => {
+            anyhow::ensure!(
+                dataset.starts_with("s3://") || dataset.starts_with("catalog://"),
+                "--ak/--sk can only be used with an s3:// Dataset or a catalog:// alias"
+            );
+            let access_key = access_key.trim().to_string();
+            let secret_key = secret_key.trim().to_string();
+            anyhow::ensure!(!access_key.is_empty(), "S3 access key must not be empty");
+            anyhow::ensure!(!secret_key.is_empty(), "S3 secret key must not be empty");
+            Ok(Some(S3Credentials {
+                access_key,
+                secret_key,
+            }))
+        }
+        _ => unreachable!("clap requires --ak and --sk together"),
+    }
+}
+
+pub(super) fn s3_endpoint_for(dataset: &str, endpoint: Option<String>) -> Result<Option<String>> {
+    let Some(endpoint) = endpoint else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        dataset.starts_with("s3://"),
+        "--endpoint can only be used with an s3:// Dataset"
+    );
+    let endpoint = endpoint.trim().trim_end_matches('/').to_owned();
+    anyhow::ensure!(!endpoint.is_empty(), "S3 endpoint must not be empty");
+    anyhow::ensure!(
+        !endpoint.starts_with('[') && !endpoint.contains("](") && !endpoint.ends_with(')'),
+        "S3 endpoint must be a plain URL, not a Markdown link"
+    );
+    let parsed = url::Url::parse(&endpoint).context("parse S3 endpoint URL")?;
+    anyhow::ensure!(
+        matches!(parsed.scheme(), "http" | "https"),
+        "S3 endpoint must use http:// or https://"
+    );
+    anyhow::ensure!(
+        parsed.host_str().is_some(),
+        "S3 endpoint must include a host"
+    );
+    anyhow::ensure!(
+        parsed.username().is_empty() && parsed.password().is_none(),
+        "S3 endpoint must not contain embedded credentials"
+    );
+    anyhow::ensure!(
+        parsed.query().is_none() && parsed.fragment().is_none(),
+        "S3 endpoint must not contain a query string or fragment"
+    );
+    Ok(Some(endpoint))
+}
+
+fn s3_region_for(dataset: &str, region: Option<String>) -> Result<Option<String>> {
+    let Some(region) = region else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        dataset.starts_with("s3://"),
+        "--region can only be used with an s3:// Dataset"
+    );
+    let region = region.trim().to_owned();
+    anyhow::ensure!(!region.is_empty(), "S3 region must not be empty");
+    anyhow::ensure!(
+        region.len() <= 128 && !region.chars().any(char::is_whitespace),
+        "S3 region must be a non-empty region name without whitespace"
+    );
+    Ok(Some(region))
+}
+
+fn apply_alias_credentials(settings: &LocalSettings, name: &str) {
+    let Some(credentials) = settings.alias_credentials.get(name) else {
+        return;
+    };
+    // Object-store clients read these standard variables when opening the
+    // resolved S3 URI. The values are never included in the URI or output.
+    unsafe {
+        std::env::set_var("AWS_ACCESS_KEY_ID", &credentials.access_key);
+        std::env::set_var("AWS_SECRET_ACCESS_KEY", &credentials.secret_key);
+    }
+}
+
+fn apply_alias_endpoint(settings: &LocalSettings, name: &str) {
+    let Some(endpoint) = settings.alias_endpoints.get(name) else {
+        return;
+    };
+    // Set both names: Lance uses the generic endpoint key to skip AWS region
+    // discovery, while object_store also recognizes the S3-specific spelling.
+    unsafe {
+        std::env::set_var("AWS_ENDPOINT", endpoint);
+        std::env::set_var("AWS_ENDPOINT_URL_S3", endpoint);
+        if endpoint.starts_with("http://") {
+            // object_store rejects plaintext HTTP by default. Local MinIO and
+            // other development S3-compatible services commonly use it.
+            std::env::set_var("AWS_ALLOW_HTTP", "true");
+        }
+    }
+}
+
+fn apply_alias_region(settings: &LocalSettings, name: &str) {
+    let Some(region) = settings.alias_regions.get(name) else {
+        return;
+    };
+    unsafe {
+        std::env::set_var("AWS_REGION", region);
+    }
+}
+
+fn expand_catalog_alias(
+    settings: &LocalSettings,
+    name: &str,
+    root: &str,
+    suffix: &str,
+    require_existing: bool,
+) -> Result<String> {
+    anyhow::ensure!(
+        !suffix.is_empty(),
+        "catalog alias '@{name}' requires a dataset, for example '@{name}/prod'"
+    );
+    let (dataset, path) = suffix.split_once('/').unwrap_or((suffix, ""));
+    if !path.is_empty() {
+        validate_alias_suffix(path)?;
+    }
+    let credentials = settings.alias_credentials.get(name).ok_or_else(|| {
+        cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            format!("catalog alias '@{name}' requires --ak and --sk"),
+        )
+    })?;
+    let ticket = fetch_catalog_ticket(
+        root,
+        &credentials.access_key,
+        &credentials.secret_key,
+        dataset,
+    )?;
+    crate::server::catalog::apply_library_env(&ticket);
+    let expanded = join_alias_target(&ticket.uri, path)?;
+    let location = DatasetLocation::parse(&expanded)?;
+    if require_existing {
+        if location.local_path().is_some_and(|path| !path.exists()) {
+            return Err(cli_boundary_error(
+                BoundaryCode::NotFound,
+                format!(
+                    "catalog dataset '{dataset}' is a local path that does not exist on this machine: {}",
+                    location.as_str()
+                ),
+            ));
+        }
+        return Ok(location.into_existing()?.as_str().to_owned());
+    }
+    Ok(location.as_str().to_owned())
+}
+
+thread_local! {
+    static CATALOG_TICKETS: std::cell::RefCell<
+        HashMap<(String, String, String), crate::server::catalog::CatalogLibrary>,
+    > = std::cell::RefCell::new(HashMap::new());
+}
+
+fn fetch_catalog_ticket(
+    catalog_url: &str,
+    access_key: &str,
+    secret_key: &str,
+    dataset: &str,
+) -> Result<crate::server::catalog::CatalogLibrary> {
+    use crate::server::catalog::{ACCESS_KEY_HEADER, SECRET_KEY_HEADER, catalog_http_base};
+
+    let cache_key = (
+        catalog_url.to_owned(),
+        access_key.to_owned(),
+        dataset.to_owned(),
+    );
+    if let Some(ticket) = CATALOG_TICKETS.with(|tickets| tickets.borrow().get(&cache_key).cloned())
+    {
+        return Ok(ticket);
+    }
+    let base = catalog_http_base(catalog_url)?;
+    let url = format!(
+        "{base}/api/v1/catalog/datasets/{}",
+        urlencoding_dataset(dataset)
+    );
+    let response = reqwest::blocking::Client::new()
+        .get(&url)
+        .header(ACCESS_KEY_HEADER, access_key)
+        .header(SECRET_KEY_HEADER, secret_key)
+        .send()
+        .with_context(|| format!("request catalog dataset '{dataset}'"))?;
+    let status = response.status();
+    let body = response.text().context("read catalog dataset response")?;
+    if !status.is_success() {
+        return Err(cli_boundary_error(
+            if status.as_u16() == 404 {
+                BoundaryCode::NotFound
+            } else if status.as_u16() == 401 {
+                BoundaryCode::InvalidRequest
+            } else {
+                BoundaryCode::Unavailable
+            },
+            format!("catalog dataset '{dataset}' failed: HTTP {status} {body}"),
+        ));
+    }
+    let ticket: crate::server::catalog::CatalogLibrary =
+        serde_json::from_str(&body).context("decode catalog dataset ticket")?;
+    CATALOG_TICKETS.with(|tickets| {
+        tickets.borrow_mut().insert(cache_key, ticket.clone());
+    });
+    Ok(ticket)
+}
+
+fn urlencoding_dataset(dataset: &str) -> String {
+    dataset
+        .bytes()
+        .flat_map(|byte| {
+            if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' {
+                vec![byte as char]
+            } else {
+                format!("%{byte:02X}").chars().collect()
+            }
+        })
+        .collect()
 }
 
 pub(super) fn expand_dataset_reference(
@@ -393,7 +741,15 @@ pub(super) fn expand_dataset_reference(
                     format!("unknown Dataset alias '@{name}'"),
                 )
             })?;
-            join_alias_target(root, suffix)?
+            if root.starts_with("catalog://") {
+                expand_catalog_alias(&settings, name, root, suffix, require_existing)?
+            } else {
+                let expanded = join_alias_target(root, suffix)?;
+                apply_alias_credentials(&settings, name);
+                apply_alias_endpoint(&settings, name);
+                apply_alias_region(&settings, name);
+                expanded
+            }
         }
     };
     let location = DatasetLocation::parse(&expanded)?;

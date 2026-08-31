@@ -1,6 +1,6 @@
 # 1.3 pVisor 网络边界
 
-这个例子只回答一个问题：pVisor 当前控制的是哪些网络流量？
+**问题：pVisor 当前控制的是哪些网络流量？可复现结论：OverlayNet 控制 cooperative proxy 流量，不是 network sandbox；direct socket 可绕过代理。**
 
 ```bash
 ./run.sh
@@ -47,3 +47,9 @@ Conclusion: OverlayNet controls cooperative proxy traffic; it is not a network s
 
 需要不可绕过的网络隔离时，应使用 container/KVM 网络边界，而不是把 cooperative proxy
 的 allowlist 或 deny-all 当作安全沙箱。
+
+## Links
+
+- [pVisor examples](../README.md)
+- [Network control](../../../docs/src/pvisor/guides/network.zh.md)
+- [OverlayNet architecture](../../../docs/src/pvisor/design/overlaynet.zh.md)

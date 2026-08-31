@@ -552,6 +552,36 @@
   margin-top: 4px;
 }
 
+.pc2-workspace-notice-request {
+  margin: 4px 0 0;
+  font-size: 11px;
+}
+
+.pc2-workspace-notice-request code {
+  user-select: all;
+  font-size: 11px;
+}
+
+.pc2-workspace-notice-copy-id {
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid #fecaca;
+  border-radius: 4px;
+  background: #fff;
+  color: #9f1239;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.pc2-workspace-notice-dismiss {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 18px;
+  cursor: pointer;
+}
+
 .pc2-workspace-notice-details summary {
   cursor: pointer;
   color: #9f1239;
@@ -572,11 +602,8 @@
   word-break: break-word;
 }
 
-.pc2-workspace-notice button {
-  margin-left: auto;
-  border: 0;
+.analyze-error-host .pc2-workspace-notice {
+  padding: 0;
+  border-bottom: 0;
   background: transparent;
-  color: inherit;
-  font-size: 18px;
-  cursor: pointer;
 }

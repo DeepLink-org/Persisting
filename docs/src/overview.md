@@ -17,14 +17,21 @@ the process that created it, and completed work should remain inspectable.
 
 ## Current user workflows
 
-The current product starts with Agent execution and history. Choose the entry
-point that matches the task in front of you; neither is a setup step for the
-other.
+The current product is the path from execution to queryable history. Choose the
+entry point that matches the task in front of you.
 
 | Command | Start here when you need to | Durable result |
 | --- | --- | --- |
 | `pvisor` | run one existing Agent with explicit workspace and runtime controls | a Run result, private Run Bundle, and staged filesystem changes |
 | `pchronicle` | inspect or exchange Agent trajectory data | a browsable and queryable Dataset view |
+
+## Command ownership
+
+| Command | Primary responsibility |
+|---|---|
+| `pvisor` | One Run, environments, review, checkpoints, apply/drop |
+| `ppilot` | Bounded collections of Runs: planning, concurrency, recovery, sinks |
+| `pchronicle` | Dataset catalog, SQL, built-in analysis, find, import/export, read-only serving |
 
 pVisor works without pChronicle, and pChronicle can read external trajectories
 that never passed through pVisor.
@@ -63,9 +70,9 @@ captured by Persisting or imported from supported external formats.
 
 [Explore the first Dataset →](pchronicle/get-started.md)
 
-## Optional integration
+## The throughline: from execution to queryable history
 
-The execution and history paths can be connected through configured capture:
+Configured capture connects the two workflows into one path:
 
 ```text
 pVisor Run ── configured Gateway/lifecycle capture ──> pChronicle Dataset
@@ -77,9 +84,13 @@ The configured handoff publishes Gateway trajectory events and selected
 lifecycle records. It does not automatically publish the full private Run
 Bundle, all staged effects, or every piece of provider-specific evidence.
 Likewise, importing an external trajectory does not retroactively add execution
-controls that were never recorded.
+controls that were never recorded. See
+[Capture Agent Trajectories](pvisor/guides/capture.md).
 
-![Current Persisting workflows and optional integration](assets/diagrams/persisting/system-products.svg)
+Each product also works on its own: pVisor can finish a Run without pChronicle,
+and pChronicle can query Datasets that never came from pVisor.
+
+![Current Persisting workflows and the execution-to-history throughline](assets/diagrams/persisting/system-products.svg)
 
 ## Where to go next
 

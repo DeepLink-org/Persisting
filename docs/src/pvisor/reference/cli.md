@@ -1,8 +1,10 @@
-# `pvisor` 命令参考
+# `pvisor` command reference
 
-`pvisor` 是单个 Run 和持久环境的产品命令。
-Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
-[使用 pVisor 运行工作负载](../guides/execution.md)。
+`pvisor` is the product command for a single Run and for durable
+environments.
+Full command examples for Host, OCI VM, and transparent host-rootfs VM
+are in
+[Run workloads with pVisor](../guides/execution.md).
 
 ```text
 pvisor
@@ -28,8 +30,7 @@ pvisor review last
 `--safe` uses the current directory as the reusable project workspace and
 OverlayFS base, creates an independent Run and writable stage under
 `PERSISTING_RUN_HOME` (default `~/.persisting/runs`), retains changes for
-manual review, enables the explicit OverlayNet proxy on ephemeral loopback
-ports, and writes `run-bundle.json` with mode `0600`.
+manual review, and writes `run-bundle.json` with mode `0600`.
 On Linux, the default host executor self-executes through pVisor's rootless
 launcher before the async runtime reaches the Agent. User/mount/PID namespaces,
 an in-namespace PID 1 descendant reaper,
@@ -51,7 +52,7 @@ After completion:
 pvisor review last
 pvisor checkpoint last --name before-experiment
 pvisor fork last --checkpoint before-experiment -- codex
-pvisor apply last       # or: pvisor drop last
+pvisor apply last --all # or: pvisor drop last
 ```
 
 The CLI checkpoint is stopped-consistent. Embedded hosts can call
@@ -61,7 +62,7 @@ quiesced state, snapshots the raw upper, then publishes `continue`. Logical
 checkpoints preserve filesystem and cooperative client safe-point boundaries,
 not process memory.
 
-持久环境拥有稳定名称和可复用 OverlayFS upper：
+A durable environment has a stable name and a reusable OverlayFS upper:
 
 ```bash
 pvisor env create dev --target ./project
@@ -70,18 +71,21 @@ pvisor env shell dev
 pvisor env inspect dev -- git status --short
 pvisor env stop dev
 pvisor env start dev
-pvisor env apply dev --path src   # 提交选中部分，其余继续 staged
-pvisor env apply dev --all        # 提交剩余修改并重置为空 stage
-pvisor env drop dev        # 丢弃修改并重置为空 stage
+pvisor env apply dev --path src   # commit the selection; the rest stays staged
+pvisor env apply dev --all        # commit remaining changes and reset to an empty stage
+pvisor env drop dev        # discard changes and reset to an empty stage
 pvisor env delete dev --force
 ```
 
-默认元数据位于 `~/.persisting/envs`，可用 `--root` 或 `PERSISTING_ENV_HOME`
-覆盖。`start` / `stop` 控制是否接受新会话，并不表示常驻虚拟机；每次 `exec` / `shell`
-都会挂载同一个 writable upper，所以修改会跨命令保留。`inspect` 使用内核强制的只读视图。
-`apply --all` 或 `drop` 不会把 terminal Overlay 原地改回 `staged`；它们会创建单调递增的
-Overlay generation。命令取得环境 lease 后会重新读取 generation，避免用 reset 前的
-metadata 覆盖新 stage。
+Default metadata lives in `~/.persisting/envs` and can be overridden
+with `--root` or `PERSISTING_ENV_HOME`. `start` / `stop` control whether
+new sessions are accepted; they do not mean a resident VM. Each
+`exec` / `shell` mounts the same writable upper, so changes persist
+across commands. `inspect` uses a kernel-enforced read-only view.
+`apply --all` or `drop` do not flip a terminal Overlay back to `staged`
+in place; they create a monotonically increasing Overlay generation.
+After a command takes the environment lease it re-reads the generation
+so metadata from before the reset cannot overwrite the new stage.
 
 ## Replay an Agent trajectory
 
@@ -306,14 +310,16 @@ KVM and Apple Silicon macOS uses HVF through the same executor. libkrunfw is
 installed beside pVisor in wheels. Source builds otherwise download the pinned
 official release into a SHA-256-verified platform cache; on macOS `/usr/bin/cc`
 turns its prebuilt kernel bundle into the required dylib. A system directory can
-still be selected with `--vm-library-dir`. OverlayNet/Gateway is rejected for
-this executor until a cross-platform guest relay is available. Linux additionally confines the VMM
-with namespaces and Landlock. The macOS VMM still has the invoking user's host
-permissions, so the first OCI-image version must not be treated as a hostile
-multi-tenant boundary despite the guest-kernel isolation.
+still be selected with `--vm-library-dir`. OverlayNet `auto` uses the
+non-bypassable VM smoltcp IPv4 TCP/DNS driver, while Gateway capture uses an
+internal route through the guest virtual router. Linux additionally confines
+the VMM with namespaces and Landlock. The macOS VMM still has the invoking
+user's host permissions, so the first OCI-image version must not be treated as
+a hostile multi-tenant boundary despite the guest-kernel isolation.
 
-The four visible OverlayNet policy flags and Gateway capture automatically enable the
-proxy driver. Any `--overlayfs-base`, `--overlayfs-compose`,
+On host/container execution, the four visible OverlayNet policy flags and
+Gateway capture automatically enable the proxy driver. Any `--overlayfs-base`,
+`--overlayfs-compose`,
 `--overlayfs-stage`, `--overlayfs-backend`, or `--overlayfs-commit` option
 automatically enables OverlayFS; no separate mode switch exists. The base
 defaults to the workspace, and the stage defaults to the generated Run
@@ -364,10 +370,10 @@ Lifecycle commands accept a Run id, Run directory, project workspace,
 ```bash
 pvisor status /path/to/project
 pvisor inspect /path/to/project -- rg TODO .
-pvisor apply /path/to/project
+pvisor apply /path/to/project --all
 pvisor apply /path/to/project --path src --path tests/unit
 pvisor apply /path/to/project --include 'docs/**' --exclude 'docs/generated/**'
-pvisor apply /path/to/project --target /path/to/another-target
+pvisor apply /path/to/project --target /path/to/another-target --all
 pvisor drop /path/to/project
 ```
 

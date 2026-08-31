@@ -542,4 +542,85 @@ mod tests {
         assert_eq!(manifest.files()[0].relative_path(), "session.jsonl");
         Ok(())
     }
+
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn normal_relative_paths_are_accepted(
+                components in proptest::collection::vec(
+                    proptest::string::string_regex("[A-Za-z0-9_-][A-Za-z0-9_.-]{0,15}").unwrap(),
+                    1..8,
+                ),
+            ) {
+                let path = components.join("/");
+                prop_assert!(validate_relative_source_path(&path).is_ok());
+            }
+
+            #[test]
+            fn path_traversal_and_absolute_forms_are_rejected(
+                component in proptest::string::string_regex("[A-Za-z0-9_-][A-Za-z0-9_.-]{0,15}").unwrap(),
+            ) {
+                let candidates = [
+                    String::new(),
+                    format!("../{component}"),
+                    format!("{component}/../../escape"),
+                    format!("/{component}"),
+                    format!("./{component}"),
+                ];
+                for candidate in candidates {
+                    prop_assert!(validate_relative_source_path(&candidate).is_err(), "{candidate}");
+                }
+            }
+
+            #[test]
+            fn json_lines_detection_is_case_insensitive(
+                stem in proptest::string::string_regex("[A-Za-z0-9_-]{1,16}").unwrap(),
+                uppercase in any::<bool>(),
+            ) {
+                let extension = if uppercase { "JSONL" } else { "jsonl" };
+                prop_assert!(is_json_lines(Path::new(&format!("{stem}.{extension}"))), "stem={}", stem);
+                prop_assert!(!is_json_lines(Path::new(&format!("{stem}.json"))), "stem={}", stem);
+            }
+
+            #[test]
+            fn recursive_detection_preserves_generated_relative_paths(
+                components in proptest::collection::vec(
+                    proptest::string::string_regex("[A-Za-z0-9_-]{1,12}").unwrap(),
+                    1..6,
+                ),
+            ) {
+                let temp = tempfile::tempdir().unwrap();
+                let relative = format!("{}.json", components.join("/"));
+                let path = temp.path().join(&relative);
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                fs::write(&path, r#"[{"session_id":"s1","step_id":0,"messages":[]}]"#).unwrap();
+
+                let manifest = LocalQueryManifest::detect(temp.path()).unwrap();
+                prop_assert_eq!(manifest.files().len(), 1);
+                prop_assert_eq!(manifest.files()[0].relative_path(), relative);
+            }
+
+            #[test]
+            fn invalid_manifest_limits_fail_before_filesystem_access(
+                max_files in 0usize..=1,
+                max_entries in 0usize..=1,
+                max_detection_bytes in 0u64..=1,
+            ) {
+                prop_assume!(max_files == 0 || max_entries == 0 || max_detection_bytes == 0);
+                let options = LocalQueryManifestOptions {
+                    max_files,
+                    max_entries,
+                    max_detection_bytes,
+                };
+                prop_assert!(validate_options(options).is_err());
+            }
+        }
+    }
 }

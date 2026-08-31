@@ -223,10 +223,32 @@ pub(crate) struct ExplorerPage<T> {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub(crate) struct TurnSearchStatus {
+    pub(crate) fts_available: bool,
+    pub(crate) mode: &'static str,
+    pub(crate) tokenizer: Option<&'static str>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct TurnExplorerPage {
+    pub(crate) snapshot: PageSnapshot,
+    pub(crate) records: Vec<TurnSummary>,
+    pub(crate) search: TurnSearchStatus,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct RunExplorerPage {
     pub(crate) snapshot: PageSnapshot,
     pub(crate) records: Vec<RunExplorerItem>,
     pub(crate) path_index: Vec<RunSummary>,
+    pub(crate) search: RunSearchStatus,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct RunSearchStatus {
+    pub(crate) fts_available: bool,
+    pub(crate) mode: &'static str,
+    pub(crate) tokenizer: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -243,6 +265,8 @@ pub(crate) struct RunExplorerItem {
     #[serde(flatten)]
     pub(crate) run: RunSummary,
     pub(crate) model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) search_preview: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -314,6 +338,7 @@ pub(crate) struct TurnSummary {
     pub(crate) timestamp: Option<String>,
     pub(crate) call_id: Option<String>,
     pub(crate) preview: String,
+    pub(crate) user_prompt: Option<String>,
     pub(crate) char_count: u64,
     pub(crate) modalities: Vec<String>,
     pub(crate) model_name: Option<String>,
@@ -362,7 +387,22 @@ pub(crate) fn explorer_run_path(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn run_page(summaries: Vec<RunSummary>, query: &ExplorerRunsQuery) -> RunExplorerPage {
+    run_page_with_fts(
+        summaries,
+        query,
+        &BTreeMap::new(),
+        RunSearchStatus::default(),
+    )
+}
+
+pub(crate) fn run_page_with_fts(
+    summaries: Vec<RunSummary>,
+    query: &ExplorerRunsQuery,
+    fts_matches: &BTreeMap<String, String>,
+    search: RunSearchStatus,
+) -> RunExplorerPage {
     let needle = query
         .q
         .as_deref()
@@ -373,20 +413,11 @@ pub(crate) fn run_page(summaries: Vec<RunSummary>, query: &ExplorerRunsQuery) ->
         .into_iter()
         .map(|run| RunExplorerItem {
             model: run.model_name.clone(),
+            search_preview: fts_matches.get(&run_identity(&run)).cloned(),
             run,
         })
         .filter(|item| {
-            (needle.is_empty()
-                || format!(
-                    "{} {} {} {} {}",
-                    item.run.agent_id,
-                    item.run.session_id,
-                    item.run.root_session_id.as_deref().unwrap_or_default(),
-                    item.run.status,
-                    item.run.path,
-                )
-                .to_ascii_lowercase()
-                .contains(&needle))
+            (needle.is_empty() || fts_matches.contains_key(&run_identity(&item.run)))
                 && matches_filter(&item.run.dataset, query.dataset.as_deref())
                 && matches_filter(&item.run.status, query.status.as_deref())
                 && matches_filter(&item.run.agent_id, query.agent.as_deref())
@@ -437,7 +468,12 @@ pub(crate) fn run_page(summaries: Vec<RunSummary>, query: &ExplorerRunsQuery) ->
         snapshot: page.snapshot,
         records: page.records,
         path_index,
+        search,
     }
+}
+
+pub(crate) fn run_identity(run: &RunSummary) -> String {
+    format!("{}\u{1f}{}\u{1f}{}", run.dataset, run.file, run.document_id)
 }
 
 pub(crate) fn analyze(
@@ -641,6 +677,23 @@ pub(crate) fn turn_page(
     paginate(records, offset, limit.clamp(1, 500))
 }
 
+pub(crate) fn turn_page_with_search(
+    turns: &[TrajectoryTurnView],
+    events: &[EventRecord],
+    q: Option<&str>,
+    source: Option<&str>,
+    offset: usize,
+    limit: usize,
+    search: TurnSearchStatus,
+) -> TurnExplorerPage {
+    let page = turn_page(turns, events, q, source, offset, limit);
+    TurnExplorerPage {
+        snapshot: page.snapshot,
+        records: page.records,
+        search,
+    }
+}
+
 pub(crate) fn turn_detail(
     item: &TrajectoryTurnView,
     events: &[EventRecord],
@@ -690,6 +743,11 @@ fn turn_summary(item: &TrajectoryTurnView, events: &[EventRecord]) -> TurnSummar
             .map(|timestamp| timestamp.canonical_rfc3339()),
         call_id: item.call_id.clone(),
         preview: compact(&extracted.text, 180),
+        user_prompt: item
+            .turn
+            .prompt
+            .as_ref()
+            .and_then(|prompt| prompt.user.clone()),
         char_count: extracted.char_count,
         modalities: extracted.modalities,
         model_name: item
@@ -884,6 +942,12 @@ fn percentile(values: &[f64], percentile: f64) -> Option<f64> {
 }
 
 pub(super) fn display_tool_calls(item: &TrajectoryTurnView) -> Vec<(String, Option<f64>)> {
+    if !matches!(
+        item.turn.source.trim().to_ascii_lowercase().as_str(),
+        "agent" | "assistant" | "model"
+    ) {
+        return Vec::new();
+    }
     if let Some(calls) = &item.turn.tool_calls {
         return calls
             .iter()
@@ -895,12 +959,6 @@ pub(super) fn display_tool_calls(item: &TrajectoryTurnView) -> Vec<(String, Opti
             })
             .collect();
     }
-    if !matches!(
-        item.turn.source.trim().to_ascii_lowercase().as_str(),
-        "agent" | "assistant" | "model"
-    ) {
-        return Vec::new();
-    }
     item.wire_tool_calls
         .iter()
         .map(|call| (call.name.clone(), None))
@@ -909,10 +967,15 @@ pub(super) fn display_tool_calls(item: &TrajectoryTurnView) -> Vec<(String, Opti
 
 fn searchable_turn(item: &TrajectoryTurnView) -> String {
     format!(
-        "{} {} {} {}",
+        "{} {} {} {} {}",
         item.turn.source,
         item.turn.kind.as_deref().unwrap_or_default(),
         item.call_id.as_deref().unwrap_or_default(),
+        item.turn
+            .prompt
+            .as_ref()
+            .and_then(|prompt| prompt.user.as_deref())
+            .unwrap_or_default(),
         match &item.turn.message {
             Value::String(value) => value.clone(),
             value => value.to_string(),
@@ -1403,5 +1466,28 @@ mod tests {
                 .all(|item| item.run.file.starts_with("gsm8k"))
         );
         assert_eq!(page.path_index.len(), 2);
+    }
+
+    #[test]
+    fn run_page_promotes_storyline_fts_matches_into_results() {
+        let matched = sample_run("evals", "storyline", "completed", "matched");
+        let other = sample_run("evals", "storyline", "completed", "other");
+        let fts_matches = BTreeMap::from([(run_identity(&matched), "content from a step".into())]);
+        let page = run_page_with_fts(
+            vec![matched, other],
+            &ExplorerRunsQuery {
+                q: Some("content from a step".into()),
+                ..ExplorerRunsQuery::default()
+            },
+            &fts_matches,
+            RunSearchStatus {
+                fts_available: true,
+                mode: "fts",
+                tokenizer: Some("jieba"),
+            },
+        );
+        assert_eq!(page.snapshot.total, 1);
+        assert_eq!(page.records[0].run.document_id, "matched");
+        assert_eq!(page.search.mode, "fts");
     }
 }

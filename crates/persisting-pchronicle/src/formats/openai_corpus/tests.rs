@@ -370,6 +370,24 @@ fn openai_imports_first_row_context_once_and_offsets_step_ids() {
 }
 
 #[test]
+fn openai_empty_response_uses_latest_cumulative_assistant_message() {
+    let input = json!({"session_steps": [{
+        "session_id": "s",
+        "step_id": 1,
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "answer"}
+        ],
+        "response": {"role": "assistant", "content": ""}
+    }]});
+
+    let story = parse_openai_msg_corpus_value(&input, "cumulative.json")
+        .unwrap()
+        .remove(0);
+    assert_eq!(story.turns.last().unwrap().message, json!("answer"));
+}
+
+#[test]
 fn openai_logical_roundtrip_preserves_mapped_storyline_fields() {
     let input = json!({"session_steps": [
         {
@@ -847,6 +865,44 @@ fn canonical_export_preserves_message_and_argument_semantics() {
 }
 
 #[test]
+fn stringified_openai_content_is_restored_to_structured_values() {
+    let parts = json!([
+        {"type": "text", "text": "hello"},
+        {"type": "image", "image_url": {"url": "https://example.test/image.png"}}
+    ]);
+    let input = json!({"session_steps": [{
+        "session_id": "s",
+        "step_id": 1,
+        "messages": [{"role": "user", "content": parts.to_string()}],
+        "response": {"role": "assistant", "content": parts.to_string()}
+    }]});
+
+    let stories = parse_openai_msg_corpus_value(&input, "stringified.json").unwrap();
+    assert!(stories[0].turns[0].message.is_array());
+    assert!(stories[0].turns[1].message.is_array());
+    assert_eq!(stories[0].turns[0].message, parts);
+    assert_eq!(stories[0].turns[1].message, parts);
+
+    let recovered = recover_openai_msg_files(&stories).unwrap();
+    assert_eq!(
+        recovered[0].document["session_steps"][0]["messages"][0]["content"],
+        parts
+    );
+    assert_eq!(
+        recovered[0].document["session_steps"][0]["response"]["content"],
+        parts
+    );
+}
+
+#[test]
+fn ordinary_json_text_content_remains_text() {
+    let array_text = json!("[not valid JSON]");
+    let object_text = json!(r#"{"kind":"plain text"}"#);
+    assert_eq!(restore_openai_content(&array_text), array_text);
+    assert_eq!(restore_openai_content(&object_text), object_text);
+}
+
+#[test]
 fn envelope_roundtrip_preserves_root_metadata() {
     let input = json!({
         "session_id": "s-1",
@@ -940,7 +996,24 @@ async fn openai_canonical_export_survives_lance_roundtrip() {
 
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].relative_path, PathBuf::from("corpus.json"));
-    assert_eq!(recovered[0].document, canonical);
+    let mut recovered_document = recovered[0].document.clone();
+    let mut canonical_document = canonical.clone();
+    for document in [&mut recovered_document, &mut canonical_document] {
+        for step in document
+            .get_mut("session_steps")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(timestamp) = step.get_mut("created_at") {
+                let normalized = StorylineTimestamp::from_json(timestamp.clone())
+                    .unwrap()
+                    .canonical_rfc3339();
+                *timestamp = json!(normalized);
+            }
+        }
+    }
+    assert_eq!(recovered_document, canonical_document);
 }
 
 #[cfg(feature = "lance-store")]
@@ -1008,4 +1081,38 @@ async fn openai_null_source_fields_survive_lance_roundtrip() {
             .unwrap();
 
     assert_eq!(recovered[0].document, canonical);
+}
+
+#[cfg(feature = "proptest")]
+mod proptests {
+    use std::path::Path;
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn openai_turn_ids_are_ordered_and_deterministic(
+            context_count in 0i64..1_000_000,
+            step_id in 1i64..1_000_000,
+        ) {
+            let (user_id, agent_id) = openai_turn_ids(context_count, step_id).expect("positive step id fits");
+            prop_assert_eq!(agent_id - user_id, 1);
+            prop_assert_eq!(user_id, context_count + step_id * 2 - 1);
+            prop_assert_eq!(agent_id, context_count + step_id * 2);
+        }
+
+        #[test]
+        fn relative_path_validation_rejects_absolute_and_parent_paths(
+            component in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+        ) {
+            let safe = Path::new(&component);
+            prop_assert!(validate_relative_path(safe).is_ok());
+            prop_assert!(validate_relative_path(Path::new("/absolute/file.json")).is_err());
+            let parent = Path::new("..").join(&component);
+            prop_assert!(validate_relative_path(&parent).is_err());
+        }
+
+    }
 }

@@ -1,5 +1,109 @@
 use super::*;
 
+#[derive(Debug)]
+pub(super) struct CatalogVirtualDocumentTableProvider {
+    sources: Vec<Arc<LazySource>>,
+    format: DocumentFormat,
+    max_concurrent_sources: usize,
+}
+
+impl CatalogVirtualDocumentTableProvider {
+    pub(super) fn new(
+        sources: Vec<Arc<LazySource>>,
+        format: DocumentFormat,
+        max_concurrent_sources: usize,
+    ) -> Self {
+        Self {
+            sources,
+            format,
+            max_concurrent_sources,
+        }
+    }
+}
+
+#[async_trait]
+impl TableProvider for CatalogVirtualDocumentTableProvider {
+    fn schema(&self) -> SchemaRef {
+        crate::store::virtual_document::schema()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        let selected = self
+            .sources
+            .iter()
+            .filter(|source| source.format_hint().is_none_or(|hint| hint == self.format))
+            .cloned()
+            .collect::<Vec<_>>();
+        let format = self.format;
+        let normalized_predicates = filters
+            .iter()
+            .flat_map(|filter| {
+                crate::store::virtual_document::normalized_json_predicates(format, filter)
+            })
+            .collect::<Vec<_>>();
+        let rows = stream::iter(selected)
+            .map(|source| {
+                let normalized_predicates = normalized_predicates.clone();
+                async move {
+                    let resolved = source
+                        .resolve()
+                        .await
+                        .map_err(crate::store::datafusion_bridge::into_datafusion)?;
+                    let candidate_ids = if normalized_predicates.is_empty() {
+                        None
+                    } else {
+                        resolved
+                            .document_ids_for_virtual_filters(format, &normalized_predicates)
+                            .await
+                            .map_err(|error| {
+                                crate::store::datafusion_bridge::into_datafusion(
+                                    error.context("push down virtual JSON filter"),
+                                )
+                            })?
+                    };
+                    resolved
+                        .virtual_document_rows_filtered(format, candidate_ids.as_ref())
+                        .await
+                        .map(|rows| {
+                            rows.into_iter()
+                                .map(|(id, data)| (format!("{}::{id}", source.file()), data))
+                                .collect::<Vec<_>>()
+                        })
+                        .map_err(crate::store::datafusion_bridge::into_datafusion)
+                }
+            })
+            .buffered(self.max_concurrent_sources)
+            .try_collect::<Vec<_>>()
+            .await?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let table = crate::store::virtual_document::provider(&rows)
+            .map_err(crate::store::datafusion_bridge::into_datafusion)?;
+        table.scan(state, projection, filters, limit).await
+    }
+
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> datafusion::common::Result<Vec<TableProviderFilterPushDown>> {
+        Ok(filters
+            .iter()
+            .map(|_| TableProviderFilterPushDown::Inexact)
+            .collect())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CatalogTableKind {
     Runs,
@@ -80,30 +184,22 @@ impl CatalogTableProvider {
         else {
             return Ok(None);
         };
-        let plan = if table.carries_file_column {
-            let source_projection = file_source_projection(projection, self.schema.fields().len());
-            table
-                .provider
-                .scan(state, Some(&source_projection), filters, limit)
-                .await?
+        let physical_schema = table.provider.schema();
+        let source_projection = if table.carries_file_column {
+            file_source_projection(projection, self.schema.as_ref(), physical_schema.as_ref())?
         } else {
-            let physical_projection = physical_projection(
-                projection,
-                self.schema.as_ref(),
-                table.provider.schema().as_ref(),
-            )?;
-            let business_filters = business_filters(filters);
-            let input = table
-                .provider
-                .scan(
-                    state,
-                    physical_projection.as_ref(),
-                    &business_filters,
-                    limit,
-                )
-                .await?;
-            project_catalog_source(input, source.file(), projection, &self.schema)?
+            physical_projection(projection, self.schema.as_ref(), physical_schema.as_ref())?
         };
+        let forwarded_filters = if table.carries_file_column {
+            filters.to_vec()
+        } else {
+            business_filters(filters)
+        };
+        let input = table
+            .provider
+            .scan(state, source_projection.as_ref(), &forwarded_filters, limit)
+            .await?;
+        let plan = project_catalog_source(input, source.file(), projection, &self.schema)?;
         Ok(Some(plan))
     }
 }
@@ -344,14 +440,22 @@ fn null_literal(
     )))
 }
 
-fn file_source_projection(projection: Option<&Vec<usize>>, catalog_width: usize) -> Vec<usize> {
-    let file_column = catalog_width.saturating_sub(1);
-    projection
-        .cloned()
-        .unwrap_or_else(|| (0..catalog_width).collect())
-        .into_iter()
-        .map(|index| if index == 0 { file_column } else { index - 1 })
-        .collect()
+fn file_source_projection(
+    projection: Option<&Vec<usize>>,
+    catalog_schema: &Schema,
+    physical_schema: &Schema,
+) -> datafusion::common::Result<Option<Vec<usize>>> {
+    let Some(projection) = projection else {
+        return Ok(None);
+    };
+    let physical = projection
+        .iter()
+        .filter_map(|index| {
+            let name = catalog_schema.field(*index).name();
+            physical_schema.index_of(name).ok()
+        })
+        .collect::<Vec<_>>();
+    Ok(Some(physical))
 }
 
 fn projected_schema(
@@ -436,15 +540,15 @@ pub(super) async fn create_trajectories_view(
                       WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS step_ids, \
                     (SELECT array_agg(s.source ORDER BY s.step_id) FROM {dataset}.steps s \
                       WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS step_sources, \
-                    (SELECT array_agg(s.message_json ORDER BY s.step_id) FROM {dataset}.steps s \
-                      WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS messages_json, \
+                    (SELECT array_agg(s.message_value ORDER BY s.step_id) FROM {dataset}.steps s \
+                      WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS messages_value, \
                     (SELECT COUNT(*) FROM {dataset}.tool_calls t \
                       WHERE t._file_ = r._file_ AND t.document_id = r.document_id) AS tool_call_count, \
                     (SELECT array_agg(t.function_name ORDER BY t.step_id, t.call_index) FROM {dataset}.tool_calls t \
                       WHERE t._file_ = r._file_ AND t.document_id = r.document_id) AS tool_names, \
-                    (SELECT array_agg(t.arguments_json ORDER BY t.step_id, t.call_index) FROM {dataset}.tool_calls t \
+                    (SELECT array_agg(t.arguments ORDER BY t.step_id, t.call_index) FROM {dataset}.tool_calls t \
                       WHERE t._file_ = r._file_ AND t.document_id = r.document_id) AS tool_arguments_json, \
-                    (SELECT array_agg(t.results_json ORDER BY t.step_id, t.call_index) FROM {dataset}.tool_calls t \
+                    (SELECT array_agg(t.results ORDER BY t.step_id, t.call_index) FROM {dataset}.tool_calls t \
                       WHERE t._file_ = r._file_ AND t.document_id = r.document_id) AS tool_results_json \
              FROM {dataset}.runs r"
         ),
@@ -583,26 +687,26 @@ mod tests {
         let fields = story_runs_arrow_schema()
             .fields()
             .iter()
-            .filter(|field| field.name() != "meta_json")
+            .filter(|field| field.name() != "meta")
             .cloned()
             .collect::<Vec<_>>();
         Arc::new(Schema::new(fields))
     }
 
     #[test]
-    fn storyline_projection_follows_column_names_when_meta_json_is_absent() {
+    fn storyline_projection_follows_column_names_when_meta_is_absent() {
         let catalog = catalog_schema(&story_runs_arrow_schema());
         let physical = runs_schema_without_meta();
         let catalog_index = catalog
-            .index_of("unknown_fields_json")
-            .expect("catalog schema exposes unknown_fields_json");
+            .index_of("unknown_fields")
+            .expect("catalog schema exposes unknown_fields");
         let physical_index = physical
-            .index_of("unknown_fields_json")
-            .expect("older Storyline runs still have unknown_fields_json");
+            .index_of("unknown_fields")
+            .expect("older Storyline runs still have unknown_fields");
         assert_ne!(
             catalog_index.checked_sub(1),
             Some(physical_index),
-            "inserting meta_json must shift later catalog indexes"
+            "inserting meta must shift later catalog indexes"
         );
 
         let mapped =
@@ -616,10 +720,61 @@ mod tests {
         let catalog = catalog_schema(&story_runs_arrow_schema());
         let physical = runs_schema_without_meta();
         let meta = catalog
-            .index_of("meta_json")
-            .expect("current catalog schema exposes meta_json");
+            .index_of("meta")
+            .expect("current catalog schema exposes meta");
         let mapped =
             physical_projection(Some(&vec![meta]), &catalog, physical.as_ref()).expect("missing");
         assert_eq!(mapped, Some(Vec::new()));
+    }
+}
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use super::*;
+    use datafusion::logical_expr::{col, lit};
+    use proptest::prelude::*;
+
+    fn catalog_index_strategy() -> impl Strategy<Value = usize> {
+        let field_count = catalog_schema(&story_runs_arrow_schema()).fields().len();
+        0usize..field_count
+    }
+
+    proptest! {
+        #[test]
+        fn physical_projection_never_forwards_the_virtual_file_column(
+            catalog_index in catalog_index_strategy(),
+        ) {
+            let catalog = catalog_schema(&story_runs_arrow_schema());
+            let physical = story_runs_arrow_schema();
+            let mapped = physical_projection(
+                Some(&vec![catalog_index]),
+                catalog.as_ref(),
+                physical.as_ref(),
+            )
+            .expect("schema projection should be valid")
+            .expect("an explicit projection returns a mapping");
+
+            if catalog_index == 0 {
+                prop_assert!(mapped.is_empty());
+            } else {
+                let name = catalog.field(catalog_index).name();
+                match physical.index_of(name) {
+                    Ok(index) => prop_assert_eq!(mapped, vec![index]),
+                    Err(_) => prop_assert!(mapped.is_empty()),
+                }
+            }
+        }
+
+        #[test]
+        fn negated_file_filters_are_the_complement_of_their_base_expression(
+            candidate in proptest::string::string_regex("[A-Za-z0-9_./-]{0,48}").unwrap(),
+            expected in proptest::string::string_regex("[A-Za-z0-9_./-]{0,48}").unwrap(),
+        ) {
+            let expression = col(SOURCE_FILE_COLUMN).eq(lit(expected.clone()));
+            let base = evaluate_file_filter(&expression, &candidate);
+            let negated = Expr::Not(Box::new(expression));
+            prop_assert_eq!(base, Some(candidate == expected));
+            prop_assert_eq!(evaluate_file_filter(&negated, &candidate), base.map(|value| !value));
+        }
     }
 }

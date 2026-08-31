@@ -12,7 +12,7 @@ pChronicle Design，命令属于各产品 Reference。
 | `persisting-events` 契约 | 存储无关的 `EventRecord` identity/envelope 与可选的版本化 pChronicle control 协议 | 物理 row、存储引擎、查询或 projection |
 | pVisor | 一个 Run、Attempt、执行环境、capability admission、Effect 与运行时 Evidence | 多 Run 调度或持久历史查询 |
 | pPilot | 多 Run planning、有界执行、lease、重试与恢复、reconciliation、结果收集及 task-to-Run mapping | Agent reasoning、Provider enforcement 或轨迹格式与存储 |
-| pChronicle | Dataset 与 Source discovery、canonical event 与终态事实、规范化 projection、revision lineage、查询与交换 | 启动、调度或控制 Run |
+| pChronicle | Agent 轨迹存储引擎：path 身份、Snapshot、canonical event、projection、查询与交换 | 启动、调度或控制 Run |
 | Runtime Provider | 一种物理执行机制 | 逻辑 Run identity 或产品策略 |
 
 Gateway、OverlayFS 和 OverlayNet 是 pVisor 运行时机制，不构成独立控制面。pPilot 扩展
@@ -25,7 +25,7 @@ Configured runtime capture
   Gateway trajectory events ─┐
   pVisor lifecycle records ──┴─> canonical event Source ──────────────┐
 Pinned external Sources                                                │
-  local/S3 ATIF, ACTF, OpenAI Messages files ──────────────────────────┼─> Catalog Snapshot
+  local/S3 ATIF, ACTF, OpenAI Messages files ──────────────────────────┼─> Snapshot
   local/S3 Storyline Sources ──────────────────────────────────────────┘
                                                                          └─> normalized Dataset views
 ```
@@ -106,24 +106,25 @@ job_id → task_id → run_id → attempt_id / lease_epoch → terminal result
 保存所选 coordination record。启用 `traj-sink` 构建并传入 `--traj` 时，pPilot 只额外发出
 终态 `ppilot.result` 或 `ppilot.failure` record；它不会捕获通用 Run 轨迹。Delegated pVisor
 Run 不会获得 Chronicle capture 配置。在所有模式中，编排决策与 task-to-Run mapping 仍归
-pPilot 所有。
+pPilot 所有。命令与 resume 行为见 [pPilot CLI](../ppilot/reference/cli.md) 与
+[编排设计](../ppilot/design/orchestration.md)。
 
 ## Dataset 路径
 
 Canonical runtime writer 与固定版本的外部 Source 是相互独立的 Source 路径；它们只在
-Catalog Snapshot 与规范化 Dataset 视图处汇合：
+Snapshot 与规范化 Dataset 视图处汇合：
 
 ```text
 configured Gateway and pVisor lifecycle writers
   → canonical event Source ────────────────────────────────┐
 pinned local/S3 external Sources                           │
-  → ATIF / ACTF / OpenAI Messages files ───────────────────┼─> Catalog Snapshot
+  → ATIF / ACTF / OpenAI Messages files ───────────────────┼─> Snapshot
   → Storyline Sources ─────────────────────────────────────┘     ├─> normalized Run / Step / ToolCall views
                                                                  └─> query / export / revision lineage
 ```
 
 Canonical fact 采用 append-oriented 模型。Storyline 等规范化视图是可重建 projection；交换
-文件是互操作边界，不替代事实源。每次读取固定一个 Catalog Snapshot，但不会虚构跨无关
+文件是互操作边界，不替代事实源。每次读取固定一个 Snapshot，但不会虚构跨无关
 Source 的全局事务。固定外部文件不会把它转换为 canonical runtime event Source。
 
 ## Source 特定保证
@@ -135,12 +136,13 @@ Source 的全局事务。固定外部文件不会把它转换为 canonical runti
 | pVisor Run | Run/Attempt identity、已记录终态事实、已安装机制、观察到的 Effect 与 Provider 特定 Evidence | 所选 Provider 未提供的 enforcement |
 | pPilot job | 所选模式支持的持久 task/Run mapping、重试与 lease 历史，以及终态结果行为 | 物理 exactly-once execution |
 
-Ingestion 保留这些边界。规范化表示或 Catalog Snapshot 不会升级 Source 提供的 Evidence。
+Ingestion 保留这些边界。规范化表示或 Snapshot 不会升级 Source 提供的 Evidence。
 
-pVisor 默认构建不链接 Lance/DataFusion。Chronicle mode 为 `spawn` 时，pVisor 启动
-`pchronicle serve --control 127.0.0.1:0 DATASET`，通过带认证的 loopback IPC
-提交生命周期与 Gateway 事件，并且只把 sidecar 成功响应视为 durable acknowledgement。
-旧模式名 `lance` 是 `spawn` 的兼容别名；pVisor 不再自行写 Lance。
+pVisor 默认构建不链接 Lance/DataFusion。配置后的 Chronicle 发布会通过带认证的
+loopback IPC 启动 pChronicle sidecar，并且只把 sidecar 成功响应视为 durable
+acknowledgement。旧模式名 `lance` 是 `spawn` 的兼容别名；pVisor 不再自行写 Lance。
+Sidecar 标志与模式名见 [pVisor CLI](../pvisor/reference/cli.md) 与
+[RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md)。
 
 ## 故障与恢复
 
@@ -192,9 +194,9 @@ Evidence 层级见[安全与 Evidence](security-evidence.md)，可迁移要求�
 | 逻辑运行事件与本地 Chronicle control 协议 | `persisting-events` | [RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md) |
 | Agent 执行与 Effect review | pVisor | [pVisor 概念](../pvisor/concepts/index.md)与[指南](../pvisor/guides/index.md) |
 | Provider 与运行时机制 | pVisor | [pVisor Design](../pvisor/design/index.md) |
-| 多 Run 编排 | pVisor 中的 pPilot | [pPilot Design](../pvisor/design/orchestration.md) |
+| 多 Run 编排 | pVisor 中的 pPilot | [pPilot Design](../ppilot/design/orchestration.md) |
 | Dataset、事实与 Projection | pChronicle | [pChronicle 概念](../pchronicle/concepts/index.md) |
-| 存储与 Catalog 实现 | pChronicle | [pChronicle Design](../pchronicle/design/index.md) |
+| 存储与 Snapshot 实现 | pChronicle | [pChronicle Design](../pchronicle/design/index.md) |
 | 稳定命令语法与格式 | 各产品 | [pVisor Reference](../pvisor/reference/index.md)与 [pChronicle Reference](../pchronicle/reference/index.md) |
 | 规范性 ownership 决策 | Project RFC | [RFC 索引](../rfcs/index.md) |
 

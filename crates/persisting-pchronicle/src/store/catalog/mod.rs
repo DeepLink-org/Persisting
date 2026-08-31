@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use datafusion::arrow::array::{StringArray, UInt64Array};
+use datafusion::arrow::array::{Array, StringArray, UInt64Array};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::Session;
@@ -583,6 +583,31 @@ impl DatasetCatalogSnapshot {
         Ok(self.lazy_source(key)?.canonical_event_uri())
     }
 
+    /// Return the normalized Storyline table paths for a physical Storyline
+    /// source. File and canonical-event sources return `None` and retain their
+    /// existing in-memory search behavior in callers.
+    pub fn storyline_table_paths(
+        &self,
+        dataset: &str,
+        file: &str,
+    ) -> Result<Option<StorylineTablePaths>> {
+        let dataset_name = identity::normalize_sql_alias(dataset)?;
+        let prepared = self
+            .prepared
+            .iter()
+            .find(|candidate| candidate.name == dataset_name)
+            .with_context(|| format!("physical source not found: {dataset}/{file}"))?;
+        let source = prepared
+            .sources
+            .iter()
+            .find(|source| source.file() == file)
+            .with_context(|| format!("physical source not found: {dataset}/{file}"))?;
+        Ok(match &source.spec {
+            LazySourceSpec::Storyline { paths } => Some(paths.clone()),
+            _ => None,
+        })
+    }
+
     pub(crate) fn physical_open_target(
         &self,
         dataset: &str,
@@ -664,6 +689,24 @@ impl DatasetCatalogSnapshot {
                     context,
                     &dataset.mount.name,
                     kind.table_name(),
+                    provider,
+                    is_default,
+                )?;
+            }
+            for format in super::virtual_document::formats() {
+                let Some(table_name) = super::virtual_document::table_name(format) else {
+                    continue;
+                };
+                let provider: Arc<dyn TableProvider> =
+                    Arc::new(CatalogVirtualDocumentTableProvider::new(
+                        prepared.sources.clone(),
+                        format,
+                        prepared.max_concurrent_sources,
+                    ));
+                register_catalog_provider(
+                    context,
+                    &dataset.mount.name,
+                    table_name,
                     provider,
                     is_default,
                 )?;

@@ -6,6 +6,9 @@ use crate::model::{
     PhysicalBucket, PhysicalColumn, PhysicalFileLayout, PhysicalFragment, PhysicalLayout,
     PhysicalPagePreview, PhysicalSource, PhysicalTable,
 };
+use crate::notice::{ErrorNotice, WorkspaceNotice, workspace_notice};
+
+const PHYSICAL_PREVIEW_LIMIT: usize = 32;
 
 #[component]
 pub fn PhysicalWorkspace() -> Element {
@@ -13,7 +16,7 @@ pub fn PhysicalWorkspace() -> Element {
     let mut layout = use_signal(|| None::<PhysicalLayout>);
     let mut file_layout = use_signal(|| None::<PhysicalFileLayout>);
     let mut preview = use_signal(|| None::<PhysicalPagePreview>);
-    let mut error = use_signal(|| None::<String>);
+    let mut error = use_signal(|| None::<WorkspaceNotice>);
     let mut loading_sources = use_signal(|| true);
     let mut loading_layout = use_signal(|| false);
     let mut loading_file = use_signal(|| false);
@@ -32,21 +35,26 @@ pub fn PhysicalWorkspace() -> Element {
             .and_then(|value| value.parse().ok())
             .unwrap_or(0u32)
     });
+    let mut preview_offset = use_signal(|| {
+        url_param("preview_offset")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0usize)
+    });
 
     use_effect(move || {
         spawn(async move {
             match api::physical_sources().await {
                 Ok(value) => {
-                    if dataset().is_empty() {
-                        if let Some(source) = value.first() {
-                            dataset.set(source.dataset.clone());
-                            file.set(source.file.clone());
-                        }
+                    if dataset().is_empty()
+                        && let Some(source) = value.first()
+                    {
+                        dataset.set(source.dataset.clone());
+                        file.set(source.file.clone());
                     }
                     sources.set(value);
                     error.set(None);
                 }
-                Err(message) => error.set(Some(message)),
+                Err(failure) => error.set(Some(workspace_notice(&failure))),
             }
             loading_sources.set(false);
         });
@@ -63,21 +71,20 @@ pub fn PhysicalWorkspace() -> Element {
         spawn(async move {
             match api::physical_layout(&dataset, &file).await {
                 Ok(value) => {
-                    if table().is_empty() {
-                        if let Some((next_table, next_fragment, next_file)) =
+                    if table().is_empty()
+                        && let Some((next_table, next_fragment, next_file)) =
                             first_data_file(&value.tables)
-                        {
-                            table.set(next_table);
-                            fragment.set(Some(next_fragment));
-                            data_file.set(next_file);
-                        }
+                    {
+                        table.set(next_table);
+                        fragment.set(Some(next_fragment));
+                        data_file.set(next_file);
                     }
                     layout.set(Some(value));
                     error.set(None);
                 }
-                Err(message) => {
+                Err(failure) => {
                     layout.set(None);
-                    error.set(Some(message));
+                    error.set(Some(workspace_notice(&failure)));
                 }
             }
             loading_layout.set(false);
@@ -101,18 +108,19 @@ pub fn PhysicalWorkspace() -> Element {
         spawn(async move {
             match api::physical_file(&dataset, &file, &table, fragment_id, &data_file).await {
                 Ok(value) => {
-                    if column().is_empty() {
-                        if let Some(next) = value.columns.first() {
-                            column.set(next.name.clone());
-                            data_page.set(next.pages.first().map(|page| page.index).unwrap_or(0));
-                        }
+                    if column().is_empty()
+                        && let Some(next) = value.columns.first()
+                    {
+                        column.set(next.name.clone());
+                        data_page.set(next.pages.first().map(|page| page.index).unwrap_or(0));
+                        preview_offset.set(0);
                     }
                     file_layout.set(Some(value));
                     error.set(None);
                 }
-                Err(message) => {
+                Err(failure) => {
                     file_layout.set(None);
-                    error.set(Some(message));
+                    error.set(Some(workspace_notice(&failure)));
                 }
             }
             loading_file.set(false);
@@ -129,6 +137,7 @@ pub fn PhysicalWorkspace() -> Element {
         };
         let data_file = data_file();
         let column = column();
+        let preview_offset = preview_offset();
         if !drawer_open()
             || dataset.is_empty()
             || file.is_empty()
@@ -148,8 +157,8 @@ pub fn PhysicalWorkspace() -> Element {
                 fragment_id,
                 &data_file,
                 Some(&column),
-                0,
-                32,
+                preview_offset,
+                PHYSICAL_PREVIEW_LIMIT,
             )
             .await
             {
@@ -157,9 +166,9 @@ pub fn PhysicalWorkspace() -> Element {
                     preview.set(Some(value));
                     error.set(None);
                 }
-                Err(message) => {
+                Err(failure) => {
                     preview.set(None);
-                    error.set(Some(message));
+                    error.set(Some(workspace_notice(&failure)));
                 }
             }
             loading_preview.set(false);
@@ -175,6 +184,7 @@ pub fn PhysicalWorkspace() -> Element {
             &data_file(),
             &column(),
             data_page(),
+            preview_offset(),
         );
     });
 
@@ -235,6 +245,7 @@ pub fn PhysicalWorkspace() -> Element {
                                             data_file.set(String::new());
                                             column.set(String::new());
                                             data_page.set(0);
+                                            preview_offset.set(0);
                                             file_layout.set(None);
                                             preview.set(None);
                                             drawer_open.set(false);
@@ -264,6 +275,7 @@ pub fn PhysicalWorkspace() -> Element {
                                         data_file.set(next_file);
                                         column.set(String::new());
                                         data_page.set(0);
+                                        preview_offset.set(0);
                                         preview.set(None);
                                         drawer_open.set(false);
                                         review_max.set(false);
@@ -304,8 +316,11 @@ pub fn PhysicalWorkspace() -> Element {
                         }
                     }
                 }
-                if let Some(message) = error() {
-                    div { class: "physical-error", "{message}" }
+                if let Some(notice) = error() {
+                    ErrorNotice {
+                        notice,
+                        on_dismiss: Some(EventHandler::new(move |_| error.set(None))),
+                    }
                 }
                 if let Some(current_table) = selected_table_layout.clone() {
                     PhysicalFragmentStrip {
@@ -317,6 +332,7 @@ pub fn PhysicalWorkspace() -> Element {
                             data_file.set(next_file);
                             column.set(String::new());
                             data_page.set(0);
+                            preview_offset.set(0);
                             preview.set(None);
                             drawer_open.set(false);
                             review_max.set(false);
@@ -338,12 +354,14 @@ pub fn PhysicalWorkspace() -> Element {
                                 on_open: move |(name, page): (String, u32)| {
                                     column.set(name);
                                     data_page.set(page);
+                                    preview_offset.set(0);
                                     review_max.set(false);
                                     drawer_open.set(true);
                                 },
                                 on_review: move |(name, page): (String, u32)| {
                                     column.set(name);
                                     data_page.set(page);
+                                    preview_offset.set(0);
                                     review_max.set(true);
                                     drawer_open.set(true);
                                 },
@@ -372,6 +390,7 @@ pub fn PhysicalWorkspace() -> Element {
                         preview: preview(),
                         loading: loading_preview(),
                         review_max: review_max(),
+                        on_page: move |offset: usize| preview_offset.set(offset),
                         on_close: move |_| {
                             drawer_open.set(false);
                             review_max.set(false);
@@ -488,8 +507,28 @@ fn PhysicalSampleDrawer(
     preview: Option<PhysicalPagePreview>,
     loading: bool,
     review_max: bool,
+    on_page: EventHandler<usize>,
     on_close: EventHandler<()>,
 ) -> Element {
+    let page_offset = preview.as_ref().map(|page| page.offset).unwrap_or(0);
+    let page_limit = preview
+        .as_ref()
+        .map(|page| page.limit.max(1))
+        .unwrap_or(PHYSICAL_PREVIEW_LIMIT);
+    let total_rows = stats
+        .as_ref()
+        .and_then(|column| usize::try_from(column.row_count).ok());
+    let page_number = page_offset / page_limit + 1;
+    let page_count = total_rows.map(|total| total.div_ceil(page_limit).max(1));
+    let can_previous = page_offset >= page_limit && !loading;
+    let can_next = !loading
+        && preview.as_ref().is_some_and(|page| {
+            page.rows.len() >= page.limit.max(1)
+                && total_rows
+                    .map(|total| page_offset.saturating_add(page.rows.len()) < total)
+                    .unwrap_or(true)
+        });
+
     rsx! {
         button { class: "physical-drawer-mask", onclick: move |_| on_close.call(()) }
         aside { class: "physical-drawer", "aria-label": "Column sample",
@@ -518,6 +557,27 @@ fn PhysicalSampleDrawer(
                         span {
                             "offset {current.offset} · {current.rows.len()} rows"
                             if current.truncated { " · truncated" }
+                        }
+                    }
+                    div { class: "physical-preview-controls",
+                        button {
+                            class: "physical-page-nav",
+                            disabled: !can_previous,
+                            onclick: move |_| on_page.call(page_offset.saturating_sub(page_limit)),
+                            "Previous"
+                        }
+                        span { class: "physical-page-status",
+                            if let Some(page_count) = page_count {
+                                "page {page_number} / {page_count}"
+                            } else {
+                                "page {page_number}"
+                            }
+                        }
+                        button {
+                            class: "physical-page-nav",
+                            disabled: !can_next,
+                            onclick: move |_| on_page.call(page_offset.saturating_add(page_limit)),
+                            "Next"
                         }
                     }
                 }
@@ -778,6 +838,22 @@ pub fn physical_workspace_url(
     column: &str,
     data_page: u32,
 ) -> String {
+    physical_workspace_url_with_preview_offset(
+        dataset, file, table, fragment, data_file, column, data_page, 0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn physical_workspace_url_with_preview_offset(
+    dataset: &str,
+    file: &str,
+    table: &str,
+    fragment: Option<u64>,
+    data_file: &str,
+    column: &str,
+    data_page: u32,
+    preview_offset: usize,
+) -> String {
     let mut params = vec!["page=physical".to_string()];
     if !dataset.is_empty() {
         params.push(format!("dataset={}", urlencoding::encode(dataset)));
@@ -800,9 +876,13 @@ pub fn physical_workspace_url(
     if data_page > 0 {
         params.push(format!("data_page={data_page}"));
     }
+    if preview_offset > 0 {
+        params.push(format!("preview_offset={preview_offset}"));
+    }
     format!("/?{}", params.join("&"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sync_physical_url(
     dataset: &str,
     file: &str,
@@ -811,11 +891,25 @@ fn sync_physical_url(
     data_file: &str,
     column: &str,
     data_page: u32,
+    preview_offset: usize,
 ) {
     let Some(window) = web_sys::window() else {
         return;
     };
-    let url = physical_workspace_url(dataset, file, table, fragment, data_file, column, data_page);
+    let url = if preview_offset == 0 {
+        physical_workspace_url(dataset, file, table, fragment, data_file, column, data_page)
+    } else {
+        physical_workspace_url_with_preview_offset(
+            dataset,
+            file,
+            table,
+            fragment,
+            data_file,
+            column,
+            data_page,
+            preview_offset,
+        )
+    };
     let _ = window
         .history()
         .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&url)));
@@ -835,9 +929,22 @@ mod tests {
                 Some(1),
                 "data/a.lance",
                 "session_id",
-                0
+                0,
             ),
             "/?page=physical&dataset=dataset&file=story&table=runs&fragment=1&data_file=data%2Fa.lance&column=session_id"
+        );
+        assert_eq!(
+            physical_workspace_url_with_preview_offset(
+                "dataset",
+                "story",
+                "runs",
+                Some(1),
+                "data/a.lance",
+                "session_id",
+                2,
+                64,
+            ),
+            "/?page=physical&dataset=dataset&file=story&table=runs&fragment=1&data_file=data%2Fa.lance&column=session_id&data_page=2&preview_offset=64"
         );
     }
 

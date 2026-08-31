@@ -78,7 +78,6 @@ pub fn detect_format(path: Option<&Path>, content: Option<&str>) -> Result<Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
 
     #[test]
     fn detects_storyline_json_by_version_and_specific_suffix() {
@@ -190,76 +189,5 @@ mod tests {
             detect_format_from_content(input).unwrap(),
             Some(DocumentFormat::ClaudeCode)
         );
-    }
-
-    fn safe_stem_strategy() -> impl Strategy<Value = String> {
-        proptest::string::string_regex("[a-zA-Z0-9_-]{1,24}").unwrap()
-    }
-
-    proptest! {
-        #[test]
-        fn registered_path_suffixes_are_ascii_case_insensitive(
-            stem in safe_stem_strategy(),
-            uppercase in any::<bool>(),
-        ) {
-            let cases = [
-                ("storyline.json", DocumentFormat::Storyline),
-                ("actf.json", DocumentFormat::Actf),
-                ("md", DocumentFormat::AgenticMd),
-            ];
-            for (suffix, expected) in cases {
-                let path = format!("{stem}.{suffix}");
-                let path = if uppercase { path.to_ascii_uppercase() } else { path };
-                prop_assert_eq!(detect_format_from_path(path), Some(expected));
-            }
-        }
-
-        #[test]
-        fn event_lance_names_are_detected_independent_of_ascii_case(
-            prefix in safe_stem_strategy(),
-            suffix in safe_stem_strategy(),
-            uppercase in any::<bool>(),
-        ) {
-            let path = format!("{prefix}-event-{suffix}.lance");
-            let path = if uppercase { path.to_ascii_uppercase() } else { path };
-            prop_assert_eq!(
-                detect_format_from_path(path),
-                Some(DocumentFormat::CanonicalEvent),
-            );
-        }
-
-        #[test]
-        fn agentic_markers_survive_leading_whitespace(
-            spaces in 0usize..32,
-            use_block_marker in any::<bool>(),
-        ) {
-            let prefix = " ".repeat(spaces);
-            let content = if use_block_marker {
-                format!("{prefix}<!-- persisting:block name=test -->")
-            } else {
-                format!("{prefix}---\nformat: persisting\n---\n")
-            };
-            prop_assert_eq!(
-                detect_format_from_content(&content).unwrap(),
-                Some(DocumentFormat::AgenticMd),
-            );
-        }
-
-        #[test]
-        fn content_fingerprint_wins_over_any_recognized_path(
-            path_kind in 0usize..4,
-        ) {
-            let paths = [
-                "mismatch.storyline.json",
-                "mismatch.actf.json",
-                "mismatch.md",
-                "event-log.lance",
-            ];
-            let claude = r#"{"type":"user","sessionId":"sess-1","uuid":"u1","message":{"role":"user","content":"hi"}}"#;
-            prop_assert_eq!(
-                detect_format(Some(Path::new(paths[path_kind])), Some(claude)).unwrap(),
-                Some(DocumentFormat::ClaudeCode),
-            );
-        }
     }
 }

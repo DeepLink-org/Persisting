@@ -147,6 +147,25 @@ impl Drop for MaintenanceAfterPublishPause {
     }
 }
 
+struct SuppressInvertedIndexes {
+    root_uri: String,
+}
+
+impl SuppressInvertedIndexes {
+    fn install(root_uri: &str) -> Self {
+        install_inverted_index_suppression(root_uri);
+        Self {
+            root_uri: root_uri.to_string(),
+        }
+    }
+}
+
+impl Drop for SuppressInvertedIndexes {
+    fn drop(&mut self) {
+        remove_inverted_index_suppression(&self.root_uri);
+    }
+}
+
 fn story(session_id: &str) -> StorylineDocument {
     StorylineDocument {
         schema_version: crate::model::STORYLINE_SCHEMA_VERSION.into(),
@@ -890,6 +909,95 @@ async fn empty_storyline_still_creates_queryable_tables() {
 }
 
 #[tokio::test]
+async fn native_json_columns_support_lance_datafusion_udfs() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open_with_content_options(
+        dir.path(),
+        StorylineContentOptions {
+            offload_threshold: 64,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut document = story("json-query");
+    document.extra = Some(serde_json::json!({
+        "answer": "yes",
+        "large_blob": "x".repeat(1024),
+    }));
+    document.final_metrics = Some(serde_json::json!({"score": 7}));
+    document.turns[1].metrics = Some(serde_json::json!({"tokens": 42}));
+    document.turns[1].tool_calls.as_mut().unwrap()[0].response =
+        Some(crate::formats::storyline::StorylineToolResponse {
+            status: Some("ok".into()),
+            exit_code: None,
+        });
+    store.replace_storyline(&document).await.unwrap();
+
+    let paths = store.current_table_paths().await.unwrap().unwrap();
+    let raw = read_projected_batches(&paths.runs, paths.runs_version, &["extra"], None)
+        .await
+        .unwrap();
+    let raw_extra = raw[0]
+        .column_by_name("extra")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<lance::deps::arrow_array::StringArray>()
+        .unwrap()
+        .value(0)
+        .to_string();
+    let raw_extra: serde_json::Value = serde_json::from_str(&raw_extra).unwrap();
+    assert!(
+        raw_extra["large_blob"]
+            .as_str()
+            .is_some_and(|value| value.starts_with(CONTENT_REF_MAGIC))
+    );
+    assert_eq!(
+        store.get_storyline_full("json-query").await.unwrap(),
+        Some(document)
+    );
+
+    let source = super::datafusion::StorylineDataSource::open(dir.path())
+        .await
+        .unwrap();
+    let context = source.session_context().unwrap();
+    let batches = context
+        .sql("SELECT json_get_string(extra, 'answer') AS answer, json_get_int(final_metrics, 'score') AS score FROM runs")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let answer = batches[0]
+        .column_by_name("answer")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<lance::deps::arrow_array::StringArray>()
+        .unwrap();
+    assert_eq!(answer.value(0), "yes");
+    let score = batches[0]
+        .column_by_name("score")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<lance::deps::arrow_array::Int64Array>()
+        .unwrap();
+    assert_eq!(score.value(0), 7);
+
+    let runs_indices = lance::Dataset::open(paths.runs.to_string_lossy().as_ref())
+        .await
+        .unwrap()
+        .load_indices()
+        .await
+        .unwrap();
+    let runs_index_names = runs_indices
+        .iter()
+        .map(|index| index.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(runs_index_names.contains(&"pchronicle_json_extra_idx"));
+    assert!(runs_index_names.contains(&"pchronicle_json_final_metrics_idx"));
+}
+
+#[tokio::test]
 async fn replacement_is_session_scoped_and_switches_generation() {
     let dir = tempfile::tempdir().unwrap();
     let store = StorylineLanceStore::open(dir.path()).await.unwrap();
@@ -1347,7 +1455,31 @@ async fn atif_stream_preserves_nested_documents_with_shared_session() {
         .into_iter()
         .collect::<Option<Vec<_>>>()
         .unwrap();
-    let rebuilt = crate::convert::storylines_to_atif(&stories).unwrap();
+    let mut rebuilt = crate::convert::storylines_to_atif(&stories).unwrap();
+    let canonical_timestamp = canonical[0].subagent_trajectories.as_ref().unwrap()[0].steps[0]
+        .timestamp
+        .as_ref()
+        .map(|value| crate::formats::timestamp::StorylineTimestamp::from_rfc3339(value))
+        .transpose()
+        .unwrap();
+    let rebuilt_timestamp = rebuilt[0].subagent_trajectories.as_ref().unwrap()[0].steps[0]
+        .timestamp
+        .as_ref()
+        .map(|value| crate::formats::timestamp::StorylineTimestamp::from_rfc3339(value))
+        .transpose()
+        .unwrap();
+    assert_eq!(
+        rebuilt_timestamp
+            .as_ref()
+            .map(|value| value.timestamp_nanos()),
+        canonical_timestamp
+            .as_ref()
+            .map(|value| value.timestamp_nanos())
+    );
+    rebuilt[0].subagent_trajectories.as_mut().unwrap()[0].steps[0].timestamp =
+        canonical[0].subagent_trajectories.as_ref().unwrap()[0].steps[0]
+            .timestamp
+            .clone();
     assert_eq!(rebuilt, canonical);
 }
 
@@ -1400,6 +1532,7 @@ async fn invalid_storyline_does_not_move_current_generation() {
 async fn replace_defers_compaction_until_explicit_maintenance() {
     let dir = tempfile::tempdir().unwrap();
     let store = StorylineLanceStore::open(dir.path()).await.unwrap();
+    let _suppress = SuppressInvertedIndexes::install(store.root_uri());
     let expected = story("a");
     store
         .replace_storylines(&[expected.clone(), story("b")])
@@ -1423,6 +1556,8 @@ async fn replace_defers_compaction_until_explicit_maintenance() {
     );
     let report = store
         .maintain(&LanceMaintenanceOptions {
+            compact: true,
+            optimize_indices: false,
             vacuum_older_than: None,
             ..Default::default()
         })
@@ -1493,8 +1628,8 @@ async fn open_rejects_missing_or_unsupported_snapshot_schema_version() {
     for (schema_version, expected) in [
         (None, "schema_version"),
         (
-            Some(1),
-            "unsupported Storyline Lance schema_version 1; expected 2",
+            Some(2),
+            "unsupported Storyline Lance schema_version 2; expected 1",
         ),
     ] {
         let root = tempfile::tempdir().unwrap();
@@ -2160,4 +2295,97 @@ fn joins_object_store_locations_without_losing_uri_scheme() {
         "s3://bucket/轨迹/generations/gen-1"
     );
     assert!(normalize_root_uri("  ").is_err());
+}
+
+#[test]
+fn storyline_fts_indexes_default_to_case_insensitive_matching() {
+    let params = storyline_inverted_index_params(None);
+    let encoded = serde_json::to_value(params).expect("FTS parameters should serialize");
+    assert_eq!(encoded["lower_case"], true);
+}
+
+#[cfg(feature = "proptest")]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn positive_content_limits_are_accepted(
+            document_rows in 1usize..10_000,
+            document_bytes in 1usize..10_000_000,
+            chunk_rows in 1usize..10_000,
+            chunk_bytes in 1usize..10_000_000,
+            import_documents in 1usize..10_000,
+        ) {
+            let options = StorylineContentOptions {
+                max_document_rows: Some(document_rows),
+                max_document_bytes: Some(document_bytes),
+                max_chunk_rows: Some(chunk_rows),
+                max_chunk_bytes: Some(chunk_bytes),
+                max_import_documents: Some(import_documents),
+                ..Default::default()
+            };
+            prop_assert!(options.validate().is_ok());
+        }
+
+        #[test]
+        fn any_zero_content_limit_is_rejected(field in 0usize..5) {
+            let mut options = StorylineContentOptions::default();
+            match field {
+                0 => options.max_document_rows = Some(0),
+                1 => options.max_document_bytes = Some(0),
+                2 => options.max_chunk_rows = Some(0),
+                3 => options.max_chunk_bytes = Some(0),
+                _ => options.max_import_documents = Some(0),
+            }
+            prop_assert!(options.validate().is_err());
+        }
+
+        #[test]
+        fn generation_timestamps_roundtrip_without_precision_loss(
+            nanos in 0u128..1_000_000_000_000_000_000u128,
+            epoch in 0u32..1_000_000,
+            ordinal in 0u64..1_000_000,
+        ) {
+            let generation = format!("gen-{nanos}-{epoch}-{ordinal}");
+            prop_assert_eq!(parse_generation_timestamp(&generation), Some(nanos));
+        }
+
+        #[test]
+        fn joining_normalized_generation_parts_is_stable(
+            root in proptest::string::string_regex("shared-memory://bucket/[A-Za-z0-9._-]{1,16}").unwrap(),
+            parts in proptest::collection::vec(
+                proptest::string::string_regex("[A-Za-z0-9._-]{1,16}").unwrap(),
+                1..5,
+            ),
+            leading in any::<bool>(),
+            trailing in any::<bool>(),
+        ) {
+            let raw_parts = parts
+                .iter()
+                .map(|part| format!("{}{}{}", if leading { "/" } else { "" }, part, if trailing { "/" } else { "" }))
+                .collect::<Vec<_>>();
+            let joined = join_location(&root, &raw_parts.iter().map(String::as_str).collect::<Vec<_>>());
+            prop_assert_eq!(joined, format!("{root}/{}", parts.join("/")));
+        }
+
+        #[test]
+        fn generation_name_validation_accepts_only_safe_gen_prefixed_names(
+            suffix in proptest::string::string_regex("[A-Za-z0-9._-]{1,24}").unwrap(),
+            invalid in prop::sample::select(vec![
+                String::new(),
+                ".".into(),
+                "..".into(),
+                "generation".into(),
+                "gen/escape".into(),
+                "gen\\\\escape".into(),
+            ]),
+        ) {
+            let valid = format!("gen-{}", suffix);
+            prop_assert!(validate_generation_name(&valid).is_ok());
+            prop_assert!(validate_generation_name(&invalid).is_err());
+        }
+    }
 }

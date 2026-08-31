@@ -88,30 +88,6 @@ fn body_text(value: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// Export one OTel span per correlated call. Wire-only fields remain in a
-/// pChronicle attribute so standard backends can coexist with lossless storage.
-pub fn events_to_otlp_json(records: &[EventRecord]) -> Value {
-    let spans = records
-        .iter()
-        .map(|record| {
-            json!({
-                "traceId": record.trace_id,
-                "spanId": record.call_id,
-                "name": record.kind,
-                "startTimeUnixNano": "0",
-                "endTimeUnixNano": "0",
-                "attributes": [
-                    {"key":"pchronicle.session_id","value":{"stringValue":record.session_id}},
-                    {"key":"pchronicle.event_id","value":{"stringValue":record.identity.event_id}},
-                    {"key":"pchronicle.seq","value":{"intValue":record.seq.to_string()}},
-                    {"key":"pchronicle.payload","value":{"stringValue":record.payload.to_string()}}
-                ]
-            })
-        })
-        .collect::<Vec<_>>();
-    json!({"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"pchronicle"}}]},"scopeSpans":[{"scope":{"name":"persisting-pchronicle"},"spans":spans}]}]})
-}
-
 /// Import OTLP JSON spans as explicitly degraded, non-replayable events.
 pub fn otlp_json_to_events(document: &Value) -> Vec<EventRecord> {
     let mut records = Vec::new();
@@ -322,7 +298,6 @@ fn otlp_attributes(value: Option<&Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
 
     #[test]
     fn otlp_import_is_explicitly_degraded() {
@@ -360,108 +335,30 @@ mod tests {
         assert_eq!(events[0].payload["langfuse"]["user_id"], "user");
     }
 
-    fn token_strategy() -> impl Strategy<Value = String> {
-        proptest::string::string_regex("[a-zA-Z0-9._-]{1,32}").unwrap()
-    }
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+        use serde_json::Value;
 
-    fn event_strategy() -> impl Strategy<Value = EventRecord> {
-        (
-            any::<u64>(),
-            token_strategy(),
-            token_strategy(),
-            prop::option::of(token_strategy()),
-            prop::option::of(token_strategy()),
-            prop::option::of(token_strategy()),
-        )
-            .prop_map(
-                |(seq, source, kind, session_id, trace_id, call_id)| EventRecord {
-                    identity: EventIdentity::default(),
-                    seq,
-                    source,
-                    kind,
-                    timestamp: None,
-                    session_id,
-                    agent_id: None,
-                    parent_uuid: None,
-                    trace_id,
-                    call_id,
-                    subagent_id: None,
-                    parent_agent_id: None,
-                    branch: None,
-                    parent_call_id: None,
-                    payload: json!({"value": seq}),
-                },
-            )
-    }
+        use super::*;
 
-    proptest! {
-        #[test]
-        fn otlp_export_import_preserves_correlating_ids(
-            records in proptest::collection::vec(event_strategy(), 0..24),
-        ) {
-            let exported = events_to_otlp_json(&records);
-            let imported = otlp_json_to_events(&exported);
-            prop_assert_eq!(imported.len(), records.len());
-            for (index, (original, restored)) in records.iter().zip(imported.iter()).enumerate() {
-                prop_assert_eq!(restored.seq, index as u64);
-                prop_assert_eq!(&restored.trace_id, &original.trace_id);
-                prop_assert_eq!(&restored.call_id, &original.call_id);
-                prop_assert_eq!(&restored.session_id, &original.session_id);
-                prop_assert_eq!(&restored.kind, "otel.span");
-                prop_assert_eq!(restored.payload["degraded"].as_bool(), Some(true));
-                prop_assert_eq!(restored.payload["replayable"].as_bool(), Some(false));
+        proptest! {
+            #[test]
+            fn otlp_timestamp_accepts_equivalent_string_and_numeric_nanos(
+                seconds in 0u64..=2_000_000_000,
+                subsec in 0u32..1_000_000_000,
+            ) {
+                let nanos = seconds * 1_000_000_000 + u64::from(subsec);
+                let string_value = Value::String(nanos.to_string());
+                let numeric_value = Value::from(nanos);
+                let string_timestamp = otlp_timestamp(Some(&string_value)).unwrap();
+                let numeric_timestamp = otlp_timestamp(Some(&numeric_value)).unwrap();
+                prop_assert_eq!(&string_timestamp, &numeric_timestamp);
+                prop_assert_eq!(
+                    timestamp_unix_ms(&string_timestamp),
+                    Some(seconds * 1000 + u64::from(subsec / 1_000_000)),
+                );
             }
-        }
-
-        #[test]
-        fn har_export_keeps_only_request_anchored_calls(
-            call_id in token_strategy(),
-            trace_id in token_strategy(),
-            duration_ms in 0u64..60_000,
-        ) {
-            let request = EventRecord {
-                identity: EventIdentity::default(),
-                seq: 0,
-                source: "gateway".into(),
-                kind: "http.request".into(),
-                timestamp: Some("2026-01-01T00:00:00Z".into()),
-                session_id: None,
-                agent_id: None,
-                parent_uuid: None,
-                trace_id: Some(trace_id.clone()),
-                call_id: Some(call_id.clone()),
-                subagent_id: None,
-                parent_agent_id: None,
-                branch: None,
-                parent_call_id: None,
-                payload: json!({"http":{"method":"POST","url":"https://example.test","body":"hi"}}),
-            };
-            let response = EventRecord {
-                kind: "http.response".into(),
-                payload: json!({"http":{"status":200,"duration_ms":duration_ms,"body":"ok"}}),
-                ..request.clone()
-            };
-            let log = events_to_har(&[response, request]);
-            let entries = log["log"]["entries"].as_array().unwrap();
-            prop_assert_eq!(entries.len(), 1);
-            prop_assert_eq!(entries[0]["_pchronicle"]["call_id"].as_str(), Some(call_id.as_str()));
-            prop_assert_eq!(entries[0]["_pchronicle"]["trace_id"].as_str(), Some(trace_id.as_str()));
-            prop_assert_eq!(entries[0]["time"].as_f64(), Some(duration_ms as f64));
-            prop_assert_eq!(entries[0]["response"]["status"].as_u64(), Some(200));
-        }
-
-        #[test]
-        fn otlp_timestamp_accepts_decimal_string_nanos(
-            seconds in 0i64..=2_000_000_000,
-            subsec in 0u32..1_000_000_000,
-        ) {
-            let nanos = i128::from(seconds) * 1_000_000_000 + i128::from(subsec);
-            let value = Value::String(nanos.to_string());
-            let timestamp = otlp_timestamp(Some(&value)).unwrap();
-            prop_assert_eq!(
-                timestamp_unix_ms(&timestamp),
-                Some((seconds * 1000) as u64 + u64::from(subsec / 1_000_000)),
-            );
         }
     }
 }

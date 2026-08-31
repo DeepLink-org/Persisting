@@ -1,8 +1,8 @@
 # Explore a Run Dataset
 
 pChronicle gives you one interface for Agent runs stored locally, in
-object storage, or behind a configured alias. Commands are read-only unless you
-explicitly run `import` or `export` with a destination.
+object storage, or behind a configured alias. The inspect, find, analysis, and
+query commands in this walkthrough are read-only.
 
 ## 1. Try pChronicle without preparing data
 
@@ -32,6 +32,13 @@ pchronicle analysis overview ./trajectory-data
 `ls` shows the run data pChronicle can use. `analysis overview` gives a
 stable summary without requiring SQL.
 
+To locate content, use the unified `find --match` syntax:
+
+```bash
+pchronicle find ./trajectory-data --match "timeout" --format json
+pchronicle find ./trajectory-data --match '#system("retry")'
+```
+
 ## 3. Ask a specific question
 
 ```bash
@@ -48,8 +55,8 @@ semantics align.
 
 ## What you completed
 
-You opened one Dataset, ran a built-in summary, and queried a normalized table.
-The Dataset was not modified.
+You opened one Dataset, ran a built-in summary, queried a normalized table, and
+can now locate specific trajectories with FTS/JSONB. The Dataset was not modified.
 
 Continue by task:
 
@@ -58,4 +65,4 @@ Continue by task:
 - [Review the product terminology](reference/terminology.md)
 - [Use aliases and the complete CLI](reference/cli.md)
 - [Capture a new Run with pVisor](../pvisor/guides/capture.md)
-- [Understand the Dataset interface](concepts/index.md)
+- [Learn the pChronicle concepts](concepts/index.md)

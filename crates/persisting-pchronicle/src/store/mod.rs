@@ -48,6 +48,8 @@ mod storyline;
 #[cfg(feature = "lance-store")]
 #[path = "storyline/model.rs"]
 mod storyline_model;
+#[cfg(feature = "lance-store")]
+mod virtual_document;
 
 #[cfg(feature = "lance-store")]
 pub(crate) use agenticmd_datafusion::AgenticMdDataSource;
@@ -117,9 +119,12 @@ pub use storyline::{
     StorylineContentOptions, StorylineContentReadMode, StorylineDataFusionTableNames,
     StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
     StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
-    StorylineTableKind, StorylineTablePaths, story_runs_arrow_schema, story_runs_from_batch,
+    StorylineTableKind, StorylineTablePaths, search_storyline_documents_fts,
+    search_storyline_step_matches_fts, search_storyline_step_matches_fts_in_columns,
+    search_storyline_steps_fts, story_runs_arrow_schema, story_runs_from_batch,
     story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch, story_steps_to_batch,
     story_tool_calls_arrow_schema, story_tool_calls_from_batch, story_tool_calls_to_batch,
+    storyline_steps_fts_available,
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_model::{

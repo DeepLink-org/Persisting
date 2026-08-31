@@ -813,6 +813,77 @@ mod tests {
     use super::*;
     use serde_json::{Map, json};
 
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn token_strategy() -> impl Strategy<Value = String> {
+            proptest::string::string_regex("[a-zA-Z0-9._-]{1,32}").unwrap()
+        }
+
+        proptest! {
+            #[test]
+            fn document_id_prefers_nonempty_trajectory_id(
+                session_id in token_strategy(), trajectory_id in prop::option::of(token_strategy()),
+            ) {
+                let mut story = StorylineDocument::new(session_id.clone(), "agent");
+                story.trajectory_id = trajectory_id.clone();
+                prop_assert_eq!(story.document_id(), trajectory_id.as_deref().unwrap_or(&session_id));
+            }
+
+            #[test]
+            fn empty_trajectory_ids_fall_back_to_the_session_id(
+                session_id in token_strategy(),
+            ) {
+                let mut story = StorylineDocument::new(session_id.clone(), "agent");
+                story.trajectory_id = Some(String::new());
+                prop_assert_eq!(story.document_id(), session_id.as_str());
+            }
+
+            #[test]
+            fn environment_overlay_prefers_overlay_values_and_merges_state(
+                base_name in prop::option::of(token_strategy()),
+                overlay_name in prop::option::of(token_strategy()),
+                base_state in prop::collection::btree_map(token_strategy(), any::<i64>(), 0..8),
+                overlay_state in prop::collection::btree_map(token_strategy(), any::<i64>(), 0..8),
+            ) {
+                let base = StorylineEnv {
+                    name: base_name.clone(),
+                    endpoint: None,
+                    id: None,
+                    event_type: None,
+                    request_id: None,
+                    state: (!base_state.is_empty()).then_some(
+                        base_state.iter().map(|(key, value)| (key.clone(), json!(value))).collect(),
+                    ),
+                };
+                let overlay = StorylineEnv {
+                    name: overlay_name.clone(),
+                    endpoint: None,
+                    id: None,
+                    event_type: None,
+                    request_id: None,
+                    state: (!overlay_state.is_empty()).then_some(
+                        overlay_state.iter().map(|(key, value)| (key.clone(), json!(value))).collect(),
+                    ),
+                };
+                let merged = base.merge_overlay(&overlay);
+                prop_assert_eq!(merged.name, overlay_name.or(base_name));
+                let state = merged.state.unwrap_or_default();
+                for (key, value) in base_state {
+                    if !overlay_state.contains_key(&key) {
+                        prop_assert_eq!(state.get(&key), Some(&json!(value)));
+                    }
+                }
+                for (key, value) in overlay_state {
+                    prop_assert_eq!(state.get(&key), Some(&json!(value)));
+                }
+            }
+        }
+    }
+
     fn story_with_source_normalized_counts() -> StorylineDocument {
         let mut story = StorylineDocument::new("session", "agent");
         for (source, source_id, pointer) in [

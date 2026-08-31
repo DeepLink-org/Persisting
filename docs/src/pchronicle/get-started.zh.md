@@ -1,7 +1,7 @@
 # 查看 Run Dataset
 
-pChronicle 使用同一套接口读取本地、对象存储或用户 alias 指向的 Agent 运行记录。除非显式运行带
-目标位置的 `import` 或 `export`，命令不会修改 Dataset。
+pChronicle 使用同一套接口读取本地、对象存储或用户 alias 指向的 Agent 运行记录。本页中的
+浏览、find、analysis 和 query 命令都是只读的。
 
 ## 1. 不准备数据，直接体验
 
@@ -28,6 +28,13 @@ pchronicle analysis overview ./trajectory-data
 
 `ls` 显示 pChronicle 可以使用的 Run 数据；`analysis overview` 无需编写 SQL，即可给出稳定汇总。
 
+需要定位具体内容时，使用统一的 `find --match` 语法：
+
+```bash
+pchronicle find ./trajectory-data --match "timeout" --format json
+pchronicle find ./trajectory-data --match '#system("retry")'
+```
+
 ## 3. 提出一个具体问题
 
 ```bash
@@ -43,7 +50,7 @@ pchronicle query ./trajectory-data \
 
 ## 你刚刚完成了什么
 
-你打开了一个 Dataset，运行了内建汇总，并查询了规范化表。整个过程没有修改 Dataset。
+你打开了一个 Dataset，运行了内建汇总，查询了规范化表，并可以用 FTS/JSONB 定位具体轨迹。整个过程没有修改 Dataset。
 
 按任务继续：
 
@@ -52,4 +59,4 @@ pchronicle query ./trajectory-data \
 - [查看统一产品术语](reference/terminology.zh.md)
 - [使用 alias 并查阅完整命令行](reference/cli.md)
 - [使用 pVisor 采集新 Run](../pvisor/guides/capture.md)
-- [理解 Dataset 接口](concepts/index.md)
+- [理解 pChronicle 核心概念](concepts/index.md)

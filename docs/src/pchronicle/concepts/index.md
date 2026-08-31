@@ -1,40 +1,14 @@
-# Dataset
+# pChronicle concepts
 
-**Dataset is the single user-facing object in pChronicle.** It is a collection
-of Agent run data that can be browsed, queried, analyzed, imported,
-exported, or served.
+pChronicle is built around a **Dataset**, which is a path. Read these concepts
+before querying history or integrating storage.
 
-A Dataset can be:
+| Question | Concept article |
+| --- | --- |
+| How is trajectory data addressed and pinned? | [Dataset, Source, and Snapshot](dataset-and-source.md) |
+| What is recorded versus the views used to inspect it? | [Recorded data, views, and versions](facts-and-projections.md) |
 
-- a local directory or file (`./local/path`);
-- an object-store URI prefix (`s3://bucket/prefix`);
-- a user alias that points to either location (`@alias-name`).
-
-## Addressing a Dataset
-
-Bare values are paths or URIs. A leading `@` explicitly selects an alias:
-
-```text
-prod       local relative path ./prod
-@prod      Dataset alias named prod
-```
-
-This keeps command behavior stable when a directory and an alias have the same
-name. Create and inspect aliases with `pchronicle alias`; choose the local
-Dataset used when an argument is omitted with `pchronicle default`.
-
-## What commands expose
-
-pChronicle discovers the supported run data inside the Dataset and
-normalizes compatible fields into query tables such as `runs`, `steps`, and
-`tool_calls`. Each read command uses an internally consistent view, even if the
-underlying location changes while the command is running.
-
-That is the complete user model needed by the CLI. Storage discovery,
-version pinning, facts, projections, and revisions are implementation and data
-contract details; consult [Design](../design/index.md) only when those boundaries
-matter to your integration.
-
-Continue with [common workflows](../guides/index.md), the
-[product terminology](../reference/terminology.md), or the
+Storage mechanisms and current implementation belong to
+[pChronicle Design](../design/index.md). Continue with
+[common workflows](../guides/index.md) or the
 [CLI reference](../reference/cli.md).

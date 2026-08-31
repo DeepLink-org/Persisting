@@ -48,6 +48,8 @@ pub struct RunExplorerItem {
     #[serde(flatten)]
     pub run: RunSummary,
     pub model: Option<String>,
+    #[serde(default)]
+    pub search_preview: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -64,6 +66,18 @@ pub struct RunPage {
     pub snapshot: PageSnapshot,
     pub records: Vec<RunExplorerItem>,
     pub path_index: Vec<RunSummary>,
+    #[serde(default)]
+    pub search: RunSearchStatus,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct RunSearchStatus {
+    #[serde(default)]
+    pub fts_available: bool,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub tokenizer: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -128,8 +142,14 @@ pub struct CatalogTreeChild {
 pub struct QueryTableSummary {
     pub name: String,
     pub description: String,
+    #[serde(default = "default_table_kind")]
+    pub kind: String,
     pub grain: String,
     pub fields: Vec<QueryFieldSummary>,
+}
+
+fn default_table_kind() -> String {
+    "table".into()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -363,10 +383,10 @@ pub fn extract_message_text(message: &Value) -> Option<String> {
         Value::Array(array) => {
             let mut parts = Vec::new();
             for item in array {
-                if let Some(text) = extract_message_text(item) {
-                    if !text.is_empty() {
-                        parts.push(text);
-                    }
+                if let Some(text) = extract_message_text(item)
+                    && !text.is_empty()
+                {
+                    parts.push(text);
                 }
             }
             if parts.is_empty() {
@@ -387,6 +407,8 @@ pub struct ToolCall {
     pub function_name: String,
     #[serde(rename = "args", alias = "arguments")]
     pub arguments: Value,
+    #[serde(default)]
+    pub result: Option<Value>,
     pub duration_ms: Option<i64>,
 }
 
@@ -395,6 +417,8 @@ pub struct WireToolCall {
     pub id: Option<String>,
     pub name: String,
     pub arguments: Value,
+    #[serde(default)]
+    pub result: Option<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -508,6 +532,8 @@ pub struct TurnSummary {
     pub call_id: Option<String>,
     pub preview: String,
     #[serde(default)]
+    pub user_prompt: Option<String>,
+    #[serde(default)]
     pub char_count: u64,
     #[serde(default)]
     pub modalities: Vec<String>,
@@ -526,6 +552,18 @@ pub struct TurnSummary {
 pub struct TurnPage {
     pub snapshot: PageSnapshot,
     pub records: Vec<TurnSummary>,
+    #[serde(default)]
+    pub search: TurnSearchStatus,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct TurnSearchStatus {
+    #[serde(default)]
+    pub fts_available: bool,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub tokenizer: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -535,14 +573,6 @@ pub struct TurnDetail {
     pub wire_tool_calls: Vec<WireToolCall>,
     pub event_provenance: EventProvenance,
     pub events: Vec<EventRecord>,
-}
-
-/// Minimal projection of the `/api/storyline` document: the full ordered turn
-/// list, used client-side to rebuild the model's context at any step.
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
-pub struct StorylineSnapshot {
-    #[serde(default)]
-    pub turns: Vec<StorylineTurn>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -703,12 +733,14 @@ mod tests {
                 QueryTableSummary {
                     name: "runs".into(),
                     description: "trajectories".into(),
+                    kind: "table".into(),
                     grain: "run".into(),
                     fields: Vec::new(),
                 },
                 QueryTableSummary {
                     name: "steps".into(),
                     description: "steps".into(),
+                    kind: "table".into(),
                     grain: "step".into(),
                     fields: Vec::new(),
                 },

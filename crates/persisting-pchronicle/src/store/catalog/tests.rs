@@ -518,8 +518,8 @@ async fn catalog_prunes_storyline_sources_before_opening_lance() -> Result<()> {
     let explorer = engine
         .query_jsonl(
             "SELECT r._file_, r.document_id, r.run_id, r.session_id, r.agent_id, \
-                    r.agent_model_name, r.parent_json, r.final_metrics_json, \
-                    r.extra_json, r.unknown_fields_json \
+                    r.agent_model_name, r.parent, r.final_metrics, \
+                    r.extra, r.unknown_fields \
              FROM dataset.runs r WHERE r._file_ = 'a'",
         )
         .await?;
@@ -1080,4 +1080,52 @@ fn report_mode_source_status_does_not_serialize_operational_diagnostics() -> Res
     assert!(!output.contains("catalog-secret-sentinel"), "{output}");
     assert!(!output.contains("/private/catalog/path"), "{output}");
     Ok(())
+}
+
+#[cfg(feature = "proptest")]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn storyline_fixture_preserves_identity_fields(
+            session_id in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+            run_id in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+        ) {
+            let story = storyline(&session_id, &run_id);
+            prop_assert_eq!(&story.session_id, &session_id);
+            prop_assert_eq!(story.run_id.as_deref(), Some(run_id.as_str()));
+            prop_assert_eq!(story.turns.len(), 1);
+            prop_assert_eq!(story.turns[0].id, 1);
+        }
+
+        #[test]
+        fn reported_source_failure_hides_arbitrary_diagnostic_details(
+            file in proptest::string::string_regex("[A-Za-z0-9._/-]{1,48}").unwrap(),
+            secret in proptest::string::string_regex("[A-Za-z0-9_-]{1,32}").unwrap(),
+        ) {
+            let source = reported_source_failure(
+                DiscoveredSource {
+                    file,
+                    format: None,
+                    kind: CatalogSourceKind::File,
+                    revision: None,
+                    projection_status: None,
+                    projection_generation: None,
+                    projection_candidates: 0,
+                    size_bytes: None,
+                    last_modified: None,
+                    status: CatalogSourceStatus::Ready,
+                    error: None,
+                },
+                anyhow::anyhow!("secret diagnostic: {secret}"),
+            );
+            let encoded = serde_json::to_string(&source).unwrap();
+            prop_assert_eq!(source.status, CatalogSourceStatus::Error);
+            prop_assert_eq!(source.error.as_deref(), Some("Source discovery failed"));
+            prop_assert!(!encoded.contains("secret diagnostic"));
+        }
+    }
 }

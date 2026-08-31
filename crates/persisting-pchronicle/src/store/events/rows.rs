@@ -389,3 +389,56 @@ mod tests {
         assert_eq!(back, rows);
     }
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use std::sync::Arc;
+
+    use proptest::prelude::*;
+    use serde_json::json;
+
+    use crate::formats::events::EventIdentity;
+
+    use super::*;
+
+    fn token_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[A-Za-z0-9._-]{1,24}").unwrap()
+    }
+
+    proptest! {
+        #[test]
+        fn event_arrow_batches_roundtrip_all_generated_rows(
+            rows in proptest::collection::vec(
+                (0u64..1_000_000, token_strategy(), proptest::string::string_regex("[A-Za-z0-9 .,!?]{0,48}").unwrap()),
+                0..12,
+            ),
+        ) {
+            let records = rows.into_iter().map(|(seq, session, text)| {
+                let mut identity = EventIdentity::default();
+                identity.event_id = Some(format!("event-{seq}"));
+                identity.timestamp_unix_ms = Some(seq + 1_000);
+                EventRecord {
+                    identity,
+                    seq,
+                    source: "test".into(),
+                    kind: "note".into(),
+                    timestamp: None,
+                    session_id: Some(session),
+                    agent_id: Some("agent".into()),
+                    parent_uuid: None,
+                    trace_id: None,
+                    call_id: None,
+                    subagent_id: None,
+                    parent_agent_id: None,
+                    branch: None,
+                    parent_call_id: None,
+                    payload: json!({"text": text}),
+                }
+            }).collect::<Vec<_>>();
+            let event_rows = records.iter().map(event_record_to_event_row).collect::<Result<Vec<_>, _>>().unwrap();
+            let batch = event_rows_to_batch(Arc::new(raw_event_arrow_schema().as_ref().clone()), &event_rows).unwrap();
+            prop_assert_eq!(event_rows_from_batch(&batch).unwrap(), event_rows);
+            prop_assert_eq!(event_records_from_batch(&batch).unwrap(), records);
+        }
+    }
+}

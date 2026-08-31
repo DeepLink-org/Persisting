@@ -306,6 +306,26 @@ fn command_tree_contains_the_product_commands() {
             .contains("combine them into one Storyline Lance Store at the Dataset root")
     );
     assert!(Cli::try_parse_from(["pchronicle", "project", "status"]).is_err());
+
+    let serve = command
+        .get_subcommands()
+        .find(|command| command.get_name() == "serve")
+        .unwrap();
+    let catalog = serve
+        .get_subcommands()
+        .find(|command| command.get_name() == "catalog")
+        .unwrap();
+    let catalog_commands = catalog
+        .get_subcommands()
+        .map(|command| command.get_name())
+        .collect::<Vec<_>>();
+    assert_eq!(catalog_commands, ["issue", "grant", "revoke"]);
+    let mut serve_command = Cli::command();
+    let serve_help = serve_command.find_subcommand_mut("serve").unwrap();
+    let mut help = Vec::new();
+    serve_help.write_long_help(&mut help).unwrap();
+    let help = String::from_utf8(help).unwrap();
+    assert!(help.contains("pchronicle serve catalog"), "{help}");
 }
 
 #[test]
@@ -431,8 +451,17 @@ async fn alias_lifecycle_resolves_dataset_references_without_moving_data() -> Re
     run(cli, false, &mut stdout, &mut Vec::new()).await?;
     let aliases: Value = serde_json::from_slice(&stdout)?;
     assert_eq!(aliases["schema_version"], "pchronicle-aliases/v1");
-    assert_eq!(aliases["aliases"][0]["name"], "archive");
-    assert_eq!(aliases["aliases"][1]["name"], "prod");
+    let names = aliases["aliases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|alias| alias["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"@codex"));
+    assert!(names.contains(&"@claude"));
+    assert!(names.contains(&"@claude-code"));
+    assert!(names.contains(&"archive"));
+    assert!(names.contains(&"prod"));
 
     let cli = Cli::try_parse_from([
         "pchronicle",
@@ -448,6 +477,271 @@ async fn alias_lifecycle_resolves_dataset_references_without_moving_data() -> Re
     assert!(resolve_dataset_uri(Some("@production/.."), Some(&config)).is_err());
     assert!(first.is_dir());
     Ok(())
+}
+
+#[tokio::test]
+async fn alias_s3_credentials_are_stored_separately_and_applied_on_expansion() -> Result<()> {
+    let _env_guard = DATASET_ALIAS_ENV_LOCK.lock().await;
+    let temporary = tempfile::tempdir()?;
+    let config = temporary.path().join("config.toml");
+    let config_arg = config.to_string_lossy().into_owned();
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "add",
+        "prod",
+        "s3://example-bucket/evals",
+        "--endpoint",
+        "http://127.0.0.1:9000",
+        "--region",
+        "us-west-2",
+        "--ak",
+        "access-test",
+        "--sk",
+        "secret-test",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+
+    let config_text = fs::read_to_string(&config)?;
+    assert!(config_text.contains("[alias_credentials.prod]"));
+    assert!(config_text.contains("alias_endpoints"));
+    assert!(config_text.contains("prod = \"http://127.0.0.1:9000\""));
+    assert!(config_text.contains("[alias_regions]"));
+    assert!(config_text.contains("prod = \"us-west-2\""));
+    assert!(config_text.contains("access_key = \"access-test\""));
+    assert!(config_text.contains("secret_key = \"secret-test\""));
+
+    let _access = EnvGuard::unset("AWS_ACCESS_KEY_ID");
+    let _secret = EnvGuard::unset("AWS_SECRET_ACCESS_KEY");
+    let _endpoint = EnvGuard::unset("AWS_ENDPOINT_URL_S3");
+    let _generic_endpoint = EnvGuard::unset("AWS_ENDPOINT");
+    let _allow_http = EnvGuard::unset("AWS_ALLOW_HTTP");
+    let _region = EnvGuard::unset("AWS_REGION");
+    assert_eq!(
+        expand_dataset_reference("@prod", Some(&config), false)?,
+        "s3://example-bucket/evals"
+    );
+    assert_eq!(
+        std::env::var("AWS_ACCESS_KEY_ID").as_deref(),
+        Ok("access-test")
+    );
+    assert_eq!(
+        std::env::var("AWS_SECRET_ACCESS_KEY").as_deref(),
+        Ok("secret-test")
+    );
+    assert_eq!(
+        std::env::var("AWS_ENDPOINT_URL_S3").as_deref(),
+        Ok("http://127.0.0.1:9000")
+    );
+    assert_eq!(
+        std::env::var("AWS_ENDPOINT").as_deref(),
+        Ok("http://127.0.0.1:9000")
+    );
+    assert_eq!(std::env::var("AWS_ALLOW_HTTP").as_deref(), Ok("true"));
+    assert_eq!(std::env::var("AWS_REGION").as_deref(), Ok("us-west-2"));
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "list",
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let output = String::from_utf8(stdout)?;
+    assert!(!output.contains("access-test"));
+    assert!(!output.contains("secret-test"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn catalog_alias_stores_user_keys_and_rejects_endpoint() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let config = temporary.path().join("config.toml");
+    let config_arg = config.to_string_lossy().into_owned();
+
+    let missing_keys = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "add",
+        "team",
+        "catalog://127.0.0.1:8081",
+    ])?;
+    let error = run(missing_keys, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("require --ak and --sk"), "{error}");
+
+    let with_endpoint = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "add",
+        "team",
+        "catalog://127.0.0.1:8081",
+        "--endpoint",
+        "http://127.0.0.1:9000",
+        "--ak",
+        "USER_AK",
+        "--sk",
+        "USER_SK",
+    ])?;
+    let error = run(with_endpoint, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("do not accept --endpoint"), "{error}");
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "add",
+        "team",
+        "catalog://127.0.0.1:8081",
+        "--ak",
+        "USER_AK",
+        "--sk",
+        "USER_SK",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+    let config_text = fs::read_to_string(&config)?;
+    assert!(config_text.contains("team = \"catalog://127.0.0.1:8081\""));
+    assert!(config_text.contains("access_key = \"USER_AK\""));
+    assert!(config_text.contains("secret_key = \"USER_SK\""));
+    assert!(!config_text.contains("alias_endpoints"));
+    assert!(!config_text.contains("BACKEND"));
+
+    let error = expand_dataset_reference("@team", Some(&config), false)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("requires a dataset"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn serve_catalog_issue_grant_revoke_rewrites_config() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let catalog = temporary.path().join("catalog.toml");
+    fs::write(
+        &catalog,
+        r#"
+[libraries.prod]
+uri = "s3://bucket/prod"
+access_key = "BACKEND_AK"
+secret_key = "BACKEND_SK"
+"#,
+    )?;
+    let catalog_arg = catalog.to_string_lossy().into_owned();
+
+    assert!(
+        Cli::try_parse_from([
+            "pchronicle",
+            "serve",
+            "catalog",
+            "issue",
+            "--catalog-config",
+            &catalog_arg,
+            "alice",
+        ])
+        .is_ok()
+    );
+    assert!(
+        Cli::try_parse_from([
+            "pchronicle",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "catalog",
+            "issue",
+            "--catalog-config",
+            &catalog_arg,
+            "alice",
+        ])
+        .is_err()
+    );
+
+    let issue = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "catalog",
+        "issue",
+        "--catalog-config",
+        &catalog_arg,
+        "alice",
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    run(issue, false, &mut stdout, &mut stderr).await?;
+    let issued: Value = serde_json::from_slice(&stdout)?;
+    let secret_key = issued["secret_key"].as_str().expect("secret_key");
+    assert!(
+        issued["access_key"]
+            .as_str()
+            .expect("access_key")
+            .starts_with("pcak_")
+    );
+    let stderr_text = String::from_utf8(stderr)?;
+    assert!(stderr_text.contains("updated=true"), "{stderr_text}");
+    assert!(!stderr_text.contains(secret_key), "{stderr_text}");
+
+    let grant = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "catalog",
+        "grant",
+        "--catalog-config",
+        &catalog_arg,
+        "alice",
+        "prod",
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(grant, false, &mut stdout, &mut Vec::new()).await?;
+    let granted: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(granted["datasets"], serde_json::json!(["prod"]));
+
+    let revoke = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "catalog",
+        "revoke",
+        "--catalog-config",
+        &catalog_arg,
+        "alice",
+        "prod",
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(revoke, false, &mut stdout, &mut Vec::new()).await?;
+    let revoked: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(revoked["datasets"], serde_json::json!([]));
+    Ok(())
+}
+
+#[test]
+fn alias_rejects_markdown_endpoint_links() {
+    let error = super::s3_endpoint_for(
+        "s3://example-bucket/evals",
+        Some("[http://127.0.0.1:9000](http://127.0.0.1:9000)".to_owned()),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("plain URL"), "{error}");
 }
 
 #[tokio::test]
@@ -1209,7 +1503,51 @@ async fn find_locates_runs_sessions_and_steps_in_example_datasets() -> Result<()
     assert_eq!(value["matches"][0]["step_id"], 2);
     assert_eq!(value["matches"][0]["step_source"], "agent");
     assert_eq!(value["matches"][0]["effective_kind"], "autonomous");
+    assert!(value["matches"][0]["preview"].as_str().is_some());
     Ok(())
+}
+
+#[test]
+fn find_fts_predicates_are_combined_as_a_balanced_sql_tree() {
+    let predicates = (0..16_384)
+        .map(|index| format!("step_id = {index}"))
+        .collect::<Vec<_>>();
+    let sql = super::balanced_sql_group(&predicates, "OR");
+
+    assert_eq!(sql.matches(" OR ").count(), predicates.len() - 1);
+    let mut depth = 0usize;
+    let mut max_depth = 0usize;
+    for character in sql.chars() {
+        match character {
+            '(' => {
+                depth += 1;
+                max_depth = max_depth.max(depth);
+            }
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    assert_eq!(depth, 0);
+    assert!(max_depth <= 16, "unexpectedly deep SQL tree: {max_depth}");
+}
+
+#[test]
+fn fts_text_clause_is_false_only_after_a_successful_empty_search() {
+    assert_eq!(
+        super::compiled_text_predicate_sql(&[], true).expect("zero hits"),
+        "FALSE"
+    );
+}
+
+#[test]
+fn fts_text_clause_is_not_false_when_search_never_ran() {
+    let error = super::compiled_text_predicate_sql(&[], false)
+        .expect_err("unsearched text must not compile to FALSE");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("FTS unavailable"),
+        "unexpected error: {message}"
+    );
 }
 
 #[tokio::test]
@@ -1386,7 +1724,9 @@ async fn find_enforces_output_byte_limit_without_partial_stdout() -> Result<()> 
 
 #[test]
 fn find_cli_requires_one_identity_and_session_for_steps() {
-    assert!(Cli::try_parse_from(["pchronicle", "find", "."]).is_err());
+    assert!(Cli::try_parse_from(["pchronicle", "find", ".", "--match", "needle"]).is_ok());
+    assert!(Cli::try_parse_from(["pchronicle", "find", ".", "--match", "$.x=true"]).is_ok());
+    assert!(Cli::try_parse_from(["pchronicle", "find", ".", "--json", "$.x=true"]).is_err());
     assert!(
         Cli::try_parse_from([
             "pchronicle",
@@ -1400,6 +1740,19 @@ fn find_cli_requires_one_identity_and_session_for_steps() {
         .is_err()
     );
     assert!(Cli::try_parse_from(["pchronicle", "find", ".", "--step-id", "1"]).is_err());
+}
+
+#[test]
+fn find_preview_extracts_message_text_from_json_envelope() {
+    assert_eq!(
+        find_preview_text(r#"[{"type":"text","text":"hello"}]"#),
+        "hello"
+    );
+    assert_eq!(
+        find_preview_text(r#""[{\"text\":\"nested hello\"}]""#),
+        "nested hello"
+    );
+    assert_eq!(find_preview_text("plain text"), "plain text");
 }
 
 #[tokio::test]
@@ -1911,6 +2264,14 @@ async fn directory_import_auto_detects_each_file_and_skips_unknown_json() -> Res
         assert_eq!(response["sources"], 2, "{output_format:?}: {response}");
         assert_eq!(response["trajectories"], 3, "{output_format:?}: {response}");
         let warnings = String::from_utf8(stderr)?;
+        assert!(
+            warnings.contains("import source=root.json status=processing"),
+            "{output_format:?}: {warnings}"
+        );
+        assert!(
+            warnings.contains("import source=root.json status=completed"),
+            "{output_format:?}: {warnings}"
+        );
         assert!(
             warnings.contains("_error_gravitational-wave-detection_astronomy.json"),
             "{output_format:?}: {warnings}"
@@ -3430,6 +3791,7 @@ fn normalize_and_validate_dataset_uri_expands_alias_and_rejects_unknown() {
 
 fn serve_args_with_storage(storage: Vec<String>) -> ServeArgs {
     ServeArgs {
+        command: None,
         config: None,
         storage,
         positional_storage: Vec::new(),
@@ -3445,6 +3807,8 @@ fn serve_args_with_storage(storage: Vec<String>) -> ServeArgs {
         gateway_object_store_manifest_mode: GatewayObjectStoreManifestMode::default(),
         gateway_stream_markdown: false,
         debug: false,
+        catalog_config: None,
+        catalog_query_worker: false,
     }
 }
 

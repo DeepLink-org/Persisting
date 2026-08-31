@@ -20,4 +20,5 @@
 placement、tenant isolation、lease、attestation、恢复与 reconciliation，而不重新定义 Run。
 
 稳定 identity 模型见 [Run、Attempt 与 Effect](../pvisor/concepts/run-model.md)。Provider
-admission 属于 [pVisor 隔离设计](../pvisor/design/isolation.md)；集群协调属于独立控制面问题。
+admission 属于 [pVisor 隔离设计](../pvisor/design/isolation.md)；集群协调（placement、lease
+与 reconciliation）由 [pPilot](../ppilot/design/orchestration.md) 拥有。

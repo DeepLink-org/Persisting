@@ -10,6 +10,7 @@ use futures::TryStreamExt;
 
 use crate::agenticmd::parse_agenticmd;
 use crate::convert::{actf_to_storylines, project_event_records};
+use crate::document::encode_json_storylines;
 use crate::document::{
     DEFAULT_DOCUMENT_MATERIALIZE_BYTES, DEFAULT_DOCUMENT_MATERIALIZE_ROWS, FilterPushdown,
     QueryCapabilities, QueryTables, decode_json_storylines,
@@ -34,6 +35,7 @@ pub(crate) enum DocumentSourceImpl {
         source: Box<StorylineDataSource>,
     },
     AgenticMd {
+        raw: String,
         story: Box<StorylineDocument>,
         source: AgenticMdDataSource,
     },
@@ -67,6 +69,7 @@ pub(crate) async fn open_document_source(
                 .with_context(|| format!("parse AgenticMD document {}", path.display()))?;
             let source = AgenticMdDataSource::new(&story)?;
             Ok(DocumentSourceImpl::AgenticMd {
+                raw: input,
                 story: Box::new(story),
                 source,
             })
@@ -161,6 +164,100 @@ impl DocumentSourceImpl {
     pub(crate) fn register_datafusion(&self, context: &SessionContext) -> Result<QueryTables> {
         self.register(context)?;
         Ok(self.tables())
+    }
+
+    /// Register format-shaped virtual tables (`atif`, `storyline`, ...).
+    ///
+    /// This is intentionally separate from the normalized tables so existing
+    /// queries keep their schema and performance characteristics.
+    pub(crate) async fn register_virtual_tables(&self, context: &SessionContext) -> Result<()> {
+        for format in super::virtual_document::formats() {
+            let Some(table_name) = super::virtual_document::table_name(format) else {
+                continue;
+            };
+            let provider: std::sync::Arc<dyn datafusion::datasource::TableProvider> = match self {
+                Self::Files {
+                    format: source_format,
+                    manifest,
+                    source,
+                    ..
+                } if *source_format == format => {
+                    std::sync::Arc::new(super::virtual_document::FileProvider::new(
+                        format,
+                        std::sync::Arc::new(manifest.clone()),
+                        source.max_file_bytes(),
+                        source.provider(super::StorylineTableKind::Runs),
+                        source.provider(super::StorylineTableKind::Steps),
+                        source.provider(super::StorylineTableKind::ToolCalls),
+                    ))
+                }
+                _ => {
+                    let rows = self.virtual_rows(format).await?;
+                    super::virtual_document::provider(&rows)?
+                }
+            };
+            context
+                .register_table(table_name, provider)
+                .map_err(|error| from_datafusion("register format virtual table", error))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn virtual_rows(
+        &self,
+        format: DocumentFormat,
+    ) -> Result<Vec<(String, String)>> {
+        match self {
+            Self::Files {
+                format: source_format,
+                manifest,
+                source,
+                ..
+            } if *source_format == format => {
+                virtual_rows_for_files(format, manifest, source.max_file_bytes(), None)
+            }
+            Self::Events { source } if format == DocumentFormat::CanonicalEvent => {
+                let context = SessionContext::new();
+                source.register(&context)?;
+                let mut stream = context
+                    .sql("SELECT * FROM events ORDER BY seq")
+                    .await?
+                    .execute_stream()
+                    .await?;
+                let mut rows = Vec::new();
+                while let Some(batch) = stream.try_next().await? {
+                    for row in super::event_rows_from_batch(&batch)? {
+                        rows.push((
+                            row.event_id.unwrap_or_else(|| row.seq.to_string()),
+                            row.payload_json,
+                        ));
+                    }
+                }
+                Ok(rows)
+            }
+            Self::AgenticMd { raw, story, .. } if format == DocumentFormat::AgenticMd => {
+                let value = serde_json::json!({
+                    "format": "agenticmd",
+                    "content": raw,
+                    "storyline": story.as_ref(),
+                });
+                Ok(vec![(story.document_id().to_string(), value.to_string())])
+            }
+            Self::StorylineLance { .. } if format == DocumentFormat::Storyline => {
+                let stories = self.project_storylines().await?;
+                stories
+                    .iter()
+                    .map(|story| {
+                        let value = encode_json_storylines(
+                            DocumentFormat::Storyline,
+                            std::slice::from_ref(story),
+                        )?;
+                        Ok((story.document_id().to_string(), value.to_string()))
+                    })
+                    .collect()
+            }
+            _ => Ok(Vec::new()),
+        }
     }
 
     pub(crate) async fn project_storylines(&self) -> Result<Vec<StorylineDocument>> {
@@ -313,7 +410,7 @@ impl DocumentSourceImpl {
     }
 }
 
-fn for_each_file_storyline<F>(
+pub(crate) fn for_each_file_storyline<F>(
     format: DocumentFormat,
     manifest: &LocalQueryManifest,
     max_file_bytes: u64,
@@ -387,6 +484,70 @@ where
         }
     }
     Ok(())
+}
+
+pub(crate) fn virtual_rows_for_files(
+    format: DocumentFormat,
+    manifest: &LocalQueryManifest,
+    max_file_bytes: u64,
+    candidate_ids: Option<&std::collections::BTreeSet<String>>,
+) -> Result<Vec<(String, String)>> {
+    let mut rows = Vec::new();
+    for file in manifest.files() {
+        let file_id = file.relative_path().replace('\\', "/");
+        if matches!(format, DocumentFormat::Codex | DocumentFormat::ClaudeCode) {
+            let input = read_bounded_file(file, max_file_bytes, format)?;
+            for (line, raw) in std::str::from_utf8(&input)
+                .with_context(|| format!("{format} input is not UTF-8"))?
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| !line.trim().is_empty())
+            {
+                let row_id = format!("{file_id}#{}", line + 1);
+                if candidate_ids.is_some_and(|ids| !ids.contains(&row_id)) {
+                    continue;
+                }
+                let value: serde_json::Value = serde_json::from_str(raw)
+                    .with_context(|| format!("parse {format} record {}:{}", file_id, line + 1))?;
+                rows.push((row_id, value.to_string()));
+            }
+            continue;
+        }
+
+        let mut ordinal = 0usize;
+        let mut error = None;
+        for_each_file_storyline(
+            format,
+            &LocalQueryManifest::from_frozen_files(
+                file.path().parent().unwrap_or_else(|| Path::new(".")),
+                format,
+                vec![file.clone()],
+            )?,
+            max_file_bytes,
+            |story| {
+                ordinal += 1;
+                if candidate_ids.is_some_and(|ids| !ids.contains(story.document_id())) {
+                    return Ok(());
+                }
+                let row_id = if ordinal == 1 {
+                    story.document_id().to_string()
+                } else {
+                    format!("{file_id}#{ordinal}")
+                };
+                let value = encode_json_storylines(format, std::slice::from_ref(&story))
+                    .map_err(|e| anyhow::anyhow!(e));
+                match value {
+                    Ok(value) => rows.push((row_id, value.to_string())),
+                    Err(e) => error = Some(e),
+                }
+                Ok(())
+            },
+        )?;
+        if let Some(error) = error {
+            return Err(error).with_context(|| format!("encode {format} virtual table row"));
+        }
+    }
+    Ok(rows)
 }
 
 fn read_bounded_file(

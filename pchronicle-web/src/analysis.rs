@@ -6,12 +6,15 @@ use crate::analysis_agent::{self, EvidenceDigest, InterpretationRequest, PlanReq
 use crate::analysis_session::{
     self, AnalysisEffect, AnalysisInterpretation, AnalysisOperationId, AnalysisPlan,
     AnalysisRevision, AnalysisScope, AnalysisScopeItem, AnalysisSession, AnalyzeTraceKind,
-    AnalyzeTraceStatus, AnalyzeTraceStep, EvidenceReference, RevisionState, SuggestedView,
+    AnalyzeTraceStatus, AnalyzeTraceStep, CompileFailure, EvidenceReference, RevisionState,
+    SuggestedView,
 };
 use crate::api;
+use crate::api::ApiFailure;
 use crate::llm;
 use crate::llm_settings::LlmSettings;
 use crate::model::{QueryCatalog, QueryEvidence};
+use crate::notice::{ErrorNotice, WorkspaceNotice, workspace_notice};
 use crate::result_explorer::{ResultExplorer, ResultIdentity, identity_href};
 use crate::result_profile::{AnalysisRefinement, ColumnProfile, profile_rows};
 
@@ -193,7 +196,7 @@ fn apply_manual_sql(revision: &mut AnalysisRevision, sql: String) -> Result<(), 
                 .scope
                 .items
                 .first()
-                .map(|item| scope_item_label(item))
+                .map(scope_item_label)
                 .unwrap_or_default(),
             filters: Vec::new(),
             groupings: Vec::new(),
@@ -206,7 +209,7 @@ fn apply_manual_sql(revision: &mut AnalysisRevision, sql: String) -> Result<(), 
     }
     revision.manually_edited = true;
     revision.state = RevisionState::PlanReady;
-    revision.error = None;
+    revision.clear_error();
     revision.execution = None;
     revision.evidence = None;
     revision.interpretation = None;
@@ -214,6 +217,47 @@ fn apply_manual_sql(revision: &mut AnalysisRevision, sql: String) -> Result<(), 
     revision.pending_effect = None;
     revision.active_operation_id = None;
     Ok(())
+}
+
+fn compile_error_text(failure: &CompileFailure) -> String {
+    match failure.field.as_deref() {
+        Some(field) => format!("{}: {}", field, failure.message),
+        None => failure.message.clone(),
+    }
+}
+
+fn record_api_failure(revision: &mut AnalysisRevision, failure: &ApiFailure) {
+    revision.set_api_error_meta(
+        Some(failure.code.clone()),
+        failure.request_id.clone(),
+        failure.engine_detail.clone(),
+    );
+}
+
+fn record_compile_failure(revision: &mut AnalysisRevision, failure: &CompileFailure) {
+    revision.set_api_error_meta(
+        Some(failure.code.clone()),
+        failure.request_id.clone(),
+        failure.engine_detail.clone(),
+    );
+}
+
+fn notice_from_revision(revision: &AnalysisRevision) -> Option<WorkspaceNotice> {
+    if revision.error_code.is_none()
+        && revision.error_request_id.is_none()
+        && revision.error_engine_detail.is_none()
+    {
+        return None;
+    }
+    Some(workspace_notice(&ApiFailure {
+        status: 0,
+        code: revision.error_code.clone().unwrap_or_default(),
+        message: revision.error.clone().unwrap_or_default(),
+        request_id: revision.error_request_id.clone(),
+        field: None,
+        engine_detail: revision.error_engine_detail.clone(),
+        raw: revision.error.clone().unwrap_or_default(),
+    }))
 }
 
 #[derive(Clone)]
@@ -658,8 +702,9 @@ pub fn AnalysisWorkspace(
                     .ok()
                     .flatten()
                 }
-                Err(message) => {
-                    let _ = revision.fail_query(revision_id, operation_id, message);
+                Err(failure) => {
+                    let _ = revision.fail_query(revision_id, operation_id, failure.to_string());
+                    record_api_failure(revision, &failure);
                     None
                 }
             };
@@ -866,14 +911,13 @@ pub fn AnalysisWorkspace(
     };
 
     let rewrite_problem = move |_| {
-        if let Some(current) = session() {
-            if let Some(revision) = current
+        if let Some(current) = session()
+            && let Some(revision) = current
                 .revisions
                 .iter()
                 .find(|revision| revision.id == current.active_revision_id)
-            {
-                question.set(revision.question.clone());
-            }
+        {
+            question.set(revision.question.clone());
         }
         session.set(None);
     };
@@ -904,11 +948,11 @@ pub fn AnalysisWorkspace(
 
     let catalog_for_recent = catalog.clone();
     let select_recent_session = EventHandler::new(move |session_id: String| {
-        if let Some(mut departing) = session() {
-            if departing.id != session_id {
-                departing.normalize_inflight_for_navigation();
-                persist_session(&departing, &mut recent_sessions, &mut storage_notice);
-            }
+        if let Some(mut departing) = session()
+            && departing.id != session_id
+        {
+            departing.normalize_inflight_for_navigation();
+            persist_session(&departing, &mut recent_sessions, &mut storage_notice);
         }
         let Some(mut selected) = recent_sessions()
             .into_iter()
@@ -1048,7 +1092,16 @@ pub fn AnalysisWorkspace(
                                                 aria_pressed: selected,
                                                 onclick: move |_| selected_table.set(table_name.clone()),
                                                 strong { "{table.name}" }
-                                                small { "{table.grain}" }
+                                                small {
+                                                    if table.kind == "view" {
+                                                        span {
+                                                            class: "analyze-schema-kind view",
+                                                            "view"
+                                                        }
+                                                        " · "
+                                                    }
+                                                    "{table.grain}"
+                                                }
                                             }
                                         }
                                     }
@@ -1245,11 +1298,18 @@ pub fn AnalysisWorkspace(
                             }
                             if let Some(revision) = active_revision.as_ref() {
                                 if revision.state == RevisionState::PlanError {
-                                    div { class: "analyze-error", role: "alert",
-                                        strong { "The analysis plan could not be created" }
-                                        if let Some(message) = revision.error.as_ref() { p { "{message}" } }
-                                        else { p { "The model did not return a valid analysis plan." } }
-                                        p { "Your question is unchanged. Adjust it or Analyze again." }
+                                    if let Some(notice) = notice_from_revision(revision) {
+                                        div { class: "analyze-error-host",
+                                            ErrorNotice { notice, on_dismiss: None }
+                                            p { "Your question is unchanged. Adjust it or Analyze again." }
+                                        }
+                                    } else {
+                                        div { class: "analyze-error", role: "alert",
+                                            strong { "The analysis plan could not be created" }
+                                            if let Some(message) = revision.error.as_ref() { p { "{message}" } }
+                                            else { p { "The model did not return a valid analysis plan." } }
+                                            p { "Your question is unchanged. Adjust it or Analyze again." }
+                                        }
                                     }
                                 }
                             }
@@ -1298,7 +1358,12 @@ pub fn AnalysisWorkspace(
                             }
                             if let Some(revision) = active_revision.as_ref() {
                                 if revision.state == RevisionState::QueryError {
-                                    if let Some(error) = revision.error.as_ref() {
+                                    if let Some(notice) = notice_from_revision(revision) {
+                                        div { class: "analyze-error-host",
+                                            ErrorNotice { notice, on_dismiss: None }
+                                            p { "Fix the SQL and Run. Analyze will not repair a handwritten query." }
+                                        }
+                                    } else if let Some(error) = revision.error.as_ref() {
                                         div { class: "analyze-error", role: "alert", strong { "Analysis could not run" } p { "{error}" } p { "Fix the SQL and Run. Analyze will not repair a handwritten query." } }
                                     }
                                 }
@@ -1628,8 +1693,9 @@ async fn run_spec_compile_execute(
                         .ok()
                         .flatten()
                     }
-                    Err(message) => {
-                        let _ = revision.fail_query(revision_id, operation_id, message);
+                    Err(failure) => {
+                        let _ = revision.fail_query(revision_id, operation_id, failure.to_string());
+                        record_api_failure(revision, &failure);
                         None
                     }
                 };
@@ -1649,7 +1715,9 @@ async fn run_spec_compile_execute(
             }
             Err(failure) => {
                 let summary = failure.summary();
-                let _ = revision.fail_compile(revision_id, operation_id, summary.clone());
+                let _ =
+                    revision.fail_compile(revision_id, operation_id, compile_error_text(&failure));
+                record_compile_failure(revision, &failure);
                 let stopped = revision.state == RevisionState::PlanError;
                 persist_session(&current, &mut recent_sessions, &mut storage_notice);
                 session.set(Some(current));

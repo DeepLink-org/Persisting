@@ -2,9 +2,34 @@ use anyhow::{Context, Result};
 use persisting_pchronicle::document::{
     DocumentFormat, decode_json_storylines, encode_json_storylines, open_document,
 };
+use persisting_pchronicle::model::StorylineTimestamp;
+use serde_json::{Map, Value, json};
 mod support;
 
 use support::{LookupStrategy, fixture_path, persist_and_restore};
+
+fn canonical_semantic_json(value: Value) -> Value {
+    match value {
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .filter(|(_, value)| !value.is_null())
+                .map(|(key, value)| {
+                    if (key == "created_at" || key.ends_with("_at"))
+                        && let Ok(timestamp) = StorylineTimestamp::from_json(value.clone())
+                    {
+                        return (key, json!(timestamp.canonical_rfc3339()));
+                    }
+                    (key, canonical_semantic_json(value))
+                })
+                .collect::<Map<_, _>>(),
+        ),
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(canonical_semantic_json).collect())
+        }
+        value => value,
+    }
+}
 
 async fn assert_openai_fixture_roundtrip(
     name: &str,
@@ -23,8 +48,11 @@ async fn assert_openai_fixture_roundtrip(
         let restored = persist_and_restore(&stories, *lookup).await?;
 
         assert_eq!(
-            encode_json_storylines(DocumentFormat::OpenaiMsg, &restored)?,
-            expected,
+            canonical_semantic_json(encode_json_storylines(
+                DocumentFormat::OpenaiMsg,
+                &restored
+            )?),
+            canonical_semantic_json(expected.clone()),
             "{name} roundtrip via {lookup:?}"
         );
     }
@@ -42,8 +70,8 @@ async fn assert_actf_fixture_roundtrip(name: &str, lookups: &[LookupStrategy]) -
         let restored = persist_and_restore(&stories, *lookup).await?;
 
         assert_eq!(
-            encode_json_storylines(DocumentFormat::Actf, &restored)?,
-            expected,
+            canonical_semantic_json(encode_json_storylines(DocumentFormat::Actf, &restored)?),
+            canonical_semantic_json(expected.clone()),
             "{name} roundtrip via {lookup:?}"
         );
     }

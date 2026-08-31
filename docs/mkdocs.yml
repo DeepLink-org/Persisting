@@ -1,7 +1,12 @@
 site_name: Persisting
 site_description: Persistent infrastructure for the Agent era—from model parameters and KV caches to Agent trajectories
-site_url: https://github.com/DeepLink-org/Persisting
+site_url: https://deeplink-org.github.io/Persisting/
 docs_dir: src
+
+# pPilot pages stay built (cross-links from system-design/project/RFC pages)
+# but are hidden from navigation while pPilot is not part of the launch story.
+not_in_nav: |
+  /ppilot/**
 
 repo_name: DeepLink-org/Persisting
 repo_url: https://github.com/DeepLink-org/Persisting
@@ -137,11 +142,14 @@ plugins:
             0007 Events contract and pChronicle sidecar: 0007 事件契约与 pChronicle Sidecar
             0008 ATIF format: 0008 ATIF 格式
             0009 OpenAI Messages format: 0009 OpenAI Messages 格式
+            0010 Agent corpus Lance layout: 0010 Agent 评测语料 Lance 布局
+            0012 pChronicle find query syntax: 0012 pChronicle find 查询语法
+            0013 pChronicle path Directory: 0013 pChronicle path Directory
             Standalone systems: 独立系统
             Installation: 安装指南
             pChronicle CLI: pChronicle 命令参考
             Query model: Query Model
-            Dataset Catalog: 数据集目录
+            Snapshot: Snapshot
             Queue guide: Queue 指南
             Python API overview: Python API 概览
             Queue API: Queue API
@@ -189,7 +197,9 @@ nav:
       - Overview: pchronicle/index.md
       - Get Started: pchronicle/get-started.md
       - Concepts:
-          - Dataset interface: pchronicle/concepts/index.md
+          - Overview: pchronicle/concepts/index.md
+          - Dataset discovery and versioning: pchronicle/concepts/dataset-and-source.md
+          - Recorded data, views, and versions: pchronicle/concepts/facts-and-projections.md
       - Guides:
           - Guides overview: pchronicle/guides/index.md
           - Discover and query: pchronicle/guides/discover-and-query.md
@@ -200,9 +210,7 @@ nav:
       - Design:
           - Design overview: pchronicle/design/index.md
           - Product architecture: pchronicle/design/architecture.md
-          - Dataset discovery and versioning: pchronicle/concepts/dataset-and-source.md
-          - Recorded data, views, and versions: pchronicle/concepts/facts-and-projections.md
-          - Dataset Catalog: pchronicle/design/catalog.md
+          - Snapshot: pchronicle/design/catalog.md
           - Run storage: pchronicle/design/trajectory-storage.md
           - Storyline Lance projection: pchronicle/design/storyline-lance.md
       - Reference:
@@ -234,6 +242,9 @@ nav:
           - 0007 Events contract and pChronicle sidecar: rfcs/0007-events-contract-pchronicle-sidecar.md
           - 0008 ATIF format: rfcs/0008-atif-format.md
           - 0009 OpenAI Messages format: rfcs/0009-openai-messages-format.md
+          - 0010 Agent corpus Lance layout: rfcs/0010-agent-corpus-lance-layout.md
+          - 0012 pChronicle find query syntax: rfcs/0012-pchronicle-find-query-syntax.md
+          - 0013 pChronicle path Directory: rfcs/0013-pchronicle-warehouse-catalog.md
       - Standalone systems:
           - Queue guide: guide/queue.md
           - Python API overview: api/index.md

@@ -1,17 +1,101 @@
 # pChronicle 测试布局
 
-pChronicle 的测试分三层，放置位置与运行方式如下。
+pChronicle 的测试分四层，放置位置与运行方式如下。
 
 | 层级 | 位置 | 覆盖对象 | 运行方式 |
 |---|---|---|---|
 | 单元测试 | `src/**/tests.rs` 或小模块内 `#[cfg(test)] mod tests` | 与被测模块同目录：单模块/单函数行为、格式解析、存储协议、并发语义 | `cargo test -p persisting-pchronicle --lib` |
+| 性质测试 | 私有模块放在对应 `src/**/*.rs` 的 `#[cfg(all(test, feature = "proptest"))] mod proptests`；公开接口放在 `tests/proptests/*.rs` | 跨输入空间的编码往返、验证不变量、路径与错误语义 | 日常功能测试不编译；回归用 `just proptest pchronicle` |
 | 集成测试 | `tests/*.rs` | 跨模块/跨 crate 行为：存储往返、查询引擎、格式 corpus、真实 S3 契约 | `cargo test -p persisting-pchronicle` |
 | 基准 | `benches/*`、`benchmark/pchronicle/` | 转换与存储性能回归 | `just benchmark-pchronicle` |
+
+`tests/proptests/` 中的每个公开接口性质测试都是独立的 Cargo test target，不再通过 `include!` 转接。所有性质测试 target 和源码内私有 `mod proptests` 都由 `proptest` feature 控制：`just test pchronicle` 只编译和运行功能测试，pChronicle 完整回归执行 `just proptest pchronicle`。
 
 大型存储模块使用邻接测试文件：`store/events/tests.rs` 覆盖 fencing/append，
 `store/storyline/tests.rs` 覆盖 CURRENT 原子性，`store/files/tests.rs` 覆盖 `_file_` 裁剪；
 较小模块（如 `store/agenticmd_fs.rs`）仍可保留内联 `mod tests`。
 crate 级门面行为（格式往返、detect、frontmatter 解析）集中在 `src/tests.rs`。
+
+性质测试按风险优先级分批迁移；当前首批 5 个模块为：
+`format`（格式识别入口）、`input`（错误语义）、`atif`（轨迹校验）、
+`revision`（派生版本落盘编码）和 `formats/events`（Canonical Event 信封）。
+第二批 5 个模块为：`formats/llm`（LLM payload 与 stream 事件）、
+`formats/actf`（ACTF 轨迹校验）、`formats/timestamp`（纳秒精度）、
+`formats/common/json_stream`（流式 JSON 边界）和 `formats/common/jsonl`（JSONL 行语义）。
+第三批 5 个模块为：`agenticmd/codec`（Markdown block 编解码）、
+`agenticmd/layout`（会话文件路径安全）、`formats/detect`（格式指纹优先级）、
+`formats/registry`（codec 注册一致性）和 `layout/coords`（运行分区坐标）。
+第四批 5 个模块为：`interop`（HAR/OTLP 互操作）、`document`（文档 codec 门面）、
+`agenticmd/convert`（Storyline 与 Markdown 语义往返）、`formats/storyline`
+（权威模型与严格 wire）和 `formats/unknown_fields`（JSON Pointer 与未知字段保真）。
+第五批 5 个模块为：`formats/codex`（Codex JSONL 会话解码）、
+`formats/claude_code`（Claude Code transcript 解码）、`formats/atif`
+（ATIF 与 Storyline 转换）、`formats/actf/convert`（ACTF 语义转换）以及
+`store/storyline/model`（Storyline 三表拆分与重建）。
+第六批 5 个模块为：`formats/codec`（codec 通用候选路径与批量发射）、
+`agenticmd/validate`（AgenticMD speaker/type/pointer 安全校验）、
+`formats/events/convert`（Canonical Event 与 Storyline 语义转换）、
+`layout/resolve`（轨迹路径推断与显式参数合并）以及
+`store/location`（本地/对象存储 URI 规范化与 bucket 校验）。
+第七批 5 个模块为：`agenticmd/fs`（AgenticMD 文件块编码与 span）、
+`formats/openai_corpus`（OpenAI corpus ID 与相对路径安全）、
+`store/storyline/content`（内容 descriptor 与 UTF-8 preview）、
+`store/storyline/rows`（Storyline steps Arrow 行编解码）以及
+`projection/storyline`（Canonical projection lineage 新鲜度）。
+第八批 5 个模块为：`store/events/manifest`（事件 manifest 与 writer fence）、
+`store/storyline/writer_control`（Storyline CURRENT lease 状态转换）、
+`store/run_control`（Run control revision 与冲突边界）、
+`store/catalog/identity`（namespace 与 SQL alias 身份规范）以及
+`store/catalog/namespace`（快照分页 token 语义）。
+第九批 5 个模块为：`store/event_row`（EventRecord 与 canonical row 往返）、
+`store/events/rows`（事件 Arrow batch 编解码）、`store/files/projected_steps`
+（投影 JSON 与 timing 规范化）、`store/catalog/discovery`（候选 source 元数据与格式提示）
+以及 `store/catalog/source`（LazySource 能力与解析错误语义）。
+第十批 5 个模块为：`append_queue`（有界追加队列容量语义）、
+`store/catalog/provider`（虚拟文件列投影映射）、`store/events`（会话谓词转义）、
+`store/files`（通配文件过滤）以及 `store/storyline`（代际时间戳与路径拼接不变量）。
+第十一批 5 个模块为：`document`（空集合 codec 边界）、`agenticmd/layout`（文件名编码边界）、
+`store/location`（本地路径归一化）、`formats/detect`（OpenAI 文件名大小写与未知扩展名语义）
+以及 `formats/llm`（token 用量不变量）。
+第十二批 5 个模块为：`public_api`（公共门面错误与编码能力边界）、`agenticmd/convert`
+（文本消息编码语义）、`format`（Unicode 外层空白解析）、`layout/coords`（显式根分区等价性）
+以及 `discovery`（生命周期分区过滤幂等性）。
+第十三批 5 个模块为：`document_source`（公共文档源投影）、`query_engine`（ATIF 查询会话语义）、
+`direct_file_query`（OpenAI 虚拟文件列）、`storyline_lance_roundtrip`（生成 Storyline 往返）
+以及 `unknown_fields_roundtrip`（ATIF/ACTF unknown-fields 往返）。涉及 I/O 的用例限制为 8 个样本。
+第十四批 5 个模块为：`store/catalog/provider`（文件过滤否定逻辑）、`store/files`（LIKE 单字符与转义）、
+`store/events`（会话谓词特殊字符）、`store/storyline`（generation 名称安全校验）以及
+`store/catalog`（数据源状态计数）。
+第十五批 5 个模块为：`openai_corpus`（多行 step 顺序）、`storyline_codec`（短字段 wire 约束）、
+`revision`（子会话共享根分区）、`attempt_registry`（终态结果序列化）以及
+`catalog_identity`（命名空间路径安全边界）。
+第十六批 5 个模块为：`claude_code`（工具调用结果关联）、`codex`（消息项文本保真）、
+`atif_codec`（ATIF turn 内容往返）、`events_convert`（请求/响应对话与延迟推导）以及
+`interop`（HAR 导出与 OTLP 输入解析）。
+第十七批 5 个模块为：`agenticmd_codec`（正数 turn ID 保真）、`analysis_compile`（未知 measure 错误结构）、
+`catalog_namespace`（分页大小边界）、`events_projection`（事件序列单调性）以及
+`run_control`（不同 owner 的租约互斥）。
+第十八批 5 个模块为：`storage_layout`（Unicode 会话文件名确定性）、`storyline_model`
+（turn effective kind 规则）、`unknown_fields_roundtrip`（step unknown field 保真）、
+`storyline_datafusion`（规范化 timing 列查询）以及 `storyline_lance`（多 turn 顺序往返）。
+第十九批 5 个模块为：`direct_file_query`（多行 OpenAI 文件查询）、`document_source`
+（逐条 storyline 回调）、`query_engine`（ATIF step 消息查询）、`timestamp`（RFC3339 任意时刻）以及
+`store/local_query_manifest`（manifest 限制参数前置校验，私有性质测试保留在源文件）。
+第二十批 5 个模块为：`agenticmd_convert`（turn timing/model 元数据往返）、`event_manifest`
+（writer owner 空白边界）、`projection_automatic`（projection state wire 名称）、`egress`
+（bundle 文件计数）以及 `event_snapshot`（快照 JSON 确定性）。
+第二十一批 5 个模块为：`attempt_registry`（过期边界为排他条件）、`catalog_namespace`
+（嵌套 namespace 父级归组）、`document`（ATIF JSONL 多记录解码）、`public_api`
+（非法 JSON 的输入错误分类）以及 `revision`（坐标路径安全校验）。
+第二十二批 5 个模块为：`codex`（function call output 关联）、`claude_code`
+（thinking/reasoning 保真）、`openai_corpus`（历史 tool result 归属）、`events_convert`
+（session note 系统 turn）以及 `catalog_provenance`（source revision snapshot ref）。
+第二十三批 5 个模块为：`events_model`（运行时 identity 字段往返）、`format`（ASCII 外层空白解析）、
+`input`（多次 location 附加的覆盖语义）、`layout_coords`（存储路径尾部斜杠等价性）以及
+`llm`（角色枚举稳定 snake_case wire 名称）。
+第二十四批 5 个模块为：`store/event_row`（Canonical Event 行往返与时间戳必填）、
+`store/storyline/mutation`（chunk 限制边界）、`store/files/atif_stream`（session identity 优先级）、
+`store/files/actf_stream`（投影计数辅助函数）以及 `store/events/datafusion`（过滤条件合取边界）。
 
 ## 集成测试文件索引
 

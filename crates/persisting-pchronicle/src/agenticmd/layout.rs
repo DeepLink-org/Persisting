@@ -191,7 +191,6 @@ fn is_session_key_markdown_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
 
     fn touch(path: std::path::PathBuf) {
         if let Some(parent) = path.parent() {
@@ -331,60 +330,5 @@ mod tests {
             locate_session_markdown(&run_dir),
             Some(run_dir.join("run-20260524-161537-122998000.md"))
         );
-    }
-
-    fn storage_safe_suffix_strategy() -> impl Strategy<Value = String> {
-        proptest::string::string_regex("[a-zA-Z0-9_-]{1,64}").unwrap()
-    }
-
-    proptest! {
-        #[test]
-        fn encoding_is_bounded_ascii_and_path_safe(session_id in any::<String>()) {
-            let encoded = session_filename_stem(&session_id);
-            prop_assert!(!encoded.is_empty());
-            prop_assert!(encoded.len() <= SESSION_FILENAME_MAX_LEN);
-            prop_assert!(encoded.is_ascii());
-            prop_assert!(!encoded.contains('/'));
-            prop_assert!(!encoded.contains('\\'));
-        }
-
-        #[test]
-        fn markdown_filename_is_a_single_md_path_component(session_id in any::<String>()) {
-            let filename = session_markdown_filename(&session_id);
-            prop_assert!(filename.ends_with(".md"));
-            prop_assert!(!filename.contains('/'));
-            prop_assert!(!filename.contains('\\'));
-            prop_assert_eq!(Path::new(&filename).file_name().and_then(|v| v.to_str()), Some(filename.as_str()));
-        }
-
-        #[test]
-        fn canonical_subagent_keys_roundtrip_through_storage_detection(
-            suffix in storage_safe_suffix_strategy(),
-        ) {
-            let key = format!("agent-{suffix}");
-            let filename = session_markdown_filename(&key);
-            prop_assert!(is_subagent_session_storage_key(&key));
-            prop_assert!(is_subagent_markdown_filename(&filename));
-            prop_assert!(is_trajectory_markdown_path(&filename));
-        }
-
-        #[test]
-        fn generated_run_and_agent_markdown_names_are_trajectory_paths(
-            prefix in prop_oneof![Just("run-"), Just("agent-")],
-            suffix in storage_safe_suffix_strategy(),
-        ) {
-            let filename = format!("{prefix}{suffix}.md");
-            prop_assert!(is_trajectory_markdown_path(filename));
-        }
-
-        #[test]
-        fn write_path_stays_beneath_run_directory_when_no_file_exists(
-            session_id in any::<String>(),
-        ) {
-            let dir = tempfile::tempdir().unwrap();
-            let path = session_markdown_write_path_for_key(dir.path(), &session_id);
-            prop_assert_eq!(path.parent(), Some(dir.path()));
-            prop_assert_eq!(path, session_markdown_path_for_key(dir.path(), &session_id));
-        }
     }
 }

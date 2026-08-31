@@ -4,7 +4,8 @@ SandboxReplay is pVisor's Agent-trajectory replay capability. It normally runs
 inside a fresh sandbox created by the caller, re-executes the complete tool
 batches before a selected boundary, rebuilds the Agent-native context with the
 fresh observations, and then continues the Agent directly after that boundary.
-
+It creates a derived Run in the
+[Run and Attempt model](../concepts/run-model.md).
 
 ## Replay boundary
 
@@ -146,3 +147,8 @@ The Chinese localization of this page contains all nine paired `A(N+1)` and
 `A'(N+1)` responses, including visible text, tool names, and arguments. Use the
 language switcher to open that detailed report. Reasoning is removed, and long
 file replacements are reduced to their distinguishing targets.
+
+For exact options, use the
+[`pvisor replay` reference](../reference/cli.md#replay-an-agent-trajectory);
+for execution boundaries, continue to the
+[execution guide](execution.md).

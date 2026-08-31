@@ -44,6 +44,36 @@
   color: #98a2b3;
   font-size: 10px;
 }
+.physical-preview-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.physical-page-nav {
+  padding: 4px 8px;
+  border: 1px solid #d0d5dd;
+  border-radius: 5px;
+  background: #fff;
+  color: #344054;
+  font-size: 10px;
+  cursor: pointer;
+}
+.physical-page-nav:hover:not(:disabled) {
+  border-color: #84adf4;
+  background: #f2f6fc;
+}
+.physical-page-nav:disabled {
+  color: #b3bac5;
+  background: #f2f4f7;
+  cursor: default;
+}
+.physical-page-status {
+  min-width: 62px;
+  color: #667085;
+  font-size: 10px;
+  text-align: center;
+}
 .physical-tree-list {
   min-height: 0;
   flex: 1;

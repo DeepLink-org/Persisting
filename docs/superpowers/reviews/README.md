@@ -31,5 +31,6 @@ YYYY-MM-DD-<topic>-review.md
 | 2026-08-23 | [product-phase-review](2026-08-23-product-phase-review.md) | 产品定位、架构与界面整体阶段 review，功能暴露路线 |
 | 2026-08-23 | [four-page-prototype-review](2026-08-23-four-page-prototype-review.md) | 四页原型（Overview/Explore/Traces/Analysis）设计 review |
 | 2026-08-23 | [frontend-product-review](2026-08-23-frontend-product-review.md) | 运行中前端整体 review（实测截图，对照时间旅行调试器叙事） |
+| 2026-08-28 | [pchronicle-design-impl-review](2026-08-28-pchronicle-design-impl-review.md) | `persisting-pchronicle` crate 设计与实现整体 review（分层评分、P0/P1/P2 发现、README 与代码漂移） |
 
 配图统一放在 `assets/` 下，命名 `YYYY-MM-DD-<slug>.svg`（实测截图可用 `assets/YYYY-MM-DD-<slug>/` 子目录放 PNG），文档内以相对路径 `assets/...` 引用。SVG 使用 CSS 变量 + fallback（如 `var(--color-text-primary, #2c2c2a)`），独立浏览器打开和嵌入文档站点均可正常渲染。

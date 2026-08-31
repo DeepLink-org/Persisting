@@ -416,16 +416,16 @@ pchronicle serve \
 
 Gateway events are durable after they have been flushed to the selected
 Dataset. Appending to an existing `events.lance` source does not rebuild the
-global Catalog. Single-trace `/api/events`, `/api/storyline`, and
+global Snapshot. Single-trace `/api/events`, `/api/storyline`, and
 `/api/trajectory-view` requests reopen that source's latest manifest, so an
-active trace can be observed in real time. The global Catalog is refreshed when
+active trace can be observed in real time. The global Snapshot is refreshed when
 a new canonical source (for example, a new split file) appears or a Storyline
 projection is published. Projection or refresh failures use bounded retry and
-retain the old queryable Catalog; neither blocks durable capture writes.
+retain the old queryable Snapshot; neither blocks durable capture writes.
 `POST /api/catalog` remains available for an explicit manual refresh. On
 `SIGINT` or `SIGTERM`, `pchronicle serve` stops both services and finishes the
 Gateway capture writer before exiting.
 
 For exact command flags, see the [`pchronicle` CLI reference](../reference/cli.md).
 For the storage model behind refresh, see
-[Dataset Catalog design](../design/catalog.md).
+[Snapshot design](../design/catalog.md).

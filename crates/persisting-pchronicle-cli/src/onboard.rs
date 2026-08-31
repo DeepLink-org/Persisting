@@ -17,11 +17,11 @@ const DEMO_ACTF: &str = include_str!("../assets/onboard/code-repair.actf.json");
 const DEMO_OPENAI: &str = include_str!("../assets/onboard/training.json");
 const MAX_FILES: usize = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES;
 const MAX_ENTRIES: usize = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES;
-const STEP_SAMPLE_SQL: &str = r#"SELECT session_id, step_id, source, model_name, message_json
+const STEP_SAMPLE_SQL: &str = r#"SELECT session_id, step_id, source, model_name, message_kind, message_value
 FROM dataset.steps
 ORDER BY session_id, step_id
 LIMIT 10"#;
-const TOOL_SAMPLE_SQL: &str = r#"SELECT session_id, step_id, function_name, arguments_json
+const TOOL_SAMPLE_SQL: &str = r#"SELECT session_id, step_id, function_name, arguments
 FROM dataset.tool_calls
 ORDER BY session_id, step_id, call_index
 LIMIT 10"#;
@@ -71,7 +71,7 @@ enum OnboardSection {
     Query(DatasetSectionArgs),
     /// Query ATIF, ACTF, and OpenAI Messages together.
     Formats,
-    /// Locate one Step by a discovered Source-local ID.
+    /// Locate Steps with Source-local IDs, FTS, or JSONB expressions.
     Find(DatasetSectionArgs),
     /// Configure an isolated Warehouse and perform strict import/export.
     #[command(visible_alias = "import-export")]
@@ -284,7 +284,8 @@ pChronicle 把 ATIF、ACTF、OpenAI Messages 等轨迹格式投影为统一的 D
 - `Dataset` 是一个本地目录或对象存储 URI。
 - `Source` 是 Dataset 中的一份逻辑轨迹数据源。
 - `Snapshot` 固定一次命令所观察到的目录视图。
-- `runs`、`steps`、`tool_calls` 等统一表屏蔽了交换格式差异。
+- `runs`、`steps`、`tool_calls` 等统一表屏蔽了交换格式差异；Storyline Lance
+  Dataset 还可以为 Step 内容建立 FTS/Jieba 索引。
 
 可以运行完整引导，也可以直接进入一个章节：
 
@@ -392,7 +393,7 @@ async fn render_query(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &str)
     .await?;
     renderer.render(&command_section(
         "Query · 查看 Step",
-        "`message_json` 保留消息值，Agent、Model 和时间字段则可直接参与 SQL。",
+        "`message_kind` 标识消息类型，`message_value` 保留原始消息值；Agent、Model 和时间字段则可直接参与 SQL。",
         &format!(
             "pchronicle query {dataset} --sql {} --format table",
             shell_quote(STEP_SAMPLE_SQL)
@@ -447,22 +448,48 @@ async fn render_formats(
 
 async fn render_find(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &str) -> Result<()> {
     let target = discover_find_target(dataset_uri.to_owned()).await?;
-    let Some((session_id, step_id)) = target else {
+    if let Some((session_id, step_id)) = target {
+        let output = capture_find(dataset_uri.to_owned(), session_id.clone(), step_id).await?;
+        renderer.render(&command_section(
+            "Find · 按 Source-local ID 定位",
+            "外部 ID 只保证在各自 Source 内有意义。`find` 返回 `source_path`，用于消除不同 Source 之间的歧义。",
+            &format!(
+                "pchronicle find {} --session-id {} --step-id {step_id} --format table",
+                shell_quote(dataset_uri),
+                shell_quote(&session_id)
+            ),
+            &output,
+        ))?;
+    } else {
         renderer.render(
             "## Find · 没有可定位的 Step\n\n当前 Dataset 的 `steps` 表为空。导入轨迹后再使用 `find`。\n",
         )?;
-        return renderer.pause();
-    };
-    let output = capture_find(dataset_uri.to_owned(), session_id.clone(), step_id).await?;
-    renderer.render(&command_section(
-        "Find · 按 Source-local ID 定位",
-        "外部 ID 只保证在各自 Source 内有意义。`find` 返回 `source_path`，用于消除不同 Source 之间的歧义。",
-        &format!(
-            "pchronicle find {} --session-id {} --step-id {step_id} --format table",
-            shell_quote(dataset_uri),
-            shell_quote(&session_id)
-        ),
-        &output,
+    }
+    renderer.pause()?;
+    if renderer.stopped() {
+        return Ok(());
+    }
+    let dataset = shell_quote(dataset_uri);
+    renderer.render(&format!(
+        r#"## Find · FTS、字段限定与 JSONB
+
+`--match` 是统一检索入口：普通文本走 Storyline Step 的 FTS/Jieba 索引，`#user(...)`、
+`#system(...)` 等形式限定字段，`AND`、`OR`、`NOT` 和括号组合条件。JSONB 使用
+`$.path=value`，或用 `#json.COLUMN("$.path")=value` 指定列。
+
+```console
+pchronicle find {dataset} --match "deployment"
+pchronicle find {dataset} --match '#user("pending")'
+pchronicle find {dataset} --match '$.tags="important"' --format json
+pchronicle find {dataset} --match '(#user("timeout") OR #assistant("retry")) AND NOT #system("example")'
+```
+
+重复 `--match` 表示 AND。JSON 输出中的 `snapshot_id`、`search.mode`、`search.scope`、
+`fts_available` 和 `preview` 用于自动化诊断；`source_path`、`session_id` 和 `step_id`
+可以直接复制到下一次定位查询。FTS 只有在 Storyline Lance 索引可用时才会执行，索引
+不可用不等价于零命中。
+
+"#
     ))?;
     renderer.pause()
 }
@@ -487,9 +514,19 @@ async fn render_exchange(
     }
     renderer.render(&command_section(
         "Exchange · 导入",
-        "导入是 create-only，来源和目标都显式写在命令中。",
+        "导入是 create-only，来源和目标都显式写在命令中。保留布局适合严格往返和审计原始来源。",
         "pchronicle import --from ./support-ticket.json --to ./trajectory-data/support-ticket --input-format atif",
         &exchange.import_output,
+    ))?;
+    renderer.pause()?;
+    if renderer.stopped() {
+        return Ok(());
+    }
+    renderer.render(&command_section(
+        "Exchange · 构建 Storyline Lance",
+        "`--output-format storyline` 将输入规范化为 Dataset 根部的 Storyline Lance Store，并为后续 FTS/Jieba 与 JSONB 查询准备统一布局。",
+        "pchronicle import --from ./support-ticket.json --to ./trajectory-data/storyline-support-ticket --input-format atif --output-format storyline",
+        &exchange.storyline_import_output,
     ))?;
     renderer.pause()?;
     if renderer.stopped() {
@@ -515,6 +552,8 @@ pchronicle serve --listen 127.0.0.1:8080 --open evals=../data/atif
 ```
 
 服务只允许 loopback 地址，因为这个本地表面不提供认证；Dataset API 和 Web UI 都是只读的。
+Runs 页面检索使用与 `find --match` 相同的 FTS/JSONB 语义，命中的轨迹会展示上下文预览；
+可以先用 CLI `find` 定位，再在 Web 中继续钻取。
 
 "#,
     )?;
@@ -525,13 +564,15 @@ fn render_completion(renderer: &mut WalkthroughRenderer<'_>) -> Result<()> {
     renderer.render(
         r#"# 完成
 
-你已经走通 Dataset 发现、内置分析、Schema、SQL、跨格式查询、ID 定位、Warehouse、导入导出和只读服务边界。
+你已经走通 Dataset 发现、内置分析、Schema、SQL、FTS/JSONB 检索、跨格式查询、ID 定位、
+Storyline Lance 导入导出和只读 Web/API 服务边界。
 
 本引导创建的内置示例和隔离 Warehouse 将在命令退出时自动清理。把自己的 Dataset 接入相同流程：
 
 ```console
 pchronicle onboard inspect ./my-trajectories
 pchronicle onboard query ./my-trajectories
+pchronicle find ./my-trajectories --match "timeout" --format json
 ```
 
 完整参数以 `pchronicle --help` 为准。
@@ -708,6 +749,7 @@ async fn capture_find(dataset_uri: String, session_id: String, step_id: i64) -> 
             run_id: None,
             session_id: Some(session_id),
             step_id: Some(step_id),
+            matches: Vec::new(),
             format: OutputFormat::Table,
             max_results: 100,
             max_output_bytes: 8 * 1024 * 1024,
@@ -727,6 +769,7 @@ async fn capture_find(dataset_uri: String, session_id: String, step_id: i64) -> 
 struct ExchangeOutput {
     default_output: String,
     import_output: String,
+    storyline_import_output: String,
     export_output: String,
 }
 
@@ -775,6 +818,25 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
     let imported_dataset = import_value["dataset_uri"]
         .as_str()
         .context("onboard import result has no dataset_uri")?;
+    let storyline_output = warehouse.join("storyline-support-ticket");
+    let mut storyline_stdout = Vec::new();
+    let mut storyline_stderr = Vec::new();
+    run_import(
+        ImportArgs {
+            from: demo.atif_source().to_string_lossy().into_owned(),
+            output: Some(storyline_output.to_string_lossy().into_owned()),
+            format: ExchangeFormat::Atif,
+            output_format: Some(ImportOutputFormat::Storyline),
+            stream: false,
+            max_input_bytes: None,
+        },
+        Some(&settings),
+        &mut std::io::empty(),
+        &mut storyline_stdout,
+        &mut storyline_stderr,
+    )
+    .await?;
+    let storyline_import_output = decode_output(storyline_stdout)?;
     let exported = demo.root().join("restored-support-ticket.json");
     let mut export_stdout = Vec::new();
     let mut export_stderr = Vec::new();
@@ -825,6 +887,7 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
     Ok(ExchangeOutput {
         default_output: sanitize(decode_output(default_stdout)?),
         import_output: sanitize(decode_output(import_stdout)?),
+        storyline_import_output: sanitize(storyline_import_output),
         export_output: format!(
             "{}严格往返校验：输入与输出 JSON 语义相等\n",
             sanitize(decode_output(export_stderr)?)

@@ -477,3 +477,28 @@ fn combine_filters(filters: &[Expr]) -> Option<Expr> {
     let first = filters.next()?;
     Some(filters.fold(first, Expr::and))
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use super::*;
+    use datafusion::prelude::{col, lit};
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn combining_filters_is_none_only_for_an_empty_slice(filter_count in 0usize..16) {
+            let filters = (0..filter_count)
+                .map(|index| col("session_id").eq(lit(index as i64)))
+                .collect::<Vec<_>>();
+            let combined = combine_filters(&filters);
+            prop_assert_eq!(combined.is_some(), filter_count > 0);
+            if let Some(expression) = combined {
+                let rendered = expression.to_string();
+                for index in 0..filter_count {
+                    prop_assert!(rendered.contains(&index.to_string()), "missing filter {index}: {rendered}");
+                }
+                prop_assert_eq!(rendered.matches("AND").count(), filter_count.saturating_sub(1));
+            }
+        }
+    }
+}

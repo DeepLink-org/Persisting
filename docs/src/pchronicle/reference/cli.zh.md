@@ -21,14 +21,11 @@ pchronicle onboard
 
 ### Dataset
 
-**Dataset 是 pChronicle 命令行操作的统一数据对象。** 它是一组可以被浏览、查询、分析、导入、
-导出或提供服务的 Agent Run 数据。
-
-一个 Dataset 可以表现为：
+**Dataset 就是 path。** pChronicle 打开这条 path 作为轨迹存储。它可以写成：
 
 - 本地目录或文件（`./local/path`）；
 - 对象存储中的 URI 前缀（`s3://bucket/prefix`）；
-- 指向上述位置的用户 alias（`@alias-name`）。
+- 解析到上述位置的用户 alias（`@alias-name`）。
 
 Dataset 内部可以保存一种或多种受支持的运行数据格式。pChronicle 负责发现和规范化这些数据；用户只需要
 向命令提供 Dataset，不需要先理解内部文件、分片、投影或版本布局。
@@ -75,7 +72,7 @@ pchronicle [-c FILE] [--log-level LEVEL] <COMMAND> ...
 | 参数 | 默认值 | 用途 |
 |---|---:|---|
 | `-c, --config FILE` | 平台配置目录 | 使用另一份用户配置文件 |
-| `--log-level error|warn|info|debug` | `info` | 控制 stderr 诊断详细度 |
+| `--log-level error|warn|info|debug` | `info` | 控制 stderr 诊断详细度；`serve` 同时用它过滤 Warehouse tracing（`pchronicle.serve`） |
 | `-h, --help` | — | 查看当前层级帮助 |
 | `-V, --version` | — | 查看版本 |
 
@@ -95,6 +92,8 @@ pchronicle onboard query @prod
 通过内建示例或自己的 Dataset 体验 pChronicle 工作流。`SECTION` 可以是 `all`、`concepts`、
 `inspect`、`analyze`、`query`、`formats`、`find`、`exchange` 或 `serve`，默认为 `all`。
 交互式终端会在章节之间暂停；pipe、重定向或 `--no-pause` 输出连续 Markdown。
+完整引导还会演示统一的 FTS/JSONB `find` 表达式、Storyline Lance 导入导出以及只读 Web/API
+边界；使用 `pchronicle onboard find DATASET` 可以直接查看检索语法。
 
 ### 2.2 `default`
 
@@ -120,6 +119,10 @@ pchronicle alias [list|add|remove|rename|get-url|set-url] [ARGUMENTS]
 ```bash
 pchronicle alias add local ./trajectory-data
 pchronicle alias add prod s3://bucket/evals
+pchronicle alias add secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
+pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --ak 123 --sk 123
+pchronicle alias add regional s3://bucket/evals --region us-west-2
+pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 pchronicle alias
 ```
 
@@ -132,6 +135,20 @@ Alias 提供类似 `git remote` 的多 Dataset 管理方式，可以同时保存
 `alias list`，结果按名称排序。其他操作可用 `pchronicle alias --help` 查看。Alias 操作只修改用户配置，
 不移动或删除 Dataset；名称使用小写字母、数字、点、下划线和连字符，并以小写字母开头。
 `codex`、`claude`、`claude-code` 是保留名称。
+`alias list` 还会始终显示系统内置的 `@codex`、`@claude`、`@claude-code`，它们分别指向对应的本地
+Agent 会话目录。
+对于 S3 Dataset，可以通过 `--ak` 和 `--sk` 配置访问密钥与秘密密钥；凭证与 URI 分开保存，
+并在使用 alias 时通过标准 AWS 环境变量提供，不会由 `alias list` 或 `alias get-url` 输出。
+对于 MinIO 等 S3 兼容服务，可以通过 `--endpoint` 保存服务地址；使用 alias 时会自动设置为
+`AWS_ENDPOINT_URL_S3`。Dataset URI 仍应保持为 `s3://bucket/prefix`，不要把主机和端口写入 URI。
+当 endpoint 使用 `http://` 时，pChronicle 会自动设置 `AWS_ALLOW_HTTP`，适用于本地 MinIO 等服务。
+`catalog://127.0.0.1:PORT` alias 是 Directory locator：`@team/prod` 换票后打开票里的 path，
+单独的 `@team` 不是 Dataset。Directory alias 必须提供 `--ak/--sk`，并拒绝 `--endpoint` 和 `--region`。
+后端对象存储密钥留在 Directory 服务端。locator、换票与进程模型见
+[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。
+`alias set-url` 也支持相同的 `--endpoint` 参数；在两个 S3 URI 之间切换且未指定新 endpoint 时，
+会保留原有 endpoint。
+可选的 `--region` 也会按 alias 保存；省略时由 S3 客户端自行处理，需要回退时默认使用 `us-west-2`。
 
 ### 2.4 `ls`
 
@@ -168,7 +185,9 @@ canonical Event Store 的 Storyline projection 状态。还可以用 `--max-file
 ### 2.6 `find`
 
 ```text
-pchronicle find [DATASET] (--run-id ID|--document-id ID|--session-id ID) [--source PATH] [--step-id N]
+pchronicle find [DATASET]
+  (--run-id ID|--document-id ID|--session-id ID|--match EXPRESSION)
+  [--source PATH] [--step-id N] [--match EXPRESSION ...]
   [--format auto|table|json] [--max-results N]
 ```
 
@@ -177,10 +196,26 @@ pchronicle find @prod --session-id session-42
 pchronicle find ./dataset \
   --source nested/source.json \
   --session-id session-42 --step-id 7
+pchronicle find ./dataset \
+  --match "timeout" --match "retry" --format json
+pchronicle find ./dataset \
+  --match '$.tags=important' --match '$.priority=2' --format json
 ```
 
 外部 ID 不保证在整个 Dataset 内唯一。没有 `--source` 时，同一个 ID 可以返回多个候选；结果中的
-`source_path` 可以供下一次查询消除歧义。使用 `--format` 和 `--max-results` 控制结果形式和数量。
+`source_path` 可以供下一次查询消除歧义。`--match` 是统一检索表达式：普通关键词搜索 Storyline
+Step 内容并使用 FTS/Jieba 索引，`#system(prompt)` 等形式可以限定字段，`AND`、`OR`、`NOT` 用于
+组合条件；`$.path=value`（或 `#json("$.path")=value`）按 JSONPath 对 JSONB 列做精确值匹配。仅
+JSON 表达式当前搜索 Run 级 JSONB，和文本混合时搜索 Step 级 JSONB。可以重复 `--match` 要求所有表达式
+同时满足；显式使用 `#json.metrics(...)` 时即使没有文本条件也会检索 Step 级 JSONB。CLI 与 Web
+共用该表达式、报告的 `search.scope` 和 `snapshot_id`；Web UI 可以对返回字段做高亮和截取，
+不改变命中集合。使用 `--format` 和 `--max-results` 控制结果形式和数量。每条结果还包含有界的 `preview`
+摘要，便于在继续查询前判断候选是否正确。
+JSON 输出还会报告 `search.mode`（`fts`、`json`、`fts+json` 或 `identity`）、`search.scope`（`steps` 或 `runs`）
+以及 FTS 可用性和分词器元数据。
+当前语法见 [Query Model](query-model.md)。
+[RFC-0012](../../rfcs/0012-pchronicle-find-query-syntax.md) 是已接受的决策记录；与已安装
+CLI 不一致时以 CLI 为准。
 
 ### 2.7 `query`
 
@@ -305,7 +340,11 @@ pchronicle serve
    [--gateway-split-idle DURATION]]
   [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
   [--gateway-stream-markdown] [--gateway-debug]
+  [--catalog-config FILE]
   [<[NAME=]DATASET> ...]
+pchronicle serve catalog issue  --catalog-config FILE NAME
+pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
+pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
 ```
 
 ```bash
@@ -317,7 +356,13 @@ pchronicle serve \
 ```
 
 未指定服务 flag 时，只读 Web/API 默认监听 `127.0.0.1:0`。多个 Dataset 使用
-`NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。无需配置的 `--gateway`
+`NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。`--catalog-config FILE`
+以 Directory 方式服务，父进程不打开 libraries；配合
+`alias add NAME catalog://127.0.0.1:PORT --ak --sk`。
+`pchronicle serve catalog issue|grant|revoke` 只改该文件、不启动 HTTP；`issue` 把用户
+sk 只打印一次。改用户或授权后必须重启 serve。`catalog` 是 `serve` 的保留子命令，挂载同名
+路径请用 `./catalog`。见
+[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。无需配置的 `--gateway`
 在 `POST /v1/events` 接收 canonical trajectory events；`--gateway-dataset` 是自动挂载的
 输出 URI，不再是 mount name。`--gateway-split` 支持 `{user}`、`{date}`、`{hour}`。
 已有 canonical source 默认在最后一条事件后空闲 30 分钟才自动刷新 Storyline projection；
@@ -416,3 +461,7 @@ pchronicle \
   --file checks.sql \
   --format jsonl > checks.jsonl
 ```
+
+定位后再写 SQL 见 [发现并查询](../guides/discover-and-query.md)，交换见
+[导入与导出](../guides/exchange.md)，只读服务见 [本地服务 Dataset](../guides/serve.md)。
+Snapshot 构造见 [Snapshot 设计](../design/catalog.md)。

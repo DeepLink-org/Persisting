@@ -881,6 +881,70 @@ mod tests {
     use crate::formats::StorylineDocument;
     use serde_json::json;
 
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn pointer_token_strategy() -> impl Strategy<Value = String> {
+            prop::collection::vec(any::<char>(), 0..64)
+                .prop_map(|chars| chars.into_iter().collect())
+        }
+
+        proptest! {
+            #[test]
+            fn pointer_join_roundtrips_every_token(token in pointer_token_strategy()) {
+                let pointer = pointer_join("", &token);
+                prop_assert_eq!(decode_json_pointer(&pointer).unwrap(), vec![token]);
+            }
+
+            #[test]
+            fn canonical_source_id_ignores_object_order_and_storyline_envelope(
+                first_key in "[a-zA-Z][a-zA-Z0-9_-]{0,15}",
+                second_key in "[a-zA-Z][a-zA-Z0-9_-]{0,15}",
+                first_value in any::<i64>(),
+                second_value in any::<i64>(),
+            ) {
+                prop_assume!(first_key != second_key);
+                prop_assume!(first_key != "_storyline" && second_key != "_storyline");
+
+                let mut forward = Map::new();
+                forward.insert(first_key.clone(), serde_json::json!(first_value));
+                forward.insert(second_key.clone(), serde_json::json!(second_value));
+
+                let mut reverse = Map::new();
+                reverse.insert(second_key, serde_json::json!(second_value));
+                reverse.insert(first_key, serde_json::json!(first_value));
+                reverse.insert("_storyline".into(), serde_json::json!({"ignored": true}));
+
+                prop_assert_eq!(
+                    canonical_source_document_id(&Value::Object(forward)).unwrap(),
+                    canonical_source_document_id(&Value::Object(reverse)).unwrap(),
+                );
+            }
+
+            #[test]
+            fn atif_step_indexes_collapse_to_one_normalized_key(
+                indexes in prop::collection::vec(0usize..1000, 1..32),
+            ) {
+                let mut fields = StorylineUnknownFields::default();
+                for index in indexes {
+                    fields.insert("atif", "source", format!("/steps/{index}/vendor"), Value::Bool(true)).unwrap();
+                }
+                let distinct_fields = fields.sources["atif"].fields.len() as u64;
+                let counts = compute_unknown_key_counts(&fields).unwrap();
+                prop_assert_eq!(counts["atif"]["/steps/*/vendor"], distinct_fields);
+            }
+
+            #[test]
+            fn joined_pointers_are_always_absolute(token in pointer_token_strategy()) {
+                prop_assert!(pointer_join("", &token).starts_with('/'));
+            }
+
+        }
+    }
+
     #[test]
     fn pointer_join_appends_rfc6901_escaped_tokens() {
         assert_eq!(pointer_join("", "steps"), "/steps");

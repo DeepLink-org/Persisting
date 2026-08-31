@@ -1,6 +1,12 @@
-# pChronicle Dataset Catalog 设计
+# pChronicle Snapshot 设计
 
-> 当前实现说明。Dataset 命令参数见 [`pchronicle` 命令参考](../reference/cli.md)；轨迹物理格式见
+> 当前实现说明。代码与历史文档称 Dataset Catalog；产品口径称 **Snapshot**：打开 **path**
+> 之后，写入与读取之间的同步协议。平台侧的名字→path 授权见
+> [RFC-0013 path Directory](../../rfcs/0013-pchronicle-warehouse-catalog.md)，不是本文。
+>
+> Dataset 命令参数见 [`pchronicle` 命令参考](../reference/cli.md)；用户模型见
+> [Dataset、Source 与 Snapshot](../concepts/dataset-and-source.md)；查询工作流见
+> [发现并查询](../guides/discover-and-query.md)；轨迹物理格式见
 > [pChronicle 运行存储](trajectory-storage.md) 与
 > [Storyline 三表 Lance](storyline-lance.md)。
 
@@ -11,20 +17,20 @@
 
 ## 1. 定位
 
-pChronicle Dataset Catalog 面向由多个存储位置和多种轨迹格式共同组成的查询空间，主要
-覆盖以下场景：
+Snapshot 面向由**一条 path** 下多个存储位置和多种轨迹格式共同组成的查询空间（Warehouse
+可同时 pin 多条 path，每条仍是独立 Dataset）。主要覆盖：
 
 - 同时查询在线数据、历史归档和评测数据；
-- 一个逻辑数据集下包含多层目录、多个 Run 级 `events.lance`，以及若干外围 JSON 文件；
-- 不同数据集存在相同的 `run_id`、`session_id` 或文件名；
+- 一条 path 下包含多层目录、多个 Run 级 `events.lance`，以及若干外围 JSON 文件；
+- 不同 path 上存在相同的 `run_id`、`session_id` 或文件名；
 - Web 服务需要在多次请求之间复用同一份发现结果，并且只在显式刷新后切换视图。
 
-它位于存储 URI 与 DataFusion SQL 之间，提供轻量的命名和发现边界。用户把若干 URI
-挂载为 Dataset；pChronicle 对每个挂载递归发现轨迹源，将不同物理格式统一投影到稳定表，
-并在一次查询或一代 Web 快照内固定其成员与版本。
+它位于 path 与 DataFusion SQL 之间。用户打开一条 path（或经 Directory 换票得到 path）；
+pChronicle 递归发现轨迹源，将不同物理格式统一投影到稳定表，并在一次查询或一代 Web
+Snapshot 内固定其成员与版本。这是写/读同步协议，不是一份需要长期维护的元数据数据库。
 
-Catalog **不是**一份需要长期维护的元数据数据库。它不复制源数据、不接管对象存储目录、
-不声明外围 JSON 已成为 canonical 数据，也不要求后台同步任务。
+Snapshot **不是** Directory，也不复制源数据、不接管对象存储目录、不声明外围 JSON 已成为
+canonical 数据，也不要求后台同步任务。代码类型名 `DatasetCatalogSnapshot` 仍指本对象。
 
 ## 2. 目标与非目标
 
@@ -55,7 +61,7 @@ Catalog **不是**一份需要长期维护的元数据数据库。它不复制�
 
 ## 3. 核心模型
 
-![Dataset Catalog 查询路径](../../assets/diagrams/persisting/dataset-catalog.svg)
+![Snapshot 查询路径](../../assets/diagrams/persisting/dataset-catalog.svg)
 
 核心对象分为七层：
 
@@ -71,10 +77,10 @@ Catalog **不是**一份需要长期维护的元数据数据库。它不复制�
 
 ### 3.1 Namespace、Dataset 与 SQL alias
 
-Dataset 是用户命名的逻辑查询空间，不等于物理 Lance dataset。一个 Dataset 可以包含多个
-Storyline store、多个 `events.lance` 和多个外围文件；每个 Dataset 对应一个 DataFusion
-schema。Catalog 用 `NamespacePath` 表达层级身份，用独立的 SQL alias 注册 DataFusion
-schema；因此 `prod/agents` 与 `staging/agents` 可以同时存在，而无需把目录身份编码进表名。
+Dataset 身份是规范化 path，不等于物理 Lance dataset，也不等于 Warehouse mount 名。
+一条 path 可以包含多个 Storyline store、多个 `events.lance` 和多个外围文件。Warehouse
+用 SQL alias 把已打开的 path 注册为 DataFusion schema，因此 `prod` 与 `staging` 可以同时
+存在；alias 不是 Dataset 身份。实现仍用 `NamespacePath` 表达挂载层级。
 
 SQL alias 会去除首尾空白并转成小写，必须匹配 `[A-Za-z_][A-Za-z0-9_]*`。`public` 和
 `information_schema` 是保留名称。namespace component 允许字母、数字、`_`、`-`、`.`。
@@ -129,13 +135,9 @@ pchronicle query \
   --sql "SELECT * FROM current.runs"
 ```
 
-也可以从 TOML 读取：
-
-```toml
-[datasets]
-current = "local:///srv/pchronicle/current"
-archive = "s3://trajectory-bucket/archive"
-```
+`--mount` 与位置 Dataset 互斥。位置参数挂载为固定 schema `dataset`；只用
+`--mount` 时必须写 mount 名，没有隐式 `dataset` schema。用户配置文件（`-c`）只保存
+alias 与默认 Dataset，不提供 query 挂载表。
 
 ```bash
 pchronicle query --mount current=local:///srv/pchronicle/current \
@@ -143,16 +145,12 @@ pchronicle query --mount current=local:///srv/pchronicle/current \
   --sql "SELECT table_schema, table_name FROM information_schema.tables"
 ```
 
-位置参数、配置文件与重复 `--mount` 可以同时使用。三者中出现规范化重名时整体失败，
-不会按参数顺序覆盖。
-
 ### 4.2 默认选择规则
 
-| 输入 | 默认 Dataset | 不带 schema 的 `runs` 等表名 |
+| CLI 输入 | 默认 Dataset | 不带 schema 的 `runs` 等表名 |
 |---|---|---|
 | 有位置参数 `INPUT` | 固定为 `dataset` | 指向 `dataset.runs` 等默认 view |
-| 无位置参数且只有一个命名挂载 | 唯一挂载 | 指向该 Dataset 的默认 view |
-| 无位置参数且有多个命名挂载 | 无 | 必须写 `current.runs` 等限定名 |
+| 仅 `--mount`（一个或多个） | 无 | 必须写 `current.runs` 等限定名 |
 
 位置参数形式如下：
 
@@ -160,13 +158,8 @@ pchronicle query --mount current=local:///srv/pchronicle/current \
 pchronicle query ./capture --sql "SELECT * FROM dataset.runs"
 ```
 
-等价于把 `./capture` 挂载为 `dataset`，并查询 `dataset.runs`。它还可以追加其他挂载：
-
-```bash
-pchronicle query ./capture \
-  --mount archive=s3://trajectory-bucket/archive \
-  --sql "SELECT * FROM dataset.runs UNION ALL SELECT * FROM archive.runs"
-```
+等价于把 `./capture` 挂载为 `dataset`，并查询 `dataset.runs`。跨 Dataset 联查使用重复
+`--mount`，不要把位置 Dataset 和 `--mount` 写在同一条命令里。
 
 ## 5. 层级发现
 
@@ -228,8 +221,8 @@ Catalog 产生四个 source：
 ### 5.4 格式检测
 
 每个外围文件独立检测格式，因此同一个 Dataset 可以混合 ATIF、OpenAI messages 与 ACTF。
-位置参数配合显式 `--source` 时，该值作为默认 Dataset 的格式约束：复合 store 类型或文件
-检测结果不匹配会报错。命名 Dataset 当前使用自动检测。
+`pchronicle query` 不对 Dataset 施加格式约束。`find` 与 `export` 的 `--source` 只把查找
+收窄到一条 Dataset-relative Source path，不是格式提示。
 
 本地和远程外围文件都不会为了自动检测而在 Catalog 构建期读取内容；如果没有显式格式
 提示，`sources.format` 可以是 `NULL`。Catalog 会先冻结本地文件指纹或远程对象版本，等
@@ -294,7 +287,7 @@ Storyline 投影。
 有效。两个内建轨迹表跨多个同 Dataset source 联接时，必须显式加入 `_file_` 等值：
 
 ```sql
-SELECT r.run_id, s.step_id, s.message_json
+SELECT r.run_id, s.step_id, s.message_kind, s.message_value
 FROM archive.runs r
 JOIN archive.steps s
   ON r._file_ = s._file_

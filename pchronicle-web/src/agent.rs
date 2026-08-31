@@ -445,7 +445,7 @@ fn format_catalog_schema(catalog: &QueryCatalog) -> String {
                 .map(|field| format!("{} {}", field.name, field.data_type))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{} ({fields})", table.name)
+            format!("{} [{}] ({fields})", table.name, table.kind)
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -706,14 +706,14 @@ async fn execute_tool(
 }
 
 fn tool_step(call: &ParsedToolCall) -> String {
-    if call.name == "get_turn" {
-        if let Some(turn_id) = call.arguments.get("turn_id").and_then(|value| {
+    if call.name == "get_turn"
+        && let Some(turn_id) = call.arguments.get("turn_id").and_then(|value| {
             value
                 .as_i64()
                 .or_else(|| value.as_str().and_then(|raw| raw.parse().ok()))
-        }) {
-            return format!("get_turn #{turn_id}");
-        }
+        })
+    {
+        return format!("get_turn #{turn_id}");
     }
     call.name.clone()
 }
@@ -2129,6 +2129,7 @@ mod tests {
                 timestamp: None,
                 call_id: None,
                 preview: String::new(),
+                user_prompt: None,
                 char_count: 0,
                 modalities: Vec::new(),
                 model_name: None,

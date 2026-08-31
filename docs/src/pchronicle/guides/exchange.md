@@ -96,6 +96,8 @@ pchronicle export --from ./imported --to one.json --output-format actf \
 document. Output files are create-only unless overwrite is requested explicitly.
 
 Import/export is not a storage migration protocol and arbitrary SQL rows are
-not exportable Runs. See [Run data formats](../reference/formats/index.md)
-for contracts and [data contracts and revisions](../concepts/facts-and-projections.md)
+not exportable Runs. For exact flags, see the
+[`pchronicle` CLI reference](../reference/cli.md). See
+[Run data formats](../reference/formats/index.md) for contracts and
+[data contracts and revisions](../concepts/facts-and-projections.md)
 for the internal layer boundary.

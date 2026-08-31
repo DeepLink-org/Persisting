@@ -60,6 +60,6 @@ records, and Run control records before deciding whether to defer, recover, or
 redispatch work. External effects still require application-level idempotency;
 the system does not promise exactly-once execution.
 
-See the [`ppilot` command reference](../reference/ppilot-cli.md) for the public
-interface and [Run, Attempt, and Effect](../concepts/run-model.md) for the
+See the [`ppilot` command reference](../reference/cli.md) for the public
+interface and [Run, Attempt, and Effect](../../pvisor/concepts/run-model.md) for the
 identity and retry model used here.

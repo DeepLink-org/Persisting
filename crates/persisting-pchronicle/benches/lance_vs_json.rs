@@ -88,7 +88,7 @@ struct Comparison {
 struct SelectiveRow {
     step_id: i64,
     source: String,
-    message_json: String,
+    message_value: String,
 }
 
 struct BenchmarkResult {
@@ -174,12 +174,21 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
         .map(|(_, story)| story.session_id.clone())
         .context("benchmark corpus is empty")?;
     let selective_sql = format!(
-        "SELECT step_id, source, message_json FROM steps \
+        "SELECT step_id, source, message_value FROM steps \
+         WHERE session_id = '{target_session}' AND step_id BETWEEN 5 AND 15 \
+         ORDER BY step_id"
+    );
+    // The normalized Lance store exposes the lossless JSON lane as
+    // `message_value`; direct ATIF/ACTF sources retain their historical
+    // query-facing name `message_json`. Keep the selected column positional
+    // and alias the direct-source version so both paths compare the same data.
+    let atif_selective_sql = format!(
+        "SELECT step_id, source, message_json AS message_value FROM steps \
          WHERE session_id = '{target_session}' AND step_id BETWEEN 5 AND 15 \
          ORDER BY step_id"
     );
     let selective_query = context.sql(&selective_sql).await?;
-    let atif_selective_query = atif_context.sql(&selective_sql).await?;
+    let atif_selective_query = atif_context.sql(&atif_selective_sql).await?;
     let analytical_query = context.sql(ANALYTICAL_SQL).await?;
     let atif_analytical_query = atif_context.sql(ANALYTICAL_SQL).await?;
 
@@ -385,14 +394,14 @@ fn selective_rows_from_trajectory(
             .get("source")
             .and_then(serde_json::Value::as_str)
             .context("benchmark ATIF step is missing source")?;
-        let message_json = step
+        let message_value = step
             .get("message")
             .unwrap_or(&serde_json::Value::Null)
             .to_string();
         matches.push(SelectiveRow {
             step_id,
             source: source.to_string(),
-            message_json,
+            message_value,
         });
     }
     Ok(matches)
@@ -419,12 +428,12 @@ fn datafusion_selective_rows(
             .column(2)
             .as_any()
             .downcast_ref::<StringArray>()
-            .context("DataFusion message_json column must be Utf8")?;
+            .context("DataFusion message_value column must be Utf8")?;
         for row in 0..batch.num_rows() {
             rows.push(SelectiveRow {
                 step_id: step_ids.value(row),
                 source: sources.value(row).to_string(),
-                message_json: messages.value(row).to_string(),
+                message_value: messages.value(row).to_string(),
             });
         }
     }
@@ -677,12 +686,12 @@ mod tests {
         let expected = vec![super::SelectiveRow {
             step_id: 5,
             source: "user".into(),
-            message_json: "\"expected\"".into(),
+            message_value: "\"expected\"".into(),
         }];
         let wrong = vec![super::SelectiveRow {
             step_id: 5,
             source: "assistant".into(),
-            message_json: "\"wrong\"".into(),
+            message_value: "\"wrong\"".into(),
         }];
 
         assert!(super::ensure_selective_results_match(&expected, &[("Lance", &wrong)]).is_err());

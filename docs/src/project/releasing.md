@@ -58,11 +58,10 @@ Rust CLIs, stages firmware, and ensures the Dioxus bundle exists. `setup.py`
 marks the wheel platform-specific while keeping the Python and ABI tags
 `py3-none`.
 
-Linux CI may fetch the pinned libkrun firmware archive through the packaging
-script. macOS CI installs libkrunfw explicitly and passes
-`PERSISTING_LIBKRUNFW_PATH`. Local wheel builds must use one of the supported
-firmware paths; a missing payload is a build error rather than an incomplete
-wheel.
+The packaging script fetches the pinned libkrun firmware archive for both
+Linux x86_64 and Apple Silicon macOS unless `PERSISTING_LIBKRUNFW_PATH` points
+at an existing payload. Local wheel builds must use one of those supported
+paths; a missing payload is a build error rather than an incomplete wheel.
 
 Every wheel is checked for its component set and install-time CLI smoke tests.
 The release-set check then requires exactly one supported wheel per platform,

@@ -44,6 +44,7 @@ const EVENT_PARTITION_COLUMNS: &[&str] = &["session_id", "agent_id"];
 pub(crate) struct ServerAcceleration {
     build_gate: Mutex<()>,
     run_summaries: OnceCell<RequiredAcceleration<CachedRunSummaries>>,
+    run_summaries_by_dataset: Mutex<HashMap<String, CachedRunSummaries>>,
     runs: OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
     event_identities: OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
     event_partitions: OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
@@ -172,8 +173,34 @@ impl ServerAcceleration {
         snapshot: &DatasetCatalogSnapshot,
         engine: &ChronicleQueryEngine,
     ) -> Result<Arc<Vec<RunSummary>>> {
-        self.run_summaries_with(|| async { build_run_summaries(snapshot, engine).await })
+        self.run_summaries_with(|| async { build_run_summaries(snapshot, engine, None).await })
             .await
+    }
+
+    /// Build summaries for one Dataset without waiting for the all-Dataset
+    /// acceleration cell. This lets callers fan out expensive JSON sources
+    /// while a fast Lance source can complete independently.
+    pub(crate) async fn run_summaries_for_dataset(
+        &self,
+        snapshot: &DatasetCatalogSnapshot,
+        engine: &ChronicleQueryEngine,
+        dataset: &str,
+    ) -> Result<Arc<Vec<RunSummary>>> {
+        if let Some(summaries) = self
+            .run_summaries_by_dataset
+            .lock()
+            .await
+            .get(dataset)
+            .cloned()
+        {
+            return Ok(summaries);
+        }
+        let summaries = build_run_summaries(snapshot, engine, Some(dataset)).await?;
+        self.run_summaries_by_dataset
+            .lock()
+            .await
+            .insert(dataset.to_string(), summaries.clone());
+        Ok(summaries)
     }
 
     async fn run_summaries_with<F, Fut>(&self, build: F) -> Result<CachedRunSummaries>
@@ -287,8 +314,16 @@ impl ServerAcceleration {
                     Ok(index) => OptionalAcceleration::Ready(index),
                     Err(error) => {
                         tracing::error!(
-                            error = ?error,
+                            target: super::problem::LOG_TARGET,
                             acceleration_index = name,
+                            root_cause = %super::problem::truncate_utf8(
+                                &error.root_cause().to_string(),
+                                super::problem::ROOT_CAUSE_LIMIT,
+                            ),
+                            chain = %super::problem::truncate_utf8(
+                                &format!("{error:#}"),
+                                super::problem::CHAIN_LIMIT,
+                            ),
                             "pChronicle acceleration index build failed"
                         );
                         OptionalAcceleration::Unavailable
@@ -866,14 +901,18 @@ fn value_fingerprint(state: &RandomState, value: &str) -> u64 {
 async fn build_run_summaries(
     snapshot: &DatasetCatalogSnapshot,
     engine: &ChronicleQueryEngine,
+    dataset_filter: Option<&str>,
 ) -> Result<Arc<Vec<RunSummary>>> {
     let mut summaries = Vec::new();
     for dataset in snapshot.datasets() {
+        if dataset_filter.is_some_and(|filter| dataset.mount.name != filter) {
+            continue;
+        }
         let name = &dataset.mount.name;
         let event_stats = build_event_stats(engine, name).await?;
         let sql = format!(
             "SELECT r._file_, r.document_id, r.run_id, r.session_id, r.agent_id, r.agent_model_name, \
-                    r.parent_json, r.final_metrics_json, r.extra_json, r.unknown_fields_json, \
+                    r.parent, r.final_metrics, r.extra, r.unknown_fields, \
                     (SELECT COUNT(*) FROM {name}.steps s \
                       WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS row_count \
              FROM {name}.runs r"
@@ -894,7 +933,8 @@ async fn build_run_summaries(
                 .and_then(JsonValue::as_str)
                 .map(str::to_owned);
             let parent_session_id = row
-                .get("parent_json")
+                .get("parent")
+                .or_else(|| row.get("parent_json"))
                 .and_then(JsonValue::as_str)
                 .and_then(|parent| serde_json::from_str::<JsonValue>(parent).ok())
                 .and_then(|parent| {
@@ -1036,10 +1076,19 @@ fn capture_call_status(request_count: u64, response_count: u64) -> Option<String
 }
 
 fn run_status(row: &JsonValue) -> String {
-    let values = ["final_metrics_json", "extra_json", "unknown_fields_json"]
-        .into_iter()
-        .filter_map(|field| parsed_json_field(row, field))
-        .collect::<Vec<_>>();
+    let values = [
+        "final_metrics",
+        "extra",
+        "unknown_fields",
+        // Accept the pre-V1 names in synthetic/legacy rows while all physical
+        // Storyline Lance queries use the stable names above.
+        "final_metrics_json",
+        "extra_json",
+        "unknown_fields_json",
+    ]
+    .into_iter()
+    .filter_map(|field| parsed_json_field(row, field))
+    .collect::<Vec<_>>();
     if let Some(status) = ["status", "state"].into_iter().find_map(|field| {
         values
             .iter()
@@ -1117,6 +1166,11 @@ mod run_summary_tests {
 
     #[test]
     fn run_status_uses_normalized_terminal_metadata() {
+        let native_completed = serde_json::json!({
+            "final_metrics": "{\"is_session_completed\":true}"
+        });
+        assert_eq!(run_status(&native_completed), "completed");
+
         let completed = serde_json::json!({
             "final_metrics_json": "{\"is_session_completed\":true}"
         });
@@ -1438,6 +1492,8 @@ mod tests {
         }
 
         let response = super::super::problem::ApiError::internal(
+            "",
+            "run_summaries",
             failures.into_iter().next().unwrap().unwrap_err(),
         )
         .into_response();

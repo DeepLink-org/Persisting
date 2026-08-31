@@ -2,6 +2,67 @@ use super::*;
 use axum::http::header;
 use axum::response::Response;
 
+#[test]
+fn explorer_run_identity_sql_does_not_project_step_payloads() {
+    let sql = explorer_run_identity_sql("dataset", "steps", "step_id = 1");
+    let lowered = sql.to_ascii_lowercase();
+    assert!(lowered.contains("select distinct"), "{sql}");
+    assert!(lowered.contains("source_path"), "{sql}");
+    assert!(lowered.contains("document_id"), "{sql}");
+    assert!(
+        !lowered.contains("message_value"),
+        "identity query must not load step payloads: {sql}"
+    );
+    assert!(
+        !lowered.contains("observation"),
+        "identity query must not load step payloads: {sql}"
+    );
+}
+
+#[test]
+fn explorer_run_preview_sql_is_row_bounded() {
+    let sql = explorer_run_preview_sql(
+        "dataset",
+        "steps",
+        "_file_ AS source_path, document_id, message_value",
+        "step_id = 1",
+        512,
+    );
+    let lowered = sql.to_ascii_lowercase();
+    assert!(lowered.contains("limit 512"), "{sql}");
+    assert!(lowered.contains("message_value"), "{sql}");
+}
+
+#[test]
+fn search_preview_returns_the_complete_normalized_field() {
+    let raw = format!("{} ipython {}", "prefix ".repeat(80), "suffix ".repeat(80));
+    let preview = search_preview_text(&raw);
+    assert!(preview.contains("ipython"));
+    assert!(preview.starts_with("prefix prefix"));
+    assert!(preview.ends_with("suffix suffix "));
+}
+
+#[test]
+fn search_preview_uses_the_field_that_contains_the_hit() {
+    let row = json!({
+        "message_value": [{"role": "user", "content": "ordinary response"}],
+        "reasoning_content": "internal reasoning with needle",
+        "observation": null,
+    });
+    let preview = search_preview_from_row(&row, "needle", "steps");
+    assert_eq!(preview, "internal reasoning with needle");
+}
+
+#[test]
+fn search_preview_reads_json_message_values() {
+    let row = json!({
+        "message_value": [{"role": "user", "content": "please finish this task"}],
+        "reasoning_content": "unrelated reasoning",
+    });
+    let preview = search_preview_from_row(&row, "task", "steps");
+    assert!(preview.contains("finish this task"), "{preview}");
+}
+
 fn assert_problem(error: ApiError, status: StatusCode, code: BoundaryCode) {
     assert_eq!(error.status, status);
     assert_eq!(error.code, code);
@@ -67,12 +128,424 @@ async fn boundary_maps_explicit_results_and_redacts_failures() {
         BoundaryCode::Unavailable,
     );
 
-    let response = ApiError::internal(anyhow::anyhow!("/secret/backend")).into_response();
+    let response =
+        ApiError::internal("rid", "test", anyhow::anyhow!("/secret/backend")).into_response();
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let body = response_json(response).await;
     assert_eq!(body["code"], "internal");
     assert_eq!(body["message"], "internal server error");
+    assert_eq!(body["request_id"], "rid");
     assert!(!body.to_string().contains("/secret/backend"));
+}
+
+#[test]
+fn truncate_utf8_does_not_split_characters_and_marks_overflow() {
+    assert_eq!(super::problem::truncate_utf8("abcd", 4), "abcd");
+    assert_eq!(super::problem::truncate_utf8("abcdef", 4), "abcd…");
+    assert_eq!(super::problem::truncate_utf8("验证中文", 3), "验…");
+}
+
+#[test]
+fn incoming_request_id_rejects_blank_and_overlong() {
+    assert_eq!(
+        super::problem::parse_incoming_request_id("abc-1"),
+        Some("abc-1".into())
+    );
+    assert_eq!(super::problem::parse_incoming_request_id("has space"), None);
+    assert_eq!(
+        super::problem::parse_incoming_request_id(&"a".repeat(65)),
+        None
+    );
+    assert_eq!(super::problem::parse_incoming_request_id(""), None);
+}
+
+#[derive(Clone, Debug)]
+struct CapturedLogEvent {
+    level: tracing::Level,
+    message: String,
+    fields: std::collections::BTreeMap<String, String>,
+}
+
+struct CapturingSubscriber {
+    events: std::sync::Arc<std::sync::Mutex<Vec<CapturedLogEvent>>>,
+    next_span: std::sync::atomic::AtomicUsize,
+}
+
+impl CapturingSubscriber {
+    fn new(events: std::sync::Arc<std::sync::Mutex<Vec<CapturedLogEvent>>>) -> Self {
+        Self {
+            events,
+            next_span: std::sync::atomic::AtomicUsize::new(1),
+        }
+    }
+}
+
+impl tracing::Subscriber for CapturingSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(
+            self.next_span
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed) as u64,
+        )
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct FieldVisitor {
+            message: String,
+            fields: std::collections::BTreeMap<String, String>,
+        }
+
+        impl tracing::field::Visit for FieldVisitor {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "message" {
+                    self.message = value.to_owned();
+                } else {
+                    self.fields
+                        .insert(field.name().to_owned(), value.to_owned());
+                }
+            }
+
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.message = format!("{value:?}");
+                } else {
+                    self.fields
+                        .insert(field.name().to_owned(), format!("{value:?}"));
+                }
+            }
+        }
+
+        let mut visitor = FieldVisitor {
+            message: String::new(),
+            fields: std::collections::BTreeMap::new(),
+        };
+        event.record(&mut visitor);
+        self.events.lock().unwrap().push(CapturedLogEvent {
+            level: *event.metadata().level(),
+            message: visitor.message,
+            fields: visitor.fields,
+        });
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+
+    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+        Some(tracing::level_filters::LevelFilter::TRACE)
+    }
+}
+
+#[test]
+fn from_anyhow_fts_chain_attaches_4xx_root_cause() {
+    let cause = anyhow::anyhow!("index missing").context("FTS unavailable for dataset/file");
+    let response = ApiError::from_anyhow("rid", "explorer_runs", cause).into_response();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let root = response
+        .extensions()
+        .get::<super::problem::FourXxRootCause>()
+        .map(|value| value.0.as_str());
+    assert_eq!(root, Some("index missing"));
+}
+
+#[tokio::test]
+async fn internal_error_logs_root_cause_and_redacts_json() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CapturedLogEvent>::new()));
+    let _guard = tracing::subscriber::set_default(CapturingSubscriber::new(events.clone()));
+    let cause = anyhow::anyhow!("disk-sentinel").context("open table");
+    let response = ApiError::internal("rid-internal-1", "query_evidence", cause).into_response();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "internal");
+    assert_eq!(body["message"], "internal server error");
+    assert_eq!(body["request_id"], "rid-internal-1");
+    assert!(!body.to_string().contains("disk-sentinel"));
+
+    let logged = events.lock().unwrap().clone();
+    let error_events: Vec<_> = logged
+        .into_iter()
+        .filter(|event| event.level == tracing::Level::ERROR)
+        .collect();
+    assert_eq!(error_events.len(), 1, "{error_events:?}");
+    assert!(
+        error_events[0].message.contains("warehouse request failed"),
+        "{:?}",
+        error_events[0]
+    );
+    assert!(!error_events[0].message.contains("internal server error"));
+    assert_eq!(
+        error_events[0].fields.get("root_cause").map(String::as_str),
+        Some("disk-sentinel")
+    );
+    assert_eq!(
+        error_events[0].fields.get("request_id").map(String::as_str),
+        Some("rid-internal-1")
+    );
+    assert_eq!(
+        error_events[0].fields.get("handler").map(String::as_str),
+        Some("query_evidence")
+    );
+    assert!(
+        error_events[0]
+            .fields
+            .get("chain")
+            .unwrap()
+            .contains("open table"),
+        "{:?}",
+        error_events[0].fields
+    );
+}
+
+#[tokio::test]
+async fn middleware_echoes_request_id_on_json_errors() {
+    use tower::ServiceExt;
+
+    async fn boom() -> Result<(), ApiError> {
+        Err(ApiError::invalid_request("bad input"))
+    }
+    let app = axum::Router::new()
+        .route("/api/boom", axum::routing::get(boom))
+        .layer(axum::middleware::from_fn(
+            crate::server::request_log::warehouse_request_layer,
+        ));
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/boom")
+                .header("x-request-id", "client-id-123")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.headers().get("x-request-id").unwrap(),
+        "client-id-123"
+    );
+    let body = response_json(response).await;
+    assert_eq!(body["request_id"], "client-id-123");
+    assert_eq!(body["code"], "invalid_request");
+}
+
+#[tokio::test]
+async fn four_xx_warn_includes_root_cause_when_chain_is_deeper() {
+    use tower::ServiceExt;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CapturedLogEvent>::new()));
+    let _guard = tracing::subscriber::set_default(CapturingSubscriber::new(events.clone()));
+    async fn boom() -> Result<(), ApiError> {
+        Err(ApiError::from_anyhow(
+            "rid-4xx-root",
+            "explorer_runs",
+            anyhow::anyhow!("index missing").context("FTS unavailable for dataset/file"),
+        ))
+    }
+    let app = axum::Router::new()
+        .route("/api/boom", axum::routing::get(boom))
+        .layer(axum::middleware::from_fn(
+            crate::server::request_log::warehouse_request_layer,
+        ));
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/boom")
+                .header("x-request-id", "rid-4xx-root")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "invalid_request");
+    assert_eq!(body["request_id"], "rid-4xx-root");
+    assert!(body.get("root_cause").is_none());
+
+    let logged = events.lock().unwrap().clone();
+    let warn_events: Vec<_> = logged
+        .into_iter()
+        .filter(|event| event.level == tracing::Level::WARN)
+        .collect();
+    assert_eq!(warn_events.len(), 1, "{warn_events:?}");
+    assert_eq!(
+        warn_events[0]
+            .fields
+            .get("root_cause")
+            .map(|value| value.trim_matches('"')),
+        Some("index missing"),
+        "{:?}",
+        warn_events[0]
+    );
+    assert_eq!(
+        warn_events[0]
+            .fields
+            .get("code")
+            .map(|value| value.trim_matches('"')),
+        Some("invalid_request")
+    );
+    assert_eq!(
+        warn_events[0]
+            .fields
+            .get("request_id")
+            .map(|value| value.trim_matches('"')),
+        Some("rid-4xx-root")
+    );
+    assert!(
+        warn_events[0].message.contains("FTS unavailable"),
+        "{:?}",
+        warn_events[0]
+    );
+}
+
+#[tokio::test]
+async fn middleware_rejects_illegal_incoming_id() {
+    use tower::ServiceExt;
+
+    async fn boom() -> Result<(), ApiError> {
+        Err(ApiError::invalid_request("bad input"))
+    }
+    let app = axum::Router::new()
+        .route("/api/boom", axum::routing::get(boom))
+        .layer(axum::middleware::from_fn(
+            crate::server::request_log::warehouse_request_layer,
+        ));
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/boom")
+                .header("x-request-id", "bad id")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let echoed = response
+        .headers()
+        .get("x-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(echoed, "bad id");
+    assert_eq!(echoed.len(), 16);
+    assert!(echoed.chars().all(|ch| ch.is_ascii_hexdigit()));
+    let body = response_json(response).await;
+    assert_eq!(body["request_id"], echoed);
+}
+
+#[tokio::test]
+async fn middleware_does_not_info_log_static_assets() {
+    use tower::ServiceExt;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CapturedLogEvent>::new()));
+    let _guard = tracing::subscriber::set_default(CapturingSubscriber::new(events.clone()));
+    async fn missing() -> StatusCode {
+        StatusCode::NOT_FOUND
+    }
+    let app = axum::Router::new()
+        .route("/assets/app.css", axum::routing::get(missing))
+        .layer(axum::middleware::from_fn(
+            crate::server::request_log::warehouse_request_layer,
+        ));
+    let _ = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/assets/app.css")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let logged = events.lock().unwrap().clone();
+    assert!(
+        !logged.iter().any(|event| {
+            event.level == tracing::Level::INFO
+                && event
+                    .fields
+                    .get("path")
+                    .is_some_and(|path| path.contains("/assets/app.css"))
+        }),
+        "{logged:?}"
+    );
+}
+
+#[test]
+fn map_inspect_unknown_errors_are_internal() {
+    let error = ApiError::from_anyhow("rid", "physical_page", anyhow::anyhow!("lance exploded"));
+    assert_eq!(error.code, BoundaryCode::Internal);
+}
+
+#[test]
+fn map_inspect_maps_documented_physical_prefixes() {
+    let missing = physical::map_inspect(
+        "rid",
+        "physical_page",
+        anyhow::anyhow!("physical source not found: ds/file"),
+    );
+    assert_eq!(missing.code, BoundaryCode::NotFound);
+    let not_lance = physical::map_inspect(
+        "rid",
+        "physical_layout",
+        anyhow::anyhow!("physical source is not a Lance dataset: ds/file"),
+    );
+    assert_eq!(not_lance.code, BoundaryCode::InvalidRequest);
+}
+
+#[tokio::test]
+async fn query_evidence_info_truncates_sql() {
+    use tower::ServiceExt as _;
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CapturedLogEvent>::new()));
+    let _guard = tracing::subscriber::set_default(CapturingSubscriber::new(events.clone()));
+    let root = json_dataset_root();
+    let sql = format!("SELECT '{}'", "a".repeat(600));
+    let _response = router(root.to_string_lossy().to_string())
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/query/evidence")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(json!({ "sql": sql }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let logged = events.lock().unwrap().clone();
+    let query_logs: Vec<_> = logged
+        .iter()
+        .filter(|event| event.message.contains("warehouse query"))
+        .collect();
+    assert_eq!(query_logs.len(), 1, "{logged:?}");
+    let sql_field = query_logs[0]
+        .fields
+        .get("sql")
+        .expect("sql field on warehouse query");
+    assert!(sql_field.ends_with('…'), "{sql_field}");
+    assert!(
+        sql_field.len() <= super::problem::QUERY_LOG_LIMIT + "…".len(),
+        "{} bytes",
+        sql_field.len()
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn warehouse_tracing_filter_matches_log_level() {
+    assert_eq!(
+        super::request_log::tracing_filter(crate::LogLevel::Info),
+        "pchronicle.serve=info"
+    );
+    assert_eq!(
+        super::request_log::tracing_filter(crate::LogLevel::Error),
+        "pchronicle.serve=error"
+    );
 }
 
 #[test]
@@ -113,7 +586,7 @@ fn test_router_with_catalog_refresh_interval(
     config: ChronicleServerConfig,
     interval: std::time::Duration,
 ) -> Router {
-    read_routes().with_state(app_state_with_catalog_refresh_interval(config, interval))
+    finish_routes(app_state_with_catalog_refresh_interval(config, interval))
 }
 
 fn json_dataset_root() -> std::path::PathBuf {
@@ -321,6 +794,7 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
                 id: Some("tool-call-1".into()),
                 name: "lookup".into(),
                 arguments: json!({"q": "x"}),
+                result: None,
             }],
         },
         TrajectoryTurnView {
@@ -331,9 +805,13 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
                 id: Some("tool-call-1".into()),
                 name: "lookup".into(),
                 arguments: json!({"q": "x"}),
+                result: None,
             }],
         },
     ];
+    let mut user_with_native_call = turns[0].clone();
+    user_with_native_call.turn.tool_calls = turns[1].turn.tool_calls.clone();
+    assert!(explorer::display_tool_calls(&user_with_native_call).is_empty());
     let run = RunSummary {
         dataset: "dataset".into(),
         file: "events.lance".into(),
@@ -432,6 +910,27 @@ async fn json_datasets_expose_tables_and_support_read_only_sql() {
     assert_eq!(tables["tables"][3]["name"], "tool_calls");
     assert_eq!(tables["tables"][4]["name"], "trajectories");
     assert_eq!(tables["tables"][5]["name"], "events");
+    assert_eq!(tables["tables"][4]["kind"], "view");
+    let view_names: Vec<_> = tables["tables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|table| table["kind"] == "view")
+        .map(|table| table["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        view_names,
+        vec![
+            "trajectories",
+            "atif",
+            "storyline",
+            "actf",
+            "openai_msg",
+            "codex",
+            "markdown",
+            "claude",
+        ]
+    );
 
     let response = app
             .oneshot(
@@ -1017,24 +1516,6 @@ async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
     );
     assert!(!events["records"].as_array().unwrap().is_empty());
 
-    let otlp = app
-        .oneshot(
-            axum::http::Request::builder()
-                .uri(format!("/api/export/otlp?{coordinates}"))
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(otlp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let otlp = response_json(otlp).await;
-    assert_eq!(otlp["code"], "unsupported");
-    assert!(
-        otlp["message"]
-            .as_str()
-            .unwrap()
-            .contains("reconstructed events")
-    );
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1582,11 +2063,120 @@ async fn physical_api_inspects_storyline_lance_layout_file_and_page() {
     let app = router(root.to_string_lossy().to_string());
     let dataset = encode_query(DEFAULT_DATASET_NAME);
 
+    let (status, explorer) = get_json(&app, "/api/explorer/runs?limit=10").await;
+    assert_eq!(status, StatusCode::OK, "{explorer}");
+    assert_eq!(explorer["snapshot"]["total"], 2, "{explorer}");
+    assert!(
+        explorer["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|run| run["session_id"] == "session-a"),
+        "{explorer}"
+    );
+
+    let (status, matched_runs) = get_json(
+        &app,
+        &format!("/api/explorer/runs?dataset={dataset}&q=hello&limit=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{matched_runs}");
+    assert_eq!(matched_runs["search"]["mode"], "fts", "{matched_runs}");
+    assert_eq!(
+        matched_runs["search"]["fts_available"], true,
+        "{matched_runs}"
+    );
+    assert_eq!(matched_runs["snapshot"]["total"], 1, "{matched_runs}");
+    assert_eq!(
+        matched_runs["records"][0]["session_id"], "session-a",
+        "{matched_runs}"
+    );
+    assert!(
+        matched_runs["records"][0]["search_preview"]
+            .as_str()
+            .is_some_and(|preview| preview.contains("hello")),
+        "{matched_runs}"
+    );
+
+    // FTS matching is case-insensitive by default, just like the Web
+    // highlight path and the in-memory compatibility filter.
+    let (status, uppercase_runs) = get_json(
+        &app,
+        &format!("/api/explorer/runs?dataset={dataset}&q=HELLO&limit=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{uppercase_runs}");
+    assert_eq!(uppercase_runs["snapshot"]["total"], 1, "{uppercase_runs}");
+
+    let (status, no_runs) = get_json(
+        &app,
+        &format!("/api/explorer/runs?dataset={dataset}&q=does-not-exist&limit=10"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{no_runs}");
+    assert_eq!(no_runs["snapshot"]["total"], 0, "{no_runs}");
+    assert!(
+        no_runs["records"].as_array().is_some_and(Vec::is_empty),
+        "{no_runs}"
+    );
+
+    let (status, scoped_no_runs) = get_json(
+        &app,
+        &format!(
+            "/api/explorer/runs?dataset={dataset}&q={}&limit=10",
+            encode_query("#system(hello)")
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{scoped_no_runs}");
+    assert_eq!(scoped_no_runs["snapshot"]["total"], 0, "{scoped_no_runs}");
+
     let (status, sources) = get_json(&app, "/api/physical/sources").await;
     assert_eq!(status, StatusCode::OK, "{sources}");
     assert_eq!(sources.as_array().map(Vec::len), Some(1));
     assert_eq!(sources[0]["file"], "story");
     assert_eq!(sources[0]["format"], "storyline-lance");
+
+    let (status, turns) = get_json(
+        &app,
+        &format!(
+            "/api/explorer/turns?dataset={dataset}&file=story&run_id=run-a&agent_id=agent&session_id=session-a&q=hello&limit=10"
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{turns}");
+    assert_eq!(turns["snapshot"]["total"], 1, "{turns}");
+    assert_eq!(turns["records"][0]["id"], 1, "{turns}");
+    assert_eq!(turns["search"]["fts_available"], true, "{turns}");
+    assert_eq!(turns["search"]["mode"], "fts", "{turns}");
+    assert_eq!(turns["search"]["tokenizer"], "jieba", "{turns}");
+
+    let (status, scoped_turns) = get_json(
+        &app,
+        &format!(
+            "/api/explorer/turns?dataset={dataset}&file=story&run_id=run-a&agent_id=agent&session_id=session-a&q={}&limit=10",
+            encode_query("#system(hello)")
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{scoped_turns}");
+    assert_eq!(scoped_turns["snapshot"]["total"], 0, "{scoped_turns}");
+
+    // A non-matching FTS query must stay empty; it must not fall back to the
+    // complete trajectory after the detail view inherits a Runs-page query.
+    let (status, empty_turns) = get_json(
+        &app,
+        &format!(
+            "/api/explorer/turns?dataset={dataset}&file=story&run_id=run-a&agent_id=agent&session_id=session-a&q=does-not-exist&limit=10"
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{empty_turns}");
+    assert_eq!(empty_turns["snapshot"]["total"], 0, "{empty_turns}");
+    assert!(
+        empty_turns["records"].as_array().is_some_and(Vec::is_empty),
+        "{empty_turns}"
+    );
 
     let (status, layout) = get_json(
         &app,

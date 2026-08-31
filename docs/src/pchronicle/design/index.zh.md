@@ -1,12 +1,14 @@
 # pChronicle Design
 
-这些页面解释运行数据源如何变成持久、可查询的历史。下文使用的存储和 API 术语见
-[术语指南](../reference/terminology.zh.md)。
+这些页面解释运行数据源如何变成持久、可查询的历史。Dataset 身份、Source 成员、
+Snapshot，以及记录事实与派生视图的区分见
+[核心概念](../concepts/index.md)。下文使用的存储和 API 术语见
+[术语指南](../reference/terminology.md)。
 
 | 区域 | 文档 |
 | --- | --- |
 | 产品边界与运维保证 | [Architecture](architecture.md) |
-| Dataset discovery、snapshot 与惰性 Source resolve | [Dataset Catalog](catalog.md) |
+| Path 身份、Snapshot 同步与惰性 Source resolve | [Snapshot](catalog.md) |
 | Canonical event 与 projection ownership | [运行存储](trajectory-storage.md) |
 | Storyline 三表 projection 与内容层 | [Storyline Lance](storyline-lance.md) |
 

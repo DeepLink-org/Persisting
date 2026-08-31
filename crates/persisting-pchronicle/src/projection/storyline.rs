@@ -810,3 +810,61 @@ mod tests {
         assert!(!projection_lineage_freshness(&appended, Some(&lineage)).0);
     }
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn source_uri_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[a-z0-9:/._-]{1,48}").unwrap()
+    }
+
+    proptest! {
+        #[test]
+        fn canonical_lineage_is_fresh_for_the_same_fact_snapshot(
+            source_uri in source_uri_strategy(),
+            source_file in proptest::string::string_regex("[A-Za-z0-9._/-]{1,48}").unwrap(),
+            fact_version in 0u64..1_000_000,
+            fact_rows in 0u64..1_000_000,
+            layout_revision in 0u64..1_000_000,
+        ) {
+            let snapshot = EventFactSnapshot { source_uri, fact_version, fact_rows, layout_revision };
+            let lineage = canonical_projection_lineage(&snapshot, source_file);
+            prop_assert!(projection_lineage_is_fresh(&snapshot, &lineage));
+
+            let mut compacted = snapshot.clone();
+            compacted.layout_revision = compacted.layout_revision.saturating_add(1);
+            prop_assert!(projection_lineage_is_fresh(&compacted, &lineage));
+        }
+
+        #[test]
+        fn fact_watermark_or_source_changes_make_lineage_stale(
+            source_uri in source_uri_strategy(),
+            source_file in proptest::string::string_regex("[A-Za-z0-9._/-]{1,48}").unwrap(),
+            fact_version in 0u64..1_000_000,
+            fact_rows in 0u64..1_000_000,
+        ) {
+            let snapshot = EventFactSnapshot {
+                source_uri: source_uri.clone(),
+                fact_version,
+                fact_rows,
+                layout_revision: 0,
+            };
+            let lineage = canonical_projection_lineage(&snapshot, source_file.clone());
+
+            let mut changed_facts = snapshot.clone();
+            changed_facts.fact_version = changed_facts.fact_version.saturating_add(1);
+            prop_assert!(!projection_lineage_is_fresh(&changed_facts, &lineage));
+
+            let original_snapshot = snapshot.clone();
+            let mut changed_source = snapshot;
+            changed_source.source_uri.push_str("-changed");
+            prop_assert!(!projection_lineage_is_fresh(&changed_source, &lineage));
+
+            let changed_file = canonical_projection_lineage(&changed_source, source_file);
+            prop_assert!(!projection_lineage_is_fresh(&original_snapshot, &changed_file));
+        }
+    }
+}

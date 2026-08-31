@@ -555,7 +555,7 @@ mod tests {
 
     use crate::store::RawEventLanceStore;
 
-    fn event() -> EventRecord {
+    pub(super) fn event() -> EventRecord {
         EventRecord {
             identity: Default::default(),
             seq: 1,
@@ -1082,5 +1082,46 @@ mod tests {
             error.chain().count() >= 2,
             "missing source chain: {error:#}"
         );
+    }
+}
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn bounded_sender_reports_full_after_capacity(
+            capacity in 1usize..16,
+            attempts in 1usize..32,
+        ) {
+            let (tx, _rx) = mpsc::sync_channel(capacity);
+            let state = Arc::new(SenderState {
+                tx,
+                accepting: AtomicBool::new(true),
+                in_flight: AtomicUsize::new(0),
+            });
+            let sender = RawEventAppendSender { state };
+            let outcomes = (0..attempts)
+                .map(|_| {
+                    sender.try_append(
+                        StoryCoords::new("memory://queue", "agent", "session", None),
+                        super::tests::event(),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let accepted = outcomes
+                .iter()
+                .filter(|outcome| **outcome == RawEventAppendOutcome::Accepted)
+                .count();
+            let full = outcomes
+                .iter()
+                .filter(|outcome| **outcome == RawEventAppendOutcome::Full)
+                .count();
+            prop_assert_eq!(accepted, attempts.min(capacity));
+            prop_assert_eq!(full, attempts.saturating_sub(capacity));
+        }
     }
 }

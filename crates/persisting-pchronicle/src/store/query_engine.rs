@@ -132,6 +132,7 @@ impl ChronicleQueryEngine {
         let source = crate::document::open_document(format, path.as_ref()).await?;
         let context = query_session_context(&options)?;
         let tables = source.register_datafusion(&context)?;
+        source.inner.register_virtual_tables(&context).await?;
         let capabilities = source.capabilities();
         let source_count = source.inner.source_count();
         let snapshot = if let Some(snapshot) = source.inner.event_snapshot() {
@@ -346,11 +347,19 @@ impl ChronicleQueryEngine {
 
     /// Execute SQL and collect Arrow record batches.
     pub async fn query(&self, sql: &str) -> Result<Vec<RecordBatch>> {
-        self.dataframe(sql)
+        let batches = self
+            .dataframe(sql)
             .await?
             .collect()
             .await
-            .map_err(|error| from_datafusion("execute pChronicle SQL", error))
+            .map_err(|error| from_datafusion("execute pChronicle SQL", error))?;
+        batches
+            .into_iter()
+            .map(|batch| {
+                lance_arrow::json::convert_lance_json_to_arrow(&batch)
+                    .context("convert Lance JSONB columns in SQL result")
+            })
+            .collect()
     }
 
     /// Execute SQL and encode result rows as JSONL.
@@ -428,6 +437,8 @@ impl ChronicleQueryEngine {
             {
                 return Ok(QueryWriteOutcome::LimitExceeded);
             }
+            let batch = lance_arrow::json::convert_lance_json_to_arrow(&batch)
+                .context("convert Lance JSONB columns in streamed SQL result")?;
             writer
                 .write(&batch)
                 .context("encode streaming SQL result batch as JSONL")?;
@@ -475,10 +486,14 @@ fn query_session_context(options: &ChronicleQueryExecutionOptions) -> Result<Ses
             .build()
             .map_err(|error| from_datafusion("build DataFusion query runtime", error))?,
     );
-    Ok(SessionContext::new_with_config_rt(
+    let context = SessionContext::new_with_config_rt(
         SessionConfig::new().with_information_schema(true),
         runtime,
-    ))
+    );
+    // Lance's JSONB UDFs are required for predicates and projections over
+    // native `lance.json` columns (json_get/json_exists/etc.).
+    lance_datafusion::udf::register_functions(&context);
+    Ok(context)
 }
 
 fn validate_external_table_spec(spec: &ExternalTableSpec) -> Result<()> {

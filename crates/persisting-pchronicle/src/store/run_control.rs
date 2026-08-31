@@ -648,3 +648,54 @@ mod tests {
         assert!(store.get(&run).await.unwrap().unwrap().commit.is_some());
     }
 }
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn next_record_creates_or_advances_a_matching_run_control_record(
+            run in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+            revision in 0u64..1_000_000,
+        ) {
+            let run_id = RunId::new(run.clone());
+            let current = RunControlRecord {
+                revision,
+                run_id: run_id.clone(),
+                lease: None,
+                commit: None,
+            };
+            let next = next_record(Some(&current), run_id.clone(), |_| {}).expect("matching run advances");
+            prop_assert_eq!(next.revision, revision + 1);
+            prop_assert_eq!(next.run_id, run_id);
+
+            let fresh = next_record(None, RunId::new(run), |_| {}).expect("new run creates record");
+            prop_assert_eq!(fresh.revision, 1);
+        }
+
+        #[test]
+        fn next_record_rejects_mismatched_or_overflowing_records(
+            run in proptest::string::string_regex("[A-Za-z0-9_-]{1,24}").unwrap(),
+        ) {
+            let current = RunControlRecord {
+                revision: 1,
+                run_id: RunId::new("other"),
+                lease: None,
+                commit: None,
+            };
+            let mismatched = next_record(Some(&current), RunId::new(run.clone()), |_| {});
+            prop_assert!(mismatched.is_err());
+            let overflowing = RunControlRecord {
+                revision: u64::MAX,
+                run_id: RunId::new(run.clone()),
+                lease: None,
+                commit: None,
+            };
+            let overflow = next_record(Some(&overflowing), RunId::new(run), |_| {});
+            prop_assert!(overflow.is_err());
+        }
+    }
+}

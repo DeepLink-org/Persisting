@@ -1,5 +1,10 @@
 # Persisting benchmarks
 
+**仓库级黑盒与微基准入口：Gateway、pChronicle、pVisor，以及独立的 Queue 吞吐压测。**
+
+拥有可复现的压测脚本与报告契约。不拥有被测组件的产品行为；Queue 子系统的语义以
+Queue 文档为准，这里只保留既有压测入口。
+
 ## Gateway
 
 Gateway 黑盒压测位于 [`gateway/`](gateway/README.md)，使用确定性的本地 Echo upstream，
@@ -15,11 +20,39 @@ just benchmark-gateway-replay
 结果包含吞吐、p50/p95/p99 延迟、Echo 直连基线，以及基于 canonical manifest 的
 持久化事件数量校验。
 
+## pChronicle
+
+统一 Criterion + hyperfine 套件，输出 raw JSON、Markdown、HTML 和 Bencher 投影：
+
+```bash
+just benchmark-pchronicle
+just benchmark-pchronicle nightly target/pchronicle-benchmark/nightly
+just benchmark-pchronicle-compare \
+  target/pchronicle-benchmark/main/raw-report.json \
+  target/pchronicle-benchmark/current/raw-report.json
+```
+
+详见 [`pchronicle/`](pchronicle/README.md)。
+
+## pVisor
+
+进程启动与 durable Run Bundle 访问基准：
+
+```bash
+just benchmark-pvisor
+just benchmark-pvisor nightly target/pvisor-benchmark/nightly
+just benchmark-pvisor-compare \
+  target/pvisor-benchmark/candidate/raw-report.json \
+  target/pvisor-benchmark/main/raw-report.json
+```
+
+详见 [`pvisor/`](pvisor/README.md)。
+
 ## Queue
 
 本目录用于对 Persisting Queue 做吞吐压测，可配置生产者/消费者数量，测试极限吞吐。
 
-## 环境
+### 环境
 
 ```bash
 pip install persisting[lance]
@@ -31,7 +64,7 @@ pip install persisting[lance]
 python benchmark/throughput_stress.py [选项]
 ```
 
-## 参数说明
+### 参数说明
 
 | 选项 | 简写 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -43,7 +76,7 @@ python benchmark/throughput_stress.py [选项]
 | `--storage-path` | | (临时目录) | 持久化目录 |
 | `--warmup` | | 1.0 | 预热秒数 |
 
-## 示例
+### 示例
 
 ```bash
 # 默认：2 生产者、2 消费者、10 秒
@@ -59,10 +92,16 @@ python benchmark/throughput_stress.py -p 2 -c 2 -d 15 -r 256
 python benchmark/throughput_stress.py -p 8 -c 8 -d 60 -b 100 --warmup 2
 ```
 
-## 输出说明
+### 输出说明
 
 - **总生产 / 总消费**：压测窗口内生产/消费的总条数。
 - **生产吞吐 / 消费吞吐**：按配置的 `duration` 折算的条/s。
 - **综合吞吐(消费)**：实际耗时内的消费条/s（含 drain 阶段）。
 
 当前实现为单进程内多 asyncio 协程，共享同一 Queue（本地 Lance 模式），用于评估队列与 Lance 后端的极限吞吐。若已启动 Pulsing，Queue 会走分布式模式，吞吐与延迟特性会不同。
+
+## Links
+
+- [Gateway architecture](../docs/src/pvisor/design/gateway.md)
+- [pChronicle design](../docs/src/pchronicle/design/index.md)
+- [pVisor design](../docs/src/pvisor/design/index.md)

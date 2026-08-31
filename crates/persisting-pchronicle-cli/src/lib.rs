@@ -3,6 +3,7 @@
 mod agent;
 mod control;
 mod exchange;
+mod find;
 mod gateway_capture;
 mod gateway_ingest;
 mod gateway_partition;
@@ -15,10 +16,13 @@ mod settings;
 #[cfg(test)]
 use exchange::rename_noreplace;
 use exchange::{run_export, run_import};
+use find::{
+    FindExpr, FindJsonOperator, FindJsonPredicate, FindTextPredicate, combine_match_expressions,
+};
 use output::*;
 use settings::*;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::CString;
 use std::fmt::Write as _;
 use std::io::{Error as IoError, Read, Write};
@@ -45,25 +49,13 @@ use persisting_pchronicle::storage::{
     EventFactSnapshot, ObjectStoreManifestWriteMode, StorylineLanceStore,
     StorylineProjectionBuildOutcome, automatic_projection_inventory, build_storyline_projection,
     inspect_automatic_storyline_projection, probe_canonical_event_store,
+    search_storyline_step_matches_fts_in_columns,
 };
 use serde::{Deserialize, Serialize};
 
 use server::problem::BoundaryCode;
 
-#[derive(Debug)]
-struct CliBoundaryError {
-    code: BoundaryCode,
-    message: String,
-}
-
-impl std::fmt::Display for CliBoundaryError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}: {}", self.code.as_str(), self.message)
-    }
-}
-
-impl std::error::Error for CliBoundaryError {}
-
+pub(crate) use server::problem::CliBoundaryError;
 fn cli_boundary_error(code: BoundaryCode, message: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(CliBoundaryError {
         code,
@@ -109,7 +101,7 @@ pub struct Cli {
     )]
     config: Option<PathBuf>,
 
-    /// Control stderr diagnostics without changing command results.
+    /// Control stderr diagnostics without changing command results. For serve, also filters Warehouse request logs (target pchronicle.serve).
     #[arg(long, global = true, value_enum, default_value_t = LogLevel::Info)]
     log_level: LogLevel,
 
@@ -276,6 +268,33 @@ enum DefaultCommand {
 }
 
 #[derive(Debug, Args)]
+#[command(after_help = r#"Examples:
+  pchronicle alias list
+  pchronicle alias add local ./trajectory-data
+  pchronicle alias add prod s3://bucket/evals
+  pchronicle alias add secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
+  pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --ak 123 --sk 123
+  pchronicle alias add regional s3://bucket/evals --region us-west-2
+  pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
+  pchronicle alias get-url prod
+  pchronicle alias set-url prod s3://new-bucket/evals
+  pchronicle status @prod
+
+S3 credentials are stored separately from the URI and are never printed by
+`alias list` or `alias get-url`. Use the standard AWS credential environment
+variables when possible; `--ak` and `--sk` are intended for a configured alias.
+S3-compatible endpoints can be stored separately with `--endpoint URL` and are
+applied as AWS_ENDPOINT_URL_S3 when the alias is used.
+HTTP endpoints automatically enable AWS_ALLOW_HTTP for local S3-compatible
+services such as MinIO.
+An optional `--region REGION` is stored per alias; when omitted, the client
+falls back to `us-west-2` only when it needs a region.
+A `catalog://127.0.0.1:PORT` alias is a Directory locator: `@team/prod` fetches a
+ticket and opens the ticket path. User `--ak/--sk` are required;
+`--endpoint` and `--region` are not accepted. Backend object-store keys stay on
+the Directory server and are not written to config.toml.
+The built-in aliases `@codex`, `@claude`, and `@claude-code` are always listed
+and resolve to the corresponding local Agent session roots."#)]
 #[command(args_conflicts_with_subcommands = true)]
 struct AliasArgs {
     #[command(subcommand)]
@@ -295,6 +314,28 @@ enum AliasCommand {
         name: String,
         #[arg(value_name = "DATASET")]
         dataset: String,
+        /// S3-compatible service endpoint, stored separately from the Dataset URI.
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+        /// S3 region. If omitted, the client default (`us-west-2`) is used when needed.
+        #[arg(long, value_name = "REGION")]
+        region: Option<String>,
+        /// S3 access key ID. Must be provided together with --sk.
+        #[arg(
+            long = "ak",
+            alias = "access-key",
+            value_name = "ACCESS_KEY",
+            requires = "secret_key"
+        )]
+        access_key: Option<String>,
+        /// S3 secret access key. Must be provided together with --ak.
+        #[arg(
+            long = "sk",
+            alias = "secret-key",
+            value_name = "SECRET_KEY",
+            requires = "access_key"
+        )]
+        secret_key: Option<String>,
     },
     /// Print an alias target.
     GetUrl {
@@ -307,6 +348,28 @@ enum AliasCommand {
         name: String,
         #[arg(value_name = "DATASET")]
         dataset: String,
+        /// Replace the S3-compatible service endpoint stored for this alias.
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+        /// Replace the S3 region stored for this alias.
+        #[arg(long, value_name = "REGION")]
+        region: Option<String>,
+        /// Replace the S3 access key ID stored for this alias.
+        #[arg(
+            long = "ak",
+            alias = "access-key",
+            value_name = "ACCESS_KEY",
+            requires = "secret_key"
+        )]
+        access_key: Option<String>,
+        /// Replace the S3 secret access key stored for this alias.
+        #[arg(
+            long = "sk",
+            alias = "secret-key",
+            value_name = "SECRET_KEY",
+            requires = "access_key"
+        )]
+        secret_key: Option<String>,
     },
     /// Rename an existing alias.
     Rename {
@@ -458,7 +521,7 @@ struct AnalysisOptions {
 #[derive(Debug, Args)]
 #[command(group(
     ArgGroup::new("identity")
-        .required(true)
+        .required(false)
         .multiple(false)
         .args(["document_id", "run_id", "session_id"])
 ))]
@@ -486,6 +549,11 @@ struct FindArgs {
     /// Find one Step within the selected Session.
     #[arg(long, requires = "session_id")]
     step_id: Option<i64>,
+
+    /// Search with a unified expression. Plain terms are content FTS queries;
+    /// use #field(term), boolean AND/OR/NOT, or $.path=value for JSONB.
+    #[arg(long = "match", value_name = "EXPRESSION", action = clap::ArgAction::Append)]
+    matches: Vec<String>,
 
     /// Output format. Auto uses a table on a terminal and JSON when piped.
     #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
@@ -684,12 +752,14 @@ struct ExportArgs {
 
 #[derive(Debug, Args)]
 #[command(
-    override_usage = "pchronicle serve [OPTIONS] <[NAME=]DATASET>...",
+    override_usage = "pchronicle serve [OPTIONS] <[NAME=]DATASET>...\n       pchronicle serve catalog <COMMAND>",
+    subcommand_negates_reqs = true,
+    args_conflicts_with_subcommands = true,
     group(
         ArgGroup::new("dataset_source")
             .required(true)
             .multiple(true)
-            .args(["config", "storage", "positional_storage", "gateway_dataset"])
+            .args(["config", "storage", "positional_storage", "gateway_dataset", "catalog_config", "catalog_query_worker"])
     ),
     group(
         ArgGroup::new("storage_source")
@@ -708,6 +778,10 @@ struct ExportArgs {
     )
 )]
 struct ServeArgs {
+    /// Issue catalog users or change grants without starting Warehouse.
+    #[command(subcommand)]
+    command: Option<ServeSubcommand>,
+
     /// Compatibility: static Warehouse configuration file.
     #[arg(
         long = "warehouse-config",
@@ -793,6 +867,82 @@ struct ServeArgs {
     /// Print Gateway diagnostics, including size-limited request/response bodies, to stderr.
     #[arg(long = "gateway-debug", alias = "debug", requires = "gateway_config")]
     debug: bool,
+
+    /// Directory ACL file (libraries + users). Enables catalog:// locators and
+    /// per-user query workers for the Web API.
+    #[arg(
+        long = "catalog-config",
+        value_name = "FILE",
+        conflicts_with_all = ["config", "storage", "positional_storage"]
+    )]
+    catalog_config: Option<PathBuf>,
+
+    /// Internal: run one filtered Warehouse request from stdin and exit.
+    #[arg(long = "catalog-query-worker", hide = true)]
+    catalog_query_worker: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum ServeSubcommand {
+    /// Issue catalog users and grant libraries without starting HTTP.
+    Catalog(CatalogManageArgs),
+}
+
+#[derive(Debug, Args)]
+struct CatalogManageArgs {
+    #[command(subcommand)]
+    command: CatalogCommand,
+}
+
+#[derive(Debug, Args)]
+struct CatalogFileArg {
+    /// Directory ACL file to read and rewrite.
+    #[arg(long = "catalog-config", value_name = "FILE")]
+    catalog_config: PathBuf,
+}
+
+#[derive(Debug, Subcommand)]
+enum CatalogCommand {
+    /// Create a user with empty grants and print the secret once.
+    Issue(CatalogIssueArgs),
+    /// Add library names to a user's grants.
+    Grant(CatalogGrantArgs),
+    /// Remove library names from a user's grants.
+    Revoke(CatalogRevokeArgs),
+}
+
+#[derive(Debug, Args)]
+struct CatalogIssueArgs {
+    #[command(flatten)]
+    file: CatalogFileArg,
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
+    format: OutputFormat,
+}
+
+#[derive(Debug, Args)]
+struct CatalogGrantArgs {
+    #[command(flatten)]
+    file: CatalogFileArg,
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[arg(value_name = "DATASET", required = true, num_args = 1..)]
+    datasets: Vec<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
+    format: OutputFormat,
+}
+
+#[derive(Debug, Args)]
+struct CatalogRevokeArgs {
+    #[command(flatten)]
+    file: CatalogFileArg,
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[arg(value_name = "DATASET", required = true, num_args = 1..)]
+    datasets: Vec<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
+    format: OutputFormat,
 }
 
 fn parse_gateway_bind(value: &str) -> std::result::Result<SocketAddr, String> {
@@ -1093,6 +1243,7 @@ struct FindResponse {
     dataset_uri: String,
     snapshot_id: String,
     query: FindQueryResponse,
+    search: FindSearchResponse,
     truncated: bool,
     matches: Vec<FindMatch>,
 }
@@ -1104,6 +1255,18 @@ struct FindQueryResponse {
     run_id: Option<String>,
     session_id: Option<String>,
     step_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    matches: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expression: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct FindSearchResponse {
+    mode: &'static str,
+    scope: &'static str,
+    fts_available: bool,
+    tokenizer: Option<&'static str>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1121,6 +1284,10 @@ struct FindMatch {
     effective_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timestamp: Option<String>,
+    /// A bounded piece of source content so a match can be identified without
+    /// issuing a second query immediately.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1237,7 +1404,15 @@ pub async fn run_with_stdio(
         Command::Dev(DevArgs {
             command: DevCommand::Echo(args),
         }) => run_echo(args, &mut diagnostics).await,
-        Command::Serve(args) => run_serve(args, config, stdout, &mut diagnostics).await,
+        Command::Serve(args) => {
+            if args.catalog_query_worker {
+                return server::catalog::run_catalog_query_worker().await;
+            }
+            if let Some(command) = args.command {
+                return run_serve_catalog(command, stdout_is_terminal, stdout, &mut diagnostics);
+            }
+            run_serve(args, config, cli.log_level, stdout, &mut diagnostics).await
+        }
     }
 }
 
@@ -1633,17 +1808,134 @@ fn warehouse_listen(args: &ServeArgs) -> Option<SocketAddr> {
     }
 }
 
-async fn run_serve(
-    args: ServeArgs,
-    settings_override: Option<&Path>,
+fn run_serve_catalog(
+    command: ServeSubcommand,
+    stdout_is_terminal: bool,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
+    let ServeSubcommand::Catalog(args) = command;
+    match args.command {
+        CatalogCommand::Issue(issue) => {
+            let issued = server::catalog::issue_user(&issue.file.catalog_config, &issue.name)?;
+            write_catalog_updated(stderr, &issue.file.catalog_config)?;
+            write_issued_user(
+                stdout,
+                resolve_output_format(issue.format, stdout_is_terminal),
+                &issued,
+            )
+        }
+        CatalogCommand::Grant(grant) => {
+            let datasets = server::catalog::grant_datasets(
+                &grant.file.catalog_config,
+                &grant.name,
+                &grant.datasets,
+            )?;
+            write_catalog_updated(stderr, &grant.file.catalog_config)?;
+            write_user_grants(
+                stdout,
+                resolve_output_format(grant.format, stdout_is_terminal),
+                &grant.name,
+                &datasets,
+            )
+        }
+        CatalogCommand::Revoke(revoke) => {
+            let datasets = server::catalog::revoke_datasets(
+                &revoke.file.catalog_config,
+                &revoke.name,
+                &revoke.datasets,
+            )?;
+            write_catalog_updated(stderr, &revoke.file.catalog_config)?;
+            write_user_grants(
+                stdout,
+                resolve_output_format(revoke.format, stdout_is_terminal),
+                &revoke.name,
+                &datasets,
+            )
+        }
+    }
+}
+
+fn resolve_output_format(format: OutputFormat, stdout_is_terminal: bool) -> OutputFormat {
+    match format {
+        OutputFormat::Auto if stdout_is_terminal => OutputFormat::Table,
+        OutputFormat::Auto => OutputFormat::Json,
+        other => other,
+    }
+}
+
+fn write_catalog_updated(stderr: &mut dyn Write, path: &Path) -> Result<()> {
+    writeln!(stderr, "config={} updated=true", path.display())
+        .context("write catalog update diagnostic")
+}
+
+fn write_issued_user(
+    stdout: &mut dyn Write,
+    format: OutputFormat,
+    issued: &server::catalog::IssuedUser,
+) -> Result<()> {
+    match format {
+        OutputFormat::Table => {
+            writeln!(stdout, "NAME\tACCESS_KEY\tSECRET_KEY")?;
+            writeln!(
+                stdout,
+                "{}\t{}\t{}",
+                issued.name, issued.access_key, issued.secret_key
+            )
+            .context("write catalog issue table")
+        }
+        OutputFormat::Json => {
+            serde_json::to_writer(&mut *stdout, issued).context("write catalog issue JSON")?;
+            writeln!(stdout).context("finish catalog issue JSON")
+        }
+        OutputFormat::Auto => unreachable!("auto output format was resolved"),
+    }
+}
+
+fn write_user_grants(
+    stdout: &mut dyn Write,
+    format: OutputFormat,
+    name: &str,
+    datasets: &[String],
+) -> Result<()> {
+    match format {
+        OutputFormat::Table => {
+            writeln!(stdout, "NAME\tDATASETS")?;
+            writeln!(stdout, "{name}\t{}", datasets.join(",")).context("write catalog grant table")
+        }
+        OutputFormat::Json => {
+            serde_json::to_writer(
+                &mut *stdout,
+                &serde_json::json!({
+                    "name": name,
+                    "datasets": datasets,
+                }),
+            )
+            .context("write catalog grant JSON")?;
+            writeln!(stdout).context("finish catalog grant JSON")
+        }
+        OutputFormat::Auto => unreachable!("auto output format was resolved"),
+    }
+}
+
+async fn run_serve(
+    args: ServeArgs,
+    settings_override: Option<&Path>,
+    log_level: LogLevel,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    server::request_log::init_warehouse_tracing(log_level);
     let gateway_dataset_uri = resolve_gateway_dataset_uri(&args, settings_override)?;
     if let Some(uri) = gateway_dataset_uri.as_deref() {
         prepare_local_gateway_dataset(uri).await?;
     }
-    let config = resolve_serve_config_with_settings(&args, settings_override)?;
+    let catalog_only = args.catalog_config.is_some();
+    let config = if catalog_only {
+        server::ChronicleServerConfig::front_only()
+    } else {
+        resolve_serve_config_with_settings(&args, settings_override)?
+    };
     let control_uri = args
         .control
         .is_some()
@@ -1674,7 +1966,10 @@ async fn run_serve(
             let listener = tokio::net::TcpListener::bind(listen)
                 .await
                 .with_context(|| format!("bind pChronicle Warehouse to {listen}"))?;
-            let warehouse = if args.gateway.is_some() {
+            let warehouse = if let Some(path) = args.catalog_config.as_ref() {
+                let acl = server::catalog::CatalogAcl::load(path)?;
+                server::PreparedWarehouse::prepare_catalog_front(acl).await?
+            } else if args.gateway.is_some() {
                 server::PreparedWarehouse::prepare_live(config.clone()).await?
             } else {
                 server::PreparedWarehouse::prepare(config.clone()).await?
@@ -1707,6 +2002,14 @@ async fn run_serve(
         .map(|(_, listener)| listener.local_addr().map(|addr| addr.to_string()))
         .transpose()
         .context("read pChronicle Warehouse listen address")?;
+    if let Some((warehouse, _)) = warehouse.as_ref() {
+        let snapshot_id = warehouse.current_snapshot_id().await;
+        server::request_log::log_warehouse_startup(
+            warehouse_endpoint.as_deref().unwrap_or_default(),
+            &warehouse.dataset_names(),
+            snapshot_id.as_deref(),
+        );
+    }
     let control_ready = control.as_ref().map(control::PreparedControl::ready);
     let gateway_endpoint = gateway
         .as_ref()
@@ -2049,7 +2352,7 @@ async fn run_list(
         discover_snapshot(&dataset_uri, args.errors, args.max_files, args.max_entries).await?;
     let dataset = snapshot
         .dataset(DEFAULT_DATASET_NAME)
-        .context("default Dataset missing from Catalog Snapshot")?;
+        .context("default Dataset missing from Snapshot")?;
     let response = ListResponse {
         dataset_uri,
         snapshot_id: snapshot.snapshot_id().to_string(),
@@ -2146,7 +2449,7 @@ async fn run_status(
     projections.sort_by(|left, right| left.source_path.cmp(&right.source_path));
     let dataset = snapshot
         .dataset(DEFAULT_DATASET_NAME)
-        .context("default Dataset missing from Catalog Snapshot")?;
+        .context("default Dataset missing from Snapshot")?;
     let total_sources = dataset.sources.len();
     let mut source_errors = dataset
         .sources
@@ -2539,8 +2842,8 @@ const ANALYSIS_TOOLS_SQL: &str = r#"
 WITH per_trajectory AS (
   SELECT _file_, document_id, function_name,
          COUNT(*) AS calls,
-         COUNT(duration_ms) AS duration_samples,
-         SUM(COALESCE(duration_ms, 0)) AS total_duration_ms
+         COUNT(duration) AS duration_samples,
+         SUM(COALESCE(duration, 0)) AS total_duration_ms
   FROM dataset.tool_calls
   GROUP BY _file_, document_id, function_name
 )
@@ -2586,6 +2889,18 @@ async fn run_find(
     if let Some(session_id) = &args.session_id {
         validate_find_id("--session-id", session_id)?;
     }
+    for query in &args.matches {
+        anyhow::ensure!(!query.trim().is_empty(), "--match must not be empty");
+        anyhow::ensure!(query.len() <= 4096, "--match must not exceed 4096 bytes");
+    }
+    let expression = combine_match_expressions(&args.matches)?;
+    anyhow::ensure!(
+        args.document_id.is_some()
+            || args.run_id.is_some()
+            || args.session_id.is_some()
+            || expression.is_some(),
+        "find requires an identity predicate or --match"
+    );
     let dataset = resolve_dataset_uri(args.dataset_uri.as_deref(), settings_override)?;
     let (_, dataset_uris, snapshot) =
         discover_query_snapshot(Some(&dataset), &[], args.max_files, args.max_entries).await?;
@@ -2595,8 +2910,16 @@ async fn run_find(
         .context("find Dataset URI missing after discovery")?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = snapshot.query_engine(Default::default()).await?;
-    let sql = find_sql(&args)?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
+    let (search_predicate, fts_available, fts_errors) = if let Some(expression) = &expression {
+        find_expression_predicate(&snapshot, expression, args.source.as_deref()).await?
+    } else {
+        (None, false, Vec::new())
+    };
+    for error in fts_errors {
+        writeln!(stderr, "pchronicle find: {error}").context("write FTS diagnostic")?;
+    }
+    let sql = find_sql(&args, expression.as_ref(), search_predicate.as_deref())?;
     let mut buffer = LimitedBuffer::new(args.max_output_bytes);
     let max_query_rows = args
         .max_results
@@ -2640,6 +2963,11 @@ async fn run_find(
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).context("decode pChronicle find match"))
         .collect::<Result<Vec<FindMatch>>>()?;
+    for candidate in &mut matches {
+        if let Some(preview) = candidate.preview.as_mut() {
+            *preview = truncate(&find_preview_text(preview), 320);
+        }
+    }
     let truncated = matches.len() > args.max_results;
     matches.truncate(args.max_results);
     let response = FindResponse {
@@ -2651,6 +2979,27 @@ async fn run_find(
             run_id: args.run_id,
             session_id: args.session_id,
             step_id: args.step_id,
+            matches: args.matches.clone(),
+            expression: expression.as_ref().map(FindExpr::display),
+        },
+        search: FindSearchResponse {
+            mode: match expression.as_ref() {
+                Some(value) if value.has_text() && value.has_json() => "fts+json",
+                Some(value) if value.has_text() => "fts",
+                Some(value) if value.has_json() => "json",
+                _ => "identity",
+            },
+            scope: if args.step_id.is_some()
+                || expression
+                    .as_ref()
+                    .is_some_and(|value| value.has_text() || value.has_step_json())
+            {
+                "steps"
+            } else {
+                "runs"
+            },
+            fts_available,
+            tokenizer: fts_available.then_some("jieba"),
         },
         truncated,
         matches,
@@ -2692,6 +3041,61 @@ async fn run_find(
     Ok(())
 }
 
+/// Turn the normalized message envelope into a compact human-readable preview.
+/// Storyline stores multimodal messages as JSON arrays; printing the envelope
+/// itself hides the text that explains why a row matched.
+pub(crate) fn find_preview_text(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return raw.to_owned();
+    };
+    for _ in 0..2 {
+        let Some(nested) = value.as_str() else { break };
+        let Ok(decoded) = serde_json::from_str::<serde_json::Value>(nested) else {
+            break;
+        };
+        value = decoded;
+    }
+    let mut text = String::new();
+    collect_preview_text(&value, &mut text);
+    if text.is_empty() {
+        trimmed.to_owned()
+    } else {
+        text
+    }
+}
+
+fn collect_preview_text(value: &serde_json::Value, output: &mut String) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_preview_text(item, output);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for key in ["text", "content", "value"] {
+                if let Some(value) = map.get(key) {
+                    if let Some(value) = value.as_str() {
+                        if !output.is_empty() {
+                            output.push(' ');
+                        }
+                        output.push_str(value);
+                    } else {
+                        collect_preview_text(value, output);
+                    }
+                }
+            }
+        }
+        serde_json::Value::String(value) => {
+            if !output.is_empty() {
+                output.push(' ');
+            }
+            output.push_str(value);
+        }
+        _ => {}
+    }
+}
+
 fn ensure_output_byte_budget(size: usize, max_bytes: usize, label: &str) -> Result<()> {
     if size > max_bytes {
         return Err(cli_boundary_error(
@@ -2702,7 +3106,245 @@ fn ensure_output_byte_budget(size: usize, max_bytes: usize, label: &str) -> Resu
     Ok(())
 }
 
-fn find_sql(args: &FindArgs) -> Result<String> {
+pub(crate) async fn find_expression_predicate(
+    snapshot: &DatasetCatalogSnapshot,
+    expression: &FindExpr,
+    source_filter: Option<&str>,
+) -> Result<(Option<String>, bool, Vec<String>)> {
+    find_expression_predicate_for_dataset(snapshot, expression, source_filter, None).await
+}
+
+pub(crate) async fn find_expression_predicate_for_dataset(
+    snapshot: &DatasetCatalogSnapshot,
+    expression: &FindExpr,
+    source_filter: Option<&str>,
+    dataset_filter: Option<&str>,
+) -> Result<(Option<String>, bool, Vec<String>)> {
+    let steps = expression.has_text() || expression.has_step_json();
+    let mut text_predicates = Vec::<FindTextPredicate>::new();
+    collect_text_predicates(expression, &mut text_predicates);
+    text_predicates.sort_by(|left, right| {
+        left.field
+            .display_name()
+            .cmp(right.field.display_name())
+            .then_with(|| left.query.cmp(&right.query))
+    });
+    text_predicates.dedup();
+
+    let mut text_sql = HashMap::<FindTextPredicate, String>::new();
+    let mut available = false;
+    let mut errors = Vec::new();
+    for predicate in text_predicates {
+        let mut matches = Vec::<String>::new();
+        let mut searched = false;
+        for dataset in snapshot.datasets() {
+            if dataset_filter.is_some_and(|filter| dataset.mount.name != filter) {
+                continue;
+            }
+            for source in &dataset.sources {
+                if source.status != CatalogSourceStatus::Ready
+                    || source.kind != CatalogSourceKind::Store
+                    || source_filter.is_some_and(|filter| filter != source.file)
+                {
+                    continue;
+                }
+                let Some(paths) =
+                    snapshot.storyline_table_paths(&dataset.mount.name, &source.file)?
+                else {
+                    continue;
+                };
+                match search_storyline_step_matches_fts_in_columns(
+                    &paths,
+                    &predicate.query,
+                    predicate.field.columns(),
+                )
+                .await
+                {
+                    Ok(step_matches) => {
+                        available = true;
+                        searched = true;
+                        let source_predicate = predicate
+                            .field
+                            .source_predicate()
+                            .map(|value| format!(" AND ({value})"))
+                            .unwrap_or_default();
+                        matches.extend(step_matches.into_iter().map(|(document_id, step_id)| {
+                            format!(
+                                "(_file_ = {} AND document_id = {} AND step_id = {}{})",
+                                sql_string(&source.file),
+                                sql_string(&document_id),
+                                step_id,
+                                source_predicate,
+                            )
+                        }));
+                    }
+                    Err(error) => errors.push(format!(
+                        "FTS unavailable for {} / {}: {error:#}",
+                        dataset.mount.name, source.file
+                    )),
+                }
+            }
+        }
+        text_sql.insert(
+            predicate,
+            compiled_text_predicate_sql(&matches, searched).with_context(|| {
+                if errors.is_empty() {
+                    "no ready Storyline store was searched".to_string()
+                } else {
+                    errors.join("; ")
+                }
+            })?,
+        );
+    }
+    let predicate = compile_find_expression(expression, &text_sql, steps)?;
+    Ok((Some(predicate), available, errors))
+}
+
+fn collect_text_predicates(expression: &FindExpr, output: &mut Vec<FindTextPredicate>) {
+    match expression {
+        FindExpr::Text(predicate) => output.push(predicate.clone()),
+        FindExpr::Json(_) => {}
+        FindExpr::And(items) | FindExpr::Or(items) => {
+            for item in items {
+                collect_text_predicates(item, output);
+            }
+        }
+        FindExpr::Not(item) => collect_text_predicates(item, output),
+    }
+}
+
+fn compile_find_expression(
+    expression: &FindExpr,
+    text_sql: &HashMap<FindTextPredicate, String>,
+    steps: bool,
+) -> Result<String> {
+    match expression {
+        FindExpr::Text(predicate) => text_sql
+            .get(predicate)
+            .cloned()
+            .context("internal error: missing compiled FTS predicate"),
+        FindExpr::Json(predicate) => compile_json_predicate(predicate, steps),
+        FindExpr::And(items) => compile_find_expression_group(items, "AND", text_sql, steps),
+        FindExpr::Or(items) => compile_find_expression_group(items, "OR", text_sql, steps),
+        FindExpr::Not(item) => Ok(format!(
+            "NOT ({})",
+            compile_find_expression(item, text_sql, steps)?
+        )),
+    }
+}
+
+fn compile_find_expression_group(
+    items: &[FindExpr],
+    operator: &str,
+    text_sql: &HashMap<FindTextPredicate, String>,
+    steps: bool,
+) -> Result<String> {
+    let compiled = items
+        .iter()
+        .map(|item| compile_find_expression(item, text_sql, steps))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(balanced_sql_group(&compiled, operator))
+}
+
+/// Compile one FTS text clause to SQL.
+///
+/// A successful search with zero hits is `FALSE`. That is correct for a
+/// positive clause and makes `NOT (FALSE)` mean "every row" — only when FTS
+/// actually ran. If search never ran, compiling to `FALSE` would make `NOT`
+/// match the whole table.
+pub(crate) fn compiled_text_predicate_sql(matches: &[String], searched: bool) -> Result<String> {
+    anyhow::ensure!(
+        searched,
+        "FTS unavailable: no searchable Storyline source was found"
+    );
+    Ok(balanced_sql_group(matches, "OR"))
+}
+
+/// Combine generated SQL predicates as a balanced tree.
+///
+/// FTS can return many thousands of `(source, document, step)` identities.
+/// Joining those predicates linearly creates a left-deep SQL AST, which can
+/// overflow DataFusion's stack while parsing or planning. A balanced tree has
+/// logarithmic nesting depth without changing the predicate semantics.
+fn balanced_sql_group(predicates: &[String], operator: &str) -> String {
+    if predicates.is_empty() {
+        return match operator {
+            "AND" => "TRUE".into(),
+            "OR" => "FALSE".into(),
+            _ => unreachable!("unsupported SQL boolean operator: {operator}"),
+        };
+    }
+    fn build(predicates: &[String], operator: &str) -> String {
+        if predicates.len() == 1 {
+            return predicates[0].clone();
+        }
+        let midpoint = predicates.len() / 2;
+        format!(
+            "({} {operator} {})",
+            build(&predicates[..midpoint], operator),
+            build(&predicates[midpoint..], operator)
+        )
+    }
+    build(predicates, operator)
+}
+
+fn compile_json_predicate(predicate: &FindJsonPredicate, steps: bool) -> Result<String> {
+    let available_columns: &[&str] = if steps {
+        &["metrics", "extra"]
+    } else {
+        &[
+            "agent_extra",
+            "final_metrics",
+            "extra",
+            "meta",
+            "unknown_fields",
+        ]
+    };
+    let columns = match predicate.column.as_deref() {
+        Some(column) => {
+            anyhow::ensure!(
+                available_columns.contains(&column),
+                "JSON column '{column}' is not available for this find scope"
+            );
+            vec![column]
+        }
+        None => available_columns.to_vec(),
+    };
+    anyhow::ensure!(
+        predicate.path.starts_with('$'),
+        "JSON find path must start with '$'"
+    );
+    let encoded_value = serde_json::to_string(&predicate.value)?;
+    let alternatives = columns
+        .into_iter()
+        .map(|column| {
+            let extracted = format!("json_extract({column}, {})", sql_string(&predicate.path));
+            match predicate.operator {
+                FindJsonOperator::Eq => Ok(format!("{extracted} = {}", sql_string(&encoded_value))),
+                FindJsonOperator::NotEq => {
+                    Ok(format!("{extracted} <> {}", sql_string(&encoded_value)))
+                }
+                operator => {
+                    let number = predicate
+                        .value
+                        .as_f64()
+                        .context("JSON range comparisons require a numeric value")?;
+                    Ok(format!(
+                        "CAST({extracted} AS DOUBLE) {} {number}",
+                        operator.as_str()
+                    ))
+                }
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(format!("({})", alternatives.join(" OR ")))
+}
+
+fn find_sql(
+    args: &FindArgs,
+    expression: Option<&FindExpr>,
+    search_predicate: Option<&str>,
+) -> Result<String> {
     let mut predicates = Vec::new();
     if let Some(source) = &args.source {
         predicates.push(format!("_file_ = {}", sql_string(source)));
@@ -2719,24 +3361,29 @@ fn find_sql(args: &FindArgs) -> Result<String> {
     if let Some(step_id) = args.step_id {
         predicates.push(format!("step_id = {step_id}"));
     }
+    if let Some(search_predicate) = search_predicate {
+        predicates.push(format!("({search_predicate})"));
+    }
     anyhow::ensure!(
         !predicates.is_empty(),
-        "find requires an identity predicate"
+        "find requires an identity predicate or --match"
     );
-    let table = if args.step_id.is_some() {
-        "steps"
-    } else {
-        "runs"
-    };
-    let projection = if args.step_id.is_some() {
+    let step_lookup = args.step_id.is_some()
+        || expression.is_some_and(|value| value.has_text() || value.has_step_json());
+    let table = if step_lookup { "steps" } else { "runs" };
+    let projection = if step_lookup {
         "_file_ AS source_path, document_id, run_id, session_id, step_id, \
-         source AS step_source, effective_kind, timestamp"
+         source AS step_source, effective_kind, timestamp, \
+         COALESCE(NULLIF(message_value, ''), NULLIF(reasoning_content, ''), \
+                  NULLIF(observation, ''), NULLIF(prompt, ''), model_name) AS preview"
     } else {
         "_file_ AS source_path, document_id, run_id, session_id, \
          CAST(NULL AS BIGINT) AS step_id, \
          CAST(NULL AS VARCHAR) AS step_source, \
          CAST(NULL AS VARCHAR) AS effective_kind, \
-         CAST(NULL AS VARCHAR) AS timestamp"
+         CAST(NULL AS VARCHAR) AS timestamp, \
+         COALESCE(NULLIF(task, ''), NULLIF(prompt, ''), NULLIF(notes, ''), \
+                  NULLIF(agent_name, ''), agent_model_name) AS preview"
     };
     let limit = args
         .max_results
@@ -2746,11 +3393,7 @@ fn find_sql(args: &FindArgs) -> Result<String> {
         "SELECT {projection} FROM dataset.{table} WHERE {} \
          ORDER BY _file_, session_id{} LIMIT {limit}",
         predicates.join(" AND "),
-        if args.step_id.is_some() {
-            ", step_id"
-        } else {
-            ""
-        }
+        if step_lookup { ", step_id" } else { "" }
     ))
 }
 
@@ -2784,7 +3427,7 @@ fn validate_find_id(flag: &str, value: &str) -> Result<()> {
 }
 
 fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<()> {
-    let step_lookup = response.query.step_id.is_some();
+    let step_lookup = response.search.scope == "steps";
     let mut rows = Vec::with_capacity(response.matches.len() + 1);
     if step_lookup {
         rows.push(
@@ -2797,6 +3440,7 @@ fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<(
                 "STEP SOURCE",
                 "KIND",
                 "TIMESTAMP",
+                "PREVIEW",
             ]
             .into_iter()
             .map(str::to_string)
@@ -2804,7 +3448,7 @@ fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<(
         );
     } else {
         rows.push(
-            ["SOURCE", "DOCUMENT ID", "RUN ID", "SESSION ID"]
+            ["SOURCE", "DOCUMENT ID", "RUN ID", "SESSION ID", "PREVIEW"]
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
@@ -2817,6 +3461,15 @@ fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<(
             candidate.run_id.as_deref().unwrap_or("-").to_string(),
             candidate.session_id.clone(),
         ];
+        if !step_lookup {
+            row.push(
+                candidate
+                    .preview
+                    .as_deref()
+                    .map(|value| truncate(value, 96))
+                    .unwrap_or_else(|| "-".into()),
+            );
+        }
         if step_lookup {
             row.extend([
                 candidate
@@ -2830,6 +3483,11 @@ fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<(
                     .unwrap_or("-")
                     .to_string(),
                 candidate.timestamp.as_deref().unwrap_or("-").to_string(),
+                candidate
+                    .preview
+                    .as_deref()
+                    .map(|value| truncate(value, 96))
+                    .unwrap_or_else(|| "-".into()),
             ]);
         }
         rows.push(row);
@@ -2960,7 +3618,13 @@ async fn discover_query_snapshot(
             .with_discovery_limits(max_files, max_entries),
     )
     .await
-    .context("discover query Dataset Sources")?;
+    .map_err(|error| {
+        let dataset_uri = dataset_uris
+            .first()
+            .map(String::as_str)
+            .unwrap_or("<mounted datasets>");
+        dataset_discovery_error(dataset_uri, format!("query discovery failed: {error:#}"))
+    })?;
     Ok((dataset_label, dataset_uris, snapshot))
 }
 
@@ -2980,8 +3644,20 @@ async fn discover_snapshot(
             .with_discovery_limits(max_files, max_entries),
     )
     .await
-    .with_context(|| "discover Dataset Sources")?;
+    .map_err(|error| dataset_discovery_error(&dataset_uri, error))?;
     Ok((dataset_uri, snapshot))
+}
+
+fn dataset_discovery_error(dataset_uri: &str, error: impl std::fmt::Display) -> anyhow::Error {
+    let detail = format!("{error:#}");
+    let endpoint_hint = if dataset_uri.starts_with("s3://") {
+        "; S3-compatible storage uses s3://<bucket>/<prefix>; configure the service endpoint \
+         separately with AWS_ENDPOINT_URL_S3 (or AWS_ENDPOINT), for example \
+         AWS_ENDPOINT_URL_S3=http://127.0.0.1:9000"
+    } else {
+        ""
+    };
+    anyhow::anyhow!("discover Dataset Sources at {dataset_uri}: {detail}{endpoint_hint}")
 }
 
 async fn query_status_counts(

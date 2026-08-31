@@ -301,6 +301,16 @@
   font-size: 9px;
 }
 
+.analyze-schema-kind {
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.analyze-schema-kind.view {
+  color: #16866a;
+}
+
 .analyze-schema-table:hover,
 .analyze-schema-field:hover:not(:disabled) {
   background: #f2f6fc;

@@ -1,7 +1,8 @@
 # 审查并应用 Agent 修改
 
 Agent 可以在 staged workspace 内自由工作，但不会自动获得修改基础项目的权限。Run
-结束后，由你决定哪些 Effect 可以跨过这条边界。
+结束后，由你决定哪些 Effect 可以跨过这条边界。这个工作流应用文件系统
+[Effect 模型](../concepts/run-model.md)。
 
 ## 使用 manual stage 运行
 

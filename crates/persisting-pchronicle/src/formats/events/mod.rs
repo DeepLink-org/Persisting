@@ -116,7 +116,6 @@ pub fn parse_events_jsonl_for_test(input: &str) -> Result<EventsDocument> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
     use serde_json::Value;
 
     #[test]
@@ -201,90 +200,55 @@ mod tests {
         );
     }
 
-    fn id_strategy() -> impl Strategy<Value = String> {
-        proptest::string::string_regex("[a-zA-Z0-9._-]{1,32}").unwrap()
-    }
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use proptest::prelude::*;
+        use serde_json::Value;
 
-    fn event_strategy() -> impl Strategy<Value = EventRecord> {
-        (
-            any::<u64>(),
-            id_strategy(),
-            id_strategy(),
-            prop::option::of(id_strategy()),
-            prop::option::of(id_strategy()),
-        )
-            .prop_map(|(seq, source, kind, session_id, agent_id)| EventRecord {
-                identity: EventIdentity::default(),
-                seq,
-                source,
-                kind,
-                timestamp: None,
-                session_id,
-                agent_id,
-                parent_uuid: None,
-                trace_id: None,
-                call_id: None,
-                subagent_id: None,
-                parent_agent_id: None,
-                branch: None,
-                parent_call_id: None,
-                payload: Value::Object(Default::default()),
-            })
-    }
+        use crate::formats::events::{EventIdentity, EventRecord, export_events_jsonl};
 
-    proptest! {
-        #[test]
-        fn events_document_new_preserves_events_and_uses_last_present_routing_ids(
-            events in proptest::collection::vec(event_strategy(), 0..32),
-        ) {
-            let expected_session = events.iter().rev().find_map(|event| event.session_id.clone());
-            let expected_agent = events.iter().rev().find_map(|event| event.agent_id.clone());
-            let document = EventsDocument::new(events.clone());
-            prop_assert_eq!(document.format, EventsDocument::FORMAT_NAME);
-            prop_assert_eq!(document.session_id, expected_session);
-            prop_assert_eq!(document.agent_id, expected_agent);
-            prop_assert_eq!(document.events, events);
+        fn id_strategy() -> impl Strategy<Value = String> {
+            proptest::string::string_regex("[a-zA-Z0-9._-]{1,32}").unwrap()
         }
 
-        #[test]
-        fn events_document_json_roundtrip_preserves_the_envelope(
-            events in proptest::collection::vec(event_strategy(), 0..16),
-        ) {
-            let document = EventsDocument::new(events);
-            let encoded = serde_json::to_value(&document).unwrap();
-            let decoded: EventsDocument = serde_json::from_value(encoded).unwrap();
-            prop_assert_eq!(decoded, document);
+        fn event_strategy() -> impl Strategy<Value = EventRecord> {
+            (
+                any::<u64>(),
+                id_strategy(),
+                id_strategy(),
+                prop::option::of(id_strategy()),
+                prop::option::of(id_strategy()),
+            )
+                .prop_map(|(seq, source, kind, session_id, agent_id)| EventRecord {
+                    identity: EventIdentity::default(),
+                    seq,
+                    source,
+                    kind,
+                    timestamp: None,
+                    session_id,
+                    agent_id,
+                    parent_uuid: None,
+                    trace_id: None,
+                    call_id: None,
+                    subagent_id: None,
+                    parent_agent_id: None,
+                    branch: None,
+                    parent_call_id: None,
+                    payload: Value::Object(Default::default()),
+                })
         }
 
-        #[test]
-        fn missing_typed_llm_payloads_are_explicitly_absent(event in event_strategy()) {
-            prop_assert!(event.llm_request_payload().unwrap().is_none());
-            prop_assert!(event.llm_response_payload().unwrap().is_none());
-        }
-
-        #[test]
-        fn event_validation_rejects_only_empty_source_or_kind(
-            source in any::<String>(),
-            kind in any::<String>(),
-        ) {
-            let event = EventRecord {
-                identity: EventIdentity::default(),
-                seq: 0,
-                source,
-                kind,
-                timestamp: None,
-                session_id: None,
-                agent_id: None,
-                parent_uuid: None,
-                trace_id: None,
-                call_id: None,
-                subagent_id: None,
-                parent_agent_id: None,
-                branch: None,
-                parent_call_id: None,
-                payload: Value::Null,
-            };
-            prop_assert_eq!(event.validate().is_ok(), !event.source.trim().is_empty() && !event.kind.trim().is_empty());
+        proptest! {
+            #[test]
+            fn jsonl_export_emits_one_decodable_record_per_event(events in proptest::collection::vec(event_strategy(), 0..16)) {
+                let encoded = export_events_jsonl(&events).unwrap();
+                let decoded = encoded
+                    .lines()
+                    .map(serde_json::from_str::<EventRecord>)
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                prop_assert_eq!(decoded, events);
+            }
         }
     }
 }

@@ -31,10 +31,8 @@ impl ProjectedAtifScanFlags {
             reasoning_content: scan.wants("reasoning_content"),
             kind_fields: scan.wants("kind") || scan.wants("effective_kind"),
             had_observation: scan.wants("had_observation"),
-            metrics: scan.wants("metrics_json")
-                || scan.wants("latency_ms")
-                || scan.wants("ttft_ms"),
-            extra_json: scan.wants("extra_json"),
+            metrics: scan.wants("metrics") || scan.wants("latency") || scan.wants("ttft"),
+            extra_json: scan.wants("extra"),
             llm_call_count: scan.wants("llm_call_count"),
             is_copied_context: scan.wants("is_copied_context"),
         }
@@ -140,7 +138,7 @@ impl ProjectedAtifTrajectory {
         self.session_id
             .as_deref()
             .filter(|value| !value.is_empty())
-            .or(inherited_session_id)
+            .or_else(|| inherited_session_id.filter(|value| !value.is_empty()))
             .or_else(|| {
                 self.trajectory_id
                     .as_deref()
@@ -1020,7 +1018,7 @@ fn project_atif_step(
             )
             .flatten(),
         metrics_json: scan
-            .wants("metrics_json")
+            .wants("metrics")
             .then_some(step.metrics_json.as_deref().map(canonical_json_text))
             .flatten(),
         model_name: scan
@@ -1035,12 +1033,83 @@ fn project_atif_step(
             .wants("is_copied_context")
             .then_some(step.is_copied_context)
             .flatten(),
-        latency_ms: scan.wants("latency_ms").then_some(latency_ms).flatten(),
-        ttft_ms: scan.wants("ttft_ms").then_some(ttft_ms).flatten(),
+        latency: scan.wants("latency").then_some(latency_ms).flatten(),
+        ttft: scan.wants("ttft").then_some(ttft_ms).flatten(),
         had_observation: scan.wants("had_observation") && step.observation_present,
         extra_json: scan
-            .wants("extra_json")
+            .wants("extra")
             .then_some(step.extra_json.as_deref().map(canonical_json_text))
             .flatten(),
+    }
+}
+
+#[cfg(all(test, feature = "proptest"))]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn maybe_identifier() -> impl Strategy<Value = Option<String>> {
+        prop::option::of(proptest::string::string_regex("[A-Za-z0-9._-]{0,16}").unwrap())
+    }
+
+    proptest! {
+        #[test]
+        fn effective_session_id_uses_the_first_nonempty_identity(
+            session_id in maybe_identifier(),
+            inherited in maybe_identifier(),
+            trajectory_id in maybe_identifier(),
+        ) {
+            let trajectory = ProjectedAtifTrajectory {
+                schema_version: "ATIF-v1.7".into(),
+                session_id,
+                trajectory_id,
+                agent: ProjectedAtifAgent { name: "agent".into(), version: "1".into() },
+                steps: Vec::new(),
+                subagent_trajectories: Vec::new(),
+                skipped_steps: 0,
+            };
+            let expected = trajectory
+                .session_id
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .or_else(|| inherited.as_deref().filter(|value| !value.is_empty()))
+                .or_else(|| trajectory.trajectory_id.as_deref().filter(|value| !value.is_empty()));
+            match expected {
+                Some(expected) => prop_assert_eq!(trajectory.effective_session_id(inherited.as_deref()).unwrap(), expected),
+                None => prop_assert!(trajectory.effective_session_id(inherited.as_deref()).is_err()),
+            }
+        }
+
+        #[test]
+        fn projected_step_count_includes_skipped_steps(
+            steps in proptest::collection::vec(any::<i64>(), 0..64),
+            skipped_steps in 0usize..64,
+        ) {
+            let expected = steps.len() + skipped_steps;
+            let trajectory = ProjectedAtifTrajectory {
+                schema_version: "ATIF-v1.7".into(),
+                session_id: Some("session".into()),
+                trajectory_id: None,
+                agent: ProjectedAtifAgent { name: "agent".into(), version: "1".into() },
+                steps: steps.into_iter().map(|step_id| ProjectedAtifStep {
+                    step_id,
+                    timestamp: None,
+                    source: "user".into(),
+                    model_name: None,
+                    reasoning_effort_json: None,
+                    message_json: None,
+                    reasoning_content: None,
+                    tool_calls_nonempty: false,
+                    observation_present: false,
+                    metrics_json: None,
+                    extra_json: None,
+                    llm_call_count: None,
+                    is_copied_context: None,
+                }).collect(),
+                subagent_trajectories: Vec::new(),
+                skipped_steps,
+            };
+            prop_assert_eq!(trajectory.step_count(), expected);
+        }
     }
 }

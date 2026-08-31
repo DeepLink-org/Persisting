@@ -28,6 +28,8 @@ pub(super) async fn run_import(
     if args.from != "-" {
         args.from = expand_dataset_reference(&args.from, settings_override, true)?;
     }
+    writeln!(stderr, "import from={} status=started", args.from)
+        .context("write pChronicle import progress")?;
     let from_location = (!args.stream)
         .then(|| DatasetLocation::parse(&args.from))
         .transpose()?;
@@ -80,6 +82,7 @@ pub(super) async fn run_import(
                 &args,
                 max_input_bytes,
                 stdin,
+                stderr,
                 directory_input,
                 &candidates,
             )
@@ -109,6 +112,7 @@ pub(super) async fn run_import(
                 let mut imported_sources = Vec::new();
                 let mut skipped_warnings = Vec::new();
                 if args.stream {
+                    write_import_progress(stderr, "stdin", "processing", None)?;
                     let input = read_bounded(stdin, max_input_bytes, "stdin")?;
                     if let Some(source) = stage_preserved_import_source(
                         args.format,
@@ -120,11 +124,25 @@ pub(super) async fn run_import(
                         &mut unknown_field_warnings,
                         &mut skipped_warnings,
                     )? {
+                        write_import_progress(
+                            stderr,
+                            &source.source_path,
+                            "completed",
+                            Some((&source.format, source.trajectories, source.input_bytes)),
+                        )?;
                         imported_sources.push(source);
+                    } else {
+                        write_import_progress(stderr, "stdin", "skipped", None)?;
                     }
                 } else {
                     for candidate in &candidates {
                         let label = format!("import source {}", candidate.relative_path.display());
+                        write_import_progress(
+                            stderr,
+                            &candidate.relative_path.to_string_lossy(),
+                            "processing",
+                            None,
+                        )?;
                         let file = std::fs::File::open(&candidate.path)
                             .with_context(|| format!("open {label}"))?;
                         let input = read_bounded(file, max_input_bytes, &label)?;
@@ -138,7 +156,20 @@ pub(super) async fn run_import(
                             &mut unknown_field_warnings,
                             &mut skipped_warnings,
                         )? {
+                            write_import_progress(
+                                stderr,
+                                &source.source_path,
+                                "completed",
+                                Some((&source.format, source.trajectories, source.input_bytes)),
+                            )?;
                             imported_sources.push(source);
+                        } else {
+                            write_import_progress(
+                                stderr,
+                                &candidate.relative_path.to_string_lossy(),
+                                "skipped",
+                                None,
+                            )?;
                         }
                     }
                 }
@@ -153,6 +184,7 @@ pub(super) async fn run_import(
                     &args,
                     max_input_bytes,
                     stdin,
+                    stderr,
                     directory_input,
                     &candidates,
                 )
@@ -253,6 +285,7 @@ async fn squash_storyline_into_store(
     args: &ImportArgs,
     max_input_bytes: usize,
     stdin: &mut dyn Read,
+    stderr: &mut dyn Write,
     directory_input: bool,
     candidates: &[ImportFileCandidate],
 ) -> Result<(
@@ -261,9 +294,9 @@ async fn squash_storyline_into_store(
     Vec<String>,
 )> {
     let mut import = if args.stream {
-        StorylineImportIterator::stdin(args.format, max_input_bytes, stdin)
+        StorylineImportIterator::stdin(args.format, max_input_bytes, stdin, stderr)
     } else {
-        StorylineImportIterator::files(args.format, max_input_bytes, candidates)
+        StorylineImportIterator::files(args.format, max_input_bytes, candidates, stderr)
     };
     let report = store.replace_storyline_stream(&mut import).await?;
     let (imported_sources, unknown_field_warnings, skipped_warnings) = import.into_result_parts();
@@ -595,7 +628,7 @@ async fn exact_local_file_export(
     anyhow::ensure!(
         sources[0].size_bytes == Some(input.len() as u64)
             && sources[0].snapshot_ref().as_deref() == Some(&local_file_snapshot_ref(&source_path)),
-        "export Source changed after the Catalog Snapshot was created"
+        "export Source changed after the Snapshot was created"
     );
     Ok(Some(EncodedExport {
         bytes: input,
@@ -727,6 +760,28 @@ struct ImportedSource {
     input_bytes: usize,
 }
 
+fn write_import_progress(
+    stderr: &mut dyn Write,
+    source: &str,
+    status: &str,
+    details: Option<(&DocumentFormat, usize, usize)>,
+) -> Result<()> {
+    if let Some((format, trajectories, input_bytes)) = details {
+        writeln!(
+            stderr,
+            "import source={} status={} format={} trajectories={} input_bytes={}",
+            source,
+            status,
+            format.as_str(),
+            trajectories,
+            input_bytes,
+        )?;
+    } else {
+        writeln!(stderr, "import source={} status={}", source, status)?;
+    }
+    Ok(())
+}
+
 fn collect_import_candidates(input: &Path) -> Result<(bool, Vec<ImportFileCandidate>)> {
     let metadata = std::fs::symlink_metadata(input)
         .with_context(|| format!("inspect import input {}", input.display()))?;
@@ -842,6 +897,7 @@ enum StorylineImportInputs<'a> {
 struct StorylineImportIterator<'a> {
     requested_format: ExchangeFormat,
     max_input_bytes: usize,
+    progress: &'a mut dyn Write,
     inputs: StorylineImportInputs<'a>,
     current: std::vec::IntoIter<StorylineDocument>,
     imported_sources: Vec<ImportedSource>,
@@ -856,10 +912,12 @@ impl<'a> StorylineImportIterator<'a> {
         requested_format: ExchangeFormat,
         max_input_bytes: usize,
         stdin: &'a mut dyn Read,
+        progress: &'a mut dyn Write,
     ) -> Self {
         Self {
             requested_format,
             max_input_bytes,
+            progress,
             inputs: StorylineImportInputs::Stdin(Some(stdin)),
             current: Vec::new().into_iter(),
             imported_sources: Vec::new(),
@@ -875,10 +933,12 @@ impl<'a> StorylineImportIterator<'a> {
         requested_format: ExchangeFormat,
         max_input_bytes: usize,
         candidates: &'a [ImportFileCandidate],
+        progress: &'a mut dyn Write,
     ) -> Self {
         Self {
             requested_format,
             max_input_bytes,
+            progress,
             inputs: StorylineImportInputs::Files {
                 candidates,
                 next: 0,
@@ -900,6 +960,7 @@ impl<'a> StorylineImportIterator<'a> {
                     let Some(stdin) = stdin.take() else {
                         return Ok(None);
                     };
+                    write_import_progress(self.progress, "stdin", "processing", None)?;
                     let input = read_bounded(stdin, self.max_input_bytes, "stdin")?;
                     decode_import_source(
                         self.requested_format,
@@ -919,6 +980,12 @@ impl<'a> StorylineImportIterator<'a> {
                         .checked_add(1)
                         .context("import Source index overflow")?;
                     let label = format!("import source {}", candidate.relative_path.display());
+                    write_import_progress(
+                        self.progress,
+                        &candidate.relative_path.to_string_lossy(),
+                        "processing",
+                        None,
+                    )?;
                     let file = std::fs::File::open(&candidate.path)
                         .with_context(|| format!("open {label}"))?;
                     let input = read_bounded(file, self.max_input_bytes, &label)?;
@@ -934,8 +1001,21 @@ impl<'a> StorylineImportIterator<'a> {
                 }
             };
             match outcome {
-                DecodeImportOutcome::Imported(decoded) => return Ok(Some(decoded)),
+                DecodeImportOutcome::Imported(decoded) => {
+                    write_import_progress(
+                        self.progress,
+                        &decoded.diagnostic_path.to_string_lossy(),
+                        "completed",
+                        Some((
+                            &decoded.metadata.format,
+                            decoded.metadata.trajectories,
+                            decoded.metadata.input_bytes,
+                        )),
+                    )?;
+                    return Ok(Some(decoded));
+                }
                 DecodeImportOutcome::Skipped { path, reason } => {
+                    write_import_progress(self.progress, &path.to_string_lossy(), "skipped", None)?;
                     self.skipped_warnings
                         .push(skipped_import_warning(&path, &reason));
                 }

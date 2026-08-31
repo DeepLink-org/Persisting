@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use lance_index::scalar::FullTextSearchQuery;
 use persisting_pchronicle::document::{
     DocumentFormat, decode_agenticmd, decode_json_storylines, encode_agenticmd,
     encode_json_storylines,
@@ -297,7 +298,7 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
     assert!(!plan_text.contains("pchronicle_step_id_idx"), "{plan_text}");
     let joined = context
         .sql(
-            "SELECT t.tool_call_id, t.results_json, s.effective_kind \
+            "SELECT t.tool_call_id, t.results, s.effective_kind \
              FROM tool_calls t JOIN steps s \
                ON t.session_id = s.session_id AND t.step_id = s.step_id \
              WHERE t.session_id = 'fixture-parallel_tools_14' \
@@ -323,6 +324,31 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
     assert!(names.contains(&"pchronicle_session_id_idx"));
     assert!(!names.contains(&"pchronicle_step_id_idx"));
     assert!(names.contains(&"pchronicle_effective_kind_idx"));
+    assert!(names.contains(&"pchronicle_fts_message_value_idx"));
+    assert!(names.contains(&"pchronicle_json_metrics_idx"));
+
+    let steps = lance::Dataset::open(paths.steps.to_string_lossy().as_ref()).await?;
+    let mut fts_scan = steps.scan();
+    fts_scan.full_text_search(
+        FullTextSearchQuery::new("deterministic".to_string())
+            .with_column("message_value".to_string())?,
+    )?;
+    let fts_batch = fts_scan.try_into_batch().await?;
+    assert!(
+        fts_batch.num_rows() > 0,
+        "Storyline FTS returned no matches"
+    );
+
+    let mut zh_fts_scan = steps.scan();
+    zh_fts_scan.full_text_search(
+        FullTextSearchQuery::new("验证中文".to_string())
+            .with_column("message_value".to_string())?,
+    )?;
+    let zh_fts_batch = zh_fts_scan.try_into_batch().await?;
+    assert!(
+        zh_fts_batch.num_rows() > 0,
+        "bundled Jieba tokenizer returned no Chinese matches"
+    );
 
     // A registered datasource remains a consistent snapshot after CURRENT moves.
     let raw = load(&fixture_root().join("dialogue_10.json"))?;

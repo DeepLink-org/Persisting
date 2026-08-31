@@ -13,7 +13,7 @@ commands belong to each product's Reference.
 | `persisting-events` contract | storage-independent `EventRecord` identity/envelope and the optional versioned pChronicle control protocol | storage rows, storage engines, query, or projection |
 | pVisor | one Run, its Attempts, execution environment, capability admission, effects, and runtime evidence | many-Run scheduling or durable history queries |
 | pPilot | planning, bounded execution, leases, retry and recovery, reconciliation, result collection, and task-to-Run mapping for many Runs | Agent reasoning, provider enforcement, or trajectory formats and storage |
-| pChronicle | Dataset and Source discovery, canonical events and terminal facts, normalized projections, revision lineage, query, and exchange | starting, scheduling, or controlling a Run |
+| pChronicle | Agent trajectory storage engine: path identity, Snapshot, canonical events, projections, query, and exchange | starting, scheduling, or controlling a Run |
 | Runtime provider | one physical execution mechanism | logical Run identity or product policy |
 
 Gateway, OverlayFS, and OverlayNet are pVisor runtime mechanisms. They do not
@@ -27,7 +27,7 @@ Configured runtime capture
   Gateway trajectory events ─┐
   pVisor lifecycle records ──┴─> canonical event Source ──────────────┐
 Pinned external Sources                                                │
-  local/S3 ATIF, ACTF, OpenAI Messages files ──────────────────────────┼─> Catalog Snapshot
+  local/S3 ATIF, ACTF, OpenAI Messages files ──────────────────────────┼─> Snapshot
   local/S3 Storyline Sources ──────────────────────────────────────────┘
                                                                          └─> normalized Dataset views
 ```
@@ -122,25 +122,27 @@ with `traj-sink` and invoked with `--traj`, pPilot additionally emits only
 terminal `ppilot.result` or `ppilot.failure` records; it does not capture a
 general Run trajectory. Delegated pVisor Runs do not receive Chronicle capture
 configuration. pPilot owns orchestration decisions and task-to-Run mapping in
-all of these modes.
+all of these modes. Command flags and resume behavior belong to the
+[pPilot CLI reference](../ppilot/reference/cli.md) and
+[orchestration design](../ppilot/design/orchestration.md).
 
 ## Dataset path
 
 Canonical runtime writers and pinned external Sources are independent Source
-paths. They converge only at the Catalog Snapshot and normalized Dataset views:
+paths. They converge only at the Snapshot and normalized Dataset views:
 
 ```text
 configured Gateway and pVisor lifecycle writers
   → canonical event Source ────────────────────────────────┐
 pinned local/S3 external Sources                           │
-  → ATIF / ACTF / OpenAI Messages files ───────────────────┼─> Catalog Snapshot
+  → ATIF / ACTF / OpenAI Messages files ───────────────────┼─> Snapshot
   → Storyline Sources ─────────────────────────────────────┘     ├─> normalized Run / Step / ToolCall views
                                                                  └─> query / export / revision lineage
 ```
 
 Canonical facts are append-oriented. Storyline and other normalized views are
 rebuildable projections. Exchange files are interoperability boundaries, not a
-replacement source of truth. Each read operation fixes a Catalog Snapshot; it
+replacement source of truth. Each read operation fixes a Snapshot; it
 does not invent a global transaction across unrelated Sources. Pinning an
 external file does not convert it into a canonical runtime event Source.
 
@@ -156,12 +158,13 @@ external file does not convert it into a canonical runtime event Source.
 Ingestion preserves these boundaries. A normalized representation or Catalog
 Snapshot does not upgrade the evidence supplied by its Source.
 
-The default pVisor build does not link Lance or DataFusion. With Chronicle mode
-`spawn`, pVisor starts `pchronicle serve --control 127.0.0.1:0 DATASET`,
-submits lifecycle and Gateway events over authenticated loopback
-IPC, and treats only a successful sidecar response as a durable
-acknowledgement. The legacy mode name `lance` is an alias for `spawn`; pVisor
-no longer writes Lance itself.
+The default pVisor build does not link Lance or DataFusion. Configured
+Chronicle publication starts a pChronicle sidecar over authenticated loopback
+IPC and treats only a successful sidecar acknowledgement as durable. The
+legacy mode name `lance` is an alias for `spawn`; pVisor no longer writes Lance
+itself. Sidecar flags and mode names belong to the
+[pVisor CLI reference](../pvisor/reference/cli.md) and
+[RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md).
 
 ## Failure and recovery
 
@@ -187,7 +190,9 @@ placement. Configured pChronicle capture stores lifecycle facts and only the
 Evidence carried by Gateway or lifecycle event records; the broader Run Bundle
 evidence inventory remains local unless moved separately.
 
-This produces a chain rather than a boolean label:
+This produces a chain rather than a boolean label. The local Run evidence
+chain does not mean every layer is automatically published into durable
+history:
 
 ```text
 requested policy
@@ -196,7 +201,11 @@ requested policy
   → provider-bound evidence
   → observed effects
   → terminal result
-  → durable history
+
+Optional configured persistence
+  Gateway trajectory events + pVisor lifecycle records
+    → event-carried Evidence only
+    → pChronicle durable history
 ```
 
 See [Security and evidence](security-evidence.md) for evidence levels and
@@ -209,9 +218,9 @@ See [Security and evidence](security-evidence.md) for evidence levels and
 | logical runtime event and local Chronicle control protocol | `persisting-events` | [RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md) |
 | Agent execution and Effect review | pVisor | [pVisor concepts](../pvisor/concepts/index.md) and [guides](../pvisor/guides/index.md) |
 | provider and runtime mechanisms | pVisor | [pVisor design](../pvisor/design/index.md) |
-| many-Run orchestration | pPilot within pVisor | [pPilot design](../pvisor/design/orchestration.md) |
+| many-Run orchestration | pPilot within pVisor | [pPilot design](../ppilot/design/orchestration.md) |
 | Dataset, facts, and projections | pChronicle | [pChronicle concepts](../pchronicle/concepts/index.md) |
-| storage and Catalog implementation | pChronicle | [pChronicle design](../pchronicle/design/index.md) |
+| storage and Snapshot implementation | pChronicle | [pChronicle design](../pchronicle/design/index.md) |
 | stable command syntax and formats | each product | [pVisor reference](../pvisor/reference/index.md) and [pChronicle reference](../pchronicle/reference/index.md) |
 | normative ownership decisions | Project RFCs | [RFC index](../rfcs/index.md) |
 

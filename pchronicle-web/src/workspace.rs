@@ -1,54 +1,45 @@
 use std::collections::BTreeMap;
 
 use dioxus::prelude::*;
+use futures_util::{StreamExt, stream::FuturesUnordered};
+use gloo_timers::future::TimeoutFuture;
 use wasm_bindgen::JsValue;
 
 use crate::agent::{self, ThreadMessage, ThreadRole};
 use crate::api;
 use crate::catalog::CatalogExplorer;
 use crate::chat_view::normalize_trace_view;
-use crate::components::{DataTable, RichBlock, TrajectoryView, parse_rich_blocks};
+use crate::components::{
+    DataTable, HighlightedText, RichBlock, StepDrawer, TrajectoryView, parse_rich_blocks,
+};
 use crate::copilot_sessions::{
-    AssistantSessionMeta, BrowserStore, KvStore, can_start_new_chat, delete_session, empty_thread,
-    load_index, load_session_thread, new_session_id, now_millis, page_after_history_switch,
-    persist_indexed_thread, relative_time, restore_for_run, save_index, session_storage_key,
-    title_from_thread,
+    AssistantSessionIndex, AssistantSessionMeta, BrowserStore, KvStore, can_start_new_chat,
+    delete_session, empty_thread, load_index, load_session_thread, new_session_id, now_millis,
+    page_after_history_switch, persist_indexed_thread, relative_time, restore_for_run, save_index,
+    session_storage_key, title_from_thread,
 };
 use crate::llm;
 use crate::llm_settings::LlmSettings;
+#[cfg(test)]
+use crate::model::RunSearchStatus;
 use crate::model::{
-    CatalogTree, DimensionAggregate, EventProvenance, HistogramBucket, QueryCatalog,
-    QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary, StorylineSnapshot,
-    ToolAggregate, TurnDetail, TurnSummary,
+    CatalogTree, DimensionAggregate, HistogramBucket, PageSnapshot, QueryCatalog,
+    QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary, ToolAggregate,
+    TurnDetail, TurnSearchStatus, TurnSummary,
 };
+use crate::notice::{ErrorNotice, WorkspaceNotice, workspace_notice};
 use crate::terminology::{ANALYSIS, ASSISTANT, DATASETS, RUNS, STEPS, STORAGE, TIMELINE};
 
-#[derive(Clone, Debug, PartialEq)]
-struct WorkspaceNotice {
-    title: String,
-    summary: String,
-    detail: String,
-    turn_id: Option<i64>,
-}
-
-fn workspace_notice(detail: String) -> WorkspaceNotice {
-    WorkspaceNotice {
-        title: "Workspace request failed".into(),
-        summary: detail
-            .lines()
-            .next()
-            .unwrap_or("Request failed")
-            .to_string(),
-        detail,
-        turn_id: None,
-    }
-}
+const SEARCH_DEBOUNCE_MS: u32 = 1_000;
 
 fn evidence_notice(turn_id: i64, detail: &str) -> WorkspaceNotice {
     WorkspaceNotice {
         title: "Step details could not be decoded".into(),
         summary: format!("Step #{turn_id} · {}", type_mismatch_summary(detail)),
+        action: String::new(),
         detail: detail.to_string(),
+        engine_detail: None,
+        request_id: None,
         turn_id: Some(turn_id),
     }
 }
@@ -70,6 +61,7 @@ fn type_mismatch_summary(detail: &str) -> String {
     }
 }
 
+#[derive(Clone)]
 struct RunFilters {
     query: String,
     dataset: String,
@@ -127,7 +119,15 @@ pub fn App() -> Element {
     let mut page = use_signal(move || initial_page.to_string());
     let runs = use_signal(|| None::<RunPage>);
     let runs_loading = use_signal(|| true);
-    let mut query = use_signal(|| url_param("q").unwrap_or_default());
+    let initial_query = url_param("q").unwrap_or_default();
+    let mut query = use_signal({
+        let initial_query = initial_query.clone();
+        move || initial_query
+    });
+    // Keep the input text separate from the query that drives the network
+    // request so typing can be debounced without making the input lag.
+    let mut applied_query = use_signal(move || initial_query);
+    let mut query_debounce_id = use_signal(|| 0u64);
     let mut dataset_filter =
         use_signal(|| url_param("dataset_filter").unwrap_or_else(|| "all".into()));
     let mut status = use_signal(|| url_param("status").unwrap_or_else(|| "all".into()));
@@ -135,8 +135,8 @@ pub fn App() -> Element {
     let mut direction = use_signal(|| url_param("direction").unwrap_or_else(|| "asc".into()));
     let mut run_path = use_signal(|| url_param("path").unwrap_or_default());
     let mut file_prefix = use_signal(|| url_param("file_prefix").unwrap_or_default());
-    let mut catalog_dataset = use_signal(|| String::new());
-    let mut catalog_prefix = use_signal(|| String::new());
+    let mut catalog_dataset = use_signal(String::new);
+    let mut catalog_prefix = use_signal(String::new);
     let catalog_tree = use_signal(|| None::<CatalogTree>);
     let catalog_loading = use_signal(|| false);
     let mut offset = use_signal(|| 0usize);
@@ -145,10 +145,16 @@ pub fn App() -> Element {
     let mut selected_run = use_signal(move || initial_run);
     let mut analysis = use_signal(|| None::<RunAnalysis>);
     let mut turns = use_signal(Vec::<TurnSummary>::new);
+    let mut turn_search = use_signal(TurnSearchStatus::default);
     let mut selected_turn = use_signal(|| None::<TurnDetail>);
+    let mut drawer_turn = use_signal(|| None::<TurnDetail>);
+    let mut drawer_details = use_signal(Vec::<TurnDetail>::new);
+    let mut drawer_turn_id = use_signal(|| None::<i64>);
+    let mut drawer_turn_ids = use_signal(Vec::<i64>::new);
+    let mut drawer_title = use_signal(String::new);
+    let mut drawer_loading = use_signal(|| false);
     let mut expanded_turn_id =
         use_signal(|| url_param("turn").and_then(|value| value.parse::<i64>().ok()));
-    let mut storyline = use_signal(|| None::<StorylineSnapshot>);
     let detail_loading = use_signal(|| false);
     let turn_loading = use_signal(|| false);
     let mut detail_mode = use_signal(|| url_param("workspace").unwrap_or_else(|| "trace".into()));
@@ -157,18 +163,23 @@ pub fn App() -> Element {
     });
     let mut source = use_signal(|| url_param("source").unwrap_or_else(|| "all".into()));
     let mut turn_query = use_signal(|| url_param("turn_q").unwrap_or_default());
+    let mut turn_query_debounce_id = use_signal(|| 0u64);
 
     let mut catalog = use_signal(|| None::<QueryCatalog>);
     let mut selected_table = use_signal(String::new);
     let mut copilot_open = use_signal(|| false);
     let mut copilot_wide = use_signal(load_copilot_wide);
+    let mut assistant_index = use_signal(|| load_index(&BrowserStore));
+    let mut path_list_mode = use_signal(|| PathListMode::Flat);
     let mut analysis_session_id = use_signal(move || initial_analysis_session_id);
     let mut analysis_seed_scope = use_signal(move || initial_analysis_seed_scope);
+    let mut settings_open = use_signal(|| false);
+    let mut llm_config = use_signal(llm::load_config);
 
     use_effect(move || {
         load_runs(
             RunFilters {
-                query: query(),
+                query: applied_query(),
                 dataset: dataset_filter(),
                 status: status(),
                 sort: sort(),
@@ -197,28 +208,38 @@ pub fn App() -> Element {
     });
 
     use_effect(move || {
-        if analysis().is_none() {
-            if let Some(run) = selected_run() {
-                load_workspace(run, analysis, turns, storyline, detail_loading, error);
-            }
+        if analysis().is_none()
+            && let Some(run) = selected_run()
+        {
+            load_workspace(
+                run,
+                turn_query(),
+                source(),
+                analysis,
+                turns,
+                turn_search,
+                detail_loading,
+                error,
+            );
         }
     });
 
     use_effect(move || {
-        if analysis().is_some() && selected_turn().is_none() {
-            if let (Some(run), Some(turn_id)) = (
+        if analysis().is_some()
+            && selected_turn().is_none()
+            && let (Some(run), Some(turn_id)) = (
                 selected_run(),
                 url_param("turn").and_then(|value| value.parse::<i64>().ok()),
-            ) {
-                load_turn(
-                    run,
-                    turn_id,
-                    expanded_turn_id,
-                    selected_turn,
-                    turn_loading,
-                    error,
-                );
-            }
+            )
+        {
+            load_turn(
+                run,
+                turn_id,
+                expanded_turn_id,
+                selected_turn,
+                turn_loading,
+                error,
+            );
         }
     });
 
@@ -259,7 +280,7 @@ pub fn App() -> Element {
                         }
                         catalog.set(Some(value));
                     }
-                    Err(message) => error.set(Some(workspace_notice(message))),
+                    Err(failure) => error.set(Some(workspace_notice(&failure))),
                 }
             });
         }
@@ -284,21 +305,15 @@ pub fn App() -> Element {
                 RailButton { active: page() == "physical", icon: "▤", label: STORAGE, onclick: move |_| page.set("physical".into()) }
                 div { class: "rail-spacer" }
                 button { class: if copilot_open() { "rail-button active" } else { "rail-button" }, aria_label: "Toggle Assistant", onclick: move |_| copilot_open.set(!copilot_open()), span { class: "rail-icon", "◇" } span { {ASSISTANT} } }
+                button { class: if settings_open() { "rail-button active" } else { "rail-button" }, aria_label: "Settings", onclick: move |_| settings_open.set(true), span { class: "rail-icon", "⚙" } span { "Keys" } }
                 div { class: "rail-status", span { class: "live-dot" } "Local" }
             }
 
             main { id: "pc2-main", class: "pc2-main", tabindex: "-1",
                 if let Some(notice) = error() {
-                    div { class: "pc2-workspace-notice", role: "alert",
-                        div { class: "pc2-workspace-notice-copy",
-                            strong { "{notice.title}" }
-                            span { "{notice.summary}" }
-                            details { class: "pc2-workspace-notice-details",
-                                summary { "Show technical details" }
-                                pre { "{notice.detail}" }
-                            }
-                        }
-                        button { aria_label: "Dismiss", onclick: move |_| error.set(None), "×" }
+                    ErrorNotice {
+                        notice,
+                        on_dismiss: Some(EventHandler::new(move |_| error.set(None))),
                     }
                 }
                 match page().as_str() {
@@ -324,7 +339,8 @@ pub fn App() -> Element {
                         crate::analysis::AnalysisWorkspace {
                             catalog: catalog(),
                             initial_scope: analysis_seed_scope(),
-                            requested_session_id: (!analysis_session_id().is_empty()).then(|| analysis_session_id()),
+                            requested_session_id: (!analysis_session_id().is_empty())
+                                .then_some(analysis_session_id()),
                             on_session_change: move |session_id: String| {
                                 analysis_session_id.set(session_id);
                                 analysis_seed_scope.set(None);
@@ -335,17 +351,35 @@ pub fn App() -> Element {
                         let path_runs = runs().map(|page| page.path_index).unwrap_or_default();
                         let selected_path = analysis().map(|value| value.run.path).or_else(|| selected_run().map(|run| run.path)).unwrap_or_default();
                         rsx! { div { class: "pc2-detail-layout",
-                            PathExplorer { runs: path_runs, selected_path, loading: runs_loading(), filter_folders: false,
+                            PathExplorer { runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path, loading: runs_loading(),
                                 on_path: move |value| { run_path.set(value); offset.set(0); page.set("runs".into()); },
-                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); storyline.set(None); },
+                                on_view_mode: move |mode| path_list_mode.set(mode),
+                                on_select: move |run: RunSummary| { turn_query.set(query()); selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); turn_search.set(TurnSearchStatus::default()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); },
+                                on_open_chat: move |run: RunSummary| {
+                                    turn_query.set(query());
+                                    selected_run.set(Some(run));
+                                    analysis.set(None);
+                                    turns.set(Vec::new());
+                                    turn_search.set(TurnSearchStatus::default());
+                                    selected_turn.set(None);
+                                    expanded_turn_id.set(None);
+                                    detail_mode.set("trace".into());
+                                    page.set("detail".into());
+                                    copilot_open.set(true);
+                                },
                             }
                             if let (Some(_run), Some(value)) = (selected_run(), analysis()) {
                                 RunDetailWorkspace {
                                     run: value.run.clone(),
                                     analysis: value,
                                     turns: turns(),
+                                    search: turn_search(),
                                     selected: selected_turn(),
-                                    storyline: storyline(),
+                                    drawer: drawer_turn(),
+                                    drawer_details: drawer_details(),
+                                    drawer_ids: drawer_turn_ids(),
+                                    drawer_title: drawer_title(),
+                                    drawer_loading: drawer_loading(),
                                     expanded_turn_id: expanded_turn_id(),
                                     loading: detail_loading(),
                                     turn_loading: turn_loading(),
@@ -359,8 +393,42 @@ pub fn App() -> Element {
                                         trace_mode.set(normalize_trace_view(&value).to_string());
                                     },
                                     on_source: move |value| source.set(value),
-                                    on_query: move |value| turn_query.set(value),
-                                    on_apply_filter: move |_| {},
+                                    on_query: move |value: String| {
+                                        turn_query.set(value.clone());
+                                        let request_id = turn_query_debounce_id() + 1;
+                                        turn_query_debounce_id.set(request_id);
+                                        spawn(async move {
+                                            TimeoutFuture::new(SEARCH_DEBOUNCE_MS).await;
+                                            if turn_query_debounce_id() == request_id
+                                                && let Some(run) = selected_run()
+                                            {
+                                                load_turns(
+                                                    run,
+                                                    value,
+                                                    source(),
+                                                    turns,
+                                                    turn_search,
+                                                    turn_loading,
+                                                    error,
+                                                );
+                                            }
+                                        });
+                                    },
+                                    on_apply_query: move |value: String| {
+                                        turn_query_debounce_id.set(turn_query_debounce_id() + 1);
+                                        turn_query.set(value.clone());
+                                        if let Some(run) = selected_run() {
+                                            load_turns(
+                                                run,
+                                                value,
+                                                source(),
+                                                turns,
+                                                turn_search,
+                                                turn_loading,
+                                                error,
+                                            );
+                                        }
+                                    },
                                     on_turn: move |id| {
                                         if expanded_turn_id() == Some(id) {
                                             expanded_turn_id.set(None);
@@ -370,6 +438,43 @@ pub fn App() -> Element {
                                             selected_turn.set(None);
                                             load_turn(run, id, expanded_turn_id, selected_turn, turn_loading, error);
                                         }
+                                    },
+                                    on_open_drawer: move |(id, title, ids): (i64, String, Vec<i64>)| {
+                                        // The run-level action uses the first loaded turn as its
+                                        // anchor too, so the anchor id alone cannot tell a run
+                                        // drawer from a conversation drawer. Compare the complete
+                                        // requested id set before treating the click as a toggle.
+                                        let same = drawer_request_matches(
+                                            drawer_turn_id(),
+                                            &drawer_turn_ids(),
+                                            id,
+                                            &ids,
+                                        );
+                                        if same {
+                                            drawer_turn_id.set(None);
+                                            drawer_turn.set(None);
+                                            drawer_details.set(Vec::new());
+                                            drawer_turn_ids.set(Vec::new());
+                                            drawer_title.set(String::new());
+                                            drawer_loading.set(false);
+                                        } else if let Some(run) = selected_run() {
+                                            let requested_ids = ids.clone();
+                                            drawer_turn_id.set(Some(id));
+                                            drawer_turn_ids.set(ids);
+                                            drawer_title.set(title);
+                                            drawer_turn.set(None);
+                                            drawer_details.set(Vec::new());
+                                            drawer_loading.set(true);
+                                            load_conversation_turns(run, requested_ids, drawer_turn_id, drawer_turn, drawer_details, drawer_loading, error);
+                                        }
+                                    },
+                                    on_close_drawer: move |_| {
+                                        drawer_turn_id.set(None);
+                                        drawer_turn.set(None);
+                                        drawer_details.set(Vec::new());
+                                        drawer_turn_ids.set(Vec::new());
+                                        drawer_title.set(String::new());
+                                        drawer_loading.set(false);
                                     },
                                     on_open_copilot: move |_| copilot_open.set(true),
                                     on_analyze: move |run: RunSummary| {
@@ -385,9 +490,22 @@ pub fn App() -> Element {
                     _ => {
                         let path_runs = runs().map(|value| value.path_index).unwrap_or_default();
                         rsx! { div { class: "pc2-runs-layout",
-                        PathExplorer { runs: path_runs, selected_path: run_path(), loading: runs_loading(), filter_folders: true,
+                        PathExplorer { runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path: run_path(), loading: runs_loading(),
                             on_path: move |value| { run_path.set(value); offset.set(0); },
-                            on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); detail_mode.set("trace".into()); page.set("detail".into()); },
+                            on_view_mode: move |mode| path_list_mode.set(mode),
+                            on_select: move |run: RunSummary| { turn_query.set(query()); selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); turn_search.set(TurnSearchStatus::default()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); detail_mode.set("trace".into()); page.set("detail".into()); },
+                            on_open_chat: move |run: RunSummary| {
+                                turn_query.set(query());
+                                selected_run.set(Some(run));
+                                analysis.set(None);
+                                turns.set(Vec::new());
+                                turn_search.set(TurnSearchStatus::default());
+                                selected_turn.set(None);
+                                expanded_turn_id.set(None);
+                                detail_mode.set("trace".into());
+                                page.set("detail".into());
+                                copilot_open.set(true);
+                            },
                         }
                         RunsExplorer {
                             page: runs(),
@@ -400,7 +518,27 @@ pub fn App() -> Element {
                             file: file_prefix(),
                             datasets: catalog().map(|value| value.datasets).unwrap_or_default(),
                             dataset: dataset_filter(),
-                            on_query: move |value| query.set(value),
+                            chat_sessions: assistant_index().sessions.clone(),
+                            on_query: move |value: String| {
+                                query.set(value.clone());
+                                // A new search starts from the first page; retaining a
+                                // previous offset can make valid matches look absent.
+                                offset.set(0);
+                                let request_id = query_debounce_id() + 1;
+                                query_debounce_id.set(request_id);
+                                spawn(async move {
+                                    TimeoutFuture::new(SEARCH_DEBOUNCE_MS).await;
+                                    if query_debounce_id() == request_id {
+                                        applied_query.set(value);
+                                    }
+                                });
+                            },
+                            on_apply_query: move |value: String| {
+                                query_debounce_id.set(query_debounce_id() + 1);
+                                query.set(value.clone());
+                                applied_query.set(value);
+                                offset.set(0);
+                            },
                             on_dataset: move |value| { dataset_filter.set(value); run_path.set(String::new()); file_prefix.set(String::new()); offset.set(0); },
                             on_status: move |value| status.set(value),
                             on_sort: move |value| sort.set(value),
@@ -419,8 +557,8 @@ pub fn App() -> Element {
                                         offset: offset(),
                                     };
                                 spawn(async move {
-                                    if let Err(message) = api::refresh_catalog().await {
-                                        error.set(Some(workspace_notice(message)));
+                                    if let Err(failure) = api::refresh_catalog().await {
+                                        error.set(Some(workspace_notice(&failure)));
                                         return;
                                     }
                                     if let Ok(value) = api::query_catalog().await {
@@ -430,13 +568,26 @@ pub fn App() -> Element {
                                 });
                             },
                             on_page: move |value| offset.set(value),
+                            on_open_chat: move |run: RunSummary| {
+                                turn_query.set(query());
+                                selected_run.set(Some(run));
+                                analysis.set(None);
+                                turns.set(Vec::new());
+                                turn_search.set(TurnSearchStatus::default());
+                                selected_turn.set(None);
+                                expanded_turn_id.set(None);
+                                detail_mode.set("trace".into());
+                                page.set("detail".into());
+                                copilot_open.set(true);
+                            },
                             on_select: move |run: RunSummary| {
+                                turn_query.set(query());
                                 selected_run.set(Some(run.clone()));
                                 analysis.set(None);
                                 turns.set(Vec::new());
+                                turn_search.set(TurnSearchStatus::default());
                                 selected_turn.set(None);
                                 expanded_turn_id.set(None);
-                                storyline.set(None);
                                 detail_mode.set("trace".into());
                                 page.set("detail".into());
                             },
@@ -447,18 +598,22 @@ pub fn App() -> Element {
             }
 
             if copilot_open() {
+                    div { class: "pc2-copilot-dismiss", aria_hidden: "true", onclick: move |_| copilot_open.set(false) }
                     AssistantPanel {
                         run: selected_run(),
                         analysis: analysis(),
                         turns: turns(),
                         selected: selected_turn(),
                         wide: copilot_wide(),
+                        llm_config: llm_config(),
                         on_toggle_wide: move |_| {
                             let next = !copilot_wide();
                             copilot_wide.set(next);
                             save_copilot_wide(next);
                         },
                         on_close: move |_| copilot_open.set(false),
+                        on_open_settings: move |_| settings_open.set(true),
+                        on_sessions_changed: move |next: AssistantSessionIndex| assistant_index.set(next),
                         on_turn: move |id| {
                             if let Some(run) = selected_run() {
                                 expanded_turn_id.set(Some(id));
@@ -481,13 +636,23 @@ pub fn App() -> Element {
                                 turns.set(Vec::new());
                                 selected_turn.set(None);
                                 expanded_turn_id.set(None);
-                                storyline.set(None);
                             }
                             if page() != next_page {
                                 page.set(next_page.to_string());
                             }
                         },
                     }
+            }
+            if settings_open() {
+                LlmSettings {
+                    config: llm_config(),
+                    on_close: move |_| settings_open.set(false),
+                    on_save: move |value| {
+                        llm::save_config(&value);
+                        llm_config.set(value);
+                        settings_open.set(false);
+                    },
+                }
             }
 
         }
@@ -500,25 +665,156 @@ fn load_runs(
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
+    page.set(None);
     loading.set(true);
     spawn(async move {
-        match api::explorer_runs(
-            &filters.query,
-            &filters.dataset,
-            &filters.status,
-            &filters.sort,
-            &filters.direction,
-            &filters.path,
-            &filters.file,
-            filters.offset,
-        )
-        .await
-        {
-            Ok(value) => page.set(Some(value)),
-            Err(message) => error.set(Some(workspace_notice(message))),
+        let all_datasets = filters.dataset.trim().is_empty() || filters.dataset == "all";
+        let dataset_names = if all_datasets {
+            api::query_catalog()
+                .await
+                .map(|catalog| {
+                    catalog
+                        .datasets
+                        .into_iter()
+                        .map(|dataset| dataset.name)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        } else {
+            vec![filters.dataset.clone()]
+        };
+
+        // A separate request per mounted Dataset lets a fast Lance source
+        // paint immediately while a slower JSON source is still scanning.
+        // Each response is merged into the same page as it arrives.
+        let request_limit = if all_datasets { 200 } else { 50 };
+        let mut pending = FuturesUnordered::new();
+        for dataset in dataset_names {
+            let mut scoped = filters.clone();
+            scoped.dataset = dataset;
+            pending.push(async move {
+                api::explorer_runs(
+                    &scoped.query,
+                    &scoped.dataset,
+                    &scoped.status,
+                    &scoped.sort,
+                    &scoped.direction,
+                    &scoped.path,
+                    &scoped.file,
+                    if all_datasets { 0 } else { scoped.offset },
+                    request_limit,
+                )
+                .await
+            });
+        }
+
+        let mut partials = Vec::new();
+        let mut first_error = None;
+        while let Some(result) = pending.next().await {
+            match result {
+                Ok(value) => {
+                    partials.push(value);
+                    page.set(Some(merge_run_pages(&partials, &filters)));
+                }
+                Err(message) => {
+                    first_error.get_or_insert(message);
+                }
+            }
+        }
+        if partials.is_empty() {
+            // Preserve the previous all-Dataset behavior if catalog discovery
+            // failed before fan-out could be started.
+            match api::explorer_runs(
+                &filters.query,
+                &filters.dataset,
+                &filters.status,
+                &filters.sort,
+                &filters.direction,
+                &filters.path,
+                &filters.file,
+                filters.offset,
+                50,
+            )
+            .await
+            {
+                Ok(value) => page.set(Some(value)),
+                Err(failure) => error.set(Some(workspace_notice(&first_error.unwrap_or(failure)))),
+            }
         }
         loading.set(false);
     });
+}
+
+fn merge_run_pages(pages: &[RunPage], filters: &RunFilters) -> RunPage {
+    let mut records = pages
+        .iter()
+        .flat_map(|page| page.records.iter().cloned())
+        .collect::<Vec<_>>();
+    records.sort_by(|left, right| match filters.sort.as_str() {
+        "events" => left.run.row_count.cmp(&right.run.row_count),
+        "status" => left.run.status.cmp(&right.run.status),
+        "agent" => left.run.agent_id.cmp(&right.run.agent_id),
+        _ => left.run.session_id.cmp(&right.run.session_id),
+    });
+    if filters.direction == "desc" {
+        records.reverse();
+    }
+
+    let all_datasets = filters.dataset.is_empty() || filters.dataset == "all";
+    let snapshot = if all_datasets {
+        let total = records.len();
+        let limit = 50;
+        let offset = filters.offset.min(total);
+        let next_offset = (offset + limit).min(total);
+        records = records.into_iter().skip(offset).take(limit).collect();
+        PageSnapshot {
+            offset,
+            next_offset,
+            total,
+            has_more: next_offset < total,
+            limit,
+        }
+    } else {
+        // A single Dataset is already sliced by the server. Skipping again
+        // here empties page 2 because the client offset matches the request.
+        pages
+            .first()
+            .map(|page| page.snapshot.clone())
+            .unwrap_or(PageSnapshot {
+                offset: filters.offset,
+                next_offset: filters.offset,
+                total: records.len(),
+                has_more: false,
+                limit: 50,
+            })
+    };
+
+    let mut path_index = pages
+        .iter()
+        .flat_map(|page| page.path_index.iter().cloned())
+        .collect::<Vec<_>>();
+    path_index.sort_by(|left, right| left.path.cmp(&right.path));
+    path_index.dedup_by(|left, right| left.query() == right.query());
+
+    let mut search = pages
+        .first()
+        .map(|page| page.search.clone())
+        .unwrap_or_default();
+    for page in pages.iter().skip(1) {
+        search.fts_available |= page.search.fts_available;
+        if search.tokenizer.is_none() {
+            search.tokenizer = page.search.tokenizer.clone();
+        }
+        if search.mode.is_empty() || search.mode == "none" {
+            search.mode = page.search.mode.clone();
+        }
+    }
+    RunPage {
+        snapshot,
+        records,
+        path_index,
+        search,
+    }
 }
 
 fn load_catalog_tree(
@@ -532,17 +828,20 @@ fn load_catalog_tree(
     spawn(async move {
         match api::explorer_tree(&dataset, &prefix).await {
             Ok(value) => tree.set(Some(value)),
-            Err(message) => error.set(Some(workspace_notice(message))),
+            Err(failure) => error.set(Some(workspace_notice(&failure))),
         }
         loading.set(false);
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn load_workspace(
     run: RunSummary,
+    query: String,
+    source: String,
     mut analysis: Signal<Option<RunAnalysis>>,
     mut turns: Signal<Vec<TurnSummary>>,
-    mut storyline: Signal<Option<StorylineSnapshot>>,
+    mut turn_search: Signal<TurnSearchStatus>,
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
@@ -551,26 +850,41 @@ fn load_workspace(
         let run = run.clone();
         async move {
             let (next_analysis, next_turns) =
-                futures_util::join!(api::run_analysis(&run), api::turns(&run, "", "all"),);
+                futures_util::join!(api::run_analysis(&run), api::turns(&run, &query, &source),);
             match (next_analysis, next_turns) {
                 (Ok(next_analysis), Ok(next_turns)) => {
                     analysis.set(Some(next_analysis));
                     turns.set(next_turns.records);
+                    turn_search.set(next_turns.search);
                 }
-                (Err(message), _) | (_, Err(message)) => {
-                    error.set(Some(workspace_notice(message)));
+                (Err(failure), _) | (_, Err(failure)) => {
+                    error.set(Some(workspace_notice(&failure)));
                 }
             }
             loading.set(false);
         }
     });
-    // The storyline powers context reconstruction in the turn inspector. It is
-    // additive and can be slow to project, so it loads independently: it must
-    // neither block nor blank the workspace.
+}
+
+fn load_turns(
+    run: RunSummary,
+    query: String,
+    source: String,
+    mut turns: Signal<Vec<TurnSummary>>,
+    mut turn_search: Signal<TurnSearchStatus>,
+    mut loading: Signal<bool>,
+    mut error: Signal<Option<WorkspaceNotice>>,
+) {
+    loading.set(true);
     spawn(async move {
-        if let Ok(snapshot) = api::storyline(&run).await {
-            storyline.set(Some(snapshot));
+        match api::turns(&run, &query, &source).await {
+            Ok(value) => {
+                turns.set(value.records);
+                turn_search.set(value.search);
+            }
+            Err(failure) => error.set(Some(workspace_notice(&failure))),
         }
+        loading.set(false);
     });
 }
 
@@ -587,12 +901,95 @@ fn load_turn(
         match api::turn_detail(&run, id).await {
             Ok(value) if active() == Some(id) => selected.set(Some(value)),
             Ok(_) => {}
-            Err(message) if active() == Some(id) => error.set(Some(evidence_notice(id, &message))),
+            Err(failure) if active() == Some(id) => error.set(Some(workspace_notice(&failure))),
             Err(_) => {}
         }
         if active() == Some(id) {
             loading.set(false);
         }
+    });
+}
+
+const MAX_CONVERSATION_DRAWER_BLOCKS: usize = 64;
+
+fn drawer_request_matches(
+    active_id: Option<i64>,
+    active_ids: &[i64],
+    requested_id: i64,
+    requested_ids: &[i64],
+) -> bool {
+    active_id == Some(requested_id) && active_ids == requested_ids
+}
+
+fn load_conversation_turns(
+    run: RunSummary,
+    ids: Vec<i64>,
+    active: Signal<Option<i64>>,
+    mut primary: Signal<Option<TurnDetail>>,
+    mut details: Signal<Vec<TurnDetail>>,
+    mut loading: Signal<bool>,
+    mut error: Signal<Option<WorkspaceNotice>>,
+) {
+    let requested = ids
+        .into_iter()
+        .take(MAX_CONVERSATION_DRAWER_BLOCKS)
+        .collect::<Vec<_>>();
+    let Some(first_id) = requested.first().copied() else {
+        loading.set(false);
+        return;
+    };
+    loading.set(true);
+    spawn(async move {
+        let mut stream = futures_util::stream::iter(requested.iter().copied())
+            .map(|id| {
+                let run = run.clone();
+                async move { (id, api::turn_detail(&run, id).await) }
+            })
+            .buffer_unordered(4);
+        let mut loaded = Vec::<(i64, TurnDetail)>::new();
+        let mut first_error = None;
+        while let Some((id, result)) = stream.next().await {
+            if active() != Some(first_id) {
+                return;
+            }
+            match result {
+                Ok(value) => {
+                    loaded.push((id, value));
+                    loaded.sort_by_key(|(loaded_id, _)| {
+                        requested
+                            .iter()
+                            .position(|candidate| candidate == loaded_id)
+                            .unwrap_or(usize::MAX)
+                    });
+                    let ordered = loaded
+                        .iter()
+                        .map(|(_, value)| value.clone())
+                        .collect::<Vec<_>>();
+                    // Make the drawer useful as soon as the first detail is
+                    // available; later responses progressively fill the
+                    // AgenticMD document without another user action.
+                    if let Some(value) = ordered.first().cloned() {
+                        primary.set(Some(value));
+                        details.set(ordered);
+                    }
+                }
+                Err(failure) => {
+                    if first_error.is_none() {
+                        first_error = Some(if failure.message.contains("invalid type") {
+                            evidence_notice(id, &failure.message)
+                        } else {
+                            workspace_notice(&failure)
+                        });
+                    }
+                }
+            }
+        }
+        if loaded.is_empty()
+            && let Some(notice) = first_error
+        {
+            error.set(Some(notice));
+        }
+        loading.set(false);
     });
 }
 
@@ -611,39 +1008,46 @@ fn LoadingWorkspace(label: &'static str) -> Element {
     rsx! { div { class: "pc2-loading", span { class: "spinner" } "{label}" } }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PathListMode {
+    #[default]
+    Flat,
+    Tree,
+}
+
+fn has_chat_for_run(sessions: &[AssistantSessionMeta], run: &RunSummary) -> bool {
+    sessions
+        .iter()
+        .any(|session| session.run.query() == run.query())
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
-struct PathTreeNode {
+struct ImportPathTreeNode {
     name: String,
-    full_path: String,
-    children: BTreeMap<String, PathTreeNode>,
+    children: BTreeMap<String, ImportPathTreeNode>,
     runs: Vec<RunSummary>,
 }
 
-fn build_path_tree(runs: &[RunSummary]) -> PathTreeNode {
-    let mut root = PathTreeNode {
-        name: "All runs".into(),
-        ..PathTreeNode::default()
-    };
+fn build_import_path_tree(runs: &[RunSummary]) -> ImportPathTreeNode {
+    let mut root = ImportPathTreeNode::default();
     for run in runs {
         let segments = run
             .path
             .split('/')
-            .filter(|value| !value.is_empty())
+            .filter(|segment| !segment.is_empty())
             .collect::<Vec<_>>();
         let mut node = &mut root;
-        let mut current = String::new();
-        for segment in segments {
-            if !current.is_empty() {
-                current.push('/');
-            }
-            current.push_str(segment);
+        for segment in if segments.is_empty() {
+            vec!["(unknown)"]
+        } else {
+            segments
+        } {
             node = node
                 .children
                 .entry(segment.into())
-                .or_insert_with(|| PathTreeNode {
+                .or_insert_with(|| ImportPathTreeNode {
                     name: segment.into(),
-                    full_path: current.clone(),
-                    ..PathTreeNode::default()
+                    ..ImportPathTreeNode::default()
                 });
         }
         node.runs.push(run.clone());
@@ -651,61 +1055,146 @@ fn build_path_tree(runs: &[RunSummary]) -> PathTreeNode {
     root
 }
 
-fn subtree_run_count(node: &PathTreeNode) -> usize {
-    node.runs.len() + node.children.values().map(subtree_run_count).sum::<usize>()
+fn import_path_tree_run_count(node: &ImportPathTreeNode) -> usize {
+    node.runs.len()
+        + node
+            .children
+            .values()
+            .map(import_path_tree_run_count)
+            .sum::<usize>()
+}
+
+#[component]
+fn PathRunRow(
+    run: RunSummary,
+    name: String,
+    chat_sessions: Vec<AssistantSessionMeta>,
+    selected_path: String,
+    on_select: EventHandler<RunSummary>,
+    on_open_chat: EventHandler<RunSummary>,
+) -> Element {
+    let active = selected_path == run.path;
+    let tone = match run.status.as_str() {
+        "completed" | "ok" => "good",
+        "active" => "live",
+        "failed" | "error" => "bad",
+        _ => "",
+    };
+    let has_chat = has_chat_for_run(&chat_sessions, &run);
+    rsx! {
+        button {
+            class: if active { "pc2-path-row active" } else { "pc2-path-row" },
+            title: "{run.path}",
+            onclick: move |_| on_select.call(run.clone()),
+            span { class: "pc2-path-toggle leaf" }
+            span { class: "pc2-path-name", span { class: "pc2-path-icon run {tone}" } span { "{name}" } }
+            if has_chat { ChatMarker { run: run.clone(), on_open_chat } }
+            code { "1" }
+        }
+    }
+}
+
+#[component]
+fn ChatMarker(run: RunSummary, on_open_chat: EventHandler<RunSummary>) -> Element {
+    let click_run = run.clone();
+    let key_run = run;
+    let marker_title = "Open Assistant chat for this run";
+    rsx! {
+        span {
+            class: "pc2-chat-dot",
+            role: "button",
+            tabindex: "0",
+            title: marker_title,
+            aria_label: marker_title,
+            onclick: move |event| {
+                event.stop_propagation();
+                on_open_chat.call(click_run.clone());
+            },
+            onkeydown: move |event| {
+                if event.key() == Key::Enter || event.key() == Key::Character(" ".to_string()) {
+                    event.stop_propagation();
+                    on_open_chat.call(key_run.clone());
+                }
+            },
+        }
+    }
 }
 
 #[component]
 fn PathExplorer(
     runs: Vec<RunSummary>,
+    chat_sessions: Vec<AssistantSessionMeta>,
+    view_mode: PathListMode,
     selected_path: String,
     loading: bool,
-    filter_folders: bool,
     on_path: EventHandler<String>,
+    on_view_mode: EventHandler<PathListMode>,
     on_select: EventHandler<RunSummary>,
+    on_open_chat: EventHandler<RunSummary>,
 ) -> Element {
-    let tree = build_path_tree(&runs);
+    let import_path_tree = build_import_path_tree(&runs);
     rsx! { aside { class: "pc2-path-explorer",
-        header { div { strong { "Run paths" } span { "Browse runs by source hierarchy" } } span { "{runs.len()}" } }
+        header {
+            div { strong { "Run paths" } span { if view_mode == PathListMode::Flat { "All runs in this dataset" } else { "Tree by import path" } } }
+            div { class: "pc2-path-view-toggle", role: "group", aria_label: "Run list view",
+                button { class: if view_mode == PathListMode::Flat { "active" } else { "" }, aria_pressed: view_mode == PathListMode::Flat, onclick: move |_| on_view_mode.call(PathListMode::Flat), "Flat" }
+                button { class: if view_mode == PathListMode::Tree { "active" } else { "" }, aria_pressed: view_mode == PathListMode::Tree, onclick: move |_| on_view_mode.call(PathListMode::Tree), "Tree" }
+            }
+            span { "{runs.len()}" }
+        }
         div { class: "pc2-path-tree",
             button { class: if selected_path.is_empty() { "pc2-path-all active" } else { "pc2-path-all" }, onclick: move |_| on_path.call(String::new()), span { class: "pc2-path-icon root", "⌂" } strong { "All runs" } code { "{runs.len()}" } }
             if loading && runs.is_empty() { div { class: "pc2-path-loading", span { class: "spinner" } "Loading paths…" } }
             else if runs.is_empty() { div { class: "pc2-path-empty", "No captured run paths." } }
-            else { for node in tree.children.into_values() { PathNode { key: "{node.full_path}", node, selected_path: selected_path.clone(), filter_folders, on_path, on_select } } }
+            else if view_mode == PathListMode::Flat {
+                for run in runs.iter() {
+                    PathRunRow { key: "flat-{run.path}", run: run.clone(), name: run.session_id.clone(), chat_sessions: chat_sessions.clone(), selected_path: selected_path.clone(), on_select, on_open_chat }
+                }
+            } else {
+                for node in import_path_tree.children.into_values() {
+                    ImportPathTreeNodeView { key: "{node.name}", node, chat_sessions: chat_sessions.clone(), selected_path: selected_path.clone(), on_select, on_open_chat }
+                }
+            }
         }
-        footer { "Folders follow agent / root / subagent / session coordinates." }
+        footer { if view_mode == PathListMode::Flat { "Showing all runs in this dataset." } else { "Tree follows the imported path." } }
     } }
 }
 
 #[component]
-fn PathNode(
-    node: PathTreeNode,
+fn ImportPathTreeNodeView(
+    node: ImportPathTreeNode,
+    chat_sessions: Vec<AssistantSessionMeta>,
     selected_path: String,
-    filter_folders: bool,
-    on_path: EventHandler<String>,
     on_select: EventHandler<RunSummary>,
+    on_open_chat: EventHandler<RunSummary>,
 ) -> Element {
-    let count = subtree_run_count(&node);
-    let is_leaf = node.children.is_empty() && node.runs.len() == 1;
-    if is_leaf {
+    let count = import_path_tree_run_count(&node);
+    if node.children.is_empty() && node.runs.len() == 1 {
         let run = node.runs[0].clone();
-        let active = selected_path == run.path;
-        let tone = match run.status.as_str() {
-            "completed" | "ok" => "good",
-            "active" => "live",
-            "failed" | "error" => "bad",
-            _ => "",
+        return rsx! {
+            PathRunRow {
+                run,
+                name: node.name,
+                chat_sessions,
+                selected_path,
+                on_select,
+                on_open_chat,
+            }
         };
-        return rsx! { button { class: if active { "pc2-path-row active" } else { "pc2-path-row" }, title: "{run.path}", onclick: move |_| on_select.call(run.clone()), span { class: "pc2-path-toggle leaf" } span { class: "pc2-path-name", span { class: "pc2-path-icon run" } span { "{node.name}" } } span { class: "pc2-path-health {tone}" } code { "1" } } };
     }
-    let folder_path = node.full_path.clone();
-    rsx! { details { open: true,
-        summary { class: if selected_path == node.full_path { "pc2-path-row branch active" } else { "pc2-path-row branch" }, span { class: "pc2-path-toggle", "›" } button { class: "pc2-path-name", onclick: move |event| { if filter_folders { event.prevent_default(); on_path.call(folder_path.clone()); } }, span { class: "pc2-path-icon folder" } span { "{node.name}" } } span {} code { "{count}" } }
-        div { class: "pc2-path-children",
-            for run in node.runs { button { class: if selected_path == run.path { "pc2-path-row active" } else { "pc2-path-row" }, onclick: move |_| on_select.call(run.clone()), span { class: "pc2-path-toggle leaf" } span { class: "pc2-path-name", span { class: "pc2-path-icon run" } span { "{run.session_id}" } } span {} code { "1" } } }
-            for child in node.children.into_values() { PathNode { key: "{child.full_path}", node: child, selected_path: selected_path.clone(), filter_folders, on_path, on_select } }
+    rsx! {
+        details { open: true,
+            summary { class: "pc2-path-row branch", span { class: "pc2-path-toggle", "›" } span { class: "pc2-path-name", span { class: "pc2-path-icon folder" } span { "{node.name}" } } span {} code { "{count}" } }
+            div { class: "pc2-path-children",
+                for run in node.runs {
+                    PathRunRow { key: "path-{run.path}", run: run.clone(), name: run.session_id.clone(), chat_sessions: chat_sessions.clone(), selected_path: selected_path.clone(), on_select, on_open_chat }
+                }
+                for child in node.children.into_values() {
+                    ImportPathTreeNodeView { key: "{child.name}", node: child, chat_sessions: chat_sessions.clone(), selected_path: selected_path.clone(), on_select, on_open_chat }
+                }
+            }
         }
-    } }
+    }
 }
 
 #[component]
@@ -714,6 +1203,7 @@ fn RunsExplorer(
     loading: bool,
     query: String,
     datasets: Vec<QueryDatasetSummary>,
+    chat_sessions: Vec<AssistantSessionMeta>,
     dataset: String,
     status: String,
     sort: String,
@@ -721,6 +1211,7 @@ fn RunsExplorer(
     path: String,
     file: String,
     on_query: EventHandler<String>,
+    on_apply_query: EventHandler<String>,
     on_dataset: EventHandler<String>,
     on_status: EventHandler<String>,
     on_sort: EventHandler<String>,
@@ -729,6 +1220,7 @@ fn RunsExplorer(
     on_file: EventHandler<String>,
     on_refresh: EventHandler<MouseEvent>,
     on_page: EventHandler<usize>,
+    on_open_chat: EventHandler<RunSummary>,
     on_select: EventHandler<RunSummary>,
 ) -> Element {
     let total = page.as_ref().map_or(0, |page| page.snapshot.total);
@@ -736,6 +1228,24 @@ fn RunsExplorer(
     let page_limit = page.as_ref().map_or(50, |page| page.snapshot.limit);
     let page_next = page.as_ref().map_or(0, |page| page.snapshot.next_offset);
     let page_has_more = page.as_ref().is_some_and(|page| page.snapshot.has_more);
+    let search = page
+        .as_ref()
+        .map(|page| page.search.clone())
+        .unwrap_or_default();
+    let search_label = match search.mode.as_str() {
+        "fts" if search.fts_available => "FTS · Jieba",
+        "fts+json" if search.fts_available => "FTS + JSONB · Jieba",
+        "json" => "JSONB",
+        "none" if search.fts_available => "FTS available · Jieba",
+        "none" => "FTS unavailable",
+        _ if search.fts_available => "FTS · Jieba",
+        _ => "FTS unavailable",
+    };
+    let search_placeholder = if search.fts_available {
+        "Search runs/content or JSONB (find syntax)"
+    } else {
+        "Search unavailable for this Dataset"
+    };
     rsx! {
         section { class: "pc2-page",
             header { class: "pc2-page-head",
@@ -743,7 +1253,7 @@ fn RunsExplorer(
                 button { class: "button", onclick: on_refresh, "↻ Refresh" }
             }
             div { class: "pc2-filterbar",
-                label { class: "pc2-filter-search", span { "⌕" } input { value: "{query}", placeholder: "Agent, session, root, or status", aria_label: "Search runs", oninput: move |event| on_query.call(event.value()) } }
+                label { class: "pc2-filter-search", span { "⌕" } input { value: "{query}", placeholder: "{search_placeholder}", aria_label: "Search runs and content", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); on_apply_query.call(query.clone()); } } } if !query.is_empty() { button { r#type: "button", class: "pc2-filter-clear", aria_label: "Clear run search", title: "Clear search", onclick: move |event| { event.prevent_default(); on_apply_query.call(String::new()); }, "×" } } }
                 select { value: "{dataset}", aria_label: "Filter by Dataset", onchange: move |event| on_dataset.call(event.value()),
                     option { value: "all", "All Datasets" }
                     for mounted in datasets { option { value: "{mounted.name}", "{mounted.name}" } }
@@ -753,6 +1263,7 @@ fn RunsExplorer(
                 button { class: "pc2-sort", aria_label: "Toggle sort direction", onclick: move |_| on_direction.call(if direction == "asc" { "desc".into() } else { "asc".into() }), if direction == "asc" { "↑ Asc" } else { "↓ Desc" } }
                 if !path.is_empty() { button { class: "pc2-path-filter", title: "{path}", onclick: move |_| on_path.call(String::new()), "⌁ {short(&path, 24)} ×" } }
                 if !file.is_empty() { button { class: "pc2-path-filter", title: "{file}", onclick: move |_| on_file.call(String::new()), "_file_ {short(&file, 24)} ×" } }
+                span { class: if search.fts_available { "pc2-search-mode available" } else { "pc2-search-mode unavailable" }, title: "{search_label}", "{search_label}" }
                 span { class: "pc2-result-count", "{total} runs" }
             }
             div { class: "pc2-table-wrap",
@@ -761,11 +1272,13 @@ fn RunsExplorer(
                     tbody {
                         if loading && page.is_none() {
                             for _ in 0..6 { tr { class: "pc2-table-skeleton", td { colspan: "5" } } }
+                        } else if loading && page.as_ref().is_none_or(|page| page.records.is_empty()) {
+                            for _ in 0..6 { tr { class: "pc2-table-skeleton", td { colspan: "5" } } }
                         } else if page.as_ref().is_none_or(|page| page.records.is_empty()) {
                             tr { td { colspan: "5", div { class: "pc2-empty", strong { "No matching runs" } span { "Adjust the filters or refresh the datasets." } } } }
                         } else {
                             for item in page.as_ref().unwrap().records.iter() {
-                                RunTableRow { key: "{item.run.dataset}/{item.run.file}/{item.run.session_id}", item: item.clone(), on_select }
+                                RunTableRow { key: "{item.run.dataset}/{item.run.file}/{item.run.session_id}", item: item.clone(), query: query.clone(), has_chat: has_chat_for_run(&chat_sessions, &item.run), on_select, on_open_chat }
                             }
                         }
                     }
@@ -783,20 +1296,89 @@ fn RunsExplorer(
 }
 
 #[component]
-fn RunTableRow(item: RunExplorerItem, on_select: EventHandler<RunSummary>) -> Element {
+fn RunTableRow(
+    item: RunExplorerItem,
+    #[props(default)] query: String,
+    #[props(default)] has_chat: bool,
+    on_open_chat: EventHandler<RunSummary>,
+    on_select: EventHandler<RunSummary>,
+) -> Element {
     let run = item.run.clone();
     let keyboard_run = item.run.clone();
     let root_text = short(item.run.root_session_id.as_deref().unwrap_or("—"), 18);
     let model_text = item.model.clone().unwrap_or_else(|| "unavailable".into());
+    let highlight_query = search_highlight_query(&query);
+    let preview = item
+        .search_preview
+        .as_ref()
+        .map(|value| search_preview_excerpt(value, &highlight_query));
     rsx! {
         tr { tabindex: "0", onclick: move |_| on_select.call(run.clone()), onkeydown: move |event| if event.key() == Key::Enter { on_select.call(keyboard_run.clone()) },
-            td { div { class: "pc2-session-cell", strong { "{item.run.session_id}" } span { "{item.run.row_count} captured rows" } } }
-            td { div { class: "pc2-session-cell", strong { "{item.run.agent_id}" } span { "{model_text}" } } }
+            td { div { class: "pc2-session-cell", div { class: "pc2-session-heading", strong { HighlightedText { text: item.run.session_id.clone(), query: query.clone() } } if has_chat { ChatMarker { run: run.clone(), on_open_chat } } } span { "{item.run.row_count} captured rows" } if let Some(preview) = preview { div { class: "pc2-run-search-preview", title: "Matched content preview", HighlightedText { text: preview, query: highlight_query.clone() } } } } }
+            td { div { class: "pc2-session-cell", strong { HighlightedText { text: item.run.agent_id.clone(), query: query.clone() } } span { HighlightedText { text: model_text.clone(), query: query.clone() } } } }
             td { StatusBadge { value: item.run.status.clone() } }
             td { class: "pc2-number", "{item.run.row_count}" }
-            td { code { title: "{item.run.root_session_id.as_deref().unwrap_or_default()}", "{root_text}" } }
+            td { code { title: "{item.run.root_session_id.as_deref().unwrap_or_default()}", HighlightedText { text: root_text, query: query.clone() } } }
         }
     }
+}
+
+fn search_highlight_query(query: &str) -> String {
+    let query = query.trim();
+    let candidate = if let Some(hash) = query.find('#') {
+        query[hash..]
+            .find('(')
+            .and_then(|offset| {
+                let start = hash + offset + 1;
+                query[start..]
+                    .find(')')
+                    .map(|end| &query[start..start + end])
+            })
+            .unwrap_or(query)
+    } else {
+        query
+    };
+    candidate
+        .trim()
+        .trim_matches(|character| character == '"' || character == '\'')
+        .to_owned()
+}
+
+fn search_preview_excerpt(text: &str, query: &str) -> String {
+    const MAX_CHARS: usize = 220;
+    if text.chars().count() <= MAX_CHARS {
+        return text.to_owned();
+    }
+
+    let lowered_text = text.to_ascii_lowercase();
+    let lowered_query = query.trim().to_ascii_lowercase();
+    let hit = (!lowered_query.is_empty())
+        .then(|| lowered_text.find(&lowered_query))
+        .flatten();
+    let hit_char = hit
+        .map(|offset| lowered_text[..offset].chars().count())
+        .unwrap_or(0);
+    let start_char = hit_char.saturating_sub(MAX_CHARS / 3);
+    let start = text
+        .char_indices()
+        .nth(start_char)
+        .map(|(offset, _)| offset)
+        .unwrap_or(0);
+    let end = text
+        .char_indices()
+        .nth(start_char + MAX_CHARS)
+        .map(|(offset, _)| offset)
+        .unwrap_or(text.len());
+
+    let mut excerpt = String::new();
+    if start > 0 {
+        excerpt.push('…');
+    }
+    excerpt.push_str(&text[start..end]);
+    if end < text.len() {
+        excerpt.push('…');
+    }
+    excerpt
 }
 
 #[component]
@@ -816,8 +1398,13 @@ fn RunDetailWorkspace(
     run: RunSummary,
     analysis: RunAnalysis,
     turns: Vec<TurnSummary>,
+    search: TurnSearchStatus,
     selected: Option<TurnDetail>,
-    storyline: Option<StorylineSnapshot>,
+    drawer: Option<TurnDetail>,
+    drawer_details: Vec<TurnDetail>,
+    drawer_ids: Vec<i64>,
+    drawer_title: String,
+    drawer_loading: bool,
     expanded_turn_id: Option<i64>,
     loading: bool,
     turn_loading: bool,
@@ -830,28 +1417,49 @@ fn RunDetailWorkspace(
     on_view: EventHandler<String>,
     on_source: EventHandler<String>,
     on_query: EventHandler<String>,
-    on_apply_filter: EventHandler<()>,
+    on_apply_query: EventHandler<String>,
     on_turn: EventHandler<i64>,
+    on_open_drawer: EventHandler<(i64, String, Vec<i64>)>,
+    on_close_drawer: EventHandler<MouseEvent>,
     on_open_copilot: EventHandler<MouseEvent>,
     on_analyze: EventHandler<RunSummary>,
 ) -> Element {
     let chats_active = view == "chats";
     let steps_active = view == "steps";
+    let mut compact_header = use_signal(|| false);
+    let mut last_run_identity = use_signal(|| None::<String>);
+    if last_run_identity().as_deref() != Some(run.session_id.as_str()) {
+        last_run_identity.set(Some(run.session_id.clone()));
+        compact_header.set(false);
+    }
+    let on_detail_scroll = move |_| {
+        let next = run_detail_is_scrolled();
+        if compact_header() != next {
+            compact_header.set(next);
+        }
+    };
     let view_for_list = view.clone();
     let source_for_list = source.clone();
     let query_for_list = query.clone();
+    let search_label = match search.mode.as_str() {
+        "fts" if search.fts_available => "FTS · Jieba",
+        "memory" if search.fts_available => "Memory fallback",
+        "memory" => "Memory filter",
+        _ if search.fts_available => "FTS available · Jieba",
+        _ => "FTS unavailable · Memory filter",
+    };
+    let search_placeholder = if search.fts_available {
+        "Search steps · FTS available (Jieba)"
+    } else {
+        "Search steps · memory filter"
+    };
     rsx! {
-        section { class: "pc2-detail",
+        section { class: if compact_header() { "pc2-detail is-condensed" } else { "pc2-detail" },
             header { class: "pc2-detail-head",
                 div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, "← Runs" } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
                 div { class: "pc2-head-actions",
                     button { class: "button primary", onclick: on_open_copilot, "◇ Ask Assistant" }
                     button { class: "button", onclick: { let run = run.clone(); move |_| on_analyze.call(run.clone()) }, "Analyze this run" }
-                    if analysis.event_provenance == EventProvenance::Canonical {
-                        a { class: "button", href: "/api/export/otlp?{run.query()}", "OTLP" }
-                    } else {
-                        button { class: "button", disabled: true, title: "OTLP export requires recorded events", "OTLP unavailable · Reconstructed events" }
-                    }
                 }
             }
             MetricsStrip { analysis: analysis.clone() }
@@ -875,6 +1483,7 @@ fn RunDetailWorkspace(
                         on_turn.call(id);
                         on_detail_mode.call("trace".into());
                     },
+                    on_scroll: on_detail_scroll,
                 }
             } else {
                 section { class: "pc2-trace-surface pc2-inline-trace",
@@ -886,16 +1495,19 @@ fn RunDetailWorkspace(
                                 button { class: if steps_active { "active" } else { "" }, onclick: move |_| on_view.call("steps".to_string()), {STEPS} }
                             }
                             select { value: "{source}", aria_label: "Filter steps by role", onchange: move |event| on_source.call(event.value()), option { value: "all", "All roles" } option { value: "user", "User" } option { value: "agent", "Agent" } option { value: "system", "System" } }
-                            input { value: "{query}", placeholder: "Filter loaded steps", aria_label: "Filter steps", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| if event.key() == Key::Enter { on_apply_filter.call(()) } }
-                            button { class: "pc2-icon", aria_label: "Apply step filter", onclick: move |_| on_apply_filter.call(()), "⌕" }
+                            span { class: if search.fts_available { "pc2-search-mode available" } else { "pc2-search-mode unavailable" }, title: "{search_label}", "{search_label}" }
+                            label { class: "pc2-filter-search pc2-detail-filter-search", span { "⌕" } input { value: "{query}", placeholder: "{search_placeholder}", aria_label: "Filter steps", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); on_apply_query.call(query.clone()); } } } if !query.is_empty() { button { r#type: "button", class: "pc2-filter-clear", aria_label: "Clear step filter", title: "Clear filter", onclick: move |event| { event.prevent_default(); on_apply_query.call(String::new()); }, "×" } } }
                         }
                     }
-                    div { class: "pc2-turn-list pc2-span-scroll",
+                    div { id: RUN_DETAIL_SCROLL_ID, class: "pc2-turn-list pc2-span-scroll", onscroll: on_detail_scroll,
                         if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing run details…" } }
                         if turns.is_empty() { div { class: "pc2-empty", strong { "No visible steps" } span { "No loaded steps match this filter." } } }
-                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, context: storyline.map(|snapshot| snapshot.turns), view: view_for_list, source: source_for_list, query: query_for_list, on_turn } }
+                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, view: view_for_list, source: source_for_list, query: query_for_list, on_turn, on_open_drawer } }
                     }
                 }
+            }
+            if drawer.is_some() || drawer_loading {
+                StepDrawer { detail: drawer, title: drawer_title, conversation_details: drawer_details, requested_block_count: drawer_ids.len(), loading: drawer_loading, on_close: on_close_drawer }
             }
         }
     }
@@ -996,6 +1608,7 @@ fn AnalysisWorkspace(
     analysis: RunAnalysis,
     turns: Vec<TurnSummary>,
     on_turn: EventHandler<i64>,
+    #[props(default)] on_scroll: EventHandler<ScrollEvent>,
 ) -> Element {
     let mut tab = use_signal(|| "overview".to_string());
     let active = tab();
@@ -1006,7 +1619,7 @@ fn AnalysisWorkspace(
             AnalysisTab { value: "tokens", label: "Tokens", active: active.clone(), on_select: move |value| tab.set(value) }
             AnalysisTab { value: "tools", label: "Tools", active: active.clone(), on_select: move |value| tab.set(value) }
         }
-        div { class: "pc2-analysis-scroll",
+        div { id: RUN_DETAIL_SCROLL_ID, class: "pc2-analysis-scroll", onscroll: on_scroll,
             match active.as_str() {
                 "performance" => rsx! { PerformanceAnalysis { analysis: analysis.clone(), turns: turns.clone(), on_turn } },
                 "tokens" => rsx! { TokenAnalysis { analysis: analysis.clone(), turns: turns.clone(), on_turn } },
@@ -1150,9 +1763,10 @@ fn ToolAnalysis(tools: Vec<ToolAggregate>) -> Element {
     let mut tools = tools;
     tools.sort_by_key(|tool| std::cmp::Reverse(tool.count));
     let max_count = tools.iter().map(|tool| tool.count).max().unwrap_or(0);
+    let tool_noun = if tools.len() == 1 { "tool" } else { "tools" };
     rsx! { div { class: "pc2-analysis-grid tools",
         article { class: "pc2-analysis-card wide",
-            header { div { h3 { "Tool performance" } p { "Frequency, observed duration, and association with steps that reported errors" } } span { "{tools.len()} tools" } }
+            header { div { h3 { "Tool performance" } p { "Frequency, observed duration, and association with steps that reported errors" } } span { "{tools.len()} {tool_noun}" } }
             div { class: "pc2-tool-table",
                 div { class: "pc2-tool-head", span { "Tool" } span { "Calls" } span { "Observed duration" } span { "Average" } span { "Max" } span { "Error-linked" } }
                 if tools.is_empty() { EmptyAnalysis { label: "No tool calls captured" } }
@@ -1298,7 +1912,15 @@ fn assistant_panel_class(wide: bool) -> &'static str {
 }
 
 const ASSISTANT_CHAT_ID: &str = "pc2-copilot-chat";
+const RUN_DETAIL_SCROLL_ID: &str = "pc2-run-detail-scroll";
 const COPILOT_FOLLOW_THRESHOLD: f64 = 48.0;
+
+fn run_detail_is_scrolled() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(RUN_DETAIL_SCROLL_ID))
+        .is_some_and(|element| element.scroll_top() > 28)
+}
 
 fn copilot_distance_from_bottom(scroll_top: f64, client_height: f64, scroll_height: f64) -> f64 {
     (scroll_height - client_height - scroll_top).max(0.0)
@@ -1358,8 +1980,11 @@ fn AssistantPanel(
     turns: Vec<TurnSummary>,
     selected: Option<TurnDetail>,
     wide: bool,
+    llm_config: llm::LlmConfig,
     on_toggle_wide: EventHandler<MouseEvent>,
     on_close: EventHandler<MouseEvent>,
+    on_open_settings: EventHandler<()>,
+    on_sessions_changed: EventHandler<AssistantSessionIndex>,
     on_turn: EventHandler<i64>,
     on_open_session: EventHandler<AssistantSessionMeta>,
 ) -> Element {
@@ -1369,9 +1994,7 @@ fn AssistantPanel(
     let mut thread = use_signal(empty_thread);
     let mut input = use_signal(String::new);
     let mut busy = use_signal(|| false);
-    let mut settings = use_signal(|| false);
     let mut history_open = use_signal(|| false);
-    let mut config = use_signal(llm::load_config);
     let mut step = use_signal(|| "Working…".to_string());
     let mut following = use_signal(|| true);
     let run_for_effect = run.clone();
@@ -1387,7 +2010,8 @@ fn AssistantPanel(
         let now = now_millis();
         let (next_index, id, next_thread) =
             restore_for_run(&BrowserStore, &current, &new_session_id(now), now);
-        index.set(next_index);
+        index.set(next_index.clone());
+        on_sessions_changed.call(next_index);
         session_id.set(id);
         thread.set(next_thread);
     });
@@ -1395,6 +2019,8 @@ fn AssistantPanel(
     let update_step = Callback::new(move |next: String| step.set(next));
     let submit_run = run.clone();
     let submit_analysis = analysis.clone();
+    let submit_config = llm_config.clone();
+    let submit_open_settings = on_open_settings;
     let submit_copilot = Callback::new(move |()| {
         let question = input().trim().to_string();
         let Some(submit_run) = submit_run.clone() else {
@@ -1406,11 +2032,11 @@ fn AssistantPanel(
         if question.is_empty() || busy() {
             return;
         }
-        let config_value = config();
+        let config_value = submit_config.clone();
         if !config_value.is_configured() {
             const CONFIGURE_MESSAGE: &str =
                 "Configure an OpenAI-compatible model in Settings before asking Assistant.";
-            settings.set(true);
+            submit_open_settings.call(());
             let mut next_thread = thread();
             let already_shown = next_thread.messages.last().is_some_and(|message| {
                 message.role == ThreadRole::Assistant && message.text == CONFIGURE_MESSAGE
@@ -1488,7 +2114,8 @@ fn AssistantPanel(
                 &finished,
                 now,
             );
-            index.set(next_index);
+            index.set(next_index.clone());
+            on_sessions_changed.call(next_index);
             thread.set(finished);
             busy.set(false);
         });
@@ -1535,7 +2162,7 @@ fn AssistantPanel(
                     onclick: move |_| history_open.set(!history_open()),
                     "◷"
                 }
-                button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" }
+                button { aria_label: "LLM settings", onclick: move |_| on_open_settings.call(()), "⚙" }
                 AssistantWideToggle { wide, on_toggle: on_toggle_wide }
                 button { aria_label: "Close Assistant", onclick: on_close, "×" }
             }
@@ -1579,7 +2206,8 @@ fn AssistantPanel(
                                         let store = BrowserStore;
                                         store.remove(&session_storage_key(&delete_id));
                                         save_index(&BrowserStore, &next);
-                                        index.set(next);
+                                        index.set(next.clone());
+                                        on_sessions_changed.call(next);
                                         if session_id().as_deref() == Some(delete_id.as_str()) {
                                             if let Some(id) = fallback {
                                                 session_id.set(Some(id.clone()));
@@ -1609,7 +2237,7 @@ fn AssistantPanel(
                     div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Assistant" }
                         if run.is_none() {
                             p { "Open a run, or select a previous chat from history." }
-                        } else if config().is_configured() {
+                        } else if llm_config.is_configured() {
                             p { "Assistant can inspect this analysis, examine a step, or run read-only SQL." }
                         } else {
                             p { "Configure an OpenAI-compatible model in Settings before asking Assistant." }
@@ -1664,7 +2292,6 @@ fn AssistantPanel(
             button { class: "button primary", disabled: !composer_enabled || input().trim().is_empty(), "Send" }
         }
         div { class: "pc2-composer-context", "{context_line}" }
-        if settings() { LlmSettings { config: config(), on_close: move |_| settings.set(false), on_save: move |value| { llm::save_config(&value); config.set(value); settings.set(false); } } }
     } }
 }
 #[component]
@@ -1770,7 +2397,7 @@ fn compact_mix(items: &[DimensionAggregate], limit: usize) -> Vec<MixSegment> {
         return Vec::new();
     }
     let mut ranked = items.to_vec();
-    ranked.sort_by(|left, right| right.turn_count.cmp(&left.turn_count));
+    ranked.sort_by_key(|item| std::cmp::Reverse(item.turn_count));
     let mut segments: Vec<MixSegment> = ranked
         .iter()
         .take(limit)
@@ -1802,6 +2429,7 @@ fn compact_mix(items: &[DimensionAggregate], limit: usize) -> Vec<MixSegment> {
     segments
 }
 
+#[allow(clippy::too_many_arguments)]
 fn coverage_points(
     latency_observed: usize,
     latency_total: usize,
@@ -1886,10 +2514,10 @@ fn turn_references(value: &str) -> Vec<i64> {
     let mut rest = value;
     while let Some((_, next)) = rest.split_once("[turn:") {
         if let Some((raw, after)) = next.split_once(']') {
-            if let Ok(id) = raw.parse() {
-                if !ids.contains(&id) {
-                    ids.push(id);
-                }
+            if let Ok(id) = raw.parse()
+                && !ids.contains(&id)
+            {
+                ids.push(id);
             }
             rest = after;
         } else {
@@ -2021,6 +2649,13 @@ fn sync_workspace_url(
 mod tests {
     use super::*;
 
+    #[test]
+    fn drawer_toggle_distinguishes_run_from_first_conversation() {
+        assert!(drawer_request_matches(Some(1), &[1, 2], 1, &[1, 2]));
+        assert!(!drawer_request_matches(Some(1), &[1, 2], 1, &[1, 2, 3]));
+        assert!(!drawer_request_matches(Some(1), &[1, 2], 2, &[1, 2]));
+    }
+
     fn run_at(path: &str) -> RunSummary {
         RunSummary {
             dataset: "dataset".into(),
@@ -2062,14 +2697,21 @@ mod tests {
     }
 
     #[test]
-    fn path_tree_preserves_hierarchy_and_subtree_counts() {
-        let tree = build_path_tree(&[
-            run_at("agent/root/session-a"),
-            run_at("agent/root/subagents/session-b"),
-        ]);
-        let agent = tree.children.get("agent").unwrap();
-        assert_eq!(subtree_run_count(agent), 2);
-        assert!(agent.children["root"].children.contains_key("subagents"));
+    fn import_path_tree_groups_runs_by_original_path() {
+        let mut first = run_at("agent/root/session-a");
+        let mut second = run_at("agent/root/session-b");
+        let mut third = run_at("agent/root/session-c");
+        first.path = "dataset/batch/first/session-a".into();
+        second.path = "dataset/batch/first/session-b".into();
+        third.path = "dataset/batch/second/session-c".into();
+
+        let tree = build_import_path_tree(&[first, second, third]);
+        let dataset = tree.children.get("dataset").unwrap();
+        let batch = dataset.children.get("batch").unwrap();
+        assert_eq!(import_path_tree_run_count(batch), 3);
+        assert_eq!(batch.children["first"].children["session-a"].runs.len(), 1);
+        assert_eq!(batch.children["first"].children["session-b"].runs.len(), 1);
+        assert_eq!(batch.children["second"].children["session-c"].runs.len(), 1);
     }
 
     #[test]
@@ -2077,6 +2719,73 @@ mod tests {
         assert_eq!(percent(25.0, 100.0), 25.0);
         assert_eq!(percent(10.0, 0.0), 0.0);
         assert_eq!(percent(150.0, 100.0), 100.0);
+    }
+
+    fn explorer_item(session: &str) -> RunExplorerItem {
+        RunExplorerItem {
+            run: run_at(session),
+            model: None,
+            search_preview: None,
+        }
+    }
+
+    fn server_page(offset: usize, total: usize, sessions: &[&str]) -> RunPage {
+        let limit = 50;
+        RunPage {
+            snapshot: PageSnapshot {
+                offset,
+                next_offset: (offset + sessions.len()).min(total),
+                total,
+                has_more: offset + sessions.len() < total,
+                limit,
+            },
+            records: sessions.iter().copied().map(explorer_item).collect(),
+            path_index: Vec::new(),
+            search: RunSearchStatus::default(),
+        }
+    }
+
+    fn run_filters(dataset: &str, offset: usize) -> RunFilters {
+        RunFilters {
+            query: String::new(),
+            dataset: dataset.into(),
+            status: String::new(),
+            sort: "session".into(),
+            direction: "asc".into(),
+            path: String::new(),
+            file: String::new(),
+            offset,
+        }
+    }
+
+    #[test]
+    fn merge_run_pages_keeps_a_server_paged_dataset() {
+        let page = server_page(50, 100, &["run-50", "run-51"]);
+        let merged = merge_run_pages(&[page], &run_filters("dataset", 50));
+        assert_eq!(
+            merged.records.len(),
+            2,
+            "{:?}",
+            merged
+                .records
+                .iter()
+                .map(|item| item.run.session_id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(merged.snapshot.total, 100);
+        assert_eq!(merged.snapshot.offset, 50);
+        assert!(merged.snapshot.has_more);
+    }
+
+    #[test]
+    fn merge_run_pages_pages_all_datasets_locally() {
+        let first = server_page(0, 2, &["a-1", "a-2"]);
+        let second = server_page(0, 2, &["b-1", "b-2"]);
+        let merged = merge_run_pages(&[first, second], &run_filters("all", 2));
+        assert_eq!(merged.records.len(), 2);
+        assert_eq!(merged.snapshot.total, 4);
+        assert_eq!(merged.snapshot.offset, 2);
+        assert!(!merged.snapshot.has_more);
     }
 
     #[test]
@@ -2203,5 +2912,23 @@ mod tests {
         );
         assert!(notice.detail.contains("1785310111"));
         assert_eq!(notice.turn_id, Some(85));
+    }
+
+    #[test]
+    fn search_preview_excerpt_keeps_a_late_match_visible() {
+        let text = format!("{} task {}", "prefix ".repeat(80), "suffix ".repeat(80));
+        let excerpt = search_preview_excerpt(&text, "task");
+        assert!(excerpt.contains("task"));
+        assert!(excerpt.starts_with('…'));
+        assert!(excerpt.ends_with('…'));
+        assert!(excerpt.chars().count() <= 222);
+    }
+
+    #[test]
+    fn search_preview_excerpt_handles_scoped_queries() {
+        let text = format!("{} timeout {}", "prefix ".repeat(80), "suffix ".repeat(80));
+        let query = search_highlight_query("#system(\"timeout\")");
+        let excerpt = search_preview_excerpt(&text, &query);
+        assert!(excerpt.contains("timeout"));
     }
 }

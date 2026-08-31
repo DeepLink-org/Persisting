@@ -42,7 +42,7 @@ pub use rows::{
 };
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -61,12 +61,12 @@ use lance::dataset::{
 use lance::deps::arrow_array::{
     Array, Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
 };
-use lance::deps::arrow_schema::{ArrowError, SchemaRef};
+use lance::deps::arrow_schema::{ArrowError, Schema as ArrowSchema, SchemaRef};
 use lance::index::DatasetIndexExt;
 use lance::io::ObjectStore;
 use lance_index::IndexType;
 use lance_index::optimize::OptimizeOptions;
-use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
+use lance_index::scalar::{BuiltinIndexType, InvertedIndexParams, ScalarIndexParams};
 use object_store::path::Path as ObjectPath;
 use serde::{Deserialize, Serialize};
 
@@ -87,7 +87,7 @@ use super::{LanceMaintenanceOptions, LanceMaintenanceReport, root_write_lock};
 
 const CURRENT_FILE: &str = "CURRENT";
 const GENERATIONS_DIR: &str = "generations";
-const STORYLINE_LANCE_SCHEMA_VERSION: u32 = 2;
+const STORYLINE_LANCE_SCHEMA_VERSION: u32 = 1;
 const WRITE_BATCH_ROWS: usize = 8192;
 const STREAM_IMPORT_STORIES: usize = 256;
 const RUN_INDEXES: [(&str, IndexType); 3] = [
@@ -110,6 +110,41 @@ const TOOL_CALL_INDEXES: [(&str, IndexType); 4] = [
     ("session_id", IndexType::BTree),
     ("tool_call_id", IndexType::BTree),
     ("function_name", IndexType::Bitmap),
+];
+
+const DEFAULT_JIEBA_MODEL: &str = "jieba/default";
+const DEFAULT_JIEBA_CONFIG: &[u8] = include_bytes!("../../../resources/jieba/default/config.json");
+const DEFAULT_JIEBA_DICT: &[u8] = include_bytes!("../../../resources/jieba/default/dict.txt");
+
+/// Text columns receive a Lance inverted index with the bundled Jieba
+/// tokenizer. JSON columns are discovered from Arrow field metadata below and
+/// receive a JSON-aware inverted index using the same Jieba base tokenizer.
+const STORYLINE_FTS_COLUMNS: &[&str] = &[
+    "agent_name",
+    "agent_version",
+    "agent_model_name",
+    "agent_tool_definitions",
+    "task",
+    "prompt",
+    "notes",
+    "message_value",
+    "reasoning_content",
+    "model_name",
+    "observation",
+    "env",
+    "function_name",
+    "arguments",
+    "result",
+    "results",
+];
+
+const STORYLINE_STEP_SEARCH_COLUMNS: &[&str] = &[
+    "message_value",
+    "reasoning_content",
+    "model_name",
+    "observation",
+    "env",
+    "prompt",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,6 +362,46 @@ static MAINTENANCE_AFTER_PUBLISH_PAUSE: std::sync::Mutex<Option<MaintenanceAfter
     std::sync::Mutex::new(None);
 
 #[cfg(test)]
+fn suppress_inverted_index_roots() -> std::sync::MutexGuard<'static, HashSet<String>> {
+    static ROOTS: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> =
+        std::sync::OnceLock::new();
+    ROOTS
+        .get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+fn dataset_is_under_root(dataset_uri: &str, root: &str) -> bool {
+    let dataset = dataset_uri
+        .strip_prefix("file://")
+        .unwrap_or(dataset_uri)
+        .trim_end_matches('/');
+    let root = root
+        .strip_prefix("file://")
+        .unwrap_or(root)
+        .trim_end_matches('/');
+    dataset == root || dataset.starts_with(&format!("{root}/"))
+}
+
+#[cfg(test)]
+fn inverted_indexes_suppressed_for(dataset: &Dataset) -> bool {
+    suppress_inverted_index_roots()
+        .iter()
+        .any(|root| dataset_is_under_root(dataset.uri(), root))
+}
+
+#[cfg(test)]
+fn install_inverted_index_suppression(root_uri: &str) {
+    suppress_inverted_index_roots().insert(root_uri.to_string());
+}
+
+#[cfg(test)]
+fn remove_inverted_index_suppression(root_uri: &str) {
+    suppress_inverted_index_roots().remove(root_uri);
+}
+
+#[cfg(test)]
 async fn wait_after_empty_current_read(root_uri: &str) {
     let barrier = CREATE_AFTER_EMPTY_READ_BARRIER
         .lock()
@@ -474,9 +549,10 @@ impl StorylineLanceStore {
 
     pub(crate) async fn open_uri_unchecked(root: impl AsRef<str>) -> Result<Self> {
         let root_uri = normalize_root_uri(root.as_ref())?;
-        let (object_store, object_root) = ObjectStore::from_uri(&root_uri)
-            .await
-            .with_context(|| format!("open Storyline object store {root_uri}"))?;
+        let (object_store, object_root) =
+            ObjectStore::from_uri(&root_uri).await.map_err(|error| {
+                anyhow::anyhow!("open Storyline object store {root_uri}: {error:#}")
+            })?;
         Ok(Self {
             root: PathBuf::from(&root_uri),
             write_lock: root_write_lock::for_root(&root_uri),
@@ -893,11 +969,16 @@ impl StorylineLanceStore {
                 .as_ref()
                 .context("missing streamed Storyline tables")?;
             let (runs_version, steps_version, tool_calls_version) =
-                if report.storylines > STREAM_IMPORT_STORIES {
+                // Build indexes for a new store (including a small import),
+                // and periodically after a large streamed import. Replacing
+                // one small region in an existing store must not rebuild and
+                // optimize every FTS/JSON index on every write; callers that
+                // need to catch up appended fragments can invoke `maintain`.
+                if original.is_none() || report.storylines > STREAM_IMPORT_STORIES {
                     let maintenance = LanceMaintenanceOptions {
-                        // Extend indices once after a genuinely multi-chunk
+                        // Extend scalar, FTS, and JSON indices once after
                         // import, without putting compaction in the ingest
-                        // path or rewriting the corpus.
+                        // path or rewriting corpus data.
                         compact: false,
                         optimize_indices: true,
                         vacuum_older_than: None,
@@ -1023,9 +1104,9 @@ impl StorylineLanceStore {
         attach_stream_cleanup_failures(result, cleanup_failures)
     }
 
-    /// Compact fragments, extend scalar indices to appended fragments, and
-    /// optionally vacuum old Lance versions while preserving one atomic
-    /// three-table CURRENT snapshot.
+    /// Compact fragments, extend scalar/FTS/JSON indices to appended
+    /// fragments, and optionally vacuum old Lance versions while preserving
+    /// one atomic three-table CURRENT snapshot.
     pub async fn maintain(
         &self,
         options: &LanceMaintenanceOptions,
@@ -1587,7 +1668,12 @@ fn normalize_root_uri(value: &str) -> Result<String> {
     while value.len() > minimum && value.ends_with('/') {
         value.pop();
     }
-    Ok(value)
+    // Validate object-store roots before opening Lance so malformed S3
+    // endpoint-in-URI forms produce an actionable error instead of a vague
+    // region-discovery failure from the underlying client.
+    Ok(crate::storage::DatasetLocation::parse(&value)?
+        .as_str()
+        .to_owned())
 }
 
 fn join_location(root: &str, parts: &[&str]) -> String {
@@ -1655,30 +1741,349 @@ fn sort_rows(
     });
 }
 
+fn storyline_inverted_index_params(lance_tokenizer: Option<&str>) -> InvertedIndexParams {
+    let params = InvertedIndexParams::default()
+        .base_tokenizer(DEFAULT_JIEBA_MODEL.to_string())
+        // Search in the Web explorer and `pchronicle find` is intentionally
+        // case-insensitive by default. Persist the setting in the index so
+        // readers get the same behavior without an in-memory fallback.
+        .lower_case(true)
+        // Jieba already performs language-appropriate segmentation. The
+        // English stemmer and stop-word list are not useful for these fields.
+        .stem(false)
+        .remove_stop_words(false)
+        .ascii_folding(false);
+    match lance_tokenizer {
+        Some(tokenizer) => params.lance_tokenizer(tokenizer.to_string()),
+        None => params,
+    }
+}
+
+/// Materialize the bundled model in Lance's standard model directory.
+///
+/// Lance's tokenizer API intentionally loads models by path so that model
+/// selection is persisted in index metadata. Keeping the files in the
+/// application data directory makes the default work for both index builders
+/// and readers without requiring callers to set an environment variable.
+fn ensure_default_jieba_model() -> Result<()> {
+    let configured_home = std::env::var_os("LANCE_LANGUAGE_MODEL_HOME").map(PathBuf::from);
+    let preferred_home = configured_home
+        .clone()
+        .or_else(dirs::data_local_dir)
+        .map(|path| {
+            if configured_home.is_some() {
+                path
+            } else {
+                path.join("lance").join("language_models")
+            }
+        });
+    let Some(preferred_home) = preferred_home else {
+        return Err(anyhow::anyhow!(
+            "cannot determine Lance language model directory"
+        ));
+    };
+
+    if let Err(error) = materialize_default_jieba_model(&preferred_home) {
+        // Sandboxed deployments may not be allowed to write the platform
+        // data directory. In that case use a shared temporary location for
+        // this process and point Lance at it. An explicitly configured home
+        // remains authoritative and surfaces its original error.
+        if configured_home.is_some()
+            || !matches!(error.root_cause().downcast_ref::<std::io::Error>(), Some(io_error) if io_error.kind() == std::io::ErrorKind::PermissionDenied)
+        {
+            return Err(error);
+        }
+        let fallback_home = std::env::temp_dir()
+            .join("pchronicle")
+            .join("language_models");
+        materialize_default_jieba_model(&fallback_home).with_context(|| {
+            format!(
+                "materialize bundled Jieba model in fallback directory {}",
+                fallback_home.display()
+            )
+        })?;
+        // SAFETY: this is process-wide configuration used by Lance's model
+        // loader. It is set once before index construction/query execution.
+        unsafe { std::env::set_var("LANCE_LANGUAGE_MODEL_HOME", &fallback_home) };
+    }
+    Ok(())
+}
+
+fn materialize_default_jieba_model(home: &Path) -> Result<()> {
+    let model_dir = home.join(DEFAULT_JIEBA_MODEL);
+    fs::create_dir_all(&model_dir)
+        .with_context(|| format!("create Jieba model directory {}", model_dir.display()))?;
+
+    for (name, contents) in [
+        ("config.json", DEFAULT_JIEBA_CONFIG),
+        ("dict.txt", DEFAULT_JIEBA_DICT),
+    ] {
+        let path = model_dir.join(name);
+        if path.exists() {
+            continue;
+        }
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                file.write_all(contents)
+                    .with_context(|| format!("write bundled Jieba model {}", path.display()))?;
+                file.sync_all()
+                    .with_context(|| format!("flush bundled Jieba model {}", path.display()))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("create bundled Jieba model {}", path.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn ensure_table_indexes(dataset: &mut Dataset, indexes: &[(&str, IndexType)]) -> Result<()> {
     if dataset.count_rows(None).await? == 0 {
         return Ok(());
     }
     for (column, index_type) in indexes {
-        let name = format!("pchronicle_{column}_idx");
-        if !dataset.load_indices_by_name(&name).await?.is_empty() {
-            continue;
-        }
         let builtin = match index_type {
             IndexType::Bitmap => BuiltinIndexType::Bitmap,
             _ => BuiltinIndexType::BTree,
         };
-        let _admission = super::index_build_gate::acquire().await;
-        dataset
-            .create_index(
-                &[*column],
-                *index_type,
-                Some(name),
-                &ScalarIndexParams::for_builtin(builtin),
-                false,
-            )
-            .await?;
+        ensure_named_index(
+            dataset,
+            column,
+            *index_type,
+            format!("pchronicle_{column}_idx"),
+            &ScalarIndexParams::for_builtin(builtin),
+        )
+        .await?;
     }
+
+    // Compaction tests can suppress inverted FTS/JSON indexes: building Jieba
+    // inverted indexes on a new store, then remapping them during compact, is
+    // the dominant cost of Storyline lib tests on macOS CI. Other unit tests
+    // still build them; integration coverage lives in
+    // `tests/atif_lance_corpus.rs`.
+    #[cfg(test)]
+    if inverted_indexes_suppressed_for(dataset) {
+        return Ok(());
+    }
+
+    let schema = ArrowSchema::from(dataset.schema());
+    let has_searchable_columns = schema.fields().iter().any(|field| {
+        lance_arrow::json::is_json_field(field)
+            || STORYLINE_FTS_COLUMNS
+                .iter()
+                .any(|column| *column == field.name())
+    });
+    if has_searchable_columns {
+        ensure_default_jieba_model()?;
+    }
+
+    for field in schema.fields() {
+        if !lance_arrow::json::is_json_field(field) {
+            continue;
+        }
+        let column = field.name();
+        let params = storyline_inverted_index_params(Some("json"));
+        ensure_named_index(
+            dataset,
+            column,
+            IndexType::Inverted,
+            format!("pchronicle_json_{column}_idx"),
+            &params,
+        )
+        .await?;
+    }
+
+    for column in STORYLINE_FTS_COLUMNS {
+        let Ok(field) = schema.field_with_name(column) else {
+            continue;
+        };
+        if lance_arrow::json::is_json_field(field) {
+            continue;
+        }
+        let params = storyline_inverted_index_params(None);
+        ensure_named_index(
+            dataset,
+            column,
+            IndexType::Inverted,
+            format!("pchronicle_fts_{column}_idx"),
+            &params,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Search normalized Storyline turns through the persisted FTS indexes.
+/// Callers may fall back to an in-memory scan for legacy tables created before
+/// FTS indexes were introduced.
+pub async fn search_storyline_steps_fts(
+    paths: &StorylineTablePaths,
+    query: &str,
+) -> Result<Vec<i64>> {
+    Ok(search_storyline_step_matches_fts(paths, query)
+        .await?
+        .into_iter()
+        .map(|(_, step_id)| step_id)
+        .collect())
+}
+
+/// Search normalized Storyline turns and retain the owning document id for
+/// each hit. Step ids are only unique within a document, so callers spanning
+/// multiple trajectories must keep both parts of this key.
+pub async fn search_storyline_step_matches_fts(
+    paths: &StorylineTablePaths,
+    query: &str,
+) -> Result<Vec<(String, i64)>> {
+    search_storyline_step_matches_fts_in_columns(paths, query, STORYLINE_STEP_SEARCH_COLUMNS).await
+}
+
+/// Search Storyline steps through selected indexed text columns.
+///
+/// The field-aware `find` command uses this to keep logical selectors such as
+/// `#system(...)` and `#reasoning(...)` from widening into every text field.
+pub async fn search_storyline_step_matches_fts_in_columns(
+    paths: &StorylineTablePaths,
+    query: &str,
+    columns: &[&str],
+) -> Result<Vec<(String, i64)>> {
+    let query = query.trim();
+    anyhow::ensure!(!query.is_empty(), "Storyline FTS query must not be empty");
+    ensure_default_jieba_model()?;
+    let dataset = open_table_version(&paths.steps, paths.steps_version).await?;
+    let columns = columns
+        .iter()
+        .copied()
+        .filter(|column| dataset.schema().field(column).is_some())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        !columns.is_empty(),
+        "Storyline steps have no searchable text columns"
+    );
+    let query = lance_index::scalar::FullTextSearchQuery::new(query.to_string())
+        .with_columns(&columns)
+        .map_err(anyhow::Error::from)?;
+    let mut scan = dataset.scan();
+    scan.full_text_search(query).map_err(anyhow::Error::from)?;
+    scan.project(&["document_id", "step_id"])
+        .map_err(anyhow::Error::from)?;
+    let batch = scan.try_into_batch().await.map_err(anyhow::Error::from)?;
+    let document_ids = batch
+        .column_by_name("document_id")
+        .context("Storyline FTS result is missing document_id")?
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .context("Storyline FTS document_id has an unexpected type")?;
+    let step_ids = batch
+        .column_by_name("step_id")
+        .context("Storyline FTS result is missing step_id")?
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .context("Storyline FTS step_id has an unexpected type")?;
+    Ok(document_ids
+        .iter()
+        .zip(step_ids.values().iter())
+        .filter_map(|(document_id, step_id)| document_id.map(|id| (id.to_string(), *step_id)))
+        .collect())
+}
+
+/// Search Storyline steps and return the owning document ids. This is used by
+/// the runs explorer to promote content matches to their parent runs.
+pub async fn search_storyline_documents_fts(
+    paths: &StorylineTablePaths,
+    query: &str,
+) -> Result<Vec<String>> {
+    let query = query.trim();
+    anyhow::ensure!(!query.is_empty(), "Storyline FTS query must not be empty");
+    ensure_default_jieba_model()?;
+    let dataset = open_table_version(&paths.steps, paths.steps_version).await?;
+    let columns = STORYLINE_STEP_SEARCH_COLUMNS
+        .iter()
+        .copied()
+        .filter(|column| dataset.schema().field(column).is_some())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        !columns.is_empty(),
+        "Storyline steps have no searchable text columns"
+    );
+    let query = lance_index::scalar::FullTextSearchQuery::new(query.to_string())
+        .with_columns(&columns)
+        .map_err(anyhow::Error::from)?;
+    let mut scan = dataset.scan();
+    scan.full_text_search(query).map_err(anyhow::Error::from)?;
+    scan.project(&["document_id"])
+        .map_err(anyhow::Error::from)?;
+    let batch = scan.try_into_batch().await.map_err(anyhow::Error::from)?;
+    let documents = batch
+        .column_by_name("document_id")
+        .context("Storyline FTS result is missing document_id")?
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .context("Storyline FTS document_id has an unexpected type")?;
+    Ok(documents.iter().flatten().map(str::to_string).collect())
+}
+
+/// Report whether the pinned Storyline steps snapshot has all FTS indexes
+/// required by the explorer search surface.
+pub async fn storyline_steps_fts_available(paths: &StorylineTablePaths) -> Result<bool> {
+    ensure_default_jieba_model()?;
+    let dataset = open_table_version(&paths.steps, paths.steps_version).await?;
+    let columns = STORYLINE_STEP_SEARCH_COLUMNS
+        .iter()
+        .copied()
+        .filter(|column| dataset.schema().field(column).is_some())
+        .collect::<Vec<_>>();
+    if columns.is_empty() {
+        return Ok(false);
+    }
+    let names = dataset
+        .load_indices()
+        .await?
+        .iter()
+        .map(|index| index.name.clone())
+        .collect::<HashSet<_>>();
+    Ok(columns
+        .iter()
+        .all(|column| names.contains(&format!("pchronicle_fts_{column}_idx"))))
+}
+
+async fn ensure_named_index(
+    dataset: &mut Dataset,
+    column: &str,
+    index_type: IndexType,
+    name: String,
+    params: &dyn lance_index::IndexParams,
+) -> Result<()> {
+    let existing = dataset.load_indices_by_name(&name).await?;
+    if !existing.is_empty() {
+        let is_jieba_index = index_type != IndexType::Inverted
+            || existing.iter().all(|metadata| {
+                metadata.index_details.as_ref().is_some_and(|details| {
+                    details
+                        .to_msg::<lance_index::pbold::InvertedIndexDetails>()
+                        .ok()
+                        .is_some_and(|details| {
+                            details.lower_case
+                                && details.base_tokenizer.as_deref() == Some(DEFAULT_JIEBA_MODEL)
+                        })
+                })
+            });
+        if is_jieba_index {
+            return Ok(());
+        }
+        // Replace legacy simple-tokenizer indexes in place. The serialized
+        // Lance details are protobuf; checking for the persisted tokenizer
+        // name keeps this migration compatible with old index versions
+        // without coupling pChronicle to Lance's generated protobuf types.
+        dataset.drop_index(&name).await?;
+    }
+    let _admission = super::index_build_gate::acquire().await;
+    dataset
+        .create_index(&[column], index_type, Some(name), params, false)
+        .await?;
     Ok(())
 }
 
@@ -1783,7 +2188,7 @@ fn content_column_projection(kind: StorylineTableKind) -> Vec<&'static str> {
         .map(|(column, _)| *column)
         .collect::<Vec<_>>();
     if kind == StorylineTableKind::Runs {
-        columns.push("unknown_fields_json");
+        columns.push("unknown_fields");
     }
     columns
 }

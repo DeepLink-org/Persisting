@@ -9,7 +9,7 @@ use std::os::fd::FromRawFd;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Stdio;
 
@@ -74,7 +74,7 @@ fn agent_help_explains_startup_controls() -> Result<()> {
             "agent help omits {option}: {stdout}"
         );
     }
-    assert!(stdout.contains("bounded Dataset status check"), "{stdout}");
+    assert!(stdout.contains("without querying the Dataset"), "{stdout}");
     assert!(
         stdout.contains("does not validate Agent installation"),
         "{stdout}"
@@ -104,6 +104,8 @@ fn serve_help_exposes_only_the_canonical_dataset_surface() -> Result<()> {
         stdout.contains("Usage: pchronicle serve [OPTIONS] <[NAME=]DATASET>..."),
         "{stdout}"
     );
+    assert!(stdout.contains("pchronicle serve catalog"), "{stdout}");
+    assert!(stdout.contains("catalog"), "{stdout}");
     for option in [
         "--listen",
         "--control",
@@ -115,6 +117,7 @@ fn serve_help_exposes_only_the_canonical_dataset_surface() -> Result<()> {
         "--gateway-state",
         "--gateway-stream-markdown",
         "--gateway-debug",
+        "--catalog-config",
     ] {
         assert!(
             stdout.contains(option),
@@ -125,12 +128,32 @@ fn serve_help_exposes_only_the_canonical_dataset_surface() -> Result<()> {
         "--warehouse-config",
         "--storage",
         "--gateway-object-store-manifest-mode",
+        "--catalog-query-worker",
     ] {
         assert!(
             !stdout.contains(legacy),
             "serve help exposes compatibility option {legacy}: {stdout}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn serve_catalog_help_lists_issue_grant_revoke() -> Result<()> {
+    let output = pchronicle(&["serve", "catalog", "--help"])?;
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout)?;
+    for command in ["issue", "grant", "revoke"] {
+        assert!(
+            stdout.contains(command),
+            "catalog help omits {command}: {stdout}"
+        );
+    }
+    let issue = pchronicle(&["serve", "catalog", "issue", "--help"])?;
+    assert!(issue.status.success());
+    let issue_help = String::from_utf8(issue.stdout)?;
+    assert!(issue_help.contains("--catalog-config"), "{issue_help}");
     Ok(())
 }
 
@@ -148,6 +171,15 @@ fn piped_onboard_is_markdown_without_terminal_escapes() -> Result<()> {
     assert!(stdout.contains("## Inspect · 发现 Source"), "{stdout}");
     assert!(stdout.contains("## Query · 先看 Schema"), "{stdout}");
     assert!(stdout.contains("## Formats · 跨格式查询"), "{stdout}");
+    assert!(
+        stdout.contains("## Find · FTS、字段限定与 JSONB"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("--match '$.tags=\"important\"'"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("--output-format storyline"), "{stdout}");
     assert!(stdout.contains("## Exchange · 严格导出"), "{stdout}");
     assert!(stdout.contains("support-ticket.json"), "{stdout}");
     assert!(stdout.contains("support-001"), "{stdout}");
@@ -257,24 +289,47 @@ fn successful_query_keeps_machine_output_on_stdout() -> Result<()> {
 #[test]
 fn agent_skill_examples_match_the_live_cli_contract() -> Result<()> {
     const SKILL: &str = include_str!("../assets/agent/pchronicle-dataset/SKILL.md");
-
-    let mut blocks = Vec::new();
-    let mut current = None::<String>;
-    for line in SKILL.lines() {
-        match (current.as_mut(), line) {
-            (None, "```bash") => current = Some(String::new()),
-            (Some(_), "```") => blocks.push(current.take().expect("bash block is active")),
-            (Some(block), line) => {
-                block.push_str(line);
-                block.push('\n');
-            }
-            (None, _) => {}
-        }
+    let blocks = skill_bash_blocks(SKILL)?;
+    assert!(
+        !blocks.is_empty(),
+        "Agent skill must include at least one executable bash example"
+    );
+    for block in &blocks {
+        assert!(
+            block.contains("$PCHRONICLE_BIN"),
+            "Agent skill bash example must invoke PCHRONICLE_BIN:\n{block}"
+        );
     }
-    assert!(current.is_none(), "unterminated bash block in Agent skill");
-    assert_eq!(blocks.len(), 3, "Agent skill command examples changed");
 
-    let dataset = format!("{}/../../examples/data/atif", env!("CARGO_MANIFEST_DIR"));
+    let atif = format!("{}/../../examples/data/atif", env!("CARGO_MANIFEST_DIR"));
+    let imported_store;
+    let dataset = if blocks
+        .iter()
+        .any(|block| skill_example_needs_storyline(block))
+    {
+        imported_store = tempfile::tempdir()?;
+        let dataset = imported_store.path().join("dataset");
+        let imported = Command::new(env!("CARGO_BIN_EXE_pchronicle"))
+            .args([
+                "import",
+                "--from",
+                &atif,
+                "--output",
+                dataset.to_str().context("temporary Dataset path")?,
+                "--output-format",
+                "storyline",
+            ])
+            .output()?;
+        assert!(
+            imported.status.success(),
+            "import example Dataset for Agent skill examples:\n{}",
+            String::from_utf8_lossy(&imported.stderr)
+        );
+        dataset
+    } else {
+        PathBuf::from(atif)
+    };
+
     for block in blocks {
         let output = Command::new("/bin/sh")
             .args(["-eu", "-c", &block])
@@ -288,6 +343,34 @@ fn agent_skill_examples_match_the_live_cli_contract() -> Result<()> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn skill_bash_blocks_are_discovered_without_a_fixed_count() -> Result<()> {
+    let skill = "\
+intro
+```bash
+\"$PCHRONICLE_BIN\" status \"$PCHRONICLE_DATASET_URI\"
+```
+
+```sql
+SELECT 1
+```
+
+```bash
+\"$PCHRONICLE_BIN\" find \"$PCHRONICLE_DATASET_URI\" --match timeout
+```
+";
+    let blocks = skill_bash_blocks(skill)?;
+    assert_eq!(
+        blocks.len(),
+        2,
+        "sql fences must not be treated as executable skill examples"
+    );
+    assert!(!skill_example_needs_storyline(&blocks[0]));
+    assert!(skill_example_needs_storyline(&blocks[1]));
     Ok(())
 }
 
@@ -460,7 +543,7 @@ fn agent_launches_codex_and_claude_with_normalized_context() -> Result<()> {
         assert!(stderr.contains(&format!("target={target}")), "{stderr}");
         assert!(stderr.contains(&format!("launching {target}")), "{stderr}");
         assert!(
-            stderr.contains("bootstrap=status question=provided"),
+            stderr.contains("bootstrap=deferred question=provided"),
             "{stderr}"
         );
         assert!(
@@ -499,7 +582,7 @@ fn agent_launches_codex_and_claude_with_normalized_context() -> Result<()> {
         let args = fs::read_to_string(record.join("args"))?;
         assert!(args.contains(question), "{args}");
         assert!(
-            args.contains(r#"{"run_status":true,"run_overview":false}"#),
+            args.contains(r#"{"run_status":false,"run_overview":false}"#),
             "{args}"
         );
         match target {
@@ -604,8 +687,8 @@ fn agent_dry_run_is_inspectable_and_has_no_launch_side_effects() -> Result<()> {
         Path::new(plan["working_directory"].as_str().unwrap()),
         fs::canonicalize(&caller)?
     );
-    assert_eq!(plan["startup_mode"], "health_then_answer");
-    assert_eq!(plan["bootstrap"]["run_status"], true);
+    assert_eq!(plan["startup_mode"], "interactive_with_question");
+    assert_eq!(plan["bootstrap"]["run_status"], false);
     assert_eq!(plan["bootstrap"]["run_overview"], false);
     assert_eq!(plan["initial_question"]["provided"], true);
     assert_eq!(
@@ -902,4 +985,28 @@ printf '%s\n' fake-agent-ok
 #[cfg(unix)]
 fn read_record(record: &Path, name: &str) -> Result<String> {
     Ok(fs::read_to_string(record.join(name))?.trim_end().to_owned())
+}
+
+#[cfg(unix)]
+fn skill_bash_blocks(skill: &str) -> Result<Vec<String>> {
+    let mut blocks = Vec::new();
+    let mut current = None::<String>;
+    for line in skill.lines() {
+        match (current.as_mut(), line.trim()) {
+            (None, "```bash") => current = Some(String::new()),
+            (Some(_), "```") => blocks.push(current.take().expect("bash block is active")),
+            (Some(block), _) => {
+                block.push_str(line);
+                block.push('\n');
+            }
+            (None, _) => {}
+        }
+    }
+    anyhow::ensure!(current.is_none(), "unterminated bash block in Agent skill");
+    Ok(blocks)
+}
+
+#[cfg(unix)]
+fn skill_example_needs_storyline(block: &str) -> bool {
+    block.split_whitespace().any(|token| token == "find")
 }

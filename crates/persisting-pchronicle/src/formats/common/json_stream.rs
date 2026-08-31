@@ -548,7 +548,6 @@ fn anyhow_io_ensure(condition: bool, message: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
     use std::io::Cursor;
 
     #[test]
@@ -611,91 +610,129 @@ mod tests {
         assert_eq!(record, br#"{"text":"a}b{c\"}"}"#);
     }
 
-    fn json_object_strategy() -> impl Strategy<Value = String> {
-        (0u64..10_000).prop_map(|value| format!(r#"{{"value":{value}}}"#))
-    }
+    #[cfg(feature = "proptest")]
+    mod proptests {
+        use std::io::Cursor;
+        use std::path::Path;
 
-    fn non_whitespace_byte_strategy() -> impl Strategy<Value = u8> {
-        prop_oneof![1u8..=8, 14u8..=31, 33u8..=126,]
-    }
+        use proptest::prelude::*;
 
-    proptest! {
-        #[test]
-        fn ascii_trimming_removes_only_ascii_whitespace(
-            leading in proptest::collection::vec(prop::sample::select(vec![b' ', b'\n', b'\r', b'\t']), 0..32),
-            core in proptest::collection::vec(non_whitespace_byte_strategy(), 1..64),
-            trailing in proptest::collection::vec(prop::sample::select(vec![b' ', b'\n', b'\r', b'\t']), 0..32),
-        ) {
-            let mut input = leading.clone();
-            input.extend_from_slice(&core);
-            input.extend_from_slice(&trailing);
-            prop_assert_eq!(trim_ascii_whitespace(&input), core.as_slice());
+        use super::*;
+
+        fn json_object_strategy() -> impl Strategy<Value = String> {
+            (0u64..10_000).prop_map(|value| format!(r#"{{"value":{value}}}"#))
         }
 
-        #[test]
-        fn first_non_whitespace_reports_byte_and_consumes_prefix(
-            whitespace in proptest::collection::vec(prop::sample::select(vec![b' ', b'\n', b'\r', b'\t']), 0..64),
-            byte in non_whitespace_byte_strategy(),
-        ) {
-            let mut input = whitespace.clone();
-            input.push(byte);
-            input.extend_from_slice(b"tail");
-            let mut reader = Cursor::new(input);
-            prop_assert_eq!(first_non_whitespace(&mut reader).unwrap(), Some(byte));
-            prop_assert_eq!(reader.position(), whitespace.len() as u64);
+        fn non_whitespace_byte_strategy() -> impl Strategy<Value = u8> {
+            prop_oneof![1u8..=8, 14u8..=31, 33u8..=126,]
         }
 
-        #[test]
-        fn ndjson_visits_nonempty_lines_with_one_based_source_locations(
-            records in proptest::collection::vec(json_object_strategy(), 1..16),
-            blank_lines in proptest::collection::vec(any::<bool>(), 0..16),
-        ) {
-            let mut input = String::new();
-            let mut expected_lines = Vec::new();
-            let mut line = 1usize;
-            for (index, record) in records.iter().enumerate() {
-                if blank_lines.get(index).copied().unwrap_or(false) {
-                    input.push_str(" \t\n");
+        proptest! {
+            #[test]
+            fn ascii_trimming_removes_only_ascii_whitespace(
+                leading in proptest::collection::vec(prop::sample::select(vec![b' ', b'\n', b'\r', b'\t']), 0..32),
+                core in proptest::collection::vec(non_whitespace_byte_strategy(), 1..64),
+                trailing in proptest::collection::vec(prop::sample::select(vec![b' ', b'\n', b'\r', b'\t']), 0..32),
+            ) {
+                let mut input = leading.clone();
+                input.extend_from_slice(&core);
+                input.extend_from_slice(&trailing);
+                prop_assert_eq!(trim_ascii_whitespace(&input), core.as_slice());
+            }
+
+            #[test]
+            fn first_non_whitespace_reports_byte_and_consumes_prefix(
+                whitespace in proptest::collection::vec(prop::sample::select(vec![b' ', b'\n', b'\r', b'\t']), 0..64),
+                byte in non_whitespace_byte_strategy(),
+            ) {
+                let mut input = whitespace.clone();
+                input.push(byte);
+                input.extend_from_slice(b"tail");
+                let mut reader = Cursor::new(input);
+                prop_assert_eq!(first_non_whitespace(&mut reader).unwrap(), Some(byte));
+                prop_assert_eq!(reader.position(), whitespace.len() as u64);
+            }
+
+            #[test]
+            fn ndjson_visits_nonempty_lines_with_one_based_source_locations(
+                records in proptest::collection::vec(json_object_strategy(), 1..16),
+                blank_lines in proptest::collection::vec(any::<bool>(), 0..16),
+            ) {
+                let mut input = String::new();
+                let mut expected_lines = Vec::new();
+                let mut line = 1usize;
+                for (index, record) in records.iter().enumerate() {
+                    if blank_lines.get(index).copied().unwrap_or(false) {
+                        input.push_str(" \t\n");
+                        line += 1;
+                    }
+                    input.push_str(record);
+                    input.push('\n');
+                    expected_lines.push(line);
                     line += 1;
                 }
-                input.push_str(record);
-                input.push('\n');
-                expected_lines.push(line);
-                line += 1;
+                let mut reader = Cursor::new(input.into_bytes());
+                let mut seen = Vec::new();
+                let count = for_each_ndjson_line(&mut reader, 4096, |record, source_line| {
+                    seen.push((serde_json::from_slice::<serde_json::Value>(record).unwrap(), source_line));
+                    Ok(())
+                }).unwrap();
+                prop_assert_eq!(count, records.len());
+                prop_assert_eq!(seen.iter().map(|(_, line)| *line).collect::<Vec<_>>(), expected_lines);
             }
-            let mut reader = Cursor::new(input.into_bytes());
-            let mut seen = Vec::new();
-            let count = for_each_ndjson_line(&mut reader, 4096, |record, source_line| {
-                seen.push((serde_json::from_slice::<serde_json::Value>(record).unwrap(), source_line));
-                Ok(())
-            }).unwrap();
-            prop_assert_eq!(count, records.len());
-            prop_assert_eq!(seen.iter().map(|(_, line)| *line).collect::<Vec<_>>(), expected_lines);
-        }
 
-        #[test]
-        fn json_arrays_visit_each_object_in_ordinal_order(
-            records in proptest::collection::vec(json_object_strategy(), 1..16),
-        ) {
-            let input = format!("[{}]", records.join(","));
-            let mut reader = Cursor::new(input.into_bytes());
-            let mut seen = Vec::new();
-            let count = for_each_json_array_record(&mut reader, 4096, |record, ordinal| {
-                seen.push((serde_json::from_slice::<serde_json::Value>(record).unwrap(), ordinal));
-                Ok(())
-            }).unwrap();
-            prop_assert_eq!(count, records.len());
-            prop_assert_eq!(seen.iter().map(|(_, ordinal)| *ordinal).collect::<Vec<_>>(), (1..=records.len()).collect::<Vec<_>>());
-        }
+            #[test]
+            fn json_arrays_visit_each_object_in_ordinal_order(records in proptest::collection::vec(json_object_strategy(), 1..16)) {
+                let input = format!("[{}]", records.join(","));
+                let mut reader = Cursor::new(input.into_bytes());
+                let mut seen = Vec::new();
+                let count = for_each_json_array_record(&mut reader, 4096, |record, ordinal| {
+                    seen.push((serde_json::from_slice::<serde_json::Value>(record).unwrap(), ordinal));
+                    Ok(())
+                }).unwrap();
+                prop_assert_eq!(count, records.len());
+                prop_assert_eq!(seen.iter().map(|(_, ordinal)| *ordinal).collect::<Vec<_>>(), (1..=records.len()).collect::<Vec<_>>());
+            }
 
-        #[test]
-        fn stream_shape_prefers_ndjson_extension_over_content(
-            content in json_object_strategy(),
-            extension in prop_oneof![Just("jsonl"), Just("NDJSON")],
-        ) {
-            let mut reader = Cursor::new(content.into_bytes());
-            let path = format!("input.{extension}");
-            prop_assert_eq!(detect_json_stream_shape(Path::new(&path), &mut reader).unwrap(), JsonStreamShape::Ndjson);
+            #[test]
+            fn stream_shape_prefers_ndjson_extension(content in json_object_strategy(), extension in prop_oneof![Just("jsonl"), Just("NDJSON")]) {
+                let mut reader = Cursor::new(content.into_bytes());
+                let path = format!("input.{extension}");
+                prop_assert_eq!(detect_json_stream_shape(Path::new(&path), &mut reader).unwrap(), JsonStreamShape::Ndjson);
+            }
+
+            #[test]
+            fn trimmed_input_is_idempotent(bytes in proptest::collection::vec(any::<u8>(), 0..128)) {
+                let once = trim_ascii_whitespace(&bytes);
+                prop_assert_eq!(trim_ascii_whitespace(once), once);
+            }
+
+            #[test]
+            fn first_non_whitespace_returns_none_for_whitespace_only(
+                whitespace in proptest::collection::vec(prop::sample::select(vec![b' ', b'\n', b'\r', b'\t']), 0..128),
+            ) {
+                let mut reader = Cursor::new(whitespace);
+                prop_assert_eq!(first_non_whitespace(&mut reader).unwrap(), None);
+            }
+
+            #[test]
+            fn visit_json_stream_reports_array_count_and_peak_record_size(
+                records in proptest::collection::vec(json_object_strategy(), 1..16),
+            ) {
+                let input = format!("[{}]", records.join(","));
+                let expected_peak = records.iter().map(String::len).max().unwrap();
+                let mut reader = Cursor::new(input.into_bytes());
+                let visit = visit_json_stream(
+                    Path::new("input.json"),
+                    &mut reader,
+                    4096,
+                    &mut (),
+                    |_reader, _state| unreachable!("array input must not use object callback"),
+                    |_record, _location, _state| Ok(()),
+                ).unwrap();
+                prop_assert_eq!(visit.record_count, records.len());
+                prop_assert_eq!(visit.peak_record_bytes, expected_peak);
+            }
         }
     }
 }

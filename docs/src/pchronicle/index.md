@@ -1,25 +1,27 @@
 # pChronicle
 
-**pChronicle lets you browse, query, exchange, and serve Agent run
-Datasets.** Use it with runs produced by Persisting or with supported
+**pChronicle is an Agent trajectory storage engine.** Use it to browse, query,
+exchange, and serve run Datasets produced by Persisting or by supported
 external formats; pChronicle does not require pVisor to run.
 
 Within Persisting's model-state-to-Agent-history story, pChronicle is the
-durable, queryable Agent-history layer.
+durable store and query engine for Agent history. It can run as a local tool
+or be deployed as a platform in front of many paths.
 
 ## The one object you work with
 
-A **Dataset** is the single object operated on by pChronicle. It is a collection
-of Agent run data that can be inspected, queried, analyzed, imported,
-exported, or served.
+A **Dataset** is a path: a local directory or file, or an object-store URI
+prefix. pChronicle discovers and normalizes the supported data inside that
+path. Aliases (`@name`) are locators; after resolution the engine only sees
+the path.
 
-A Dataset can be:
+A Dataset can be written as:
 
 - a local directory or file (`./local/path`);
 - an object-store URI prefix (`s3://bucket/prefix`);
-- a user alias that points to either location (`@alias-name`).
+- a user alias that resolves to either location (`@alias-name`).
 
-pChronicle discovers and normalizes the supported data inside that location.
+pChronicle discovers and normalizes the supported data inside that path.
 You do not need to understand its internal files or storage layout before using
 the CLI.
 
@@ -63,4 +65,4 @@ Agents. To run an Agent in a controlled workspace, start with
 - [Look up the complete CLI](reference/cli.md)
 - [Use the shared product terminology](reference/terminology.md)
 - [Understand the data model](concepts/index.md)
-- [Inspect storage and catalog design](design/index.md)
+- [Inspect storage and Snapshot design](design/index.md)
