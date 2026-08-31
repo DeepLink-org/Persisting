@@ -45,8 +45,9 @@ execution; install version `0.9.137` with
 repository CI setup action.
 
 Local and ordinary CI builds use the platform's default linker. The manylinux
-wheel job disables rust-lld (`-C linker-features=-lld`) because glibc 2.17
-cannot link with it.
+wheel job links with `cargo zigbuild` against a glibc 2.17 sysroot, because
+current rustc libstd references `statx` / `copy_file_range` that neither
+rust-lld nor GNU ld can satisfy on manylinux2014.
 
 `just dev` is intentionally scoped to runtime crates and a no-default-feature
 pChronicle check. Use `just gate` or the CI workflows for the full workspace,

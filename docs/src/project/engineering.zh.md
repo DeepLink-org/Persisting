@@ -40,8 +40,9 @@ Rust 测试用 `cargo nextest` 做进程隔离和并行执行；用
 `cargo install cargo-nextest --version 0.9.137 --locked` 安装 `0.9.137`，
 或使用仓库 CI setup action。
 
-本地和普通 CI 构建使用平台默认 linker。manylinux wheel job 关闭 rust-lld
-（`-C linker-features=-lld`），因为 glibc 2.17 无法与它链接。
+本地和普通 CI 构建使用平台默认 linker。manylinux wheel job 用
+`cargo zigbuild` 链接 glibc 2.17 sysroot，因为当前 rustc libstd 会引用
+`statx` / `copy_file_range`，在 manylinux2014 上 rust-lld 和 GNU ld 都无法满足。
 
 `just dev` 刻意限定在 runtime crate 以及无默认 feature 的 pChronicle 检查。
 完整工作区、all-targets 和 storage-feature 矩阵请用 `just gate` 或 CI

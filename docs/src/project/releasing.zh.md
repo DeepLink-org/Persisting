@@ -60,6 +60,12 @@ Silicon macOS），除非 `PERSISTING_LIBKRUNFW_PATH` 指向已有 payload。本
 wheel 构建必须走这些受支持路径之一；缺少 payload 是构建错误，而不是不完整
 的 wheel。
 
+Linux wheel 仍使用 manylinux2014 / glibc 2.17 标签。cibuildwheel 仍在该镜像
+内运行，但三条 CLI 通过 `cargo zigbuild --target x86_64-unknown-linux-gnu.2.17`
+链接，避免 rustc libstd 拉入 glibc 2.27+ 符号。本地 Linux 上的
+`python -m build` 默认仍走普通 `cargo build`，除非设置
+`PERSISTING_CARGO_ZIGBUILD=1`。
+
 每个 wheel 都会检查组件集和安装时 CLI smoke test。发布集检查随后要求每个
 平台恰好一个受支持 wheel、版本匹配、包元数据有效，以及发布前产物大小有界。
 
