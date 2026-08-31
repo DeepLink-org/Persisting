@@ -63,11 +63,9 @@ Linux x86_64 and Apple Silicon macOS unless `PERSISTING_LIBKRUNFW_PATH` points
 at an existing payload. Local wheel builds must use one of those supported
 paths; a missing payload is a build error rather than an incomplete wheel.
 
-Linux wheels stay on the manylinux2014 / glibc 2.17 tag. cibuildwheel still
-runs inside that image, but the three CLIs are linked with
-`cargo zigbuild --target x86_64-unknown-linux-gnu.2.17` so rustc's libstd does
-not pull glibc 2.27+ symbols. Local `python -m build` on Linux keeps using
-plain `cargo build` unless `PERSISTING_CARGO_ZIGBUILD=1`.
+Linux wheels use the manylinux_2_28 / glibc 2.28 tag. Current rustc libstd
+and libkrun's virtiofs passthrough need `statx` and `copy_file_range`, which
+are not available on manylinux2014.
 
 Every wheel is checked for its component set and install-time CLI smoke tests.
 The release-set check then requires exactly one supported wheel per platform,

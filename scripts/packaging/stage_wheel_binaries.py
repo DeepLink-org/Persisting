@@ -29,11 +29,6 @@ SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-gnu",
     "aarch64-apple-darwin",
 }
-ZIGBUILD_ENV = "PERSISTING_CARGO_ZIGBUILD"
-LINUX_GNU_GLIBC = "2.17"
-ZIGBUILD_GNU_TARGETS = {
-    "x86_64-unknown-linux-gnu": f"x86_64-unknown-linux-gnu.{LINUX_GNU_GLIBC}",
-}
 MACOS_ENTITLEMENTS = ROOT / "crates" / "persisting-pvisor" / "macos-hypervisor.entitlements"
 LIBKRUNFW_VERSION = "5.5.0"
 MACOS_DEPLOYMENT_TARGET = "11.0"
@@ -140,27 +135,10 @@ def options_from_build_backend(
     )
 
 
-def _flag_enabled(name: str) -> bool:
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _zigbuild_target(options: BuildOptions) -> str:
-    rust_target = options.target or _host_target()
-    try:
-        return ZIGBUILD_GNU_TARGETS[rust_target]
-    except KeyError as error:
-        supported = ", ".join(sorted(ZIGBUILD_GNU_TARGETS))
-        raise RuntimeError(
-            f"{ZIGBUILD_ENV} is set, but cargo zigbuild is only configured for "
-            f"{supported}; got {rust_target}"
-        ) from error
-
-
 def _cargo_command(options: BuildOptions) -> list[str]:
-    use_zigbuild = _flag_enabled(ZIGBUILD_ENV)
     command = [
         "cargo",
-        "zigbuild" if use_zigbuild else "build",
+        "build",
         "--profile",
         options.profile,
         "--message-format=json-render-diagnostics",
@@ -177,9 +155,8 @@ def _cargo_command(options: BuildOptions) -> list[str]:
         "--bin",
         "ppilot",
     ]
-    target = _zigbuild_target(options) if use_zigbuild else options.target
-    if target is not None:
-        command.extend(("--target", target))
+    if options.target is not None:
+        command.extend(("--target", options.target))
     if options.target_dir is not None:
         command.extend(("--target-dir", options.target_dir))
     if options.frozen:

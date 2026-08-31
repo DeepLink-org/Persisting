@@ -50,22 +50,15 @@ build-frontend = "build"
 
 [tool.cibuildwheel.linux]
 archs = ["x86_64"]
-manylinux-x86_64-image = "manylinux2014"
+manylinux-x86_64-image = "manylinux_2_28"
 before-all = [
     "yum install -y curl glibc-static",
     "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
-    "/opt/python/cp312-cp312/bin/python -m pip install --no-cache-dir cargo-zigbuild==0.23.0 ziglang==0.14.1",
-    "/opt/python/cp312-cp312/bin/python -m ziglang version",
 ]
-# rustc libstd on current stable references glibc 2.27/2.28 symbols
-# (statx, copy_file_range). Neither rust-lld nor GNU ld on manylinux2014
-# can satisfy those as weak refs. cargo-zigbuild links against a glibc 2.17
-# sysroot so the wheel can keep the manylinux2014 tag.
-# zig 0.14.1 avoids the zig 0.15+ libc++ / bindgen mismatch with libkrun.
-# ziglang does not install a `zig` binary. cargo-zigbuild looks up
-# `python3 -m ziglang`, but PEP 517 isolation prepends a venv without
-# ziglang, so pin the manylinux CPython that received the pip install.
-environment = { PATH = "$HOME/.cargo/bin:/opt/python/cp312-cp312/bin:$PATH", PERSISTING_CARGO_ZIGBUILD = "1", CARGO_ZIGBUILD_PYTHON_PATH = "/opt/python/cp312-cp312/bin/python", CFLAGS = "-isystem /usr/include" }
+# rustc libstd and libkrun's virtiofs passthrough need statx (glibc 2.28)
+# and copy_file_range (glibc 2.27). Targeting glibc 2.17 cannot satisfy
+# those refs, so the wheel tag is manylinux_2_28.
+environment = { PATH = "$HOME/.cargo/bin:$PATH" }
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
