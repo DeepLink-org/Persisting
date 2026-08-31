@@ -37,6 +37,20 @@ def _load_wheel_stage():
 wheel_stage = _load_wheel_stage()
 
 
+def _load_wheel_verify():
+    name = "verify_wheel_test"
+    path = ROOT / "scripts" / "packaging" / "verify_wheel.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+wheel_verify = _load_wheel_verify()
+
+
 def test_python_wheel_uses_setuptools_and_platform_builds() -> None:
     contents = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
@@ -45,7 +59,10 @@ def test_python_wheel_uses_setuptools_and_platform_builds() -> None:
     assert 'build = "cp312-*"' in contents
     assert 'manylinux-x86_64-image = "manylinux2014"' in contents
     assert 'archs = ["arm64"]' in contents
-    assert 'RUSTFLAGS = "-C linker-features=-lld"' in contents
+    assert "PERSISTING_CARGO_ZIGBUILD" in contents
+    assert "cargo-zigbuild==0.23.0" in contents
+    assert "ziglang==0.14.1" in contents
+    assert "linker-features=-lld" not in contents
 
 
 @pytest.mark.parametrize("workflow", ["nightly.yml", "release.yml"])
@@ -258,3 +275,57 @@ def test_firmware_source_fetches_when_path_is_not_configured(
 
     assert source == firmware
     assert name == firmware.name
+
+
+def test_cargo_command_uses_plain_build_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(wheel_stage.ZIGBUILD_ENV, raising=False)
+    command = wheel_stage._cargo_command(wheel_stage.BuildOptions())
+
+    assert command[:2] == ["cargo", "build"]
+    assert "--target" not in command
+
+
+def test_cargo_command_uses_zigbuild_glibc_2_17(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(wheel_stage.ZIGBUILD_ENV, "1")
+    command = wheel_stage._cargo_command(
+        wheel_stage.BuildOptions(target="x86_64-unknown-linux-gnu")
+    )
+
+    assert command[:2] == ["cargo", "zigbuild"]
+    assert command[command.index("--target") + 1] == "x86_64-unknown-linux-gnu.2.17"
+    assert wheel_stage.LINUX_GNU_GLIBC == "2.17"
+
+
+def test_cargo_command_zigbuild_infers_host_linux_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(wheel_stage.ZIGBUILD_ENV, "1")
+    monkeypatch.setattr(wheel_stage, "_host_target", lambda: "x86_64-unknown-linux-gnu")
+    command = wheel_stage._cargo_command(wheel_stage.BuildOptions())
+
+    assert command[:2] == ["cargo", "zigbuild"]
+    assert command[command.index("--target") + 1] == "x86_64-unknown-linux-gnu.2.17"
+
+
+def test_cargo_command_zigbuild_rejects_macos(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(wheel_stage.ZIGBUILD_ENV, "1")
+    with pytest.raises(RuntimeError, match="cargo zigbuild"):
+        wheel_stage._cargo_command(wheel_stage.BuildOptions(target="aarch64-apple-darwin"))
+
+
+def test_manylinux_glibc_requirement_accepts_2_17() -> None:
+    symbols = """
+    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND memcpy@GLIBC_2.2.5
+    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND posix_spawn@GLIBC_2.17
+    """
+    assert wheel_verify.glibc_requirement(symbols) == (2, 17, 0)
+    assert wheel_verify.glibc_requirement(symbols) <= wheel_verify.MANYLINUX_MAX_GLIBC
+
+
+def test_manylinux_glibc_requirement_detects_2_28() -> None:
+    symbols = """
+    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND statx@GLIBC_2.28
+    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND copy_file_range@GLIBC_2.27
+    """
+    assert wheel_verify.glibc_requirement(symbols) == (2, 28, 0)
+    assert wheel_verify.glibc_requirement(symbols) > wheel_verify.MANYLINUX_MAX_GLIBC
