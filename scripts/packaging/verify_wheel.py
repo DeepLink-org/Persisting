@@ -16,7 +16,7 @@ from pathlib import Path
 
 EXPECTED_BINARIES = ("pchronicle", "pvisor", "ppilot")
 FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
-MANYLINUX_MAX_GLIBC = (2, 17, 0)
+MANYLINUX_MAX_GLIBC = (2, 28, 0)
 _GLIBC_NEED = re.compile(r"GLIBC_(\d+)\.(\d+)(?:\.(\d+))?")
 
 
@@ -37,7 +37,7 @@ def _assert_manylinux_glibc(name: str, executable: Path) -> None:
         pretty = ".".join(str(part) for part in required)
         ceiling = ".".join(str(part) for part in MANYLINUX_MAX_GLIBC)
         raise RuntimeError(
-            f"{name} requires GLIBC {pretty}, which exceeds manylinux2014 ({ceiling})"
+            f"{name} requires GLIBC {pretty}, which exceeds manylinux_2_28 ({ceiling})"
         )
 
 

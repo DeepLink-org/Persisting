@@ -57,13 +57,10 @@ def test_python_wheel_uses_setuptools_and_platform_builds() -> None:
     assert 'requires = ["setuptools>=77"]' in contents
     assert 'build-backend = "build_backend"' in contents
     assert 'build = "cp312-*"' in contents
-    assert 'manylinux-x86_64-image = "manylinux2014"' in contents
+    assert 'manylinux-x86_64-image = "manylinux_2_28"' in contents
     assert 'archs = ["arm64"]' in contents
-    assert "PERSISTING_CARGO_ZIGBUILD" in contents
-    assert "CARGO_ZIGBUILD_PYTHON_PATH" in contents
-    assert "cargo-zigbuild==0.23.0" in contents
-    assert "ziglang==0.14.1" in contents
-    assert "linker-features=-lld" not in contents
+    assert "PERSISTING_CARGO_ZIGBUILD" not in contents
+    assert "cargo-zigbuild" not in contents
 
 
 @pytest.mark.parametrize("workflow", ["nightly.yml", "release.yml"])
@@ -121,7 +118,7 @@ def test_release_version_rejects_tag_version_mismatch(tmp_path: Path) -> None:
 def test_release_artifacts_accept_supported_matrix(tmp_path: Path) -> None:
     version = "1.2.3"
     names = [
-        f"persisting-{version}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        f"persisting-{version}-py3-none-manylinux_2_28_x86_64.whl",
         f"persisting-{version}-py3-none-macosx_11_0_arm64.whl",
     ]
     for name in names:
@@ -144,7 +141,7 @@ def test_release_artifacts_reject_missing_platform(tmp_path: Path) -> None:
 def test_release_artifacts_reject_metadata_version_mismatch(tmp_path: Path) -> None:
     filename_version = "1.2.3"
     names = [
-        f"persisting-{filename_version}-py3-none-manylinux2014_x86_64.whl",
+        f"persisting-{filename_version}-py3-none-manylinux_2_28_x86_64.whl",
         f"persisting-{filename_version}-py3-none-macosx_11_0_arm64.whl",
     ]
     for name in names:
@@ -157,7 +154,7 @@ def test_release_artifacts_reject_metadata_version_mismatch(tmp_path: Path) -> N
 def test_release_artifacts_reject_oversized_wheel(tmp_path: Path) -> None:
     version = "1.2.3"
     names = [
-        f"persisting-{version}-py3-none-manylinux2014_x86_64.whl",
+        f"persisting-{version}-py3-none-manylinux_2_28_x86_64.whl",
         f"persisting-{version}-py3-none-macosx_11_0_arm64.whl",
     ]
     for name in names:
@@ -278,55 +275,27 @@ def test_firmware_source_fetches_when_path_is_not_configured(
     assert name == firmware.name
 
 
-def test_cargo_command_uses_plain_build_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(wheel_stage.ZIGBUILD_ENV, raising=False)
+def test_cargo_command_uses_plain_build_by_default() -> None:
     command = wheel_stage._cargo_command(wheel_stage.BuildOptions())
 
     assert command[:2] == ["cargo", "build"]
     assert "--target" not in command
 
 
-def test_cargo_command_uses_zigbuild_glibc_2_17(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(wheel_stage.ZIGBUILD_ENV, "1")
-    command = wheel_stage._cargo_command(
-        wheel_stage.BuildOptions(target="x86_64-unknown-linux-gnu")
-    )
-
-    assert command[:2] == ["cargo", "zigbuild"]
-    assert command[command.index("--target") + 1] == "x86_64-unknown-linux-gnu.2.17"
-    assert wheel_stage.LINUX_GNU_GLIBC == "2.17"
-
-
-def test_cargo_command_zigbuild_infers_host_linux_target(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(wheel_stage.ZIGBUILD_ENV, "1")
-    monkeypatch.setattr(wheel_stage, "_host_target", lambda: "x86_64-unknown-linux-gnu")
-    command = wheel_stage._cargo_command(wheel_stage.BuildOptions())
-
-    assert command[:2] == ["cargo", "zigbuild"]
-    assert command[command.index("--target") + 1] == "x86_64-unknown-linux-gnu.2.17"
-
-
-def test_cargo_command_zigbuild_rejects_macos(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(wheel_stage.ZIGBUILD_ENV, "1")
-    with pytest.raises(RuntimeError, match="cargo zigbuild"):
-        wheel_stage._cargo_command(wheel_stage.BuildOptions(target="aarch64-apple-darwin"))
-
-
-def test_manylinux_glibc_requirement_accepts_2_17() -> None:
+def test_manylinux_glibc_requirement_accepts_2_28() -> None:
     symbols = """
     0000000000000000  0 FUNC    GLOBAL DEFAULT  UND memcpy@GLIBC_2.2.5
-    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND posix_spawn@GLIBC_2.17
+    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND copy_file_range@GLIBC_2.27
+    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND statx@GLIBC_2.28
     """
-    assert wheel_verify.glibc_requirement(symbols) == (2, 17, 0)
+    assert wheel_verify.glibc_requirement(symbols) == (2, 28, 0)
     assert wheel_verify.glibc_requirement(symbols) <= wheel_verify.MANYLINUX_MAX_GLIBC
 
 
-def test_manylinux_glibc_requirement_detects_2_28() -> None:
+def test_manylinux_glibc_requirement_detects_newer_than_2_28() -> None:
     symbols = """
     0000000000000000  0 FUNC    GLOBAL DEFAULT  UND statx@GLIBC_2.28
-    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND copy_file_range@GLIBC_2.27
+    0000000000000000  0 FUNC    GLOBAL DEFAULT  UND fchmodat2@GLIBC_2.38
     """
-    assert wheel_verify.glibc_requirement(symbols) == (2, 28, 0)
+    assert wheel_verify.glibc_requirement(symbols) == (2, 38, 0)
     assert wheel_verify.glibc_requirement(symbols) > wheel_verify.MANYLINUX_MAX_GLIBC

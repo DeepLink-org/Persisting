@@ -44,10 +44,9 @@ execution; install version `0.9.137` with
 `cargo install cargo-nextest --version 0.9.137 --locked`, or use the
 repository CI setup action.
 
-Local and ordinary CI builds use the platform's default linker. The manylinux
-wheel job links with `cargo zigbuild` against a glibc 2.17 sysroot, because
-current rustc libstd references `statx` / `copy_file_range` that neither
-rust-lld nor GNU ld can satisfy on manylinux2014.
+Local and ordinary CI builds use the platform's default linker. Linux wheels
+use the manylinux_2_28 image (glibc 2.28) so rustc libstd and libkrun can
+link `statx` / `copy_file_range`.
 
 `just dev` is intentionally scoped to runtime crates and a no-default-feature
 pChronicle check. Use `just gate` or the CI workflows for the full workspace,
