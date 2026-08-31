@@ -60,6 +60,7 @@ def test_python_wheel_uses_setuptools_and_platform_builds() -> None:
     assert 'manylinux-x86_64-image = "manylinux2014"' in contents
     assert 'archs = ["arm64"]' in contents
     assert "PERSISTING_CARGO_ZIGBUILD" in contents
+    assert "CARGO_ZIGBUILD_PYTHON_PATH" in contents
     assert "cargo-zigbuild==0.23.0" in contents
     assert "ziglang==0.14.1" in contents
     assert "linker-features=-lld" not in contents
