@@ -86,10 +86,10 @@
 
 到此才引入产品分工，定位是"链路中的纵深"而非"竞争入口"：
 
-- **pVisor 面板**：治理具体意味着什么——staged Effects、review / apply / drop、两种执行器
-- **pChronicle 面板**：可查询具体意味着什么——SQL 查询、导入外部轨迹、Web UI
+- **pVisor 面板**：治理具体意味着什么——staged Effects、review / apply / drop、两种执行器。配 `pvisor review` 输出的终端卡（CSS 构造）
+- **pChronicle 面板**：可查询具体意味着什么——SQL 查询、导入外部轨迹、Web UI。配 `analysis-sql.jpg` 截图
 
-各配真实截图或代码，取代旧版的空洞能力卡片。
+取代旧版的空洞能力卡片。截图分配不重复：Hero 用 `runs-browser.jpg`，本节用 `analysis-sql.jpg`。
 
 ### ⑤ 快速上手
 
@@ -102,6 +102,10 @@
 ### ⑦ 收束原则
 
 保留并收紧现有文案。
+
+### 关于现有架构图
+
+旧版第 4 节的 `system-products.svg` 架构图**从首页移除**。理由：③ 贯通带已用页面结构本身表达了同一条链路，图与结构重复；该图在 `docs/src/overview.md` 中仍然保留，需要图解的读者可从 ⑥ 的"Choose a workflow"入口到达。资产文件不删除。
 
 ## 4. 视觉系统
 
