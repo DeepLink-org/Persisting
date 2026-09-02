@@ -135,7 +135,7 @@ impl FindExpr {
         let mut expressions = expressions;
         match expressions.len() {
             0 => None,
-            1 => Some(expressions.pop().expect("one expression")),
+            1 => Some(expressions.remove(0)),
             _ => Some(Self::And(expressions)),
         }
     }
@@ -273,7 +273,7 @@ impl<'a> Parser<'a> {
             items.push(self.parse_and()?);
         }
         Ok(if items.len() == 1 {
-            items.pop().expect("one expression")
+            items.remove(0)
         } else {
             FindExpr::Or(items)
         })
@@ -290,7 +290,7 @@ impl<'a> Parser<'a> {
             items.push(self.parse_unary()?);
         }
         Ok(if items.len() == 1 {
-            items.pop().expect("one expression")
+            items.remove(0)
         } else {
             FindExpr::And(items)
         })
