@@ -25,7 +25,7 @@
 //! - [`query`]：DataFusion 查询引擎与能力快照。
 //!
 //! 外围 wire DTO、低层 parser、Markdown AST、Arrow codec、provider、manifest 与锁均不公开。
-//! `search` 是单独的 feature，其既有 API 不属于本次门面收敛范围。
+//! Storyline 全文检索随 `lance-store` 提供；向量与混合检索仍由 `search` feature 启用。
 
 mod agenticmd;
 pub mod analysis_compile;
@@ -51,7 +51,7 @@ mod projection;
 pub mod query;
 #[cfg(feature = "lance-store")]
 mod revision;
-#[cfg(feature = "search")]
+#[cfg(feature = "lance-store")]
 pub mod search;
 pub mod storage;
 mod store;

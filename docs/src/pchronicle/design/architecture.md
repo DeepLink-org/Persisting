@@ -29,7 +29,7 @@ It has four deployment shapes:
 | Shape | Purpose | Persistent state |
 | --- | --- | --- |
 | direct Dataset | inspect a local path or S3 prefix | none outside the Dataset |
-| native Dataset | receive canonical events or create-only import | Dataset manifests and versions |
+| native Dataset | receive canonical events or create/append/replace import | Dataset manifests and versions |
 | default local Dataset | omit the Dataset argument for one local root | normalized path in user configuration |
 | read-only Warehouse | mount static paths for Web and API review; optional Directory for path ACL | configuration and rebuildable cache |
 

@@ -3,7 +3,6 @@
 mod agent;
 mod control;
 mod exchange;
-mod find;
 mod gateway_capture;
 mod gateway_ingest;
 mod gateway_partition;
@@ -15,10 +14,7 @@ mod settings;
 
 #[cfg(test)]
 use exchange::rename_noreplace;
-use exchange::{run_export, run_import};
-use find::{
-    FindExpr, FindJsonOperator, FindJsonPredicate, FindTextPredicate, combine_match_expressions,
-};
+use exchange::{run_drop, run_export, run_import};
 use output::*;
 use settings::*;
 
@@ -42,6 +38,10 @@ use persisting_pchronicle::document::{
 };
 use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::query::ChronicleQueryEngine;
+use persisting_pchronicle::search::{
+    FindExpr, FindJsonOperator, FindJsonPredicate, FindTextPredicate, combine_match_expressions,
+    search_storyline_step_matches_fts_in_columns,
+};
 use persisting_pchronicle::storage::{
     AutomaticProjectionInspection, AutomaticProjectionState, CatalogErrorPolicy,
     CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
@@ -49,7 +49,6 @@ use persisting_pchronicle::storage::{
     EventFactSnapshot, ObjectStoreManifestWriteMode, StorylineLanceStore,
     StorylineProjectionBuildOutcome, automatic_projection_inventory, build_storyline_projection,
     inspect_automatic_storyline_projection, probe_canonical_event_store,
-    search_storyline_step_matches_fts_in_columns,
 };
 use serde::{Deserialize, Serialize};
 
@@ -147,11 +146,12 @@ impl<'a> DiagnosticWriter<'a> {
     }
 
     fn emit(&mut self, line: &[u8]) -> std::io::Result<()> {
+        let destructive_prompt = line.starts_with(b"Permanently ");
         let visible = match self.level {
-            LogLevel::Error => false,
+            LogLevel::Error => destructive_prompt,
             LogLevel::Warn => {
                 let text = String::from_utf8_lossy(line).to_ascii_lowercase();
-                text.contains("warning") || text.starts_with("warn")
+                destructive_prompt || text.contains("warning") || text.starts_with("warn")
             }
             LogLevel::Info | LogLevel::Debug => true,
         };
@@ -202,8 +202,10 @@ enum Command {
     Agent(agent::AgentArgs),
     /// Locate a Run or Step by its source-local ID.
     Find(FindArgs),
-    /// Create a new Dataset from one or more run data sources.
+    /// Create, append to, or replace a Dataset from one or more run data sources.
     Import(ImportArgs),
+    /// Permanently delete a Dataset directory or object-store prefix.
+    Drop(DropArgs),
     /// Export complete Trajectories to an exchange format.
     Export(ExportArgs),
     /// Run a deterministic local LLM upstream for Gateway testing.
@@ -641,6 +643,24 @@ enum ImportOutputFormat {
     Storyline,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ImportMode {
+    /// Require a new destination and publish it atomically.
+    Create,
+    /// Add trajectories to an existing Storyline Dataset.
+    Append,
+    /// Import into a staging path, then atomically replace an existing local Dataset.
+    Replace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DuplicateIdPolicy {
+    /// Add #N to a colliding document ID.
+    Suffix,
+    /// Skip a trajectory whose document ID already exists.
+    Skip,
+}
+
 impl ImportOutputFormat {
     fn response_name(self) -> &'static str {
         match self {
@@ -656,8 +676,8 @@ struct ImportArgs {
     #[arg(short = 'f', long = "from", value_name = "PATH_OR_STDIN")]
     from: String,
 
-    /// New Dataset directory or object-store URI.
-    #[arg(short = 't', long = "to", alias = "output", value_name = "NEW_DATASET")]
+    /// Destination Dataset directory or object-store URI.
+    #[arg(short = 't', long = "to", alias = "output", value_name = "DATASET")]
     output: Option<String>,
 
     /// Input exchange format. Auto detects each regular file from name and content.
@@ -669,6 +689,18 @@ struct ImportArgs {
     #[arg(short = 'o', long = "output-format", value_enum)]
     output_format: Option<ImportOutputFormat>,
 
+    /// Destination behavior: create a new Dataset, append, or replace.
+    #[arg(long, value_enum, default_value_t = ImportMode::Create)]
+    mode: ImportMode,
+
+    /// How append handles an existing document ID.
+    #[arg(long, value_enum, value_name = "suffix|skip")]
+    on_duplicate: Option<DuplicateIdPolicy>,
+
+    /// Skip the destructive confirmation required by --mode replace.
+    #[arg(short = 'y', long)]
+    yes: bool,
+
     /// Compatibility no-op; stdin is selected by --from -.
     #[arg(long, hide = true)]
     stream: bool,
@@ -676,6 +708,17 @@ struct ImportArgs {
     /// Maximum bytes accepted from each Source, or from stdin in total.
     #[arg(long, value_parser = parse_byte_size, default_value = "256MiB")]
     max_input_bytes: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+struct DropArgs {
+    /// Dataset path, URI, or alias to permanently delete.
+    #[arg(value_name = "DATASET")]
+    dataset_uri: String,
+
+    /// Skip the destructive confirmation prompt.
+    #[arg(short = 'y', long)]
+    yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1398,7 +1441,28 @@ pub async fn run_with_stdio(
         Command::Find(args) => {
             run_find(args, config, stdout_is_terminal, stdout, &mut diagnostics).await
         }
-        Command::Import(args) => run_import(args, config, stdin, stdout, &mut diagnostics).await,
+        Command::Import(args) => {
+            run_import(
+                args,
+                config,
+                stdin_is_terminal,
+                stdin,
+                stdout,
+                &mut diagnostics,
+            )
+            .await
+        }
+        Command::Drop(args) => {
+            run_drop(
+                args,
+                config,
+                stdin_is_terminal,
+                stdin,
+                stdout,
+                &mut diagnostics,
+            )
+            .await
+        }
         Command::Export(args) => run_export(args, config, stdout, &mut diagnostics).await,
         Command::Echo(args) => run_echo(args, &mut diagnostics).await,
         Command::Dev(DevArgs {

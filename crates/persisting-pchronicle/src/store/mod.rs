@@ -30,7 +30,7 @@ mod events;
 #[cfg(feature = "lance-store")]
 mod files;
 #[cfg(feature = "lance-store")]
-mod index_build_gate;
+pub(crate) mod index_build_gate;
 #[cfg(feature = "lance-store")]
 mod inspect;
 #[cfg(feature = "lance-store")]
@@ -105,8 +105,9 @@ pub(crate) use local_query_manifest::{
 pub use location::{DatasetLocation, DatasetLocationKind};
 #[cfg(feature = "lance-store")]
 pub use query_engine::{
-    ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat, ExternalTableSpec,
-    IntrospectedField, IntrospectedTable, QueryBackendInfo, QuerySnapshot, QueryWriteOutcome,
+    ChronicleQueryEngine, ChronicleQueryExecutionOptions, DEFAULT_QUERY_MEMORY_LIMIT_BYTES,
+    ExternalTableFormat, ExternalTableSpec, IntrospectedField, IntrospectedTable, QueryBackendInfo,
+    QuerySnapshot, QueryWriteOutcome,
 };
 #[cfg(feature = "lance-store")]
 pub use run_control::{CommitRunOutcome, LeaseAcquireOutcome, RunControlStore};
@@ -119,12 +120,9 @@ pub use storyline::{
     StorylineContentOptions, StorylineContentReadMode, StorylineDataFusionTableNames,
     StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
     StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
-    StorylineTableKind, StorylineTablePaths, search_storyline_documents_fts,
-    search_storyline_step_matches_fts, search_storyline_step_matches_fts_in_columns,
-    search_storyline_steps_fts, story_runs_arrow_schema, story_runs_from_batch,
+    StorylineTableKind, StorylineTablePaths, story_runs_arrow_schema, story_runs_from_batch,
     story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch, story_steps_to_batch,
     story_tool_calls_arrow_schema, story_tool_calls_from_batch, story_tool_calls_to_batch,
-    storyline_steps_fts_available,
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_model::{

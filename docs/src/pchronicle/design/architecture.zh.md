@@ -24,7 +24,7 @@ mount 名、`@alias`、Directory 的 library 名都是 locator。解析完成后
 | 形态 | 用途 | 持久状态 |
 | --- | --- | --- |
 | 直接 Dataset | 检查本地路径或 S3 prefix | Dataset 外无状态 |
-| 原生 Dataset | 接收 canonical event 或 create-only import | Dataset manifest 与 version |
+| 原生 Dataset | 接收 canonical event 或 create/append/replace import | Dataset manifest 与 version |
 | 本地默认 Dataset | 为一个本地 root 省略 Dataset 参数 | 用户配置中的规范化路径 |
 | 只读 Warehouse | 为 Web/API review 静态挂载 path；可选 Directory 做 path ACL | 配置与可重建 cache |
 

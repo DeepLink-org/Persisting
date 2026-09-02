@@ -1,8 +1,203 @@
 use super::*;
 
+#[derive(Serialize)]
+struct DropResponse {
+    dataset_uri: String,
+    dropped: bool,
+}
+
+pub(super) async fn run_drop(
+    args: DropArgs,
+    settings_override: Option<&Path>,
+    stdin_is_terminal: bool,
+    stdin: &mut dyn Read,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    let dataset_uri = expand_dataset_reference(&args.dataset_uri, settings_override, false)?;
+    let mut location = DatasetLocation::parse(&dataset_uri)?;
+    if !location.exists().await? {
+        return Err(cli_boundary_error(
+            BoundaryCode::NotFound,
+            format!("Dataset does not exist: {}", location.as_str()),
+        ));
+    }
+    if location.local_path().is_some() {
+        location = location.into_existing()?;
+    }
+    confirm_destructive_dataset(
+        "drop",
+        location.as_str(),
+        args.yes,
+        stdin_is_terminal,
+        stdin,
+        stderr,
+    )?;
+    location.remove_all().await?;
+    let response = DropResponse {
+        dataset_uri: location.as_str().to_string(),
+        dropped: true,
+    };
+    serde_json::to_writer_pretty(&mut *stdout, &response).context("encode pChronicle drop JSON")?;
+    writeln!(stdout).context("write pChronicle drop JSON")?;
+    writeln!(
+        stderr,
+        "dataset_uri={} status=dropped",
+        response.dataset_uri
+    )
+    .context("write pChronicle drop metadata")?;
+    Ok(())
+}
+
+async fn prepare_import_destination(
+    args: &ImportArgs,
+    output_arg: &str,
+    stdin_is_terminal: bool,
+    stdin: &mut dyn Read,
+    stderr: &mut dyn Write,
+) -> Result<PreparedImportDestination> {
+    let parsed = DatasetLocation::parse(output_arg)?;
+    let exists = parsed.exists().await?;
+    match args.mode {
+        ImportMode::Create => {
+            if parsed.is_object_store() {
+                anyhow::ensure!(!exists, "import output already exists");
+                Ok(PreparedImportDestination {
+                    location: parsed,
+                    replace_existing: false,
+                })
+            } else {
+                Ok(PreparedImportDestination {
+                    location: parsed.into_create_target()?,
+                    replace_existing: false,
+                })
+            }
+        }
+        ImportMode::Append => {
+            if !exists {
+                return Err(cli_boundary_error(
+                    BoundaryCode::NotFound,
+                    format!("append target Dataset does not exist: {}", parsed.as_str()),
+                ));
+            }
+            let location = if parsed.local_path().is_some() {
+                parsed.into_existing()?
+            } else {
+                parsed
+            };
+            Ok(PreparedImportDestination {
+                location,
+                replace_existing: false,
+            })
+        }
+        ImportMode::Replace => {
+            if !exists {
+                return if parsed.is_object_store() {
+                    Ok(PreparedImportDestination {
+                        location: parsed,
+                        replace_existing: false,
+                    })
+                } else {
+                    Ok(PreparedImportDestination {
+                        location: parsed.into_create_target()?,
+                        replace_existing: false,
+                    })
+                };
+            }
+            anyhow::ensure!(
+                !parsed.is_object_store(),
+                "replace mode for an existing object-store Dataset is unsupported; use a new URI"
+            );
+            let existing = parsed.into_existing()?;
+            ensure_import_source_outside_destination(args, &existing)?;
+            confirm_destructive_dataset(
+                "replace",
+                existing.as_str(),
+                args.yes,
+                stdin_is_terminal,
+                stdin,
+                stderr,
+            )?;
+            Ok(PreparedImportDestination {
+                location: existing,
+                replace_existing: true,
+            })
+        }
+    }
+}
+
+struct PreparedImportDestination {
+    location: DatasetLocation,
+    replace_existing: bool,
+}
+
+fn ensure_import_source_outside_destination(
+    args: &ImportArgs,
+    destination: &DatasetLocation,
+) -> Result<()> {
+    let (Some(source), Some(target)) = (
+        (args.from != "-").then(|| Path::new(&args.from)),
+        destination.local_path(),
+    ) else {
+        return Ok(());
+    };
+    let source = std::fs::canonicalize(source).context("canonicalize replace import source")?;
+    anyhow::ensure!(
+        !source.starts_with(target),
+        "replace import source is inside the Dataset that would be replaced"
+    );
+    Ok(())
+}
+
+fn confirm_destructive_dataset(
+    action: &str,
+    dataset_uri: &str,
+    yes: bool,
+    stdin_is_terminal: bool,
+    stdin: &mut dyn Read,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    if yes {
+        return Ok(());
+    }
+    if !stdin_is_terminal {
+        return Err(cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            format!("{action} requires confirmation; rerun with --yes"),
+        ));
+    }
+    write!(
+        stderr,
+        "Permanently {action} Dataset '{dataset_uri}'? [y/N] "
+    )
+    .context("write Dataset confirmation prompt")?;
+    stderr
+        .flush()
+        .context("flush Dataset confirmation prompt")?;
+    let mut answer = Vec::new();
+    let mut byte = [0u8; 1];
+    while answer.len() <= 16 && stdin.read(&mut byte).context("read Dataset confirmation")? == 1 {
+        if byte[0] == b'\n' {
+            break;
+        }
+        answer.push(byte[0]);
+    }
+    let answer = std::str::from_utf8(&answer)
+        .context("Dataset confirmation is not UTF-8")?
+        .trim();
+    if matches!(answer.to_ascii_lowercase().as_str(), "y" | "yes") {
+        return Ok(());
+    }
+    Err(cli_boundary_error(
+        BoundaryCode::InvalidRequest,
+        format!("{action} cancelled"),
+    ))
+}
+
 pub(super) async fn run_import(
     mut args: ImportArgs,
     settings_override: Option<&Path>,
+    stdin_is_terminal: bool,
     stdin: &mut dyn Read,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
@@ -25,6 +220,18 @@ pub(super) async fn run_import(
             "stdin import requires an explicit --input-format"
         );
     }
+    anyhow::ensure!(
+        args.mode == ImportMode::Append || args.on_duplicate.is_none(),
+        "--on-duplicate is only valid with --mode append"
+    );
+    anyhow::ensure!(
+        args.mode == ImportMode::Replace || !args.yes,
+        "--yes is only valid with --mode replace"
+    );
+    anyhow::ensure!(
+        !(args.stream && args.mode == ImportMode::Replace && !args.yes),
+        "stdin replace import requires --yes because stdin carries the import data"
+    );
     if args.from != "-" {
         args.from = expand_dataset_reference(&args.from, settings_override, true)?;
     }
@@ -44,8 +251,38 @@ pub(super) async fn run_import(
     } else {
         None
     };
+    let output_arg = match args.output.as_deref() {
+        Some(output) => expand_dataset_reference(output, settings_override, false)?,
+        None => default_import_output(&args, settings_override)?,
+    };
+    let requested_destination = DatasetLocation::parse(&output_arg)?;
+    if canonical.is_none()
+        && requested_destination.is_object_store()
+        && args.output_format != Some(ImportOutputFormat::Storyline)
+    {
+        anyhow::ensure!(
+            args.mode == ImportMode::Append && args.output_format.is_none(),
+            "object-store import requires --output-format storyline"
+        );
+    }
+    let prepared =
+        prepare_import_destination(&args, &output_arg, stdin_is_terminal, stdin, stderr).await?;
+    let destination = prepared.location;
+    let replace_existing = prepared.replace_existing;
     if let Some(snapshot) = canonical {
-        return run_canonical_event_import(args, snapshot, settings_override, stdout, stderr).await;
+        anyhow::ensure!(
+            args.mode != ImportMode::Append,
+            "canonical event import does not support --mode append"
+        );
+        return run_canonical_event_import(
+            args,
+            snapshot,
+            destination,
+            replace_existing,
+            stdout,
+            stderr,
+        )
+        .await;
     }
     let input_path = (!args.stream).then(|| Path::new(&args.from));
     let (directory_input, candidates) = if let Some(input_path) = input_path {
@@ -53,20 +290,57 @@ pub(super) async fn run_import(
     } else {
         (false, Vec::new())
     };
-    let output_arg = match args.output.as_deref() {
-        Some(output) => expand_dataset_reference(output, settings_override, false)?,
-        None => default_import_output(&args, settings_override)?,
-    };
-    let destination = DatasetLocation::parse(&output_arg)?.into_create_target()?;
-    if destination.is_object_store() && args.output_format != Some(ImportOutputFormat::Storyline) {
-        return Err(anyhow!(
-            "object-store import requires --output-format storyline"
-        ));
-    }
-    let output_format = args.output_format.unwrap_or(ImportOutputFormat::Preserve);
-    let (dataset_uri, imported_sources, unknown_field_warnings, skipped_warnings) = if destination
-        .is_object_store()
+    anyhow::ensure!(
+        args.mode != ImportMode::Append || args.output_format != Some(ImportOutputFormat::Preserve),
+        "append import requires --output-format storyline (or omit it)"
+    );
+    let output_format = args
+        .output_format
+        .unwrap_or(if args.mode == ImportMode::Append {
+            ImportOutputFormat::Storyline
+        } else {
+            ImportOutputFormat::Preserve
+        });
+    let duplicate_policy = args.on_duplicate.unwrap_or(DuplicateIdPolicy::Suffix);
+    let (dataset_uri, imported_sources, unknown_field_warnings, skipped_warnings) = if args.mode
+        == ImportMode::Append
     {
+        let store = StorylineLanceStore::open_uri(destination.as_str())
+            .await
+            .context("open append target as a Storyline Lance Dataset")?;
+        anyhow::ensure!(
+            store.current_table_paths().await?.is_some(),
+            "append target is not a committed Storyline Dataset"
+        );
+        let (append_generation, existing_document_ids) = store
+            .document_ids_snapshot()
+            .await?
+            .context("append target has no committed Storyline snapshot")?;
+        let existing_document_ids = existing_document_ids.into_iter().collect();
+        let (imported_sources, unknown_field_warnings, skipped_warnings) =
+            squash_storyline_into_store(
+                &store,
+                &args,
+                stdin,
+                stderr,
+                &candidates,
+                StorylineImportOptions {
+                    max_input_bytes,
+                    directory_input,
+                    seen_document_ids: existing_document_ids,
+                    duplicate_policy,
+                    allow_empty: true,
+                    append_generation: Some(append_generation),
+                },
+            )
+            .await?;
+        (
+            destination.as_str().to_string(),
+            imported_sources,
+            unknown_field_warnings,
+            skipped_warnings,
+        )
+    } else if destination.is_object_store() {
         if destination.exists().await? {
             return Err(cli_boundary_error(
                 BoundaryCode::Conflict,
@@ -80,11 +354,10 @@ pub(super) async fn run_import(
             squash_storyline_into_store(
                 &store,
                 &args,
-                max_input_bytes,
                 stdin,
                 stderr,
-                directory_input,
                 &candidates,
+                StorylineImportOptions::create(max_input_bytes, directory_input),
             )
             .await?;
         (
@@ -182,27 +455,25 @@ pub(super) async fn run_import(
                 squash_storyline_into_store(
                     &store,
                     &args,
-                    max_input_bytes,
                     stdin,
                     stderr,
-                    directory_input,
                     &candidates,
+                    StorylineImportOptions::create(max_input_bytes, directory_input),
                 )
                 .await?
             }
         };
+        if imported_sources.is_empty() {
+            return Err(empty_auto_directory_import_error(directory_input));
+        }
+
         std::fs::File::open(staging.path())
             .and_then(|directory| directory.sync_all())
             .context("sync import staging directory")?;
 
         let staging_path = staging.keep();
-        let mut cleanup = PublishedPathGuard::new(staging_path.clone());
-        rename_noreplace(&staging_path, &output)
-            .with_context(|| format!("publish new Dataset {}", output.display()))?;
-        cleanup.track(output.clone());
-        std::fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .with_context(|| format!("sync Dataset parent {}", parent.display()))?;
+        let mut cleanup = StagingPathGuard::new(staging_path.clone());
+        publish_staged_dataset(&staging_path, &output, replace_existing)?;
         cleanup.disarm();
         (
             output.to_string_lossy().into_owned(),
@@ -280,25 +551,85 @@ pub(super) async fn run_import(
     Ok(())
 }
 
+struct StorylineImportOptions {
+    max_input_bytes: usize,
+    directory_input: bool,
+    seen_document_ids: HashSet<String>,
+    duplicate_policy: DuplicateIdPolicy,
+    allow_empty: bool,
+    append_generation: Option<String>,
+}
+
+impl StorylineImportOptions {
+    fn create(max_input_bytes: usize, directory_input: bool) -> Self {
+        Self {
+            max_input_bytes,
+            directory_input,
+            seen_document_ids: HashSet::new(),
+            duplicate_policy: DuplicateIdPolicy::Suffix,
+            allow_empty: false,
+            append_generation: None,
+        }
+    }
+}
+
 async fn squash_storyline_into_store(
     store: &StorylineLanceStore,
     args: &ImportArgs,
-    max_input_bytes: usize,
     stdin: &mut dyn Read,
     stderr: &mut dyn Write,
-    directory_input: bool,
     candidates: &[ImportFileCandidate],
+    options: StorylineImportOptions,
 ) -> Result<(
     Vec<ImportedSource>,
     persisting_pchronicle::model::UnknownFieldImportWarnings,
     Vec<String>,
 )> {
+    let StorylineImportOptions {
+        max_input_bytes,
+        directory_input,
+        seen_document_ids,
+        duplicate_policy,
+        allow_empty,
+        append_generation,
+    } = options;
     let mut import = if args.stream {
-        StorylineImportIterator::stdin(args.format, max_input_bytes, stdin, stderr)
+        StorylineImportIterator::stdin(
+            args.format,
+            max_input_bytes,
+            stdin,
+            stderr,
+            seen_document_ids,
+            duplicate_policy,
+        )
     } else {
-        StorylineImportIterator::files(args.format, max_input_bytes, candidates, stderr)
+        StorylineImportIterator::files(
+            args.format,
+            max_input_bytes,
+            candidates,
+            stderr,
+            seen_document_ids,
+            duplicate_policy,
+        )
     };
-    let report = store.replace_storyline_stream(&mut import).await?;
+    let report_storylines = match import.next() {
+        Some(first) => match append_generation.as_deref() {
+            Some(generation) => {
+                store
+                    .append_storyline_stream(std::iter::once(first).chain(&mut import), generation)
+                    .await?
+                    .storylines
+            }
+            None => {
+                store
+                    .replace_storyline_stream(std::iter::once(first).chain(&mut import))
+                    .await?
+                    .storylines
+            }
+        },
+        None if allow_empty => 0,
+        None => return Err(empty_auto_directory_import_error(directory_input)),
+    };
     let (imported_sources, unknown_field_warnings, skipped_warnings) = import.into_result_parts();
     if imported_sources.is_empty() {
         return Err(empty_auto_directory_import_error(directory_input));
@@ -313,7 +644,7 @@ async fn squash_storyline_into_store(
             .context("import trajectory count overflow")
     })?;
     anyhow::ensure!(
-        report.storylines == imported_trajectories,
+        report_storylines == imported_trajectories,
         "squashed Storyline import report does not match decoded trajectory count"
     );
     Ok((imported_sources, unknown_field_warnings, skipped_warnings))
@@ -322,7 +653,8 @@ async fn squash_storyline_into_store(
 async fn run_canonical_event_import(
     args: ImportArgs,
     _snapshot: EventFactSnapshot,
-    settings_override: Option<&Path>,
+    destination: DatasetLocation,
+    replace_existing: bool,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
@@ -334,12 +666,7 @@ async fn run_canonical_event_import(
         args.output_format != Some(ImportOutputFormat::Preserve),
         "canonical event import cannot preserve an existing canonical event Store"
     );
-    let output_arg = match args.output.as_deref() {
-        Some(output) => expand_dataset_reference(output, settings_override, false)?,
-        None => default_import_output(&args, settings_override)?,
-    };
-    let destination = DatasetLocation::parse(&output_arg)?.into_create_target()?;
-    if destination.exists().await? {
+    if destination.exists().await? && !replace_existing {
         return Err(cli_boundary_error(
             BoundaryCode::Conflict,
             "import output already exists",
@@ -347,15 +674,50 @@ async fn run_canonical_event_import(
     }
     let output_uri = destination.as_str().to_string();
 
-    let report = match build_storyline_projection(&args.from, &output_uri, "events.lance").await? {
-        StorylineProjectionBuildOutcome::Built(report) => report,
-        StorylineProjectionBuildOutcome::OutputNotEmpty => {
-            return Err(cli_boundary_error(
-                BoundaryCode::Conflict,
-                "import output already exists",
-            ));
-        }
+    let (report, staged_path) = if replace_existing {
+        let output = destination
+            .local_path()
+            .context("replace import output must be a local Dataset path")?;
+        let parent = output
+            .parent()
+            .context("replace import output must have a parent directory")?;
+        let staging = tempfile::Builder::new()
+            .prefix(".pchronicle-import-")
+            .tempdir_in(parent)
+            .with_context(|| format!("create import staging directory in {}", parent.display()))?;
+        let staging_uri = staging.path().to_string_lossy().into_owned();
+        let report =
+            match build_storyline_projection(&args.from, &staging_uri, "events.lance").await? {
+                StorylineProjectionBuildOutcome::Built(report) => report,
+                StorylineProjectionBuildOutcome::OutputNotEmpty => {
+                    return Err(cli_boundary_error(
+                        BoundaryCode::Conflict,
+                        "import staging Dataset already exists",
+                    ));
+                }
+            };
+        std::fs::File::open(staging.path())
+            .and_then(|directory| directory.sync_all())
+            .context("sync import staging directory")?;
+        (report, Some((staging.keep(), output.to_path_buf())))
+    } else {
+        let report =
+            match build_storyline_projection(&args.from, &output_uri, "events.lance").await? {
+                StorylineProjectionBuildOutcome::Built(report) => report,
+                StorylineProjectionBuildOutcome::OutputNotEmpty => {
+                    return Err(cli_boundary_error(
+                        BoundaryCode::Conflict,
+                        "import output already exists",
+                    ));
+                }
+            };
+        (report, None)
     };
+    if let Some((staging_path, output)) = staged_path {
+        let mut cleanup = StagingPathGuard::new(staging_path.clone());
+        publish_staged_dataset(&staging_path, &output, true)?;
+        cleanup.disarm();
+    }
     let response = ImportResponse {
         dataset_uri: output_uri,
         source_path: Some("events.lance".into()),
@@ -904,6 +1266,7 @@ struct StorylineImportIterator<'a> {
     unknown_field_warnings: persisting_pchronicle::model::UnknownFieldImportWarnings,
     skipped_warnings: Vec<String>,
     seen_document_ids: HashSet<String>,
+    duplicate_policy: DuplicateIdPolicy,
     failed: bool,
 }
 
@@ -913,6 +1276,8 @@ impl<'a> StorylineImportIterator<'a> {
         max_input_bytes: usize,
         stdin: &'a mut dyn Read,
         progress: &'a mut dyn Write,
+        seen_document_ids: HashSet<String>,
+        duplicate_policy: DuplicateIdPolicy,
     ) -> Self {
         Self {
             requested_format,
@@ -924,7 +1289,8 @@ impl<'a> StorylineImportIterator<'a> {
             unknown_field_warnings:
                 persisting_pchronicle::model::UnknownFieldImportWarnings::default(),
             skipped_warnings: Vec::new(),
-            seen_document_ids: HashSet::new(),
+            seen_document_ids,
+            duplicate_policy,
             failed: false,
         }
     }
@@ -934,6 +1300,8 @@ impl<'a> StorylineImportIterator<'a> {
         max_input_bytes: usize,
         candidates: &'a [ImportFileCandidate],
         progress: &'a mut dyn Write,
+        seen_document_ids: HashSet<String>,
+        duplicate_policy: DuplicateIdPolicy,
     ) -> Self {
         Self {
             requested_format,
@@ -948,7 +1316,8 @@ impl<'a> StorylineImportIterator<'a> {
             unknown_field_warnings:
                 persisting_pchronicle::model::UnknownFieldImportWarnings::default(),
             skipped_warnings: Vec::new(),
-            seen_document_ids: HashSet::new(),
+            seen_document_ids,
+            duplicate_policy,
             failed: false,
         }
     }
@@ -1044,13 +1413,35 @@ impl Iterator for StorylineImportIterator<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if let Some(mut storyline) = self.current.next() {
-                if let Some((original, renamed)) =
-                    uniquify_storyline_document_id(&mut storyline, &mut self.seen_document_ids)
-                {
-                    self.skipped_warnings.push(format!(
-                        "warning: duplicate document_id '{original}' renamed to '{renamed}'"
-                    ));
+                let original = storyline.document_id().to_string();
+                match self.duplicate_policy {
+                    DuplicateIdPolicy::Suffix => {
+                        if let Some((original, renamed)) = uniquify_storyline_document_id(
+                            &mut storyline,
+                            &mut self.seen_document_ids,
+                        ) {
+                            self.skipped_warnings.push(format!(
+                                "warning: duplicate document_id '{original}' renamed to '{renamed}'"
+                            ));
+                        }
+                    }
+                    DuplicateIdPolicy::Skip => {
+                        if !self.seen_document_ids.insert(original.clone()) {
+                            self.skipped_warnings.push(format!(
+                                "warning: duplicate document_id '{original}' skipped"
+                            ));
+                            continue;
+                        }
+                    }
                 }
+                let metadata = self
+                    .imported_sources
+                    .last_mut()
+                    .expect("decoded Storyline has source metadata");
+                metadata.trajectories = metadata
+                    .trajectories
+                    .checked_add(1)
+                    .expect("import trajectory count overflow");
                 return Some(Ok(storyline));
             }
             if self.failed {
@@ -1058,7 +1449,9 @@ impl Iterator for StorylineImportIterator<'_> {
             }
             match self.decode_next_source() {
                 Ok(Some(decoded)) => {
-                    self.imported_sources.push(decoded.metadata);
+                    let mut metadata = decoded.metadata;
+                    metadata.trajectories = 0;
+                    self.imported_sources.push(metadata);
                     self.current = decoded.storylines.into_iter();
                 }
                 Ok(None) => return None,
@@ -1428,11 +1821,11 @@ pub(super) async fn validate_import_source(format: ExchangeFormat, path: &Path) 
     Ok(document_count)
 }
 
-struct PublishedPathGuard {
+struct StagingPathGuard {
     path: Option<PathBuf>,
 }
 
-impl PublishedPathGuard {
+impl StagingPathGuard {
     fn new(path: PathBuf) -> Self {
         Self { path: Some(path) }
     }
@@ -1440,18 +1833,74 @@ impl PublishedPathGuard {
     fn disarm(&mut self) {
         self.path = None;
     }
-
-    fn track(&mut self, path: PathBuf) {
-        self.path = Some(path);
-    }
 }
 
-impl Drop for PublishedPathGuard {
+impl Drop for StagingPathGuard {
     fn drop(&mut self) {
         if let Some(path) = &self.path {
             let _ = std::fs::remove_dir_all(path);
         }
     }
+}
+
+fn publish_staged_dataset(staging: &Path, output: &Path, replace_existing: bool) -> Result<()> {
+    let parent = output
+        .parent()
+        .context("Dataset output must have a parent directory")?;
+    if !replace_existing {
+        rename_noreplace(staging, output)
+            .with_context(|| format!("publish new Dataset {}", output.display()))?;
+        sync_dataset_parent(parent)?;
+        return Ok(());
+    }
+
+    let backup = parent.join(format!(
+        ".pchronicle-replace-{}-{}",
+        output
+            .file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_else(|| std::borrow::Cow::Borrowed("dataset")),
+        uuid::Uuid::new_v4().simple()
+    ));
+    rename_noreplace(output, &backup)
+        .with_context(|| format!("move existing Dataset to {}", backup.display()))?;
+    if let Err(error) = sync_dataset_parent(parent) {
+        return Err(rollback_replacement(output, &backup, error));
+    }
+    if let Err(error) = rename_noreplace(staging, output)
+        .with_context(|| format!("publish replacement Dataset {}", output.display()))
+    {
+        return Err(rollback_replacement(output, &backup, error));
+    }
+    sync_dataset_parent(parent).with_context(|| {
+        format!(
+            "sync replacement Dataset parent {}; old Dataset remains at {}",
+            parent.display(),
+            backup.display()
+        )
+    })?;
+    std::fs::remove_dir_all(&backup)
+        .with_context(|| format!("delete replaced Dataset backup {}", backup.display()))?;
+    sync_dataset_parent(parent)?;
+    Ok(())
+}
+
+fn rollback_replacement(output: &Path, backup: &Path, error: anyhow::Error) -> anyhow::Error {
+    match rename_noreplace(backup, output) {
+        Ok(()) => error,
+        Err(rollback_error) => anyhow!(
+            "{error}; failed to restore old Dataset from {} to {}: {rollback_error}",
+            backup.display(),
+            output.display()
+        ),
+    }
+}
+
+fn sync_dataset_parent(parent: &Path) -> Result<()> {
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| format!("sync Dataset parent {}", parent.display()))?;
+    Ok(())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

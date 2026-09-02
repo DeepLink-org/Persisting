@@ -12,6 +12,9 @@ use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::query::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, QuerySnapshot,
 };
+use persisting_pchronicle::search::{
+    search_storyline_step_matches_fts_in_columns, storyline_steps_fts_available,
+};
 use persisting_pchronicle::storage::StorylineLanceStore;
 
 mod support;
@@ -348,6 +351,22 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
     assert!(
         zh_fts_batch.num_rows() > 0,
         "bundled Jieba tokenizer returned no Chinese matches"
+    );
+
+    assert!(storyline_steps_fts_available(&paths).await?);
+    let search_hits =
+        search_storyline_step_matches_fts_in_columns(&paths, "deterministic", &["message_value"])
+            .await?;
+    assert!(!search_hits.is_empty());
+    assert_eq!(
+        persisting_pchronicle::storage::search_storyline_step_matches_fts_in_columns(
+            &paths,
+            "deterministic",
+            &["message_value"],
+        )
+        .await?,
+        search_hits,
+        "storage compatibility export must use the search kernel"
     );
 
     // A registered datasource remains a consistent snapshot after CURRENT moves.

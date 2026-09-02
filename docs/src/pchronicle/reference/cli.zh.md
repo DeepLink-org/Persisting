@@ -265,7 +265,9 @@ pchronicle analysis tools @prod --format csv --limit 20
 
 ```text
 pchronicle import -f|--from SOURCE -t|--to NEW_DATASET
-  [-i|--input-format FORMAT] [-o|--output-format preserve|storyline] [--max-input-bytes BYTES]
+  [-i|--input-format FORMAT] [-o|--output-format preserve|storyline]
+  [--mode create|append|replace] [--on-duplicate suffix|skip] [--yes]
+  [--max-input-bytes BYTES]
 ```
 
 ```bash
@@ -275,6 +277,10 @@ pchronicle import \
   -f ./corpus \
   -t s3://bucket/normalized \
   -o storyline
+pchronicle import \
+  -f more.json -t ./normalized --mode append --on-duplicate skip
+pchronicle import \
+  -f rebuilt.json -t ./normalized --mode replace --yes
 ```
 
 长参数分别是 `--from`、`--to`、`--input-format` 和 `--output-format`。短 option 始终只有一个字符，
@@ -292,9 +298,21 @@ pchronicle import \
 | `claude-code` | 是 | 否 |
 
 Codex 和 Claude Code session 是 decode-only 输入格式。Canonical Event Store 会自动识别并投影为
-Storyline Dataset。导入目标必须是新 Dataset；任一必要输入失败时，最终目标不会发布。
+Storyline Dataset。默认 `create` 模式要求目标不存在。`append` 要求目标是已有 Storyline Dataset；
+重复 `document_id` 默认增加 `#N` 后缀，也可用 `--on-duplicate skip` 跳过。`replace` 会先将完整导入
+写入临时路径，再将旧本地 Dataset rename 到备份路径、将新 Dataset rename 到正式路径，确认新路径
+发布后才删除备份；因此必须交互确认或传入 `--yes`。已有对象存储 Dataset 当前不支持原地 replace。
 
-### 2.10 `export`
+### 2.10 `drop`
+
+```text
+pchronicle drop DATASET [--yes]
+```
+
+`drop` 永久删除本地 Dataset 目录或对象存储前缀。默认要求交互确认，`--yes` 可跳过确认；命令会
+拒绝删除文件系统根目录或整个对象存储 bucket。
+
+### 2.11 `export`
 
 ```text
 pchronicle export -f|--from DATASET -t|--to TARGET -o|--output-format FORMAT
@@ -315,7 +333,7 @@ pchronicle export \
 原始 exchange document，失败时不产生部分输出。文件和对象存储输出默认 create-only，只有显式
 `--overwrite` 才允许原子替换。
 
-### 2.11 `agent`
+### 2.12 `agent`
 
 ```text
 pchronicle agent <codex|claude> [DATASET]
@@ -331,7 +349,7 @@ pchronicle agent claude @prod --ask '比较模型延迟'
 overview。问题也可以通过 `--ask-file` 从文件或 stdin 读取，`--dry-run` 用于预览启动内容。
 Agent 注入是行为引导，不是 filesystem、network 或 tool permission 沙箱。
 
-### 2.12 `serve`
+### 2.13 `serve`
 
 ```text
 pchronicle serve

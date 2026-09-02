@@ -1,4 +1,4 @@
-//! Parser for the unified `pchronicle find --match` expression.
+//! Parser and syntax tree for the unified `pchronicle find --match` expression.
 
 use anyhow::{Result, bail};
 use serde_json::Value;

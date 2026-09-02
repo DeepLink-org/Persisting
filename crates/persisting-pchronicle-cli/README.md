@@ -15,8 +15,8 @@ or isolate Agent Runs (pVisor / pPilot).
 
 Current commands include `onboard`, `default`, `alias`, `ls`/`list`, `status`,
 bounded read-only `query`, built-in `analysis`, assisted `agent` sessions,
-Source-local `find`, create-only `import`, complete-trajectory `export`,
-`echo`, and loopback-only `serve`. Import and export support ATIF, OpenAI
+Source-local `find`, create/append/replace `import`, destructive `drop`,
+complete-trajectory `export`, `echo`, and loopback-only `serve`. Import and export support ATIF, OpenAI
 Messages, ACTF, and Storyline JSON.
 
 `pchronicle serve --control 127.0.0.1:0 URI` is normally launched by pPilot or
