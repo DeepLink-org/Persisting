@@ -158,16 +158,34 @@ pchronicle analysis tools @prod --format csv --limit 20
 ```text
 pchronicle import -f|--from SOURCE -t|--to NEW_DATASET
   [-i|--input-format auto|atif|actf|openai-messages|storyline|codex|claude-code]
-  [-o|--output-format preserve|storyline] [OPTIONS]
+  [-o|--output-format preserve|storyline]
+  [--mode create|append|replace] [--on-duplicate suffix|skip] [--yes] [OPTIONS]
 ```
 
 ```bash
 pchronicle import -f input.json -t ./imported -i atif
 cat input.json | pchronicle import -f - -t ./imported -i openai-messages
+pchronicle import -f more.json -t ./normalized --mode append --on-duplicate skip
+pchronicle import -f rebuilt.json -t ./normalized --mode replace --yes
 ```
 
-`-` means stdin. Import is create-only and publishes the destination only after
-the selected operation succeeds.
+`-` means stdin. `create` is the default and requires a new destination.
+`append` requires an existing Storyline Dataset and either suffixes colliding
+`document_id` values with `#N` (the default) or skips them. `replace` moves the
+old local Dataset aside, publishes the fully imported Dataset with a rename
+transaction, and only then removes the old data. It requires interactive
+confirmation or `--yes`; an existing object-store Dataset cannot currently be
+replaced in place.
+
+### Drop
+
+```text
+pchronicle drop DATASET [--yes]
+```
+
+Drop permanently removes a local Dataset directory or object-store prefix. It
+requires interactive confirmation unless `--yes` is supplied and refuses
+filesystem roots or whole object-store buckets.
 
 ### Export
 

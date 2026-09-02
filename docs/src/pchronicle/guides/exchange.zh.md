@@ -1,6 +1,6 @@
 # 导入与导出 Run
 
-Import 和 export 位于互操作边界。Import 创建新 Dataset；export 从已有 Dataset 读取完整 Run。
+Import 和 export 位于互操作边界。Import 可以创建、追加或替换 Dataset；export 从已有 Dataset 读取完整 Run。
 Import 与 export 均接受 ATIF、ACTF、OpenAI Messages 和 Storyline JSON。
 Import 还接受仅解码的 Codex（`codex`）与 Claude Code（`claude-code`）会话 JSONL；
 export 拒绝这两种格式。
@@ -12,8 +12,11 @@ pchronicle import --from input.json \
   --to ./imported --input-format atif
 ```
 
-目标是 create-only。已有目标会被拒绝，而不是静默 append 或 replace。普通文件可以自动
-识别。目录输入会递归扫描 `.json`、`.jsonl` 与 `.ndjson` 文件；默认输出会保留其相对
+默认 `--mode create` 会拒绝已有目标。`--mode append` 用于已有 Storyline Dataset；重复
+`document_id` 默认增加 `#N` 后缀，也可用 `--on-duplicate skip` 跳过。`--mode replace` 会先
+把完整导入写入临时路径，确认后以 rename 事务替换已有的本地 Dataset，最后才删除旧数据；要求
+交互确认或 `--yes`。已有对象存储 Dataset 当前不支持原地 replace。普通文件可以自动识别。目录输入会递归扫描
+`.json`、`.jsonl` 与 `.ndjson` 文件；默认输出会保留其相对
 路径。未指定 `--input-format` 时按文件分别探测类型；无法识别为运行数据格式的 JSON 会跳过并警告：
 
 ```bash
@@ -37,7 +40,7 @@ Storyline Lance：
 pchronicle import --from ./run/events.lance --to ./run/storyline
 ```
 
-此模式接受本地和 object-store URI，不修改源，并拒绝已有目标。JSON 结果报告
+此模式接受本地和 object-store URI，不修改源，支持 create 或经确认的 replace（不支持 append）。JSON 结果报告
 `format: "events"`、`output_format: "storyline-lance"` 和 `fact_rows`，不包含
 `input_bytes`。canonical events 不接受显式 `--output-format preserve` 或 JSON exchange
 `--input-format`。
@@ -49,9 +52,9 @@ pchronicle query ./normalized \
   --sql 'SELECT _file_, COUNT(*) AS runs FROM dataset.runs GROUP BY _file_'
 ```
 
-所有输入的 `document_id` 与 `session_id` 必须分别全局唯一；冲突会使整次导入失败，并报告
-两个原始路径。成功的 Storyline Store 不把这些路径保存为可查询的来源信息。需要保留
-文件边界时应使用默认的 preserve 输出。
+Storyline 输出中的 `document_id` 全局唯一；冲突时会确定性地增加 `#N` 后缀，append 也可用
+`--on-duplicate skip` 跳过。成功的 Storyline Store 不把来源路径保存为可查询信息。需要保留
+文件边界时应使用 preserve 输出。
 
 ATIF `.jsonl` 与 `.ndjson` 输入会逐条解码其中的非空记录。递归扫描目录时会跳过软链接；
 若 `--from` 显式指定一个指向普通文件的软链接，则仍按单文件导入。只有所有输入和所选

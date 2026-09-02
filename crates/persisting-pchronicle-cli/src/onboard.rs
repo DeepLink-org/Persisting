@@ -7,9 +7,9 @@ use clap::{Args, Subcommand};
 
 use super::{
     AnalysisArgs, AnalysisCommand, AnalysisOptions, DefaultArgs, DefaultCommand, ErrorMode,
-    ExchangeFormat, ExportArgs, ExportFormat, FindArgs, ImportArgs, ImportOutputFormat, ListArgs,
-    OutputFormat, QueryArgs, QueryOutputFormat, StatusArgs, run_analysis, run_default, run_export,
-    run_find, run_import, run_list, run_query, run_status,
+    ExchangeFormat, ExportArgs, ExportFormat, FindArgs, ImportArgs, ImportMode, ImportOutputFormat,
+    ListArgs, OutputFormat, QueryArgs, QueryOutputFormat, StatusArgs, run_analysis, run_default,
+    run_export, run_find, run_import, run_list, run_query, run_status,
 };
 
 const DEMO_ATIF: &str = include_str!("../assets/onboard/support-ticket.json");
@@ -514,7 +514,7 @@ async fn render_exchange(
     }
     renderer.render(&command_section(
         "Exchange · 导入",
-        "导入是 create-only，来源和目标都显式写在命令中。保留布局适合严格往返和审计原始来源。",
+        "导入默认使用安全的 create 模式，来源和目标都显式写在命令中。保留布局适合严格往返和审计原始来源；已有 Storyline Dataset 可显式选择 append 或 replace。",
         "pchronicle import --from ./support-ticket.json --to ./trajectory-data/support-ticket --input-format atif",
         &exchange.import_output,
     ))?;
@@ -804,10 +804,14 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
             ),
             format: ExchangeFormat::Atif,
             output_format: Some(ImportOutputFormat::Preserve),
+            mode: ImportMode::Create,
+            on_duplicate: None,
+            yes: false,
             stream: false,
             max_input_bytes: None,
         },
         Some(&settings),
+        false,
         &mut empty_stdin,
         &mut import_stdout,
         &mut import_stderr,
@@ -827,10 +831,14 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
             output: Some(storyline_output.to_string_lossy().into_owned()),
             format: ExchangeFormat::Atif,
             output_format: Some(ImportOutputFormat::Storyline),
+            mode: ImportMode::Create,
+            on_duplicate: None,
+            yes: false,
             stream: false,
             max_input_bytes: None,
         },
         Some(&settings),
+        false,
         &mut std::io::empty(),
         &mut storyline_stdout,
         &mut storyline_stderr,

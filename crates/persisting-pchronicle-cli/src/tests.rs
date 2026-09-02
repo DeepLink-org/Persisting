@@ -282,7 +282,7 @@ fn command_tree_contains_the_product_commands() {
         names,
         [
             "onboard", "default", "alias", "ls", "status", "query", "analysis", "agent", "find",
-            "import", "export", "echo", "dev", "serve",
+            "import", "drop", "export", "echo", "dev", "serve",
         ]
     );
     let ls = command
@@ -389,6 +389,34 @@ fn canonical_parser_surface_matches_the_cli_guide() -> Result<()> {
     assert_eq!(import.output.as_deref(), Some("./imported"));
     assert_eq!(import.format, ExchangeFormat::Atif);
     assert_eq!(import.output_format, Some(ImportOutputFormat::Preserve));
+    assert_eq!(import.mode, ImportMode::Create);
+    assert_eq!(import.on_duplicate, None);
+    assert!(!import.yes);
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "-f",
+        "input.json",
+        "-t",
+        "./imported",
+        "--mode",
+        "append",
+        "--on-duplicate",
+        "skip",
+    ])?;
+    let Command::Import(import) = cli.command else {
+        panic!("expected import command")
+    };
+    assert_eq!(import.mode, ImportMode::Append);
+    assert_eq!(import.on_duplicate, Some(DuplicateIdPolicy::Skip));
+
+    let cli = Cli::try_parse_from(["pchronicle", "drop", "./imported", "--yes"])?;
+    let Command::Drop(drop) = cli.command else {
+        panic!("expected drop command")
+    };
+    assert_eq!(drop.dataset_uri, "./imported");
+    assert!(drop.yes);
 
     assert!(Cli::try_parse_from(["pchronicle", "export", "-t", "-", "-o", "storyline"]).is_err());
     assert!(
@@ -2702,6 +2730,219 @@ async fn directory_storyline_import_renames_duplicate_document_ids() -> Result<(
         .map(|row| row["document_id"].as_str().unwrap_or_default())
         .collect::<Vec<_>>();
     assert_eq!(ids, ["Energy_001", "Energy_001#1"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn append_storyline_import_suffixes_or_skips_existing_document_ids() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let initial = temp.path().join("initial.json");
+    let duplicate = temp.path().join("duplicate.json");
+    let output = temp.path().join("dataset");
+    fs::write(
+        &initial,
+        serde_json::to_vec(&atif_identity_document("shared", "session-initial"))?,
+    )?;
+    fs::write(
+        &duplicate,
+        serde_json::to_vec(&atif_identity_document("shared", "session-duplicate"))?,
+    )?;
+
+    let create = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        initial.to_str().unwrap(),
+        "--to",
+        output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+    ])?;
+    run(create, false, &mut Vec::new(), &mut Vec::new()).await?;
+
+    let append = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        duplicate.to_str().unwrap(),
+        "--to",
+        output.to_str().unwrap(),
+        "--mode",
+        "append",
+    ])?;
+    let mut append_stdout = Vec::new();
+    let mut append_stderr = Vec::new();
+    run(append, false, &mut append_stdout, &mut append_stderr).await?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&append_stdout)?["trajectories"],
+        1
+    );
+    assert!(String::from_utf8(append_stderr)?.contains("renamed to 'shared#1'"));
+
+    let skip = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        duplicate.to_str().unwrap(),
+        "--to",
+        output.to_str().unwrap(),
+        "--mode",
+        "append",
+        "--on-duplicate",
+        "skip",
+    ])?;
+    let mut skip_stdout = Vec::new();
+    let mut skip_stderr = Vec::new();
+    run(skip, false, &mut skip_stdout, &mut skip_stderr).await?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&skip_stdout)?["trajectories"],
+        0
+    );
+    assert!(String::from_utf8(skip_stderr)?.contains("document_id 'shared' skipped"));
+
+    let query = Cli::try_parse_from([
+        "pchronicle",
+        "query",
+        output.to_str().unwrap(),
+        "SELECT document_id FROM dataset.runs ORDER BY document_id",
+        "--format",
+        "jsonl",
+    ])?;
+    let mut query_stdout = Vec::new();
+    run(query, false, &mut query_stdout, &mut Vec::new()).await?;
+    let ids = query_stdout
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(serde_json::from_slice::<Value>)
+        .collect::<serde_json::Result<Vec<_>>>()?
+        .into_iter()
+        .map(|row| row["document_id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["shared", "shared#1"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn replace_and_drop_require_confirmation_and_accept_yes() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("replacement.json");
+    let output = temp.path().join("dataset");
+    fs::write(
+        &input,
+        serde_json::to_vec(&atif_identity_document(
+            "replacement",
+            "replacement-session",
+        ))?,
+    )?;
+    fs::create_dir(&output)?;
+    fs::write(output.join("old.marker"), "old")?;
+
+    let replace_without_yes = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--to",
+        output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+        "--mode",
+        "replace",
+    ])?;
+    let error = run(replace_without_yes, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("rerun with --yes"));
+    assert!(output.join("old.marker").exists());
+
+    fs::write(&input, b"not valid JSON")?;
+    let failed_replace = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--to",
+        output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+        "--mode",
+        "replace",
+        "--yes",
+    ])?;
+    assert!(
+        run(failed_replace, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .is_err()
+    );
+    assert!(output.join("old.marker").exists());
+
+    fs::write(
+        &input,
+        serde_json::to_vec(&atif_identity_document(
+            "replacement",
+            "replacement-session",
+        ))?,
+    )?;
+    let replace = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--to",
+        output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+        "--mode",
+        "replace",
+        "--yes",
+    ])?;
+    run(replace, false, &mut Vec::new(), &mut Vec::new()).await?;
+    assert!(output.join("CURRENT").is_file());
+    assert!(!output.join("old.marker").exists());
+    assert!(!temp.path().read_dir()?.any(|entry| {
+        entry.ok().is_some_and(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".pchronicle-replace-")
+        })
+    }));
+
+    let drop_without_yes = Cli::try_parse_from(["pchronicle", "drop", output.to_str().unwrap()])?;
+    let error = run(drop_without_yes, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("rerun with --yes"));
+    assert!(output.exists());
+
+    let drop = Cli::try_parse_from(["pchronicle", "drop", output.to_str().unwrap(), "--yes"])?;
+    let mut stdout = Vec::new();
+    run(drop, false, &mut stdout, &mut Vec::new()).await?;
+    assert_eq!(serde_json::from_slice::<Value>(&stdout)?["dropped"], true);
+    assert!(!output.exists());
+
+    fs::create_dir(&output)?;
+    fs::write(output.join("interactive.marker"), "interactive")?;
+    let interactive_drop = Cli::try_parse_from([
+        "pchronicle",
+        "--log-level",
+        "error",
+        "drop",
+        output.to_str().unwrap(),
+    ])?;
+    let mut confirmation = std::io::Cursor::new(b"yes\n".to_vec());
+    let mut prompt = Vec::new();
+    run_with_stdio(
+        interactive_drop,
+        true,
+        false,
+        &mut confirmation,
+        &mut Vec::new(),
+        &mut prompt,
+    )
+    .await?;
+    assert!(String::from_utf8(prompt)?.contains("Permanently drop Dataset"));
+    assert!(!output.exists());
     Ok(())
 }
 

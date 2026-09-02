@@ -420,6 +420,10 @@ async fn streaming_jsonl_matches_collected_jsonl() -> Result<()> {
 
 #[tokio::test]
 async fn query_runtime_validates_memory_and_spill_limits() -> Result<()> {
+    assert_eq!(
+        ChronicleQueryExecutionOptions::default().memory_limit_bytes,
+        Some(2 * 1024 * 1024 * 1024)
+    );
     let input = fixture_root().join("dialogue_10.json");
     let invalid = ChronicleQueryEngine::open(
         DocumentFormat::Atif,

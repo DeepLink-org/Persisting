@@ -1,7 +1,7 @@
 # Import and export Runs
 
-Use import and export at the interoperability boundary. Import creates a new
-Dataset; export reads complete Runs from an existing Dataset.
+Use import and export at the interoperability boundary. Import creates,
+appends to, or replaces a Dataset; export reads complete Runs from an existing Dataset.
 Import and export accept ATIF, ACTF, OpenAI Messages, and Storyline JSON.
 Import also accepts decode-only Codex (`codex`) and Claude Code (`claude-code`)
 session JSONL. Export refuses those two formats.
@@ -13,8 +13,13 @@ pchronicle import --from input.json \
   --to ./imported --input-format atif
 ```
 
-The target is create-only. pChronicle refuses an existing target instead of
-silently appending or replacing it. Regular files can be auto-detected. A
+The default `--mode create` refuses an existing target. Use `--mode append`
+for an existing Storyline Dataset; duplicate `document_id` values receive a
+`#N` suffix by default, or can be skipped with `--on-duplicate skip`. Use
+`--mode replace` to stage the complete import and atomically replace an existing
+local Dataset after confirmation; replacement requires interactive confirmation
+or `--yes`. Existing object-store Datasets cannot currently be replaced in place.
+Regular files can be auto-detected. A
 directory recursively imports `.json`, `.jsonl`, and `.ndjson` files while
 preserving their relative paths in the default output. When `--input-format` is
 omitted, each file is detected independently; JSON that is not a known
@@ -43,7 +48,7 @@ pchronicle import --from ./run/events.lance --to ./run/storyline
 ```
 
 This mode accepts local and object-store URIs, never mutates the source, and
-refuses an existing destination. Its JSON result reports `format: "events"`,
+supports create or confirmed replace (not append). Its JSON result reports `format: "events"`,
 `output_format: "storyline-lance"`, and `fact_rows`; it omits `input_bytes`.
 Explicit `--output-format preserve` and JSON exchange `--input-format` values are
 invalid for canonical events.
@@ -55,10 +60,10 @@ pchronicle query ./normalized \
   --sql 'SELECT _file_, COUNT(*) AS runs FROM dataset.runs GROUP BY _file_'
 ```
 
-`document_id` and `session_id` must be globally unique across the inputs. A
-collision fails the complete import and names both original paths. Successful
-Storyline output does not retain those paths as queryable source information; use the
-default preserve output when file boundaries matter.
+`document_id` is globally unique in Storyline output. Collisions receive a
+deterministic `#N` suffix; append can instead skip them with
+`--on-duplicate skip`. Successful Storyline output does not retain source paths
+as queryable information; use preserve output when file boundaries matter.
 
 ATIF `.jsonl` and `.ndjson` inputs decode every non-empty record. Symbolic
 links found while walking a directory are skipped; an explicitly named link to

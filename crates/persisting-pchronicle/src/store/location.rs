@@ -194,6 +194,35 @@ impl DatasetLocation {
             .map_err(|error| object_store_io_error("write object", &self.uri, error))?;
         Ok(())
     }
+
+    /// Remove the complete Dataset represented by this local directory or
+    /// object-store prefix.
+    pub async fn remove_all(&self) -> Result<()> {
+        if let Some(path) = &self.local_path {
+            anyhow::ensure!(path.exists(), "Dataset does not exist: {}", self.uri);
+            anyhow::ensure!(
+                path.file_name().is_some(),
+                "refusing to drop a filesystem root as a Dataset"
+            );
+            anyhow::ensure!(path.is_dir(), "Dataset is not a directory: {}", self.uri);
+            std::fs::remove_dir_all(path)
+                .with_context(|| format!("drop local Dataset {}", path.display()))?;
+            return Ok(());
+        }
+
+        let url = Url::parse(&self.uri).context("parse Dataset URI for drop")?;
+        anyhow::ensure!(
+            !url.path().trim_matches('/').is_empty(),
+            "refusing to drop an entire object-store bucket; name a Dataset prefix"
+        );
+        let (store, root) = ObjectStore::from_uri(&self.uri)
+            .await
+            .map_err(|error| object_store_io_error("open object store", &self.uri, error))?;
+        store.remove_dir_all(root).await.map_err(|error| {
+            object_store_io_error("drop object-store Dataset", &self.uri, error)
+        })?;
+        Ok(())
+    }
 }
 
 fn validate_object_store_bucket(scheme: &str, bucket: &str) -> Result<()> {
@@ -421,5 +450,25 @@ mod tests {
         ))
         .unwrap();
         assert!(!location.exists().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn remove_all_drops_local_dataset_directory() {
+        let temp = tempdir().unwrap();
+        let dataset = temp.path().join("dataset");
+        std::fs::create_dir(&dataset).unwrap();
+        std::fs::write(dataset.join("source.json"), b"{}").unwrap();
+        let location = DatasetLocation::parse(dataset.to_str().unwrap()).unwrap();
+
+        location.remove_all().await.unwrap();
+
+        assert!(!dataset.exists());
+    }
+
+    #[tokio::test]
+    async fn remove_all_rejects_object_store_bucket_root() {
+        let location = DatasetLocation::parse("memory://bucket").unwrap();
+        let error = location.remove_all().await.unwrap_err().to_string();
+        assert!(error.contains("entire object-store bucket"), "{error}");
     }
 }
