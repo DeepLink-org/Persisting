@@ -61,14 +61,26 @@ pub struct ExternalTableSpec {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub const DEFAULT_QUERY_MEMORY_LIMIT_BYTES: usize = 2 * 1024 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChronicleQueryExecutionOptions {
-    /// DataFusion operator memory pool. `None` retains DataFusion's default.
+    /// DataFusion operator memory pool. Defaults to 2 GiB.
     pub memory_limit_bytes: Option<usize>,
     /// Directory used by spillable operators. `None` uses DataFusion's default.
     pub spill_path: Option<PathBuf>,
     /// Maximum bytes permitted in the spill directory.
     pub max_spill_bytes: Option<u64>,
+}
+
+impl Default for ChronicleQueryExecutionOptions {
+    fn default() -> Self {
+        Self {
+            memory_limit_bytes: Some(DEFAULT_QUERY_MEMORY_LIMIT_BYTES),
+            spill_path: None,
+            max_spill_bytes: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

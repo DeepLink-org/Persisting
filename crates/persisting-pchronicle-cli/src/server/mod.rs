@@ -26,11 +26,12 @@ use persisting_pchronicle::analysis_compile::{
 use persisting_pchronicle::document::InputIssue;
 use persisting_pchronicle::model::{EventRecord, StorylineTurn};
 use persisting_pchronicle::query::ChronicleQueryEngine;
+use persisting_pchronicle::search::storyline_steps_fts_available;
 #[cfg(test)]
 use persisting_pchronicle::storage::StoryCoords;
 use persisting_pchronicle::storage::{
     CatalogErrorPolicy, CatalogEventProvenance, CatalogSnapshotOptions, CatalogStorylineKey,
-    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount, storyline_steps_fts_available,
+    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

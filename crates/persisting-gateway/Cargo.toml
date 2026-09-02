@@ -67,3 +67,7 @@ path = "tests/agenticmd_bridge.rs"
 [[test]]
 name = "network_policy_http"
 path = "tests/network_policy_http.rs"
+
+[[test]]
+name = "model_api_forwarding"
+path = "tests/model_api_forwarding.rs"

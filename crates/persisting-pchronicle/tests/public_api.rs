@@ -1,4 +1,4 @@
-//! Compile-time guard for pChronicle's four intentional public entrypoints.
+//! Compile-time guard for pChronicle's intentional public entrypoints.
 
 use persisting_pchronicle::Result;
 use persisting_pchronicle::document::{
@@ -9,6 +9,8 @@ use persisting_pchronicle::model::{EventRecord, StorylineDocument};
 
 #[cfg(feature = "lance-store")]
 use persisting_pchronicle::query::{ChronicleQueryEngine, QueryCapabilities};
+#[cfg(feature = "lance-store")]
+use persisting_pchronicle::search::{FindExpr, FindTextField, parse_match_expression};
 
 #[test]
 fn approved_facade_paths_compile() {
@@ -23,6 +25,8 @@ fn approved_facade_paths_compile() {
     {
         let _: Option<ChronicleQueryEngine> = None;
         let _: Option<QueryCapabilities> = None;
+        let _: fn(&str) -> Result<FindExpr> = parse_match_expression;
+        let _: Option<FindTextField> = None;
     }
 }
 
