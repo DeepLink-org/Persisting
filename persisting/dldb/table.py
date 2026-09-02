@@ -853,7 +853,7 @@ class ValuePartitionTable(BaseTable):
     def get_partition(self, table_name):
         return table_name[len(self.table_name_prefix) :]
 
-    def open_table(self, partitions, create_when_missing=False):
+    def open_table(self, partitions, create_when_missing=False, table_names=None):
         for partition in partitions:
             assert partition, "partition can not be None"
             assert isinstance(partition, str), "partition must be a string"
@@ -861,7 +861,10 @@ class ValuePartitionTable(BaseTable):
         if not missing:
             return
 
-        table_names = set(self.db_conn.list_tables().tables)
+        if table_names is None:
+            table_names = set(self.db_conn.list_tables().tables)
+        else:
+            table_names = set(table_names)
         for partition in missing:
             table_name = self.get_table_name(partition)
             if table_name in table_names:
@@ -885,12 +888,16 @@ class ValuePartitionTable(BaseTable):
                 )
             self.tables[partition] = table
 
-    def list_partitions(self) -> list[str]:
+    def _partition_catalog(self) -> tuple[list[str], set[str]]:
         table_names = set(self.db_conn.list_tables().tables)
         partitions = []
         for table_name in table_names:
             if table_name.startswith(self.table_name_prefix):
                 partitions.append(self.get_partition(table_name))
+        return partitions, table_names
+
+    def list_partitions(self) -> list[str]:
+        partitions, _ = self._partition_catalog()
         return partitions
 
     def count_rows(self, partition=None) -> int:
@@ -1076,8 +1083,9 @@ class ValuePartitionTable(BaseTable):
         ascending: bool = True,
         checkout_latest: bool = False,
     ) -> pd.DataFrame:
+        catalog_names = None
         if partitions is None:
-            partitions = self.list_partitions()
+            partitions, catalog_names = self._partition_catalog()
             if partition_cond is not None:
                 partitions = filter_values(
                     partitions, partition_cond, column_name=self.partition_column
@@ -1086,9 +1094,9 @@ class ValuePartitionTable(BaseTable):
             assert len(partitions) == 1, "offset is not supported for multiple partitions"
         partitions = sorted(partitions)
 
+        self.open_table(partitions, table_names=catalog_names)
         result = pd.DataFrame()
         for partition in partitions:
-            self.open_table([partition])
             table = self.tables[partition]
             if checkout_latest:
                 table.checkout_latest()
@@ -1237,7 +1245,7 @@ class HashPartitionTable(BaseTable):
     def get_partition(self, table_name: str) -> int:
         return int(table_name[len(self.table_name_prefix) :])
 
-    def open_table(self, partitions: List[int], create_when_missing=False):
+    def open_table(self, partitions: List[int], create_when_missing=False, table_names=None):
         for partition in partitions:
             assert partition is not None, "partition can not be None"
             assert isinstance(partition, int), "partition must be an integer"
@@ -1248,7 +1256,10 @@ class HashPartitionTable(BaseTable):
         if not missing:
             return
 
-        table_names = set(self.db_conn.list_tables().tables)
+        if table_names is None:
+            table_names = set(self.db_conn.list_tables().tables)
+        else:
+            table_names = set(table_names)
         for partition in missing:
             table_name = self.get_table_name(partition)
             if table_name in table_names:
@@ -1272,12 +1283,16 @@ class HashPartitionTable(BaseTable):
                 )
             self.tables[partition] = table
 
-    def list_partitions(self) -> List[int]:
+    def _partition_catalog(self) -> tuple[List[int], set[str]]:
         table_names = set(self.db_conn.list_tables().tables)
         partitions = []
         for table_name in table_names:
             if table_name.startswith(self.table_name_prefix):
                 partitions.append(self.get_partition(table_name))
+        return partitions, table_names
+
+    def list_partitions(self) -> List[int]:
+        partitions, _ = self._partition_catalog()
         return partitions
 
     def add(self, datas: pd.DataFrame, partition=None):
@@ -1524,8 +1539,9 @@ class HashPartitionTable(BaseTable):
     ) -> pd.DataFrame:
         assert partition_cond is None, "partition_cond is not supported for hash partition table"
 
+        catalog_names = None
         if partitions is None:
-            partitions = self.list_partitions()
+            partitions, catalog_names = self._partition_catalog()
             if offset is not None:
                 assert len(partitions) == 1, "offset is not supported for multiple partitions"
         else:
@@ -1542,14 +1558,15 @@ class HashPartitionTable(BaseTable):
             cached = [partition for partition in partitions if partition in self.tables]
             uncached = [partition for partition in partitions if partition not in self.tables]
             if uncached:
-                materialized = set(self.list_partitions())
-                uncached = [partition for partition in uncached if partition in materialized]
+                materialized, catalog_names = self._partition_catalog()
+                materialized_set = set(materialized)
+                uncached = [partition for partition in uncached if partition in materialized_set]
             partitions = cached + uncached
         partitions = sorted(partitions)
 
+        self.open_table(partitions, table_names=catalog_names)
         result = pd.DataFrame()
         for partition in partitions:
-            self.open_table([partition])
             table = self.tables[partition]
             if checkout_latest:
                 table.checkout_latest()
