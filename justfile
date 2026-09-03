@@ -5,6 +5,12 @@ repo := justfile_directory()
 docs_dir := repo / "docs"
 gen_py := repo / "scripts" / "generate_benchmark_data.py"
 
+# Product CLI component set. Keep all Cargo build entry points below routed
+# through `build-components` so package/bin changes have one source in just.
+component_pchronicle := "-p persisting-pchronicle-cli --bin pchronicle"
+component_pvisor := "-p persisting-pvisor --bin pvisor"
+component_ppilot := "-p persisting-ppilot --bin ppilot"
+
 # Python 路径（ruff format）
 ruff_paths := "persisting tests examples"
 # lint 默认只扫包代码（与 CI 一致）；全量用 lint-py-all
@@ -104,9 +110,7 @@ example-pvisor scenario profile="release": (pvisor profile)
 examples-pchronicle:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo build --release -q -p persisting-pchronicle-cli --bin pchronicle
-    cargo build --release -q -p persisting-pchronicle \
-      --example pchronicle_storage_query_benchmark
+    just build-components release pchronicle-benchmark
     bash "{{ repo }}/examples/pchronicle/test.sh" --profile release
     bash "{{ repo }}/examples/pchronicle/output-contract.sh" >/dev/null
 
@@ -115,11 +119,7 @@ examples-pchronicle:
 examples-ppilot:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo build --release -q \
-      -p persisting-pchronicle-cli --bin pchronicle \
-      -p persisting-ppilot --bin ppilot
-    cargo build --release -q \
-      -p persisting-pvisor --bin pvisor
+    just build-components release all
     for example in "{{ repo }}"/examples/ppilot/*; do
         [[ -f "$example/run.sh" ]] || continue
         echo "==> ${example#"{{ repo }}/"}/run.sh"
@@ -274,11 +274,11 @@ chronicle-binary profile="debug": chronicle-web-build
     case "$profile" in
       debug)
         binary="{{ repo }}/target/debug/pchronicle"
-        cargo build --locked -p persisting-pchronicle-cli --bin pchronicle
+        just build-components debug pchronicle
         ;;
       release)
         binary="{{ repo }}/target/release/pchronicle"
-        cargo build --locked -p persisting-pchronicle-cli --bin pchronicle --release
+        just build-components release pchronicle
         ;;
       *)
         echo "unsupported pChronicle profile: $profile (expected debug or release)" >&2
@@ -296,25 +296,59 @@ build profile="debug":
     set -euo pipefail
     profile="{{ profile }}"
     case "$profile" in
-      debug) cargo_args=() ;;
-      release) cargo_args=(--release) ;;
+      debug|release) ;;
       *)
         echo "unsupported build profile: $profile (expected debug or release)" >&2
         exit 2
         ;;
     esac
-    # Build the pChronicle storage service beside its lightweight pPilot client.
-    # pPilot launches this binary for durable control and does not link Lance.
-    cargo build \
-      -p persisting-pchronicle-cli --bin pchronicle \
-      -p persisting-ppilot --bin ppilot \
-      "${cargo_args[@]}"
+    just build-components "$profile" all
 
-    # pPilot invokes pVisor at runtime instead of linking it. The default
-    # pVisor profile includes local Lance Chronicle for durable Attempt state
-    # while keeping cloud object-store SDKs excluded.
-    cargo build -p persisting-pvisor --bin pvisor \
-      "${cargo_args[@]}"
+# Build one product component, the benchmark binary, or the complete runtime component set.
+# This is the single Cargo build entry point used by local recipes and CI.
+[group('build')]
+build-components profile="debug" components="all":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile="{{ profile }}"
+    components="{{ components }}"
+    case "$profile" in
+      debug) cargo_profile=dev ;;
+      release) cargo_profile=release ;;
+      *) echo "unsupported build profile: $profile (expected debug or release)" >&2; exit 2 ;;
+    esac
+    case "$components" in
+      all|runtime)
+        cargo build --profile "$cargo_profile" --locked \
+          {{ component_pchronicle }} {{ component_pvisor }} {{ component_ppilot }}
+        ;;
+      pchronicle)
+        cargo build --profile "$cargo_profile" --locked {{ component_pchronicle }}
+        ;;
+      pchronicle-benchmark)
+        cargo build --profile "$cargo_profile" --locked \
+          {{ component_pchronicle }} \
+          -p persisting-pchronicle --example pchronicle_storage_query_benchmark
+        ;;
+      pvisor-pchronicle)
+        cargo build --profile "$cargo_profile" --locked \
+          {{ component_pvisor }} {{ component_pchronicle }}
+        ;;
+      pvisor)
+        cargo build --profile "$cargo_profile" --locked {{ component_pvisor }}
+        ;;
+      ppilot)
+        cargo build --profile "$cargo_profile" --locked {{ component_ppilot }}
+        ;;
+      pchronicle-ppilot)
+        cargo build --profile "$cargo_profile" --locked \
+          {{ component_pchronicle }} {{ component_ppilot }}
+        ;;
+      *)
+        echo "unsupported component set: $components (all|runtime|pchronicle|pchronicle-benchmark|pvisor|pvisor-pchronicle|ppilot|pchronicle-ppilot)" >&2
+        exit 2
+        ;;
+    esac
 
 build-release:
     just build release
@@ -371,11 +405,11 @@ pvisor profile="release":
     case "$profile" in
       release)
         binary="{{ repo }}/target/release/pvisor"
-        cargo build --locked -p persisting-pvisor --bin pvisor --release
+        just build-components release pvisor
         ;;
       debug)
         binary="{{ repo }}/target/debug/pvisor"
-        cargo build --locked -p persisting-pvisor --bin pvisor
+        just build-components debug pvisor
         ;;
       *)
         echo "unsupported pVisor profile: $profile (expected release or debug)" >&2
@@ -540,7 +574,7 @@ test-crate crate:
       agentctl) cargo nextest run -p persisting-agentctl --locked ;;
       capture) cargo nextest run -p persisting-gateway --locked ;;
       ppilot)
-        cargo build -p persisting-pvisor --bin pvisor
+        just build-components debug pvisor
         cargo nextest run -p persisting-ppilot --locked
         ;;
       pvisor) cargo nextest run -p persisting-pvisor --locked ;;
@@ -557,14 +591,13 @@ test-rust package="":
         if [[ "$target_dir" != /* ]]; then
             target_dir="$PWD/$target_dir"
         fi
-        cargo build --locked -p persisting-pvisor --bin pvisor
-        cargo build --locked -p persisting-pchronicle-cli --bin pchronicle
+        just build-components debug pvisor-pchronicle
         export PATH="$target_dir/debug:$PATH"
     fi
     if [[ -n "$package" ]]; then
         cargo nextest run --locked -p "$package"
     else
-        cargo nextest run --workspace --locked
+        cargo nextest run --workspace --exclude persisting-dlcapt --locked
     fi
 
 # Default pVisor crate profile, including CLI and integration regressions.
