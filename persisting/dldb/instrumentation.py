@@ -110,6 +110,28 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
             },
         ),
         _ApiSpec(
+            method="create_fts_index",
+            api="create_fts_index",
+            meta_fn=lambda self, table_name, column, *, partition=None, wait=True, **kwargs: {
+                "table_name": table_name,
+                "column": column,
+                "partition": partition,
+                "wait": wait,
+            },
+        ),
+        _ApiSpec(
+            method="fts_search",
+            api="fts_search",
+            df_attr=True,
+            meta_fn=lambda self, table_name, query, *, where=None, limit=None, columns=None, partition=None, checkout_latest=False, **lance_kwargs: {
+                "table_name": table_name,
+                "limit": limit,
+                "where": where,
+                "partition": partition,
+                "checkout_latest": checkout_latest,
+            },
+        ),
+        _ApiSpec(
             method="list_indices",
             api="list_indices",
             meta_fn=lambda self, table_name, partition=None: {

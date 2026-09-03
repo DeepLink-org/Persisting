@@ -16,6 +16,20 @@ from loguru import logger
 DEFAULT_COMPACT_BATCH_SIZE = 64
 OPTIMIZE_CLEANUP_OLDER_THAN = timedelta(days=7)
 
+_FTS_SIMPLE_ONLY_MSG = (
+    "FTS is only supported on non-partitioned (Simple) tables; "
+    "VALUE/HASH partition FTS is not implemented yet"
+)
+
+
+def _reject_fts_partition(partition) -> None:
+    if partition is not None:
+        raise NotImplementedError(
+            "FTS with partition= is not implemented yet; "
+            "currently only non-partitioned (Simple) tables are supported "
+            f"(got partition={partition!r})"
+        )
+
 
 @dataclass(frozen=True)
 class IndexCoverage:
@@ -514,6 +528,22 @@ class BaseTable:
     ):
         raise NotImplementedError
 
+    def create_fts_index(self, column: str, *, partition=None, wait: bool = True, **kwargs):
+        raise NotImplementedError(_FTS_SIMPLE_ONLY_MSG)
+
+    def fts_search(
+        self,
+        query: str,
+        *,
+        where: str = None,
+        limit: int = None,
+        columns: List[str] = None,
+        partition=None,
+        checkout_latest: bool = False,
+        **lance_kwargs,
+    ) -> pd.DataFrame:
+        raise NotImplementedError(_FTS_SIMPLE_ONLY_MSG)
+
     def list_indices(self, partition=None) -> list[IndexConfig]:
         raise NotImplementedError
 
@@ -678,6 +708,42 @@ class SimpleTable(BaseTable):
         self.table.create_scalar_index(column, index_type=index_type)
         index_name = f"{column}_idx"
         _complete_scalar_index_create(self.table, index_name, wait_timeout=wait_timeout)
+
+    def create_fts_index(self, column: str, *, partition=None, wait: bool = True, **kwargs):
+        _reject_fts_partition(partition)
+        if self.table is None:
+            self.open_table()
+        self.table.create_fts_index(column, **kwargs)
+        if wait:
+            index_name = f"{column}_idx"
+            self.table.wait_for_index([index_name])
+
+    def fts_search(
+        self,
+        query: str,
+        *,
+        where: str = None,
+        limit: int = None,
+        columns: List[str] = None,
+        partition=None,
+        checkout_latest: bool = False,
+        **lance_kwargs,
+    ) -> pd.DataFrame:
+        _reject_fts_partition(partition)
+        if self.table is None:
+            self.open_table()
+        if checkout_latest:
+            self.table.checkout_latest()
+        search_kwargs = dict(lance_kwargs)
+        search_kwargs["query_type"] = "fts"
+        query_stat = self.table.search(query, **search_kwargs)
+        if where is not None:
+            query_stat = query_stat.where(where)
+        if columns is not None:
+            query_stat = query_stat.select(columns)
+        if limit is not None:
+            query_stat = query_stat.limit(limit)
+        return query_stat.to_pandas()
 
     def list_indices(self, partition=None) -> list[IndexConfig]:
         assert partition is None, "Partitioning not supported for SimpleTable"

@@ -131,6 +131,25 @@ class SessionBase:
     ):
         raise NotImplementedError
 
+    def create_fts_index(
+        self, table_name: str, column: str, *, partition=None, wait: bool = True, **kwargs
+    ):
+        raise NotImplementedError
+
+    def fts_search(
+        self,
+        table_name: str,
+        query: str,
+        *,
+        where: str = None,
+        limit: int = None,
+        columns: List[str] = None,
+        partition=None,
+        checkout_latest: bool = False,
+        **lance_kwargs,
+    ) -> pd.DataFrame:
+        raise NotImplementedError
+
     def list_indices(self, table_name: str, partition=None) -> list[IndexConfig]:
         raise NotImplementedError
 
@@ -445,6 +464,35 @@ class LanceSession(SessionBase):
         table = self._get_table(table_name, partition)
         return table.create_scalar_index(
             column, partition, index_type, wait_timeout=wait_timeout
+        )
+
+    def create_fts_index(
+        self, table_name: str, column: str, *, partition=None, wait: bool = True, **kwargs
+    ):
+        table = self._get_table(table_name, partition)
+        return table.create_fts_index(column, partition=partition, wait=wait, **kwargs)
+
+    def fts_search(
+        self,
+        table_name: str,
+        query: str,
+        *,
+        where: str = None,
+        limit: int = None,
+        columns: List[str] = None,
+        partition=None,
+        checkout_latest: bool = False,
+        **lance_kwargs,
+    ) -> pd.DataFrame:
+        table = self._get_table(table_name, None)
+        return table.fts_search(
+            query,
+            where=where,
+            limit=limit,
+            columns=columns,
+            partition=partition,
+            checkout_latest=checkout_latest,
+            **lance_kwargs,
         )
 
     def list_indices(self, table_name: str, partition=None) -> list[IndexConfig]:
