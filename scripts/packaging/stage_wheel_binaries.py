@@ -314,12 +314,40 @@ def _sign_macos_pvisor(path: Path) -> None:
     )
 
 
+def _web_inputs_digest() -> str:
+    """Hash the inputs that affect the generated Dioxus public directory."""
+    digest = hashlib.sha256()
+    inputs = [WEB_ROOT / "Cargo.toml", WEB_ROOT / "Dioxus.toml"]
+    inputs.extend(sorted((WEB_ROOT / "src").rglob("*")))
+    inputs.extend(sorted((WEB_ROOT / "assets").rglob("*")))
+    for path in inputs:
+        if not path.is_file():
+            continue
+        digest.update(str(path.relative_to(WEB_ROOT)).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _web_assets_are_current(manifest: Path, digest: str) -> bool:
+    if not manifest.is_file() or not (WEB_PUBLIC / "index.html").is_file():
+        return False
+    lines = manifest.read_text(encoding="utf-8").splitlines()
+    return len(lines) >= 2 and lines[1] == digest
+
+
 def _build_web_assets() -> None:
-    """Build the target-independent Dioxus bundle before compiling native CLIs."""
+    """Build the target-independent Dioxus bundle when its inputs changed."""
     manifest = WEB_PUBLIC / "embedded.manifest"
-    if shutil.which("dx") is None and manifest.is_file():
-        print(f"Using prebuilt pChronicle Web assets: {WEB_PUBLIC}", file=sys.stderr)
+    digest = _web_inputs_digest()
+    if _web_assets_are_current(manifest, digest):
+        print(f"Using current pChronicle Web assets: {WEB_PUBLIC}", file=sys.stderr)
         return
+    if shutil.which("dx") is None and manifest.is_file():
+        raise RuntimeError(
+            "pChronicle Web assets are stale or incomplete and Dioxus CLI is unavailable"
+        )
     command = ["dx", "bundle", "--release", "--debug-symbols", "false"]
     print(f"Building pChronicle Web assets: {shlex.join(command)}", file=sys.stderr)
     try:
@@ -337,7 +365,10 @@ def _build_web_assets() -> None:
     assets.mkdir(parents=True, exist_ok=True)
     for stylesheet in sorted((WEB_ROOT / "assets").glob("*.css")):
         shutil.copy2(stylesheet, assets / stylesheet.name)
-    manifest.write_text("__PCHRONICLE_EMBEDDED_WEB_ASSETS_V1__\n", encoding="utf-8")
+    manifest.write_text(
+        f"__PCHRONICLE_EMBEDDED_WEB_ASSETS_V1__\n{digest}\n",
+        encoding="utf-8",
+    )
 
 
 def stage_wheel_binaries(options: BuildOptions) -> Path:

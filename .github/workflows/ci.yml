@@ -27,7 +27,6 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-protoc: "false"
           install-nextest: "false"
           install-zig: "false"
           components: "rustfmt"
@@ -46,7 +45,6 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-protoc: "false"
           install-nextest: "false"
           install-zig: "false"
           components: "clippy"
@@ -67,7 +65,6 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-protoc: "false"
           install-nextest: "false"
           install-zig: "false"
           components: "clippy"
@@ -208,7 +205,6 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-protoc: "false"
           install-zig: "${{ matrix.install_zig }}"
           components: ""
 
@@ -228,9 +224,7 @@ jobs:
         if: matrix.prepare_runtime
         run: |
           just pvisor debug
-          cargo build --locked \
-            -p persisting-pchronicle-cli --bin pchronicle \
-            -p persisting-ppilot --bin ppilot
+          just build-components debug pchronicle-ppilot
           echo "${GITHUB_WORKSPACE}/target/debug" >> "${GITHUB_PATH}"
 
       - name: Run ${{ matrix.shard }} tests
@@ -238,7 +232,6 @@ jobs:
           # GitHub-hosted Linux runners may disable unprivileged user
           # namespaces. The dedicated isolation job remains strict.
           PERSISTING_TEST_ALLOW_NO_USERNS: "1"
-          RUST_MIN_STACK: "8388608"
         run: cargo nextest run --locked ${{ matrix.packages }}
 
       - name: Test shared event control contract
@@ -283,8 +276,6 @@ jobs:
       # Keep property tests out of the regular pChronicle package shard so
       # nextest can schedule the two workloads on separate runners.
       - name: Run pChronicle property-test regression
-        env:
-          RUST_MIN_STACK: "8388608"
         run: just proptest pchronicle
 
   pchronicle-web-test:
@@ -296,7 +287,6 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-protoc: "false"
           install-dioxus: "true"
           install-zig: "false"
           components: ""
@@ -322,7 +312,6 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-protoc: "false"
           install-zig: "false"
           components: ""
 
@@ -455,7 +444,6 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-protoc: "false"
           install-nextest: "false"
           install-zig: "false"
           components: ""

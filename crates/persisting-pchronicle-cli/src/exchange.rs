@@ -551,6 +551,66 @@ pub(super) async fn run_import(
     Ok(())
 }
 
+/// Run one full snapshot import for the resident sync worker.
+///
+/// The existing import path already stages local outputs atomically, mirrors
+/// deletions, and rebuilds a Storyline Lance destination from the same source
+/// directory. Keeping the orchestration here avoids a second decoder or
+/// Dataset publication protocol in the sync command.
+pub(crate) async fn sync_snapshot(
+    source: &Path,
+    warehouse: &Path,
+    storyline: &Path,
+    input_format: ExchangeFormat,
+) -> Result<()> {
+    // ponytail: rebuild one atomic snapshot per coalesced batch; add affected-document mutation
+    // when profiling shows full-directory rebuilds are the bottleneck.
+    let mut stdout = std::io::sink();
+    let mut stderr = std::io::sink();
+    let mut stdin = std::io::empty();
+    run_import(
+        ImportArgs {
+            from: source.to_string_lossy().into_owned(),
+            output: Some(warehouse.to_string_lossy().into_owned()),
+            format: input_format,
+            output_format: Some(ImportOutputFormat::Preserve),
+            mode: ImportMode::Replace,
+            on_duplicate: None,
+            yes: true,
+            stream: false,
+            max_input_bytes: Some(256 * 1024 * 1024),
+        },
+        None,
+        false,
+        &mut stdin,
+        &mut stdout,
+        &mut stderr,
+    )
+    .await
+    .context("sync source into Warehouse")?;
+    run_import(
+        ImportArgs {
+            from: source.to_string_lossy().into_owned(),
+            output: Some(storyline.to_string_lossy().into_owned()),
+            format: input_format,
+            output_format: Some(ImportOutputFormat::Storyline),
+            mode: ImportMode::Replace,
+            on_duplicate: None,
+            yes: true,
+            stream: false,
+            max_input_bytes: Some(256 * 1024 * 1024),
+        },
+        None,
+        false,
+        &mut stdin,
+        &mut stdout,
+        &mut stderr,
+    )
+    .await
+    .context("sync source into Storyline Lance")?;
+    Ok(())
+}
+
 struct StorylineImportOptions {
     max_input_bytes: usize,
     directory_input: bool,
