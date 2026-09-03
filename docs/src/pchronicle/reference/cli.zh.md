@@ -54,6 +54,7 @@ pchronicle
 ├── query [DATASET]
 ├── analysis overview|agents|models|tools [DATASET]
 ├── import --from SOURCE --to DATASET
+├── sync --from DIRECTORY --to DIRECTORY --convert DIRECTORY
 ├── export --from DATASET --to TARGET
 ├── agent codex|claude [DATASET]
 └── serve DATASET...
@@ -303,7 +304,20 @@ Storyline Dataset。默认 `create` 模式要求目标不存在。`append` 要�
 写入临时路径，再将旧本地 Dataset rename 到备份路径、将新 Dataset rename 到正式路径，确认新路径
 发布后才删除备份；因此必须交互确认或传入 `--yes`。已有对象存储 Dataset 当前不支持原地 replace。
 
-### 2.10 `drop`
+### 2.10 `sync`
+
+```text
+pchronicle sync --from DIRECTORY --to DIRECTORY --convert DIRECTORY
+  [--input-format FORMAT] [--interval DURATION] [--once]
+```
+
+`sync` 是常驻轮询器：监听源目录下的 `.json`、`.jsonl` 和 `.ndjson`，将变更合并到
+pending 池，并按 `--interval` 将源文件逐字节批量镜像到本地 Warehouse 目录，同时将数据转换为
+Storyline Lance 写入 `--convert` 目标。一个批次成功后才清理 pending；失败会保留
+变更并指数退避重试。`--once` 只执行一次初始批次后退出。当前目标必须是本地目录，两个目标
+必须位于源目录之外。
+
+### 2.11 `drop`
 
 ```text
 pchronicle drop DATASET [--yes]
@@ -312,7 +326,7 @@ pchronicle drop DATASET [--yes]
 `drop` 永久删除本地 Dataset 目录或对象存储前缀。默认要求交互确认，`--yes` 可跳过确认；命令会
 拒绝删除文件系统根目录或整个对象存储 bucket。
 
-### 2.11 `export`
+### 2.12 `export`
 
 ```text
 pchronicle export -f|--from DATASET -t|--to TARGET -o|--output-format FORMAT
@@ -333,7 +347,7 @@ pchronicle export \
 原始 exchange document，失败时不产生部分输出。文件和对象存储输出默认 create-only，只有显式
 `--overwrite` 才允许原子替换。
 
-### 2.12 `agent`
+### 2.13 `agent`
 
 ```text
 pchronicle agent <codex|claude> [DATASET]
@@ -349,7 +363,7 @@ pchronicle agent claude @prod --ask '比较模型延迟'
 overview。问题也可以通过 `--ask-file` 从文件或 stdin 读取，`--dry-run` 用于预览启动内容。
 Agent 注入是行为引导，不是 filesystem、network 或 tool permission 沙箱。
 
-### 2.13 `serve`
+### 2.14 `serve`
 
 ```text
 pchronicle serve

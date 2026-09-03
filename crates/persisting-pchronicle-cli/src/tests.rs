@@ -282,7 +282,7 @@ fn command_tree_contains_the_product_commands() {
         names,
         [
             "onboard", "default", "alias", "ls", "status", "query", "analysis", "agent", "find",
-            "import", "drop", "export", "echo", "dev", "serve",
+            "import", "drop", "export", "sync", "echo", "dev", "serve",
         ]
     );
     let ls = command

@@ -177,6 +177,22 @@ transaction, and only then removes the old data. It requires interactive
 confirmation or `--yes`; an existing object-store Dataset cannot currently be
 replaced in place.
 
+### Sync
+
+```text
+pchronicle sync --from DIRECTORY --to DIRECTORY --convert DIRECTORY
+  [--input-format FORMAT] [--interval DURATION] [--once]
+```
+
+`sync` is a resident polling worker for `.json`, `.jsonl`, and `.ndjson` files.
+It coalesces changes into a pending set and, on each interval, atomically
+mirrors the source files byte-for-byte into a local Warehouse Dataset and
+writes a Storyline Lance Dataset to the `--convert` destination.
+Pending changes are cleared only after both outputs succeed; failures retain
+the set and retry with bounded exponential backoff. Use `--once` for one
+initial batch and exit. The two destinations must be local directories outside
+the source directory.
+
 ### Drop
 
 ```text
