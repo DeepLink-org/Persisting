@@ -45,7 +45,7 @@
 
   <rect width="1400" height="780" rx="28" fill="url(#background)"/>
   <text x="52" y="56" class="title">Persisting product paths and optional integration</text>
-  <text x="52" y="86" class="subtitle">pPilot plans many Runs; pVisor governs each Attempt; pChronicle stores history</text>
+  <text x="52" y="86" class="subtitle">pVisor governs execution; pChronicle preserves queryable history</text>
 
   <text x="70" y="119" class="eyebrow">Inputs</text>
   <g id="agent-task-input" filter="url(#shadow)">
@@ -67,7 +67,7 @@
 
     <rect x="100" y="351" width="440" height="106" rx="16" class="inner-card visor-card"/>
     <text x="124" y="395" class="body">pVisor: one governed Run per Agent</text>
-    <text x="124" y="426" class="small">pPilot adds planning, leases, retry, and reconciliation</text>
+    <text x="124" y="426" class="small">review, apply, or drop staged changes</text>
 
     <rect x="100" y="518" width="440" height="114" rx="16" class="inner-card"/>
     <text x="124" y="568" class="body">Host · OCI container · libkrun VM</text>

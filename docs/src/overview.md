@@ -30,7 +30,6 @@ entry point that matches the task in front of you.
 | Command | Primary responsibility |
 |---|---|
 | `pvisor` | One Run, environments, review, checkpoints, apply/drop |
-| `ppilot` | Bounded collections of Runs: planning, concurrency, recovery, sinks |
 | `pchronicle` | Dataset catalog, SQL, built-in analysis, find, import/export, read-only serving |
 
 pVisor works without pChronicle, and pChronicle can read external trajectories

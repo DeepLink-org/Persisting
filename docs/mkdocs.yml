@@ -109,6 +109,7 @@ plugins:
             Gateway architecture: Gateway 架构
             OverlayNet architecture: OverlayNet 架构
             pVisor CLI: pVisor CLI
+            Case catalog: Case catalog
             Dataset interface: Dataset 接口
             Dataset discovery and versioning: Dataset 发现与版本固定
             Recorded data, views, and versions: 记录数据、视图与版本
@@ -191,9 +192,11 @@ nav:
           - Isolation architecture: pvisor/design/isolation.md
           - OverlayNet architecture: pvisor/design/overlaynet.md
           - Gateway architecture: pvisor/design/gateway.md
+          - pVisor CLI design: pvisor/design/cli.md
       - Reference:
           - Reference overview: pvisor/reference/index.md
           - pVisor CLI: pvisor/reference/cli.md
+          - Case catalog: pvisor/reference/cases.md
   - pChronicle:
       - Overview: pchronicle/index.md
       - Get Started: pchronicle/get-started.md

@@ -23,6 +23,5 @@ attestation, recovery, and reconciliation without redefining the Run.
 
 The stable identity model is defined in
 [Run, Attempt, and Effect](../pvisor/concepts/run-model.md). Provider admission
-belongs to [pVisor isolation](../pvisor/design/isolation.md). Fleet
-coordination—placement, leases, and reconciliation—is owned by
-[pPilot](../ppilot/design/orchestration.md).
+belongs to [pVisor isolation](../pvisor/design/isolation.md). Fleet coordination—placement, leases, and reconciliation—belongs to the
+deployment control plane and does not change the logical Run contract.

@@ -1,290 +1,169 @@
 {% extends "main.html" %}
 
-{% set copy = {
+{% set t = {
   "en": {
-    "eyebrow": "MODEL STATE · AGENT HISTORY",
-    "positioning": "Persistent Infrastructure for the Agent Era",
-    "lede": "Run Agents under governance, then query what actually happened.",
-    "cta_primary": "Run your first Agent",
-    "cta_secondary": "Explore a trajectory Dataset",
-    "cta_tertiary": "Install",
-    "term_caption": "Execution",
-    "shot_caption": "Queryable history",
-    "shot_alt": "pChronicle Runs browser listing captured Agent sessions",
-    "stat_formats": "trajectory formats",
-    "stat_executors": "executors: host kernel, libkrun microVM",
-    "stat_import": "Import Codex and Claude Code sessions directly",
-    "stat_sql": "Query trajectory history with SQL",
-    "flow_kicker": "THE THROUGHLINE",
-    "flow_title": "From execution to queryable history",
-    "flow_lead": "One path, three steps. Each step is a real command.",
-    "flow_1_step": "Run",
-    "flow_1_title": "Execute under governance",
-    "flow_1_body": "The Agent works in a stage. Filesystem changes stay staged until you review them.",
-    "flow_2_step": "Capture",
-    "flow_2_title": "Facts become records",
-    "flow_2_body": "Configured capture publishes Gateway trajectory events and selected lifecycle records.",
-    "flow_3_step": "Query",
-    "flow_3_title": "History becomes queryable",
-    "flow_3_body": "Datasets answer SQL. External trajectories can enter without ever touching pVisor.",
-    "flow_note": "Each product also works on its own.",
-    "depth_kicker": "WHAT THAT MEANS",
-    "depth_title": "Governance and history, in detail",
-    "pvisor_body": "Every filesystem change an Agent makes lands in a stage, not your workspace. Review the full diff, then apply what you want and drop the rest.",
-    "pvisor_link": "Review and apply effects →",
-    "pchronicle_body": "Trajectories become Datasets you can query with SQL, browse in a local web UI, and exchange across eight formats.",
-    "pchronicle_link": "Discover and query →",
-    "pchronicle_shot_alt": "pChronicle analysis view running a SQL query over a trajectory Dataset",
-    "start_kicker": "FIRST FIVE MINUTES",
-    "start_title": "Install once, start anywhere",
-    "start_lead": "One wheel ships both commands. Pick the entry point that matches what you have.",
-    "start_install": "Install",
-    "start_exec": "Start with execution",
-    "start_data": "Start with data",
-    "start_data_note": "The built-in walkthrough uses temporary examples. It needs neither a pVisor Run nor a source checkout.",
-    "read_kicker": "KEEP READING",
-    "read_title": "Go deeper when you need to",
-    "read_1_t": "Choose a workflow",
-    "read_1_d": "Understand the two product entry points and the connected path",
-    "read_2_t": "Review Agent changes",
-    "read_2_d": "Understand staged Effects and selective apply",
-    "read_3_t": "Look up the pChronicle CLI",
-    "read_3_d": "Datasets, command prototypes, and common examples",
-    "read_4_t": "Inspect system boundaries",
-    "read_4_d": "Architecture, integration scope, and guarantee boundaries",
-    "close_title": "From model state to Agent history",
-    "close_body": "Persisting keeps reusable state durable and completed runs queryable. It records the data and execution mechanisms actually present without inventing controls or evidence absent from the original record."
+    "eyebrow": "PERSISTENT INFRASTRUCTURE FOR AGENTS",
+    "title": "Persisting",
+    "lede": "Run an Agent with a reviewable execution boundary. Preserve the resulting history as a queryable Dataset.",
+    "primary": "Get started",
+    "secondary": "Read the system design",
+    "install": "Installation",
+    "scope": "A product surface with two independent entry points",
+    "visor_title": "pVisor",
+    "visor_body": "Govern one Agent Run across a staged workspace and a selected execution provider. Inspect Evidence, then apply or discard Effects.",
+    "visor_link": "Start a Run →",
+    "chronicle_title": "pChronicle",
+    "chronicle_body": "Pin, normalize, query, and exchange Agent trajectory Sources. Browse durable history without requiring a pVisor Run.",
+    "chronicle_link": "Explore Datasets →",
+    "architecture": "Product architecture",
+    "architecture_body": "Execution and history are independent paths. Configured capture is an explicit handoff that carries selected lifecycle facts and trajectory events.",
+    "principles": "Operating principles",
+    "p1": "Explicit boundaries",
+    "p1b": "Requested and effective capabilities are recorded separately for every Run.",
+    "p2": "Reviewable Effects",
+    "p2b": "Filesystem changes remain staged until a user chooses to apply or drop them.",
+    "p3": "Source fidelity",
+    "p3b": "Normalization and query views preserve the guarantees and lineage of their input Source.",
+    "docs": "Documentation",
+    "docs_body": "Choose the entry point that matches the work in front of you.",
+    "d1": "First pVisor Run",
+    "d1b": "Install, execute, review, and selectively apply changes.",
+    "d2": "Execution environments",
+    "d2b": "Compare host, OCI, and VM layouts and their boundaries.",
+    "d3": "CLI model",
+    "d3b": "Understand commands, configuration precedence, and lifecycle decisions.",
+    "d4": "Case catalog",
+    "d4b": "Run reproducible examples and regression checks.",
+    "footer": "Persisting records what ran, what changed, and what the source can support."
   },
   "zh": {
-    "eyebrow": "模型状态 · AGENT 历史",
-    "positioning": "Agent 时代的持久化基础设施",
-    "lede": "在受治理的环境中运行 Agent，然后查询真实发生过的一切。",
-    "cta_primary": "运行第一个 Agent",
-    "cta_secondary": "查看轨迹 Dataset",
-    "cta_tertiary": "安装",
-    "term_caption": "执行",
-    "shot_caption": "可查询的历史",
-    "shot_alt": "pChronicle Runs 浏览器，列出已捕获的 Agent 会话",
-    "stat_formats": "种轨迹格式",
-    "stat_executors": "种执行器：host 内核、libkrun microVM",
-    "stat_import": "直接导入 Codex 与 Claude Code 会话",
-    "stat_sql": "用 SQL 查询轨迹历史",
-    "flow_kicker": "贯通路径",
-    "flow_title": "从执行到可查询的历史",
-    "flow_lead": "一条路径，三个步骤。每一步都是真实命令。",
-    "flow_1_step": "Run",
-    "flow_1_title": "受治理地执行",
-    "flow_1_body": "Agent 在 stage 中工作。文件修改先留在 stage，等你审查后再决定去向。",
-    "flow_2_step": "Capture",
-    "flow_2_title": "事实成为记录",
-    "flow_2_body": "配置 capture 后，Gateway 轨迹事件与选定的生命周期记录会被发布出来。",
-    "flow_3_step": "Query",
-    "flow_3_title": "历史变得可查询",
-    "flow_3_body": "Dataset 可用 SQL 查询。外部轨迹无需经过 pVisor 也能直接进入。",
-    "flow_note": "两者仍可独立使用。",
-    "depth_kicker": "具体意味着什么",
-    "depth_title": "治理与历史的细节",
-    "pvisor_body": "Agent 的每一处文件修改都落在 stage 而非你的工作区。审查完整 diff，然后 apply 你想要的，drop 其余的。",
-    "pvisor_link": "审查与应用 Effect →",
-    "pchronicle_body": "轨迹成为可用 SQL 查询的 Dataset，可在本地 Web UI 中浏览，并能在八种格式之间交换。",
-    "pchronicle_link": "发现与查询 →",
-    "pchronicle_shot_alt": "pChronicle 分析视图，正在对轨迹 Dataset 执行 SQL 查询",
-    "start_kicker": "五分钟上手",
-    "start_title": "装一次，从任意一端开始",
-    "start_lead": "同一个 wheel 提供两个命令。按你手头已有的东西选择入口。",
-    "start_install": "安装",
-    "start_exec": "从执行开始",
-    "start_data": "从数据开始",
-    "start_data_note": "内建 walkthrough 使用临时示例，既不要求先运行 pVisor，也不要求源码 checkout。",
-    "read_kicker": "继续阅读",
-    "read_title": "需要时再进入细节",
-    "read_1_t": "选择工作流",
-    "read_1_d": "理解两个产品入口与贯通路径",
-    "read_2_t": "审查 Agent 修改",
-    "read_2_d": "理解 staged Effect 与选择性 apply",
-    "read_3_t": "查阅 pChronicle CLI",
-    "read_3_d": "Dataset、命令原型和常见例子",
-    "read_4_t": "检查系统边界",
-    "read_4_d": "架构、集成范围和保证边界",
-    "close_title": "从模型状态到 Agent 历史",
-    "close_body": "Persisting 让需要复用的状态保持持久，让已经发生的运行保持可查询；它记录实际存在的数据与执行机制，不补造原始记录中不存在的控制或证据。"
+    "eyebrow": "面向 Agent 的持久化基础设施",
+    "title": "Persisting",
+    "lede": "在可审查的执行边界中运行 Agent，并将产生的历史保存为可查询 Dataset。",
+    "primary": "开始使用",
+    "secondary": "阅读系统设计",
+    "install": "安装指南",
+    "scope": "两个独立入口组成的产品界面",
+    "visor_title": "pVisor",
+    "visor_body": "在 staged workspace 与选定执行 Provider 中治理单个 Agent Run。查看 Evidence，再决定 apply 或 drop Effect。",
+    "visor_link": "开始一次 Run →",
+    "chronicle_title": "pChronicle",
+    "chronicle_body": "固定、规范化、查询和交换 Agent 轨迹 Source。无需先运行 pVisor，也可以浏览持久历史。",
+    "chronicle_link": "探索 Dataset →",
+    "architecture": "产品架构",
+    "architecture_body": "执行与历史是两条独立路径。配置后的 capture 是显式交接，只传递选定的生命周期事实与轨迹事件。",
+    "principles": "运行原则",
+    "p1": "边界必须明确",
+    "p1b": "每个 Run 都分别记录请求的 capability 与实际生效的 capability。",
+    "p2": "Effect 可审查",
+    "p2b": "文件修改会留在 stage 中，直到用户选择 apply 或 drop。",
+    "p3": "保持 Source 事实",
+    "p3b": "规范化与查询视图保留输入 Source 的保证和 lineage。",
+    "docs": "文档入口",
+    "docs_body": "按当前任务选择合适的入口。",
+    "d1": "第一次使用 pVisor",
+    "d1b": "安装、执行、审查并选择性应用修改。",
+    "d2": "执行环境",
+    "d2b": "比较 host、OCI 与 VM 的布局和边界。",
+    "d3": "CLI 模型",
+    "d3b": "理解命令、配置优先级和生命周期决策。",
+    "d4": "Case 目录",
+    "d4b": "运行可复现示例和回归检查。",
+    "footer": "Persisting 记录实际运行了什么、改变了什么，以及 Source 能够支持什么。"
   }
 } %}
-{% set t = copy["zh"] if config.theme.language == "zh" else copy["en"] %}
+{% set c = t["zh"] if config.theme.language == "zh" else t["en"] %}
 
 {% block tabs %}
   {{ super() }}
-
   <main class="ph">
-
     <section class="ph-hero">
       <div class="ph-shell">
         <div class="ph-hero-copy">
-          <p class="ph-eyebrow">{{ t.eyebrow }}</p>
-          <h1 class="ph-wordmark">Persisting</h1>
-          <p class="ph-positioning">{{ t.positioning }}</p>
-          <p class="ph-lede">{{ t.lede }}</p>
+          <p class="ph-eyebrow">{{ c.eyebrow }}</p>
+          <h1 class="ph-wordmark">{{ c.title }}</h1>
+          <p class="ph-positioning">{{ c.lede }}</p>
           <div class="ph-actions">
-            <a href="pvisor/get-started/" class="ph-btn ph-btn--primary">{{ t.cta_primary }}</a>
-            <a href="pchronicle/get-started/" class="ph-btn">{{ t.cta_secondary }}</a>
-            <a href="installation/" class="ph-btn ph-btn--quiet">{{ t.cta_tertiary }}</a>
+            <a href="pvisor/get-started/" class="ph-btn ph-btn--primary">{{ c.primary }}</a>
+            <a href="system-design/" class="ph-btn">{{ c.secondary }}</a>
+            <a href="installation/" class="ph-btn ph-btn--quiet">{{ c.install }}</a>
           </div>
         </div>
-
         <div class="ph-stage">
           <figure class="ph-panel ph-panel--exec">
-            <div class="ph-term" role="img" aria-label="{{ t.flow_1_body }}">
+            <div class="ph-term" role="img" aria-label="pVisor command workflow">
               <span class="ph-term-dots" aria-hidden="true"></span>
-              <pre><code><span class="ph-l"><span class="ph-p">$</span> pvisor run --safe codex</span>
+              <pre><code><span class="ph-l"><span class="ph-p">$</span> pvisor -- codex</span>
 <span class="ph-l"><span class="ph-p">$</span> pvisor review last</span>
-<span class="ph-l"><span class="ph-p">$</span> pvisor apply last --path src</span>
-<span class="ph-l"><span class="ph-p">$</span> pvisor drop last</span></code></pre>
+<span class="ph-l"><span class="ph-p">$</span> pvisor apply last --path src</span></code></pre>
             </div>
-            <figcaption>{{ t.term_caption }}</figcaption>
+            <figcaption>pVisor / governed execution</figcaption>
           </figure>
-
           <span class="ph-beam" aria-hidden="true"></span>
-
           <figure class="ph-panel ph-panel--hist">
             <div class="ph-window">
               <span class="ph-term-dots" aria-hidden="true"></span>
-              <img src="{{ base_url }}/assets/screenshots/pchronicle/runs-browser.jpg"
-                   alt="{{ t.shot_alt }}" loading="lazy" width="1280" height="720" />
+              <img src="{{ base_url }}/assets/diagrams/persisting/system-products.svg" alt="{{ c.architecture }}" loading="lazy" width="1400" height="780" />
             </div>
-            <figcaption>{{ t.shot_caption }}</figcaption>
+            <figcaption>pChronicle / durable history</figcaption>
           </figure>
         </div>
       </div>
     </section>
 
-    <section class="ph-stats">
-      <div class="ph-shell">
-        <ul>
-          <li><strong>8</strong><span>{{ t.stat_formats }}</span></li>
-          <li><strong>2</strong><span>{{ t.stat_executors }}</span></li>
-          <li><span>{{ t.stat_import }}</span></li>
-          <li><span>{{ t.stat_sql }}</span></li>
-        </ul>
-      </div>
-    </section>
-
     <section class="ph-section">
       <div class="ph-shell">
-        <p class="ph-kicker">{{ t.flow_kicker }}</p>
-        <h2>{{ t.flow_title }}</h2>
-        <p class="ph-lead">{{ t.flow_lead }}</p>
-
-        <ol class="ph-flow">
-          <li class="ph-step ph-step--1">
-            <span class="ph-step-tag">{{ t.flow_1_step }}</span>
-            <h3>{{ t.flow_1_title }}</h3>
-            <p>{{ t.flow_1_body }}</p>
-            <code>pvisor run --safe codex</code>
-          </li>
-          <li class="ph-step ph-step--2">
-            <span class="ph-step-tag">{{ t.flow_2_step }}</span>
-            <h3>{{ t.flow_2_title }}</h3>
-            <p>{{ t.flow_2_body }}</p>
-            <code>pvisor run --gateway-mode capture</code>
-          </li>
-          <li class="ph-step ph-step--3">
-            <span class="ph-step-tag">{{ t.flow_3_step }}</span>
-            <h3>{{ t.flow_3_title }}</h3>
-            <p>{{ t.flow_3_body }}</p>
-            <code>pchronicle query ./dataset --sql "DESCRIBE dataset.steps"</code>
-          </li>
-        </ol>
-
-        <p class="ph-note">{{ t.flow_note }}</p>
-      </div>
-    </section>
-
-    <section class="ph-section ph-section--contrast">
-      <div class="ph-shell">
-        <p class="ph-kicker">{{ t.depth_kicker }}</p>
-        <h2>{{ t.depth_title }}</h2>
-
+        <p class="ph-kicker">{{ c.scope }}</p>
         <div class="ph-depth">
           <article class="ph-depth-card ph-depth-card--exec">
             <span class="ph-tag">PVISOR</span>
-            <p>{{ t.pvisor_body }}</p>
-            <div class="ph-term ph-term--sm">
-              <pre><code><span class="ph-l"><span class="ph-p">$</span> pvisor review last</span>
-<span class="ph-l"><span class="ph-p">$</span> pvisor apply last --path src</span>
-<span class="ph-l"><span class="ph-p">$</span> pvisor apply last --include 'tests/**'</span>
-<span class="ph-l"><span class="ph-p">$</span> pvisor drop last</span></code></pre>
-            </div>
-            <a href="pvisor/guides/review-apply/">{{ t.pvisor_link }}</a>
+            <h2>{{ c.visor_title }}</h2>
+            <p>{{ c.visor_body }}</p>
+            <a href="pvisor/get-started/">{{ c.visor_link }}</a>
           </article>
-
           <article class="ph-depth-card ph-depth-card--hist">
             <span class="ph-tag">PCHRONICLE</span>
-            <p>{{ t.pchronicle_body }}</p>
-            <div class="ph-window ph-window--sm">
-              <img src="{{ base_url }}/assets/screenshots/pchronicle/analysis-sql.jpg"
-                   alt="{{ t.pchronicle_shot_alt }}" loading="lazy" width="1280" height="720" />
-            </div>
-            <a href="pchronicle/guides/discover-and-query/">{{ t.pchronicle_link }}</a>
+            <h2>{{ c.chronicle_title }}</h2>
+            <p>{{ c.chronicle_body }}</p>
+            <a href="pchronicle/get-started/">{{ c.chronicle_link }}</a>
           </article>
-        </div>
-      </div>
-    </section>
-
-    <section class="ph-section">
-      <div class="ph-shell">
-        <p class="ph-kicker">{{ t.start_kicker }}</p>
-        <h2>{{ t.start_title }}</h2>
-        <p class="ph-lead">{{ t.start_lead }}</p>
-
-        <div class="ph-start">
-          <div class="ph-start-install">
-            <h3>{{ t.start_install }}</h3>
-            <pre><code>pip install persisting[lance]</code></pre>
-          </div>
-          <div class="ph-start-paths">
-            <div>
-              <h3>{{ t.start_exec }}</h3>
-              <pre><code>pvisor run --safe codex
-pvisor review last
-pvisor apply last --all</code></pre>
-            </div>
-            <div>
-              <h3>{{ t.start_data }}</h3>
-              <pre><code>pchronicle onboard
-pchronicle onboard query</code></pre>
-              <p class="ph-note">{{ t.start_data_note }}</p>
-            </div>
-          </div>
         </div>
       </div>
     </section>
 
     <section class="ph-section ph-section--contrast">
       <div class="ph-shell">
-        <p class="ph-kicker">{{ t.read_kicker }}</p>
-        <h2>{{ t.read_title }}</h2>
+        <p class="ph-kicker">{{ c.architecture }}</p>
+        <p class="ph-lead">{{ c.architecture_body }}</p>
+        <img src="{{ base_url }}/assets/diagrams/persisting/system-products.svg" alt="{{ c.architecture }}" loading="lazy" width="1400" height="780" />
+      </div>
+    </section>
 
-        <div class="ph-links">
-          <a href="overview/"><strong>{{ t.read_1_t }}</strong><span>{{ t.read_1_d }}</span></a>
-          <a href="pvisor/guides/review-apply/"><strong>{{ t.read_2_t }}</strong><span>{{ t.read_2_d }}</span></a>
-          <a href="pchronicle/reference/cli/"><strong>{{ t.read_3_t }}</strong><span>{{ t.read_3_d }}</span></a>
-          <a href="system-design/"><strong>{{ t.read_4_t }}</strong><span>{{ t.read_4_d }}</span></a>
+    <section class="ph-section">
+      <div class="ph-shell">
+        <p class="ph-kicker">{{ c.principles }}</p>
+        <div class="ph-flow">
+          <article class="ph-step"><span class="ph-step-tag">01</span><h3>{{ c.p1 }}</h3><p>{{ c.p1b }}</p></article>
+          <article class="ph-step"><span class="ph-step-tag">02</span><h3>{{ c.p2 }}</h3><p>{{ c.p2b }}</p></article>
+          <article class="ph-step"><span class="ph-step-tag">03</span><h3>{{ c.p3 }}</h3><p>{{ c.p3b }}</p></article>
         </div>
       </div>
     </section>
 
-    <section class="ph-close">
+    <section class="ph-section ph-section--contrast">
       <div class="ph-shell">
-        <h2>{{ t.close_title }}</h2>
-        <p>{{ t.close_body }}</p>
+        <p class="ph-kicker">{{ c.docs }}</p>
+        <p class="ph-lead">{{ c.docs_body }}</p>
+        <div class="ph-links">
+          <a href="pvisor/get-started/"><strong>{{ c.d1 }}</strong><span>{{ c.d1b }}</span></a>
+          <a href="pvisor/guides/execution/"><strong>{{ c.d2 }}</strong><span>{{ c.d2b }}</span></a>
+          <a href="pvisor/design/cli/"><strong>{{ c.d3 }}</strong><span>{{ c.d3b }}</span></a>
+          <a href="pvisor/reference/cases/"><strong>{{ c.d4 }}</strong><span>{{ c.d4b }}</span></a>
+        </div>
       </div>
     </section>
 
+    <section class="ph-close"><div class="ph-shell"><p>{{ c.footer }}</p></div></section>
   </main>
 {% endblock %}
-
 {% block content %}{% endblock %}
-
-{% block footer %}
-  {{ super() }}
-{% endblock %}

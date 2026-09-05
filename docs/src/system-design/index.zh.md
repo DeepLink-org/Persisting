@@ -4,7 +4,6 @@ Persisting 是横跨模型状态——参数与 KV Cache——以及 Agent 历�
 当前公开产品路径：
 
 - [pVisor](../pvisor/index.md) 虚拟化并治理单个 Agent Run；
-- [pPilot](../ppilot/index.md) 把该 Run 模型扩展到多个任务，并仍位于 pVisor 执行边界内；
 - [pChronicle](../pchronicle/index.md) 把持久轨迹 Source 组织为可查询 Dataset。
 
 Gateway、OverlayFS 与 OverlayNet 是 pVisor 运行时机制。存在稳定 Run identity 时，它会连接
@@ -36,7 +35,6 @@ Evidence。
 | --- | --- |
 | 单个 Run 的执行边界 | pVisor |
 | 模型、网络与文件系统 runtime driver | pVisor |
-| 多 Run planning、lease 与 task-to-Run mapping | pPilot |
 | Canonical event、终态事实与 Dataset 历史 | pChronicle |
 | 查询、交换与 revision lineage | pChronicle |
 
@@ -46,7 +44,6 @@ Evidence。
 - [从本地到集群的连续性](local-to-fleet.md)
 - [安全与 Evidence 模型](security-evidence.md)
 - [pVisor 实现边界](../pvisor/design/index.md)
-- [pPilot 编排](../ppilot/design/orchestration.md)
 - [pChronicle 实现边界](../pchronicle/design/index.md)
 
 交付状态以产品 Design 页面与[项目工程笔记](../project/engineering.md)为准。目标架构不能
