@@ -1,7 +1,7 @@
 const config = {
   title: 'Persisting',
   tagline: 'Persistent Infrastructure for the Agent Era',
-  favicon: 'img/diagrams/persisting/hero-cyberpunk.svg',
+  favicon: 'img/logo-mark.svg',
   url: 'https://deeplink-org.github.io',
   baseUrl: '/Persisting/',
   organizationName: 'DeepLink-org',
@@ -27,7 +27,7 @@ const config = {
     image: 'img/diagrams/persisting/hero-cyberpunk.svg',
     navbar: {
       title: 'Persisting',
-      logo: { alt: 'Persisting', src: 'img/diagrams/persisting/hero-cyberpunk.svg' },
+      logo: { alt: 'Persisting', src: 'img/logo-mark.svg' },
       items: [
         { to: '/docs/', label: 'Start here', position: 'left' },
         { to: '/docs/pvisor/', label: 'pVisor', position: 'left' },

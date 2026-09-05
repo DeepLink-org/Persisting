@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-labelledby="title">
+  <title>Persisting</title>
+  <defs><linearGradient id="g" x1="8" y1="40" x2="40" y2="8" gradientUnits="userSpaceOnUse"><stop stop-color="#0d9488"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs>
+  <path d="M24 4 41 14v20L24 44 7 34V14L24 4Z" fill="none" stroke="url(#g)" stroke-width="3"/>
+  <path d="m24 13 9 5v12l-9 5-9-5V18l9-5Z" fill="#111827" stroke="#5eead4" stroke-width="2"/>
+  <path d="M24 18v12M18 21l12 6M30 21l-12 6" stroke="#a5f3fc" stroke-width="1.5" opacity=".9"/>
+</svg>
