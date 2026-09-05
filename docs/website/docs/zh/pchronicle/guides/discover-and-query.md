@@ -3,6 +3,10 @@
 当你已有本地路径、对象存储 URI 或 alias，希望先理解其中的 Run 数据再编写报告时，使用这个
 工作流。
 
+:::tip 完成后你会得到什么
+你会知道 Dataset 包含哪些 Source、有哪些可用 relation，以及如何可复现地回答一个受资源限制的只读问题。
+:::
+
 ## 1. 检查 Dataset
 
 ```bash
@@ -23,6 +27,8 @@ Dataset 可能包含损坏条目时，显式选择错误策略：
 pchronicle ls ./dataset --errors report
 pchronicle ls ./dataset --errors strict
 ```
+
+探索陌生数据时使用 `report`。在自动化任务中，如果不完整 Dataset 应该让任务失败而不是产生部分结果，再切换到 `strict`。
 
 ## 2. 从内建分析开始
 

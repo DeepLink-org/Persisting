@@ -4,6 +4,11 @@ Agent 可以在 staged workspace 内自由工作，但不会自动获得修改�
 结束后，由你决定哪些 Effect 可以跨过这条边界。这个工作流应用文件系统
 [Effect 模型](../concepts/run-model.md)。
 
+:::note 开始前
+你需要一个项目目录和一个可以运行 Agent 的命令。如果还没有完成第一次运行，请先完成[运行第一个 Agent](../get-started.md)。
+下面的流程假设你希望手动决定 staged 修改何时进入基础项目。
+:::
+
 ## 使用 manual stage 运行
 
 最短命令是：
@@ -62,6 +67,11 @@ pvisor apply last --all
 ```bash
 pvisor drop last
 ```
+
+:::tip 验证结果
+每次批量 apply 后，都要对比 staged view 与基础项目。`apply` 成功只表示选中的、依赖闭包完整的批次已经跨过边界，
+不表示所有剩余 Effect 都已应用。
+:::
 
 ## 从已接受状态继续
 

@@ -3,6 +3,11 @@
 Use this workflow when you have a local path, object-store URI, or alias and
 want to understand its run data before writing a report.
 
+:::tip What you will have at the end
+You will know which Sources a Dataset contains, which relations are available,
+and how to answer one bounded, read-only question reproducibly.
+:::
+
 ## 1. Inspect the Dataset
 
 ```bash
@@ -24,6 +29,10 @@ If the Dataset may contain malformed entries, choose the error policy:
 pchronicle ls ./dataset --errors report
 pchronicle ls ./dataset --errors strict
 ```
+
+Use `report` while exploring unfamiliar data. Switch to `strict` in automation
+when an incomplete Dataset should fail the job instead of producing a partial
+answer.
 
 ## 2. Start with a built-in analysis
 
