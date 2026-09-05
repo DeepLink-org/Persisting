@@ -12,17 +12,21 @@ pub(crate) struct SyncArgs {
     #[arg(long, value_name = "DIRECTORY")]
     pub(crate) from: PathBuf,
 
-    /// Local Warehouse Dataset directory receiving the source files.
+    /// Local Warehouse Dataset receiving source files; unused for compact-jsonl.
     #[arg(long = "to", alias = "warehouse", value_name = "DIRECTORY")]
     pub(crate) to: PathBuf,
 
-    /// Local Storyline Lance Dataset directory receiving the decoded data.
+    /// Local Storyline or compact JSONL Lance Dataset receiving each snapshot.
     #[arg(long = "convert", alias = "storyline", value_name = "DIRECTORY")]
     pub(crate) convert: PathBuf,
 
-    /// Input exchange format. Auto detects each source file.
+    /// Input format. compact-jsonl requires a tree of .jsonl files.
     #[arg(long = "input-format", value_enum, default_value_t = ExchangeFormat::Auto)]
     pub(crate) input_format: ExchangeFormat,
+
+    /// Compact JSONL mapping; id/timestamp override $.id/$.timestamp defaults.
+    #[arg(long = "column", value_name = "NAME=JSON_PATH", action = clap::ArgAction::Append)]
+    pub(crate) columns: Vec<String>,
 
     /// Polling and update interval. Supports ms, s, m, and h.
     #[arg(long = "interval", value_name = "DURATION", value_parser = super::parse_duration_seconds, default_value = "1s")]
@@ -58,7 +62,14 @@ pub(crate) async fn run(args: SyncArgs, stderr: &mut dyn Write) -> Result<()> {
             !initial.is_empty(),
             "sync source contains no supported JSON files"
         );
-        super::exchange::sync_snapshot(&source, &warehouse, &storyline, args.input_format).await?;
+        super::exchange::sync_snapshot(
+            &source,
+            &warehouse,
+            &storyline,
+            args.input_format,
+            &args.columns,
+        )
+        .await?;
         writeln!(stderr, "sync batch={} status=ok", initial.len())
             .context("write sync progress")?;
         return Ok(());
@@ -94,8 +105,14 @@ pub(crate) async fn run(args: SyncArgs, stderr: &mut dyn Write) -> Result<()> {
                 continue;
             }
 
-            match super::exchange::sync_snapshot(&source, &warehouse, &storyline, args.input_format)
-                .await
+            match super::exchange::sync_snapshot(
+                &source,
+                &warehouse,
+                &storyline,
+                args.input_format,
+                &args.columns,
+            )
+            .await
             {
                 Ok(()) => {
                     writeln!(stderr, "sync batch={} status=ok", pending.len())
@@ -251,6 +268,7 @@ mod tests {
                 to: warehouse,
                 convert: storyline.clone(),
                 input_format: ExchangeFormat::Auto,
+                columns: Vec::new(),
                 interval_seconds: 1,
                 once: true,
             },

@@ -65,7 +65,16 @@ lance-table = "9.0.1"
 libc = "0.2"
 libkrun = "=1.19.3"
 log = "0.4"
-object_store = "0.13.2"
+opendal = { version = "0.57.0", default-features = true, features = [
+    "services-azblob",
+    "services-cos",
+    "services-fs",
+    "services-gcs",
+    "services-memory",
+    "services-oss",
+    "services-s3",
+    "services-tos",
+] }
 persisting-agentctl = { path = "crates/persisting-agentctl" }
 persisting-events = { path = "crates/persisting-events" }
 persisting-gateway = { path = "crates/persisting-gateway" }

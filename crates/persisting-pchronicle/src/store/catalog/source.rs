@@ -1,4 +1,5 @@
 use super::*;
+use crate::store::opendal_store::Store as OpendalStore;
 
 pub(super) async fn load_storyline_from_source(
     source: &ResolvedSource,
@@ -197,14 +198,17 @@ pub(super) enum LazySourceSpec {
         snapshot: RawEventSnapshot,
         projection: Option<StorylineTablePaths>,
     },
+    Compact {
+        uri: String,
+    },
     LocalFile {
         root: PathBuf,
         file: LocalQueryInputFile,
         format_hint: Option<DocumentFormat>,
     },
     RemoteFile {
-        store: Arc<LanceObjectStore>,
-        meta: ObjectMeta,
+        store: OpendalStore,
+        meta: RemoteObjectMeta,
         format_hint: Option<DocumentFormat>,
     },
 }
@@ -242,6 +246,7 @@ impl LazySource {
         match &self.spec {
             LazySourceSpec::Storyline { .. } => Some(DocumentFormat::StorylineLance),
             LazySourceSpec::Events { .. } => Some(DocumentFormat::CanonicalEvent),
+            LazySourceSpec::Compact { .. } => None,
             LazySourceSpec::LocalFile { format_hint, .. }
             | LazySourceSpec::RemoteFile { format_hint, .. } => *format_hint,
         }
@@ -308,6 +313,7 @@ impl LazySource {
                     normalization_count: AtomicUsize::new(0),
                 }))
             }
+            LazySourceSpec::Compact { .. } => Ok(ResolvedSource::Compact),
             LazySourceSpec::LocalFile {
                 root,
                 file,
@@ -381,6 +387,7 @@ pub(super) enum ResolvedSource {
     Storyline(StorylineDataSource),
     Events(ResolvedEventSource),
     File(FileTrajectoryDataSource),
+    Compact,
 }
 
 #[derive(Debug)]
@@ -549,6 +556,7 @@ impl ResolvedSource {
                 }
                 Ok(rows)
             }
+            Self::Compact => Ok(Vec::new()),
             _ => Ok(Vec::new()),
         }
     }
@@ -590,6 +598,7 @@ impl ResolvedSource {
                     carries_file_column: false,
                 })
             }
+            Self::Compact => None,
         })
     }
 }
@@ -609,35 +618,28 @@ async fn register_normalized_source(
                 "registering all normalized canonical events requires a fresh Storyline projection"
             )
         }
+        ResolvedSource::Compact => {
+            anyhow::bail!("compact JSONL has no normalized trajectory tables")
+        }
     }
 }
 
 async fn materialize_pinned_object(
-    store: &Arc<LanceObjectStore>,
-    meta: &ObjectMeta,
+    store: &OpendalStore,
+    meta: &RemoteObjectMeta,
     destination: &Path,
     max_bytes: u64,
 ) -> Result<()> {
-    let options = GetOptions {
-        if_match: meta.e_tag.clone(),
-        version: meta.version.clone(),
-        ..GetOptions::default()
-    };
-    let mut stream = store
-        .inner
-        .get_opts(&meta.location, options)
+    let (bytes, _) = store
+        .read(&meta.location)
         .await
         .with_context(|| format!("read pinned Dataset object {}", meta.location))?
-        .into_stream();
+        .with_context(|| format!("pinned Dataset object {} disappeared", meta.location))?;
     let mut output = tokio::fs::File::create(destination)
         .await
         .with_context(|| format!("create pinned Dataset file {}", destination.display()))?;
     let mut written = 0u64;
-    while let Some(chunk) = stream
-        .try_next()
-        .await
-        .with_context(|| format!("stream pinned Dataset object {}", meta.location))?
-    {
+    for chunk in bytes.chunks(64 * 1024) {
         written = written.saturating_add(chunk.len() as u64);
         anyhow::ensure!(
             written <= max_bytes,
@@ -645,7 +647,7 @@ async fn materialize_pinned_object(
             meta.location
         );
         output
-            .write_all(&chunk)
+            .write_all(chunk)
             .await
             .with_context(|| format!("write pinned Dataset file {}", destination.display()))?;
     }

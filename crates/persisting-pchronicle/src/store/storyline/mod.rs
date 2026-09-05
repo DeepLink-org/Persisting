@@ -63,13 +63,12 @@ use lance::deps::arrow_array::{
 };
 use lance::deps::arrow_schema::{ArrowError, SchemaRef};
 use lance::index::DatasetIndexExt;
-use lance::io::ObjectStore;
 use lance_index::IndexType;
 use lance_index::optimize::OptimizeOptions;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
-use object_store::path::Path as ObjectPath;
 use serde::{Deserialize, Serialize};
 
+use super::opendal_store::Store as OpendalStore;
 use super::storyline_model::{
     STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE, StoryRunRow, StoryStepRow,
     StoryToolCallRow, StorylineTables, reconstruct_storyline, split_storyline_with_unknown_limits,
@@ -209,8 +208,7 @@ struct StorylineSnapshotPointer {
 pub struct StorylineLanceStore {
     root: PathBuf,
     root_uri: String,
-    object_store: std::sync::Arc<ObjectStore>,
-    object_root: ObjectPath,
+    control_store: OpendalStore,
     write_lock: Arc<tokio::sync::Mutex<()>>,
     control_lock: Arc<tokio::sync::Mutex<()>>,
     content_options: StorylineContentOptions,
@@ -500,31 +498,31 @@ impl StorylineLanceStore {
     /// This is observational: it never creates the local directory, a lock
     /// file, or an object-store key.
     pub async fn destination_exists(root: impl AsRef<str>) -> Result<bool> {
+        if !root.as_ref().contains("://") {
+            return Ok(Path::new(root.as_ref()).exists());
+        }
         let store = Self::open_uri_unchecked(root).await?;
-        if matches!(store.storage_scheme(), "file" | "file+uring") {
+        if !store.root_uri.contains("://")
+            || matches!(store.storage_scheme(), "file" | "file+uring")
+        {
             return Ok(store.root.exists());
         }
-        let mut objects = store.object_store.inner.list(Some(&store.object_root));
-        objects
-            .try_next()
+        store
+            .control_store
+            .exists()
             .await
             .context("inspect Storyline destination prefix")
-            .map(|object| object.is_some())
     }
 
     pub(crate) async fn open_uri_unchecked(root: impl AsRef<str>) -> Result<Self> {
         let root_uri = normalize_root_uri(root.as_ref())?;
-        let (object_store, object_root) =
-            ObjectStore::from_uri(&root_uri).await.map_err(|error| {
-                anyhow::anyhow!("open Storyline object store {root_uri}: {error:#}")
-            })?;
+        let control_store = OpendalStore::from_uri(&root_uri).await?;
         Ok(Self {
             root: PathBuf::from(&root_uri),
             write_lock: root_write_lock::for_root(&root_uri),
             control_lock: Arc::new(tokio::sync::Mutex::new(())),
             root_uri,
-            object_store,
-            object_root,
+            control_store,
             content_options: StorylineContentOptions::default(),
         })
     }
@@ -539,7 +537,10 @@ impl StorylineLanceStore {
     }
 
     pub fn storage_scheme(&self) -> &str {
-        self.object_store.scheme()
+        self.root_uri
+            .split_once("://")
+            .map(|(scheme, _)| scheme)
+            .unwrap_or("file")
     }
 
     async fn acquire_write_guard(&self) -> Result<StoreWriteGuard> {
@@ -1116,8 +1117,8 @@ impl StorylineLanceStore {
             ))
             && let Some(generation) = new_table_generation
             && let Err(error) = self
-                .object_store
-                .remove_dir_all(self.generation_object_path(&generation))
+                .control_store
+                .remove(&self.generation_object_path(&generation))
                 .await
         {
             cleanup_failures.push(format!(
@@ -1279,8 +1280,8 @@ impl StorylineLanceStore {
             && !published
             && let Some(generation) = takeover_generation
             && let Err(error) = self
-                .object_store
-                .remove_dir_all(self.generation_object_path(&generation))
+                .control_store
+                .remove(&self.generation_object_path(&generation))
                 .await
         {
             cleanup_failures.push(format!(
@@ -1492,11 +1493,8 @@ impl StorylineLanceStore {
         Ok(cloned)
     }
 
-    fn generation_object_path(&self, generation: &str) -> ObjectPath {
-        self.object_root
-            .clone()
-            .join(GENERATIONS_DIR)
-            .join(generation)
+    fn generation_object_path(&self, generation: &str) -> String {
+        format!("{GENERATIONS_DIR}/{generation}")
     }
 
     async fn expired_generation_candidates(
@@ -1512,18 +1510,15 @@ impl StorylineLanceStore {
             .unwrap_or_default()
             .saturating_sub(retention)
             .as_nanos();
-        let generations_root = self.object_root.clone().join(GENERATIONS_DIR);
-        let prefix = format!("{}/", generations_root.as_ref().trim_end_matches('/'));
+        let prefix = format!("{GENERATIONS_DIR}/");
         let objects = self
-            .object_store
-            .inner
-            .list(Some(&generations_root))
-            .try_collect::<Vec<_>>()
+            .control_store
+            .list(GENERATIONS_DIR)
             .await
             .context("list Storyline physical generations")?;
         let mut candidates = std::collections::BTreeSet::new();
         for object in objects {
-            let Some(relative) = object.location.as_ref().strip_prefix(&prefix) else {
+            let Some(relative) = object.path.strip_prefix(&prefix) else {
                 continue;
             };
             let Some(generation) = relative.split('/').next() else {
@@ -1549,8 +1544,8 @@ impl StorylineLanceStore {
     ) -> Result<usize> {
         let mut removed = 0;
         for generation in candidates {
-            self.object_store
-                .remove_dir_all(self.generation_object_path(&generation))
+            self.control_store
+                .remove(&self.generation_object_path(&generation))
                 .await
                 .with_context(|| format!("remove expired Storyline generation {generation}"))?;
             removed += 1;

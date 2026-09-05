@@ -157,9 +157,10 @@ pchronicle analysis tools @prod --format csv --limit 20
 
 ```text
 pchronicle import -f|--from SOURCE -t|--to NEW_DATASET
-  [-i|--input-format auto|atif|actf|openai-messages|storyline|codex|claude-code]
-  [-o|--output-format preserve|storyline]
-  [--mode create|append|replace] [--on-duplicate suffix|skip] [--yes] [OPTIONS]
+  [-i|--input-format auto|atif|actf|openai-messages|storyline|codex|claude-code|compact-jsonl]
+  [-o|--output-format preserve|storyline|compact-jsonl]
+  [--mode create|append|replace] [--on-duplicate suffix|skip] [--yes]
+  [--column NAME=JSON_PATH]... [OPTIONS]
 ```
 
 ```bash
@@ -167,6 +168,10 @@ pchronicle import -f input.json -t ./imported -i atif
 cat input.json | pchronicle import -f - -t ./imported -i openai-messages
 pchronicle import -f more.json -t ./normalized --mode append --on-duplicate skip
 pchronicle import -f rebuilt.json -t ./normalized --mode replace --yes
+pchronicle import -f ./jsonl-root -t ./records.lance \
+  -o compact-jsonl \
+  --column id=$.event.id --column timestamp=$.event.time \
+  --column model=$.payload.model
 ```
 
 `-` means stdin. `create` is the default and requires a new destination.
@@ -177,21 +182,39 @@ transaction, and only then removes the old data. It requires interactive
 confirmation or `--yes`; an existing object-store Dataset cannot currently be
 replaced in place.
 
+Compact JSONL is a record store, not a trajectory conversion. Either
+`--input-format compact-jsonl` or `--output-format compact-jsonl` selects it.
+It recursively reads local `.jsonl` files and requires every non-empty line to
+be a JSON object with a unique scalar `id` and scalar `timestamp`; their default
+paths are `$.id` and `$.timestamp`. `--column id=PATH` and
+`--column timestamp=PATH` override those paths, while any other
+`--column NAME=PATH` adds a nullable JSONB projection. Compact import supports
+local `create` and confirmed `replace`, but not stdin, object-store targets, or
+`append`.
+
 ### Sync
 
 ```text
 pchronicle sync --from DIRECTORY --to DIRECTORY --convert DIRECTORY
-  [--input-format FORMAT] [--interval DURATION] [--once]
+  [--input-format FORMAT] [--column NAME=JSON_PATH]...
+  [--interval DURATION] [--once]
 ```
 
 `sync` is a resident polling worker for `.json`, `.jsonl`, and `.ndjson` files.
-It coalesces changes into a pending set and, on each interval, atomically
-mirrors the source files byte-for-byte into a local Warehouse Dataset and
-writes a Storyline Lance Dataset to the `--convert` destination.
+For run-data formats it coalesces changes into a pending set and, on each
+interval, atomically mirrors the source files byte-for-byte into a local
+Warehouse Dataset and writes a Storyline Lance Dataset to `--convert`.
 Pending changes are cleared only after both outputs succeed; failures retain
 the set and retry with bounded exponential backoff. Use `--once` for one
 initial batch and exit. The two destinations must be local directories outside
 the source directory.
+
+With `--input-format compact-jsonl`, the source must be a local `.jsonl` tree
+and the same `--column` rules as compact import apply. Every successful batch
+rescans the whole tree and atomically replaces the compact Lance snapshot at
+`--convert`, so additions, changes, and deletions are reflected without
+row-level incremental updates. In this mode `--to` is retained as a required
+compatibility argument but is not written.
 
 ### Drop
 
@@ -207,7 +230,7 @@ filesystem roots or whole object-store buckets.
 
 ```text
 pchronicle export -f|--from DATASET -t|--to TARGET
-  -o|--output-format atif|actf|openai-messages|storyline [OPTIONS]
+  -o|--output-format atif|actf|openai-messages|storyline|compact-jsonl [OPTIONS]
 ```
 
 ```bash

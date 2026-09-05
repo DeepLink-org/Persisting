@@ -122,6 +122,8 @@ pub(crate) struct RunSummary {
     pub(crate) row_count: usize,
     pub(crate) duplicate_event_ids: usize,
     pub(crate) status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) format: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -256,6 +258,7 @@ fn api_routes() -> Router<AppState> {
         .route("/explorer/runs", get(explorer_runs))
         .route("/explorer/tree", get(explorer_tree))
         .route("/explorer/run", get(explorer_run))
+        .route("/explorer/record", get(explorer_record))
         .route("/explorer/turns", get(explorer_turns))
         .route("/explorer/turn", get(explorer_turn))
         .route("/events", get(events))
@@ -1241,6 +1244,14 @@ async fn load_trajectory(
     {
         return Ok(loaded.clone());
     }
+    if run.format.as_deref() == Some("compact-jsonl/v1") {
+        return Ok(LoadedTrajectory {
+            run,
+            event_provenance: CatalogEventProvenance::SyntheticFromStoryline,
+            records: Vec::new(),
+            turns: Vec::new(),
+        });
+    }
     let key = catalog_storyline_key(&run);
     let bundle = if state.live_reads {
         runtime.snapshot.load_live_trajectory_bundle(&key).await
@@ -1363,6 +1374,33 @@ async fn explorer_run(
         &loaded.records,
         loaded.event_provenance,
     )))
+}
+
+#[derive(Debug, Serialize)]
+struct CompactRecordDetail {
+    run: RunSummary,
+    record: Value,
+}
+
+async fn explorer_record(
+    State(state): State<AppState>,
+    request_id: RequestId,
+    query: Result<Query<SessionQuery>, QueryRejection>,
+) -> Result<Json<CompactRecordDetail>, ApiError> {
+    let query = api_query(query)?;
+    let run = resolve_run_summary(&state, &query, &request_id).await?;
+    if run.format.as_deref() != Some("compact-jsonl/v1") {
+        return Err(ApiError::not_found("run is not a compact JSONL record"));
+    }
+    let key = catalog_storyline_key(&run);
+    let record = current_catalog(&state, &request_id)
+        .await?
+        .snapshot
+        .compact_record(&key)
+        .await
+        .map_err(|error| fail(&request_id, "load_compact_record", error))?
+        .ok_or_else(|| ApiError::not_found("record was not found"))?;
+    Ok(Json(CompactRecordDetail { run, record }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1960,7 +1998,7 @@ enum AnalysisCompileScopeItem {
         root_session_id: String,
     },
     Run {
-        run: RunSummary,
+        run: Box<RunSummary>,
     },
 }
 

@@ -45,9 +45,6 @@ use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::prelude::SessionContext;
 use futures::{StreamExt, TryStreamExt, stream};
-use lance::io::ObjectStore as LanceObjectStore;
-use object_store::path::Path as ObjectPath;
-use object_store::{GetOptions, ObjectMeta};
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::OnceCell;
@@ -60,6 +57,7 @@ use crate::projection::projection_lineage_is_fresh;
 
 use super::events::datafusion::{RawEventDataSource, RawEventDataSourceOptions, RawEventSnapshot};
 use super::files::matches_file_filter;
+use super::opendal_store::Entry as OpendalEntry;
 use super::{
     FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, FileTrajectoryQueryMetrics,
     LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions, ProjectionSourceSnapshot,
@@ -69,6 +67,31 @@ use super::{
     story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch, story_steps_to_batch,
     story_tool_calls_arrow_schema, story_tool_calls_from_batch, story_tool_calls_to_batch,
 };
+
+#[derive(Clone, Debug)]
+pub(crate) struct RemoteObjectMeta {
+    pub(crate) location: String,
+    pub(crate) size: u64,
+    pub(crate) etag: Option<String>,
+    pub(crate) version: Option<String>,
+    pub(crate) last_modified: String,
+}
+
+impl From<OpendalEntry> for RemoteObjectMeta {
+    fn from(entry: OpendalEntry) -> Self {
+        Self {
+            location: entry.path,
+            size: entry.metadata.content_length(),
+            etag: entry.metadata.etag().map(ToOwned::to_owned),
+            version: entry.metadata.version().map(ToOwned::to_owned),
+            last_modified: entry
+                .metadata
+                .last_modified()
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+        }
+    }
+}
 
 pub const DEFAULT_DATASET_NAME: &str = "dataset";
 
@@ -422,6 +445,35 @@ impl DatasetCatalogSnapshot {
     ) -> Result<Option<StorylineDocument>> {
         let source = self.lazy_source(key)?.resolve().await?;
         load_storyline_from_source(source.as_ref(), key).await
+    }
+
+    pub async fn compact_records(
+        &self,
+        dataset: &str,
+        file: &str,
+    ) -> Result<Option<Vec<crate::store::CompactJsonlRecord>>> {
+        let key = CatalogStorylineKey {
+            dataset: dataset.into(),
+            file: file.into(),
+            document_id: String::new(),
+            session_id: String::new(),
+        };
+        let source = self.lazy_source(&key)?;
+        let LazySourceSpec::Compact { uri } = &source.spec else {
+            return Ok(None);
+        };
+        Ok(Some(crate::store::CompactJsonlStore::records(uri).await?))
+    }
+
+    pub async fn compact_record(
+        &self,
+        key: &CatalogStorylineKey,
+    ) -> Result<Option<serde_json::Value>> {
+        let source = self.lazy_source(key)?;
+        let LazySourceSpec::Compact { uri } = &source.spec else {
+            return Ok(None);
+        };
+        crate::store::CompactJsonlStore::read_record(uri, &key.document_id).await
     }
 
     /// Resolve one canonical Storyline from the latest visible events
@@ -854,30 +906,14 @@ fn local_snapshot_ref(path: &Path) -> String {
     format!("local:{}", hash.finalize().to_hex())
 }
 
-fn remote_source_revision(meta: &ObjectMeta) -> CatalogSourceRevision {
+fn remote_source_revision(meta: &RemoteObjectMeta) -> CatalogSourceRevision {
     CatalogSourceRevision::Object {
         version: meta.version.clone(),
-        etag: meta.e_tag.clone(),
+        etag: meta.etag.clone(),
         size_bytes: meta.size,
-        last_modified: meta.last_modified.to_rfc3339(),
-        location: meta.location.to_string(),
+        last_modified: meta.last_modified.clone(),
+        location: meta.location.clone(),
     }
-}
-
-fn relative_object_path(root: &ObjectPath, location: &ObjectPath) -> Result<String> {
-    let root = root.as_ref().trim_matches('/');
-    let location = location.as_ref().trim_matches('/');
-    if root.is_empty() {
-        return Ok(location.to_string());
-    }
-    if location == root {
-        return Ok(String::new());
-    }
-    location
-        .strip_prefix(root)
-        .and_then(|relative| relative.strip_prefix('/'))
-        .map(str::to_owned)
-        .with_context(|| format!("object {location} is outside Dataset prefix {root}"))
 }
 
 fn parent_relative_path(path: &str, leaf: &str) -> String {

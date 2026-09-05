@@ -2,9 +2,15 @@
 
 Use import and export at the interoperability boundary. Import creates,
 appends to, or replaces a Dataset; export reads complete Runs from an existing Dataset.
-Import and export accept ATIF, ACTF, OpenAI Messages, and Storyline JSON.
+Import and export accept ATIF, ACTF, OpenAI Messages, Storyline JSON, and
+record-level Compact JSONL.
 Import also accepts decode-only Codex (`codex`) and Claude Code (`claude-code`)
 session JSONL. Export refuses those two formats.
+
+Compact JSONL keeps one JSON object per row without assigning trajectory
+semantics. Use `--input-format compact-jsonl` or
+`--output-format compact-jsonl`; see the [CLI reference](../reference/cli.md)
+for the `--column` mapping and snapshot-sync restrictions.
 
 ## Import into a new Dataset
 

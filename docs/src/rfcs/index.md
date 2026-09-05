@@ -19,3 +19,4 @@ each product's Reference and Guides.
 | [0010](0010-agent-corpus-lance-layout.md) | Layered Lance layout for Agent evaluation corpora | Proposed |
 | [0012](0012-pchronicle-find-query-syntax.md) | pChronicle `find` query expression | Proposed |
 | [0013](0013-pchronicle-warehouse-catalog.md) | pChronicle path Directory | Proposed |
+| [0014](0014-compact-jsonl.md) | Compact JSONL Lance storage format (`compact-jsonl/v1`) | Accepted |

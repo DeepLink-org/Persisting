@@ -20,3 +20,4 @@ RFC 正文保持英文，因为它们是历史决策快照。翻译会产生两�
 | [0010](0010-agent-corpus-lance-layout.md) | Agent 评测语料的分层 Lance 布局 | Proposed |
 | [0012](0012-pchronicle-find-query-syntax.md) | pChronicle `find` 查询表达式 | Proposed |
 | [0013](0013-pchronicle-warehouse-catalog.md) | pChronicle path Directory | Proposed |
+| [0014](0014-compact-jsonl.md) | Compact JSONL Lance 存储格式（`compact-jsonl/v1`） | Accepted |

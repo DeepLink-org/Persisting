@@ -6436,6 +6436,7 @@ dependencies = [
  "opendal-service-azblob",
  "opendal-service-azdls",
  "opendal-service-cos",
+ "opendal-service-fs",
  "opendal-service-gcs",
  "opendal-service-goosefs",
  "opendal-service-hf",
@@ -6581,6 +6582,20 @@ dependencies = [
  "reqsign-file-read-tokio",
  "reqsign-tencent-cos",
  "serde",
+]
+
+[[package]]
+name = "opendal-service-fs"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22e89a665fef0e6bd249cf5ea47fc174b7ba892159bee4b9382528b1ca873a2c"
+dependencies = [
+ "bytes",
+ "log",
+ "opendal-core",
+ "serde",
+ "tokio",
+ "xattr",
 ]
 
 [[package]]
@@ -7030,7 +7045,7 @@ dependencies = [
  "lance-linalg",
  "lance-table",
  "libc",
- "object_store",
+ "opendal",
  "persisting-agentctl",
  "persisting-events",
  "proptest",

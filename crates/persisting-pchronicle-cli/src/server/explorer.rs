@@ -1323,6 +1323,7 @@ mod tests {
             row_count: 1,
             duplicate_event_ids: 0,
             status: status.into(),
+            format: None,
         }
     }
 

@@ -392,12 +392,12 @@ mod tests {
     use super::*;
     use crate::layout::StoryCoords;
     use crate::projection::{StorylineProjectionBuildOutcome, build_storyline_projection};
+    use crate::store::opendal_store::Store as OpendalStore;
     use crate::store::{
         CatalogSnapshotOptions, DatasetCatalogSnapshot, DatasetMount, RawEventLanceStore,
         raw_event_lance_path,
     };
     use crate::{EventIdentity, EventRecord};
-    use lance::io::ObjectStore;
 
     fn note(session_id: &str, seq: u64) -> EventRecord {
         EventRecord {
@@ -601,9 +601,9 @@ mod tests {
             uuid::Uuid::new_v4().simple()
         );
         assert!(!storyline_projection_destination_exists(&remote).await?);
-        let (store, root) = ObjectStore::from_uri(&remote).await?;
+        let store = OpendalStore::from_uri(&remote).await?;
         store
-            .put(&root.join("sentinel"), b"present".as_slice())
+            .write_overwrite("sentinel", b"present".to_vec())
             .await?;
         assert!(storyline_projection_destination_exists(&remote).await?);
         Ok(())

@@ -145,6 +145,7 @@ plugins:
             0010 Agent corpus Lance layout: 0010 Agent 评测语料 Lance 布局
             0012 pChronicle find query syntax: 0012 pChronicle find 查询语法
             0013 pChronicle path Directory: 0013 pChronicle path Directory
+            0014 Compact JSONL: 0014 Compact JSONL
             Standalone systems: 独立系统
             Installation: 安装指南
             pChronicle CLI: pChronicle 命令参考
@@ -245,6 +246,7 @@ nav:
           - 0010 Agent corpus Lance layout: rfcs/0010-agent-corpus-lance-layout.md
           - 0012 pChronicle find query syntax: rfcs/0012-pchronicle-find-query-syntax.md
           - 0013 pChronicle path Directory: rfcs/0013-pchronicle-warehouse-catalog.md
+          - 0014 Compact JSONL: rfcs/0014-compact-jsonl.md
       - Standalone systems:
           - Queue guide: guide/queue.md
           - Python API overview: api/index.md

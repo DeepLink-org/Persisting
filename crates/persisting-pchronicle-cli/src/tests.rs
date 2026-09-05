@@ -2095,6 +2095,7 @@ async fn directory_import_reads_atif_jsonl_and_ndjson_in_both_output_modes() -> 
                     assert!(output.join("CURRENT").is_file());
                     assert!(!staged.exists());
                 }
+                ImportOutputFormat::CompactJsonl => unreachable!(),
             }
         }
     }

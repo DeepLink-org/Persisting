@@ -255,6 +255,12 @@ pub(super) async fn run_import(
         Some(output) => expand_dataset_reference(output, settings_override, false)?,
         None => default_import_output(&args, settings_override)?,
     };
+    if args.format == ExchangeFormat::CompactJsonl
+        || args.output_format == Some(ImportOutputFormat::CompactJsonl)
+    {
+        args.format = ExchangeFormat::CompactJsonl;
+        return run_compact_jsonl_import(args, &output_arg, stdout, stderr).await;
+    }
     let requested_destination = DatasetLocation::parse(&output_arg)?;
     if canonical.is_none()
         && requested_destination.is_object_store()
@@ -462,6 +468,7 @@ pub(super) async fn run_import(
                 )
                 .await?
             }
+            ImportOutputFormat::CompactJsonl => unreachable!("compact import handled above"),
         };
         if imported_sources.is_empty() {
             return Err(empty_auto_directory_import_error(directory_input));
@@ -551,6 +558,74 @@ pub(super) async fn run_import(
     Ok(())
 }
 
+async fn run_compact_jsonl_import(
+    args: ImportArgs,
+    output_arg: &str,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    anyhow::ensure!(
+        args.mode != ImportMode::Append,
+        "compact JSONL append is not supported; use sync or replace"
+    );
+    anyhow::ensure!(
+        args.from != "-",
+        "compact JSONL import does not support stdin"
+    );
+    let input = Path::new(&args.from);
+    let output = Path::new(output_arg);
+    anyhow::ensure!(
+        !output_arg.starts_with("s3://") && !output_arg.starts_with("oss://"),
+        "compact JSONL currently requires local paths"
+    );
+    if args.mode == ImportMode::Create {
+        anyhow::ensure!(!output.exists(), "import output already exists");
+    }
+    let columns = args
+        .columns
+        .iter()
+        .map(|item| {
+            let (name, path) = item
+                .split_once('=')
+                .context("--column must be NAME=JSON_PATH")?;
+            persisting_pchronicle::storage::CompactJsonlColumn::new(name.trim(), path.trim())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let options = persisting_pchronicle::storage::CompactJsonlOptions {
+        columns,
+        offload_threshold: 4 * 1024 * 1024,
+    };
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let staging = tempfile::Builder::new()
+        .prefix(".pchronicle-compact-jsonl-")
+        .tempdir_in(parent)?;
+    let rows = persisting_pchronicle::storage::CompactJsonlStore::import_path(
+        input,
+        staging.path(),
+        &options,
+    )
+    .await?;
+    std::fs::File::open(staging.path())?.sync_all()?;
+    let staging_path = staging.keep();
+    let mut cleanup = StagingPathGuard::new(staging_path.clone());
+    publish_staged_dataset(&staging_path, output, output.exists())?;
+    cleanup.disarm();
+    serde_json::to_writer_pretty(
+        &mut *stdout,
+        &serde_json::json!({"dataset_uri": output_arg, "output_format": "compact-jsonl", "rows": rows}),
+    )?;
+    writeln!(stdout)?;
+    writeln!(
+        stderr,
+        "dataset_uri={} output_format=compact-jsonl rows={rows}",
+        output_arg
+    )?;
+    Ok(())
+}
+
 /// Run one full snapshot import for the resident sync worker.
 ///
 /// The existing import path already stages local outputs atomically, mirrors
@@ -562,7 +637,30 @@ pub(crate) async fn sync_snapshot(
     warehouse: &Path,
     storyline: &Path,
     input_format: ExchangeFormat,
+    columns: &[String],
 ) -> Result<()> {
+    if input_format == ExchangeFormat::CompactJsonl {
+        let mut stdout = std::io::sink();
+        let mut stderr = std::io::sink();
+        return run_compact_jsonl_import(
+            ImportArgs {
+                from: source.to_string_lossy().into_owned(),
+                output: Some(storyline.to_string_lossy().into_owned()),
+                format: ExchangeFormat::CompactJsonl,
+                output_format: Some(ImportOutputFormat::CompactJsonl),
+                mode: ImportMode::Replace,
+                on_duplicate: None,
+                yes: true,
+                stream: false,
+                max_input_bytes: Some(256 * 1024 * 1024),
+                columns: columns.to_vec(),
+            },
+            storyline.to_string_lossy().as_ref(),
+            &mut stdout,
+            &mut stderr,
+        )
+        .await;
+    }
     // ponytail: rebuild one atomic snapshot per coalesced batch; add affected-document mutation
     // when profiling shows full-directory rebuilds are the bottleneck.
     let mut stdout = std::io::sink();
@@ -579,6 +677,7 @@ pub(crate) async fn sync_snapshot(
             yes: true,
             stream: false,
             max_input_bytes: Some(256 * 1024 * 1024),
+            columns: Vec::new(),
         },
         None,
         false,
@@ -599,6 +698,7 @@ pub(crate) async fn sync_snapshot(
             yes: true,
             stream: false,
             max_input_bytes: Some(256 * 1024 * 1024),
+            columns: Vec::new(),
         },
         None,
         false,
@@ -854,6 +954,33 @@ pub(super) async fn run_export(
     let dataset = resolve_dataset_uri(args.from.as_deref(), settings_override)?;
     if args.output != "-" {
         args.output = expand_dataset_reference(&args.output, settings_override, false)?;
+    }
+    if format == ExchangeFormat::CompactJsonl {
+        anyhow::ensure!(
+            args.source.is_none()
+                && args.run_id.is_none()
+                && args.document_id.is_none()
+                && args.session_id.is_none()
+                && args.r#where.is_none(),
+            "compact JSONL export does not support filters"
+        );
+        anyhow::ensure!(
+            args.output != "-",
+            "compact JSONL export requires a directory output"
+        );
+        anyhow::ensure!(
+            args.overwrite || !Path::new(&args.output).exists(),
+            "export output already exists; pass --overwrite"
+        );
+        let rows =
+            persisting_pchronicle::storage::CompactJsonlStore::export_path(&dataset, &args.output)
+                .await?;
+        writeln!(
+            stderr,
+            "format=compact-jsonl rows={} output={}",
+            rows, args.output
+        )?;
+        return Ok(());
     }
     let (_, dataset_uris, snapshot) =
         discover_query_snapshot(Some(&dataset), &[], args.max_files, args.max_entries).await?;
@@ -1113,7 +1240,9 @@ fn encode_export(format: ExchangeFormat, stories: &[StorylineDocument]) -> Resul
         ExchangeFormat::Codex | ExchangeFormat::ClaudeCode => {
             bail!("{format} is decode-only and cannot be exported")
         }
-        ExchangeFormat::Auto => unreachable!("exchange export format was validated"),
+        ExchangeFormat::CompactJsonl | ExchangeFormat::Auto => {
+            unreachable!("exchange export format was validated")
+        }
     };
     let mut output = serde_json::to_vec_pretty(&value).context("encode export JSON")?;
     output.push(b'\n');
@@ -1128,7 +1257,7 @@ fn exchange_document_format(format: ExchangeFormat) -> Option<DocumentFormat> {
         ExchangeFormat::Storyline => Some(DocumentFormat::Storyline),
         ExchangeFormat::Codex => Some(DocumentFormat::Codex),
         ExchangeFormat::ClaudeCode => Some(DocumentFormat::ClaudeCode),
-        ExchangeFormat::Auto => None,
+        ExchangeFormat::CompactJsonl | ExchangeFormat::Auto => None,
     }
 }
 
@@ -1764,6 +1893,7 @@ fn resolve_import_format(
         ExchangeFormat::Storyline => ExchangeFormat::Storyline,
         ExchangeFormat::Codex => ExchangeFormat::Codex,
         ExchangeFormat::ClaudeCode => ExchangeFormat::ClaudeCode,
+        ExchangeFormat::CompactJsonl => ExchangeFormat::CompactJsonl,
     };
     if !matches!(
         format,
@@ -1773,6 +1903,7 @@ fn resolve_import_format(
             | ExchangeFormat::Storyline
             | ExchangeFormat::Codex
             | ExchangeFormat::ClaudeCode
+            | ExchangeFormat::CompactJsonl
     ) {
         return Err(cli_boundary_error(
             BoundaryCode::Unsupported,
@@ -1824,6 +1955,7 @@ fn import_source_name(format: ExchangeFormat) -> &'static str {
         ExchangeFormat::Storyline => "trajectories.storyline.json",
         ExchangeFormat::Codex => "session.codex.jsonl",
         ExchangeFormat::ClaudeCode => "session.claude-code.jsonl",
+        ExchangeFormat::CompactJsonl => "compact.jsonl",
         _ => unreachable!("unsupported import format was rejected"),
     }
 }

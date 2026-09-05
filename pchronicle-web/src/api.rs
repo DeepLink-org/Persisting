@@ -5,8 +5,9 @@
 
 use crate::analysis_session::{AnalysisScope, AnalysisSpec, CompileFailure, CompiledQuery};
 use crate::model::{
-    CatalogTree, PhysicalFileLayout, PhysicalLayout, PhysicalPagePreview, PhysicalSource,
-    QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, TurnDetail, TurnPage,
+    CatalogTree, CompactRecordDetail, PhysicalFileLayout, PhysicalLayout, PhysicalPagePreview,
+    PhysicalSource, QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, TurnDetail,
+    TurnPage,
 };
 use gloo_net::http::{Request, RequestBuilder, Response};
 use serde::de::DeserializeOwned;
@@ -180,6 +181,18 @@ pub async fn run_analysis(run: &RunSummary) -> Result<RunAnalysis, ApiFailure> {
         with_catalog_headers(Request::get(&format!("/api/explorer/run?{}", run.query())))
             .send()
             .await,
+    )
+    .await
+}
+
+pub async fn compact_record(run: &RunSummary) -> Result<CompactRecordDetail, ApiFailure> {
+    json_checked(
+        with_catalog_headers(Request::get(&format!(
+            "/api/explorer/record?{}",
+            run.query()
+        )))
+        .send()
+        .await,
     )
     .await
 }

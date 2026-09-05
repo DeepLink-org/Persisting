@@ -203,13 +203,21 @@ enum Command {
     Agent(agent::AgentArgs),
     /// Locate a Run or Step by its source-local ID.
     Find(FindArgs),
-    /// Create, append to, or replace a Dataset from one or more run data sources.
+    /// Create, append to, or replace a Dataset from run data or compact JSONL.
+    ///
+    /// Compact JSONL stores each JSON object as one record without trajectory semantics.
+    /// Select it with either --input-format compact-jsonl or
+    /// --output-format compact-jsonl; it accepts local .jsonl input and supports
+    /// create or replace, not stdin or append.
     Import(ImportArgs),
     /// Permanently delete a Dataset directory or object-store prefix.
     Drop(DropArgs),
     /// Export complete Trajectories to an exchange format.
     Export(ExportArgs),
-    /// Mirror a changing directory into a Warehouse and Storyline Dataset.
+    /// Mirror a changing directory into snapshot Datasets.
+    ///
+    /// With --input-format compact-jsonl, each batch atomically replaces the
+    /// compact Lance Dataset at --convert; --to remains required but is not written.
     Sync(sync::SyncArgs),
     /// Run a deterministic local LLM upstream for Gateway testing.
     #[command(hide = true)]
@@ -596,6 +604,8 @@ enum ExchangeFormat {
     Codex,
     #[value(name = "claude-code")]
     ClaudeCode,
+    #[value(name = "compact-jsonl")]
+    CompactJsonl,
 }
 
 impl ExchangeFormat {
@@ -608,6 +618,7 @@ impl ExchangeFormat {
             Self::Storyline => "storyline",
             Self::Codex => "codex",
             Self::ClaudeCode => "claude-code",
+            Self::CompactJsonl => "compact-jsonl",
         }
     }
 }
@@ -625,6 +636,8 @@ enum ExportFormat {
     #[value(name = "openai-messages")]
     OpenaiMessages,
     Storyline,
+    #[value(name = "compact-jsonl")]
+    CompactJsonl,
 }
 
 impl From<ExportFormat> for ExchangeFormat {
@@ -634,6 +647,7 @@ impl From<ExportFormat> for ExchangeFormat {
             ExportFormat::Actf => Self::Actf,
             ExportFormat::OpenaiMessages => Self::OpenaiMessages,
             ExportFormat::Storyline => Self::Storyline,
+            ExportFormat::CompactJsonl => Self::CompactJsonl,
         }
     }
 }
@@ -644,6 +658,9 @@ enum ImportOutputFormat {
     Preserve,
     /// Decode all input Sources into one squashed Storyline Lance Store at the Dataset root.
     Storyline,
+    /// Store JSONL rows in one columnar compact JSONL Lance Dataset.
+    #[value(name = "compact-jsonl")]
+    CompactJsonl,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -669,6 +686,7 @@ impl ImportOutputFormat {
         match self {
             Self::Preserve => "preserve",
             Self::Storyline => "storyline-lance",
+            Self::CompactJsonl => "compact-jsonl",
         }
     }
 }
@@ -683,12 +701,12 @@ struct ImportArgs {
     #[arg(short = 't', long = "to", alias = "output", value_name = "DATASET")]
     output: Option<String>,
 
-    /// Input exchange format. Auto detects each regular file from name and content.
-    /// Directory imports skip JSON that is not a supported run data format.
+    /// Input exchange format. Auto detects run data; compact-jsonl is explicit.
+    /// Compact JSONL recursively reads local .jsonl files, one object per line.
     #[arg(short = 'i', long = "input-format", alias = "format", value_enum, default_value_t = ExchangeFormat::Auto)]
     format: ExchangeFormat,
 
-    /// Dataset layout: preserve source files, or combine them into one Storyline Lance Store at the Dataset root.
+    /// Dataset layout: preserve, normalized Storyline, or record-level compact JSONL.
     #[arg(short = 'o', long = "output-format", value_enum)]
     output_format: Option<ImportOutputFormat>,
 
@@ -711,6 +729,11 @@ struct ImportArgs {
     /// Maximum bytes accepted from each Source, or from stdin in total.
     #[arg(long, value_parser = parse_byte_size, default_value = "256MiB")]
     max_input_bytes: Option<usize>,
+
+    /// Compact JSONL mapping. id/timestamp override $.id/$.timestamp; other names add JSONB columns.
+    /// Example: --column id=$.event.id --column model=$.payload.model.
+    #[arg(long = "column", value_name = "NAME=JSON_PATH", action = clap::ArgAction::Append)]
+    columns: Vec<String>,
 }
 
 #[derive(Debug, Args)]
