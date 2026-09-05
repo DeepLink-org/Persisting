@@ -83,7 +83,7 @@ plugins:
           build: true
           site_name: "Persisting 文档"
           nav_translations:
-            Home: 首页
+            Start here: 从这里开始
             pVisor: pVisor
             pChronicle: pChronicle
             Overview: 概览
@@ -171,7 +171,7 @@ plugins:
             show_submodules: no
 
 nav:
-  - Home:
+  - Start here:
       - Start here: index.md
       - Choose a workflow: overview.md
       - Installation: installation.md
