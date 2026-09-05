@@ -1,0 +1,5032 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Persistent infrastructure for the Agent era—from model parameters and KV caches to Agent trajectories">
+      
+      
+      
+        <link rel="canonical" href="https://deeplink-org.github.io/Persisting/pvisor/design/isolation/">
+      
+      
+        <link rel="prev" href="../">
+      
+      
+        <link rel="next" href="../overlaynet/">
+      
+      
+        
+          <link rel="alternate" href="./" hreflang="en">
+        
+          <link rel="alternate" href="../../../zh/pvisor/design/isolation/" hreflang="zh">
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>Isolation architecture - Persisting Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/home.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#pvisor-isolation-architecture" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Persisting Documentation" class="md-header__button md-logo" aria-label="Persisting Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Persisting Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Isolation architecture
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="Select language">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="./" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="../../../zh/pvisor/design/isolation/" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/DeepLink-org/Persisting" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../.." class="md-tabs__link">
+          
+  
+  
+    
+  
+  Home
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  pVisor
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../pchronicle/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  pChronicle
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../project/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Persisting Documentation" class="md-nav__button md-logo" aria-label="Persisting Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Persisting Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/DeepLink-org/Persisting" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../.." class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_1" id="__nav_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Home
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Choose a workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pVisor
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    pVisor
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../get-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_3" id="__nav_2_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/agentvisor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AgentVisor category
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/run-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run, Attempt, and Effect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/capabilities-and-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capabilities and evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../guides/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_4" id="__nav_2_4_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/execution/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution environments
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/review-apply/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Review and apply effects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/network/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Network control
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/capture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capture trajectories
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/sandbox-replay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Replay Agent trajectories
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_5" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_5" id="__nav_2_5_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Isolation architecture
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Isolation architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-common-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Common model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-native-host-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Native host paths
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Native host paths">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-linux-fuse-workspace-landlock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Linux: FUSE + Workspace + Landlock
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.1 Linux: FUSE + Workspace + Landlock">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#current-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-minimum-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Minimum policy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-security-and-operational-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 Security and operational properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-macos-fuse-seatbelt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 macOS: FUSE + Seatbelt
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25-macos-virtualizationframework-host-root-overlay" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 macOS: Virtualization.framework + host-root overlay
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.5 macOS: Virtualization.framework + host-root overlay">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ghostvm-research" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GhostVM research
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#filesystem-and-identity-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Filesystem and identity semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lifecycle-and-security-profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifecycle and security profile
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#feasibility-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feasibility gate
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-path-b-litebox-overlayfs-semantics-in-the-vfs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Path B: LiteBox + OverlayFS semantics in the VFS
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Path B: LiteBox + OverlayFS semantics in the VFS">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-positioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Positioning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-security-and-operational-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Security and operational properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-workspace-transfer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Workspace transfer
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-path-c-docker-oci-container" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Path C: Docker / OCI container
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Path C: Docker / OCI container">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-positioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Positioning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-production-profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Production profile
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-security-and-operational-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Security and operational properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-path-d-firecracker-microvm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Path D: Firecracker microVM
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Path D: Firecracker microVM">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-positioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Positioning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-security-and-operational-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Security and operational properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-comparison-and-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Comparison and selection
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Comparison and selection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#recommended-portfolio" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended portfolio
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-one-backend-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. One backend contract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-zero-configuration-acceptance-criteria" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Zero-configuration acceptance criteria
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-validation-and-benchmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Validation and benchmarks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overlaynet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    OverlayNet architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_6" id="__nav_2_6_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pVisor CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pChronicle
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    pChronicle
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/get-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_3" id="__nav_3_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/concepts/dataset-and-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataset discovery and versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/concepts/facts-and-projections/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Recorded data, views, and versions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/guides/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_4" id="__nav_3_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/discover-and-query/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discover and query
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/exchange/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Import and export
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/serve/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local read-only Dataset server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/ui/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local Dataset Web UI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/serve-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway forwarding, rewriting, and capture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/design/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_5" id="__nav_3_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/design/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/design/catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Snapshot
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/design/trajectory-storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/design/storyline-lance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storyline Lance projection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_6" id="__nav_3_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/terminology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product terminology
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pChronicle CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/query-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/agenticmd/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AgenticMD format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/formats/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run data formats
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../project/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../system-design/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    End-to-end architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/local-to-fleet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local to fleet
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/security-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security and evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Engineering
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/engineering/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/releasing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing persisting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reproducible examples
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../rfcs/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decisions and RFCs
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Decisions and RFCs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0001-storyline-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0001 Storyline format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0002-events-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0002 Events format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0003-pchronicle-ownership/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0003 pChronicle ownership
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0004-actf-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0004 ACTF format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0005-pchronicle-revision-lineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0005 pChronicle revision lineage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0006-pchronicle-vortex-backend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0006 pChronicle Vortex backend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0007-events-contract-pchronicle-sidecar/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0007 Events contract and pChronicle sidecar
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0008-atif-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0008 ATIF format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0009-openai-messages-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0009 OpenAI Messages format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0010-agent-corpus-lance-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0010 Agent corpus Lance layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0012-pchronicle-find-query-syntax/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0012 pChronicle find query syntax
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0013-pchronicle-warehouse-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0013 pChronicle path Directory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0014-compact-jsonl/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0014 Compact JSONL
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../api/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Standalone systems
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_5" id="__nav_4_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Standalone systems
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../guide/queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../guide/custom-backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom queue backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-common-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Common model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-native-host-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Native host paths
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Native host paths">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-linux-fuse-workspace-landlock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Linux: FUSE + Workspace + Landlock
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.1 Linux: FUSE + Workspace + Landlock">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#current-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current implementation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-minimum-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Minimum policy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-security-and-operational-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 Security and operational properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-macos-fuse-seatbelt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 macOS: FUSE + Seatbelt
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25-macos-virtualizationframework-host-root-overlay" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 macOS: Virtualization.framework + host-root overlay
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.5 macOS: Virtualization.framework + host-root overlay">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ghostvm-research" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GhostVM research
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#filesystem-and-identity-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Filesystem and identity semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lifecycle-and-security-profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifecycle and security profile
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#feasibility-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feasibility gate
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-path-b-litebox-overlayfs-semantics-in-the-vfs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Path B: LiteBox + OverlayFS semantics in the VFS
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Path B: LiteBox + OverlayFS semantics in the VFS">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-positioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Positioning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-security-and-operational-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Security and operational properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-workspace-transfer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Workspace transfer
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-path-c-docker-oci-container" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Path C: Docker / OCI container
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Path C: Docker / OCI container">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-positioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Positioning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-production-profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Production profile
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-security-and-operational-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Security and operational properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-path-d-firecracker-microvm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Path D: Firecracker microVM
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Path D: Firecracker microVM">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-positioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Positioning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-security-and-operational-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Security and operational properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-comparison-and-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Comparison and selection
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Comparison and selection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#recommended-portfolio" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended portfolio
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-one-backend-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. One backend contract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-zero-configuration-acceptance-criteria" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Zero-configuration acceptance criteria
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-validation-and-benchmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Validation and benchmarks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="pvisor-isolation-architecture">pVisor isolation architecture<a class="headerlink" href="#pvisor-isolation-architecture" title="Permanent link">&para;</a></h1>
+<p>This document compares provider mechanisms and their actual security
+properties. Choose a provider with the <a href="../../guides/execution/">execution guide</a>
+and interpret guarantees with
+<a href="../../concepts/capabilities-and-evidence/">Capabilities and evidence</a>.</p>
+<div class="admonition note">
+<p class="admonition-title">Target architecture</p>
+<p>This document combines current implementation with explicitly identified
+target architecture. Linux <code>pvisor run --safe</code> implements the FUSE +
+synthetic root + rootless user/mount namespace + Landlock path described
+in section 2. macOS <code>--safe</code> implements Seatbelt-enforced staged writes and
+deny-all socket confinement; filesystem reads remain ambient and are
+reported separately. Docker and libkrun/KVM transports also exist.
+The Virtualization.framework backend in section 2.5, LiteBox VFS in
+section 3, the Docker production profile in section 4.2, and the
+Firecracker architecture in section 5 are targets, not implemented
+backends. Seccomp and complete resource enforcement remain acceptance
+criteria and roadmap work.</p>
+</div>
+<p>pVisor needs more than one isolation backend. A local coding Agent values fast
+startup and an exact view of the developer's workspace; an untrusted tenant
+requires a boundary that remains useful after the guest runtime is compromised.
+The design therefore separates the <strong>transactional workspace</strong> from the
+<strong>enforcement boundary</strong> instead of trying to make one mechanism serve both
+roles.</p>
+<p>The multiple backends are an implementation portfolio, <strong>not a configuration
+surface imposed on the user</strong>. The normal product experience remains:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pvisor<span class="w"> </span>run<span class="w"> </span>--safe<span class="w"> </span>&lt;agent&gt;<span class="w"> </span><span class="o">[</span>args...<span class="o">]</span>
+</span></code></pre></div>
+<p>pVisor probes the host, workload, and available placement, selects a backend,
+constructs the workspace, and applies the policy. Users do not configure
+Landlock rights, mount propagation, UID maps, 9P transports, seccomp JSON,
+container capabilities, TAP devices, or microVM images. Expert backend flags
+may exist for development and diagnosis, but must not be required for the
+normal path.</p>
+<p>Easy to use does not mean an invisible security downgrade. If the requested
+guarantee cannot be provided, pVisor either chooses another available backend
+or returns one actionable error. It never reports a <code>cwd</code>-only Run as safely
+sandboxed.</p>
+<h2 id="1-common-model">1. Common model<a class="headerlink" href="#1-common-model" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>RunSpec / capability policy
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>            |
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>            v
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>        pVisor supervisor (trusted)
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>            |
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>            +-- WorkspaceOverlay
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>            |     lower + compose + writable upper
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>            |     review / checkpoint / apply / drop
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>            |
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>            +-- IsolationBackend
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>                  workspace-landlock | workspace-seatbelt
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>                  litebox | container | microvm
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>            |
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>            v
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>       Agent process tree (untrusted)
+</span></code></pre></div>
+<p><code>WorkspaceOverlay</code> is the data plane for file changes. It provides an isolated
+Run view, copy-on-write, whiteouts, and an auditable changeset. It does <strong>not</strong>
+by itself prevent a process from opening a path outside that view.</p>
+<p><code>IsolationBackend</code> is the security plane. It determines which kernel, syscall
+surface, namespace, host paths, file descriptors, and network paths the Agent
+can reach. Every backend consumes the same logical workspace and must return a
+changeset with the same review/apply/drop semantics.</p>
+<p>The following invariants apply to backends that claim complete capability
+enforcement. A partial native backend may enforce a smaller dimension only
+when the Run Bundle identifies that dimension explicitly and records the
+remaining ambient access:</p>
+<ol>
+<li>Deny by default; every host file, socket, credential, device, and endpoint is
+   an explicit capability.</li>
+<li>The Agent never receives host control-plane credentials or the Docker socket.</li>
+<li>Only <code>stdin</code>, <code>stdout</code>, <code>stderr</code>, the Run-scoped AgentCtl transport, and
+   explicitly granted resource handles cross the execution boundary.</li>
+<li>The writable workspace is separate from the read-only base. A successful
+   process exit never implies permission to apply its changes.</li>
+<li>Requested and effective enforcement are recorded separately. An enforce
+   request fails closed when its backend is unavailable; it never silently
+   falls back to the current <code>cwd</code>-only behavior.</li>
+<li>pVisor records enough evidence to audit the boundary: backend/version,
+   workspace digest, effective UID/capabilities, kernel feature probes,
+   network mode, resource limits, image/rootfs digest, and downgrade reasons.</li>
+</ol>
+<h2 id="2-native-host-paths">2. Native host paths<a class="headerlink" href="#2-native-host-paths" title="Permanent link">&para;</a></h2>
+<h3 id="21-linux-fuse-workspace-landlock">2.1 Linux: FUSE + Workspace + Landlock<a class="headerlink" href="#21-linux-fuse-workspace-landlock" title="Permanent link">&para;</a></h3>
+<p>This is the preferred lightweight Linux host path. It keeps today's embedded
+FUSE OverlayFS and adds a kernel-enforced, unprivileged filesystem policy to
+the Agent process tree.</p>
+<p>Landlock is entirely internal: no system policy file, root helper, daemon, or
+per-project rule configuration is exposed to the user. pVisor derives the
+rules from the workspace, executable/runtime closure, explicit inputs, and
+Run-scoped scratch directory.</p>
+<h4 id="current-implementation">Current implementation<a class="headerlink" href="#current-implementation" title="Permanent link">&para;</a></h4>
+<p>The native Linux safe path is operational for ordinary local executables:</p>
+<ul>
+<li>pVisor self-executes a hidden launcher before Agent code starts;</li>
+<li>the launcher creates one-ID user plus private mount and child PID namespaces without
+  <code>/etc/subuid</code>, <code>newuidmap</code>, a setuid binary, or a daemon;</li>
+<li>a private tmpfs root bind-projects only the runtime, staged workspace, exact
+  device nodes, Run-scoped AgentCtl socket, and explicit capabilities before
+  the launcher enters it with <code>chroot</code>; arbitrary host pathname Unix sockets
+  are therefore absent rather than left to Landlock;</li>
+<li>inherited descriptors above stderr are closed, Landlock ABI v3 handles all
+  filesystem rights through <code>TRUNCATE</code>, <code>no_new_privs</code> is set, namespace and
+  ambient capabilities are cleared, and a trusted namespace PID 1 supervises
+  and reaps the Agent tree;</li>
+<li>successful main-process exit, cancellation, and forced termination all end
+  at the PID namespace boundary, so <code>setsid</code> and double-fork descendants cannot
+  survive the Run;</li>
+<li>the writable FUSE merged workspace and explicit read/write capabilities are
+  admitted, while the executable and a broad host runtime are read-only;</li>
+<li><code>NetworkCapability::Deny</code> also creates a private network namespace. Public
+  and allowlist proxy policies remain cooperative and are not reported as
+  non-bypassable;</li>
+<li>any namespace or Landlock setup error terminates before Agent execution with
+  a reserved infrastructure result and a Run Bundle downgrade warning.</li>
+</ul>
+<p>The broad immutable runtime currently includes existing <code>/bin</code>, <code>/sbin</code>,
+<code>/usr</code>, <code>/lib*</code>, <code>/etc</code>, and the process-local procfs views. This favors
+compatibility with shell, Python, Node, and dynamically linked local tools. A
+measured runtime-closure builder may narrow it later; the current policy never
+makes those hierarchies writable.</p>
+<p>The default pVisor dependency graph does not include a pChronicle storage
+backend, Lance, or DataFusion. Durable Attempt and trajectory publication uses
+the lightweight <code>persisting-events</code> control feature to start and communicate
+with the Control component of <code>pchronicle serve</code>; storage-engine and cloud SDK dependencies
+remain in that process. <code>jujutsu-overlay</code> adds the Jujutsu OverlayFS upper.
+See <a href="../../../rfcs/0007-events-contract-pchronicle-sidecar/">RFC-0007</a> for the
+dependency boundary.</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>pVisor process
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  +-- embedded FUSE server
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  |     base/compose (read-only) + upper (writable)
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>  |                         |
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>  |                         v
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>  |                    merged workspace
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>  |
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>  +-- small sandbox launcher
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>        close unrelated FDs
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>        synthetic bind-projected root + chroot
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>        PR_SET_NO_NEW_PRIVS
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>        Landlock ruleset
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>             |
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>             v
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>        Agent process tree
+</span></code></pre></div>
+<p>The pVisor supervisor and FUSE request loop remain outside the chroot and
+Landlock domain. The child receives read/write access to the merged workspace,
+read/execute access to a runtime, and read-only access to explicit inputs. An
+unprojected path is absent from the synthetic root; Landlock independently
+enforces access rights over projected hierarchies. Absolute paths are resolved
+inside that root rather than redirected into the workspace.</p>
+<h3 id="22-minimum-policy">2.2 Minimum policy<a class="headerlink" href="#22-minimum-policy" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Hierarchy</th>
+<th>Effective access</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>merged workspace</td>
+<td>read, write, create, remove, rename, link as required</td>
+</tr>
+<tr>
+<td>Agent executable and loader</td>
+<td>read, execute</td>
+</tr>
+<tr>
+<td>required shared libraries and runtime data</td>
+<td>read-only</td>
+</tr>
+<tr>
+<td>explicit input datasets</td>
+<td>read-only</td>
+</tr>
+<tr>
+<td>Run scratch directory</td>
+<td>read/write; preferably a size-limited tmpfs</td>
+</tr>
+<tr>
+<td>pVisor state, pChronicle, source credentials, home directory</td>
+<td>denied</td>
+</tr>
+<tr>
+<td><code>/proc</code>, <code>/sys</code>, host sockets</td>
+<td>not admitted to Agent access unless explicitly projected or separately virtualized</td>
+</tr>
+<tr>
+<td>minimal devices</td>
+<td>exact null, zero/full, random/urandom, and tty nodes only</td>
+</tr>
+</tbody>
+</table>
+<p>Landlock is additive to normal DAC/ACL/LSM checks; it does not grant an access
+the process did not already have. The launcher must negotiate the running
+kernel's Landlock ABI and handle all security-relevant rights supported by that
+ABI. Older ABIs may lack controls such as cross-directory refer or truncate,
+so pVisor must publish the effective guarantee rather than a boolean
+"Landlock enabled" flag.</p>
+<p>Files opened before <code>landlock_restrict_self</code> are not retroactively constrained.
+FD hygiene is consequently part of the boundary: prepare directory handles,
+close everything not granted, install <code>no_new_privs</code> and the ruleset, then
+<code>exec</code>. This setup belongs in a small auditable launcher, not in a complex
+post-fork closure of the multithreaded supervisor.</p>
+<h3 id="23-security-and-operational-properties">2.3 Security and operational properties<a class="headerlink" href="#23-security-and-operational-properties" title="Permanent link">&para;</a></h3>
+<p><strong>Strengths</strong></p>
+<ul>
+<li>No host root or persistent privileged daemon is required.</li>
+<li>Startup and steady-state overhead are small; file contents still use the
+  existing FUSE/OverlayFS path.</li>
+<li>Workspace fidelity remains the best of the native host paths, including
+  current review, checkpoint, apply, and drop behavior.</li>
+<li>A child can no longer escape merely by using <code>..</code> or an absolute host path.</li>
+</ul>
+<p><strong>Limits</strong></p>
+<ul>
+<li>The Agent still uses the host kernel and its native syscall ABI.</li>
+<li>Landlock is a filesystem access-control layer, not a root filesystem,
+  network namespace, resource controller, or complete process sandbox.</li>
+<li>Runtime allowlists are difficult for dynamic language stacks unless pVisor
+  builds a minimal runtime bundle.</li>
+<li>FUSE context switches remain on the hot path for workspace I/O.</li>
+<li>Linux only. The macOS sibling path has a different, explicitly narrower
+  Seatbelt boundary.</li>
+</ul>
+<p>The implementation already combines Landlock with an empty capability set,
+<code>no_new_privs</code>, rootless user/mount/PID namespaces, and a network namespace for
+deny-all Runs. Seccomp, complete aggregate resource limits, and transparent
+enforcement for selective egress remain necessary hardening without changing
+the workspace contract.</p>
+<h3 id="24-macos-fuse-seatbelt">2.4 macOS: FUSE + Seatbelt<a class="headerlink" href="#24-macos-fuse-seatbelt" title="Permanent link">&para;</a></h3>
+<p>The native macOS safe path is operational for ordinary local executables. It
+keeps the same staged macFUSE workspace while adding a kernel-enforced Seatbelt
+policy around the complete Agent descendant process tree:</p>
+<ul>
+<li>pVisor invokes only the fixed system <code>/usr/bin/sandbox-exec</code>, never a PATH
+  lookup or a project-supplied wrapper;</li>
+<li>the generated SBPL uses <code>-D</code> parameters for every writable path, so a
+  workspace name cannot inject policy text;</li>
+<li>path-parameterized <code>file-write*</code> rules admit only the mounted staged
+  workspace, explicit read-write filesystem capabilities, exact
+  terminal/device handles, a Run-owned temporary directory, and a one-time
+  setup attestation;</li>
+<li>the hidden launcher writes and unlinks that attestation before <code>exec</code> of the
+  Agent. A profile compile/apply failure therefore cannot be mistaken for an
+  Agent exit and terminates the Run as an infrastructure failure;</li>
+<li><code>NetworkCapability::Deny</code> starts from a deny-by-default profile, blocks IP
+  sockets and outbound ambient host Unix sockets, and retains only the exact
+  Run-scoped AgentCtl plus Unix IPC rooted in Run-owned directories;</li>
+<li>public and selective proxy modes remain cooperative because the first
+  implementation does not yet constrain direct sockets to only the in-process
+  proxy endpoint.</li>
+</ul>
+<p>The compatibility profile deliberately leaves filesystem reads ambient. This
+avoids hard-coding a brittle closure of Homebrew, Xcode, Python, Node, Rustup,
+SDK, framework, and user-installed runtime paths. Consequently the Run Bundle
+sets <code>filesystem_write_non_bypassable=true</code> but keeps
+<code>filesystem_read_non_bypassable=false</code> and the aggregate
+<code>filesystem_non_bypassable=false</code>. A future measured runtime-closure mode may
+make reads deny-by-default without changing the workspace contract.</p>
+<p>Seatbelt improves the local macOS boundary materially, but it is not a VM or a
+complete process sandbox: the host kernel, PID namespace, syscall surface, and
+resource accounting remain shared. The <code>sandbox-exec</code> interface is deprecated
+by Apple even though it remains shipped, so pVisor probes the fixed binary and
+fails closed instead of promising indefinite platform availability. macFUSE is
+still required for transactional staging until an FSKit backend is available.</p>
+<h3 id="25-macos-virtualizationframework-host-root-overlay">2.5 macOS: Virtualization.framework + host-root overlay<a class="headerlink" href="#25-macos-virtualizationframework-host-root-overlay" title="Permanent link">&para;</a></h3>
+<p>This is the proposed macOS kernel-isolation path for native Mach-O workloads.
+It is the macOS analogue of the implemented Linux libkrun full-root executor,
+but it cannot use libkrun: a macOS guest must be booted by Apple's
+Virtualization.framework on Apple Silicon. The objective is that an executable
+sees the invoking host's root filesystem, with all writes captured by the
+pVisor upper layer, while executing behind a separate macOS kernel boundary.</p>
+<p>The guest's boot disk is not the Agent's logical root. It contains only a
+compatible macOS installation and a privileged pVisor guest supervisor. The
+host constructs <code>host / + Run upper</code> through OverlayFS/macFUSE, exports the
+merged view with VirtioFS, and asks the guest supervisor to enter that view
+before executing the target:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>host pVisor (Rust)
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>  +-- host / (lower, access still limited by the invoking host identity)
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>  +-- per-Run upper
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>  +-- merged pVisor root (macFUSE / future FSKit)
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>  +-- MacVmExecutor
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>          |
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>          | private Unix socket / framed control protocol
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>          v
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>     pvisor-vz-helper (Swift, one helper process per active VM)
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>       Virtualization.framework
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>       +-- compatible macOS boot disk
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>       +-- stable VirtioFS share tag -&gt; merged pVisor root
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>       +-- VZVirtioSocket control and AgentCtl transports
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>                    |
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>                    v
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>          pvisor-guestd (root LaunchDaemon)
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>            mount VirtioFS at a private path
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>            chroot into the pVisor root
+</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>            setgroups / setgid / setuid
+</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>            set cwd, environment, limits, and stdio
+</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>            execve host Mach-O
+</span></code></pre></div>
+<p>The Swift helper is deliberately outside the Rust supervisor. It owns only the
+Objective-C/Swift Virtualization.framework lifecycle and converts it into a
+small versioned protocol. The existing <code>RunExecutor</code> contract remains the
+product boundary, so selection, cancellation, evidence, review, checkpoint,
+apply, and drop keep the same semantics as other pVisor executors.</p>
+<h4 id="ghostvm-research">GhostVM research<a class="headerlink" href="#ghostvm-research" title="Permanent link">&para;</a></h4>
+<p><a href="https://github.com/groundwater/GhostVM">GhostVM</a> is the closest examined
+reference implementation. At commit
+<a href="https://github.com/groundwater/GhostVM/tree/fe88d5862f74ddb05ce79e04028b84c7f70482f6"><code>fe88d586</code></a>
+it demonstrates the required control-plane primitives:</p>
+<ul>
+<li><code>VZMacOSBootLoader</code>, Mac platform identity, a macOS disk, headless display
+  configuration, VirtioFS, and a virtio socket are assembled in one
+  <a href="https://github.com/groundwater/GhostVM/blob/fe88d5862f74ddb05ce79e04028b84c7f70482f6/macOS/GhostVMKit/Configuration/VMConfigurationBuilder.swift">configuration builder</a>;</li>
+<li>one helper process owns an active VM and exposes a host Unix-socket API;</li>
+<li>host requests cross <code>VZVirtioSocket</code> to a guest agent, which can execute
+  native macOS programs;</li>
+<li>a running VirtioFS device can receive a rebuilt directory share through
+  <a href="https://github.com/groundwater/GhostVM/blob/fe88d5862f74ddb05ce79e04028b84c7f70482f6/macOS/GhostVM/Services/FolderShareService.swift">FolderShareService</a>;</li>
+<li>VM suspend/resume uses <code>saveMachineStateTo</code> and <code>restoreMachineStateFrom</code>;
+  APFS <code>clonefile()</code> creates copy-on-write VM clones in
+  <a href="https://github.com/groundwater/GhostVM/blob/fe88d5862f74ddb05ce79e04028b84c7f70482f6/macOS/GhostVMKit/Operations/VMController.swift#L519">VMController</a>.</li>
+</ul>
+<p>These are architectural references, not a filesystem-execution solution.
+GhostVM boots and executes against its private <code>disk.img</code>; VirtioFS directories
+remain shares mounted under the normal guest root. Its guest <code>exec</code> endpoint is
+a user LaunchAgent calling Swift <code>Process.run()</code> with buffered stdout and
+stderr. It does not chroot, reproduce credentials, stream stdio, forward
+signals, control a process group, or expose a pVisor changeset. The pVisor guest
+supervisor must therefore be an independently implemented root LaunchDaemon.</p>
+<p>The following split is intentional:</p>
+<table>
+<thead>
+<tr>
+<th>GhostVM mechanism</th>
+<th>pVisor decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>VM configuration builder</td>
+<td>reproduce the minimal headless subset in <code>pvisor-vz-helper</code></td>
+</tr>
+<tr>
+<td>one helper process per VM</td>
+<td>retain for VMM crash and lifecycle isolation</td>
+</tr>
+<tr>
+<td>host Unix socket plus vsock</td>
+<td>retain the topology; use a bounded, versioned, streaming protocol</td>
+</tr>
+<tr>
+<td>runtime VirtioFS replacement</td>
+<td>adapt to one stable pVisor-root tag</td>
+</tr>
+<tr>
+<td>VM suspend/resume</td>
+<td>use to amortize boot, with strict template compatibility</td>
+</tr>
+<tr>
+<td>APFS VM clone</td>
+<td>optionally use for creation of a clean boot template</td>
+</tr>
+<tr>
+<td>GhostTools command execution</td>
+<td>replace with privileged <code>pvisor-guestd</code></td>
+</tr>
+<tr>
+<td>NAT, bridge, clipboard, audio, GUI automation</td>
+<td>omit from the default process-isolation VM</td>
+</tr>
+<tr>
+<td>private guest root as workload root</td>
+<td>reject; the exported pVisor merged root is the workload root</td>
+</tr>
+</tbody>
+</table>
+<p>GhostVM's README currently says its source-code license has not been
+determined. pVisor may study the public behavior and architecture but must not
+copy its implementation unless a compatible license is published. The helper
+and guest supervisor are clean independent implementations against Apple's
+public API.</p>
+<h4 id="filesystem-and-identity-semantics">Filesystem and identity semantics<a class="headerlink" href="#filesystem-and-identity-semantics" title="Permanent link">&para;</a></h4>
+<p>"Use the host UID and permissions" means preservation of ordinary POSIX file
+semantics, not inheritance of every macOS security identity. The host pVisor
+opens and serves lower files under the invoking host identity; the guest
+supervisor then installs matching numeric UID, GID, and supplementary groups
+before <code>execve</code>. The implementation must prove how VirtioFS represents owner,
+mode, ACL, symlink, hard-link, xattr, device, and rename semantics rather than
+assuming numeric identity is sufficient.</p>
+<p>The following host facilities do not become transparent merely because the
+numeric UID matches:</p>
+<ul>
+<li>TCC decisions, Keychain access groups, code-signing identity and entitlements;</li>
+<li>the host login/GUI bootstrap session, launchd services, Mach ports, Apple
+  Events, and host Unix sockets;</li>
+<li>host kernel state, devices, mounted volumes not visible through the exported
+  root, and credentials held only by host processes.</li>
+</ul>
+<p>Modern macOS also presents <code>/</code> through a sealed system volume, a writable data
+volume, and firmlinks. pVisor must verify that exporting the host root presents
+one coherent namespace and that whiteout/copy-up behavior remains correct
+across <code>/System/Volumes/Data</code>. Access to privacy-protected host files may
+require Full Disk Access for the trusted host component; pVisor must report
+that requirement rather than silently returning a partial root.</p>
+<p>Host and guest should initially require the same architecture and exact macOS
+build. A host executable can depend on the matching dyld shared cache,
+framework ABI, code-signing policy, and kernel behavior. Cross-build execution
+is unsupported until a compatibility matrix proves otherwise.</p>
+<h4 id="lifecycle-and-security-profile">Lifecycle and security profile<a class="headerlink" href="#lifecycle-and-security-profile" title="Permanent link">&para;</a></h4>
+<p>Cold-installing macOS per Run is infeasible. The intended lifecycle is:</p>
+<ol>
+<li>provision and attest one minimal, matching macOS boot template;</li>
+<li>boot it once, install <code>pvisor-guestd</code>, and save a clean suspended state;</li>
+<li>restore a warm VM or acquire one from a small version-matched pool;</li>
+<li>attach only the Run's VirtioFS root and per-Run vsock endpoints;</li>
+<li>rotate Run identity, authentication material, entropy, IPC, and network
+   state before guest execution;</li>
+<li>execute exactly one untrusted process tree, export the upper through the
+   normal pVisor review path, then destroy or return a scrubbed VM to the pool.</li>
+</ol>
+<p>The default VM has no NAT or bridged network device. Network access crosses an
+explicit vsock relay owned by OverlayNet. Clipboard, host audio, GUI devices,
+arbitrary shared folders, port forwarding, and ambient host sockets are absent.
+The host VMM helper receives access only to the prepared merged root, VM
+template, its private control socket, and required Virtualization.framework
+resources; it must not inherit pChronicle, source credentials, or unrelated
+descriptors.</p>
+<p>VirtioFS is the largest feasibility risk. GhostVM has an open report of
+<a href="https://github.com/groundwater/GhostVM/issues/255">empty mounts and unreadable files</a>
+under macOS guests. pVisor's design puts dyld, frameworks, SDKs, package
+managers, and metadata-heavy toolchains on that path, which is more demanding
+than sharing a project directory. VM startup success is therefore not evidence
+that the backend is usable or safe.</p>
+<h4 id="feasibility-gate">Feasibility gate<a class="headerlink" href="#feasibility-gate" title="Permanent link">&para;</a></h4>
+<p>This backend remains experimental until one focused prototype passes all of
+the following on a supported host/guest build pair:</p>
+<ol>
+<li>export a pVisor merged root with a stable VirtioFS tag and mount it without
+   Finder or login-session automation;</li>
+<li>run <code>/usr/bin/true</code>, <code>/bin/zsh</code>, and representative <code>xcrun</code>/compiler tools
+   after <code>chroot</code>, with correct cwd, environment, UID, GID, groups, exit status,
+   streaming stdio, signals, cancellation, and descendant cleanup;</li>
+<li>prove lower files do not change and all creates, modifications, renames,
+   deletions, whiteouts, xattrs, ACLs, symlinks, and hard links enter the Run
+   upper and survive review/checkpoint/apply/drop;</li>
+<li>exercise dyld/framework loading, code signatures, the sealed-system/data
+   firmlink layout, large output, large files, many small files, concurrent
+   mutation, crash recovery, and warm-restore attachment changes;</li>
+<li>demonstrate that no network, clipboard, arbitrary share, stale vsock token,
+   prior-Run upper, or unrelated host descriptor is reachable;</li>
+<li>publish cold/warm latency and RSS and compare them with Seatbelt and Linux
+   libkrun Runs.</li>
+</ol>
+<p>Passing this gate establishes transparent CLI and development-tool execution.
+GUI applications and host-session services require separate evidence and are
+not implied by success of the process-level backend.</p>
+<h2 id="3-path-b-litebox-overlayfs-semantics-in-the-vfs">3. Path B: LiteBox + OverlayFS semantics in the VFS<a class="headerlink" href="#3-path-b-litebox-overlayfs-semantics-in-the-vfs" title="Permanent link">&para;</a></h2>
+<h3 id="31-positioning">3.1 Positioning<a class="headerlink" href="#31-positioning" title="Permanent link">&para;</a></h3>
+<p>This is the high-density libOS path. LiteBox handles the guest Linux ABI and
+path resolution in userspace. pVisor should implement its overlay semantics as
+a LiteBox filesystem backend or composer, rather than FUSE-mounting a host path
+and forwarding guest path strings to host <code>openat</code>.</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>pVisor supervisor
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>  +-- build content-addressed root/workspace bundle
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>  +-- pass sealed bundle FD + policy + AgentCtl FD
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>  |
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>  `-- LiteBox runner process
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>        LiteBox Linux shim
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>                 |
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>                 v
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>        LiteBox VFS resolver
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>          +-- read-only root/runtime
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>          +-- read-only workspace layers
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>          `-- writable in-memory/delta upper
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>                         |
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>                         v
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>                 exported changeset
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>                         |
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>                         v
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>          pVisor review / apply / drop
+</span></code></pre></div>
+<p>The adapter preserves pVisor's logical operations:</p>
+<ul>
+<li>ordered read-only base and compose layers;</li>
+<li>copy-up on first write;</li>
+<li>whiteout and opaque-directory semantics;</li>
+<li>deterministic directory merge;</li>
+<li>metadata policy for modes, timestamps, symlinks, hard links, and xattrs;</li>
+<li>a bounded writable upper that can be exported without traversing unrelated
+  host paths.</li>
+</ul>
+<p>The initial implementation can reuse LiteBox's read-only tar and in-memory
+filesystems, but production adoption requires a filesystem semantic matrix.
+Unsupported metadata must fail explicitly or be normalized by a documented
+policy; silent loss would break pVisor's changeset contract.</p>
+<h3 id="32-security-and-operational-properties">3.2 Security and operational properties<a class="headerlink" href="#32-security-and-operational-properties" title="Permanent link">&para;</a></h3>
+<p><strong>Strengths</strong></p>
+<ul>
+<li>Guest paths terminate in the LiteBox VFS; the normal path contains no host
+  pathname lookup.</li>
+<li>A smaller host interface than a native Linux process or general OCI
+  container makes syscall-level policy and deterministic I/O practical.</li>
+<li>Read-only content-addressed bundles can be cached and shared across Runs;
+  writable state remains per-Run.</li>
+<li>No kernel FUSE round trip is needed for VFS operations handled entirely in
+  the runner, which may benefit metadata-heavy workloads.</li>
+</ul>
+<p><strong>Limits</strong></p>
+<ul>
+<li>Linux syscall and filesystem compatibility is narrower than Docker or a VM.</li>
+<li>LiteBox and its pVisor adapter are evolving code and expand pVisor's trusted
+  computing base.</li>
+<li>A userspace libOS is not automatically a hardware or kernel security
+  boundary. Bugs in the runner, loader, syscall interception, or shared
+  address space must be assumed possible.</li>
+<li>Packaging native libraries, dynamic runtimes, JITs, and unusual filesystem
+  behavior requires explicit compatibility testing.</li>
+</ul>
+<p>The LiteBox runner must therefore execute in a separate unprivileged process
+with Landlock, seccomp, <code>no_new_privs</code>, empty capabilities, closed FDs, and
+resource limits. The outer kernel policy is the containment boundary if the
+guest escapes the LiteBox abstraction. Embedding an untrusted LiteBox guest in
+the pVisor supervisor process is forbidden.</p>
+<h3 id="33-workspace-transfer">3.3 Workspace transfer<a class="headerlink" href="#33-workspace-transfer" title="Permanent link">&para;</a></h3>
+<p>Avoid a long-lived, arbitrary pathname broker. Prefer immutable and bounded
+objects:</p>
+<ol>
+<li>pVisor snapshots the logical lower layers and computes a digest.</li>
+<li>It supplies a sealed <code>memfd</code> or read-only file descriptor to the runner.</li>
+<li>LiteBox reads the root and workspace through its VFS.</li>
+<li>Writes enter a per-Run upper with byte/inode quotas.</li>
+<li>The runner exports a canonical, bounded changeset.</li>
+<li>pVisor validates paths, entry types, metadata, sizes, and digest before
+   exposing the changeset to review/apply.</li>
+</ol>
+<h2 id="4-path-c-docker-oci-container">4. Path C: Docker / OCI container<a class="headerlink" href="#4-path-c-docker-oci-container" title="Permanent link">&para;</a></h2>
+<h3 id="41-positioning">4.1 Positioning<a class="headerlink" href="#41-positioning" title="Permanent link">&para;</a></h3>
+<p>This is the compatibility and ecosystem path. It supports existing Agent
+images and conventional Linux runtimes with stronger placement isolation than
+the host executor, while sharing the host kernel.</p>
+<p>The current pVisor Docker/Podman executor already injects a matching static
+pVisor into the image and delegates the same <code>RunSpec</code>. It mounts the final
+workspace and returns a typed <code>RunResult</code>. It does not yet translate every
+pVisor capability into an OCI restriction, and the injected pVisor currently
+bootstraps as container root; those are implementation gaps, not properties of
+the target design.</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>host pVisor
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>  +-- WorkspaceOverlay / merged view
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>  +-- Docker or Podman transport
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>          |
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>          v
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>     OCI container
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>       read-only image rootfs
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>       /workspace -&gt; pVisor Run view
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>       tmpfs /tmp
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>       injected pVisor -&gt; Agent
+</span></code></pre></div>
+<p>Docker's image-layer OverlayFS and pVisor's WorkspaceOverlay have distinct
+roles. The former assembles an OCI root filesystem; the latter owns Agent
+changes and review/apply/drop. Container teardown must not commit the OCI
+writable layer as the Run result.</p>
+<h3 id="42-production-profile">4.2 Production profile<a class="headerlink" href="#42-production-profile" title="Permanent link">&para;</a></h3>
+<p>The target profile is:</p>
+<ul>
+<li>rootless Docker/Podman when supported, or user namespace remapping;</li>
+<li>non-root Agent UID after the injected pVisor bootstrap issue is removed;</li>
+<li>all capabilities dropped, <code>no-new-privileges</code>, default or tighter seccomp;</li>
+<li>read-only container rootfs and a private, bounded <code>/tmp</code>;</li>
+<li>PID, memory, CPU, file-size, and process-count limits;</li>
+<li>no network by default, otherwise a dedicated namespace connected to a
+  pVisor-owned broker;</li>
+<li>no host PID/IPC namespace, privileged mode, device passthrough, arbitrary
+  writable mounts, or Docker socket;</li>
+<li>image digest pinning and an auditable mount/capability manifest.</li>
+</ul>
+<h3 id="43-security-and-operational-properties">4.3 Security and operational properties<a class="headerlink" href="#43-security-and-operational-properties" title="Permanent link">&para;</a></h3>
+<p><strong>Strengths</strong></p>
+<ul>
+<li>Highest workload compatibility short of a VM.</li>
+<li>Mature image construction, distribution, caching, observability, and
+  operational tooling.</li>
+<li>Namespaces, cgroups, capabilities, seccomp, and host LSMs compose into a
+  practical production boundary.</li>
+<li>Natural deployment path for Kubernetes and existing CI infrastructure.</li>
+</ul>
+<p><strong>Limits</strong></p>
+<ul>
+<li>Containers share the host kernel; a kernel or container-runtime escape is
+  outside pVisor's own enforcement.</li>
+<li>Cold-start cost, image storage, daemon/runtime dependencies, and mount
+  plumbing are higher than the local and LiteBox paths.</li>
+<li>Rootful daemon deployments create a larger privileged control plane.</li>
+<li>Host networking, broad bind mounts, <code>--privileged</code>, or the Docker socket can
+  erase most of the isolation value.</li>
+<li>The current Gateway loopback integration requires host networking in some
+  configurations; production enforcement needs a guest-visible broker before
+  that restriction can be removed.</li>
+</ul>
+<p>Docker is the recommended compatibility fallback, not the definition of
+pVisor's capability model.</p>
+<h2 id="5-path-d-firecracker-microvm">5. Path D: Firecracker microVM<a class="headerlink" href="#5-path-d-firecracker-microvm" title="Permanent link">&para;</a></h2>
+<h3 id="51-positioning">5.1 Positioning<a class="headerlink" href="#51-positioning" title="Permanent link">&para;</a></h3>
+<p>This is the strongest multi-tenant path. Each Run or warm Run slot receives a
+separate guest kernel under KVM. Firecracker intentionally exposes a small
+device model and provides a jailer that adds host-side namespace/cgroup
+isolation and drops VMM privileges.</p>
+<p>The existing pVisor <code>vm</code> executor statically links libkrun and can either use
+an explicit Linux rootfs or pull a public OCI image without a container daemon.
+Verified image layers form an immutable cached lower rootfs, guest system writes
+stay in a reviewable upper layer. Host paths are not implicitly exposed. An
+explicit <code>--overlayfs-base</code> plus <code>--overlayfs-target</code> mounts a staged view at
+the selected guest path. A vendored libkrun serves both root and workspace
+copy-on-write unions directly over virtio-fs on Linux and macOS, without a
+host FUSE mount, materialization, or reconciliation. It uses KVM on Linux
+and HVF on Apple Silicon macOS. Linux
+additionally confines the VMM with user/mount/network namespaces and Landlock.
+The macOS VMM is not yet wrapped in an equivalent host filesystem sandbox, so
+libkrun's virtio-fs proxy remains in the invoking user's security context.
+OverlayNet and AgentCtl guest relays are not implemented in this phase. This
+is not the hostile multi-tenant Firecracker design below:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>host pVisor / microVM manager
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>  +-- immutable kernel + rootfs image
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>  +-- read-only workspace/base block image
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>  +-- per-Run writable delta block image
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>  +-- vsock control and AgentCtl transport
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>  +-- TAP/network broker under policy
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>          |
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>          v
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>  Firecracker + jailer
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>          |
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>          v
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>  guest kernel + injected pVisor + Agent
+</span></code></pre></div>
+<p>The rootfs and workspace are attached as file-backed block devices. At Run
+completion, the guest quiesces the filesystem and returns a manifest over
+vsock; the host validates and converts the delta into the normal pVisor
+changeset. Firecracker snapshots can amortize boot cost, but VM state, guest
+memory, block devices, network devices, and vsock endpoints have separate
+lifecycle and compatibility requirements. Snapshot reuse must rotate Run
+identity, entropy, credentials, and network state.</p>
+<h3 id="52-security-and-operational-properties">5.2 Security and operational properties<a class="headerlink" href="#52-security-and-operational-properties" title="Permanent link">&para;</a></h3>
+<p><strong>Strengths</strong></p>
+<ul>
+<li>A separate guest kernel provides the clearest boundary for mutually
+  untrusted tenants and hostile native code.</li>
+<li>Minimal device emulation reduces VMM attack surface relative to a general
+  machine emulator.</li>
+<li>Resource accounting and network topology are explicit at the VM boundary.</li>
+<li>Warm pools and snapshots can make repeated Run startup practical.</li>
+</ul>
+<p><strong>Limits</strong></p>
+<ul>
+<li>Requires Linux, KVM, kernel/rootfs image production, a jailer, TAP/network
+  setup, and a microVM lifecycle service.</li>
+<li>Baseline memory and operational complexity are higher than process/container
+  paths even when the VMM is lightweight.</li>
+<li>Workspace block-image creation and delta extraction are less interactive
+  than a directly mounted FUSE workspace.</li>
+<li>Kernel, rootfs, snapshot, and VMM versions form a larger compatibility and
+  patch-management surface.</li>
+<li>Direct host directory sharing would weaken the clean boundary and should not
+  become the production workspace design.</li>
+</ul>
+<p>Production Firecracker execution must use the jailer or an equivalent stronger
+host policy, a dedicated unprivileged VMM identity, cgroups, seccomp, isolated
+networking, trusted immutable inputs, and no ambient access to host paths.</p>
+<h2 id="6-comparison-and-selection">6. Comparison and selection<a class="headerlink" href="#6-comparison-and-selection" title="Permanent link">&para;</a></h2>
+<p>The table describes the intended production shape, not just the code currently
+present in the repository. Performance is deliberately relative until a common
+benchmark has measured cold/warm startup, RSS, syscall-heavy and data-heavy
+workloads, and teardown.</p>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>FUSE + Landlock</th>
+<th>FUSE + Seatbelt</th>
+<th>macOS VM + VirtioFS</th>
+<th>LiteBox VFS</th>
+<th>Docker/OCI</th>
+<th>Firecracker</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Primary goal</td>
+<td>fastest Linux least privilege</td>
+<td>zero-config macOS write confinement</td>
+<td>transparent Mach-O execution with a guest-kernel boundary</td>
+<td>dense libOS isolation</td>
+<td>compatibility and deployment</td>
+<td>hostile multi-tenant isolation</td>
+</tr>
+<tr>
+<td>Security boundary</td>
+<td>synthetic root + host LSM/namespace policy</td>
+<td>Seatbelt write/socket policy on host process</td>
+<td>macOS guest kernel + Virtualization.framework VMM</td>
+<td>libOS plus outer host policy</td>
+<td>namespaces/cgroups/LSM, shared kernel</td>
+<td>guest kernel + KVM + jailed VMM</td>
+</tr>
+<tr>
+<td>Host root required</td>
+<td>no</td>
+<td>no</td>
+<td>exported as a pVisor merged root</td>
+<td>no</td>
+<td>no in rootless mode</td>
+<td>host provisioning normally required</td>
+</tr>
+<tr>
+<td>Guest compatibility</td>
+<td>native Linux ABI</td>
+<td>native macOS ABI; ambient reads</td>
+<td>native Mach-O, initially exact host/guest build only</td>
+<td>constrained Linux ABI</td>
+<td>broad Linux userspace</td>
+<td>full guest Linux</td>
+</tr>
+<tr>
+<td>Workspace fidelity</td>
+<td>highest</td>
+<td>highest with macFUSE</td>
+<td>target is full-root fidelity; unproven over VirtioFS</td>
+<td>requires semantic adapter</td>
+<td>high through mount/volume</td>
+<td>explicit block/delta conversion</td>
+</tr>
+<tr>
+<td>Startup cost</td>
+<td>lowest</td>
+<td>lowest</td>
+<td>high cold; warm restore/pool target</td>
+<td>low target</td>
+<td>medium, image dependent</td>
+<td>highest cold; warm snapshot target</td>
+</tr>
+<tr>
+<td>Per-Run memory</td>
+<td>lowest</td>
+<td>lowest</td>
+<td>high</td>
+<td>low target</td>
+<td>medium</td>
+<td>highest</td>
+</tr>
+<tr>
+<td>Kernel escape blast radius</td>
+<td>host</td>
+<td>host</td>
+<td>guest first, then VMM boundary</td>
+<td>host, after outer escape</td>
+<td>host</td>
+<td>guest first, then VMM/KVM boundary</td>
+</tr>
+<tr>
+<td>Portability</td>
+<td>Linux</td>
+<td>macOS; deprecated launcher dependency</td>
+<td>Apple Silicon Mac with supported macOS virtualization</td>
+<td>platform/ABI dependent</td>
+<td>broad OCI hosts</td>
+<td>Linux + KVM</td>
+</tr>
+<tr>
+<td>Current pVisor status</td>
+<td>implemented; seccomp/limits pending</td>
+<td>write confinement and deny-all socket policy implemented</td>
+<td>researched design; feasibility prototype required</td>
+<td>planned</td>
+<td>implemented with hardening gaps</td>
+<td>libkrun full-root mode exists; Firecracker planned</td>
+</tr>
+</tbody>
+</table>
+<h3 id="recommended-portfolio">Recommended portfolio<a class="headerlink" href="#recommended-portfolio" title="Permanent link">&para;</a></h3>
+<p>The selection belongs to pVisor and the placement control plane:</p>
+<ol>
+<li>A normal Linux <code>pvisor run --safe</code> uses FUSE + Workspace + synthetic root +
+   rootless namespaces + Landlock today. Required controls are installed
+   fail-closed; an unavailable user namespace, mount, chroot, or Landlock ABI
+   never falls back silently.</li>
+<li>pVisor may choose LiteBox automatically for a compatible packaged workload
+   when it provides a smaller, measured host interface; the user still invokes
+   the same command.</li>
+<li>Supplying an OCI image naturally selects Docker/Podman. Otherwise pVisor
+   may use an already available rootless runtime as a compatibility fallback;
+   it does not ask users to construct capability or mount flags.</li>
+<li>A fleet configured for hostile multi-tenant execution places the Run on a
+   Firecracker worker. Kernel images, snapshots, networking, and jailer setup
+   are operator-owned fleet infrastructure, not per-user configuration.</li>
+<li>macOS keeps the same command and uses Seatbelt write confinement for the
+   implemented low-latency local path. After the feasibility gate passes,
+   policy requiring a guest-kernel boundary may select the
+   Virtualization.framework backend automatically. Until then, the Bundle
+   reports ambient reads and cooperative selective networking separately and a
+   stricter request routes to another capable placement or fails with one
+   remediation.</li>
+</ol>
+<p>These paths are a portfolio, not a mandatory migration ladder. A customer
+states workload intent and, where necessary, a minimum security requirement;
+placement chooses only a backend whose measured capabilities satisfy it. The
+customer does not select kernel mechanisms.</p>
+<h2 id="7-one-backend-contract">7. One backend contract<a class="headerlink" href="#7-one-backend-contract" title="Permanent link">&para;</a></h2>
+<p>All implementations should compile one request into one evidence-bearing
+result:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>IsolationRequest {
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>  minimum_boundary,
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>  filesystem_capabilities,
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>  network_capabilities,
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>  compute_limits,
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>  credential_refs,
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>  require_enforcement,
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>}
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>IsolationEvidence {
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>  requested_class,
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>  effective_backend,
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>  backend_version,
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>  effective_controls,
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>  unsupported_controls,
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>  workspace_digest,
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>  runtime_or_image_digest,
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a>  identity_and_capabilities,
+</span><span id="__span-7-19"><a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a>  kernel_features,
+</span><span id="__span-7-20"><a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a>}
+</span></code></pre></div>
+<p><code>RuntimeCapabilities.filesystem = true</code> is valid only when tests demonstrate
+that the complete Agent process tree cannot reach a non-granted hierarchy. A
+mounted workspace or successful setup call alone is not evidence.</p>
+<p>This contract is internal between admission, placement, and runtime drivers.
+It is not a requirement for users to understand or configure backend-specific
+mechanisms.</p>
+<h2 id="8-zero-configuration-acceptance-criteria">8. Zero-configuration acceptance criteria<a class="headerlink" href="#8-zero-configuration-acceptance-criteria" title="Permanent link">&para;</a></h2>
+<p>The default local path is complete only when all of the following hold:</p>
+<ul>
+<li>one pVisor installation and one <code>pvisor run --safe</code> command are sufficient;</li>
+<li>no root shell, setuid pVisor daemon, manual group membership, hand-written
+  policy, mount command, or container security flags are required;</li>
+<li>pVisor discovers the executable and its minimal runtime dependencies;</li>
+<li>workspace setup, isolation, cleanup, and changeset recovery are automatic;</li>
+<li>unsupported hosts produce one stable error with a concrete remediation or
+  an automatically available placement, rather than a cascade of kernel
+  details;</li>
+<li><code>pvisor status</code> and the Run Bundle explain the effective boundary for audit
+  without making that explanation a prerequisite for use;</li>
+<li>upgrades preserve the high-level command and Run contract while allowing the
+  selected backend to change.</li>
+</ul>
+<p>This criterion rules out 9P as a user-facing Docker setup step. pVisor may use
+a filesystem protocol internally when a remote backend requires it, but users
+must never provision a 9P server, mount it, or grant a container mount
+capability for a normal Run.</p>
+<h2 id="9-validation-and-benchmarks">9. Validation and benchmarks<a class="headerlink" href="#9-validation-and-benchmarks" title="Permanent link">&para;</a></h2>
+<p>Every backend must run the same adversarial suite:</p>
+<ul>
+<li>absolute paths, <code>..</code>, symlink chains, hard links, rename races, magic links,
+  <code>/proc/self/fd</code>, inherited directory FDs, UNIX sockets, device nodes, and
+  descriptor passing;</li>
+<li>fork/clone/exec descendants, raw syscalls, static binaries, JIT-generated
+  code, signals, ptrace attempts, and namespace operations where applicable;</li>
+<li>direct sockets, DNS rebinding, literal IPs, UDP/QUIC, loopback, link-local,
+  and metadata-service addresses;</li>
+<li>byte/inode/process/CPU/memory/network exhaustion and cancellation cleanup;</li>
+<li>power loss or supervisor crash during workspace export, review, and apply;</li>
+<li>semantic comparison of the same changeset across all four backends.</li>
+</ul>
+<p>The shared benchmark reports distributions rather than a single demo number:</p>
+<ul>
+<li>cold and warm start P50/P95/P99;</li>
+<li>idle and peak RSS;</li>
+<li>sequential and random workspace throughput;</li>
+<li>small-file metadata operations per second;</li>
+<li>syscall-heavy and Python/Node/native Agent workloads;</li>
+<li>checkpoint/export/apply latency and produced bytes;</li>
+<li>host CPU cost, context switches, page faults, and FUSE/VMM/broker overhead.</li>
+</ul>
+<p>The implemented Linux suite currently proves staged writes plus denial of
+absolute-path reads/writes, symlink escapes, <code>/proc/self/root</code> escapes,
+ungranted pathname Unix sockets, preservation of the exact AgentCtl socket,
+and host-loopback access in deny-all mode. It also proves setup failures are
+reported before Agent execution. This is a useful regression floor, not yet
+the complete adversarial/kernel matrix listed above. No backend becomes a
+production default from architectural expectations alone; it must publish
+repeatable measurements and pass that matrix on every supported host/kernel.</p>
+<h2 id="references">References<a class="headerlink" href="#references" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="https://developer.apple.com/documentation/virtualization/running-macos-in-a-virtual-machine-on-apple-silicon">Apple: Running macOS in a virtual machine on Apple silicon</a></li>
+<li><a href="https://developer.apple.com/documentation/virtualization/vzvirtiofilesystemdeviceconfiguration">Apple: VZVirtioFileSystemDeviceConfiguration</a></li>
+<li><a href="https://github.com/groundwater/GhostVM">GhostVM</a></li>
+<li><a href="https://github.com/groundwater/GhostVM/issues/255">GhostVM VirtioFS instability report</a></li>
+<li><a href="https://docs.kernel.org/userspace-api/landlock.html">Linux Landlock userspace API</a></li>
+<li><a href="https://docs.docker.com/engine/security/rootless/">Docker rootless mode</a></li>
+<li><a href="https://docs.docker.com/engine/security/seccomp/">Docker default seccomp profile</a></li>
+<li><a href="https://github.com/firecracker-microvm/firecracker">Firecracker</a></li>
+<li><a href="https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md">Firecracker jailer</a></li>
+<li><a href="https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/snapshot-support.md">Firecracker snapshot support</a></li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2025–2026 Persisting. All rights reserved.
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/DeepLink-org/Persisting" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.indexes", "navigation.tracking", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

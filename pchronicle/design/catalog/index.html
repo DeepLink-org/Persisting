@@ -1,0 +1,5142 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Persistent infrastructure for the Agent era—from model parameters and KV caches to Agent trajectories">
+      
+      
+      
+        <link rel="canonical" href="https://deeplink-org.github.io/Persisting/pchronicle/design/catalog/">
+      
+      
+        <link rel="prev" href="../architecture/">
+      
+      
+        <link rel="next" href="../trajectory-storage/">
+      
+      
+        
+          <link rel="alternate" href="./" hreflang="en">
+        
+          <link rel="alternate" href="../../../zh/pchronicle/design/catalog/" hreflang="zh">
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>Snapshot - Persisting Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/home.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#pchronicle-snapshot-design" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Persisting Documentation" class="md-header__button md-logo" aria-label="Persisting Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Persisting Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Snapshot
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="Select language">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="./" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="../../../zh/pchronicle/design/catalog/" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/DeepLink-org/Persisting" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../.." class="md-tabs__link">
+          
+  
+  
+    
+  
+  Home
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../pvisor/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  pVisor
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  pChronicle
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../project/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Persisting Documentation" class="md-nav__button md-logo" aria-label="Persisting Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Persisting Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/DeepLink-org/Persisting" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../.." class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_1" id="__nav_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Home
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Choose a workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pVisor
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    pVisor
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/get-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_3" id="__nav_2_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/concepts/agentvisor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AgentVisor category
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/concepts/run-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run, Attempt, and Effect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/concepts/capabilities-and-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capabilities and evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/guides/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_4" id="__nav_2_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/execution/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution environments
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/review-apply/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Review and apply effects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/network/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Network control
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/capture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capture trajectories
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/sandbox-replay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Replay Agent trajectories
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/design/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_5" id="__nav_2_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/design/isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Isolation architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/design/overlaynet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    OverlayNet architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/design/gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_6" id="__nav_2_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pVisor CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pChronicle
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    pChronicle
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../get-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_3" id="__nav_3_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/dataset-and-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataset discovery and versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/facts-and-projections/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Recorded data, views, and versions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../guides/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_4" id="__nav_3_4_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/discover-and-query/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discover and query
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/exchange/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Import and export
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/serve/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local read-only Dataset server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/ui/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local Dataset Web UI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/serve-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway forwarding, rewriting, and capture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_5" id="__nav_3_5_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Snapshot
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Snapshot
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-role" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Role
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-goals-and-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Goals and non-goals
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Goals and non-goals">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Non-goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-core-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Core model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Core model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-namespace-dataset-and-sql-alias" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Namespace, Dataset, and SQL alias
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-source-and-_file_" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Source and _file_
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-storyline-and-run-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Storyline and Run identity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-source-revision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Source revision
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-mounts-and-the-default-dataset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Mounts and the default Dataset
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Mounts and the default Dataset">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-cli-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 CLI form
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-default-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Default selection
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-hierarchical-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Hierarchical discovery
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Hierarchical discovery">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Example
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-local-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Local discovery
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-object-store-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Object-store discovery
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-format-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Format detection
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-sql-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. SQL provider
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. SQL provider">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61-catalog-aware-source-pruning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 Catalog-aware source pruning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62-join-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 Join rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-snapshots-and-consistency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Snapshots and consistency
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. Snapshots and consistency">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#71-build-process" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.1 Build process
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#72-how-each-source-is-pinned" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.2 How each source is pinned
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#73-consistency-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.3 Consistency bounds
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#74-resolve-lifetime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.4 Resolve lifetime
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-error-policy-and-resource-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Error policy and resource bounds
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-server-refresh-and-web" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Server, refresh, and Web
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Server, refresh, and Web">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#91-server-source-routing-acceleration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.1 Server source-routing acceleration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#92-write-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.2 Write boundary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-rust-api-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Rust API boundary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-key-invariants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Key invariants
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-trade-offs-and-alternatives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. Trade-offs and alternatives
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="12. Trade-offs and alternatives">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#121-a-persistent-metadata-service" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.1 A persistent metadata service
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#122-flattening-every-mount-into-public" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.2 Flattening every mount into public
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#123-using-the-directory-basename-as-the-default-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.3 Using the directory basename as the default name
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#124-importing-everything-to-lance-at-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.4 Importing everything to Lance at discovery
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#125-using-only-run_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.5 Using only run_id
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#13-tests-and-evolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        13. Tests and evolution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#14-related-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14. Related implementation
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../trajectory-storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storyline-lance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storyline Lance projection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_6" id="__nav_3_6_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/terminology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product terminology
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pChronicle CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/query-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/agenticmd/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AgenticMD format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/formats/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run data formats
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../project/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../system-design/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    End-to-end architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/local-to-fleet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local to fleet
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/security-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security and evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Engineering
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/engineering/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/releasing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing persisting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reproducible examples
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../rfcs/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decisions and RFCs
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Decisions and RFCs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0001-storyline-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0001 Storyline format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0002-events-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0002 Events format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0003-pchronicle-ownership/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0003 pChronicle ownership
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0004-actf-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0004 ACTF format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0005-pchronicle-revision-lineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0005 pChronicle revision lineage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0006-pchronicle-vortex-backend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0006 pChronicle Vortex backend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0007-events-contract-pchronicle-sidecar/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0007 Events contract and pChronicle sidecar
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0008-atif-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0008 ATIF format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0009-openai-messages-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0009 OpenAI Messages format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0010-agent-corpus-lance-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0010 Agent corpus Lance layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0012-pchronicle-find-query-syntax/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0012 pChronicle find query syntax
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0013-pchronicle-warehouse-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0013 pChronicle path Directory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0014-compact-jsonl/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0014 Compact JSONL
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../api/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Standalone systems
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_5" id="__nav_4_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Standalone systems
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../guide/queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../guide/custom-backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom queue backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-role" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Role
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-goals-and-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Goals and non-goals
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Goals and non-goals">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Non-goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-core-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Core model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Core model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-namespace-dataset-and-sql-alias" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Namespace, Dataset, and SQL alias
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-source-and-_file_" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Source and _file_
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-storyline-and-run-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Storyline and Run identity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-source-revision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Source revision
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-mounts-and-the-default-dataset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Mounts and the default Dataset
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Mounts and the default Dataset">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-cli-form" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 CLI form
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-default-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Default selection
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-hierarchical-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Hierarchical discovery
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Hierarchical discovery">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Example
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-local-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Local discovery
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-object-store-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Object-store discovery
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-format-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Format detection
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-sql-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. SQL provider
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. SQL provider">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61-catalog-aware-source-pruning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 Catalog-aware source pruning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62-join-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 Join rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-snapshots-and-consistency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Snapshots and consistency
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. Snapshots and consistency">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#71-build-process" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.1 Build process
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#72-how-each-source-is-pinned" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.2 How each source is pinned
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#73-consistency-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.3 Consistency bounds
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#74-resolve-lifetime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.4 Resolve lifetime
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-error-policy-and-resource-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Error policy and resource bounds
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-server-refresh-and-web" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Server, refresh, and Web
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Server, refresh, and Web">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#91-server-source-routing-acceleration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.1 Server source-routing acceleration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#92-write-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.2 Write boundary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-rust-api-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Rust API boundary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-key-invariants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Key invariants
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-trade-offs-and-alternatives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. Trade-offs and alternatives
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="12. Trade-offs and alternatives">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#121-a-persistent-metadata-service" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.1 A persistent metadata service
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#122-flattening-every-mount-into-public" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.2 Flattening every mount into public
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#123-using-the-directory-basename-as-the-default-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.3 Using the directory basename as the default name
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#124-importing-everything-to-lance-at-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.4 Importing everything to Lance at discovery
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#125-using-only-run_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.5 Using only run_id
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#13-tests-and-evolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        13. Tests and evolution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#14-related-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14. Related implementation
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="pchronicle-snapshot-design">pChronicle Snapshot design<a class="headerlink" href="#pchronicle-snapshot-design" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p>Current implementation notes. Code and historical docs call this the
+Dataset Catalog. The product name is <strong>Snapshot</strong>: the write/read sync
+protocol after a <strong>path</strong> is opened. Platform name-to-path authorization
+is <a href="../../../rfcs/0013-pchronicle-warehouse-catalog/">RFC-0013 path Directory</a>,
+not this page.</p>
+<p>Dataset command arguments are in the <a href="../../reference/cli/"><code>pchronicle</code> command reference</a>.
+The user model is <a href="../../concepts/dataset-and-source/">Dataset, Source, and Snapshot</a>.
+The query workflow is <a href="../../guides/discover-and-query/">Discover and query</a>.
+Physical trajectory formats are <a href="../trajectory-storage/">pChronicle run storage</a>
+and <a href="../storyline-lance/">Storyline three-table Lance</a>.</p>
+</blockquote>
+<p>Format wire contracts and field-by-field conversions follow
+<a href="../../../rfcs/0001-storyline-format/#wire-schema">RFC-0001 § Wire schema</a>,
+<a href="../../../rfcs/0004-actf-format/#actf-storyline-json-pointer-mapping">RFC-0004 § ACTF mapping</a>,
+<a href="../../../rfcs/0008-atif-format/#atif-storyline-json-pointer-mapping">RFC-0008 § ATIF mapping</a>,
+and
+<a href="../../../rfcs/0009-openai-messages-format/#openai-storyline-json-pointer-mapping">RFC-0009 § OpenAI Messages mapping</a>.</p>
+<h2 id="1-role">1. Role<a class="headerlink" href="#1-role" title="Permanent link">&para;</a></h2>
+<p>Snapshot addresses a query space composed of multiple storage locations and
+trajectory formats under <strong>one path</strong>. A Warehouse can pin several paths at
+once; each path remains an independent Dataset. The main cases are:</p>
+<ul>
+<li>querying live data, historical archives, and evaluation data together;</li>
+<li>one path that contains nested directories, several Run-level
+  <code>events.lance</code> stores, and peripheral JSON files;</li>
+<li>the same <code>run_id</code>, <code>session_id</code>, or filename appearing on different paths;</li>
+<li>a Web service that must reuse one discovery result across requests and
+  switch views only after an explicit refresh.</li>
+</ul>
+<p>It sits between a path and DataFusion SQL. The user opens a path (or
+receives one after a Directory ticket). pChronicle recursively discovers
+trajectory sources, projects the different physical formats onto stable
+tables, and pins members and versions for one query or one generation of
+Web Snapshot. This is a write/read sync protocol, not a metadata database
+that must be maintained over time.</p>
+<p>Snapshot is <strong>not</strong> Directory. It does not copy source data, take over
+object-store directories, declare that peripheral JSON has become canonical,
+or require a background sync job. The code type name
+<code>DatasetCatalogSnapshot</code> still refers to this object.</p>
+<h2 id="2-goals-and-non-goals">2. Goals and non-goals<a class="headerlink" href="#2-goals-and-non-goals" title="Permanent link">&para;</a></h2>
+<h3 id="21-goals">2.1 Goals<a class="headerlink" href="#21-goals" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Multi-Dataset joins</strong>: one SQL statement can reach several named local
+   directories or object-store prefixes.</li>
+<li><strong>Hierarchical discovery</strong>: a Dataset URI can point at a storage root, a
+   Run root, a composite store, or a single file.</li>
+<li><strong>Unified table model</strong>: Storyline, canonical events, ATIF, OpenAI
+   messages, and ACTF use the same query table names.</li>
+<li><strong>Stable identity</strong>: any Storyline can be located to a physical source
+   inside the Snapshot with <code>(dataset, _file_, session_id)</code>.</li>
+<li><strong>Snapshot consistency</strong>: a query never mixes newly discovered files or
+   a new Lance generation into an in-flight execution.</li>
+<li><strong>Stable default entry</strong>: a positional argument is always mounted as
+   the default Dataset named <code>dataset</code>.</li>
+<li><strong>Bounded failure</strong>: discovery, format detection, per-file size, parse
+   concurrency, and query memory all have explicit limits and error
+   policies.</li>
+<li><strong>Safe writes</strong>: named mounts are read-only by default. Server-side
+   writes can land only on an explicitly chosen canonical events Dataset.</li>
+<li><strong>Catalog-aware pruning</strong>: Dataset and <code>_file_</code> predicates select
+   sources first; the physical scan plan is built after that.</li>
+<li><strong>Lazy resolution</strong>: a Catalog Snapshot pins only member and version
+    descriptions. Lance datasets, remote objects, and file datasources
+    open when a query actually needs them, and are single-flight reused
+    inside the Snapshot.</li>
+</ol>
+<h3 id="22-non-goals">2.2 Non-goals<a class="headerlink" href="#22-non-goals" title="Permanent link">&para;</a></h3>
+<ul>
+<li>No persistent catalog service in the style of Hive Metastore or Glue
+  Catalog.</li>
+<li>No cross-file index, statistics warehouse, or materialized view inside
+  the Catalog.</li>
+<li>No automatic merge of the same <code>run_id</code> or <code>session_id</code> from different
+  sources.</li>
+<li>No distributed transaction or global point-in-time read across
+  independent physical sources.</li>
+<li>No Catalog-driven rewrite, move, or conversion of peripheral JSON.
+  Long-lived columnar analysis still requires an explicit Lance import.</li>
+<li>No secret management in URI parameters. Object-store authentication
+  continues to use each SDK's standard credential chain.</li>
+</ul>
+<h2 id="3-core-model">3. Core model<a class="headerlink" href="#3-core-model" title="Permanent link">&para;</a></h2>
+<p><img alt="Snapshot query path" src="../../../assets/diagrams/persisting/dataset-catalog.svg" /></p>
+<p>The core objects have seven layers:</p>
+<table>
+<thead>
+<tr>
+<th>Object</th>
+<th>Role</th>
+<th>Lifetime</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DatasetMount</code></td>
+<td>holds hierarchical namespace, SQL alias, root URI, and optional format hint</td>
+<td>configuration</td>
+</tr>
+<tr>
+<td><code>CatalogDataset</code></td>
+<td>one Dataset and its <code>DiscoveredSource</code> list</td>
+<td>Snapshot</td>
+</tr>
+<tr>
+<td><code>DiscoveredSource</code></td>
+<td>logical path, format, version, and status of a composite store or peripheral file</td>
+<td>Snapshot</td>
+</tr>
+<tr>
+<td><code>DatasetCatalogSnapshot</code></td>
+<td>pins members, source versions, and temporary object files for every mount</td>
+<td>one CLI query or one Server Catalog generation</td>
+</tr>
+<tr>
+<td><code>LazySource</code></td>
+<td>holds the pinned source description and caches the first resolve result or error, concurrency-safe</td>
+<td>same as the Snapshot</td>
+</tr>
+<tr>
+<td><code>CatalogTableProvider</code></td>
+<td>prunes sources at the DataFusion <code>scan</code> boundary and composes the matching physical plans</td>
+<td>each Dataset stable table</td>
+</tr>
+<tr>
+<td><code>ChronicleQueryEngine</code></td>
+<td>registers the Snapshot as a DataFusion schema and runs read-only SQL</td>
+<td>same as the Snapshot</td>
+</tr>
+</tbody>
+</table>
+<h3 id="31-namespace-dataset-and-sql-alias">3.1 Namespace, Dataset, and SQL alias<a class="headerlink" href="#31-namespace-dataset-and-sql-alias" title="Permanent link">&para;</a></h3>
+<p>Dataset identity is a normalized path. It is not a physical Lance dataset
+and not a Warehouse mount name. One path can contain several Storyline
+stores, several <code>events.lance</code> stores, and several peripheral files. The
+Warehouse registers an opened path as a DataFusion schema through a SQL
+alias, so <code>prod</code> and <code>staging</code> can exist at the same time. The alias is
+not Dataset identity. The implementation still uses <code>NamespacePath</code> for
+mount hierarchy.</p>
+<p>A SQL alias is trimmed and lowercased and must match
+<code>[A-Za-z_][A-Za-z0-9_]*</code>. <code>public</code> and <code>information_schema</code> are reserved.
+A namespace component may contain letters, digits, <code>_</code>, <code>-</code>, and <code>.</code>. A
+duplicate full namespace or SQL alias fails before discovery.</p>
+<h3 id="32-source-and-_file_">3.2 Source and <code>_file_</code><a class="headerlink" href="#32-source-and-_file_" title="Permanent link">&para;</a></h3>
+<p>A Source is the Catalog's smallest discovery unit:</p>
+<ul>
+<li>a Storyline <code>CURRENT</code> root is a <code>store</code> source;</li>
+<li>a canonical <code>events.lance</code> root is a <code>store</code> source;</li>
+<li>each JSON, JSONL, or NDJSON file is a <code>file</code> source.</li>
+</ul>
+<p><code>_file_</code> is the source's UTF-8 logical path relative to the Dataset root,
+always separated by <code>/</code>. When the mount root itself is the source, the
+value is <code>.</code>. It is not a persistent column of the source table and is
+never written back to Lance.</p>
+<h3 id="33-storyline-and-run-identity">3.3 Storyline and Run identity<a class="headerlink" href="#33-storyline-and-run-identity" title="Permanent link">&para;</a></h3>
+<p><code>session_id</code> is the logical primary key of a Storyline, but uniqueness is
+guaranteed only inside one source. The same value can appear in a
+peripheral file or another archive. Catalog and Server therefore use this
+composite key:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>(dataset, _file_, session_id)
+</span></code></pre></div>
+<p><code>run_id</code> is a Run grouping key. One physical Run can contain a main
+Storyline and several subagent Storylines, so many rows in the same source
+can share one <code>run_id</code>. Canonical-event normalization groups by the
+event's Storyline/session identity and keeps the actual <code>events.lance</code>
+URI, so later reads and writes do not guess a physical location from the
+mount root.</p>
+<h3 id="34-source-revision">3.4 Source revision<a class="headerlink" href="#34-source-revision" title="Permanent link">&para;</a></h3>
+<p>Internally, <code>CatalogSourceRevision</code> stores a typed revision. A single
+string is not asked to represent a Storyline generation, an event
+fact/layout watermark, a local file fingerprint, and an object version at
+once. <code>sources.snapshot_ref</code> remains a string projection that is convenient
+for SQL display and filtering. Consistency checks, Snapshot summaries, and
+API descriptions use the typed revision.</p>
+<p>One canonical events source can be linked to several derived Storyline
+projections. The Catalog does not hide or reject the canonical source
+because of that. It selects one read-acceleration projection in the stable
+order <code>fresh → last_modified → generation → path</code>.
+<code>projection_candidates</code> exposes the candidate count. When no candidate is
+fresh, the query falls back to the pinned canonical events Snapshot.</p>
+<h2 id="4-mounts-and-the-default-dataset">4. Mounts and the default Dataset<a class="headerlink" href="#4-mounts-and-the-default-dataset" title="Permanent link">&para;</a></h2>
+<h3 id="41-cli-form">4.1 CLI form<a class="headerlink" href="#41-cli-form" title="Permanent link">&para;</a></h3>
+<p><code>--mount NAME=DATASET</code> may be repeated:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pchronicle<span class="w"> </span>query<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--mount<span class="w"> </span><span class="nv">current</span><span class="o">=</span>local:///srv/pchronicle/current<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>--mount<span class="w"> </span><span class="nv">archive</span><span class="o">=</span>s3://trajectory-bucket/archive<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span>--sql<span class="w"> </span><span class="s2">&quot;SELECT * FROM current.runs&quot;</span>
+</span></code></pre></div>
+<p><code>--mount</code> and a positional Dataset are mutually exclusive. A positional
+argument is mounted as the fixed schema <code>dataset</code>. With only <code>--mount</code>,
+the caller must write the mount name; there is no implicit <code>dataset</code>
+schema. The user config file (<code>-c</code>) stores aliases and a default Dataset
+only. It does not provide a query mount table.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>pchronicle<span class="w"> </span>query<span class="w"> </span>--mount<span class="w"> </span><span class="nv">current</span><span class="o">=</span>local:///srv/pchronicle/current<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--mount<span class="w"> </span><span class="nv">archive</span><span class="o">=</span>s3://trajectory-bucket/archive<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--sql<span class="w"> </span><span class="s2">&quot;SELECT table_schema, table_name FROM information_schema.tables&quot;</span>
+</span></code></pre></div>
+<h3 id="42-default-selection">4.2 Default selection<a class="headerlink" href="#42-default-selection" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>CLI input</th>
+<th>Default Dataset</th>
+<th>Unqualified names such as <code>runs</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>positional <code>INPUT</code></td>
+<td>fixed as <code>dataset</code></td>
+<td>resolve to <code>dataset.runs</code> and the other default views</td>
+</tr>
+<tr>
+<td><code>--mount</code> only (one or more)</td>
+<td>none</td>
+<td>must use a qualified name such as <code>current.runs</code></td>
+</tr>
+</tbody>
+</table>
+<p>Positional form:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>pchronicle<span class="w"> </span>query<span class="w"> </span>./capture<span class="w"> </span>--sql<span class="w"> </span><span class="s2">&quot;SELECT * FROM dataset.runs&quot;</span>
+</span></code></pre></div>
+<p>This is equivalent to mounting <code>./capture</code> as <code>dataset</code> and querying
+<code>dataset.runs</code>. Cross-Dataset joins use repeated <code>--mount</code>. Do not put a
+positional Dataset and <code>--mount</code> on the same command.</p>
+<h2 id="5-hierarchical-discovery">5. Hierarchical discovery<a class="headerlink" href="#5-hierarchical-discovery" title="Permanent link">&para;</a></h2>
+<h3 id="51-example">5.1 Example<a class="headerlink" href="#51-example" title="Permanent link">&para;</a></h3>
+<p>Assume this mounted directory:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>capture-root/
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>├── live/
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>│   └── CURRENT
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>├── agents/
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>│   └── codex/
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>│       └── run-001/
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>│           └── events.lance/
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>│               └── _manifest.json
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>└── imports/
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>    ├── batch-a.atif.jsonl
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>    └── nested/
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>        └── session.json
+</span></code></pre></div>
+<p>The Catalog produces four sources:</p>
+<table>
+<thead>
+<tr>
+<th><code>_file_</code></th>
+<th><code>kind</code></th>
+<th>Possible <code>format</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>live</code></td>
+<td><code>store</code></td>
+<td><code>storyline</code></td>
+</tr>
+<tr>
+<td><code>agents/codex/run-001/events.lance</code></td>
+<td><code>store</code></td>
+<td><code>events</code></td>
+</tr>
+<tr>
+<td><code>imports/batch-a.atif.jsonl</code></td>
+<td><code>file</code></td>
+<td><code>atif</code></td>
+</tr>
+<tr>
+<td><code>imports/nested/session.json</code></td>
+<td><code>file</code></td>
+<td>detected from the file</td>
+</tr>
+</tbody>
+</table>
+<p>Internal files of <code>live</code> and <code>events.lance</code> do not become sources again.
+Stopping descent after a composite root is recognized keeps manifests,
+generations, segments, and <code>objects.lance</code> from being treated as user
+input.</p>
+<h3 id="52-local-discovery">5.2 Local discovery<a class="headerlink" href="#52-local-discovery" title="Permanent link">&para;</a></h3>
+<p>Local URIs accept ordinary paths, <code>local://</code>, and <code>file://</code>:</p>
+<ol>
+<li>If the root is a <code>.json</code>, <code>.jsonl</code>, or <code>.ndjson</code> file, create a single
+   source.</li>
+<li>If the root directory contains <code>CURRENT</code>, the whole root is one
+   Storyline source.</li>
+<li>If the root is named <code>events.lance</code> and contains <code>_manifest.json</code>, the
+   whole root is one events source.</li>
+<li>Otherwise recurse in stable path order: recognize composite roots, or
+   collect supported peripheral files.</li>
+<li>Symbolic links are not followed, which avoids cycles, out-of-tree
+   reads, and duplicate identities for the same physical file.</li>
+</ol>
+<h3 id="53-object-store-discovery">5.3 Object-store discovery<a class="headerlink" href="#53-object-store-discovery" title="Permanent link">&para;</a></h3>
+<p>Object URIs are resolved through the Lance/object-store adapter. The
+Catalog consumes a prefix listing as a stream and fails before it reads
+<code>max_entries + 1</code> objects. It does not collect an unbounded listing into
+memory and check afterwards. Then:</p>
+<ol>
+<li>recognize Storyline roots from a <code>CURRENT</code> object;</li>
+<li>recognize canonical events roots from <code>events.lance/_manifest.json</code>;</li>
+<li>exclude every object inside a composite root;</li>
+<li>treat remaining <code>.json</code>, <code>.jsonl</code>, and <code>.ndjson</code> objects as independent
+   sources;</li>
+<li>sort by Dataset-relative object key.</li>
+</ol>
+<p>Current object backends reuse the URI schemes that pChronicle/Lance
+already support, such as <code>s3://</code>, <code>az://</code>, and <code>gs://</code>. A failed mount or
+listing means a trusted member set cannot be built, so even <code>report</code> mode
+fails.</p>
+<h3 id="54-format-detection">5.4 Format detection<a class="headerlink" href="#54-format-detection" title="Permanent link">&para;</a></h3>
+<p>Each peripheral file is detected independently, so one Dataset can mix
+ATIF, OpenAI messages, and ACTF. <code>pchronicle query</code> does not impose a
+format constraint on the Dataset. <code>--source</code> on <code>find</code> and <code>export</code> only
+narrows the search to one Dataset-relative Source path; it is not a
+format hint.</p>
+<p>Neither local nor remote peripheral files are read at Catalog-build time
+for autodetection. Without an explicit format hint, <code>sources.format</code> may
+be <code>NULL</code>. The Catalog first freezes the local file fingerprint or remote
+object version, then runs bounded format detection after <code>_file_</code> pruning
+selects that source. The detection result is cached on the Snapshot's
+<code>LazySource</code> together with the datasource resolve result.</p>
+<h2 id="6-sql-provider">6. SQL provider<a class="headerlink" href="#6-sql-provider" title="Permanent link">&para;</a></h2>
+<p>The Dataset's stable public relations, exact <code>sources</code> columns,
+Source-local identity, and join rules belong to the
+<a href="../../reference/query-model/">Query Model Reference</a>. This section only
+explains how the Catalog builds execution plans for those relations.</p>
+<p>Peripheral files do not synthesize fake raw event rows. They are queried
+only through Storyline-normalized relations. The Catalog adds a constant
+<code>_file_</code> to entity relations so the public Source identity connects to the
+lazy physical Source.</p>
+<h3 id="61-catalog-aware-source-pruning">6.1 Catalog-aware source pruning<a class="headerlink" href="#61-catalog-aware-source-pruning" title="Permanent link">&para;</a></h3>
+<p><code>runs</code>, <code>steps</code>, <code>tool_calls</code>, and <code>events</code> are each provided by a
+Dataset-level <code>CatalogTableProvider</code>. After DataFusion hands projection,
+filters, and limit to the provider, the provider builds the physical plan
+in this order:</p>
+<ol>
+<li>drop sources that cannot provide the target table — for example
+   <code>events</code> automatically excludes Storyline and peripheral files;</li>
+<li>evaluate recognizable filter expressions against each source's constant
+   <code>_file_</code>;</li>
+<li>skip sources that cannot match, without calling <code>LazySource::resolve</code>;</li>
+<li>resolve candidates in stable source order, capped by
+   <code>max_concurrent_sources</code>, and pass business-column projection, business
+   predicates, and limit on to each native provider;</li>
+<li>zero hits produce <code>EmptyExec</code>; one hit uses that plan directly; several
+   hits produce <code>UnionExec</code>; a global limit is applied last when needed.</li>
+</ol>
+<p><code>_file_</code> predicates that can prune exactly include <code>=</code>, <code>!=</code>, <code>IN</code>,
+<code>NOT IN</code>, case-sensitive <code>LIKE</code>/<code>NOT LIKE</code>, and combinations of <code>AND</code>,
+<code>OR</code>, and <code>NOT</code> that can be evaluated safely. Expressions that mix source
+conditions with business conditions use conservative three-valued logic:
+a source is skipped only when it can be proved impossible to match. For
+example:</p>
+<div class="language-sql highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">SELECT</span><span class="w"> </span><span class="n">run_id</span><span class="p">,</span><span class="w"> </span><span class="n">session_id</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="k">FROM</span><span class="w"> </span><span class="n">archive</span><span class="p">.</span><span class="n">runs</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="k">WHERE</span><span class="w"> </span><span class="n">_file_</span><span class="w"> </span><span class="k">LIKE</span><span class="w"> </span><span class="s1">&#39;2026/08/%&#39;</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="n">session_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">&#39;session-42&#39;</span><span class="p">;</span>
+</span></code></pre></div>
+<p>Here <code>LIKE</code> prunes sources at the Catalog layer. <code>session_id</code> is pushed
+into the Lance or file provider of each hit. Without a <code>_file_</code>
+predicate, the Catalog has no cross-source <code>run_id</code> or time statistics, so
+every compatible source of the target table is a candidate. Business
+predicates can still be pushed down inside each native provider.</p>
+<p><code>LazySource</code> caches the resolve result in an async <code>OnceCell</code>. Concurrent
+queries that hit the same source open, remotely materialize, or parse the
+format only once. Resolve-phase failures are cached too, so behavior is
+stable inside one Snapshot. The raw <code>events</code> table of canonical events
+can scan pinned segments directly. Without a fresh projection, a query
+with a provable <code>session_id = ...</code> or <code>session_id IN (...)</code> reads only
+the full history of the target Storyline. Wide queries read the pinned
+snapshot. Both fallbacks are bounded by <code>max_event_fallback_rows</code> and
+<code>max_event_fallback_bytes</code>, and they materialize only the relation tables
+the current query asked for. Over-budget cases require a build/sync of
+the Storyline projection.
+<code>load_events</code> point lookups read the target session directly and do not
+build a DataFusion MemTable, but they use the same row and byte budgets.</p>
+<p><code>EXPLAIN</code> can inspect the pruned physical plan. An exact single-source
+hit should not contain <code>UnionExec</code>.</p>
+<h3 id="62-join-rules">6.2 Join rules<a class="headerlink" href="#62-join-rules" title="Permanent link">&para;</a></h3>
+<p>One Dataset can contain several physical sources, and <code>run_id</code>/<code>session_id</code>
+are valid only inside a single source. When two built-in trajectory tables
+join across several same-Dataset sources, an explicit <code>_file_</code> equality
+is required:</p>
+<div class="language-sql highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">run_id</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">step_id</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">message_kind</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">message_value</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">FROM</span><span class="w"> </span><span class="n">archive</span><span class="p">.</span><span class="n">runs</span><span class="w"> </span><span class="n">r</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="k">JOIN</span><span class="w"> </span><span class="n">archive</span><span class="p">.</span><span class="n">steps</span><span class="w"> </span><span class="n">s</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span><span class="k">ON</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">_file_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">_file_</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">session_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">session_id</span><span class="p">;</span>
+</span></code></pre></div>
+<p>Omitting <code>_file_</code> is rejected before execution. Cross-Dataset joins do
+not require matching <code>_file_</code> values, because the left and right
+namespaces are already different and usually do not share a directory
+layout:</p>
+<div class="language-sql highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">SELECT</span><span class="w"> </span><span class="k">c</span><span class="p">.</span><span class="n">run_id</span><span class="p">,</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">run_id</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">archived_run</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="k">FROM</span><span class="w"> </span><span class="k">current</span><span class="p">.</span><span class="n">runs</span><span class="w"> </span><span class="k">c</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="k">JOIN</span><span class="w"> </span><span class="n">archive</span><span class="p">.</span><span class="n">runs</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="k">c</span><span class="p">.</span><span class="n">session_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">session_id</span><span class="p">;</span>
+</span></code></pre></div>
+<p>The check applies to built-in joins of <code>runs</code>, <code>steps</code>, and <code>tool_calls</code>.
+The query engine accepts a single read-only <code>SELECT</code>, <code>VALUES</code>,
+<code>DESCRIBE</code>, or <code>EXPLAIN</code>. It rejects DDL, DML, <code>COPY</code>, and multi-statement
+SQL.</p>
+<h2 id="7-snapshots-and-consistency">7. Snapshots and consistency<a class="headerlink" href="#7-snapshots-and-consistency" title="Permanent link">&para;</a></h2>
+<h3 id="71-build-process">7.1 Build process<a class="headerlink" href="#71-build-process" title="Permanent link">&para;</a></h3>
+<p>One Catalog build completes in this order:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>parse and validate mounts
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>  → freeze candidate members of each root
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>  → pin identity / CURRENT / manifest / object metadata of each candidate
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>  → build sources metadata
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>  → compute snapshot_id
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>  → register Dataset schema, CatalogTableProvider, and default views
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>  → publish to query or Server
+</span></code></pre></div>
+<p>Only a fully successful <code>DatasetCatalogSnapshot</code> is handed to the query
+engine. The build does not open Lance datasets, copy remote JSON locally,
+or normalize canonical events into Storyline three-table form.</p>
+<h3 id="72-how-each-source-is-pinned">7.2 How each source is pinned<a class="headerlink" href="#72-how-each-source-is-pinned" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Member pin</th>
+<th>Content/version pin</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>local peripheral file</td>
+<td>freeze the path list at discovery</td>
+<td>record path, size, mtime, and device/inode on Unix; re-check before and after the first read</td>
+</tr>
+<tr>
+<td>remote peripheral object</td>
+<td>freeze listing <code>ObjectMeta</code></td>
+<td>after a hit, read with the pinned version/ETag, stream-copy into the Snapshot temp directory, and verify the final size</td>
+</tr>
+<tr>
+<td>Storyline store</td>
+<td>discover and read the <code>CURRENT</code> description</td>
+<td>freeze the generation and the exact versions of the three tables; open the Lance dataset only after a hit</td>
+</tr>
+<tr>
+<td>canonical events</td>
+<td>discover and read <code>_manifest.json</code></td>
+<td>freeze the manifest revision and visible segment versions; open segments only after a hit</td>
+</tr>
+</tbody>
+</table>
+<p>Only remote objects selected by a query are copied. Copies write chunks
+into a temporary file held by the Snapshot; the whole object is never
+read into memory at once. The temporary directory is removed when the
+Snapshot is dropped. A local fingerprint is change detection, not a
+content hash: an attacker who rewrites a file in place while keeping the
+same identity, size, and mtime is outside the guarantee.</p>
+<h3 id="73-consistency-bounds">7.3 Consistency bounds<a class="headerlink" href="#73-consistency-bounds" title="Permanent link">&para;</a></h3>
+<p>A Snapshot guarantees:</p>
+<ul>
+<li>query planning and execution see the same source member set;</li>
+<li>even a late-opened Storyline/events store can open only the generation,
+  manifest, and segment versions already pinned by the Snapshot — it does
+  not re-read the latest pointers;</li>
+<li>when the backend provides a version or ETag, a remote peripheral object
+  is pinned to the version observed at listing time;</li>
+<li>new files, generations, or manifests become visible only on the next
+  CLI query or an explicit refresh.</li>
+</ul>
+<p>A Snapshot does not claim that several independent URIs come from one
+global transaction instant, and it cannot stop a source system from
+deleting data that was pinned but not yet read. If a local file changes
+detectably between discovery and first read, the query fails rather than
+mixing versions. If an object backend provides neither version nor ETag,
+the Catalog can only describe <code>snapshot_ref</code> with key, size, and mtime
+and verify transfer size. That is a weaker object-version pin.</p>
+<p><code>snapshot_id</code> is a truncated BLAKE3 digest of Dataset names, URIs, format
+hints, source-relative paths, pinned references, and candidate errors. It
+identifies a member/version view. It is not a content checksum and not a
+business commit ID.</p>
+<h3 id="74-resolve-lifetime">7.4 Resolve lifetime<a class="headerlink" href="#74-resolve-lifetime" title="Permanent link">&para;</a></h3>
+<p>Each ready source in the Snapshot holds a pinned description and a
+resolve cell. On first hit:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>CatalogTableProvider source pruning
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>  → LazySource::resolve
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>  → open the pinned Lance version, or verify/materialize the pinned file
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>  → create the native TableProvider
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>  → cache Result&lt;ResolvedSource&gt;
+</span></code></pre></div>
+<p>Laziness therefore does not change the Snapshot boundary: resolve happens
+late, but the resolve target was pinned before the Catalog was published.
+A source that no query hits can stay unopened for the whole Snapshot
+lifetime.</p>
+<h2 id="8-error-policy-and-resource-bounds">8. Error policy and resource bounds<a class="headerlink" href="#8-error-policy-and-resource-bounds" title="Permanent link">&para;</a></h2>
+<p><code>ls</code> and <code>status</code> expose two strategies through <code>--errors</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>One candidate cannot pin a description or pass initial validation</th>
+<th>Dataset root missing, listing/walk failed, or a global limit exceeded</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>strict</code></td>
+<td>Catalog build fails</td>
+<td>Catalog build fails</td>
+</tr>
+<tr>
+<td><code>report</code></td>
+<td>write <code>&lt;dataset&gt;.sources</code> with status <code>error</code> and skip data-table registration</td>
+<td>Catalog build fails</td>
+</tr>
+</tbody>
+</table>
+<p><code>report</code> is meant to tolerate a bad file inside a trusted member set. It
+is not meant to disguise an incomplete listing as success. Candidate
+errors strip the URI query string before they enter the public Catalog,
+so a temporary signature is not reflected. Production configuration
+should still keep credentials out of URIs. Lance open, remote conditional
+read, format detection, or record-parse errors that appear only at SQL
+scan time fail that query under both <code>strict</code> and <code>report</code>. They never
+silently drop a ready source, and they never rewrite <code>sources.status</code> on
+the immutable Snapshot after the fact.</p>
+<p>The Catalog reuses the resource parameters of direct file query:</p>
+<ul>
+<li><code>max_files</code>: upper bound on candidate sources;</li>
+<li><code>max_entries</code>: upper bound on directory entries or object listing
+  items;</li>
+<li><code>max_detection_bytes</code>: upper bound on format-detection input;</li>
+<li><code>max_file_bytes</code>: upper bound on peripheral file/object size;</li>
+<li>optional <code>max_record_bytes</code>, <code>max_concurrent_files</code>, and cache
+  parameters: resolve-time bounds. There is no default per-record size
+  limit; <code>max_file_bytes</code> limits the source;</li>
+<li><code>max_concurrent_sources</code>: how many sources one physical scan may
+  resolve at once;</li>
+<li><code>max_event_fallback_rows</code>, <code>max_event_fallback_bytes</code>: memory bound
+  for one directed canonical→Storyline fallback when no fresh
+  projection exists;</li>
+<li>DataFusion memory pool, spill path, spill bytes, timeout, and output
+  row count: query-time bounds.</li>
+</ul>
+<h2 id="9-server-refresh-and-web">9. Server, refresh, and Web<a class="headerlink" href="#9-server-refresh-and-web" title="Permanent link">&para;</a></h2>
+<p><code>pchronicle serve</code> mounts Datasets through one or more positional
+<code>[NAME=]DATASET</code> arguments. Startup first converges canonical Storyline
+projections, then builds the initial Catalog. Every later REST and SQL
+request shares that Catalog.</p>
+<table>
+<thead>
+<tr>
+<th>API</th>
+<th>Semantics</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /api/catalog</code></td>
+<td>current <code>snapshot_id</code>, creation time, default Dataset, error policy, and source list</td>
+</tr>
+<tr>
+<td><code>POST /api/catalog</code></td>
+<td>build a complete new Snapshot off the lock, replace atomically on success, and clear the trajectory cache</td>
+</tr>
+</tbody>
+</table>
+<p>When the projection supervisor discovers a new canonical Store at
+runtime, or a projection is published, it marks the Catalog dirty, then
+rebuilds completely off the lock and switches atomically. Further
+appends to an already discovered <code>events.lance</code> only advance the source
+watermark; they do not trigger a global Catalog rebuild. A Gateway-backed
+single-trace query first locates the source through the Catalog, then
+reopens the latest canonical manifest, so an in-flight trace stays
+visible while the Storyline projection waits for an idle window. A failed
+refresh does not clear or partially update the old Catalog. It keeps the
+dirty flag and retries within a bound. In-flight requests hold an <code>Arc</code>
+to the old Snapshot and can finish.
+Web Explorer takes the Dataset list from the Catalog. Server-side
+filters, URL state, and Storyline lists all carry the full
+<code>(dataset, _file_, session_id)</code>. <code>run_id</code> is returned separately as
+physical Run grouping. The Catalog is an immutable Snapshot.
+<code>POST /api/catalog</code> can still refresh explicitly, but canonical updates
+maintained by positional-Dataset <code>serve</code> produce a new Snapshot
+automatically.</p>
+<h3 id="91-server-source-routing-acceleration">9.1 Server source-routing acceleration<a class="headerlink" href="#91-server-source-routing-acceleration" title="Permanent link">&para;</a></h3>
+<p>The Server holds a rebuildable in-memory acceleration structure inside
+each <code>CatalogRuntime</code> generation. It does not change the definitions of
+<code>DatasetCatalogSnapshot</code>, <code>CatalogDataset</code>, or <code>DiscoveredSource</code>.
+Indexes are derived on demand from the current Snapshot's stable tables:</p>
+<ul>
+<li>the <code>runs</code> index maps <code>run_id</code>, <code>session_id</code>, <code>agent_id</code>, and
+  <code>agent_model_name</code> to source ids as a multi-value map;</li>
+<li><code>events</code> uses a two-level lazy index: the identity layer holds
+  <code>event_id</code> and <code>trace_id</code>; the partition layer holds <code>session_id</code> and
+  <code>agent_id</code>. Project lists do not pay memory cost for high-cardinality
+  event identities;</li>
+<li>source paths are stored once per Dataset. Value keys use a
+  per-generation keyed 64-bit fingerprint. A single-source hit inlines
+  the integer source id. A hash collision only widens the candidate set;
+  the original SQL predicates still do the final filter;</li>
+<li>Run lists are cached lazily on a separate path so SQL point queries do
+  not pay for Explorer <code>row_count</code> aggregation.</li>
+</ul>
+<p>An index is built only when the first single-table query with a routable
+predicate arrives. Async single-flight prevents concurrent duplicate
+scans. Construction uses an Arrow batch stream and does not collect the
+full result. One index layer accepts at most 1,000,000 rows and
+1,000,000 distinct values. Crossing that bound discards the unpublished
+temporary index and falls back to the original query. The Server extracts
+only string equalities or <code>IN</code> predicates that must hold from the top-level
+<code>AND</code>. Joins, CTEs, disjunctions, complex expressions, an existing
+<code>_file_</code> predicate, too many candidate sources, or an index-build failure
+all keep the original SQL. On a hit, the Server only adds <code>_file_ = ...</code>
+or <code>_file_ IN (...)</code>; DataFusion still evaluates the original business
+predicates. The index can only shrink physical source candidates. It
+cannot change result semantics.</p>
+<p>The <code>acceleration</code> field of <code>GET /api/catalog</code> reports whether indexes
+are built and their row, source, and distinct-value counts. <code>failed</code>
+lists build failures already cached for this generation so later requests
+do not rescan the whole table. <code>POST /api/query/evidence</code> reports
+<code>applied</code>, <code>already_pruned</code>, <code>not_applicable</code>, <code>not_selective</code>, or
+<code>index_unavailable</code> in the <code>source_routing</code> response field. A Catalog
+refresh publishes the new Snapshot, query engine, and empty acceleration
+structure as one runtime. Old requests keep the old runtime. Indexes are
+not reused across <code>snapshot_id</code> values.</p>
+<p>The first index build still scans the corresponding stable table. The
+main gain is later point/project queries in the same Server lifetime.
+One-shot CLI SQL does not use this state and does not turn the Catalog
+into a persistent metadata service.</p>
+<h3 id="92-write-boundary">9.2 Write boundary<a class="headerlink" href="#92-write-boundary" title="Permanent link">&para;</a></h3>
+<p><code>pchronicle serve</code> exposes reads, Catalog refresh, and bounded evidence
+query only. It does not expose maintenance, import, or arbitrary SQL
+writes. The service is forced to loopback. Gateway and native writers
+write the Dataset directly and do not go through the Warehouse API.</p>
+<h2 id="10-rust-api-boundary">10. Rust API boundary<a class="headerlink" href="#10-rust-api-boundary" title="Permanent link">&para;</a></h2>
+<p>The core API is provided by <code>persisting-pchronicle</code>:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">sync</span><span class="p">::</span><span class="n">Arc</span><span class="p">;</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">use</span><span class="w"> </span><span class="n">persisting_pchronicle</span><span class="p">::{</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="n">CatalogSnapshotOptions</span><span class="p">,</span><span class="w"> </span><span class="n">ChronicleQueryEngine</span><span class="p">,</span><span class="w"> </span><span class="n">DatasetCatalogSnapshot</span><span class="p">,</span><span class="w"> </span><span class="n">DatasetMount</span><span class="p">,</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="p">};</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="kd">let</span><span class="w"> </span><span class="n">mounts</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">    </span><span class="n">DatasetMount</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;current&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;local:///srv/pchronicle/current&quot;</span><span class="p">)</span><span class="o">?</span><span class="p">,</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">    </span><span class="n">DatasetMount</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;archive&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;s3://trajectory-bucket/archive&quot;</span><span class="p">)</span><span class="o">?</span><span class="p">,</span>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="p">];</span>
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="kd">let</span><span class="w"> </span><span class="n">snapshot</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">    </span><span class="n">DatasetCatalogSnapshot</span><span class="p">::</span><span class="n">discover</span><span class="p">(</span><span class="n">mounts</span><span class="p">,</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span><span class="w"> </span><span class="n">CatalogSnapshotOptions</span><span class="p">::</span><span class="n">default</span><span class="p">()).</span><span class="k">await</span><span class="o">?</span><span class="p">,</span>
+</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="p">);</span>
+</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="kd">let</span><span class="w"> </span><span class="n">engine</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ChronicleQueryEngine</span><span class="p">::</span><span class="n">from_catalog_snapshot</span><span class="p">(</span><span class="n">snapshot</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="kd">let</span><span class="w"> </span><span class="n">rows</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">engine</span>
+</span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="w">    </span><span class="p">.</span><span class="n">query_jsonl</span><span class="p">(</span><span class="s">&quot;SELECT COUNT(*) AS runs FROM archive.runs&quot;</span><span class="p">)</span>
+</span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span></code></pre></div>
+<p>To read a complete trajectory by Storyline, call the Snapshot's
+<code>load_storyline</code>, <code>load_events</code>, or <code>canonical_event_uri</code> with a
+<code>CatalogStorylineKey</code>. The control plane can page through the same
+Snapshot with <code>list_namespaces</code>, <code>list_sources</code>, and <code>describe_source</code>.
+Page tokens are bound to <code>snapshot_id</code> and cannot be reused after a
+refresh. Callers must not rediscover sources around the Snapshot; that
+can splice different members or versions into one response.</p>
+<h2 id="11-key-invariants">11. Key invariants<a class="headerlink" href="#11-key-invariants" title="Permanent link">&para;</a></h2>
+<p>Implementation and later extensions must keep these invariants:</p>
+<ol>
+<li>Namespace is hierarchical logical identity. A SQL alias is an
+   independent, unique lowercase schema name. The two must not be mixed
+   into one field.</li>
+<li><code>_file_</code> is stable inside one Snapshot and relative to the Dataset
+   root. The root source is always <code>.</code>.</li>
+<li>A Catalog Storyline's full identity is always
+   <code>(dataset, _file_, session_id)</code>. <code>run_id</code> is only for Run grouping.</li>
+<li>After a composite store is recognized, its internal files must not be
+   registered as independent sources.</li>
+<li>The six tables must exist even when empty, and they keep a fixed
+   schema.</li>
+<li><code>events</code> can contain only canonical events. It must not be forged
+   backwards from a lossy Storyline.</li>
+<li>Trajectory-table joins across several sources in the same Dataset must
+   carry <code>_file_</code> equality.</li>
+<li>A query-time source cannot outlive the Snapshot that holds it.</li>
+<li>The Server publishes only a complete new Snapshot atomically. On
+   failure it keeps serving the old Snapshot.</li>
+<li>The Warehouse Server must not treat any Dataset or source as a write
+    target.</li>
+<li><code>_file_</code> source pruning must happen before <code>LazySource::resolve</code>. A
+    source must not be opened just to decide whether it hits.</li>
+<li>Late resolve may use only the version description pinned by the
+    Snapshot, and it must single-flight inside that Snapshot. It must
+    not re-follow <code>CURRENT</code> or the latest manifest at resolve time.</li>
+<li>When several projections attach to the same canonical events source,
+    the canonical source must remain visible and at most one fresh
+    projection is chosen stably. Conflicts can only become diagnostics;
+    they must not block fact reads.</li>
+<li>The Server routing index must be published with the same Snapshot
+    generation. Uncertain build or analysis can only fall back to the
+    original query. An incomplete index must not exclude a source.</li>
+</ol>
+<h2 id="12-trade-offs-and-alternatives">12. Trade-offs and alternatives<a class="headerlink" href="#12-trade-offs-and-alternatives" title="Permanent link">&para;</a></h2>
+<h3 id="121-a-persistent-metadata-service">12.1 A persistent metadata service<a class="headerlink" href="#121-a-persistent-metadata-service" title="Permanent link">&para;</a></h3>
+<p>A persistent Catalog can cache listings and statistics, but it introduces
+consistency protocols, migrations, background sync, authorization, and
+disaster recovery. The current workload needs a definite bound on "what
+this one query sees", so the design uses a query-time Snapshot. If
+listing cost becomes the main bottleneck later, a verifiable cache can be
+added without changing the SQL model.</p>
+<h3 id="122-flattening-every-mount-into-public">12.2 Flattening every mount into <code>public</code><a class="headerlink" href="#122-flattening-every-mount-into-public" title="Permanent link">&para;</a></h3>
+<p>Flattened tables cannot tell live data from archives, and <code>_file_</code> would
+have to encode a URI or Dataset name. DataFusion schemas keep the Dataset
+semantics the user supplied and make cross-Dataset SQL explicitly
+reviewable.</p>
+<h3 id="123-using-the-directory-basename-as-the-default-name">12.3 Using the directory basename as the default name<a class="headerlink" href="#123-using-the-directory-basename-as-the-default-name" title="Permanent link">&para;</a></h3>
+<p>A basename depends on path spelling, object prefixes, and deployment
+directories. Unqualified SQL would not get a stable resolution. The
+positional entry therefore always uses the fixed name <code>dataset</code> instead
+of guessing a name from the URI.</p>
+<h3 id="124-importing-everything-to-lance-at-discovery">12.4 Importing everything to Lance at discovery<a class="headerlink" href="#124-importing-everything-to-lance-at-discovery" title="Permanent link">&para;</a></h3>
+<p>Automatic import of peripheral JSON would change query latency, capacity,
+and failure semantics, and it would create new persistent state. The
+Catalog therefore only virtualizes those files. Canonical <code>events.lance</code>
+is the exception: positional-Dataset <code>serve</code> maintains a deterministic
+sibling Storyline projection outside the Catalog. Queries still choose a
+projection or a pinned-snapshot fallback by lineage and freshness.</p>
+<h3 id="125-using-only-run_id">12.5 Using only <code>run_id</code><a class="headerlink" href="#125-using-only-run_id" title="Permanent link">&para;</a></h3>
+<p><code>run_id</code> is a grouping key, not the Storyline primary key. The main Agent
+and subagents in one physical Run can share it. Locating by
+<code>(dataset, _file_, session_id)</code> keeps the physical origin and supports
+unambiguous read/write routing.</p>
+<h2 id="13-tests-and-evolution">13. Tests and evolution<a class="headerlink" href="#13-tests-and-evolution" title="Permanent link">&para;</a></h2>
+<p>Current tests cover:</p>
+<ul>
+<li>Dataset name normalization, reserved names, and duplicate rejection;</li>
+<li>local mixed-format recursive discovery, default views, and empty
+  Dataset schema;</li>
+<li><code>strict</code>/<code>report</code> candidate-error behavior;</li>
+<li>source-resolve counts remaining zero after Catalog and query-engine
+  construction;</li>
+<li><code>_file_</code> plus business predicates resolving only the hit local, remote,
+  and Storyline sources;</li>
+<li>single-source physical plans with no <code>UnionExec</code>, and no download of
+  unhit remote objects;</li>
+<li>late errors not being silently skipped under <code>report</code>;</li>
+<li>raw canonical <code>events</code> scans and session point lookups not triggering
+  full Storyline normalization;</li>
+<li>stable selection of one among several fresh projections, with canonical
+  events always visible;</li>
+<li>hierarchical namespace paging, source describe, and cross-Snapshot
+  page-token rejection;</li>
+<li>dangerous same-Dataset joins rejected and cross-Dataset joins allowed;</li>
+<li>independent reads of several Storylines in one canonical events source;</li>
+<li>CLI positional arguments, single/multi named mounts, TOML, and help
+  text;</li>
+<li>Server lazy Catalog, Dataset filtering, failed refresh keeping the old
+  Snapshot, and physical write coordinates;</li>
+<li>Server routing-index multi-predicate intersection, single-source SQL
+  injection, result equivalence, explicit <code>_file_</code> preservation, and
+  clear-on-refresh;</li>
+<li>Web Dataset selection and full Run-coordinate encoding.</li>
+</ul>
+<p>When a new format or backend is added later, define first how it produces
+a stable <code>_file_</code>, how it pins versions, which tables it can project, and
+whether writes are allowed, then attach a discoverer. A backend that
+cannot pin members or versions must lower its consistency claim
+explicitly. It must not reuse the existing <code>snapshot_ref</code> to imply a
+stronger guarantee.</p>
+<h2 id="14-related-implementation">14. Related implementation<a class="headerlink" href="#14-related-implementation" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>crates/persisting-pchronicle/src/store/catalog/</code>: discovery, pinning,
+  lazy sources, Catalog provider, source pruning, and Run routing;</li>
+<li><code>crates/persisting-pchronicle/src/store/query_engine.rs</code>: Catalog
+  DataFusion backend and join checks;</li>
+<li><code>crates/persisting-pchronicle/src/store/storyline/datafusion.rs</code>:
+  Storyline description pinning and late open of a pinned generation;</li>
+<li><code>crates/persisting-pchronicle/src/store/events/datafusion.rs</code>:
+  canonical event manifest pinning and late open of pinned segments;</li>
+<li><code>crates/persisting-pchronicle-cli/src/lib.rs</code>: query CLI mounts and
+  default Dataset resolution;</li>
+<li><code>crates/persisting-pchronicle-cli/src/server/mod.rs</code>: lazy build,
+  atomic refresh, and read/write routing;</li>
+<li><code>crates/persisting-pchronicle-cli/src/server/acceleration.rs</code>:
+  same-generation in-memory source-routing index, conservative SQL
+  analysis, and <code>_file_</code> injection;</li>
+<li><code>pchronicle-web/src/</code>: Dataset selection and full Run identity.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2025–2026 Persisting. All rights reserved.
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/DeepLink-org/Persisting" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.indexes", "navigation.tracking", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
