@@ -25,6 +25,11 @@ const config = {
   ],
   themeConfig: {
     image: 'img/diagrams/persisting/hero-cyberpunk.svg',
+    announcementBar: {
+      id: 'agent-era',
+      content: 'Persistent Infrastructure for the Agent Era · Start with a Run or a Dataset',
+      isCloseable: true,
+    },
     navbar: {
       title: 'Persisting',
       logo: { alt: 'Persisting', src: 'img/logo-mark.svg' },
@@ -36,6 +41,15 @@ const config = {
         { to: '/docs/', label: 'English', position: 'right' },
         { to: '/zh/', label: '中文', position: 'right' },
       ],
+    },
+    footer: {
+      style: 'dark',
+      links: [
+        { title: 'Start here', items: [{ label: 'Choose a workflow', to: '/docs/overview' }, { label: 'Installation', to: '/docs/installation' }] },
+        { title: 'Products', items: [{ label: 'pVisor', to: '/docs/pvisor/' }, { label: 'pChronicle', to: '/docs/pchronicle/' }] },
+        { title: 'Project', items: [{ label: 'System design', to: '/docs/system-design/' }, { label: 'GitHub', href: 'https://github.com/DeepLink-org/Persisting' }] },
+      ],
+      copyright: `Copyright © ${new Date().getFullYear()} DeepLink-org`,
     },
     prism: { theme: require('prism-react-renderer').themes.github, darkTheme: require('prism-react-renderer').themes.dracula },
   },
