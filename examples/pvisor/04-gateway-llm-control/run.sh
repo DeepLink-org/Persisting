@@ -11,7 +11,7 @@ pvisor_example_reset
 ports="$(pvisor_free_ports 3)"
 read -r mock_port proxy_port admin_port <<<"$ports"
 sed \
-  -e "s|^\[run\]|[run]\ncommand = [\"/usr/bin/python3\", \"$example_dir/agent.py\"]|" \
+  -e "s|^\[run\]|[run]\ncommand = [\"${PYTHON_BIN:-python3}\", \"$example_dir/agent.py\"]|" \
   -e "s/127.0.0.1:19080/127.0.0.1:$mock_port/" \
   -e "s/127.0.0.1:19081/127.0.0.1:$proxy_port/" \
   -e "s/127.0.0.1:19082/127.0.0.1:$admin_port/" \

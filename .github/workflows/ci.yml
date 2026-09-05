@@ -484,6 +484,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Python for examples
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
@@ -501,6 +507,7 @@ jobs:
       - name: Run ${{ matrix.shard }} examples
         env:
           WORK_ROOT: ${{ runner.temp }}/${{ matrix.shard }}-examples
+          PYTHON_BIN: ${{ steps.setup-python.outputs.python-path }}
         run: ${{ matrix.command }}
 
   ci:
