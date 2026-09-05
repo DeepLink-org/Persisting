@@ -20,6 +20,25 @@ Gateway, OverlayFS, and OverlayNet are pVisor runtime mechanisms. They do not
 form independent control planes. pPilot scales the pVisor Run model and remains
 inside the pVisor product boundary.
 
+## Runtime placement and platform boundary
+
+The logical Run contract is portable across providers, but the enforcement
+boundary follows the selected platform:
+
+| Placement | Workload boundary | Workspace behavior | Security qualification |
+| --- | --- | --- | --- |
+| Linux host | private user/mount/PID namespaces plus Landlock | staged FUSE workspace | filesystem and network capabilities are reported separately; unavailable setup fails before execution |
+| macOS host | Seatbelt where available, with staged macFUSE writes | staged host workspace | safe best-effort host isolation; host kernel and ambient reads remain visible in Evidence |
+| Linux or Apple Silicon macOS VM | guest kernel with an OCI or prepared Linux rootfs | staged workspace inside the guest | stronger kernel boundary, while the macOS VMM still runs with the invoking user's host authority |
+| native OCI container | OCI runtime and bundle selected by pVisor | bundle-mounted rootfs and staged paths | container isolation is recorded; it is not treated as a complete hostile multi-tenant boundary |
+
+The provider reports requested versus effective capability dimensions in the Run
+Bundle. A successful process exit does not imply that the requested boundary
+was installed, and a workspace stage remains reviewable independently of the
+provider that produced it. See [pVisor isolation design](../pvisor/design/isolation.md)
+and the [execution guide](../pvisor/guides/execution.md) for provider-specific
+behavior and prerequisites.
+
 ## Independent ingress paths
 
 ```text

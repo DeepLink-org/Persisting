@@ -9,15 +9,15 @@ Agent 可以在 staged workspace 内自由工作，但不会自动获得修改�
 最短命令是：
 
 ```bash
-pvisor run --safe codex
+pvisor -- codex
 ```
 
 也可以显式指定路径和提交方式：
 
 ```bash
 pvisor run \
-  --overlayfs-base "$PWD" \
-  --overlayfs-stage /tmp/my-agent-stage \
+  --overlayfs-compose "$PWD" \
+  --stage /tmp/my-agent-stage \
   --overlayfs-commit manual \
   -- codex
 ```

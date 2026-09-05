@@ -5,9 +5,9 @@
 [Capability 与 Evidence](../concepts/capabilities-and-evidence.md) 解读保证。
 
 !!! note "Target architecture"
-    本文把当前实现与明确标出的目标架构写在一起。Linux `pvisor run --safe`
+    本文把当前实现与明确标出的目标架构写在一起。Linux `pvisor --`
     实现第 2 节描述的 FUSE + 合成 root + rootless user/mount namespace +
-    Landlock 路径。macOS `--safe` 实现 Seatbelt 强制的 staged 写入和 deny-all
+    Landlock 路径。macOS host 执行在可用时使用 Seatbelt 强制 staged 写入和 deny-all
     socket 约束；文件系统读取仍是 ambient，并单独报告。Docker 与
     libkrun/KVM 传输也已存在。第 2.5 节的 Virtualization.framework backend、
     第 3 节的 LiteBox VFS、第 4.2 节的 Docker 生产 profile，以及第 5 节的
@@ -22,7 +22,7 @@ pVisor 需要不止一种隔离 backend。本地 coding Agent 看重快速启动
 多种 backend 是实现组合，**不是强加给用户的配置面**。正常产品体验仍然是：
 
 ```bash
-pvisor run --safe <agent> [args...]
+pvisor -- <agent> [args...]
 ```
 
 pVisor 探测 host、工作负载和可用 placement，选择 backend，构造工作区并应用
@@ -541,7 +541,7 @@ namespace/cgroup 隔离并丢掉 VMM 特权。
 现有 pVisor `vm` executor 静态链接 libkrun，可以使用显式 Linux rootfs，或
 在没有 container daemon 的情况下拉取公开 OCI 镜像。已校验的镜像层形成不可变
 缓存 lower rootfs，guest 系统写入留在可审查 upper。host 路径不会被隐式暴露。
-显式 `--overlayfs-base` 加 `--overlayfs-target` 在所选 guest 路径挂载 staged
+显式 `--overlayfs-compose` 加 `--overlayfs-path` 在所选 guest 路径挂载 staged
 视图。vendored libkrun 在 Linux 和 macOS 上通过 virtio-fs 直接服务 root 与
 工作区 copy-on-write union，没有 host FUSE mount、物化或对账。Linux 使用
 KVM，Apple Silicon macOS 使用 HVF。Linux 另外用 user/mount/network
@@ -616,7 +616,7 @@ VMM 身份、cgroup、seccomp、隔离网络、受信任不可变输入，并且
 
 选择权属于 pVisor 和 placement 控制面：
 
-1. 普通 Linux `pvisor run --safe` 今天使用 FUSE + Workspace + 合成 root +
+1. 普通 Linux `pvisor --` 今天使用 FUSE + Workspace + 合成 root +
    rootless namespace + Landlock。所需控制 fail-closed 安装；不可用的 user
    namespace、mount、chroot 或 Landlock ABI 从不静默回退。
 2. 当 LiteBox 能为兼容的打包工作负载提供更小、可度量的 host 接口时，pVisor
@@ -675,7 +675,7 @@ setup 调用不是 Evidence。
 
 默认本地路径只有在以下全部成立时才算完整：
 
-- 一次 pVisor 安装和一条 `pvisor run --safe` 命令就足够；
+- 一次 pVisor 安装和一条 `pvisor --` 命令就足够；
 - 不需要 root shell、setuid pVisor daemon、手工加组、手写策略、mount 命令
   或 container 安全标志；
 - pVisor 发现可执行文件及其最小 runtime 依赖；

@@ -15,7 +15,7 @@ cd examples/pvisor/04-gateway-llm-control
 ```bash
 export DEEPSEEK_API_KEY=sk-...
 pvisor run \
-  --agent deepseek \
+  --name deepseek \
   --gateway-mode capture \
   --gateway-route 'name="deepseek", upstream="https://api.deepseek.com/v1", api_key_env="DEEPSEEK_API_KEY"' \
   --gateway-route 'name="*", forward="deepseek"' \

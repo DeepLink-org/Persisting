@@ -21,16 +21,16 @@ pvisor
 ## 安全的第一次运行
 
 ```bash
-pvisor run --safe codex
+pvisor -- codex
 pvisor review last
 ```
 
-`--safe` 把当前目录当作可复用项目工作区和 OverlayFS base，在
-`PERSISTING_RUN_HOME`（默认 `~/.persisting/runs`）下创建独立 Run 和可写
-stage，保留改动供人工审查，并以 `0600` 写入 `run-bundle.json`。
+默认 host 执行使用 safe-best-effort 隔离；`--stage <PATH>` 才启用当前目录的
+OverlayFS stage 在显式 `--stage` 路径（未指定时为生成的 Run 记录目录）创建独立
+Run 和可写 stage，保留改动供人工审查，并以 `0600` 写入 `run-bundle.json`。
 在 Linux 上，默认 host executor 会在异步 runtime 到达 Agent 之前，通过
 pVisor 的 rootless launcher 自执行。User/mount/PID namespace、namespace 内
-PID 1 后代回收器、最小 bind-projected root 加 `chroot`、Landlock ABI v3
+PID 1 后代回收器、最小 bind-projected root 加 `chroot`、按内核协商的 Landlock ABI v1-v3
 策略、关闭继承描述符、`no_new_privs` 以及空 capability 集，使工作区约束对
 Agent 进程树不可绕过。
 `--overlaynet-deny-all` 再加一个私有 network namespace；public/allowlist
@@ -157,12 +157,14 @@ Transport 审计。显式选择 `--state-dir` 或 `--output-dir` 的调用方拥
 ## 一套配置模型
 
 `pvisor run` 只有一份规范 `RunConfig`。TOML 和命令行选项是同一组字段的两种
-表示。`--config` 是可选且显式的；pVisor 不会发现隐藏的项目配置文件。
+表示。`--spec` 是可选且显式的；JSON 对象按准备好的 RunSpec 处理，否则按
+TOML RunConfig 处理。pVisor 不会发现隐藏的项目配置文件。
 
 ```bash
 pvisor run \
-  --agent codex \
-  --overlayfs-base /path/to/project \
+  --name codex \
+  --overlayfs-path /workspace \
+  --overlayfs-compose /path/to/project \
   --overlayfs-backend directory \
   --overlayfs-commit manual \
   --overlaynet-allow api.openai.com:443 \
@@ -200,7 +202,8 @@ image = "example/codex-agent:latest"
 network = "host"
 
 [overlayfs]
-base = "/path/to/project"
+path = "/workspace"
+compose = ["/path/to/project"]
 backend = "directory"
 commit = "manual"
 
@@ -232,18 +235,20 @@ api_key_env = "OPENAI_API_KEY"
 mode = "lance"
 ```
 
-用 `pvisor run --config run.toml` 运行。显式 CLI 标量替换 TOML 标量。提供
+用 `pvisor run --spec run.toml` 运行。显式 CLI 标量替换 TOML 标量。提供
 任一重复 CLI 字段（`--overlayfs-compose`、`--overlaynet-allow`、
 `--overlaynet-deny`、`--overlaynet-limit` 或 `--gateway-route`）会替换该
 完整 TOML 列表。`--` 之后的命令替换 `run.command`。
 
-`--container-image IMAGE` 自动选择 OCI container executor；
-`--executor container` 让选择显式。传输层解析匹配的静态
-`linux-amd64`/`linux-arm64` pVisor，挂进镜像，覆盖 entrypoint，并走普通
-`pvisor run --executor host --run-spec ...` 路径。Agent 命令放在 RunSpec
-内，而不是暴露在 Docker/Podman argv。注入的 pVisor 创建自己的 AgentCtl 并
+`--container-image IMAGE` 自动选择原生 OCI container executor；
+`--executor container` 让选择显式。传输层生成标准 OCI bundle，解析匹配的静态
+`linux-amd64`/`linux-arm64` pVisor，挂进 rootfs，设置 process args，并走普通
+`pvisor run --executor host --spec ...` 路径。Agent 命令放在 RunSpec
+内，而不是暴露在 OCI runner argv。注入的 pVisor 创建自己的 AgentCtl 并
 返回类型化 RunResult。最终 OverlayFS cwd 和会话 Gateway 配置挂在稳定路径。
-用户 mount 是可重复的 TOML inline table，例如：
+`--container-rootfs PATH` 可直接指定已有 rootfs；否则 pVisor 使用自带 OCI
+image store 准备 `--container-image`。运行时必须是 `runc` 或 `crun`，不再调用
+Docker/Podman。用户 mount 是可重复的 TOML inline table，例如：
 
 ```bash
 pvisor run \
@@ -257,23 +262,25 @@ pvisor run \
 ```
 
 进程内 Gateway 和显式 OverlayNet 代理当前要求 `container.network = "host"`，
-因为它们注入的地址是 host loopback 端点。关闭这些 driver 时，bridge 和无网络
-模式有效。executor 记录 container 隔离，但不声称完整 capability
+因为它们注入的地址是 host loopback 端点。关闭这些 driver 时，`none` 模式有效；
+`bridge` 需要外部 CNI 配置，当前会被拒绝。executor 记录 container 隔离，但不声称完整 capability
 enforcement。
 
 `--executor vm` 使用静态链接的 libkrun 及其嵌入 init 启动最小 Linux guest。
-`--image IMAGE` 选择该 executor，并直接拉取 OCI/Docker 镜像，不调用 Docker、
-Podman 或 Buildah。未提供显式 `--vm-rootfs` 时，默认是 `ubuntu:latest`。
+`--rootfs image=<IMAGE>` 选择该 executor，并直接拉取 OCI/Docker 镜像，不调用 Docker、
+Podman 或 Buildah。未提供显式 rootfs 时，默认是 `ubuntu:latest`。
 manifest 和 layer digest 会被校验，host 架构选择 `linux/arm64` 或
 `linux/amd64`，解包后的 rootfs 成为 pVisor OverlayFS 的不可变 lower。
 `--image-store` 覆盖平台缓存目录。OCI 缓存目标被标为不可变，且该保护在逻辑
 checkpoint/fork 后仍然有效，因此 `pvisor apply` 不能改写被其他 Run 共享的
 rootfs。
 
-在 Linux 上，`--host-rootfs` 选择 host `/` 作为 VM rootfs lower，并在省略
-`--executor` 时选择 VM executor。它与 `--image` 和 `--vm-rootfs` 互斥，并在
-macOS 上被拒绝。这是独立语义选项，而不是 CLI 别名：`--overlayfs-base` 和
-`--overlayfs-target` 继续独立选择项目工作区。带 guest 工作区 target 时，
+在 Linux 上，`--rootfs host` 选择 host `/` 作为 VM rootfs lower，并在省略
+`--executor` 时选择 VM executor。`--rootfs <PATH>` 使用准备好的目录，
+`--rootfs image=<PATH>` 使用 OCI 镜像或镜像路径；三者互斥，host rootfs 在
+macOS 上被拒绝。这是统一 rootfs 语法；
+`--overlayfs-path` 指定 Agent 看到的绝对路径；重复 `--overlayfs-compose` 可按命令行顺序从底层叠加到顶层，当前 workspace 是隐式底层。带 guest 工作区路径时，
+省略 `--overlayfs-path` 时，视图内容默认来自当前目录；为避免 lower 与挂载点递归覆盖，pVisor 会把 merged mount 放在每个 Run 的受管路径中。
 工作区外的写入使用临时 root upper，并在 VM 退出时丢弃；工作区改动使用
 durable OverlayFS stage。
 
@@ -290,10 +297,10 @@ namespace 和 Landlock 约束 VMM。macOS VMM 仍拥有调用用户的 host 权�
 尽管有 guest-kernel 隔离，第一版 OCI-image 也不应被当成敌对多租户边界。
 
 在 host/container 执行上，四个可见 OverlayNet 策略标志和 Gateway capture
-会自动启用代理 driver。任一 `--overlayfs-base`、`--overlayfs-compose`、
-`--overlayfs-stage`、`--overlayfs-backend` 或 `--overlayfs-commit` 选项会
-自动启用 OverlayFS；没有单独的 mode 开关。base 默认是工作区，stage 默认是
-生成的 Run 目录。当 stage 嵌在 base 或 compose 层内时，pVisor 从合并视图
+会自动启用代理 driver。任一 `--overlayfs-path`、`--overlayfs-compose`、
+`--stage`、`--overlayfs-backend` 或 `--overlayfs-commit` 选项会
+自动启用 OverlayFS；没有单独的 mode 开关。workspace 是隐式 base，compose 层按给定顺序叠加；显式 `--stage`
+是元数据、轨迹和文件系统状态的统一记录目录。当 stage 嵌在 base 或 compose 层内时，pVisor 从合并视图
 隐藏该子树，并拒绝 guest 重建它。libkrun Run 不创建 live host mountpoint，
 防止 host indexer 递归进入 `<stage>/merged`。反向拓扑——stage 包含 lower
 层——会被拒绝。在 pVisor 能安全物化完整 merged-vs-base diff 之前，组合 Run
@@ -306,8 +313,8 @@ default-deny 策略交给当前 driver。host/container 直接 socket 仍是 amb
 
 ## Run 项目发现
 
-当前目录是默认项目关联。启用 OverlayFS 时，`--overlayfs-base` 标识可复用
-项目目录。每个 Run 在 `PERSISTING_RUN_HOME` 下获得独立目录。若该根会落在
+当前目录是默认项目关联。启用 OverlayFS 时，`--overlayfs-compose` 指定宿主机叠加层，
+`--overlayfs-path` 指定 Agent 看到的视图路径。每个 Run 在 pVisor 默认记录根目录下获得独立目录。若该根会落在
 所选 OverlayFS base 或 compose 层内，pVisor 改用系统临时 Run 根，以保持
 可写 stage 分离：
 

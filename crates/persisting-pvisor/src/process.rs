@@ -4,7 +4,7 @@ use crate::sandbox::INTERNAL_SANDBOX_ARG;
 #[cfg(target_os = "macos")]
 use crate::sandbox::{MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION, SeatbeltPlan, seatbelt_profile};
 #[cfg(target_os = "linux")]
-use crate::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan};
+use crate::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
 use crate::sandbox::{SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
 use async_trait::async_trait;
 use persisting_agentctl::{
@@ -17,7 +17,7 @@ use persisting_agentctl::{FilesystemAccess, NetworkCapability};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{Command as StdCommand, Stdio};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 
@@ -381,7 +381,7 @@ impl ProcessExecutor {
     ///
     /// The launcher must dispatch [`crate::sandbox::run_internal_if_requested`]
     /// before starting threads or an async runtime.  The `pvisor` binary is the
-    /// canonical launcher and uses this path automatically for `--safe` Runs.
+    /// canonical launcher and uses this path automatically for default host Runs.
     #[cfg(target_os = "linux")]
     pub fn rootless_with_launcher(launcher: impl Into<PathBuf>) -> std::io::Result<Self> {
         let launcher = launcher.into().canonicalize()?;
@@ -480,7 +480,15 @@ impl ProcessExecutor {
         {
             use std::os::unix::process::CommandExt;
             command.as_std_mut().process_group(0);
-            install_resource_limit_hook(&mut command, spec.runtime.resource_limits.clone());
+            let mut limits = spec.runtime.resource_limits.clone();
+            // RLIMIT_NPROC must be applied after the rootless launcher has
+            // created its private PID namespace and reaper. Applying it to
+            // the launcher itself can make setup fail with EAGAIN when the
+            // host user already has more processes than the requested cap.
+            if sandbox_plan.is_some() {
+                limits.processes = None;
+            }
+            install_resource_limit_hook(&mut command, limits);
         }
         if let Some(cwd) = &invocation.cwd {
             command.current_dir(cwd);
@@ -502,6 +510,22 @@ impl ProcessExecutor {
         }
         Ok(PreparedCommand { command, resources })
     }
+}
+
+/// Probe the namespace primitives used by the default Linux launcher without
+/// mutating the pVisor process itself.  A short-lived `unshare` child keeps the
+/// probe safe in a multithreaded Tokio process and distinguishes an unavailable
+/// host capability from a later Agent failure.
+#[cfg(target_os = "linux")]
+pub(crate) fn rootless_runtime_available() -> bool {
+    landlock_runtime_available()
+        && StdCommand::new("unshare")
+            .args(["--user", "--mount", "--pid", "--fork", "true"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
 }
 
 #[cfg(unix)]
@@ -817,6 +841,7 @@ fn rootless_plan(
         read_only,
         read_write,
         deny_network: matches!(spec.capabilities.network, NetworkCapability::Deny),
+        process_limit: spec.runtime.resource_limits.processes,
     })
 }
 

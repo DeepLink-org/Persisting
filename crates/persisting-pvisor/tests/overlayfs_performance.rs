@@ -56,9 +56,9 @@ fn recursive_lower_walk_does_not_materialize_file_payloads() {
 
     let started = Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--overlayfs-base"])
+        .args(["run", "--overlayfs-compose"])
         .arg(&lower)
-        .arg("--overlayfs-stage")
+        .arg("--stage")
         .arg(&stage)
         .args(["--", "/usr/bin/find", ".", "-type", "f", "-print"])
         .env("PERSISTING_RUN_HOME", temporary.path().join("runs"))

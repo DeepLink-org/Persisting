@@ -7,6 +7,7 @@ These pages explain how pVisor realizes one Agent virtual execution environment.
 | Provider portfolio and security properties | [Isolation architecture](isolation.md) |
 | Transparent VM and planned host interception | [OverlayNet](overlaynet.md) |
 | Model routing, capture, and event emission | [Gateway](gateway.md) |
+| Product command model and lifecycle semantics | [CLI design](cli.md) |
 
 Cross-product Run and history ownership is defined in
 [System Design](../../system-design/index.md). User-facing behavior is described

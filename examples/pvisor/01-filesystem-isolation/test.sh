@@ -20,7 +20,7 @@ jq -e '
   .filesystem.state == "staged" and
   .filesystem.changed_files == 2 and
   .safety.filesystem_changes_staged == true and
-  .safety.filesystem_non_bypassable == false
+  .safety.filesystem_non_bypassable == true
 ' "$run_dir/run-bundle.json" >/dev/null
 
 echo 'RESULT example=filesystem-isolation base_unchanged=true staged_changes=2'

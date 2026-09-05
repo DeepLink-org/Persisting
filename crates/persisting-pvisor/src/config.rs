@@ -88,11 +88,14 @@ pub enum RunExecutorKind {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ContainerSettings {
-    /// Docker- or Podman-compatible executable.
+    /// Native OCI runtime executable (runc or crun).
     pub runtime: PathBuf,
     /// Image reference used for the Agent process.
     pub image: String,
-    /// Target-specific statically linked pVisor injected into the container.
+    /// Prepared OCI rootfs directory. When omitted, `image` is prepared by pVisor.
+    pub rootfs: Option<PathBuf>,
+    /// Target-specific pVisor injected into the container. Defaults to the
+    /// running executable; set it when the guest ABI differs from the host.
     pub pvisor_binary: Option<PathBuf>,
     /// Explicit OCI platform. Required for packaged artifact auto-discovery
     /// when the image platform cannot be inspected locally.
@@ -114,8 +117,9 @@ pub struct ContainerSettings {
 impl Default for ContainerSettings {
     fn default() -> Self {
         Self {
-            runtime: PathBuf::from("docker"),
+            runtime: PathBuf::from("crun"),
             image: String::new(),
+            rootfs: None,
             pvisor_binary: None,
             platform: None,
             network: ContainerNetwork::Host,
@@ -132,15 +136,6 @@ impl Default for ContainerSettings {
 pub enum ContainerPlatform {
     LinuxAmd64,
     LinuxArm64,
-}
-
-impl ContainerPlatform {
-    pub(crate) const fn oci_value(self) -> &'static str {
-        match self {
-            Self::LinuxAmd64 => "linux/amd64",
-            Self::LinuxArm64 => "linux/arm64",
-        }
-    }
 }
 
 impl std::str::FromStr for ContainerPlatform {
@@ -201,16 +196,6 @@ pub enum ContainerNetwork {
     None,
 }
 
-impl ContainerNetwork {
-    pub(crate) const fn as_runtime_value(self) -> &'static str {
-        match self {
-            Self::Host => "host",
-            Self::Bridge => "bridge",
-            Self::None => "none",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerMount {
@@ -239,14 +224,19 @@ pub enum RunPolicy {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OverlayFsSettings {
-    /// Bottom host layer and default apply destination.
+    /// Optional host base layer and default apply destination (normally the workspace).
     pub base: Option<PathBuf>,
     /// Absolute path where the staged overlay is exposed inside a libkrun guest.
+    #[serde(rename = "path")]
     pub target: Option<PathBuf>,
-    /// Additional read-only layers composed above `base`, in command-line order.
+    /// Host mount point used as the Agent-visible overlay view.
+    pub merged_dir: Option<PathBuf>,
+    /// Read-only host layers, listed bottom-to-top as supplied on the CLI.
     pub compose: Vec<PathBuf>,
     /// Durable writable stage root. Defaults to the generated per-Run storage directory.
     pub stage: Option<PathBuf>,
+    /// Aggregate byte budget for the whole staged filesystem.
+    pub stage_size_bytes: Option<u64>,
     pub backend: OverlayFsBackend,
     pub commit: OverlayFsCommit,
 }
@@ -256,8 +246,10 @@ impl Default for OverlayFsSettings {
         Self {
             base: None,
             target: None,
+            merged_dir: None,
             compose: Vec::new(),
             stage: None,
+            stage_size_bytes: None,
             backend: OverlayFsBackend::Directory,
             commit: OverlayFsCommit::Manual,
         }
@@ -520,7 +512,8 @@ image = "example/agent:latest"
 network = "none"
 
 [overlayfs]
-base = "/tmp/lower"
+path = "/workspace"
+compose = ["/tmp/lower"]
 
 [overlaynet]
 mode = "proxy"
@@ -554,8 +547,12 @@ upstream = "https://api.openai.com/v1"
             config
                 .overlayfs
                 .as_ref()
-                .and_then(|overlay| overlay.base.as_deref()),
-            Some(Path::new("/tmp/lower"))
+                .and_then(|overlay| overlay.target.as_deref()),
+            Some(Path::new("/workspace"))
+        );
+        assert_eq!(
+            config.overlayfs.as_ref().unwrap().compose,
+            [PathBuf::from("/tmp/lower")]
         );
         assert_eq!(config.run.executor, RunExecutorKind::Container);
         assert_eq!(config.container.runtime, Path::new("podman"));

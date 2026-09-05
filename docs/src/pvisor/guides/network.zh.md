@@ -23,10 +23,21 @@ pvisor run \
 只要出现 allow 规则，pVisor 就会启用 OverlayNet，并把默认动作切换为拒绝。上例中，
 经过代理的流量只能访问两个列出的 HTTPS 目标，其他目标都会被拒绝。
 
+## 选择 driver 模式
+
+使用 `--overlaynet off|auto|proxy` 作为 OverlayNet 的主要开关：
+
+| 模式 | Executor | 边界 |
+|---|---|---|
+| `off` | 任意 | 关闭 OverlayNet |
+| `proxy` | Host/container | cooperative host proxy |
+| `auto` | VM（推荐） | 不可绕过的 smoltcp 数据面 |
+
+省略该参数时，策略参数和 Gateway capture 会按 executor 自动推导模式。
+
 ## 选择策略
 
-公开的 CLI 参数会自动推导与 executor 对应的驱动模式和默认动作（host/container
-使用 `proxy`，VM 使用 `auto`/`vm-smoltcp`）：
+策略参数用于配置已选择的 driver（未显式指定模式时会自动推导）：
 
 | 目标 | 参数 | 对其他代理流量的处理 |
 |---|---|---|
@@ -115,7 +126,7 @@ bytes_per_second = 250000
 运行：
 
 ```bash
-pvisor run --config run.toml
+pvisor run --spec run.toml
 ```
 
 transport 支持 `http`、`https` 和 `tcp_tunnel`。`ports` 或 `transports` 为空时，表示该
@@ -145,7 +156,7 @@ IP/CIDR 策略时，应使用能返回具体地址的 resolver。
 
 因此 host/container cooperative-proxy Run 会报告
 `safety.network_non_bypassable = false`。如果必须
-彻底阻止直接联网，使用 `pvisor run --safe --overlaynet-deny-all`：Linux 会创建私有
+彻底阻止直接联网，使用 `pvisor -- --overlaynet-deny-all`：Linux 会创建私有
 network namespace；macOS 会用 Seatbelt 阻断 IP 与宿主 ambient Unix socket，只保留精确的
 AgentCtl 和 Run 私有目录内 IPC。Container Run 也可以使用 `--container-network none`。
 两种本地 host 路径上的 selective allow/deny 仍是协作式。VM executor 默认使用
@@ -155,7 +166,7 @@ executor 使用进程内 proxy 时仍要求 `--container-network host`。
 
 ## 检查运行结果
 
-当前目录默认就是可重复使用的 workspace；每次调用都会在 `PERSISTING_RUN_HOME` 下保留
+当前目录默认就是可重复使用的 workspace；每次调用都会在 pVisor 默认记录根目录下保留
 一条独立 Run：
 
 ```bash

@@ -39,10 +39,10 @@ requirements, and component overrides.
 From a project directory:
 
 ```bash
-pvisor run --safe codex
+pvisor -- codex
 ```
 
-Replace `codex` with another Agent command if needed. `--safe` creates a
+Replace `codex` with another Agent command if needed. `--stage ./runs/task-001` creates a
 Run-owned stage for workspace writes and installs the supported platform
 controls. It does not silently describe every platform as providing the same
 isolation; the Run Bundle records filesystem, network, and other capability

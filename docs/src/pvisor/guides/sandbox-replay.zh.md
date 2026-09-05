@@ -188,7 +188,7 @@ replay journal 不记录提示词明文；Agent 原生的 prepared 或 continued
 
 迁移说明：旧版非 Claude 配置有时使用 `replay_only = true` 表示只构造前缀、不执行。现在应改为 `prepare_only = true`；v3 的 replay-only 一定会执行选中的前缀，因此需要精确版本的 runtime。无法重新生成的 Claude observation 默认失败，只有显式指定 `--allow-stale-observations` 才会复用并把质量标记为 `degraded`。
 
-`disable_thinking` 也可以通过 `--disable-thinking` 指定。只有显式提供 `--safe`、`--executor`、`--overlayfs-base` 等运行参数，或在 TOML 中增加 `[run]`、`[overlayfs]`、`[overlaynet]`，才会在回放外层创建受管的 `pvisor run`。
+`disable_thinking` 也可以通过 `--disable-thinking` 指定。只有显式提供 `--executor`、`--stage`、`--overlayfs-path` 或 `--overlayfs-compose` 等运行参数，或在 TOML 中增加 `[run]`、`[overlayfs]`、`[overlaynet]`，才会在回放外层创建受管的 `pvisor run`。
 
 完整参数见 [`pvisor replay` 命令参考](../reference/cli.md#replay-an-agent-trajectory)。
 

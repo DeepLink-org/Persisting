@@ -18,9 +18,9 @@ pub struct PVisorProcessClient {
 
 #[derive(Debug, Clone, Default)]
 pub struct PVisorProcessOptions {
-    /// Root under which pVisor creates `<run_id>/`.
+    /// Root under which pVisor stores `<run_id>/`, passed as a per-Run `--stage`.
     pub run_home: Option<PathBuf>,
-    /// Additional `pvisor run` switches, before `--run-spec`.
+    /// Additional `pvisor run` switches, before `--spec`.
     pub run_args: Vec<OsString>,
 }
 
@@ -71,20 +71,7 @@ impl PVisorProcessClient {
         let result_path = control.path().join("run-result.json");
         write_private_json(&spec_path, spec).await?;
 
-        let mut command = Command::new(&self.binary);
-        command.arg("run").args(&options.run_args);
-        command
-            .arg("--run-spec")
-            .arg(&spec_path)
-            .arg("--result-file")
-            .arg(&result_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        if let Some(run_home) = &options.run_home {
-            command.arg("--run-home").arg(run_home);
-        }
+        let mut command = self.command(spec, options, &spec_path, &result_path)?;
         let mut child = command
             .spawn()
             .with_context(|| format!("spawn pVisor binary {}", self.binary.display()))?;
@@ -112,6 +99,50 @@ impl PVisorProcessClient {
             }
         };
         Ok(output.result)
+    }
+
+    fn command(
+        &self,
+        spec: &RunSpec,
+        options: &PVisorProcessOptions,
+        spec_path: &Path,
+        result_path: &Path,
+    ) -> Result<Command> {
+        let mut command = Command::new(&self.binary);
+        command.arg("run").args(&options.run_args);
+        command
+            .arg("--spec")
+            .arg(spec_path)
+            .arg("--result-file")
+            .arg(result_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        if let Some(run_home) = &options.run_home {
+            // RunId is an opaque protocol identifier, not a trusted path.
+            // Preserve the historical <run_home>/<run_id> layout without
+            // allowing an ID to escape the caller's storage root.
+            let run_id = spec.run_id.as_str();
+            anyhow::ensure!(
+                !run_id.is_empty()
+                    && run_id != "."
+                    && run_id != ".."
+                    && !run_id.contains(['/', '\\', '\0']),
+                "Run ID must be a single directory name for pVisor stage storage"
+            );
+            // Absolute paths cannot be confused with --stage drop/drop:...
+            // and remain independent of the Agent's cwd in the JSON spec.
+            let run_home = if run_home.is_absolute() {
+                run_home.clone()
+            } else {
+                std::env::current_dir()
+                    .context("resolve pVisor Run storage root")?
+                    .join(run_home)
+            };
+            command.arg("--stage").arg(run_home.join(run_id));
+        }
+        Ok(command)
     }
 }
 

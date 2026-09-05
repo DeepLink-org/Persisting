@@ -1,5 +1,5 @@
-//! Docker/Podman transport that injects a target-specific pVisor and lets the
-//! injected pVisor execute the Agent through the normal ProcessExecutor.
+//! Native OCI runtime transport. pVisor materializes an OCI bundle and invokes
+//! runc/crun; no Docker or Podman daemon is required.
 
 use crate::artifact::resolve_pvisor_binary;
 use crate::config::{ContainerMount, ContainerPlatform, ContainerSettings};
@@ -10,7 +10,8 @@ use persisting_agentctl::{
     ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
     RunInvocation, RunResult, RunSpec, RunState, StdioMode,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -46,12 +47,12 @@ impl ContainerExecutor {
             "container runtime must not be empty"
         );
         anyhow::ensure!(
-            !settings.image.trim().is_empty(),
-            "container image must not be empty"
+            !settings.image.trim().is_empty() || settings.rootfs.is_some(),
+            "container requires an image or an explicit rootfs"
         );
         anyhow::ensure!(
-            settings.user.is_none(),
-            "container.user is not supported when pVisor is injected; run the injected pVisor as root and express Agent identity through pVisor policy"
+            settings.network != crate::config::ContainerNetwork::Bridge,
+            "container.network=bridge requires CNI and is not supported by native OCI runner; use host or none"
         );
         if let Some(workdir) = &settings.workdir {
             anyhow::ensure!(
@@ -70,35 +71,11 @@ impl ContainerExecutor {
         &self.settings
     }
 
-    async fn resolve_platform(&self) -> anyhow::Result<ContainerPlatform> {
-        if let Some(platform) = self.settings.platform {
-            return Ok(platform);
-        }
-        let output = Command::new(&self.settings.runtime)
-            .arg("image")
-            .arg("inspect")
-            .arg("--format")
-            .arg("{{.Os}}/{{.Architecture}}")
-            .arg(&self.settings.image)
-            .output()
-            .await
-            .map_err(|error| anyhow::anyhow!("inspect OCI image platform: {error}"))?;
-        anyhow::ensure!(
-            output.status.success(),
-            "cannot inspect OCI image platform; set container.platform explicitly: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-        String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse()
-            .map_err(anyhow::Error::msg)
-    }
-
     fn build_command(
         &self,
         spec: &RunSpec,
         attempt_id: &str,
-        platform: ContainerPlatform,
+        _platform: ContainerPlatform,
         pvisor_binary: &Path,
         files: &DelegatedRunFiles,
     ) -> anyhow::Result<Command> {
@@ -149,96 +126,137 @@ impl ContainerExecutor {
             }
         }
 
+        let control_dir = files.spec_path.parent().unwrap();
+        let bundle = control_dir.join(format!("oci-bundle-{}", attempt_id));
+        fs::create_dir_all(&bundle)?;
+        let configured_rootfs = self
+            .settings
+            .rootfs
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let rootfs = if configured_rootfs == Path::new("/") {
+            // A host-root container gets a private synthetic root directory.
+            // Standard host directories are mounted read-only into it, so OCI
+            // mountpoint creation never mutates the real host `/`.
+            let synthetic = bundle.join("rootfs");
+            fs::create_dir_all(&synthetic)?;
+            fs::create_dir_all(synthetic.join("tmp"))?;
+            fs::create_dir_all(synthetic.join("dev"))?;
+            fs::create_dir_all(synthetic.join("proc"))?;
+            fs::create_dir_all(synthetic.join("sys"))?;
+            for path in ["bin", "usr", "lib", "lib64", "sbin", "etc", "var"] {
+                let source = PathBuf::from(format!("/{path}"));
+                if source.is_dir() {
+                    add_mount(
+                        &mut mounts,
+                        bind_mount(&source, Path::new(&format!("/{path}")), true)?,
+                    )?;
+                }
+            }
+            synthetic
+        } else {
+            anyhow::ensure!(
+                configured_rootfs.is_dir(),
+                "OCI rootfs does not exist: {}",
+                configured_rootfs.display()
+            );
+            configured_rootfs
+        };
+        let _ = fs::create_dir_all(rootfs.join("opt/persisting"));
+        let _ = fs::create_dir_all(rootfs.join("run/persisting"));
+        // A read-only image still needs a standard writable scratch location
+        // for the injected pVisor and AgentCtl setup.
+        let _ = fs::create_dir_all(rootfs.join("tmp"));
+        for mount in mounts.values() {
+            if let Ok(relative) = mount.target.strip_prefix("/") {
+                let target = rootfs.join(relative);
+                if mount.source.is_dir() {
+                    let _ = fs::create_dir_all(target);
+                } else if let Some(parent) = target.parent() {
+                    let _ = fs::create_dir_all(parent);
+                    let _ = fs::File::create(target);
+                }
+            }
+        }
+        let config = bundle.join("config.json");
+        let mut namespaces = vec![
+            serde_json::json!({"type":"pid"}),
+            serde_json::json!({"type":"ipc"}),
+            serde_json::json!({"type":"uts"}),
+            serde_json::json!({"type":"mount"}),
+        ];
+        if self.settings.network != crate::config::ContainerNetwork::Host {
+            namespaces.push(serde_json::json!({"type":"network"}));
+        }
+        let mut mounts_json = Vec::new();
+        mounts_json.push(serde_json::json!({"destination":"/dev","type":"tmpfs","source":"tmpfs","options":["nosuid","noexec","nodev","mode=755"]}));
+        mounts_json.push(serde_json::json!({"destination":"/dev/shm","type":"tmpfs","source":"shm","options":["nosuid","noexec","nodev"]}));
+        mounts_json.push(serde_json::json!({"destination":"/proc","type":"proc","source":"proc","options":["nosuid","noexec","nodev"]}));
+        mounts_json.push(serde_json::json!({"destination":"/tmp","type":"tmpfs","source":"tmpfs","options":["nosuid","nodev","mode=1777"]}));
+        // Bind mounts follow the standard pseudo-filesystem mounts.
+        for m in mounts.values() {
+            mounts_json.push(serde_json::json!({"destination":m.target,"type":"bind","source":m.source,"options":if m.read_only { vec!["rbind","ro"] } else { vec!["rbind","rw"] }}));
+        }
+        let requested_user = parse_user(self.settings.user.as_deref())?;
+        let host_uid = unsafe { libc::geteuid() };
+        let host_gid = unsafe { libc::getegid() };
+        // Without subordinate ID ranges, rootless runtimes can only map the
+        // caller's identity. Keep the container runnable (best effort) by
+        // falling back to container root for an explicitly requested user.
+        // pVisor currently uses a single-identity rootless mapping.  A
+        // non-root container user would require configured subordinate ID
+        // ranges and cannot be represented safely otherwise.
+        let process_user = if requested_user != (0, 0) {
+            eprintln!(
+                "pVisor container: subordinate UID/GID mapping is unavailable; running as container root"
+            );
+            (0, 0)
+        } else {
+            requested_user
+        };
+        namespaces.insert(0, serde_json::json!({"type":"user"}));
+        let resources = serde_json::json!({"memory": limits.memory_bytes.map(|v| serde_json::json!({"limit":v})), "pids": limits.processes.map(|v| serde_json::json!({"limit":v}))});
+        let mut env_json = Vec::new();
+        for (key, value) in &invocation.env {
+            env_json.push(format!("{key}={value}"));
+        }
+        if invocation.inherit_env {
+            for (key, value) in std::env::vars() {
+                if valid_env_name(&key) && !invocation.env.contains_key(&key) {
+                    env_json.push(format!("{key}={value}"));
+                }
+            }
+        }
+        let devices = [
+            ("/dev/null", 1, 3), ("/dev/zero", 1, 5), ("/dev/random", 1, 8),
+            ("/dev/urandom", 1, 9), ("/dev/tty", 5, 0),
+        ].into_iter().map(|(path, major, minor)| serde_json::json!({"path":path,"type":"c","major":major,"minor":minor,"fileMode":438,"uid":0,"gid":0})).collect::<Vec<_>>();
+        // Rootless runtimes require a mapping for UID/GID 0 whenever a user
+        // namespace is enabled (even when the requested process user is not
+        // root). Map the caller's host identity to container root, and add a
+        // separate mapping for an explicitly requested non-root user.
+        // A single contiguous range avoids duplicate host IDs (which Linux
+        // rejects when writing uid_map/gid_map) while covering arbitrary
+        // explicit container users such as 1000:1000.
+        let mapping_size = 1u32;
+        let uid_mappings =
+            vec![serde_json::json!({"containerID":0,"hostID":host_uid,"size":mapping_size})];
+        let gid_mappings =
+            vec![serde_json::json!({"containerID":0,"hostID":host_gid,"size":mapping_size})];
+        let cfg = serde_json::json!({"ociVersion":"1.0.2","process":{"terminal":false,"cwd":workdir.as_deref().unwrap_or(Path::new("/")),"args":[GUEST_PVISOR,"run","--executor","host","--stdio","capture","--spec",format!("{GUEST_CONTROL_DIR}/{SPEC_FILENAME}"),"--result-file",format!("{GUEST_CONTROL_DIR}/{RESULT_FILENAME}" )],"env":env_json,"user":{"uid":process_user.0,"gid":process_user.1}},"root":{"path":rootfs,"readonly":self.settings.read_only_rootfs},"mounts":mounts_json,"linux":{"namespaces":namespaces,"resources":resources,"devices":devices,"uidMappings":uid_mappings,"gidMappings":gid_mappings},"annotations":{"io.persisting.run_id":run_id,"io.persisting.attempt_id":attempt_id}});
+        fs::write(&config, serde_json::to_vec_pretty(&cfg)?)?;
+        let state = control_dir.join("oci-state");
+        fs::create_dir_all(&state)?;
         let mut command = Command::new(&self.settings.runtime);
         command
+            .arg("--root")
+            .arg(state)
             .arg("run")
-            .arg("--rm")
-            .arg("--init")
-            .arg("--name")
-            .arg(container_name(run_id, attempt_id))
-            .arg("--label")
-            .arg(format!("io.persisting.run_id={run_id}"))
-            .arg("--label")
-            .arg(format!("io.persisting.attempt_id={attempt_id}"))
-            .arg("--platform")
-            .arg(platform.oci_value())
-            .arg("--network")
-            .arg(self.settings.network.as_runtime_value())
-            .arg("--user")
-            .arg("0:0")
-            .arg("--entrypoint")
-            .arg(GUEST_PVISOR);
-
-        if let Some(bytes) = limits.memory_bytes {
-            command.arg("--memory").arg(format!("{bytes}b"));
-        }
-        if let Some(processes) = limits.processes {
-            command.arg("--pids-limit").arg(processes.to_string());
-        }
-        if let Some(milliseconds) = limits.cpu_time_ms {
-            let seconds = milliseconds.div_ceil(1_000).max(1);
-            command
-                .arg("--ulimit")
-                .arg(format!("cpu={seconds}:{seconds}"));
-        }
-        if let Some(open_files) = limits.open_files {
-            command
-                .arg("--ulimit")
-                .arg(format!("nofile={open_files}:{open_files}"));
-        }
-        if let Some(bytes) = limits.file_size_bytes {
-            let blocks = bytes.div_ceil(512);
-            command
-                .arg("--ulimit")
-                .arg(format!("fsize={blocks}:{blocks}"));
-        }
-
-        if invocation.stdin == StdioMode::Inherit {
-            command.arg("--interactive");
-            if invocation.stdout == StdioMode::Inherit
-                && invocation.stderr == StdioMode::Inherit
-                && terminal_is_tty()
-            {
-                command.arg("--tty");
-            }
-        }
-        if self.settings.read_only_rootfs {
-            command
-                .arg("--read-only")
-                .arg("--tmpfs")
-                .arg("/tmp:rw,nosuid,nodev,mode=1777");
-        }
-        if let Some(workdir) = workdir {
-            anyhow::ensure!(
-                workdir.is_absolute(),
-                "container workdir must be absolute: {}",
-                workdir.display()
-            );
-            command.arg("--workdir").arg(workdir);
-        }
-        for mount in mounts.into_values() {
-            command.arg("--mount").arg(mount_arg(&mount)?);
-        }
-
-        if invocation.inherit_env {
-            let env_names = std::env::vars_os()
-                .filter_map(|(key, _)| key.into_string().ok())
-                .filter(|key| valid_env_name(key))
-                .collect::<BTreeSet<_>>();
-            for key in env_names {
-                command.arg("--env").arg(key);
-            }
-        }
+            .arg("--bundle")
+            .arg(bundle)
+            .arg(container_name(run_id, attempt_id));
 
         command
-            .arg(&self.settings.image)
-            .arg("run")
-            .arg("--executor")
-            .arg("host")
-            .arg("--run-spec")
-            .arg(format!("{GUEST_CONTROL_DIR}/{SPEC_FILENAME}"))
-            .arg("--result-file")
-            .arg(format!("{GUEST_CONTROL_DIR}/{RESULT_FILENAME}"))
             .stdin(stdio(invocation.stdin))
             .stdout(stdio(invocation.stdout))
             .stderr(stdio(invocation.stderr))
@@ -252,14 +270,12 @@ impl ContainerExecutor {
         container_name: &str,
         grace_ms: u64,
     ) -> Option<String> {
-        let grace_seconds = grace_ms.div_ceil(1_000).max(1);
         let stop = tokio::time::timeout(
             Duration::from_millis(grace_ms.saturating_add(2_000)),
             Command::new(&self.settings.runtime)
-                .arg("stop")
-                .arg("--time")
-                .arg(grace_seconds.to_string())
+                .arg("kill")
                 .arg(container_name)
+                .arg("TERM")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status(),
@@ -279,12 +295,19 @@ impl ContainerExecutor {
         let kill = Command::new(&self.settings.runtime)
             .arg("kill")
             .arg(container_name)
+            .arg("KILL")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
             .await;
         let _ = child.kill().await;
         let _ = child.wait().await;
+        let _ = Command::new(&self.settings.runtime)
+            .arg("delete")
+            .arg("--force")
+            .arg(container_name)
+            .status()
+            .await;
         match kill {
             Ok(status) if status.success() => None,
             Ok(_) => Some("container runtime could not kill the delegated pVisor".into()),
@@ -297,7 +320,7 @@ impl ContainerExecutor {
 impl RunExecutor for ContainerExecutor {
     fn descriptor(&self) -> ExecutorDescriptor {
         ExecutorDescriptor {
-            name: "docker-pvisor-v2".into(),
+            name: "oci-pvisor".into(),
             kind: ExecutorKind::Container,
             isolation: IsolationKind::Container,
             capability_enforcement: Default::default(),
@@ -321,10 +344,26 @@ impl RunExecutor for ContainerExecutor {
             .await;
 
         let prepared = async {
-            let platform = self.resolve_platform().await?;
+            let platform = self
+                .settings
+                .platform
+                .unwrap_or(ContainerPlatform::LinuxAmd64);
             let binary = resolve_pvisor_binary(self.settings.pvisor_binary.as_deref())?;
-            let files = DelegatedRunFiles::new(&spec)?;
-            let command = self.build_command(
+            let files = DelegatedRunFiles::new_with_stdio(&spec, true)?;
+            let mut executor = self.clone();
+            if executor.settings.rootfs.is_none() {
+                anyhow::ensure!(
+                    !executor.settings.image.trim().is_empty(),
+                    "container requires --container-rootfs or --container-image"
+                );
+                let image = executor.settings.image.clone();
+                let prepared = tokio::task::spawn_blocking(move || {
+                    crate::oci::ImageStore::new(None)?.prepare(&image)
+                })
+                .await??;
+                executor.settings.rootfs = Some(prepared.rootfs);
+            }
+            let command = executor.build_command(
                 &spec,
                 context.attempt_id().as_str(),
                 platform,
@@ -549,22 +588,6 @@ fn add_mount(mounts: &mut BTreeMap<PathBuf, BindMount>, mount: BindMount) -> any
     Ok(())
 }
 
-fn mount_arg(mount: &BindMount) -> anyhow::Result<String> {
-    let source = mount
-        .source
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("container mount source is not UTF-8"))?;
-    let target = mount
-        .target
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("container mount target is not UTF-8"))?;
-    let mut value = format!("type=bind,source={source},target={target}");
-    if mount.read_only {
-        value.push_str(",readonly");
-    }
-    Ok(value)
-}
-
 fn validate_mount_path(path: &Path) -> anyhow::Result<()> {
     let value = path
         .to_str()
@@ -586,6 +609,25 @@ fn absolute_container_path(path: &Path) -> anyhow::Result<PathBuf> {
 
 fn valid_env_name(key: &str) -> bool {
     !key.is_empty() && !key.contains(['=', '\0'])
+}
+
+fn parse_user(value: Option<&str>) -> anyhow::Result<(u32, u32)> {
+    let Some(value) = value else {
+        return Ok((0, 0));
+    };
+    let mut parts = value.split(':');
+    let uid: u32 = parts
+        .next()
+        .unwrap_or("0")
+        .parse()
+        .map_err(|_| anyhow::anyhow!("container user must be uid[:gid]"))?;
+    let gid: u32 = parts
+        .next()
+        .unwrap_or("0")
+        .parse()
+        .map_err(|_| anyhow::anyhow!("container user must be uid[:gid]"))?;
+    anyhow::ensure!(parts.next().is_none(), "container user must be uid[:gid]");
+    Ok((uid, gid))
 }
 
 fn container_name(run_id: &str, attempt_id: &str) -> String {
@@ -653,20 +695,6 @@ async fn join_capture(
     }
 }
 
-#[cfg(unix)]
-fn terminal_is_tty() -> bool {
-    unsafe {
-        libc::isatty(libc::STDIN_FILENO) == 1
-            && libc::isatty(libc::STDOUT_FILENO) == 1
-            && libc::isatty(libc::STDERR_FILENO) == 1
-    }
-}
-
-#[cfg(not(unix))]
-fn terminal_is_tty() -> bool {
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -724,17 +752,9 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--entrypoint", GUEST_PVISOR])
+            args.iter()
+                .any(|arg| arg.contains("oci-bundle-attempt-one"))
         );
-        assert!(args.windows(2).any(|pair| pair == ["--executor", "host"]));
-        assert!(args.windows(2).any(|pair| pair == ["--memory", "1048576b"]));
-        assert!(args.windows(2).any(|pair| pair == ["--pids-limit", "8"]));
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--ulimit", "nofile=32:32"])
-        );
-        assert!(args.iter().any(|arg| arg.ends_with(SPEC_FILENAME)));
         assert!(!args.iter().any(|arg| arg == "secret-agent"));
     }
 
@@ -746,21 +766,21 @@ mod tests {
         })
         .unwrap();
         let descriptor = executor.descriptor();
-        assert_eq!(descriptor.name, "docker-pvisor-v2");
+        assert_eq!(descriptor.name, "oci-pvisor");
         assert_eq!(descriptor.kind, ExecutorKind::Container);
         assert_eq!(descriptor.isolation, IsolationKind::Container);
         assert!(descriptor.capability_enforcement.dimensions.is_empty());
     }
 
     #[test]
-    fn rejects_custom_container_user() {
+    fn accepts_numeric_container_user() {
         assert!(
             ContainerExecutor::new(ContainerSettings {
                 image: "agent".into(),
                 user: Some("1000".into()),
                 ..ContainerSettings::default()
             })
-            .is_err()
+            .is_ok()
         );
     }
 

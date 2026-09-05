@@ -188,6 +188,17 @@ jobs:
             install_zig: true
           - platform: macOS
             os: macos-latest
+            shard: pvisor
+            packages: -p persisting-pvisor
+            event_control: false
+            prepare_pvisor: true
+            prepare_runtime: false
+            smoke_pvisor: true
+            smoke_ppilot: false
+            smoke_pchronicle: false
+            install_zig: true
+          - platform: macOS
+            os: macos-latest
             shard: pchronicle
             packages: >-
               -p persisting-pchronicle
@@ -423,6 +434,49 @@ jobs:
       - name: Pytest
         run: uv run pytest tests/ -q
 
+  pvisor-cases:
+    name: pVisor case checklist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-nextest: "false"
+          install-zig: "false"
+          components: ""
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-pvisor-cases
+
+      - name: Build pVisor
+        run: cargo build --release -p persisting-pvisor --locked
+
+      - name: Run documented cases
+        run: |
+          python3 scripts/run-pvisor-cases.py \
+            --pvisor ./target/release/pvisor \
+            --case A01,A02,A03,A04,A05,A06 \
+            --case B01,B02,B03,B04 \
+            --case C02,C03,C04 \
+            --case D01,D03 \
+            --case F01,F02,F03 \
+            --case G01,G02,G03,G06 \
+            --case H01,H02 \
+            --case I01,I02,I03 \
+            --case J03 \
+            --report target/pvisor-case-report.md
+
+      - name: Upload case report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pvisor-case-report
+          path: target/pvisor-case-report.md
+          if-no-files-found: ignore
+
   examples:
     name: Examples / ${{ matrix.shard }}
     runs-on: ubuntu-latest
@@ -441,6 +495,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Python for examples
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
@@ -458,6 +518,7 @@ jobs:
       - name: Run ${{ matrix.shard }} examples
         env:
           WORK_ROOT: ${{ runner.temp }}/${{ matrix.shard }}-examples
+          PYTHON_BIN: ${{ steps.setup-python.outputs.python-path }}
         run: ${{ matrix.command }}
 
   ci:
@@ -474,6 +535,7 @@ jobs:
       - pvisor-isolation-regression
       - s3-contract
       - python-test
+      - pvisor-cases
       - examples
     runs-on: ubuntu-latest
     steps:

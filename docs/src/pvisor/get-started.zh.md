@@ -37,10 +37,10 @@ pchronicle --help
 进入项目目录：
 
 ```bash
-pvisor run --safe codex
+pvisor -- codex
 ```
 
-也可以把 `codex` 换成其他 Agent 命令。`--safe` 为 workspace 写入创建 Run 独占 stage，
+也可以把 `codex` 换成其他 Agent 命令。`--stage ./runs/task-001` 为 workspace 写入创建 Run 独占 stage，
 并安装当前平台支持的控制机制。它不会把所有平台描述成具有相同隔离强度；Run Bundle
 会分别记录文件系统、网络与其他 capability evidence。
 
