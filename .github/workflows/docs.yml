@@ -1,20 +1,32 @@
-name: Docs
+name: Docs checks
 
 on:
   push:
     branches: [main, master]
+    paths:
+      - 'docs/website/**'
+      - '.github/workflows/docs.yml'
   pull_request:
     branches: [main, master]
+    paths:
+      - 'docs/website/**'
+      - '.github/workflows/docs.yml'
 
 permissions:
   contents: read
 
 jobs:
-  i18n:
-    name: i18n coverage
+  build:
+    name: Docusaurus build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check documentation i18n coverage
-        run: python3 scripts/check-docs-i18n.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install website dependencies
+        working-directory: docs/website
+        run: npm install
+      - name: Build documentation
+        working-directory: docs/website
+        run: npm run build

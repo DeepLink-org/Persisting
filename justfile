@@ -710,19 +710,19 @@ install-nightly:
 # ── 文档（docs/ 子项目）──────────────────────────────────────────────────────
 
 docs-sync:
-    cd "{{ docs_dir }}" && uv sync --frozen
+    cd "{{ docs_dir }}/website" && npm install
 
-docs-serve:
-    cd "{{ docs_dir }}" && uv run mkdocs serve
+docs-serve: docs-sync
+    cd "{{ docs_dir }}/website" && npm run start -- --host 0.0.0.0
 
-docs-serve-dirty:
-    cd "{{ docs_dir }}" && uv run mkdocs serve --dirtyreload
+docs-serve-dirty: docs-sync
+    cd "{{ docs_dir }}/website" && npm run start -- --host 0.0.0.0
 
-docs-build:
-    cd "{{ docs_dir }}" && uv run mkdocs build
+docs-build: docs-sync
+    cd "{{ docs_dir }}/website" && npm run build
 
-docs-links:
-    cd "{{ docs_dir }}" && uv run mkdocs build --strict
+docs-links: docs-sync
+    cd "{{ docs_dir }}/website" && npm run build
 
 # Fail if a translatable English page lacks a Chinese counterpart (or vice versa).
 docs-i18n:

@@ -1,4 +1,5 @@
 docs/site/
+docs/website/node_modules/
 examples/**/.work/
 target/
 /store/

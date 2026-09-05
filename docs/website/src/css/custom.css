@@ -1,0 +1,9 @@
+:root { --ifm-color-primary: #3f51b5; --ifm-color-primary-dark: #303f9f; --ifm-color-primary-light: #7986cb; --ifm-code-font-size: 90%; }
+.hero--primary { background: linear-gradient(135deg, #080f25 0%, #263b8c 52%, #0d9488 100%); }
+.hero__title { letter-spacing: -0.04em; }
+.hero__subtitle { max-width: 46rem; margin-inline: auto; }
+.hero-cyberpunk { display: block; width: min(1120px, 100%); margin: 3rem auto 0; border-radius: 1rem; box-shadow: 0 24px 80px rgb(0 0 0 / 30%); }
+.quickstart-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 3rem 0; }
+.quickstart-card { padding: 1.25rem; border: 1px solid var(--ifm-color-emphasis-200); border-radius: .75rem; }
+.quickstart-card pre { min-height: 5rem; }
+@media (max-width: 996px) { .quickstart-grid { grid-template-columns: 1fr; } }
