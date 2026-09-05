@@ -10,6 +10,7 @@ not_in_nav: |
 
 repo_name: DeepLink-org/Persisting
 repo_url: https://github.com/DeepLink-org/Persisting
+edit_uri: edit/main/docs/src/
 
 theme:
   name: material
@@ -36,10 +37,15 @@ theme:
     - navigation.indexes
     - navigation.tracking
     - navigation.top
+    - toc.follow
     - search.highlight
     - search.share
     - content.code.copy
     - content.code.annotate
+    - content.action.edit
+    - content.action.view
+    - content.tabs.link
+    - announce.dismiss
   icon:
     repo: fontawesome/brands/github
 

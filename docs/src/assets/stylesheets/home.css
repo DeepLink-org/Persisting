@@ -75,8 +75,20 @@ body {
 }
 
 .ph-shell {
-  width: min(1180px, calc(100% - 44px));
+  width: min(1280px, calc(100% - 56px));
   margin: 0 auto;
+}
+
+/* The landing page is a full-width surface. Material's regular content grid
+   remains in place for documentation pages, but must not squeeze the hero
+   into the reading column. */
+body:has(.ph) .md-tabs:has(.ph),
+body:has(.ph) .md-tabs:has(.ph) .ph {
+  max-width: none;
+}
+
+body:has(.ph) .md-tabs:has(.ph) {
+  width: 100%;
 }
 
 /* ---------------------------------------------------------------- hero -- */
@@ -198,14 +210,19 @@ body {
 
 .ph-hero-art {
   position: relative;
-  min-height: 430px;
+  width: 100vw;
+  min-height: 620px;
   overflow: hidden;
   border: 1px solid rgba(94, 234, 212, 0.25);
   border-radius: 24px;
   background: #07101d url('../diagrams/persisting/hero-cyberpunk.svg') center / cover no-repeat;
   box-shadow: var(--ph-shadow);
-  max-width: 980px;
-  margin: 58px auto 0;
+  max-width: none;
+  margin: 58px 0 0;
+  margin-left: calc(50% - 50vw);
+  border-radius: 0;
+  background-size: cover;
+  background-position: center;
 }
 
 .ph-hero-art__label,
@@ -738,7 +755,7 @@ body {
   }
 
   .ph-hero-art {
-    min-height: 360px;
+    min-height: 460px;
   }
 
   /* Stack the dual visual; the beam turns vertical. */
@@ -778,6 +795,10 @@ body {
 
   .ph-hero {
     padding: 60px 0 68px;
+  }
+
+  .ph-hero-art {
+    min-height: 390px;
   }
 
   .ph-section {
