@@ -710,7 +710,7 @@ install-nightly:
 # ── 文档（docs/ 子项目）──────────────────────────────────────────────────────
 
 docs-sync:
-    cd "{{ docs_dir }}/website" && npm install
+    cd "{{ docs_dir }}/website" && npm ci
 
 docs-serve: docs-sync
     cd "{{ docs_dir }}/website" && npm run start -- --host 0.0.0.0
