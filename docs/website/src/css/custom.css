@@ -1,8 +1,10 @@
 :root { --ifm-color-primary: #3f51b5; --ifm-color-primary-dark: #303f9f; --ifm-color-primary-light: #7986cb; --ifm-code-font-size: 90%; }
-.hero--primary { background: linear-gradient(135deg, #080f25 0%, #263b8c 52%, #0d9488 100%); }
-.hero__title { letter-spacing: -0.04em; }
-.hero__subtitle { max-width: 46rem; margin-inline: auto; }
-.hero-cyberpunk { display: block; width: min(1120px, 100%); margin: 3rem auto 0; border-radius: 1rem; box-shadow: 0 24px 80px rgb(0 0 0 / 30%); }
+.hero--primary { position: relative; background: #101936; }
+.hero--primary::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, rgb(5 11 29 / 94%) 0%, rgb(5 11 29 / 74%) 38%, rgb(5 11 29 / 20%) 78%, rgb(5 11 29 / 10%) 100%), linear-gradient(0deg, rgb(5 11 29 / 78%) 0%, transparent 52%); pointer-events: none; }
+.hero .container { position: relative; z-index: 1; width: 100%; }
+.hero__title { max-width: 48rem; letter-spacing: -0.04em; font-size: clamp(2.75rem, 7vw, 5.5rem); line-height: 1.02; }
+.hero__subtitle { max-width: 38rem; margin: 1.5rem 0 2rem; font-size: 1.25rem; line-height: 1.55; }
+.hero-cyberpunk { position: absolute; z-index: 0; inset: 0; display: block; width: 100vw; height: 100%; max-width: none; margin: 0; border-radius: 0; object-fit: cover; object-position: center; opacity: .92; }
 .architecture-section { border-top: 1px solid var(--ifm-color-emphasis-200); }
 .section-lede { max-width: 42rem; margin: 0 auto 2rem; color: var(--ifm-color-emphasis-700); }
 .architecture-diagram { display: block; width: min(1100px, 100%); margin: 2rem auto 3rem; border-radius: .75rem; box-shadow: 0 16px 50px rgb(31 41 55 / 12%); }
@@ -18,3 +20,4 @@
 .quickstart-commands pre { min-height: 5rem; margin-bottom: 0; font-size: .8rem; }
 @media (max-width: 996px) { .quickstart-grid { grid-template-columns: 1fr; } }
 @media (max-width: 996px) { .quickstart-commands { grid-template-columns: 1fr; } }
+@media (max-width: 996px) { .hero { min-height: 40rem; padding: 7rem 0 4rem; } .hero__subtitle { font-size: 1.05rem; } }
