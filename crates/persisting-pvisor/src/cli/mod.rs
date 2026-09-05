@@ -19,7 +19,7 @@ const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, G
 const ROOT_ABOUT: &str =
     "Foreground Agent Run manager with Seatbelt isolation and reviewable workspaces";
 #[cfg(target_os = "macos")]
-const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn macOS, host runs use safe-best-effort Seatbelt confinement when supported. Full-disk reads remain available for local toolchain compatibility. `--overlaynet-deny-all` also blocks IP and ambient host Unix sockets while retaining Run-local IPC.";
+const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn macOS, host runs use safe-best-effort macFUSE workspace views and Seatbelt confinement when supported. Full-disk reads remain available for local toolchain compatibility. `--overlaynet-deny-all` also blocks IP and ambient host Unix sockets while retaining Run-local IPC.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const ROOT_ABOUT: &str = "Foreground Agent Run manager with staged, reviewable workspaces";
