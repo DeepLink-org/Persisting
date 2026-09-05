@@ -188,6 +188,17 @@ jobs:
             install_zig: true
           - platform: macOS
             os: macos-latest
+            shard: pvisor
+            packages: -p persisting-pvisor
+            event_control: false
+            prepare_pvisor: true
+            prepare_runtime: false
+            smoke_pvisor: true
+            smoke_ppilot: false
+            smoke_pchronicle: false
+            install_zig: true
+          - platform: macOS
+            os: macos-latest
             shard: pchronicle
             packages: >-
               -p persisting-pchronicle
