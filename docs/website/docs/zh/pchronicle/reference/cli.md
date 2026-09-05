@@ -6,6 +6,24 @@
 `pchronicle` 用于浏览、查询、交换和服务 Agent Run Dataset。它既适合人在终端中探索，
 也适合 shell、CI 和 Agent 发起受资源上限保护的只读分析。
 
+## 按任务查找命令
+
+- **先体验产品：** `pchronicle onboard query` 使用临时示例数据，不需要 Dataset 路径。
+- **检查 Dataset：** 先用 `ls` 和 `analysis overview`，再编写 SQL。
+- **定位 Run 或文本：** 使用 `find --run-id`、`--session-id` 或 `--match`。
+- **提出可复现问题：** 使用 `query --sql` 或 `query --file`，并显式设置输出与资源上限。
+- **提供历史服务：** 先完成只读查询，再阅读[服务指南](../guides/serve.md)使用 `serve`。
+
+第一次使用可以复制：
+
+```bash
+pchronicle onboard query
+pchronicle ls ./trajectory-data
+pchronicle query ./trajectory-data --sql 'SELECT COUNT(*) FROM dataset.runs'
+```
+
+后两条命令要求你已有 Dataset；如果还没有数据，完成 `onboard query` 后继续阅读[Dataset 入门](../get-started.md)。
+
 如果你第一次使用 pChronicle，可以从这里开始：
 
 ```bash

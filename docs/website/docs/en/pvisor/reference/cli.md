@@ -6,6 +6,32 @@ Full command examples for Host, OCI VM, and transparent host-rootfs VM
 are in
 [Run workloads with pVisor](../guides/execution.md).
 
+## Find the command you need
+
+Use the smallest surface that matches your next decision:
+
+- **Run an Agent:** start with [`pvisor run`](../get-started.md), then use
+  `review`, `inspect`, and `apply` to decide what reaches the project.
+- **Understand a boundary:** use `status` and `inspect`, then read the
+  [execution guide](../guides/execution.md) before changing providers.
+- **Keep a workspace:** use `env create` and `env exec` for a reusable staged
+  environment; use `env apply` or `env drop` to close the loop.
+- **Continue a trajectory:** use `replay` only when you already have a
+  supported trajectory and want a fresh sandbox; begin with the
+  [replay guide](../guides/sandbox-replay.md).
+
+If this is your first command, do not start with the full option list below:
+
+```bash
+pvisor run --stage ./runs/task-001 -- codex
+pvisor review last
+pvisor apply last --path src
+```
+
+The reference that follows is organized by lifecycle. Options that affect the
+same Run are intentionally described together so that a copied command has a
+clear verification step.
+
 ```text
 pvisor
 ├── run                 execute one Agent Run
