@@ -253,7 +253,20 @@ fn container_executor_runs_through_an_oci_compatible_control_surface() {
         &runtime,
         r#"#!/bin/sh
 set -eu
-sleep 30
+bundle=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --bundle) bundle="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+control=$(awk '
+  /"source"[[:space:]]*:/ { line=$0; sub(/^.*"source"[[:space:]]*:[[:space:]]*"/, "", line); sub(/".*$/, "", line); source=line }
+  /"destination"[[:space:]]*:[[:space:]]*"\/run\/persisting"/ { print source; exit }
+' "$bundle/config.json")
+exec "$PERSISTING_TEST_PVISOR" run --executor host \
+  --spec "$control/run-spec.json" \
+  --result-file "$control/run-result.json"
 "#,
     )
     .unwrap();
@@ -264,8 +277,10 @@ sleep 30
         .arg(&runtime)
         .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
         .args([
-            "--container-image",
-            "fixture-image",
+            "--rootfs",
+        ])
+        .arg(&workspace)
+        .args([
             "--container-platform",
             "linux/amd64",
             "--container-network",
