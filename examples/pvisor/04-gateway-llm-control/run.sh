@@ -25,7 +25,7 @@ trap 'kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
 pvisor_wait_tcp "$mock_port"
 
 # Run the agent through pVisor's configured Gateway.
-"$pvisor_bin" run --config "$work_dir/run.toml" --stdio capture
+"$pvisor_bin" run --spec "$work_dir/run.toml" --stdio capture
 run_dir="$(find "$PERSISTING_RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -print -quit)"
 test -n "$run_dir"
 
