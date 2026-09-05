@@ -253,31 +253,7 @@ fn container_executor_runs_through_an_oci_compatible_control_surface() {
         &runtime,
         r#"#!/bin/sh
 set -eu
-bundle=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --bundle)
-      bundle="$2"
-      shift 2
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
-control=$(awk '
-  /"source"[[:space:]]*:/ {
-    line=$0
-    sub(/^.*"source"[[:space:]]*:[[:space:]]*"/, "", line)
-    sub(/".*$/, "", line)
-    source=line
-  }
-  /"destination"[[:space:]]*:[[:space:]]*"\/run\/persisting"/ {print source; exit}
-' "$bundle/config.json")
-exec "$PERSISTING_TEST_PVISOR" run --executor host \
-  --spec "$control/run-spec.json" \
-  --result-file "$control/run-result.json"
-exit 0
+sleep 30
 "#,
     )
     .unwrap();
