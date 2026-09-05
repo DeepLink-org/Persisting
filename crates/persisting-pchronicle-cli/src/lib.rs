@@ -706,7 +706,7 @@ struct ImportArgs {
     #[arg(short = 'i', long = "input-format", alias = "format", value_enum, default_value_t = ExchangeFormat::Auto)]
     format: ExchangeFormat,
 
-    /// Dataset layout: preserve, normalized Storyline, or record-level compact JSONL.
+    /// Dataset layout: preserve, normalized Storyline (combine all inputs into one Storyline Lance Store at the Dataset root), or record-level compact JSONL.
     #[arg(short = 'o', long = "output-format", value_enum)]
     output_format: Option<ImportOutputFormat>,
 
