@@ -42,17 +42,21 @@ pchronicle query ./trajectory-data \
   --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
 ```
 
-## Choose a task
+## Choose your next step
 
-| I want to... | Start with |
-| --- | --- |
-| Inspect a Dataset | `pchronicle ls DATASET` or `pchronicle status DATASET` |
-| Run a common report | `pchronicle analysis overview DATASET` |
-| Ask a custom SQL question | `pchronicle query DATASET --sql SQL` |
-| Give a Dataset a short name | `pchronicle alias add NAME DATASET` |
-| Import or export runs | `pchronicle import` or `pchronicle export` |
-| Analyze with Codex or Claude | `pchronicle agent codex DATASET` |
-| Open the local read-only UI and API | [`pchronicle serve DATASET`](guides/ui.md) |
+Start with [Explore your first Dataset](get-started.md) if you are learning
+the command line. It creates temporary data and lets you complete a read-only
+query before you connect a real source.
+
+When you already have a question, follow the matching path:
+
+- **Inspect a Dataset:** `pchronicle ls DATASET` or `pchronicle status DATASET`
+- **Run a common report:** `pchronicle analysis overview DATASET`
+- **Ask a custom SQL question:** `pchronicle query DATASET --sql SQL`
+- **Name a Dataset:** `pchronicle alias add NAME DATASET`
+- **Import or export runs:** [Exchange data](guides/exchange.md)
+- **Analyze with an Agent:** `pchronicle agent codex DATASET`
+- **Open the local UI and API:** [Serve a Dataset](guides/ui.md)
 
 pChronicle reads and organizes run history. It does not execute or schedule
 Agents. To run an Agent in a controlled workspace, start with

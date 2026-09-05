@@ -37,17 +37,20 @@ pchronicle query ./trajectory-data \
   --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
 ```
 
-## 按任务选择命令
+## 选择下一步
 
-| 我想要…… | 从这里开始 |
-| --- | --- |
-| 浏览 Dataset | `pchronicle ls DATASET` 或 `pchronicle status DATASET` |
-| 运行常用分析 | `pchronicle analysis overview DATASET` |
-| 用 SQL 提出自定义问题 | `pchronicle query DATASET --sql SQL` |
-| 给 Dataset 设置短名称 | `pchronicle alias add NAME DATASET` |
-| 导入或导出运行记录 | `pchronicle import` 或 `pchronicle export` |
-| 使用 Codex 或 Claude 分析 | `pchronicle agent codex DATASET` |
-| 打开本地只读 UI 和 API | [`pchronicle serve DATASET`](guides/ui.md) |
+第一次学习命令行时，从[探索第一个 Dataset](get-started.md)开始。这条路径会创建临时数据，
+让你先完成一次只读查询，再接入真实 Source。
+
+如果已经知道问题，可以直接进入对应路径：
+
+- **浏览 Dataset：** `pchronicle ls DATASET` 或 `pchronicle status DATASET`
+- **运行常用分析：** `pchronicle analysis overview DATASET`
+- **用 SQL 提问：** `pchronicle query DATASET --sql SQL`
+- **给 Dataset 命名：** `pchronicle alias add NAME DATASET`
+- **导入或导出记录：** [交换数据](guides/exchange.md)
+- **使用 Agent 分析：** `pchronicle agent codex DATASET`
+- **打开本地 UI 与 API：** [提供 Dataset 服务](guides/ui.md)
 
 pChronicle 读取并组织运行历史，不执行或调度 Agent。要在受控工作区中运行 Agent，请从
 [pVisor](../pvisor/index.md)开始。

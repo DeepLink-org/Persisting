@@ -16,7 +16,7 @@ CLIs, scripts, and frameworks you already have.
 From a project directory:
 
 ```bash
-pvisor -- codex
+pvisor run --stage ./runs/task-001 -- codex
 pvisor review last
 pvisor apply last --path src
 ```
@@ -35,16 +35,19 @@ The exact filesystem and network boundary depends on the platform and chosen
 executor. pVisor records the effective controls so that a Run is not described
 as more isolated than it was.
 
-## Choose a task
+## Choose your next step
 
-| I want to... | Start with |
-| --- | --- |
-| Complete one staged Agent Run | [Run your first Agent](get-started.md) |
-| Review and selectively accept changes | [Review and apply](guides/review-apply.md) |
-| Choose host, container, or VM execution | [Execution layouts](guides/execution.md) |
-| Control network access | [Network policy](guides/network.md) |
-| Capture trajectory data | [Capture trajectories](guides/capture.md) |
-| Look up exact command syntax | [CLI reference](reference/cli.md) |
+Start with [Run your first Agent](get-started.md) if this is your first
+session. It ends with a reviewed stage and gives you the vocabulary used by
+the rest of the documentation.
+
+When you already know what you need, follow the matching path:
+
+- **Keep or discard changes:** [Review and apply](guides/review-apply.md)
+- **Compare host, container, and VM:** [Execution layouts](guides/execution.md)
+- **Constrain network access:** [Network policy](guides/network.md)
+- **Publish trajectory events:** [Capture trajectories](guides/capture.md)
+- **Look up exact flags:** [CLI reference](reference/cli.md)
 
 pVisor's local run-review-apply loop works on its own. pChronicle is optional:
 use it when you want to retain and query trajectory Datasets after a Run.
