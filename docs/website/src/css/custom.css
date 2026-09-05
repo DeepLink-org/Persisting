@@ -11,4 +11,10 @@
 .quickstart-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 3rem 0; }
 .quickstart-card { padding: 1.25rem; border: 1px solid var(--ifm-color-emphasis-200); border-radius: .75rem; }
 .quickstart-card pre { min-height: 5rem; }
+.quickstart-section { border-top: 1px solid var(--ifm-color-emphasis-200); }
+.quickstart-commands { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 2.5rem; }
+.quickstart-commands article { padding: 1.25rem; border: 1px solid var(--ifm-color-emphasis-200); border-radius: .75rem; background: var(--ifm-background-surface-color); }
+.quickstart-commands h3 { margin-top: 1rem; }
+.quickstart-commands pre { min-height: 5rem; margin-bottom: 0; font-size: .8rem; }
 @media (max-width: 996px) { .quickstart-grid { grid-template-columns: 1fr; } }
+@media (max-width: 996px) { .quickstart-commands { grid-template-columns: 1fr; } }
