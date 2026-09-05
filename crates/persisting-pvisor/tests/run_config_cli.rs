@@ -252,25 +252,31 @@ fn container_executor_runs_through_an_oci_compatible_control_surface() {
     std::fs::write(
         &runtime,
         r#"#!/bin/sh
-if [ "$1" = "run" ]; then
-  shift
-  control=""
-  while [ "$1" != "fixture-image" ]; do
-    if [ "$1" = "--mount" ]; then
+set -eu
+bundle=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --bundle)
+      bundle="$2"
+      shift 2
+      ;;
+    *)
       shift
-      case "$1" in
-        *target=/run/persisting*)
-          control=$(printf '%s' "$1" | sed -e 's/^.*source=//' -e 's/,target=.*$//')
-          ;;
-      esac
-    fi
-    shift
-  done
-  shift
-    exec "$PERSISTING_TEST_PVISOR" run --executor host \
-    --spec "$control/run-spec.json" \
-    --result-file "$control/run-result.json"
-fi
+      ;;
+  esac
+done
+control=$(awk '
+  /"source"[[:space:]]*:/ {
+    line=$0
+    sub(/^.*"source"[[:space:]]*:[[:space:]]*"/, "", line)
+    sub(/".*$/, "", line)
+    source=line
+  }
+  /"destination"[[:space:]]*:[[:space:]]*"\/run\/persisting"/ {print source; exit}
+' "$bundle/config.json")
+exec "$PERSISTING_TEST_PVISOR" run --executor host \
+  --spec "$control/run-spec.json" \
+  --result-file "$control/run-result.json"
 exit 0
 "#,
     )
