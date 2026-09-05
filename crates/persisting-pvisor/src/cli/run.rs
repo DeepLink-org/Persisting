@@ -1951,9 +1951,9 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
         GatewayMode::Off if !config.gateway.routes.is_empty() => {
             bail!("Gateway routes require --gateway-mode capture");
         }
-        GatewayMode::Capture if config.gateway.routes.is_empty() => {
-            bail!("--gateway-mode capture requires at least one --gateway-route");
-        }
+        // Capture without explicit routes uses the Gateway's default route;
+        // this is required by internal pPilot delegation.
+        GatewayMode::Capture if config.gateway.routes.is_empty() => {}
         _ => {}
     }
     Ok(())
