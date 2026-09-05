@@ -37,7 +37,7 @@ pchronicle --help
 进入项目目录：
 
 ```bash
-pvisor -- codex
+pvisor run --stage ./runs/task-001 -- codex
 ```
 
 也可以把 `codex` 换成其他 Agent 命令。`--stage ./runs/task-001` 为 workspace 写入创建 Run 独占 stage，

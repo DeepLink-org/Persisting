@@ -1,100 +1,81 @@
-# From model state to Agent history
+# Start with the question you have
 
-**Persisting is persistent infrastructure for the Agent era.** It connects the
-state an Agent needs to work with the history needed to understand what it did.
+Persisting has two independent entry points. Start with the one that matches
+the work in front of you, then follow the short path to a useful result.
 
-## One persistence continuum
+## I want to run an Agent safely and review its changes
 
-| Layer | Examples | Why persistence matters |
-| --- | --- | --- |
-| Model state | model parameters and checkpoints | load, share, version, and recover model state |
-| Inference state | KV caches and reusable intermediate state | avoid repeated work across requests and Runs |
-| Agent history | trajectories, tool calls, execution records, and effects | review, query, compare, and reproduce behavior |
+Start with **pVisor**. It gives one Agent a Run-owned workspace, records the
+execution boundary, and leaves filesystem changes staged until you decide what
+enters the real project.
 
-These layers do not have to use one physical format or one API. The shared
-idea is durable identity and explicit lifecycle: reusable state should survive
-the process that created it, and completed work should remain inspectable.
+1. [Install the command line tools](installation.md).
+2. [Run your first Agent](pvisor/get-started.md).
+3. [Review and selectively apply changes](pvisor/guides/review-apply.md).
+4. [Choose a host, OCI, or VM environment](pvisor/guides/execution.md).
 
-## Current user workflows
-
-The current product is the path from execution to queryable history. Choose the
-entry point that matches the task in front of you.
-
-| Command | Start here when you need to | Durable result |
-| --- | --- | --- |
-| `pvisor` | run one existing Agent with explicit workspace and runtime controls | a Run result, private Run Bundle, and staged filesystem changes |
-| `pchronicle` | inspect or exchange Agent trajectory data | a browsable and queryable Dataset view |
-
-## Command ownership
-
-| Command | Primary responsibility |
-|---|---|
-| `pvisor` | One Run, environments, review, checkpoints, apply/drop |
-| `pchronicle` | Dataset catalog, SQL, built-in analysis, find, import/export, read-only serving |
-
-pVisor works without pChronicle, and pChronicle can read external trajectories
-that never passed through pVisor.
-
-## Workflow 1: run and review one Agent
-
-Use pVisor when the immediate question is: “How do I let this Agent work while
-keeping its filesystem changes reviewable?”
+You should finish with a completed Run, a readable Run Bundle, and either an
+applied or discarded stage.
 
 ```bash
-pvisor run --safe codex
+pvisor run --stage ./runs/task-001 -- codex
 pvisor review last
-pvisor apply last --all    # or: pvisor drop last
+pvisor apply last --path src
 ```
 
-The Agent works in a Run-owned stage. `review` shows the staged changes;
-`apply` accepts selected changes into the base workspace; `drop` discards them.
-The exact filesystem and network boundary depends on the selected execution
-provider and is recorded with the Run.
+## I already have Agent trajectories
 
-[Complete the first pVisor Run →](pvisor/get-started.md)
+Start with **pChronicle**. It can inspect local or object-store data and can
+also import supported external formats. The first walkthrough creates temporary
+example data, so you can learn the query flow before preparing a Dataset.
 
-## Workflow 2: explore Agent history
+1. [Explore a first Dataset](pchronicle/get-started.md).
+2. [Discover and query your own data](pchronicle/guides/discover-and-query.md).
+3. [Import or export a supported format](pchronicle/guides/exchange.md).
+4. [Serve a Dataset locally](pchronicle/guides/serve.md).
 
-Use pChronicle when you have trajectory data and need to browse, query, analyze,
-import, export, or serve it.
+You should finish with a read-only query, a normalized view, and a clear Source
+lineage for the data you inspected.
 
 ```bash
-pchronicle onboard
 pchronicle onboard query
+pchronicle query ./trajectory-data \
+  --sql 'SELECT source, COUNT(*) FROM dataset.steps GROUP BY source'
 ```
 
-The walkthrough creates temporary example Datasets. A Dataset can be a local
-path, an object-store URI prefix, or a configured alias. It may contain data
-captured by Persisting or imported from supported external formats.
+## I want execution and history together
 
-[Explore the first Dataset →](pchronicle/get-started.md)
+Connect the two products only after each standalone workflow works. Configure
+pVisor capture to publish selected Gateway trajectory events and lifecycle
+records into pChronicle. The handoff is explicit and narrow: it does not move
+the private Run Bundle or invent evidence that the original Source did not
+provide.
 
-## The throughline: from execution to queryable history
-
-Configured capture connects the two workflows into one path:
+1. [Capture Agent trajectories](pvisor/guides/capture.md).
+2. [Understand the event and sidecar contract](rfcs/0007-events-contract-pchronicle-sidecar.md).
+3. [Read the execution-to-history architecture](system-design/architecture.md).
 
 ```text
-pVisor Run ── configured Gateway/lifecycle capture ──> pChronicle Dataset
-
-External trajectory files ───────────────────────────> pChronicle Dataset
+pVisor Run ── configured capture ──> canonical event Source ──> Dataset views
+external trajectory Source ──────────────────────────────────> Dataset views
 ```
 
-The configured handoff publishes Gateway trajectory events and selected
-lifecycle records. It does not automatically publish the full private Run
-Bundle, all staged effects, or every piece of provider-specific evidence.
-Likewise, importing an external trajectory does not retroactively add execution
-controls that were never recorded. See
-[Capture Agent Trajectories](pvisor/guides/capture.md).
+## I need to understand the boundary before I run anything
 
-Each product also works on its own: pVisor can finish a Run without pChronicle,
-and pChronicle can query Datasets that never came from pVisor.
+Read the concepts in this order:
 
-![Current Persisting workflows and the execution-to-history throughline](assets/diagrams/persisting/system-products.svg)
+1. [Run, Attempt, and Effect](pvisor/concepts/run-model.md) — the stable objects.
+2. [Capabilities and evidence](pvisor/concepts/capabilities-and-evidence.md) — what a Run can claim.
+3. [Execution environments](pvisor/guides/execution.md) — how provider choice changes the boundary.
+4. [Security and evidence](system-design/security-evidence.md) — what persists and what stays local.
 
-## Where to go next
+The documentation uses one rule throughout: a successful command does not imply
+that every requested capability was enforced. The Run Bundle records the
+mechanisms and limitations that actually applied.
 
-- [Install Persisting](installation.md)
-- [Choose a pVisor execution environment](pvisor/guides/execution.md)
-- [Review and selectively apply Agent changes](pvisor/guides/review-apply.md)
-- [Read the pChronicle CLI guide](pchronicle/reference/cli.md)
-- [Inspect architecture and delivery boundaries](system-design/index.md)
+## Keep going
+
+- [pVisor command model](pvisor/design/cli.md)
+- [pVisor case catalog](pvisor/reference/cases.md)
+- [pChronicle concepts](pchronicle/concepts/index.md)
+- [System design](system-design/index.md)

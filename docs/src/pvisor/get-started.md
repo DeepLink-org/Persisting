@@ -39,7 +39,7 @@ requirements, and component overrides.
 From a project directory:
 
 ```bash
-pvisor -- codex
+pvisor run --stage ./runs/task-001 -- codex
 ```
 
 Replace `codex` with another Agent command if needed. `--stage ./runs/task-001` creates a
