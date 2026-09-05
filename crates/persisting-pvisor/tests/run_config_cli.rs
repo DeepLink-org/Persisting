@@ -260,10 +260,7 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
-control=$(awk '
-  /"source"[[:space:]]*:/ { line=$0; sub(/^.*"source"[[:space:]]*:[[:space:]]*"/, "", line); sub(/".*$/, "", line); source=line }
-  /"destination"[[:space:]]*:[[:space:]]*"\/run\/persisting"/ { print source; exit }
-' "$bundle/config.json")
+control=$(perl -0777 -ne 'if (/"source"\s*:\s*"([^"]+)".{0,300}?"destination"\s*:\s*"\/run\/persisting"/s) { print $1 }' "$bundle/config.json")
 exec "$PERSISTING_TEST_PVISOR" run --executor host \
   --spec "$control/run-spec.json" \
   --result-file "$control/run-result.json"
@@ -276,9 +273,7 @@ exec "$PERSISTING_TEST_PVISOR" run --executor host \
         .args(["run", "--executor", "container", "--container-runtime"])
         .arg(&runtime)
         .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
-        .args([
-            "--rootfs",
-        ])
+        .args(["--rootfs"])
         .arg(&workspace)
         .args([
             "--container-platform",
