@@ -21,6 +21,28 @@ Markdown 编码。
 DTO、低层 parser、Arrow codec 和 DataFusion provider 保持私有。`search` 是独立
 feature。错误门面保持轻量：公开 `Result<T>` 精确等同于 `anyhow::Result<T>`。
 
+Storyline 大内容恢复使用 Lance 的批量 Blob 读取计划，让引擎合并 packed Blob
+的读取并调度并发 I/O；按流消费结果，I/O 调度缓冲设为 16 MiB，仍逐对象验证长度和
+BLAKE3 校验和。这个缓冲不是完整查询的内存上限，返回的解压内容仍需驻留内存。
+
+Lance 11 的输入预算可用于分批维护 Storyline：
+
+```rust,ignore
+store.maintain(&LanceMaintenanceOptions {
+    target_rows_per_fragment: 100_000,
+    max_compaction_source_rows: Some(500_000),
+    max_compaction_source_bytes: Some(256 * 1024 * 1024),
+    vacuum_older_than: None,
+    ..Default::default()
+}).await?;
+```
+
+预算按每张 Storyline 表、每次调用独立计算，默认不限制；它限制 compaction 输入，
+不限制索引维护、GC、总内存或独立 Blob v2 文件的 I/O。Lance 不会拆开超预算的任务，
+如果没有任务能放进预算，本次 compaction 可以不做任何合并，需要提高预算；字节预算
+要求源文件已有大小元数据。Raw Event 跨 segment 的维护使用不同路径，会明确拒绝
+这两个预算参数。每次成功维护仍通过 CURRENT 原子发布快照。
+
 ## Develop
 
 ```bash

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use futures::TryStreamExt;
@@ -40,6 +40,7 @@ const CONTENT_ID_COLUMN: &str = "content_id";
 const PAYLOAD_COLUMN: &str = "payload";
 const ROW_ADDRESS_COLUMN: &str = "_rowaddr";
 const LOOKUP_CHUNK_SIZE: usize = 512;
+const BLOB_READ_BUFFER_BYTES: u64 = 16 * 1024 * 1024;
 
 fn json_text_values(column: &dyn Array, name: &str) -> Result<Vec<Option<String>>> {
     if let Some(values) = column.as_any().downcast_ref::<StringArray>() {
@@ -1160,19 +1161,32 @@ async fn resolve_objects(
             let address_values = (0..batch.num_rows())
                 .map(|row| addresses.value(row))
                 .collect::<Vec<_>>();
-            let blobs = dataset
-                .take_blobs_by_addresses(&address_values, PAYLOAD_COLUMN)
+            // Plan reads together so Lance can coalesce packed blobs and schedule
+            // remote I/O concurrently. Stream results to avoid retaining every
+            // compressed payload alongside its decompressed contents.
+            let mut blobs = dataset
+                .read_blobs(PAYLOAD_COLUMN)?
+                .with_row_addresses(address_values)
+                .with_io_buffer_size_bytes(BLOB_READ_BUFFER_BYTES)
+                .preserve_order(true)
+                .try_into_stream()
                 .await?;
-            anyhow::ensure!(
-                blobs.len() == batch.num_rows(),
-                "Blob lookup length mismatch"
-            );
-            for (row, blob) in blobs.into_iter().enumerate() {
+            for row in 0..batch.num_rows() {
+                let blob = blobs
+                    .try_next()
+                    .await?
+                    .context("Blob lookup length mismatch")?;
+                anyhow::ensure!(
+                    blob.row_address == addresses.value(row),
+                    "Blob lookup row address mismatch"
+                );
                 let content_id = ids.value(row).to_string();
                 let _logical_type = LogicalType::from_u8(logical_types.value(row))?;
                 let codec = ContentCodec::from_u8(codecs.value(row))?;
                 let raw_length = raw_lengths.value(row);
-                let stored = blob.read().await?;
+                let stored = blob
+                    .data
+                    .ok_or_else(|| anyhow!("Missing Storyline content blob for '{content_id}'"))?;
                 let bytes = match codec {
                     ContentCodec::Identity => stored.to_vec(),
                     ContentCodec::Zstd => zstd::stream::decode_all(stored.as_ref())
@@ -1200,6 +1214,10 @@ async fn resolve_objects(
                     "duplicate Storyline content object '{content_id}'"
                 );
             }
+            anyhow::ensure!(
+                blobs.try_next().await?.is_none(),
+                "Blob lookup length mismatch"
+            );
         }
     }
     anyhow::ensure!(
@@ -1257,6 +1275,116 @@ mod tests {
     #[test]
     fn preview_does_not_split_utf8() {
         assert_eq!(utf8_preview("你好abc".as_bytes(), 4).unwrap(), "你");
+    }
+
+    #[tokio::test]
+    async fn planned_blob_reads_preserve_contents_across_fragments_and_lookup_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = StorylineContentOptions::default();
+        let contents = (0..LOOKUP_CHUNK_SIZE + 2)
+            .map(|index| match index {
+                0 => String::new(),
+                1 => "你好，批量内容恢复！".repeat(1024),
+                _ => format!("short content {index}"),
+            })
+            .collect::<Vec<_>>();
+        let objects = contents
+            .iter()
+            .map(|value| build_object(value.as_bytes(), LogicalType::Utf8, options).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(objects[0].reference.codec, ContentCodec::Identity);
+        assert_eq!(objects[1].reference.codec, ContentCodec::Zstd);
+        let references = objects
+            .iter()
+            .map(|object| {
+                (
+                    object.reference.content_id.clone(),
+                    object.reference.clone(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let mut dataset = InsertBuilder::new(dir.path().to_string_lossy().as_ref())
+            .with_params(&WriteParams {
+                data_storage_version: Some(LanceFileVersion::V2_2),
+                ..Default::default()
+            })
+            .execute(vec![objects_to_batch(&objects[..256]).unwrap()])
+            .await
+            .unwrap();
+        dataset = InsertBuilder::new(Arc::new(dataset))
+            .with_params(&WriteParams {
+                mode: WriteMode::Append,
+                data_storage_version: Some(LanceFileVersion::V2_2),
+                ..Default::default()
+            })
+            .execute(vec![objects_to_batch(&objects[256..]).unwrap()])
+            .await
+            .unwrap();
+        let dataset = Arc::new(dataset);
+        let resolved = resolve_objects(&dataset, &references).await.unwrap();
+        for (object, contents) in objects.iter().zip(contents) {
+            assert_eq!(
+                resolved[&object.reference.content_id].bytes,
+                contents.as_bytes()
+            );
+        }
+
+        let mut references = references;
+        let absent = build_object(b"not stored", LogicalType::Utf8, options).unwrap();
+        references.insert(absent.reference.content_id.clone(), absent.reference);
+        let error = resolve_objects(&dataset, &references).await.err().unwrap();
+        assert!(
+            error.to_string().contains("dangling content references"),
+            "{error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn planned_blob_reads_reject_corrupt_or_null_contents() {
+        for null_payload in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut object = build_object(
+                b"original",
+                LogicalType::Utf8,
+                StorylineContentOptions::default(),
+            )
+            .unwrap();
+            let references = HashMap::from([(
+                object.reference.content_id.clone(),
+                object.reference.clone(),
+            )]);
+            // Keep the length and codec valid, but make the stored checksum wrong.
+            object.stored[0] ^= 1;
+            let mut batch = objects_to_batch(&[object]).unwrap();
+            if null_payload {
+                let index = batch.schema().index_of(PAYLOAD_COLUMN).unwrap();
+                let mut fields = batch.schema().fields().to_vec();
+                fields[index] = Arc::new(fields[index].as_ref().clone().with_nullable(true));
+                let mut payloads = BlobArrayBuilder::new(1);
+                payloads.push_null().unwrap();
+                let mut columns = batch.columns().to_vec();
+                columns[index] = payloads.finish().unwrap();
+                batch = RecordBatch::try_new(Arc::new(ArrowSchema::new(fields)), columns).unwrap();
+            }
+            let dataset = InsertBuilder::new(dir.path().to_string_lossy().as_ref())
+                .with_params(&WriteParams {
+                    data_storage_version: Some(LanceFileVersion::V2_2),
+                    ..Default::default()
+                })
+                .execute(vec![batch])
+                .await
+                .unwrap();
+            let error = resolve_objects(&Arc::new(dataset), &references)
+                .await
+                .err()
+                .unwrap();
+            let expected = if null_payload {
+                "Missing Storyline content blob"
+            } else {
+                "checksum mismatch"
+            };
+            assert!(error.to_string().contains(expected), "{error:#}");
+        }
     }
 }
 

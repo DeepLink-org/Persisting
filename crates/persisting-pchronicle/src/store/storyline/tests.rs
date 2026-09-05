@@ -1535,6 +1535,82 @@ async fn invalid_storyline_does_not_move_current_generation() {
 }
 
 #[tokio::test]
+async fn maintenance_source_budgets_preserve_current_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open(dir.path()).await.unwrap();
+    let _suppress = SuppressInvertedIndexes::install(store.root_uri());
+    // The first fragment has indexes; the next six unindexed fragments form
+    // two three-row compaction tasks, only one of which fits the row budget.
+    let documents = (0..7)
+        .map(|i| story(&format!("budget-{i}")))
+        .collect::<Vec<_>>();
+    for document in &documents {
+        store.replace_storyline(document).await.unwrap();
+    }
+    let before = store.current_table_paths().await.unwrap().unwrap();
+    let mut options = LanceMaintenanceOptions {
+        target_rows_per_fragment: 3,
+        max_compaction_source_rows: Some(3),
+        max_compaction_source_bytes: Some(1),
+        optimize_indices: false,
+        vacuum_older_than: None,
+        ..Default::default()
+    };
+    let report = store.maintain(&options).await.unwrap();
+    assert_eq!(report.runs.fragments_removed, 0);
+    assert_eq!(report.steps.fragments_removed, 0);
+    assert_eq!(report.tool_calls.fragments_removed, 0);
+    options.max_compaction_source_bytes = None;
+    let report = store.maintain(&options).await.unwrap();
+    assert!(
+        report.runs.fragments_removed > 0 && report.runs.fragments_removed <= 3,
+        "{report:?}"
+    );
+    let after = store.current_table_paths().await.unwrap().unwrap();
+    assert_ne!(before.generation, after.generation);
+    for document in documents {
+        assert_eq!(
+            store
+                .get_storyline_full(&document.session_id)
+                .await
+                .unwrap(),
+            Some(document)
+        );
+    }
+    // Old snapshots remain readable; compaction only advances CURRENT.
+    assert_eq!(
+        open_table_version(&before.runs, before.runs_version)
+            .await
+            .unwrap()
+            .count_rows(None)
+            .await
+            .unwrap(),
+        7
+    );
+    for invalid in [
+        LanceMaintenanceOptions {
+            max_compaction_source_rows: Some(0),
+            ..Default::default()
+        },
+        LanceMaintenanceOptions {
+            max_compaction_source_bytes: Some(0),
+            ..Default::default()
+        },
+    ] {
+        assert!(store.maintain(&invalid).await.is_err());
+        assert_eq!(
+            store
+                .current_table_paths()
+                .await
+                .unwrap()
+                .unwrap()
+                .generation,
+            after.generation
+        );
+    }
+}
+
+#[tokio::test]
 async fn replace_defers_compaction_until_explicit_maintenance() {
     let dir = tempfile::tempdir().unwrap();
     let store = StorylineLanceStore::open(dir.path()).await.unwrap();
@@ -1780,6 +1856,7 @@ async fn live_writer_lease_rejects_maintenance_before_table_mutation() {
             optimize_indices: true,
             vacuum_older_than: None,
             target_rows_per_fragment: 1024,
+            ..Default::default()
         })
         .await
         .unwrap_err();
