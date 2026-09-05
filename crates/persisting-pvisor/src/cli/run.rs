@@ -128,7 +128,12 @@ pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVi
 pub(super) const RUN_COMMAND_ABOUT: &str =
     "Execute one Agent Run with safe-best-effort host isolation by default";
 #[cfg(target_os = "macos")]
-pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVisor management. Host execution uses safe-best-effort isolation when supported by the system.";
+pub(super) const RUN_COMMAND_LONG_ABOUT: &str = MACOS_RUN_COMMAND_LONG_ABOUT;
+
+// Compile the macOS description in tests on every platform so Linux CI also
+// checks its safety disclosures instead of leaving them to the macOS shard.
+#[cfg(any(target_os = "macos", test))]
+const MACOS_RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVisor management. Host execution uses safe-best-effort isolation when supported by the system.\n\nOn macOS, staged workspace views use macFUSE and Seatbelt confines writes when available. Full-disk reads remain ambient; selective network policies remain cooperative. With --overlaynet-deny-all, Seatbelt blocks IP traffic and ambient host Unix sockets while permitting Run-scoped Unix IPC.\n\nUnavailable isolation capabilities are reported as warnings in best-effort mode. With --strict, insufficient isolation guarantees cause the Run to fail before Agent execution.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) const RUN_COMMAND_ABOUT: &str = "Execute one Agent Run under pVisor management";
@@ -2721,6 +2726,38 @@ mod tests {
         assert!(!help.contains("--workspace"));
         assert!(!help.contains("--overlaynet-policy"));
         assert!(!help.contains("--overlaynet-rule"));
+    }
+
+    #[test]
+    fn macos_help_disclosures_are_rendered_on_every_platform() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command()
+            .mut_subcommand("run", |run| run.long_about(MACOS_RUN_COMMAND_LONG_ABOUT));
+        let help = command
+            .find_subcommand_mut("run")
+            .expect("run subcommand")
+            .render_long_help()
+            .to_string();
+        // Terminal wrapping must not affect checks of the safety description.
+        let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        for disclosure in [
+            "safe-best-effort",
+            "macFUSE",
+            "Seatbelt",
+            "Full-disk reads remain ambient",
+            "selective network policies remain cooperative",
+            "ambient host Unix sockets",
+            "Run-scoped Unix IPC",
+            "reported as warnings in best-effort mode",
+            "With --strict",
+            "fail before Agent execution",
+        ] {
+            assert!(
+                help.contains(disclosure),
+                "missing disclosure: {disclosure}"
+            );
+        }
     }
 
     #[test]

@@ -136,7 +136,9 @@ impl PVisorProcessClient {
             let run_home = if run_home.is_absolute() {
                 run_home.clone()
             } else {
-                std::env::current_dir().context("resolve pVisor Run storage root")?.join(run_home)
+                std::env::current_dir()
+                    .context("resolve pVisor Run storage root")?
+                    .join(run_home)
             };
             command.arg("--stage").arg(run_home.join(run_id));
         }
