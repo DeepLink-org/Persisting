@@ -1,0 +1,25 @@
+{
+  "id": "rfcs/events-contract-pchronicle-sidecar",
+  "title": "RFC-0007: 事件契约与 pChronicle Sidecar 边界",
+  "description": "| Field | Value |",
+  "source": "@site/docs/zh/rfcs/0007-events-contract-pchronicle-sidecar.md",
+  "sourceDirName": "rfcs",
+  "slug": "/rfcs/events-contract-pchronicle-sidecar",
+  "permalink": "/Persisting/zh/docs/rfcs/events-contract-pchronicle-sidecar",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/rfcs/0007-events-contract-pchronicle-sidecar.md",
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 7,
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "RFC-0006: pChronicle Vortex 轨迹后端提案",
+    "permalink": "/Persisting/zh/docs/rfcs/pchronicle-vortex-backend"
+  },
+  "next": {
+    "title": "RFC-0008: ATIF v1.7 轨迹格式",
+    "permalink": "/Persisting/zh/docs/rfcs/atif-format"
+  }
+}

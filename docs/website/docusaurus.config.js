@@ -7,7 +7,7 @@ const config = {
   organizationName: 'DeepLink-org',
   projectName: 'Persisting',
   onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'warn',
+  markdown: { hooks: { onBrokenMarkdownLinks: 'throw' } },
   presets: [
     ['classic', {
       docs: false,
@@ -17,10 +17,10 @@ const config = {
   ],
   plugins: [
     [require.resolve('@docusaurus/plugin-content-docs'), {
-      id: 'en', path: 'docs/en', routeBasePath: 'docs', sidebarPath: require.resolve('./sidebars.js'), showLastUpdateTime: true, editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/website/'
+      id: 'en', path: 'docs/en', routeBasePath: 'docs', sidebarPath: require.resolve('./sidebars.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/website/'
     }],
     [require.resolve('@docusaurus/plugin-content-docs'), {
-      id: 'zh', path: 'docs/zh', routeBasePath: 'zh', sidebarPath: require.resolve('./sidebars.js'), showLastUpdateTime: true, editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/website/'
+      id: 'zh', path: 'docs/zh', routeBasePath: 'zh/docs', sidebarPath: require.resolve('./sidebars.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/website/'
     }],
   ],
   themeConfig: {
@@ -33,6 +33,7 @@ const config = {
         { to: '/docs/pvisor/', label: 'pVisor', position: 'left' },
         { to: '/docs/pchronicle/', label: 'pChronicle', position: 'left' },
         { href: 'https://github.com/DeepLink-org/Persisting', label: 'GitHub', position: 'right' },
+        { to: '/docs/', label: 'English', position: 'right' },
         { to: '/zh/', label: '中文', position: 'right' },
       ],
     },

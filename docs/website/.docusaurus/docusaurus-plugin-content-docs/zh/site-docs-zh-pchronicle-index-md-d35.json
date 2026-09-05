@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/index",
+  "title": "pChronicle",
+  "description": "pChronicle 是 Agent 轨迹存储引擎。 用于浏览、查询、交换和服务运行 Dataset；既可以读取",
+  "source": "@site/docs/zh/pchronicle/index.md",
+  "sourceDirName": "pchronicle",
+  "slug": "/pchronicle/",
+  "permalink": "/Persisting/zh/docs/pchronicle/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pchronicle/index.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "使用本地 Web UI",
+    "permalink": "/Persisting/zh/docs/pchronicle/guides/ui"
+  },
+  "next": {
+    "title": "pChronicle Reference",
+    "permalink": "/Persisting/zh/docs/pchronicle/reference/"
+  }
+}

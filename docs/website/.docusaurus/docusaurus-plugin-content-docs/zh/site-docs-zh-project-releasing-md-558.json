@@ -1,0 +1,24 @@
+{
+  "id": "project/releasing",
+  "title": "发布 Persisting",
+  "description": "稳定发布由 GitHub Actions 从版本 tag 构建，并通过 Trusted Publishing 发布到",
+  "source": "@site/docs/zh/project/releasing.md",
+  "sourceDirName": "project",
+  "slug": "/project/releasing",
+  "permalink": "/Persisting/zh/docs/project/releasing",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/project/releasing.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Project",
+    "permalink": "/Persisting/zh/docs/project/"
+  },
+  "next": {
+    "title": "RFC-0001: Storyline Format",
+    "permalink": "/Persisting/zh/docs/rfcs/storyline-format"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/get-started",
+  "title": "Run your first Agent",
+  "description": "This walkthrough completes one useful cycle: install Persisting, run an Agent",
+  "source": "@site/docs/en/pvisor/get-started.md",
+  "sourceDirName": "pvisor",
+  "slug": "/pvisor/get-started",
+  "permalink": "/Persisting/docs/pvisor/get-started",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pvisor/get-started.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "OverlayNet transparent interception",
+    "permalink": "/Persisting/docs/pvisor/design/overlaynet"
+  },
+  "next": {
+    "title": "pVisor guides",
+    "permalink": "/Persisting/docs/pvisor/guides/"
+  }
+}

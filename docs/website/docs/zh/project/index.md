@@ -25,8 +25,8 @@ Persisting 的公共定位横跨模型状态与 Agent 历史。这一节记录�
 
 Queue 及其 Python API 独立于 Agent 执行主路径：
 
-- [Queue 指南](../guide/queue.md)
-- [Queue API](../api/queue.md)
-- [自定义 Queue backend](../guide/custom-backends.md)
+- Queue 指南
+- Queue API remains outside the default product documentation
+- 自定义 Queue backend 保持在默认产品文档范围之外
 
 历史 Queue 时代的设计笔记保留在仓库的 `docs/archive/` 目录中，不进入发布站点。

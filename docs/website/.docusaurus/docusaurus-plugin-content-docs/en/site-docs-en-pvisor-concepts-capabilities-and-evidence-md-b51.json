@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/concepts/capabilities-and-evidence",
+  "title": "Capabilities and evidence",
+  "description": "A capability is bounded authority over one resource and action. pVisor reasons",
+  "source": "@site/docs/en/pvisor/concepts/capabilities-and-evidence.md",
+  "sourceDirName": "pvisor/concepts",
+  "slug": "/pvisor/concepts/capabilities-and-evidence",
+  "permalink": "/Persisting/docs/pvisor/concepts/capabilities-and-evidence",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pvisor/concepts/capabilities-and-evidence.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "What is an AgentVisor?",
+    "permalink": "/Persisting/docs/pvisor/concepts/agentvisor"
+  },
+  "next": {
+    "title": "Run, Attempt, and Effect",
+    "permalink": "/Persisting/docs/pvisor/concepts/run-model"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/design/overlaynet",
+  "title": "OverlayNet 透明拦截",
+  "description": "本文负责拦截机制、强制缺口与验收门。用户策略流程属于",
+  "source": "@site/docs/zh/pvisor/design/overlaynet.md",
+  "sourceDirName": "pvisor/design",
+  "slug": "/pvisor/design/overlaynet",
+  "permalink": "/Persisting/zh/docs/pvisor/design/overlaynet",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pvisor/design/overlaynet.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pVisor 隔离架构",
+    "permalink": "/Persisting/zh/docs/pvisor/design/isolation"
+  },
+  "next": {
+    "title": "运行第一个 Agent",
+    "permalink": "/Persisting/zh/docs/pvisor/get-started"
+  }
+}

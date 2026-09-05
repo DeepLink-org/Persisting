@@ -1,0 +1,734 @@
+{
+  "docusaurus-plugin-content-docs": {
+    "en": {
+      "path": "/Persisting/docs",
+      "versions": [
+        {
+          "name": "current",
+          "label": "Next",
+          "isLast": true,
+          "path": "/Persisting/docs",
+          "mainDocId": "index",
+          "docs": [
+            {
+              "id": "index",
+              "path": "/Persisting/docs/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "installation",
+              "path": "/Persisting/docs/installation",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "overview",
+              "path": "/Persisting/docs/overview",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/concepts/dataset-and-source",
+              "path": "/Persisting/docs/pchronicle/concepts/dataset-and-source",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/concepts/facts-and-projections",
+              "path": "/Persisting/docs/pchronicle/concepts/facts-and-projections",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/concepts/index",
+              "path": "/Persisting/docs/pchronicle/concepts/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/design/architecture",
+              "path": "/Persisting/docs/pchronicle/design/architecture",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/design/catalog",
+              "path": "/Persisting/docs/pchronicle/design/catalog",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/design/index",
+              "path": "/Persisting/docs/pchronicle/design/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/design/storyline-lance",
+              "path": "/Persisting/docs/pchronicle/design/storyline-lance",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/design/trajectory-storage",
+              "path": "/Persisting/docs/pchronicle/design/trajectory-storage",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/get-started",
+              "path": "/Persisting/docs/pchronicle/get-started",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/guides/discover-and-query",
+              "path": "/Persisting/docs/pchronicle/guides/discover-and-query",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/guides/exchange",
+              "path": "/Persisting/docs/pchronicle/guides/exchange",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/guides/index",
+              "path": "/Persisting/docs/pchronicle/guides/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/guides/serve",
+              "path": "/Persisting/docs/pchronicle/guides/serve",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/guides/serve-gateway",
+              "path": "/Persisting/docs/pchronicle/guides/serve-gateway",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/guides/ui",
+              "path": "/Persisting/docs/pchronicle/guides/ui",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/index",
+              "path": "/Persisting/docs/pchronicle/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/reference/agenticmd",
+              "path": "/Persisting/docs/pchronicle/reference/agenticmd",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/reference/cli",
+              "path": "/Persisting/docs/pchronicle/reference/cli",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/reference/formats/index",
+              "path": "/Persisting/docs/pchronicle/reference/formats/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/reference/index",
+              "path": "/Persisting/docs/pchronicle/reference/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/reference/query-model",
+              "path": "/Persisting/docs/pchronicle/reference/query-model",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/reference/terminology",
+              "path": "/Persisting/docs/pchronicle/reference/terminology",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "project/engineering",
+              "path": "/Persisting/docs/project/engineering",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "project/examples",
+              "path": "/Persisting/docs/project/examples",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "project/index",
+              "path": "/Persisting/docs/project/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "project/releasing",
+              "path": "/Persisting/docs/project/releasing",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/concepts/agentvisor",
+              "path": "/Persisting/docs/pvisor/concepts/agentvisor",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/concepts/capabilities-and-evidence",
+              "path": "/Persisting/docs/pvisor/concepts/capabilities-and-evidence",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/concepts/index",
+              "path": "/Persisting/docs/pvisor/concepts/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/concepts/run-model",
+              "path": "/Persisting/docs/pvisor/concepts/run-model",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/design/cli",
+              "path": "/Persisting/docs/pvisor/design/cli",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/design/gateway",
+              "path": "/Persisting/docs/pvisor/design/gateway",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/design/index",
+              "path": "/Persisting/docs/pvisor/design/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/design/isolation",
+              "path": "/Persisting/docs/pvisor/design/isolation",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/design/overlaynet",
+              "path": "/Persisting/docs/pvisor/design/overlaynet",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/get-started",
+              "path": "/Persisting/docs/pvisor/get-started",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/guides/capture",
+              "path": "/Persisting/docs/pvisor/guides/capture",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/guides/execution",
+              "path": "/Persisting/docs/pvisor/guides/execution",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/guides/index",
+              "path": "/Persisting/docs/pvisor/guides/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/guides/network",
+              "path": "/Persisting/docs/pvisor/guides/network",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/guides/review-apply",
+              "path": "/Persisting/docs/pvisor/guides/review-apply",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/guides/sandbox-replay",
+              "path": "/Persisting/docs/pvisor/guides/sandbox-replay",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/index",
+              "path": "/Persisting/docs/pvisor/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/reference/cases",
+              "path": "/Persisting/docs/pvisor/reference/cases",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/reference/cli",
+              "path": "/Persisting/docs/pvisor/reference/cli",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/reference/index",
+              "path": "/Persisting/docs/pvisor/reference/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/actf-format",
+              "path": "/Persisting/docs/rfcs/actf-format",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/agent-corpus-lance-layout",
+              "path": "/Persisting/docs/rfcs/agent-corpus-lance-layout",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/atif-format",
+              "path": "/Persisting/docs/rfcs/atif-format",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/compact-jsonl",
+              "path": "/Persisting/docs/rfcs/compact-jsonl",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/events-contract-pchronicle-sidecar",
+              "path": "/Persisting/docs/rfcs/events-contract-pchronicle-sidecar",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/events-format",
+              "path": "/Persisting/docs/rfcs/events-format",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/index",
+              "path": "/Persisting/docs/rfcs/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/openai-messages-format",
+              "path": "/Persisting/docs/rfcs/openai-messages-format",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/pchronicle-find-query-syntax",
+              "path": "/Persisting/docs/rfcs/pchronicle-find-query-syntax",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/pchronicle-ownership",
+              "path": "/Persisting/docs/rfcs/pchronicle-ownership",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/pchronicle-revision-lineage",
+              "path": "/Persisting/docs/rfcs/pchronicle-revision-lineage",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/pchronicle-vortex-backend",
+              "path": "/Persisting/docs/rfcs/pchronicle-vortex-backend",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/pchronicle-warehouse-catalog",
+              "path": "/Persisting/docs/rfcs/pchronicle-warehouse-catalog",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/storyline-format",
+              "path": "/Persisting/docs/rfcs/storyline-format",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "system-design/architecture",
+              "path": "/Persisting/docs/system-design/architecture",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "system-design/index",
+              "path": "/Persisting/docs/system-design/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "system-design/local-to-fleet",
+              "path": "/Persisting/docs/system-design/local-to-fleet",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "system-design/security-evidence",
+              "path": "/Persisting/docs/system-design/security-evidence",
+              "sidebar": "zhSidebar"
+            }
+          ],
+          "draftIds": [],
+          "sidebars": {
+            "enSidebar": {
+              "link": {
+                "path": "/Persisting/docs/",
+                "label": "Start here"
+              }
+            },
+            "zhSidebar": {
+              "link": {
+                "path": "/Persisting/docs/",
+                "label": "从这里开始"
+              }
+            }
+          }
+        }
+      ],
+      "breadcrumbs": true
+    },
+    "zh": {
+      "path": "/Persisting/zh/docs",
+      "versions": [
+        {
+          "name": "current",
+          "label": "Next",
+          "isLast": true,
+          "path": "/Persisting/zh/docs",
+          "mainDocId": "index",
+          "docs": [
+            {
+              "id": "index",
+              "path": "/Persisting/zh/docs/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "installation",
+              "path": "/Persisting/zh/docs/installation",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "overview",
+              "path": "/Persisting/zh/docs/overview",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/concepts/dataset-and-source",
+              "path": "/Persisting/zh/docs/pchronicle/concepts/dataset-and-source",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/concepts/facts-and-projections",
+              "path": "/Persisting/zh/docs/pchronicle/concepts/facts-and-projections",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/concepts/index",
+              "path": "/Persisting/zh/docs/pchronicle/concepts/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/design/architecture",
+              "path": "/Persisting/zh/docs/pchronicle/design/architecture",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/design/catalog",
+              "path": "/Persisting/zh/docs/pchronicle/design/catalog",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/design/index",
+              "path": "/Persisting/zh/docs/pchronicle/design/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/design/storyline-lance",
+              "path": "/Persisting/zh/docs/pchronicle/design/storyline-lance",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/design/trajectory-storage",
+              "path": "/Persisting/zh/docs/pchronicle/design/trajectory-storage",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/get-started",
+              "path": "/Persisting/zh/docs/pchronicle/get-started",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/guides/discover-and-query",
+              "path": "/Persisting/zh/docs/pchronicle/guides/discover-and-query",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/guides/exchange",
+              "path": "/Persisting/zh/docs/pchronicle/guides/exchange",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/guides/index",
+              "path": "/Persisting/zh/docs/pchronicle/guides/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/guides/serve",
+              "path": "/Persisting/zh/docs/pchronicle/guides/serve",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/guides/serve-gateway",
+              "path": "/Persisting/zh/docs/pchronicle/guides/serve-gateway",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/guides/ui",
+              "path": "/Persisting/zh/docs/pchronicle/guides/ui",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/index",
+              "path": "/Persisting/zh/docs/pchronicle/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/reference/agenticmd",
+              "path": "/Persisting/zh/docs/pchronicle/reference/agenticmd",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/reference/cli",
+              "path": "/Persisting/zh/docs/pchronicle/reference/cli",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/reference/formats/index",
+              "path": "/Persisting/zh/docs/pchronicle/reference/formats/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/reference/index",
+              "path": "/Persisting/zh/docs/pchronicle/reference/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/reference/query-model",
+              "path": "/Persisting/zh/docs/pchronicle/reference/query-model",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pchronicle/reference/terminology",
+              "path": "/Persisting/zh/docs/pchronicle/reference/terminology",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "project/engineering",
+              "path": "/Persisting/zh/docs/project/engineering",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "project/examples",
+              "path": "/Persisting/zh/docs/project/examples",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "project/index",
+              "path": "/Persisting/zh/docs/project/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "project/releasing",
+              "path": "/Persisting/zh/docs/project/releasing",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/concepts/agentvisor",
+              "path": "/Persisting/zh/docs/pvisor/concepts/agentvisor",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/concepts/capabilities-and-evidence",
+              "path": "/Persisting/zh/docs/pvisor/concepts/capabilities-and-evidence",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/concepts/index",
+              "path": "/Persisting/zh/docs/pvisor/concepts/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/concepts/run-model",
+              "path": "/Persisting/zh/docs/pvisor/concepts/run-model",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/design/cli",
+              "path": "/Persisting/zh/docs/pvisor/design/cli",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/design/gateway",
+              "path": "/Persisting/zh/docs/pvisor/design/gateway",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/design/index",
+              "path": "/Persisting/zh/docs/pvisor/design/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/design/isolation",
+              "path": "/Persisting/zh/docs/pvisor/design/isolation",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/design/overlaynet",
+              "path": "/Persisting/zh/docs/pvisor/design/overlaynet",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/get-started",
+              "path": "/Persisting/zh/docs/pvisor/get-started",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/guides/capture",
+              "path": "/Persisting/zh/docs/pvisor/guides/capture",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/guides/execution",
+              "path": "/Persisting/zh/docs/pvisor/guides/execution",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/guides/index",
+              "path": "/Persisting/zh/docs/pvisor/guides/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/guides/network",
+              "path": "/Persisting/zh/docs/pvisor/guides/network",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/guides/review-apply",
+              "path": "/Persisting/zh/docs/pvisor/guides/review-apply",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/guides/sandbox-replay",
+              "path": "/Persisting/zh/docs/pvisor/guides/sandbox-replay",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/index",
+              "path": "/Persisting/zh/docs/pvisor/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/reference/cases",
+              "path": "/Persisting/zh/docs/pvisor/reference/cases",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/reference/cli",
+              "path": "/Persisting/zh/docs/pvisor/reference/cli",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "pvisor/reference/index",
+              "path": "/Persisting/zh/docs/pvisor/reference/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/actf-format",
+              "path": "/Persisting/zh/docs/rfcs/actf-format",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/agent-corpus-lance-layout",
+              "path": "/Persisting/zh/docs/rfcs/agent-corpus-lance-layout",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/atif-format",
+              "path": "/Persisting/zh/docs/rfcs/atif-format",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/compact-jsonl",
+              "path": "/Persisting/zh/docs/rfcs/compact-jsonl",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/events-contract-pchronicle-sidecar",
+              "path": "/Persisting/zh/docs/rfcs/events-contract-pchronicle-sidecar",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/events-format",
+              "path": "/Persisting/zh/docs/rfcs/events-format",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/index",
+              "path": "/Persisting/zh/docs/rfcs/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/openai-messages-format",
+              "path": "/Persisting/zh/docs/rfcs/openai-messages-format",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/pchronicle-find-query-syntax",
+              "path": "/Persisting/zh/docs/rfcs/pchronicle-find-query-syntax",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/pchronicle-ownership",
+              "path": "/Persisting/zh/docs/rfcs/pchronicle-ownership",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/pchronicle-revision-lineage",
+              "path": "/Persisting/zh/docs/rfcs/pchronicle-revision-lineage",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/pchronicle-vortex-backend",
+              "path": "/Persisting/zh/docs/rfcs/pchronicle-vortex-backend",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/pchronicle-warehouse-catalog",
+              "path": "/Persisting/zh/docs/rfcs/pchronicle-warehouse-catalog",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "rfcs/storyline-format",
+              "path": "/Persisting/zh/docs/rfcs/storyline-format",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "system-design/architecture",
+              "path": "/Persisting/zh/docs/system-design/architecture",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "system-design/index",
+              "path": "/Persisting/zh/docs/system-design/",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "system-design/local-to-fleet",
+              "path": "/Persisting/zh/docs/system-design/local-to-fleet",
+              "sidebar": "zhSidebar"
+            },
+            {
+              "id": "system-design/security-evidence",
+              "path": "/Persisting/zh/docs/system-design/security-evidence",
+              "sidebar": "zhSidebar"
+            }
+          ],
+          "draftIds": [],
+          "sidebars": {
+            "enSidebar": {
+              "link": {
+                "path": "/Persisting/zh/docs/",
+                "label": "Start here"
+              }
+            },
+            "zhSidebar": {
+              "link": {
+                "path": "/Persisting/zh/docs/",
+                "label": "从这里开始"
+              }
+            }
+          }
+        }
+      ],
+      "breadcrumbs": true
+    }
+  }
+}

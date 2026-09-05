@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/guides/ui",
+  "title": "Use the local Web UI",
+  "description": "pchronicle serve provides a loopback-only, read-only workspace for browsing",
+  "source": "@site/docs/en/pchronicle/guides/ui.md",
+  "sourceDirName": "pchronicle/guides",
+  "slug": "/pchronicle/guides/ui",
+  "permalink": "/Persisting/docs/pchronicle/guides/ui",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pchronicle/guides/ui.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Serve Datasets locally",
+    "permalink": "/Persisting/docs/pchronicle/guides/serve"
+  },
+  "next": {
+    "title": "pChronicle",
+    "permalink": "/Persisting/docs/pchronicle/"
+  }
+}

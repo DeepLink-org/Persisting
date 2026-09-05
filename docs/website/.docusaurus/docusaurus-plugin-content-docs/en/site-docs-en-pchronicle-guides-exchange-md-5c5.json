@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/guides/exchange",
+  "title": "Import and export Runs",
+  "description": "Use import and export at the interoperability boundary. Import creates,",
+  "source": "@site/docs/en/pchronicle/guides/exchange.md",
+  "sourceDirName": "pchronicle/guides",
+  "slug": "/pchronicle/guides/exchange",
+  "permalink": "/Persisting/docs/pchronicle/guides/exchange",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pchronicle/guides/exchange.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Discover and query a Dataset",
+    "permalink": "/Persisting/docs/pchronicle/guides/discover-and-query"
+  },
+  "next": {
+    "title": "Gateway ingestion, forwarding, and capture for pchronicle serve",
+    "permalink": "/Persisting/docs/pchronicle/guides/serve-gateway"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/reference/terminology",
+  "title": "产品术语",
+  "description": "pChronicle 在命令行、Web 界面和任务型文档中统一使用以下词汇：",
+  "source": "@site/docs/zh/pchronicle/reference/terminology.md",
+  "sourceDirName": "pchronicle/reference",
+  "slug": "/pchronicle/reference/terminology",
+  "permalink": "/Persisting/zh/docs/pchronicle/reference/terminology",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pchronicle/reference/terminology.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Query Model 参考",
+    "permalink": "/Persisting/zh/docs/pchronicle/reference/query-model"
+  },
+  "next": {
+    "title": "端到端架构",
+    "permalink": "/Persisting/zh/docs/system-design/architecture"
+  }
+}

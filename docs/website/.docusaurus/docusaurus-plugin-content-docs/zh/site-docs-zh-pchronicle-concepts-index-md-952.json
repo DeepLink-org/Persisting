@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/concepts/index",
+  "title": "pChronicle 核心概念",
+  "description": "pChronicle 围绕 Dataset 构建，Dataset 就是 path。查询历史或集成存储前，先理解这些概念。",
+  "source": "@site/docs/zh/pchronicle/concepts/index.md",
+  "sourceDirName": "pchronicle/concepts",
+  "slug": "/pchronicle/concepts/",
+  "permalink": "/Persisting/zh/docs/pchronicle/concepts/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pchronicle/concepts/index.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pvisor 命令参考",
+    "permalink": "/Persisting/zh/docs/pvisor/reference/cli"
+  },
+  "next": {
+    "title": "Dataset、Source 与 Snapshot",
+    "permalink": "/Persisting/zh/docs/pchronicle/concepts/dataset-and-source"
+  }
+}

@@ -56,7 +56,7 @@ pchronicle query ./trajectory-data \
 
 - [发现并查询自己的 Dataset](guides/discover-and-query.md)
 - [导入或导出 Run](guides/exchange.md)
-- [查看统一产品术语](reference/terminology.zh.md)
+- [查看统一产品术语](reference/terminology.md)
 - [使用 alias 并查阅完整命令行](reference/cli.md)
 - [使用 pVisor 采集新 Run](../pvisor/guides/capture.md)
 - [理解 pChronicle 核心概念](concepts/index.md)

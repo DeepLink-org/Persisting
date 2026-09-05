@@ -68,6 +68,6 @@ Sanitizer 构建故意不进入 `just dev` / CI 的默认路径：它们会重�
 只适合聚焦的调试会话。
 
 支持的行为请从 [pVisor 指南](../pvisor/guides/index.md)、
-[pPilot 编排](../ppilot/guides/orchestrate.md) 或
+pPilot 编排 或
 [pChronicle 指南](../pchronicle/guides/index.md) 开始，实现理由见
 [系统架构](../system-design/index.md)。

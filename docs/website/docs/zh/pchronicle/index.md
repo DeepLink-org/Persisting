@@ -60,6 +60,6 @@ pChronicle 读取并组织运行历史，不执行或调度 Agent。要在受控
 - [探索第一个 Dataset](get-started.md)
 - [完成常见工作流](guides/index.md)
 - [查看完整命令行手册](reference/cli.md)
-- [使用统一产品术语](reference/terminology.zh.md)
+- [使用统一产品术语](reference/terminology.md)
 - [理解数据模型](concepts/index.md)
 - [了解存储与 Snapshot 设计](design/index.md)

@@ -1,0 +1,24 @@
+{
+  "id": "system-design/security-evidence",
+  "title": "Security and evidence model",
+  "description": "Persisting does not compress security into one safe or sandboxed label.",
+  "source": "@site/docs/en/system-design/security-evidence.md",
+  "sourceDirName": "system-design",
+  "slug": "/system-design/security-evidence",
+  "permalink": "/Persisting/docs/system-design/security-evidence",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/system-design/security-evidence.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Local to fleet",
+    "permalink": "/Persisting/docs/system-design/local-to-fleet"
+  },
+  "next": {
+    "title": "Engineering Notes",
+    "permalink": "/Persisting/docs/project/engineering"
+  }
+}

@@ -8,7 +8,7 @@ storage. The screenshots and examples on this page were produced directly by:
 ./target/release/pchronicle serve tmp/test/ data/ --listen 127.0.0.1:9980
 ```
 
-After the listener is ready, open <http://127.0.0.1:9980/>. This command mounts
+After the listener is ready, open [http://127.0.0.1:9980/](http://127.0.0.1:9980/). This command mounts
 two Datasets. Because neither has an explicit name, the UI derives `test` and
 `data` from the last path component. Give mounts stable UI and SQL schema names
 when they will be reused:

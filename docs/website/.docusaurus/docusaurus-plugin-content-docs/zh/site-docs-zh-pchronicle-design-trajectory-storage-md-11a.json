@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/design/trajectory-storage",
+  "title": "pChronicle 运行存储",
+  "description": "当前实现说明。规范性所有权见 RFC-0003与",
+  "source": "@site/docs/zh/pchronicle/design/trajectory-storage.md",
+  "sourceDirName": "pchronicle/design",
+  "slug": "/pchronicle/design/trajectory-storage",
+  "permalink": "/Persisting/zh/docs/pchronicle/design/trajectory-storage",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pchronicle/design/trajectory-storage.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Storyline 三表 Lance 存储",
+    "permalink": "/Persisting/zh/docs/pchronicle/design/storyline-lance"
+  },
+  "next": {
+    "title": "查看 Run Dataset",
+    "permalink": "/Persisting/zh/docs/pchronicle/get-started"
+  }
+}

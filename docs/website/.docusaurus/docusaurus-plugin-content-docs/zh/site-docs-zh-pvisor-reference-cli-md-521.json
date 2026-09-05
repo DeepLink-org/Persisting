@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/reference/cli",
+  "title": "pvisor 命令参考",
+  "description": "pvisor 是单个 Run 和持久环境的产品命令。",
+  "source": "@site/docs/zh/pvisor/reference/cli.md",
+  "sourceDirName": "pvisor/reference",
+  "slug": "/pvisor/reference/cli",
+  "permalink": "/Persisting/zh/docs/pvisor/reference/cli",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pvisor/reference/cli.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pVisor run 用户场景与回归示例",
+    "permalink": "/Persisting/zh/docs/pvisor/reference/cases"
+  },
+  "next": {
+    "title": "pChronicle 核心概念",
+    "permalink": "/Persisting/zh/docs/pchronicle/concepts/"
+  }
+}

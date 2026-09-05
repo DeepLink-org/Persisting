@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/concepts/capabilities-and-evidence",
+  "title": "Capability 与 Evidence",
+  "description": "Capability 是对某个资源和动作的有界权限。pVisor 按维度描述 capability，因为单一的",
+  "source": "@site/docs/zh/pvisor/concepts/capabilities-and-evidence.md",
+  "sourceDirName": "pvisor/concepts",
+  "slug": "/pvisor/concepts/capabilities-and-evidence",
+  "permalink": "/Persisting/zh/docs/pvisor/concepts/capabilities-and-evidence",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pvisor/concepts/capabilities-and-evidence.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "什么是 AgentVisor？",
+    "permalink": "/Persisting/zh/docs/pvisor/concepts/agentvisor"
+  },
+  "next": {
+    "title": "Run、Attempt 与 Effect",
+    "permalink": "/Persisting/zh/docs/pvisor/concepts/run-model"
+  }
+}

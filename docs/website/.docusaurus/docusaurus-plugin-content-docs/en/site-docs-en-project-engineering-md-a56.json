@@ -1,0 +1,24 @@
+{
+  "id": "project/engineering",
+  "title": "Engineering Notes",
+  "description": "These notes track repository delivery work that is useful to contributors, but",
+  "source": "@site/docs/en/project/engineering.md",
+  "sourceDirName": "project",
+  "slug": "/project/engineering",
+  "permalink": "/Persisting/docs/project/engineering",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/project/engineering.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Security and evidence model",
+    "permalink": "/Persisting/docs/system-design/security-evidence"
+  },
+  "next": {
+    "title": "Reproduce the Run lifecycle",
+    "permalink": "/Persisting/docs/project/examples"
+  }
+}

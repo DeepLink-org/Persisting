@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/design/storyline-lance",
+  "title": "Storyline 三表 Lance 存储",
+  "description": "StorylineLanceStore 是 pChronicle 的 Storyline-native 规范化存储表示。它与",
+  "source": "@site/docs/zh/pchronicle/design/storyline-lance.md",
+  "sourceDirName": "pchronicle/design",
+  "slug": "/pchronicle/design/storyline-lance",
+  "permalink": "/Persisting/zh/docs/pchronicle/design/storyline-lance",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pchronicle/design/storyline-lance.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pChronicle Snapshot 设计",
+    "permalink": "/Persisting/zh/docs/pchronicle/design/catalog"
+  },
+  "next": {
+    "title": "pChronicle 运行存储",
+    "permalink": "/Persisting/zh/docs/pchronicle/design/trajectory-storage"
+  }
+}

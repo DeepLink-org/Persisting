@@ -75,7 +75,7 @@ they rebuild the standard library and are intended for focused debugging
 sessions.
 
 For supported behavior, start with [pVisor Guides](../pvisor/guides/index.md),
-[pPilot orchestration](../ppilot/guides/orchestrate.md), or
+pPilot orchestration, or
 [pChronicle Guides](../pchronicle/guides/index.md), and consult
 [System Design](../system-design/index.md) for the rationale behind an
 implementation.

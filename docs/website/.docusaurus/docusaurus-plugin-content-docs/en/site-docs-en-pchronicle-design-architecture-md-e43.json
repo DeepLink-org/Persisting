@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/design/architecture",
+  "title": "pChronicle architecture",
+  "description": "This document explains how pChronicle stores Agent trajectories and exposes",
+  "source": "@site/docs/en/pchronicle/design/architecture.md",
+  "sourceDirName": "pchronicle/design",
+  "slug": "/pchronicle/design/architecture",
+  "permalink": "/Persisting/docs/pchronicle/design/architecture",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pchronicle/design/architecture.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pChronicle design",
+    "permalink": "/Persisting/docs/pchronicle/design/"
+  },
+  "next": {
+    "title": "pChronicle Snapshot design",
+    "permalink": "/Persisting/docs/pchronicle/design/catalog"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/concepts/dataset-and-source",
+  "title": "Dataset、Source 与 Snapshot",
+  "description": "pChronicle 是 Agent 轨迹存储引擎。Dataset 就是 path：保留轨迹数据的物理来源，不把每条",
+  "source": "@site/docs/zh/pchronicle/concepts/dataset-and-source.md",
+  "sourceDirName": "pchronicle/concepts",
+  "slug": "/pchronicle/concepts/dataset-and-source",
+  "permalink": "/Persisting/zh/docs/pchronicle/concepts/dataset-and-source",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pchronicle/concepts/dataset-and-source.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pChronicle 核心概念",
+    "permalink": "/Persisting/zh/docs/pchronicle/concepts/"
+  },
+  "next": {
+    "title": "记录数据、查询视图与派生版本",
+    "permalink": "/Persisting/zh/docs/pchronicle/concepts/facts-and-projections"
+  }
+}

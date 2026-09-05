@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/reference/formats/index",
+  "title": "运行数据格式",
+  "description": "| 格式 | 角色 | 规范 |",
+  "source": "@site/docs/zh/pchronicle/reference/formats/index.md",
+  "sourceDirName": "pchronicle/reference/formats",
+  "slug": "/pchronicle/reference/formats/",
+  "permalink": "/Persisting/zh/docs/pchronicle/reference/formats/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pchronicle/reference/formats/index.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pChronicle 命令行设计与使用指南",
+    "permalink": "/Persisting/zh/docs/pchronicle/reference/cli"
+  },
+  "next": {
+    "title": "Query Model 参考",
+    "permalink": "/Persisting/zh/docs/pchronicle/reference/query-model"
+  }
+}

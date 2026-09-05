@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/guides/serve",
+  "title": "在本地服务 Dataset",
+  "description": "pchronicle serve 把一个或多个 Dataset 挂载到内建的只读 Web UI 和 API。它用于本地检查，",
+  "source": "@site/docs/zh/pchronicle/guides/serve.md",
+  "sourceDirName": "pchronicle/guides",
+  "slug": "/pchronicle/guides/serve",
+  "permalink": "/Persisting/zh/docs/pchronicle/guides/serve",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pchronicle/guides/serve.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pchronicle serve 的 Gateway 入库、转发与捕获",
+    "permalink": "/Persisting/zh/docs/pchronicle/guides/serve-gateway"
+  },
+  "next": {
+    "title": "使用本地 Web UI",
+    "permalink": "/Persisting/zh/docs/pchronicle/guides/ui"
+  }
+}

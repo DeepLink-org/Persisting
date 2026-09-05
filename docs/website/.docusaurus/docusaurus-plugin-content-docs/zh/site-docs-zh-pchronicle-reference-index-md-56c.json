@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/reference/index",
+  "title": "pChronicle Reference",
+  "description": "- pchronicle 命令行设计与使用指南",
+  "source": "@site/docs/zh/pchronicle/reference/index.md",
+  "sourceDirName": "pchronicle/reference",
+  "slug": "/pchronicle/reference/",
+  "permalink": "/Persisting/zh/docs/pchronicle/reference/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pchronicle/reference/index.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pChronicle",
+    "permalink": "/Persisting/zh/docs/pchronicle/"
+  },
+  "next": {
+    "title": "AgenticMD 运行数据格式",
+    "permalink": "/Persisting/zh/docs/pchronicle/reference/agenticmd"
+  }
+}

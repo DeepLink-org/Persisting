@@ -1,0 +1,24 @@
+{
+  "id": "project/engineering",
+  "title": "工程说明",
+  "description": "这些笔记记录对贡献者有用的仓库交付工作，但不属于产品契约。产品实现状态与",
+  "source": "@site/docs/zh/project/engineering.md",
+  "sourceDirName": "project",
+  "slug": "/project/engineering",
+  "permalink": "/Persisting/zh/docs/project/engineering",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/project/engineering.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "安全与 Evidence 模型",
+    "permalink": "/Persisting/zh/docs/system-design/security-evidence"
+  },
+  "next": {
+    "title": "复现 Run 生命周期",
+    "permalink": "/Persisting/zh/docs/project/examples"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/reference/cli",
+  "title": "pvisor command reference",
+  "description": "pvisor is the product command for a single Run and for durable",
+  "source": "@site/docs/en/pvisor/reference/cli.md",
+  "sourceDirName": "pvisor/reference",
+  "slug": "/pvisor/reference/cli",
+  "permalink": "/Persisting/docs/pvisor/reference/cli",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pvisor/reference/cli.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pVisor case catalog",
+    "permalink": "/Persisting/docs/pvisor/reference/cases"
+  },
+  "next": {
+    "title": "pChronicle concepts",
+    "permalink": "/Persisting/docs/pchronicle/concepts/"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/get-started",
+  "title": "查看 Run Dataset",
+  "description": "pChronicle 使用同一套接口读取本地、对象存储或用户 alias 指向的 Agent 运行记录。本页中的",
+  "source": "@site/docs/zh/pchronicle/get-started.md",
+  "sourceDirName": "pchronicle",
+  "slug": "/pchronicle/get-started",
+  "permalink": "/Persisting/zh/docs/pchronicle/get-started",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pchronicle/get-started.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pChronicle 运行存储",
+    "permalink": "/Persisting/zh/docs/pchronicle/design/trajectory-storage"
+  },
+  "next": {
+    "title": "pChronicle 使用指南",
+    "permalink": "/Persisting/zh/docs/pchronicle/guides/"
+  }
+}

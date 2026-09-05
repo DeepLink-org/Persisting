@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/guides/discover-and-query",
+  "title": "Discover and query a Dataset",
+  "description": "Use this workflow when you have a local path, object-store URI, or alias and",
+  "source": "@site/docs/en/pchronicle/guides/discover-and-query.md",
+  "sourceDirName": "pchronicle/guides",
+  "slug": "/pchronicle/guides/discover-and-query",
+  "permalink": "/Persisting/docs/pchronicle/guides/discover-and-query",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pchronicle/guides/discover-and-query.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pChronicle guides",
+    "permalink": "/Persisting/docs/pchronicle/guides/"
+  },
+  "next": {
+    "title": "Import and export Runs",
+    "permalink": "/Persisting/docs/pchronicle/guides/exchange"
+  }
+}

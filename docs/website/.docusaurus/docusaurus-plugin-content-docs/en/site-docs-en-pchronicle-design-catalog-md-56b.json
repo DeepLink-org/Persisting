@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/design/catalog",
+  "title": "pChronicle Snapshot design",
+  "description": "Current implementation notes. Code and historical docs call this the",
+  "source": "@site/docs/en/pchronicle/design/catalog.md",
+  "sourceDirName": "pchronicle/design",
+  "slug": "/pchronicle/design/catalog",
+  "permalink": "/Persisting/docs/pchronicle/design/catalog",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pchronicle/design/catalog.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pChronicle architecture",
+    "permalink": "/Persisting/docs/pchronicle/design/architecture"
+  },
+  "next": {
+    "title": "Storyline three-table Lance storage",
+    "permalink": "/Persisting/docs/pchronicle/design/storyline-lance"
+  }
+}

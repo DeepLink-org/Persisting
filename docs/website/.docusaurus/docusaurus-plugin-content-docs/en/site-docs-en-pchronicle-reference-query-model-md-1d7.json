@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/reference/query-model",
+  "title": "Query model reference",
+  "description": "Every mounted Dataset is a SQL schema. A positional Dataset is named dataset;",
+  "source": "@site/docs/en/pchronicle/reference/query-model.md",
+  "sourceDirName": "pchronicle/reference",
+  "slug": "/pchronicle/reference/query-model",
+  "permalink": "/Persisting/docs/pchronicle/reference/query-model",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pchronicle/reference/query-model.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Run data formats",
+    "permalink": "/Persisting/docs/pchronicle/reference/formats/"
+  },
+  "next": {
+    "title": "Product terminology",
+    "permalink": "/Persisting/docs/pchronicle/reference/terminology"
+  }
+}

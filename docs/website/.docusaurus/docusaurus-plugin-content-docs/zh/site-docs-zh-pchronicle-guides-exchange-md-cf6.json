@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/guides/exchange",
+  "title": "导入与导出 Run",
+  "description": "Import 和 export 位于互操作边界。Import 可以创建、追加或替换 Dataset；export 从已有 Dataset 读取完整 Run。",
+  "source": "@site/docs/zh/pchronicle/guides/exchange.md",
+  "sourceDirName": "pchronicle/guides",
+  "slug": "/pchronicle/guides/exchange",
+  "permalink": "/Persisting/zh/docs/pchronicle/guides/exchange",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pchronicle/guides/exchange.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "发现并查询 Dataset",
+    "permalink": "/Persisting/zh/docs/pchronicle/guides/discover-and-query"
+  },
+  "next": {
+    "title": "pchronicle serve 的 Gateway 入库、转发与捕获",
+    "permalink": "/Persisting/zh/docs/pchronicle/guides/serve-gateway"
+  }
+}

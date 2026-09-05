@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/guides/capture",
+  "title": "捕获 Agent 轨迹",
+  "description": "Gateway capture 是 pVisor 的 Run 驱动，由 Run 启停；系统不再提供独立 Gateway 命令或",
+  "source": "@site/docs/zh/pvisor/guides/capture.md",
+  "sourceDirName": "pvisor/guides",
+  "slug": "/pvisor/guides/capture",
+  "permalink": "/Persisting/zh/docs/pvisor/guides/capture",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pvisor/guides/capture.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pVisor 使用指南",
+    "permalink": "/Persisting/zh/docs/pvisor/guides/"
+  },
+  "next": {
+    "title": "使用 pVisor 运行工作负载",
+    "permalink": "/Persisting/zh/docs/pvisor/guides/execution"
+  }
+}

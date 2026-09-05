@@ -1,0 +1,20 @@
+{
+  "id": "rfcs/index",
+  "title": "RFCs",
+  "description": "RFCs are historical decision records for Persisting formats, ownership, and",
+  "source": "@site/docs/en/rfcs/index.md",
+  "sourceDirName": "rfcs",
+  "slug": "/rfcs/",
+  "permalink": "/Persisting/docs/rfcs/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/rfcs/index.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "RFC-0014: Compact JSONL Lance 存储格式",
+    "permalink": "/Persisting/docs/rfcs/compact-jsonl"
+  }
+}

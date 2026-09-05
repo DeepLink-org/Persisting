@@ -1,0 +1,24 @@
+{
+  "id": "project/examples",
+  "title": "复现 Run 生命周期",
+  "description": "examples/",
+  "source": "@site/docs/zh/project/examples.md",
+  "sourceDirName": "project",
+  "slug": "/project/examples",
+  "permalink": "/Persisting/zh/docs/project/examples",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/project/examples.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "工程说明",
+    "permalink": "/Persisting/zh/docs/project/engineering"
+  },
+  "next": {
+    "title": "Project",
+    "permalink": "/Persisting/zh/docs/project/"
+  }
+}

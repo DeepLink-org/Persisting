@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/guides/index",
+  "title": "pVisor 使用指南",
+  "description": "先沿着一个 Run 的生命周期阅读，需要时再把执行连接到持久历史。",
+  "source": "@site/docs/zh/pvisor/guides/index.md",
+  "sourceDirName": "pvisor/guides",
+  "slug": "/pvisor/guides/",
+  "permalink": "/Persisting/zh/docs/pvisor/guides/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pvisor/guides/index.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "运行第一个 Agent",
+    "permalink": "/Persisting/zh/docs/pvisor/get-started"
+  },
+  "next": {
+    "title": "捕获 Agent 轨迹",
+    "permalink": "/Persisting/zh/docs/pvisor/guides/capture"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/guides/review-apply",
+  "title": "Review and apply Agent changes",
+  "description": "An Agent can work freely inside a staged workspace without receiving automatic",
+  "source": "@site/docs/en/pvisor/guides/review-apply.md",
+  "sourceDirName": "pvisor/guides",
+  "slug": "/pvisor/guides/review-apply",
+  "permalink": "/Persisting/docs/pvisor/guides/review-apply",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pvisor/guides/review-apply.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Control network access with OverlayNet",
+    "permalink": "/Persisting/docs/pvisor/guides/network"
+  },
+  "next": {
+    "title": "SandboxReplay",
+    "permalink": "/Persisting/docs/pvisor/guides/sandbox-replay"
+  }
+}

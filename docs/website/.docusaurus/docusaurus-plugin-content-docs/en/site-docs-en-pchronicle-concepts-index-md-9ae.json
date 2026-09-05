@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/concepts/index",
+  "title": "pChronicle concepts",
+  "description": "pChronicle is built around a Dataset, which is a path. Read these concepts",
+  "source": "@site/docs/en/pchronicle/concepts/index.md",
+  "sourceDirName": "pchronicle/concepts",
+  "slug": "/pchronicle/concepts/",
+  "permalink": "/Persisting/docs/pchronicle/concepts/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pchronicle/concepts/index.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pvisor command reference",
+    "permalink": "/Persisting/docs/pvisor/reference/cli"
+  },
+  "next": {
+    "title": "Dataset, Source, and Snapshot",
+    "permalink": "/Persisting/docs/pchronicle/concepts/dataset-and-source"
+  }
+}

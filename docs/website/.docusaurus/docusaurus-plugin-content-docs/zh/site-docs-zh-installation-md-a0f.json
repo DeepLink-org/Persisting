@@ -1,0 +1,24 @@
+{
+  "id": "installation",
+  "title": "安装指南",
+  "description": "Persisting 通过 Python wheel 发布，wheel 同时包含 Python 包和版本匹配的 CLI 组件集：",
+  "source": "@site/docs/zh/installation.md",
+  "sourceDirName": ".",
+  "slug": "/installation",
+  "permalink": "/Persisting/zh/docs/installation",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/installation.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "选择工作流",
+    "permalink": "/Persisting/zh/docs/overview"
+  },
+  "next": {
+    "title": "pVisor 核心概念",
+    "permalink": "/Persisting/zh/docs/pvisor/concepts/"
+  }
+}

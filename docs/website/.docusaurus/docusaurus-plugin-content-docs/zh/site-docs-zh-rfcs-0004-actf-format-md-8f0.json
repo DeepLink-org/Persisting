@@ -1,0 +1,25 @@
+{
+  "id": "rfcs/actf-format",
+  "title": "RFC-0004: ACTF v1.0 轨迹格式",
+  "description": "| Field | Value |",
+  "source": "@site/docs/zh/rfcs/0004-actf-format.md",
+  "sourceDirName": "rfcs",
+  "slug": "/rfcs/actf-format",
+  "permalink": "/Persisting/zh/docs/rfcs/actf-format",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/rfcs/0004-actf-format.md",
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 4,
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "RFC-0003: pChronicle 轨迹存储层所有权",
+    "permalink": "/Persisting/zh/docs/rfcs/pchronicle-ownership"
+  },
+  "next": {
+    "title": "RFC-0005: pChronicle 派生 Revision Lineage",
+    "permalink": "/Persisting/zh/docs/rfcs/pchronicle-revision-lineage"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/guides/sandbox-replay",
+  "title": "SandboxReplay",
+  "description": "SandboxReplay 是 pVisor 的 Agent 轨迹回放能力。它面向用户已经创建好的新沙箱，重新执行原始轨迹中恢复边界之前的工具调用，用新沙箱产生的 observation 重建 Agent 原生上下文，然后从边界后继续运行。它会在",
+  "source": "@site/docs/zh/pvisor/guides/sandbox-replay.md",
+  "sourceDirName": "pvisor/guides",
+  "slug": "/pvisor/guides/sandbox-replay",
+  "permalink": "/Persisting/zh/docs/pvisor/guides/sandbox-replay",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pvisor/guides/sandbox-replay.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "审查并应用 Agent 修改",
+    "permalink": "/Persisting/zh/docs/pvisor/guides/review-apply"
+  },
+  "next": {
+    "title": "pVisor",
+    "permalink": "/Persisting/zh/docs/pvisor/"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "id": "rfcs/storyline-format",
+  "title": "RFC-0001: Storyline Format",
+  "description": "| Field | Value |",
+  "source": "@site/docs/zh/rfcs/0001-storyline-format.md",
+  "sourceDirName": "rfcs",
+  "slug": "/rfcs/storyline-format",
+  "permalink": "/Persisting/zh/docs/rfcs/storyline-format",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/rfcs/0001-storyline-format.md",
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 1,
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "发布 Persisting",
+    "permalink": "/Persisting/zh/docs/project/releasing"
+  },
+  "next": {
+    "title": "RFC-0002: Events Format（events）",
+    "permalink": "/Persisting/zh/docs/rfcs/events-format"
+  }
+}

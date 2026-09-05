@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/guides/network",
+  "title": "Control network access with OverlayNet",
+  "description": "OverlayNet lets pVisor apply allow, deny, and bandwidth rules to network",
+  "source": "@site/docs/en/pvisor/guides/network.md",
+  "sourceDirName": "pvisor/guides",
+  "slug": "/pvisor/guides/network",
+  "permalink": "/Persisting/docs/pvisor/guides/network",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pvisor/guides/network.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Run workloads with pVisor",
+    "permalink": "/Persisting/docs/pvisor/guides/execution"
+  },
+  "next": {
+    "title": "Review and apply Agent changes",
+    "permalink": "/Persisting/docs/pvisor/guides/review-apply"
+  }
+}

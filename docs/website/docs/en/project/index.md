@@ -26,9 +26,9 @@ systems outside the current pVisor, pPilot, and pChronicle product path.
 
 Queue and its Python API remain independent of the Agent execution path:
 
-- [Queue guide](../guide/queue.md)
-- [Queue API](../api/queue.md)
-- [Custom Queue backends](../guide/custom-backends.md)
+- Queue guide
+- Queue API remains outside the default product documentation
+- Custom Queue backends remain outside the default product documentation
 
 Historical queue-era design notes are retained outside the published site in
 the repository's `docs/archive/` directory.

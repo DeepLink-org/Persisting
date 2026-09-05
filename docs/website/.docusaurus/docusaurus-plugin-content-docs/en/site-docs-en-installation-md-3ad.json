@@ -1,0 +1,24 @@
+{
+  "id": "installation",
+  "title": "Installation",
+  "description": "Persisting is distributed as a Python wheel containing both the Python package",
+  "source": "@site/docs/en/installation.md",
+  "sourceDirName": ".",
+  "slug": "/installation",
+  "permalink": "/Persisting/docs/installation",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/installation.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "选择工作流",
+    "permalink": "/Persisting/docs/overview"
+  },
+  "next": {
+    "title": "pVisor concepts",
+    "permalink": "/Persisting/docs/pvisor/concepts/"
+  }
+}

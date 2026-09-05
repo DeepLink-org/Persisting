@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/design/cli",
+  "title": "pVisor 命令模型",
+  "description": "pvisor 是单个受治理 Agent Run 的公共入口。命令接口围绕四类责任组织：启动 Run、查看",
+  "source": "@site/docs/zh/pvisor/design/cli.md",
+  "sourceDirName": "pvisor/design",
+  "slug": "/pvisor/design/cli",
+  "permalink": "/Persisting/zh/docs/pvisor/design/cli",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pvisor/design/cli.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pVisor Design",
+    "permalink": "/Persisting/zh/docs/pvisor/design/"
+  },
+  "next": {
+    "title": "pVisor Gateway — 架构与设计",
+    "permalink": "/Persisting/zh/docs/pvisor/design/gateway"
+  }
+}

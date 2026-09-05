@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/concepts/dataset-and-source",
+  "title": "Dataset, Source, and Snapshot",
+  "description": "pChronicle is an Agent trajectory storage engine. A Dataset is a path: the",
+  "source": "@site/docs/en/pchronicle/concepts/dataset-and-source.md",
+  "sourceDirName": "pchronicle/concepts",
+  "slug": "/pchronicle/concepts/dataset-and-source",
+  "permalink": "/Persisting/docs/pchronicle/concepts/dataset-and-source",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pchronicle/concepts/dataset-and-source.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pChronicle concepts",
+    "permalink": "/Persisting/docs/pchronicle/concepts/"
+  },
+  "next": {
+    "title": "Recorded data, views, and versions",
+    "permalink": "/Persisting/docs/pchronicle/concepts/facts-and-projections"
+  }
+}

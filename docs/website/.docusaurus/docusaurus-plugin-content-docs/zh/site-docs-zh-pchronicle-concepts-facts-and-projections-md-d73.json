@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/concepts/facts-and-projections",
+  "title": "记录数据、查询视图与派生版本",
+  "description": "pChronicle 把“发生了什么”与“如何查看它”分开。",
+  "source": "@site/docs/zh/pchronicle/concepts/facts-and-projections.md",
+  "sourceDirName": "pchronicle/concepts",
+  "slug": "/pchronicle/concepts/facts-and-projections",
+  "permalink": "/Persisting/zh/docs/pchronicle/concepts/facts-and-projections",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pchronicle/concepts/facts-and-projections.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Dataset、Source 与 Snapshot",
+    "permalink": "/Persisting/zh/docs/pchronicle/concepts/dataset-and-source"
+  },
+  "next": {
+    "title": "pChronicle Design",
+    "permalink": "/Persisting/zh/docs/pchronicle/design/"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "project/index",
+  "title": "Project",
+  "description": "Persisting's public positioning spans model state and Agent history. This",
+  "source": "@site/docs/en/project/index.md",
+  "sourceDirName": "project",
+  "slug": "/project/",
+  "permalink": "/Persisting/docs/project/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/project/index.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Reproduce the Run lifecycle",
+    "permalink": "/Persisting/docs/project/examples"
+  },
+  "next": {
+    "title": "Releasing persisting",
+    "permalink": "/Persisting/docs/project/releasing"
+  }
+}

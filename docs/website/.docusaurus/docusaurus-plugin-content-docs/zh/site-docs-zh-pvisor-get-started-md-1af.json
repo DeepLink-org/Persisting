@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/get-started",
+  "title": "运行第一个 Agent",
+  "description": "这篇指南只完成一条有用的闭环：安装 Persisting，在 staged environment 中运行 Agent，",
+  "source": "@site/docs/zh/pvisor/get-started.md",
+  "sourceDirName": "pvisor",
+  "slug": "/pvisor/get-started",
+  "permalink": "/Persisting/zh/docs/pvisor/get-started",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pvisor/get-started.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "OverlayNet 透明拦截",
+    "permalink": "/Persisting/zh/docs/pvisor/design/overlaynet"
+  },
+  "next": {
+    "title": "pVisor 使用指南",
+    "permalink": "/Persisting/zh/docs/pvisor/guides/"
+  }
+}

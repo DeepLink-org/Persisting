@@ -1,0 +1,24 @@
+{
+  "id": "project/examples",
+  "title": "Reproduce the Run lifecycle",
+  "description": "The examples/",
+  "source": "@site/docs/en/project/examples.md",
+  "sourceDirName": "project",
+  "slug": "/project/examples",
+  "permalink": "/Persisting/docs/project/examples",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/project/examples.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Engineering Notes",
+    "permalink": "/Persisting/docs/project/engineering"
+  },
+  "next": {
+    "title": "Project",
+    "permalink": "/Persisting/docs/project/"
+  }
+}

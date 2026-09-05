@@ -1,0 +1,25 @@
+{
+  "id": "rfcs/compact-jsonl",
+  "title": "RFC-0014: Compact JSONL Lance 存储格式",
+  "description": "| Field | Value |",
+  "source": "@site/docs/zh/rfcs/0014-compact-jsonl.md",
+  "sourceDirName": "rfcs",
+  "slug": "/rfcs/compact-jsonl",
+  "permalink": "/Persisting/zh/docs/rfcs/compact-jsonl",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/rfcs/0014-compact-jsonl.md",
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 14,
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "RFC-0013: pChronicle path Directory",
+    "permalink": "/Persisting/zh/docs/rfcs/pchronicle-warehouse-catalog"
+  },
+  "next": {
+    "title": "RFC",
+    "permalink": "/Persisting/zh/docs/rfcs/"
+  }
+}

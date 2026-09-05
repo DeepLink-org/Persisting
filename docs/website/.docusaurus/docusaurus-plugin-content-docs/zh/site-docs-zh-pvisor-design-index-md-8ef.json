@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/design/index",
+  "title": "pVisor Design",
+  "description": "这些页面解释 pVisor 如何实现一个 Agent 虚拟执行环境。",
+  "source": "@site/docs/zh/pvisor/design/index.md",
+  "sourceDirName": "pvisor/design",
+  "slug": "/pvisor/design/",
+  "permalink": "/Persisting/zh/docs/pvisor/design/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pvisor/design/index.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Run、Attempt 与 Effect",
+    "permalink": "/Persisting/zh/docs/pvisor/concepts/run-model"
+  },
+  "next": {
+    "title": "pVisor 命令模型",
+    "permalink": "/Persisting/zh/docs/pvisor/design/cli"
+  }
+}

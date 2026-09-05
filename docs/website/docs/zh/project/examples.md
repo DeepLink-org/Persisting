@@ -49,6 +49,6 @@ Python 3 和 `jq` 等常见 POSIX 工具；pVisor 文件系统示例另需 macFU
 生产时运行 pPilot 示例；准备从执行进入历史时，再运行 pChronicle 示例。
 
 任务解释见 [pVisor Guides](../pvisor/guides/index.md)，多 Run 工作流见
-[pPilot 编排](../ppilot/guides/orchestrate.md)，Dataset 工作流见
+pPilot 编排，Dataset 工作流见
 [pChronicle Guides](../pchronicle/guides/index.md)。示例用于验证产品路径；精确命令语法仍以
 各产品 Reference 为准。

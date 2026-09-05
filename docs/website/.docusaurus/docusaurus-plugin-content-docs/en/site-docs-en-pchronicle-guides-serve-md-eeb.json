@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/guides/serve",
+  "title": "Serve Datasets locally",
+  "description": "pchronicle serve mounts one or more Datasets in the bundled read-only Web UI",
+  "source": "@site/docs/en/pchronicle/guides/serve.md",
+  "sourceDirName": "pchronicle/guides",
+  "slug": "/pchronicle/guides/serve",
+  "permalink": "/Persisting/docs/pchronicle/guides/serve",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pchronicle/guides/serve.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "Gateway ingestion, forwarding, and capture for pchronicle serve",
+    "permalink": "/Persisting/docs/pchronicle/guides/serve-gateway"
+  },
+  "next": {
+    "title": "Use the local Web UI",
+    "permalink": "/Persisting/docs/pchronicle/guides/ui"
+  }
+}

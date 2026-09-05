@@ -1,0 +1,24 @@
+{
+  "id": "pvisor/design/isolation",
+  "title": "pVisor 隔离架构",
+  "description": "本文比较各 provider 机制及其真实安全性质。用",
+  "source": "@site/docs/zh/pvisor/design/isolation.md",
+  "sourceDirName": "pvisor/design",
+  "slug": "/pvisor/design/isolation",
+  "permalink": "/Persisting/zh/docs/pvisor/design/isolation",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pvisor/design/isolation.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pVisor Gateway — 架构与设计",
+    "permalink": "/Persisting/zh/docs/pvisor/design/gateway"
+  },
+  "next": {
+    "title": "OverlayNet 透明拦截",
+    "permalink": "/Persisting/zh/docs/pvisor/design/overlaynet"
+  }
+}

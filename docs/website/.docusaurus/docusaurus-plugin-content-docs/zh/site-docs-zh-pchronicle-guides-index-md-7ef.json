@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/guides/index",
+  "title": "pChronicle 使用指南",
+  "description": "先完成查询第一个 Dataset，再选择面向任务的工作流。",
+  "source": "@site/docs/zh/pchronicle/guides/index.md",
+  "sourceDirName": "pchronicle/guides",
+  "slug": "/pchronicle/guides/",
+  "permalink": "/Persisting/zh/docs/pchronicle/guides/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/pchronicle/guides/index.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "查看 Run Dataset",
+    "permalink": "/Persisting/zh/docs/pchronicle/get-started"
+  },
+  "next": {
+    "title": "发现并查询 Dataset",
+    "permalink": "/Persisting/zh/docs/pchronicle/guides/discover-and-query"
+  }
+}

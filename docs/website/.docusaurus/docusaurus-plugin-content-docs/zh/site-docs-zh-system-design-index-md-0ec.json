@@ -1,0 +1,24 @@
+{
+  "id": "system-design/index",
+  "title": "System Design",
+  "description": "Persisting 是横跨模型状态——参数与 KV Cache——以及 Agent 历史的持久化基础设施。本节聚焦",
+  "source": "@site/docs/zh/system-design/index.md",
+  "sourceDirName": "system-design",
+  "slug": "/system-design/",
+  "permalink": "/Persisting/zh/docs/system-design/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/system-design/index.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "端到端架构",
+    "permalink": "/Persisting/zh/docs/system-design/architecture"
+  },
+  "next": {
+    "title": "从本地到集群",
+    "permalink": "/Persisting/zh/docs/system-design/local-to-fleet"
+  }
+}

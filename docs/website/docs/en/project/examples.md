@@ -53,7 +53,7 @@ then run the pPilot examples when you want many-Run production, and the
 pChronicle examples when you are ready to inspect history.
 
 Use [pVisor Guides](../pvisor/guides/index.md) for task explanations,
-[pPilot orchestration](../ppilot/guides/orchestrate.md) for many-Run workflows,
+pPilot orchestration for many-Run workflows,
 and [pChronicle Guides](../pchronicle/guides/index.md) for Dataset workflows.
 The examples verify a product workflow; exact command syntax remains in each
 product's Reference section.

@@ -1,0 +1,24 @@
+{
+  "id": "pchronicle/design/storyline-lance",
+  "title": "Storyline three-table Lance storage",
+  "description": "StorylineLanceStore is pChronicle's Storyline-native normalized storage",
+  "source": "@site/docs/en/pchronicle/design/storyline-lance.md",
+  "sourceDirName": "pchronicle/design",
+  "slug": "/pchronicle/design/storyline-lance",
+  "permalink": "/Persisting/docs/pchronicle/design/storyline-lance",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/en/pchronicle/design/storyline-lance.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "pChronicle Snapshot design",
+    "permalink": "/Persisting/docs/pchronicle/design/catalog"
+  },
+  "next": {
+    "title": "pChronicle run storage",
+    "permalink": "/Persisting/docs/pchronicle/design/trajectory-storage"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "id": "rfcs/pchronicle-find-query-syntax",
+  "title": "RFC-0012: pChronicle find 查询表达式",
+  "description": "| Field | Value |",
+  "source": "@site/docs/zh/rfcs/0012-pchronicle-find-query-syntax.md",
+  "sourceDirName": "rfcs",
+  "slug": "/rfcs/pchronicle-find-query-syntax",
+  "permalink": "/Persisting/zh/docs/rfcs/pchronicle-find-query-syntax",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/DeepLink-org/Persisting/edit/main/docs/website/docs/zh/rfcs/0012-pchronicle-find-query-syntax.md",
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 12,
+  "frontMatter": {},
+  "sidebar": "zhSidebar",
+  "previous": {
+    "title": "RFC-0010: Agent 评测语料的分层 Lance 布局",
+    "permalink": "/Persisting/zh/docs/rfcs/agent-corpus-lance-layout"
+  },
+  "next": {
+    "title": "RFC-0013: pChronicle path Directory",
+    "permalink": "/Persisting/zh/docs/rfcs/pchronicle-warehouse-catalog"
+  }
+}
