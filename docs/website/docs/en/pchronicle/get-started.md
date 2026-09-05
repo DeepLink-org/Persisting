@@ -19,7 +19,12 @@ pchronicle onboard query
 
 Neither command requires a source checkout or an existing Dataset.
 
-## 2. Inspect your own Dataset
+## 2. Inspect a Dataset you already have
+
+The onboarding Dataset is temporary and is removed when the walkthrough ends.
+For a persistent query, point the commands below at a Dataset path you already
+own. If you do not have one yet, stop after the onboarding query and continue
+with [Discover and query your own data](guides/discover-and-query.md).
 
 A Dataset may be a local path, an object-store URI prefix, or an alias such as
 `@prod`:
