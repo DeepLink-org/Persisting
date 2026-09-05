@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780" role="img" aria-labelledby="title desc">
   <title id="title">pVisor AgentVisor architecture</title>
-  <desc id="desc">An Agent sends one Run contract into pVisor. pVisor governs lifecycle, capabilities, Effects, checkpoints, lineage, Evidence, and runtime drivers. pPilot orchestrates many Runs, while host, container, VM, and future fleet providers execute Attempts. Configured pChronicle capture receives Gateway trajectory events, pVisor lifecycle records, and their event-carried Evidence; the full Run Bundle and its Artifact, lineage, Effect, and broader Evidence inventory remain local.</desc>
+  <desc id="desc">An Agent sends one Run contract into pVisor. pVisor governs lifecycle, capabilities, Effects, checkpoints, lineage, Evidence, and runtime drivers. orchestration orchestrates many Runs, while host, container, VM, and future fleet providers execute Attempts. Configured pChronicle capture receives Gateway trajectory events, pVisor lifecycle records, and their event-carried Evidence; the full Run Bundle and its Artifact, lineage, Effect, and broader Evidence inventory remain local.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#08111f"/>
@@ -92,7 +92,7 @@
 
   <g filter="url(#shadow)">
     <rect x="35" y="322" width="205" height="132" rx="20" class="card" stroke="#c084fc"/>
-    <text x="70" y="360" class="label">pPilot</text>
+    <text x="70" y="360" class="label">orchestration</text>
     <text x="70" y="387" class="small">plan · lease · schedule</text>
     <text x="70" y="410" class="small">retry · reconcile</text>
     <text x="70" y="434" class="tiny">Many Runs</text>

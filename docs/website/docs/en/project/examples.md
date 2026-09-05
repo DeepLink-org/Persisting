@@ -9,7 +9,6 @@ the documented sequence: execute, govern effects, and inspect history.
 just examples
 just examples-pvisor
 just examples-pchronicle
-just examples-ppilot
 ```
 
 ## pVisor
@@ -20,13 +19,6 @@ just examples-ppilot
 | `02-changeset-management` | Review, apply, and drop |
 | `03-network-isolation` | Explicit proxy policy and its boundary |
 | `04-gateway-llm-control` | Embedded Gateway routing and capture |
-
-## pPilot
-
-| Example | What it demonstrates |
-|---|---|
-| `01-run` | Concurrent `plan()` / `execute()` work written to a durable sink |
-| `02-produce` | A Python planner that creates independent, reviewable pVisor Runs |
 
 ## pChronicle
 
@@ -49,11 +41,11 @@ as `jq`. The pVisor filesystem examples additionally require macFUSE or FUSE3.
 `just examples-pvisor-portable` runs 03/04 without FUSE.
 
 Start with `pvisor/01-filesystem-isolation`, continue to changeset management,
-then run the pPilot examples when you want many-Run production, and the
+then run the orchestration layer examples when you want many-Run production, and the
 pChronicle examples when you are ready to inspect history.
 
 Use [pVisor Guides](../pvisor/guides/index.md) for task explanations,
-pPilot orchestration for many-Run workflows,
+orchestration layer orchestration for many-Run workflows,
 and [pChronicle Guides](../pchronicle/guides/index.md) for Dataset workflows.
 The examples verify a product workflow; exact command syntax remains in each
 product's Reference section.

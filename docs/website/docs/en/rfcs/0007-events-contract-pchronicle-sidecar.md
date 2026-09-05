@@ -4,14 +4,14 @@
 |---|---|
 | **Status** | Accepted |
 | **Date** | 2026-08-16 |
-| **Components** | `persisting-events` · pVisor · pPilot · pChronicle · Gateway |
+| **Components** | `persisting-events` · pVisor · orchestration layer · pChronicle · Gateway |
 | **Amends** | [RFC-0002 Events](0002-events-format.md) · [RFC-0003 pChronicle ownership](0003-pchronicle-ownership.md) |
-| **Related** | [端到端架构](../system-design/architecture.md) · pPilot architecture · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
+| **Related** | [端到端架构](../system-design/architecture.md) · orchestration architecture · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
 
 ## 摘要
 
 Persisting 将运行时事件的逻辑契约从存储实现中拆出，由唯一新增 crate
-`persisting-events` 拥有。pVisor、Gateway、pPilot 与 pChronicle 共享该契约，但只有
+`persisting-events` 拥有。pVisor、Gateway、orchestration layer 与 pChronicle 共享该契约，但只有
 pChronicle 拥有 Lance、DataFusion、对象存储、Catalog、查询与投影实现。
 
 pVisor 需要持久轨迹或 Attempt registry 时启动
@@ -76,7 +76,7 @@ pVisor 只暴露两个面向用户的落盘选择：格式和目标位置。
 | `--record-format lance` | 启动 `pchronicle serve --control 127.0.0.1:0 <root>`，通过 control 协议写 canonical Lance |
 
 旧的 `--chronicle-mode`、`--chronicle-dir` 和 `--pchronicle-binary` 不再是 pVisor
-CLI 参数。pVisor 库/配置仍可通过 `chronicle.binary` 选择 sidecar executable；pPilot
+CLI 参数。pVisor 库/配置仍可通过 `chronicle.binary` 选择 sidecar executable；orchestration layer
 自己的 `--pchronicle-binary` 不属于 pVisor CLI。pVisor 管理自己启动的 child 生命周期；
 child 退出、握手失败或协议版本不兼容都会显式使持久化路径失败。
 
@@ -112,7 +112,7 @@ pVisor 到 sidecar 的 append 队列是有界的。入队使用 `try_send`：队
 ## 依赖边界
 
 ```text
-pVisor / Gateway / pPilot
+pVisor / Gateway / orchestration layer
           │
           │ EventRecord + optional control protocol
           ▼
@@ -148,7 +148,7 @@ pChronicle 的间接依赖，不改变本 RFC 的 ownership，但 SHOULD 在后�
 | pVisor 继续内嵌 Lance adapter | 执行器与存储引擎生命周期、feature 和依赖重新耦合 |
 | `EventRecord` 继续由 pChronicle 定义 | producer 为使用基础事件信封被迫依赖存储产品 |
 | 单独保留 `persisting-pchronicle-client` | 协议包过碎；control 契约可以作为事件边界的可选 feature |
-| pVisor 与 pPilot 各写一套 IPC client | 会产生协议漂移、重复认证与错误语义 |
+| pVisor 与 orchestration layer 各写一套 IPC client | 会产生协议漂移、重复认证与错误语义 |
 | pVisor 写 JSONL，pChronicle 以后导入 | 缺少运行期 durable ACK、fencing 与统一 canonical append 语义 |
 
 ## 验收条件

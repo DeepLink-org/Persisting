@@ -2,7 +2,7 @@
 
 Persisting's public positioning spans model state and Agent history. This
 section records delivery state, durable decisions, contributor workflows, and
-systems outside the current pVisor, pPilot, and pChronicle product path.
+systems outside the current pVisor and pChronicle product path.
 
 ## Architecture
 

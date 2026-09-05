@@ -135,7 +135,7 @@ Vortex projector 固定输入事实 snapshot 后异步构建。构建、上传�
 
 ### 3.6 依赖和构建默认隔离
 
-Vortex 不进入 pChronicle、pPilot、pVisor、Gateway 或 CLI 的默认依赖图。默认构建、测试和发布
+Vortex 不进入 pChronicle、orchestration layer、pVisor、Gateway 或 CLI 的默认依赖图。默认构建、测试和发布
 二进制中不得出现 Vortex crate，除非消费者显式启用或构建独立实验 crate。
 
 ## 4. 范围与非目标
@@ -1226,7 +1226,7 @@ Lance 的 merge、MVCC、maintenance、scalar index 和 Vortex 的 overlay、dir
 | workspace-wide CI 变慢 | 独立 job/cache；日常使用 targeted package commands |
 | test matrix 成倍增长 | core semantic tests共享 fixture；后端专项测试独立运行 |
 
-验收要求：默认 `cargo build`、pPilot、pVisor、Gateway 和 pChronicle CLI 的依赖图中不出现任何
+验收要求：默认 `cargo build`、orchestration layer、pVisor、Gateway 和 pChronicle CLI 的依赖图中不出现任何
 `vortex-*` package；只有显式构建实验 crate 时才增加编译成本。
 
 ### 18.4 独立 helper 与同进程链接的权衡
@@ -1517,7 +1517,7 @@ codec。它适合作为 benchmark baseline，不作为目标设计。
 - 锁定与 Arrow 58.3/DataFusion 54/object_store 0.13.2 兼容的 crates.io release；
 - 记录 clean build、增量 build、package graph、二进制和 target 增量；
 - 写最小 nested `TrajectoryBundle`，用 `vx`/Rust reader 检查 layout tree；
-- 不修改 Gateway、pPilot、pVisor 或默认 CLI。
+- 不修改 Gateway、orchestration layer、pVisor 或默认 CLI。
 
 ### Phase 1：标准 Vortex 单文件 codec prototype
 

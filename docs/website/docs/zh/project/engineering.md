@@ -12,16 +12,16 @@
 | `just test` | 通过 `cargo nextest` 跑工作区 Rust 测试，再跑 Python 套件 |
 | `just test <package>` | 单个 crate 或 Cargo package（例如 `pvisor` 或 `persisting-pvisor`） |
 | `just docs-sync` | 安装锁定的文档环境 |
-| `just docs-serve` | 本地 MkDocs 预览，磁盘文件修改时自动刷新 |
-| `just docs-serve-dirty` | 自动重载卡住时用 `--dirtyreload` 预览 |
+| `just docs-serve` | 本地 Docusaurus 预览，文件修改时自动刷新 |
+| `just docs-serve-dirty` | 自动重载卡住时重新启动 Docusaurus 预览 |
 | `just docs-build` | 构建静态文档站点 |
-| `just docs-links` | 严格 MkDocs 构建，死链即失败 |
-| `just examples` | 全部产品示例套件（pVisor、pChronicle 与 pPilot） |
+| `just docs-links` | Docusaurus 生产构建，并检查断链 |
+| `just examples` | pVisor 与 pChronicle 产品示例套件 |
 | `just gate` | 格式化、lint 以及完整 Rust 测试工作区 |
 | `just dev` | 限定范围的 runtime crate 检查；不是完整工作区矩阵 |
 
 `just test` 使用 debug nextest profile 以便更快迭代。传入 Cargo package 名
-或短 crate 别名（`pvisor`、`ppilot`、`pchronicle`、`pchronicle-cli`、
+或短 crate 别名（`pvisor`、`pchronicle`、`pchronicle-cli`、
 `agentctl`、`capture`）。无参数形式还会跑 `just test-py`。
 
 ## 当前笔记
@@ -68,6 +68,6 @@ Sanitizer 构建故意不进入 `just dev` / CI 的默认路径：它们会重�
 只适合聚焦的调试会话。
 
 支持的行为请从 [pVisor 指南](../pvisor/guides/index.md)、
-pPilot 编排 或
+批量 Run 编排 或
 [pChronicle 指南](../pchronicle/guides/index.md) 开始，实现理由见
 [系统架构](../system-design/index.md)。
