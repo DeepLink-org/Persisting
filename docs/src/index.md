@@ -1,6 +1,6 @@
 ---
 template: home.html
-title: Persisting — Persistent Infrastructure for Agents
+title: Persisting — Persistent Infrastructure for the Agent Era
 description: Run Agents under a reviewable execution boundary and preserve queryable history.
 hide: toc
 ---
