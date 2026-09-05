@@ -317,7 +317,7 @@ exec "$PERSISTING_TEST_PVISOR" run --executor host \
             .executor
             .as_ref()
             .map(|executor| executor.name.as_str()),
-        Some("docker-pvisor-v2")
+        Some("oci-pvisor")
     );
 }
 
