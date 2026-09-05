@@ -243,7 +243,10 @@ fn run_accepts_portable_object_store_chronicle_sink() {
 
 #[cfg(unix)]
 #[test]
-#[cfg_attr(target_os = "macos", ignore = "temporary OCI control mount is not visible to nested pVisor on macOS")]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "temporary OCI control mount is not visible to nested pVisor on macOS"
+)]
 fn container_executor_runs_through_an_oci_compatible_control_surface() {
     let temporary = tempfile::tempdir().expect("create CLI fixture");
     let workspace = temporary.path().join("workspace");
@@ -261,7 +264,8 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
-control=$(perl -0777 -ne 'if (/"source"\s*:\s*"([^"]+)".{0,300}?"destination"\s*:\s*"\/run\/persisting"/s) { print $1 }' "$bundle/config.json")
+spec=$(find "$(dirname "$bundle")" -name run-spec.json -print -quit)
+control=$(dirname "$spec")
 exec "$PERSISTING_TEST_PVISOR" run --executor host \
   --spec "$control/run-spec.json" \
   --result-file "$control/run-result.json"
