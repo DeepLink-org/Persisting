@@ -31,12 +31,15 @@ lineage、Effect 与更完整的 Evidence 清单仍留在本地，除非另行�
 canonical event。每条路径保留与 Source 对应的保证；ingestion 不会补充 Source 未提供的
 Evidence。
 
-| 关注点 | Owner |
-| --- | --- |
-| 单个 Run 的执行边界 | pVisor |
-| 模型、网络与文件系统 runtime driver | pVisor |
-| Canonical event、终态事实与 Dataset 历史 | pChronicle |
-| 查询、交换与 revision lineage | pChronicle |
+职责边界可以概括为两点：
+
+- **pVisor 负责执行。** 它定义单个 Run 的边界，以及模型、网络和文件系统 runtime driver。
+  即使没有捕获历史，私有 Run Bundle 也独立有效。
+- **pChronicle 负责历史。** 它记录 canonical event 和终态事实，并提供 Dataset 查询、交换与
+  revision lineage。
+
+这个拆分直接服务于使用者：可以先独立使用执行或历史，只有当问题同时跨越两个域时才配置
+capture 交接。
 
 ## 按问题继续阅读
 

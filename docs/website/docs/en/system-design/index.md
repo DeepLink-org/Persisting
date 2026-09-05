@@ -36,12 +36,17 @@ passing through pVisor or becoming canonical events. Each path retains
 source-specific guarantees; ingestion does not add Evidence that its Source did
 not provide.
 
-| Concern | Owner |
-| --- | --- |
-| One Run's execution boundary | pVisor |
-| Model, network, and filesystem runtime drivers | pVisor |
-| Canonical events, terminal facts, and Dataset history | pChronicle |
-| Query, exchange, and revision lineage | pChronicle |
+The ownership boundary is deliberately simple:
+
+- **pVisor owns execution.** It defines one Run's boundary and its model,
+  network, and filesystem runtime drivers. Its private Run Bundle remains useful
+  even when no history is captured.
+- **pChronicle owns history.** It records canonical events and terminal facts,
+  then provides Dataset queries, exchange, and revision lineage.
+
+This separation is a practical choice for users: start with execution or
+history independently, and add the capture handoff only when the question you
+need to answer crosses both domains.
 
 ## Continue by question
 
