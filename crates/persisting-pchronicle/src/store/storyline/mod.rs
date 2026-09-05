@@ -1135,6 +1135,12 @@ impl StorylineLanceStore {
         &self,
         options: &LanceMaintenanceOptions,
     ) -> Result<StorylineMaintenanceReport> {
+        anyhow::ensure!(
+            options.target_rows_per_fragment > 0
+                && options.max_compaction_source_rows != Some(0)
+                && options.max_compaction_source_bytes != Some(0),
+            "Storyline compaction target and source budgets must be greater than zero"
+        );
         let _guard = self.acquire_write_guard().await?;
         let Some(original) = self.resolve_current_table_paths().await? else {
             return Ok(StorylineMaintenanceReport::default());
@@ -1841,6 +1847,8 @@ async fn maintain_table_layout(
             &mut dataset,
             CompactionOptions {
                 target_rows_per_fragment: options.target_rows_per_fragment,
+                max_source_rows: options.max_compaction_source_rows,
+                max_source_bytes: options.max_compaction_source_bytes,
                 ..Default::default()
             },
             None,

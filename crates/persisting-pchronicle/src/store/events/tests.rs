@@ -807,6 +807,19 @@ async fn routed_batch_creates_one_fragment_per_run_not_per_record() {
 }
 
 #[tokio::test]
+async fn raw_event_maintenance_rejects_storyline_budgets_before_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = flat_session(dir.path().to_str().unwrap(), "agent", "run");
+    let options = LanceMaintenanceOptions {
+        max_compaction_source_rows: Some(100),
+        ..Default::default()
+    };
+    let error = maintain(&session, &options).await.unwrap_err();
+    assert!(error.to_string().contains("only by Storyline maintenance"));
+    assert!(!raw_event_lance_path(&session).unwrap().exists());
+}
+
+#[tokio::test]
 async fn explicit_maintenance_compacts_fragments_and_builds_session_index() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().join("store");

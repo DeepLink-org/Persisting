@@ -54,14 +54,14 @@ hyper = "1"
 hyper-util = { version = "0.1", default-features = false }
 ipnet = "2"
 jj-lib = "0.43.0"
-lance = { version = "9.0.1", default-features = false }
-lance-arrow = "9.0.1"
-lance-core = "9.0.1"
-lance-file = "9.0.1"
-lance-datafusion = "9.0.1"
-lance-index = { version = "9.0.1", features = ["tokenizer-jieba"] }
-lance-linalg = "9.0.1"
-lance-table = "9.0.1"
+lance = { version = "11.0.0", default-features = false }
+lance-arrow = "11.0.0"
+lance-core = "11.0.0"
+lance-file = "11.0.0"
+lance-datafusion = "11.0.0"
+lance-index = { version = "11.0.0", features = ["tokenizer-jieba"] }
+lance-linalg = "11.0.0"
+lance-table = "11.0.0"
 libc = "0.2"
 libkrun = "=1.19.3"
 log = "0.4"

@@ -50,6 +50,18 @@ pub struct LanceMaintenanceOptions {
     pub optimize_indices: bool,
     pub vacuum_older_than: Option<Duration>,
     pub target_rows_per_fragment: usize,
+    /// Maximum live source rows compacted per Storyline data table
+    /// (runs/steps/tool_calls) per maintenance call. None leaves compaction
+    /// unlimited. An undersized budget can prevent progress; raise it if no
+    /// compaction task fits. Not supported by raw-event
+    /// maintenance, which rewrites across separate segment datasets.
+    pub max_compaction_source_rows: Option<usize>,
+    /// Maximum source data/overlay file bytes per Storyline table per call.
+    /// Excludes separate Blob v2 payloads and does not bound total memory or
+    /// index/GC work. An undersized budget can leave no eligible task; raise it
+    /// if compaction makes no progress. Requires recorded source file sizes.
+    /// None leaves compaction unlimited. Not supported by raw-event maintenance.
+    pub max_compaction_source_bytes: Option<u64>,
 }
 
 impl Default for LanceMaintenanceOptions {
@@ -59,6 +71,8 @@ impl Default for LanceMaintenanceOptions {
             optimize_indices: true,
             vacuum_older_than: Some(Duration::from_secs(7 * 24 * 60 * 60)),
             target_rows_per_fragment: 1024 * 1024,
+            max_compaction_source_rows: None,
+            max_compaction_source_bytes: None,
         }
     }
 }
@@ -688,6 +702,11 @@ pub async fn maintain(
     session: &StoryCoords,
     options: &LanceMaintenanceOptions,
 ) -> Result<LanceMaintenanceReport> {
+    anyhow::ensure!(
+        options.max_compaction_source_rows.is_none()
+            && options.max_compaction_source_bytes.is_none(),
+        "compaction source budgets are supported only by Storyline maintenance"
+    );
     let uri = raw_event_lance_path(session)?
         .to_string_lossy()
         .into_owned();
