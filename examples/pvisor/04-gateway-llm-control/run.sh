@@ -25,7 +25,7 @@ pvisor_wait_tcp "$mock_port"
 
 # Run the agent through pVisor's configured Gateway.
 "$pvisor_bin" run --config "$work_dir/run.toml" --stdio capture -- \
-  env PYTHONDONTWRITEBYTECODE=1 python3 agent.py
+  python3 "$example_dir/agent.py"
 run_dir="$(find "$PERSISTING_RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -print -quit)"
 test -n "$run_dir"
 
