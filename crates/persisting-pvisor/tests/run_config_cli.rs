@@ -377,7 +377,8 @@ exit 0
     // result for this fixture. Linux and normal macOS runners must exercise the
     // actual watchdog path.
     if failure_kind == Some(persisting_agentctl::RunFailureKind::Spawn) {
-        assert!(cfg!(target_os = "macos"));
+        #[cfg(not(target_os = "macos"))]
+        panic!("unexpected spawn failure on non-macOS platform");
     } else {
         assert_eq!(
             failure_kind,
