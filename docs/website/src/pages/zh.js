@@ -23,9 +23,9 @@ export default function ChineseHome() {
       <img className="hero-cyberpunk" src="/Persisting/img/diagrams/persisting/hero-cyberpunk.svg" alt="Persisting 执行与历史架构" />
     </div></header>
     <main>
-      <section className="container padding-vert--xl"><div className="row">
-        <div className="col col--6"><h2>pVisor</h2><p>在 staged workspace 与选定执行 Provider 中治理单个 Agent Run。查看 Evidence，再决定 apply 或 drop Effect。</p><Link to="/zh/docs/pvisor/">开始一次 Run →</Link></div>
-        <div className="col col--6"><h2>pChronicle</h2><p>固定、规范化、查询和交换 Agent 轨迹 Source。无需先运行 pVisor，也可以浏览持久历史。</p><Link to="/zh/docs/pchronicle/">探索 Dataset →</Link></div>
+      <section className="container padding-vert--xl"><div className="row product-choices">
+        <div className="col col--6"><article className="product-card"><p className="product-kicker">受治理执行</p><h2>pVisor</h2><p>在 staged workspace 与选定执行 Provider 中治理单个 Agent Run。查看 Evidence，再决定 apply 或 drop Effect。</p><p className="product-outcome">最终得到可审查的 Run Bundle，并控制哪些修改进入项目。</p><Link to="/zh/docs/pvisor/">开始一次 Run →</Link></article></div>
+        <div className="col col--6"><article className="product-card"><p className="product-kicker">持久历史</p><h2>pChronicle</h2><p>固定、规范化、查询和交换 Agent 轨迹 Source。无需先运行 pVisor，也可以浏览持久历史。</p><p className="product-outcome">最终得到可查询 Dataset，并保留清晰的 Source lineage。</p><Link to="/zh/docs/pchronicle/">探索 Dataset →</Link></article></div>
       </div></section>
       <section className="container padding-vert--xl architecture-section"><div className="text--center"><h2>一条边界，两条持久化路径</h2><p className="section-lede">执行与历史各自独立可用，只有在工作流需要持久交接时才把它们连接起来。</p></div><img className="architecture-diagram" src="/Persisting/img/diagrams/persisting/system-products.svg" alt="pVisor 执行路径与 pChronicle 历史路径" /><div className="row workflow-steps"><div className="col col--4"><span className="step-number">01</span><h3>运行</h3><p>pVisor 为 Agent 提供 staged workspace，并记录实际生效的控制机制。</p></div><div className="col col--4"><span className="step-number">02</span><h3>审查</h3><p>在决定哪些修改进入项目之前，先检查 Evidence 与 Effect。</p></div><div className="col col--4"><span className="step-number">03</span><h3>留存</h3><p>把选定的生命周期事实与轨迹事件捕获为可查询 Dataset。</p></div></div></section>
       <section className="container padding-vert--lg"><h2>一条持久化 Agent 工作流所需的一切</h2><div className="quickstart-grid">{capabilities.map(([title, body]) => <article className="quickstart-card" key={title}><h3>{title}</h3><p>{body}</p></article>)}</div></section>
