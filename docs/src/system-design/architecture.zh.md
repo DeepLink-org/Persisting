@@ -18,6 +18,22 @@ pChronicle Design，命令属于各产品 Reference。
 Gateway、OverlayFS 和 OverlayNet 是 pVisor 运行时机制，不构成独立控制面。pPilot 扩展
 pVisor 的 Run 模型，仍位于 pVisor 产品路径中。
 
+## 运行位置与平台边界
+
+逻辑 Run 契约可以跨 Provider 迁移，但 enforcement 边界取决于选中的平台：
+
+| 运行位置 | 工作负载边界 | Workspace 行为 | 安全声明 |
+| --- | --- | --- | --- |
+| Linux host | 私有 user/mount/PID namespace 与 Landlock | staged FUSE workspace | filesystem 与 network capability 分开报告；准备失败时在执行前失败 |
+| macOS host | 可用时使用 Seatbelt，并用 staged macFUSE 处理写入 | staged host workspace | safe best-effort host 隔离；host kernel 与 ambient read 仍记录在 Evidence 中 |
+| Linux 或 Apple Silicon macOS VM | guest kernel 加 OCI 或准备好的 Linux rootfs | guest 内 staged workspace | kernel 边界更强，但 macOS VMM 仍以调用用户的 host 权限运行 |
+| 原生 OCI container | pVisor 选择的 OCI runtime 与 bundle | bundle 挂载的 rootfs 与 staged path | 记录 container isolation；不将其视为完整的敌对多租户边界 |
+
+Provider 会在 Run Bundle 中分别记录请求的 capability 与实际生效的维度。进程成功退出
+不代表请求的边界已经安装；workspace stage 也独立于产生它的 Provider，仍可 review。
+Provider 的行为与前置条件见 [pVisor 隔离设计](../pvisor/design/isolation.md) 和
+[执行指南](../pvisor/guides/execution.md)。
+
 ## 独立 Ingress 路径
 
 ```text

@@ -11,10 +11,10 @@ This guide covers the supported host and VM execution layouts. The command-line
 surface deliberately keeps three independent decisions separate:
 
 1. `--executor` chooses where the process runs: the host kernel or a libkrun VM.
-2. `--image`, `--vm-rootfs`, or `--host-rootfs` chooses the VM's Linux root
+2. `--rootfs host`, `--rootfs <PATH>`, or `--rootfs image=<PATH>` chooses the VM's Linux root
    filesystem.
-3. `--overlayfs-*` chooses the host directory exposed as the writable workspace
-   and how its changes are retained.
+3. `--overlayfs-path` chooses the absolute path visible to the Agent, while
+   repeated `--overlayfs-compose` layers host directories in bottom-to-top order.
 
 There are no workspace aliases. The canonical options are shown below.
 
@@ -24,53 +24,58 @@ There are no workspace aliases. The canonical options are shown below.
 | --- | --- |
 | `--executor host` | Run the command with the host kernel. This is the default. |
 | `--executor vm` | Boot a Linux guest kernel with libkrun. |
-| `--host-rootfs` | Linux only: export the host `/` as the VM rootfs lower layer. Implies `vm` when `--executor` is omitted. |
-| `--image IMAGE` | Use a daemonless OCI image as the VM rootfs. The default VM image is `ubuntu:latest`; pin an explicit tag or digest for reproducibility. |
-| `--vm-rootfs DIR` | Use an already prepared Linux rootfs directory. |
-| `--overlayfs-base DIR` | Host directory used as the read-only workspace lower layer and default apply destination. |
-| `--overlayfs-target PATH` | VM only: absolute guest path where the workspace is mounted; it also becomes the guest working directory. Requires `--overlayfs-base` and cannot be `/`. |
-| `--overlayfs-stage DIR` | Durable writable stage containing workspace changes. Use a separate stage for each concurrent run or mode. |
+| `--rootfs host` | Linux only: export the host `/` as the VM rootfs lower layer. Implies `vm` when `--executor` is omitted. |
+| `--rootfs image=<IMAGE>` | Use a daemonless OCI image as the VM rootfs. The default VM image is `ubuntu:latest`; pin an explicit tag or digest for reproducibility. |
+| `--rootfs DIR` | Use an already prepared Linux rootfs directory. |
+| `--overlayfs-path PATH` | Absolute path visible to the Agent after the overlay view is mounted. |
+| `--overlayfs-compose DIR` | Host read-only layer; repeat in bottom-to-top order. The current workspace is the implicit bottom layer. |
+| `--stage DIR` | Durable writable stage containing workspace changes. Use a separate stage for each concurrent run or mode. |
 | `--overlayfs-commit manual` | Keep changes staged for review. `apply` writes them to the base; `drop` discards them. |
 | `--overlayfs-commit apply` | Apply changes automatically after a successful run. |
 | `--overlayfs-commit drop` | Discard changes automatically after the run. |
 
-`--host-rootfs`, `--image`, and `--vm-rootfs` are mutually exclusive rootfs
-sources. `--host-rootfs` is a semantic selection, not an alias for
-`--vm-rootfs /` or any OverlayFS option.
+`--rootfs host`, `--rootfs image=<PATH>`, and `--rootfs <PATH>` are mutually exclusive rootfs
+sources. `--rootfs host` is a semantic selection, not an alias for
+`--rootfs /` or any OverlayFS option.
+
+Without `--overlayfs-path`, the current directory is the default workspace view;
+pVisor uses a managed per-Run merged mountpoint so the lower directory is never
+mounted over itself.
 
 ## Supported layouts
 
 | Host platform | Executor | VM rootfs | Workspace inside the command |
 | --- | --- | --- | --- |
-| macOS | `host` | not applicable | `--overlayfs-base` at the staged host cwd |
-| macOS | `vm` | OCI image or prepared Linux rootfs | `--overlayfs-base` at `--overlayfs-target` |
-| Linux | `host` | not applicable | `--overlayfs-base` at the staged host cwd |
-| Linux | `vm --host-rootfs` | Linux host `/` through virtio-fs | `--overlayfs-base` at `--overlayfs-target` |
-| Linux | `vm` | OCI image or prepared Linux rootfs | `--overlayfs-base` at `--overlayfs-target` |
+| macOS | `host` | not applicable | `--overlayfs-path` in the staged host view |
+| macOS | `vm` | OCI image or prepared Linux rootfs | `--overlayfs-path` in the guest |
+| Linux | `host` | not applicable | `--overlayfs-path` in the staged host view |
+| Linux | `vm --rootfs host` | Linux host `/` through virtio-fs | `--overlayfs-path` in the guest |
+| Linux | `vm` | OCI image or prepared Linux rootfs | `--overlayfs-path` in the guest |
 
 ### macOS host executor
 
 ```bash
 ./target/release/pvisor run --executor host \
-  --overlayfs-base /Users/reiase/workspace \
-  --overlayfs-stage ./tmp/macos-host \
+  --overlayfs-path /workspace \
+  --overlayfs-compose /Users/reiase/workspace \
+  --stage ./tmp/macos-host \
   --overlayfs-commit manual \
   -- /bin/bash
 ```
 
 The command uses the macOS kernel and host binaries. It sees a copy-on-write
 view of the base as its working directory. This mode does not provide a Linux
-kernel. Use `--safe` when the stronger supported host write-confinement profile
-is desired.
+kernel. Host isolation is safe-best-effort by default; unsupported controls are
+reported and downgraded where the platform cannot provide them.
 
 ### macOS VM with an OCI rootfs
 
 ```bash
 ./target/release/pvisor run --executor vm \
-  --image ubuntu:24.04 \
-  --overlayfs-base /Users/reiase/workspace \
-  --overlayfs-target /home/workspace \
-  --overlayfs-stage ./tmp/macos-vm \
+  --rootfs image=ubuntu:24.04 \
+  --overlayfs-path /home/workspace \
+  --overlayfs-compose /Users/reiase/workspace \
+  --stage ./tmp/macos-vm \
   --overlayfs-commit manual \
   -- /bin/bash
 ```
@@ -84,8 +89,9 @@ Mach-O programs and the macOS userland do not run under the Linux guest kernel.
 
 ```bash
 ./target/release/pvisor run --executor host \
-  --overlayfs-base /home/reiase/workspace \
-  --overlayfs-stage ./tmp/linux-host \
+  --overlayfs-path /workspace \
+  --overlayfs-compose /home/reiase/workspace \
+  --stage ./tmp/linux-host \
   --overlayfs-commit manual \
   -- /bin/bash
 ```
@@ -97,10 +103,10 @@ host kernel and host userland.
 
 ```bash
 ./target/release/pvisor run --executor vm \
-  --host-rootfs \
-  --overlayfs-base /home/reiase/workspace \
-  --overlayfs-target /home/workspace \
-  --overlayfs-stage ./tmp/linux-host-rootfs \
+  --rootfs host \
+  --overlayfs-path /home/workspace \
+  --overlayfs-compose /home/reiase/workspace \
+  --stage ./tmp/linux-host-rootfs \
   --overlayfs-commit manual \
   -- /bin/bash
 ```
@@ -112,7 +118,7 @@ mounted workspace has the durable stage and can be reviewed or applied.
 
 This mode exposes host-rootfs contents to the guest for reading. It is intended
 for same-owner local isolation, not for untrusted multi-tenant workloads. Keep
-`--overlayfs-target` in this layout. Without it, the durable OverlayFS stage
+`--overlayfs-path` in this layout. Without it, the durable OverlayFS stage
 would describe changes to the whole host `/`, and a later apply could target
 the host rootfs.
 
@@ -120,16 +126,16 @@ the host rootfs.
 
 ```bash
 ./target/release/pvisor run --executor vm \
-  --image ubuntu:24.04 \
-  --overlayfs-base /home/reiase/workspace \
-  --overlayfs-target /home/workspace \
-  --overlayfs-stage ./tmp/linux-vm \
+  --rootfs image=ubuntu:24.04 \
+  --overlayfs-path /home/workspace \
+  --overlayfs-compose /home/reiase/workspace \
+  --stage ./tmp/linux-vm \
   --overlayfs-commit manual \
   -- /bin/bash
 ```
 
 This provides a guest kernel and image-defined userland. It is more
-reproducible and exposes less host data than `--host-rootfs`, at the cost of
+reproducible and exposes less host data than `--rootfs host`, at the cost of
 maintaining or downloading an image.
 
 ### VM with a prepared rootfs directory
@@ -139,10 +145,10 @@ image:
 
 ```bash
 ./target/release/pvisor run --executor vm \
-  --vm-rootfs /opt/pvisor/rootfs \
-  --overlayfs-base /path/to/project \
-  --overlayfs-target /home/workspace \
-  --overlayfs-stage ./tmp/prepared-rootfs \
+  --rootfs /opt/pvisor/rootfs \
+  --overlayfs-path /home/workspace \
+  --overlayfs-compose /path/to/project \
+  --stage ./tmp/prepared-rootfs \
   --overlayfs-commit manual \
   -- /bin/bash
 ```
@@ -164,7 +170,7 @@ After a manual run, use the emitted Run id or `last`:
 ./target/release/pvisor drop last
 ```
 
-`apply` targets `--overlayfs-base` unless `--target` is supplied to the apply
+`apply` targets the implicit workspace unless `--target` is supplied to the apply
 command. A filtered apply consumes only the selected dependency-closed batch;
 the remaining changes stay staged and can be applied again or dropped. Opaque
 directories and hard-link groups cannot be split unsafely. Successful batches
@@ -179,8 +185,8 @@ but keeping stages in a separate `tmp` directory is easier to operate and audit.
   signature. An unsigned binary fails at `krun_start_enter`.
 - Linux VM execution requires accessible `/dev/kvm`; macOS VM execution
   requires Apple Silicon, HVF, and the Hypervisor entitlement.
-- `--overlayfs-target` is VM-only, must be absolute, cannot be `/`, and requires
-  `--overlayfs-base`.
+- `--overlayfs-path` must be an absolute Agent-visible path and cannot contain
+  `..`; `--overlayfs-compose` entries must be readable host directories.
 - Do not use a macOS path such as `/Users/...` for a Linux host. Use the actual
   Linux path, such as `/home/reiase/workspace`.
 - VM networking defaults to OverlayNet `auto`: pVisor supplies DHCP, synthetic

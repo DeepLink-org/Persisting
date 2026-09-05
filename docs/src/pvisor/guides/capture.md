@@ -22,7 +22,7 @@ The example starts a loopback OpenAI-compatible model, executes its Agent with
 export DEEPSEEK_API_KEY=sk-...
 
 pvisor run \
-  --agent deepseek \
+  --name deepseek \
   --gateway-mode capture \
   --gateway-route 'name="deepseek", upstream="https://api.deepseek.com/v1", api_key_env="DEEPSEEK_API_KEY"' \
   --gateway-route 'name="*", forward="deepseek"' \
@@ -32,7 +32,8 @@ pvisor run \
 
 pVisor starts the embedded Gateway, injects proxy/base-URL values into the
 child, waits for the child, flushes capture, and stops the Gateway. Each Run
-writes an independent directory below `PERSISTING_RUN_HOME`.
+writes all metadata, trajectory, and optional filesystem state into the Run
+record directory (or the explicit `--stage` directory).
 
 Use `--gateway-stream-markdown` for a live human-readable projection. Select
 `--record-format json --record-destination ./capture` for lightweight local

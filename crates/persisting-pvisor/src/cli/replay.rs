@@ -123,9 +123,13 @@ pub struct ReplayArgs {
     #[arg(long, value_name = "NAME")]
     pass_env: Vec<String>,
 
-    /// Base workspace for optional outer pVisor filesystem isolation.
+    /// Absolute path visible to the replay Agent after the overlay is mounted.
+    #[arg(long = "overlayfs-path", value_name = "PATH")]
+    overlayfs_path: Option<PathBuf>,
+
+    /// Host directory layered into the replay view; repeat in order.
     #[arg(long, value_name = "DIR")]
-    overlayfs_base: Option<PathBuf>,
+    overlayfs_compose: Vec<PathBuf>,
 
     /// Outer OverlayFS backend: directory or jujutsu.
     #[arg(long, value_name = "BACKEND")]
@@ -136,8 +140,14 @@ pub struct ReplayArgs {
     overlayfs_commit: Option<String>,
 
     /// Outer OverlayNet mode: auto, off, or proxy.
-    #[arg(long, value_name = "MODE")]
-    overlaynet_mode: Option<String>,
+    /// Outer OverlayNet driver: off, auto, or proxy.
+    #[arg(
+        long,
+        value_name = "MODE",
+        num_args = 0..=1,
+        default_missing_value = "proxy"
+    )]
+    overlaynet: Option<String>,
 
     /// Outer OverlayNet policy: public, deny, or allowlist.
     #[arg(long, value_name = "POLICY")]
@@ -203,7 +213,8 @@ fn needs_managed_run(config: &ReplayToml) -> bool {
         || config.run.policy.is_some()
         || config.run.inherit_env
         || !config.run.pass_env.is_empty()
-        || config.overlayfs.base.is_some()
+        || config.overlayfs.path.is_some()
+        || !config.overlayfs.compose.is_empty()
         || config.overlayfs.backend.is_some()
         || config.overlayfs.commit.is_some()
         || config.overlaynet.mode.is_some()
@@ -217,10 +228,11 @@ fn direct_managed_requested(args: &ReplayArgs) -> bool {
         || args.policy.is_some()
         || args.inherit_env
         || !args.pass_env.is_empty()
-        || args.overlayfs_base.is_some()
+        || args.overlayfs_path.is_some()
+        || !args.overlayfs_compose.is_empty()
         || args.overlayfs_backend.is_some()
         || args.overlayfs_commit.is_some()
-        || args.overlaynet_mode.is_some()
+        || args.overlaynet.is_some()
         || args.overlaynet_policy.is_some()
 }
 
@@ -266,12 +278,13 @@ fn direct_managed_config(args: &ReplayArgs) -> Result<ReplayToml, ReplayError> {
             pass_env: args.pass_env.clone(),
         },
         overlayfs: ReplayOverlayFsConfig {
-            base: args.overlayfs_base.clone(),
+            path: args.overlayfs_path.clone(),
+            compose: args.overlayfs_compose.clone(),
             backend: args.overlayfs_backend.clone(),
             commit: args.overlayfs_commit.clone(),
         },
         overlaynet: ReplayOverlayNetConfig {
-            mode: args.overlaynet_mode.clone(),
+            mode: args.overlaynet.clone(),
             policy: args.overlaynet_policy.clone(),
         },
     })
@@ -307,12 +320,14 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
     outer.run.pass_env = config.run.pass_env.clone();
     outer.run.command = inner_replay_command(config, &executable)?;
 
-    if config.overlayfs.base.is_some()
+    if config.overlayfs.path.is_some()
+        || !config.overlayfs.compose.is_empty()
         || config.overlayfs.backend.is_some()
         || config.overlayfs.commit.is_some()
     {
         let mut overlay = OverlayFsSettings {
-            base: config.overlayfs.base.clone(),
+            target: config.overlayfs.path.clone(),
+            compose: config.overlayfs.compose.clone(),
             ..OverlayFsSettings::default()
         };
         overlay.backend = match config.overlayfs.backend.as_deref().unwrap_or("directory") {
@@ -387,11 +402,8 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
             ReplayError::configuration(format!("resolve managed replay workspace: {error}"))
         })?;
     let mut command = Command::new(&executable);
-    command.args(["run", "--config"]).arg(file.path());
+    command.args(["run", "--spec"]).arg(file.path());
     command.current_dir(&working_dir);
-    if config.run.safe {
-        command.arg("--safe");
-    }
     let status = command.status().map_err(|error| {
         ReplayError::configuration(format!("start managed pVisor replay: {error}"))
     })?;
@@ -552,10 +564,11 @@ fn reject_direct(args: &ReplayArgs) -> Result<(), ReplayError> {
         || args.policy.is_some()
         || args.inherit_env
         || !args.pass_env.is_empty()
-        || args.overlayfs_base.is_some()
+        || args.overlayfs_path.is_some()
+        || !args.overlayfs_compose.is_empty()
         || args.overlayfs_backend.is_some()
         || args.overlayfs_commit.is_some()
-        || args.overlaynet_mode.is_some()
+        || args.overlaynet.is_some()
         || args.overlaynet_policy.is_some();
     if direct {
         return Err(ReplayError::configuration(
@@ -622,7 +635,8 @@ inherit_env = false
 pass_env = ["OPENAI_BASE_URL", "OPENAI_API_KEY", "MODEL_NAME"]
 
 [overlayfs]
-base = "/workspace"
+path = "/workspace"
+compose = ["/workspace"]
 backend = "directory"
 commit = "manual"
 

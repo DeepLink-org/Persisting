@@ -44,8 +44,8 @@
   </defs>
 
   <rect width="1400" height="780" rx="28" fill="url(#background)"/>
-  <text x="52" y="56" class="title">Current Agent workflows, optional integration</text>
-  <text x="52" y="86" class="subtitle">From controlled execution to durable, queryable history</text>
+  <text x="52" y="56" class="title">Persisting product paths and optional integration</text>
+  <text x="52" y="86" class="subtitle">pPilot plans many Runs; pVisor governs each Attempt; pChronicle stores history</text>
 
   <text x="70" y="119" class="eyebrow">Inputs</text>
   <g id="agent-task-input" filter="url(#shadow)">
@@ -54,7 +54,7 @@
   </g>
   <g id="external-producer-input" filter="url(#shadow)">
     <rect x="830" y="137" width="500" height="74" rx="18" class="input-card"/>
-    <text x="860" y="182" class="card-title">Existing trajectory data</text>
+    <text x="860" y="182" class="card-title">Pinned external Sources</text>
   </g>
 
   <path d="M320 211V246" class="input-line"/>
@@ -66,12 +66,12 @@
     <text x="100" y="324" class="domain-title">pVisor: controlled execution</text>
 
     <rect x="100" y="351" width="440" height="106" rx="16" class="inner-card visor-card"/>
-    <text x="124" y="395" class="body">run one existing Agent with control</text>
-    <text x="124" y="426" class="small">review · selectively apply · drop staged changes</text>
+    <text x="124" y="395" class="body">pVisor: one governed Run per Agent</text>
+    <text x="124" y="426" class="small">pPilot adds planning, leases, retry, and reconciliation</text>
 
     <rect x="100" y="518" width="440" height="114" rx="16" class="inner-card"/>
-    <text x="124" y="568" class="body">Host · container · libkrun VM</text>
-    <text x="124" y="599" class="small">effective controls recorded with the Run</text>
+    <text x="124" y="568" class="body">Host · OCI container · libkrun VM</text>
+    <text x="124" y="599" class="small">provider boundary and Evidence recorded with the Run</text>
   </g>
 
   <g id="pchronicle-domain" filter="url(#shadow)">
@@ -80,10 +80,10 @@
     <text x="860" y="324" class="domain-title">pChronicle: trajectory Datasets</text>
 
     <rect x="860" y="351" width="440" height="106" rx="16" class="inner-card chronicle-card"/>
-    <text x="884" y="411" class="body">local path · S3 URI prefix · @alias</text>
+    <text x="884" y="411" class="body">local/S3 files · Storyline Sources · @alias</text>
 
     <rect x="860" y="518" width="440" height="114" rx="16" class="inner-card chronicle-card"/>
-    <text x="884" y="583" class="body">browse · query · analyze · exchange · serve</text>
+    <text x="884" y="583" class="body">Snapshot · normalize · query · analyze · exchange</text>
   </g>
 
   <g id="integration-handoff">

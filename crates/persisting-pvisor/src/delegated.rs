@@ -20,7 +20,15 @@ pub(crate) struct DelegatedRunFiles {
 }
 
 impl DelegatedRunFiles {
+    #[cfg(test)]
     pub(crate) fn new(spec: &RunSpec) -> anyhow::Result<Self> {
+        Self::new_with_stdio(spec, false)
+    }
+
+    /// Create delegated files while forcing the injected pVisor to use pipes.
+    /// The outer transport owns the real terminal; inheriting it in the nested
+    /// process makes rootless OCI runs attempt tty process-group operations.
+    pub(crate) fn new_with_stdio(spec: &RunSpec, capture: bool) -> anyhow::Result<Self> {
         let temporary = tempfile::Builder::new()
             .prefix("pvisor-delegated-")
             .tempdir()?;
@@ -32,6 +40,13 @@ impl DelegatedRunFiles {
         process.env.retain(|key, _| {
             !key.starts_with("PERSISTING_AGENTCTL_") && !key.starts_with("PERSISTING_AGENTCTL_")
         });
+        if capture {
+            // pVisor v1 does not support captured stdin. Null stdin also
+            // prevents the nested host executor from attempting tty control.
+            process.stdin = persisting_agentctl::StdioMode::Null;
+            process.stdout = persisting_agentctl::StdioMode::Capture;
+            process.stderr = persisting_agentctl::StdioMode::Capture;
+        }
         write_private_json(&spec_path, &delegated)?;
         Ok(Self {
             _temporary: temporary,

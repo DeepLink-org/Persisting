@@ -12,12 +12,12 @@ pVisor 不替代 Agent 自己的推理循环。你可以继续使用已有的 Ag
 在项目目录中运行：
 
 ```bash
-pvisor run --safe codex
+pvisor -- codex
 pvisor review last
 pvisor apply last --path src
 ```
 
-使用 `--safe` 时，Agent 写入项目的 staged 视图。Run 结束后，你可以接受全部变更、分多次接受
+使用 `--stage ./runs/task-001` 时，Agent 写入项目的 staged 视图。Run 结束后，你可以接受全部变更、分多次接受
 选定路径，或丢弃整个 stage：
 
 ```bash

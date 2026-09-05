@@ -116,8 +116,8 @@ fresh fail by default; `--allow-stale-observations` explicitly permits a
 `degraded` result.
 
 Runtime isolation is opt-in. Replay only creates an outer managed `pvisor run`
-when the caller supplies runtime options such as `--safe`, `--executor`, or
-`--overlayfs-base`, or their TOML equivalents. See the
+when the caller supplies runtime options such as `--executor`, `--stage`, or
+`--overlayfs-path`/`--overlayfs-compose`, or their TOML equivalents. See the
 [`pvisor replay` reference](../reference/cli.md#replay-an-agent-trajectory) for
 the complete surface.
 
