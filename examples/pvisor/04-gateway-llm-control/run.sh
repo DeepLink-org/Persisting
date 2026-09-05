@@ -11,6 +11,7 @@ pvisor_example_reset
 ports="$(pvisor_free_ports 3)"
 read -r mock_port proxy_port admin_port <<<"$ports"
 sed \
+  -e "s|^\[run\]|[run]\ncommand = [\"/usr/bin/python3\", \"$example_dir/agent.py\"]|" \
   -e "s/127.0.0.1:19080/127.0.0.1:$mock_port/" \
   -e "s/127.0.0.1:19081/127.0.0.1:$proxy_port/" \
   -e "s/127.0.0.1:19082/127.0.0.1:$admin_port/" \
@@ -24,8 +25,7 @@ trap 'kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
 pvisor_wait_tcp "$mock_port"
 
 # Run the agent through pVisor's configured Gateway.
-"$pvisor_bin" run --config "$work_dir/run.toml" --stdio capture -- \
-  python3 "$example_dir/agent.py"
+"$pvisor_bin" run --config "$work_dir/run.toml" --stdio capture
 run_dir="$(find "$PERSISTING_RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -print -quit)"
 test -n "$run_dir"
 
