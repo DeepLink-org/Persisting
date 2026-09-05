@@ -15,7 +15,7 @@ base="$work_dir/base"
 # Review and apply the first Run, making its staged files visible on the host.
 (
   cd "$base"
-  "$pvisor_bin" run --overlayfs-base "$base" \
+  "$pvisor_bin" run --overlayfs-path "$base" \
     --overlayfs-commit manual --stdio capture -- \
     /bin/sh -c 'printf "accepted\n" > existing.txt; printf "accepted\n" > accepted.txt'
 )
@@ -30,7 +30,7 @@ cat "$base/accepted.txt"
 # Review and drop the second Run, leaving the host directory unchanged.
 (
   cd "$base"
-  "$pvisor_bin" run --overlayfs-base "$base" \
+  "$pvisor_bin" run --overlayfs-path "$base" \
     --overlayfs-commit manual --stdio capture -- \
     /bin/sh -c 'printf "rejected\n" > rejected.txt'
 )
