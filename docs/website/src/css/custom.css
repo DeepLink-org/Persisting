@@ -3,6 +3,11 @@
 .hero__title { letter-spacing: -0.04em; }
 .hero__subtitle { max-width: 46rem; margin-inline: auto; }
 .hero-cyberpunk { display: block; width: min(1120px, 100%); margin: 3rem auto 0; border-radius: 1rem; box-shadow: 0 24px 80px rgb(0 0 0 / 30%); }
+.architecture-section { border-top: 1px solid var(--ifm-color-emphasis-200); }
+.section-lede { max-width: 42rem; margin: 0 auto 2rem; color: var(--ifm-color-emphasis-700); }
+.architecture-diagram { display: block; width: min(1100px, 100%); margin: 2rem auto 3rem; border-radius: .75rem; box-shadow: 0 16px 50px rgb(31 41 55 / 12%); }
+.workflow-steps { text-align: center; }
+.step-number { display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: 50%; background: var(--ifm-color-primary); color: #fff; font-size: .75rem; font-weight: 700; }
 .quickstart-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 3rem 0; }
 .quickstart-card { padding: 1.25rem; border: 1px solid var(--ifm-color-emphasis-200); border-radius: .75rem; }
 .quickstart-card pre { min-height: 5rem; }
