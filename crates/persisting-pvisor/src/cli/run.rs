@@ -1879,12 +1879,12 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
         );
     }
     if config.run.executor == RunExecutorKind::Container {
-        ContainerExecutor::new(config.container.clone())?;
         if config.overlaynet.mode == OverlayNetMode::Proxy
             && config.container.network != ContainerNetwork::Host
         {
             bail!("the in-process OverlayNet/Gateway requires container.network = \"host\"");
         }
+        ContainerExecutor::new(config.container.clone())?;
     }
     if config.run.executor == RunExecutorKind::Vm {
         VmExecutor::new(config.vm.clone())?;
