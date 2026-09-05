@@ -316,10 +316,13 @@ async fn run_single_writer_manifest_contract(root: &str) -> Result<()> {
 }
 
 async fn cleanup(root: &str) -> Result<()> {
-    Operator::from_uri(root)?
+    if let Err(error) = Operator::from_uri(root)?
         .delete_with(".")
         .recursive(true)
-        .await?;
+        .await
+    {
+        eprintln!("S3 test cleanup skipped for {root}: {error}");
+    }
     Ok(())
 }
 
