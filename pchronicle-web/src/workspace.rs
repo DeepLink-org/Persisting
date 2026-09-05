@@ -18,14 +18,15 @@ use crate::copilot_sessions::{
     page_after_history_switch, persist_indexed_thread, relative_time, restore_for_run, save_index,
     session_storage_key, title_from_thread,
 };
+use crate::json_value::JsonValue;
 use crate::llm;
 use crate::llm_settings::LlmSettings;
 #[cfg(test)]
 use crate::model::RunSearchStatus;
 use crate::model::{
-    CatalogTree, DimensionAggregate, HistogramBucket, PageSnapshot, QueryCatalog,
-    QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary, ToolAggregate,
-    TurnDetail, TurnSearchStatus, TurnSummary,
+    CatalogTree, CompactRecordDetail, DimensionAggregate, HistogramBucket, PageSnapshot,
+    QueryCatalog, QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary,
+    ToolAggregate, TurnDetail, TurnSearchStatus, TurnSummary,
 };
 use crate::notice::{ErrorNotice, WorkspaceNotice, workspace_notice};
 use crate::terminology::{ANALYSIS, ASSISTANT, DATASETS, RUNS, STEPS, STORAGE, TIMELINE};
@@ -97,6 +98,7 @@ pub fn App() -> Element {
             row_count: 0,
             duplicate_event_ids: 0,
             status: "loading".into(),
+            format: None,
         });
     let initial_analysis_session_id = url_param("analysis_session").unwrap_or_default();
     let initial_analysis_seed_scope = if initial_analysis_session_id.is_empty() {
@@ -144,6 +146,7 @@ pub fn App() -> Element {
 
     let mut selected_run = use_signal(move || initial_run);
     let mut analysis = use_signal(|| None::<RunAnalysis>);
+    let compact_record = use_signal(|| None::<CompactRecordDetail>);
     let mut turns = use_signal(Vec::<TurnSummary>::new);
     let mut turn_search = use_signal(TurnSearchStatus::default);
     let mut selected_turn = use_signal(|| None::<TurnDetail>);
@@ -218,6 +221,7 @@ pub fn App() -> Element {
                 analysis,
                 turns,
                 turn_search,
+                compact_record,
                 detail_loading,
                 error,
             );
@@ -372,6 +376,7 @@ pub fn App() -> Element {
                                 RunDetailWorkspace {
                                     run: value.run.clone(),
                                     analysis: value,
+                                    compact_record: compact_record(),
                                     turns: turns(),
                                     search: turn_search(),
                                     selected: selected_turn(),
@@ -842,9 +847,11 @@ fn load_workspace(
     mut analysis: Signal<Option<RunAnalysis>>,
     mut turns: Signal<Vec<TurnSummary>>,
     mut turn_search: Signal<TurnSearchStatus>,
+    mut compact_record: Signal<Option<CompactRecordDetail>>,
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
+    compact_record.set(None);
     loading.set(true);
     spawn({
         let run = run.clone();
@@ -853,6 +860,12 @@ fn load_workspace(
                 futures_util::join!(api::run_analysis(&run), api::turns(&run, &query, &source),);
             match (next_analysis, next_turns) {
                 (Ok(next_analysis), Ok(next_turns)) => {
+                    if next_analysis.run.is_compact_jsonl() {
+                        match api::compact_record(&next_analysis.run).await {
+                            Ok(value) => compact_record.set(Some(value)),
+                            Err(failure) => error.set(Some(workspace_notice(&failure))),
+                        }
+                    }
                     analysis.set(Some(next_analysis));
                     turns.set(next_turns.records);
                     turn_search.set(next_turns.search);
@@ -1307,6 +1320,7 @@ fn RunTableRow(
     let keyboard_run = item.run.clone();
     let root_text = short(item.run.root_session_id.as_deref().unwrap_or("—"), 18);
     let model_text = item.model.clone().unwrap_or_else(|| "unavailable".into());
+    let compact = item.run.is_compact_jsonl();
     let highlight_query = search_highlight_query(&query);
     let preview = item
         .search_preview
@@ -1314,8 +1328,8 @@ fn RunTableRow(
         .map(|value| search_preview_excerpt(value, &highlight_query));
     rsx! {
         tr { tabindex: "0", onclick: move |_| on_select.call(run.clone()), onkeydown: move |event| if event.key() == Key::Enter { on_select.call(keyboard_run.clone()) },
-            td { div { class: "pc2-session-cell", div { class: "pc2-session-heading", strong { HighlightedText { text: item.run.session_id.clone(), query: query.clone() } } if has_chat { ChatMarker { run: run.clone(), on_open_chat } } } span { "{item.run.row_count} captured rows" } if let Some(preview) = preview { div { class: "pc2-run-search-preview", title: "Matched content preview", HighlightedText { text: preview, query: highlight_query.clone() } } } } }
-            td { div { class: "pc2-session-cell", strong { HighlightedText { text: item.run.agent_id.clone(), query: query.clone() } } span { HighlightedText { text: model_text.clone(), query: query.clone() } } } }
+            td { div { class: "pc2-session-cell", div { class: "pc2-session-heading", strong { if compact { "Record · " } HighlightedText { text: item.run.session_id.clone(), query: query.clone() } } if has_chat && !compact { ChatMarker { run: run.clone(), on_open_chat } } } span { if compact { "1 JSON record · {item.run.file}" } else { "{item.run.row_count} captured rows" } } if let Some(preview) = preview { div { class: "pc2-run-search-preview", title: "Matched content preview", HighlightedText { text: preview, query: highlight_query.clone() } } } } }
+            td { div { class: "pc2-session-cell", strong { if compact { "Compact JSONL" } else { HighlightedText { text: item.run.agent_id.clone(), query: query.clone() } } } span { if !compact { HighlightedText { text: model_text.clone(), query: query.clone() } } } } }
             td { StatusBadge { value: item.run.status.clone() } }
             td { class: "pc2-number", "{item.run.row_count}" }
             td { code { title: "{item.run.root_session_id.as_deref().unwrap_or_default()}", HighlightedText { text: root_text, query: query.clone() } } }
@@ -1397,6 +1411,7 @@ fn StatusBadge(value: String) -> Element {
 fn RunDetailWorkspace(
     run: RunSummary,
     analysis: RunAnalysis,
+    compact_record: Option<CompactRecordDetail>,
     turns: Vec<TurnSummary>,
     search: TurnSearchStatus,
     selected: Option<TurnDetail>,
@@ -1458,10 +1473,28 @@ fn RunDetailWorkspace(
             header { class: "pc2-detail-head",
                 div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, "← Runs" } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
                 div { class: "pc2-head-actions",
-                    button { class: "button primary", onclick: on_open_copilot, "◇ Ask Assistant" }
-                    button { class: "button", onclick: { let run = run.clone(); move |_| on_analyze.call(run.clone()) }, "Analyze this run" }
+                    if !run.is_compact_jsonl() {
+                        button { class: "button primary", onclick: on_open_copilot, "◇ Ask Assistant" }
+                        button { class: "button", onclick: { let run = run.clone(); move |_| on_analyze.call(run.clone()) }, "Analyze this run" }
+                    }
                 }
             }
+            if run.is_compact_jsonl() {
+                section { class: "pc2-trace-surface pc2-compact-record",
+                    header { class: "pc2-trace-toolbar",
+                        div { strong { "JSON record" } span { "Compact JSONL · no inferred step semantics" } }
+                    }
+                    div { class: "pc2-turn-list pc2-span-scroll",
+                        if loading && compact_record.is_none() {
+                            div { class: "pc2-inline-loading", span { class: "spinner" } "Loading record…" }
+                        } else if let Some(detail) = compact_record {
+                            JsonValue { value: detail.record, default_open: true }
+                        } else {
+                            div { class: "pc2-empty", strong { "Record unavailable" } }
+                        }
+                    }
+                }
+            } else {
             MetricsStrip { analysis: analysis.clone() }
             if detail_mode == "trace" {
                 CompactOverviewStrip {
@@ -1508,6 +1541,7 @@ fn RunDetailWorkspace(
             }
             if drawer.is_some() || drawer_loading {
                 StepDrawer { detail: drawer, title: drawer_title, conversation_details: drawer_details, requested_block_count: drawer_ids.len(), loading: drawer_loading, on_close: on_close_drawer }
+            }
             }
         }
     }
@@ -2669,6 +2703,7 @@ mod tests {
             row_count: 1,
             duplicate_event_ids: 0,
             status: "completed".into(),
+            format: None,
         }
     }
 

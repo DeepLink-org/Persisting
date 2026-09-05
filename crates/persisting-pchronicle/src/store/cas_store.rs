@@ -1,20 +1,16 @@
 //! Shared JSON CAS for per-key records.
 //!
 //! Local backend: exclusive flock, then tmp `create_new` + rename.
-//! Object backend: conditional `PutMode::Create` / `PutMode::Update` with retries.
+//! Object backend: conditional OpenDAL writes with retries.
 
+use super::opendal_store::{self, Store, Version};
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
-use futures::TryStreamExt;
-use lance::io::ObjectStore;
-use object_store::path::Path as ObjectPath;
-use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 pub(crate) const CAS_RETRIES: usize = 32;
 
@@ -26,10 +22,7 @@ pub(crate) enum Mutation<Record, T> {
 
 enum Backend {
     Local(PathBuf),
-    Object {
-        store: Arc<ObjectStore>,
-        root: ObjectPath,
-    },
+    Object { store: Store, root: String },
 }
 
 pub(crate) struct CasStore {
@@ -65,15 +58,13 @@ impl CasStore {
                 backend: Backend::Local(path),
             });
         }
-        let (store, object_root) = ObjectStore::from_uri(root)
-            .await
-            .with_context(|| format!("open {name} object store {root}"))?;
+        let store = Store::from_uri(root).await?;
         Ok(Self {
             root_uri: root.to_string(),
             name,
             backend: Backend::Object {
                 store,
-                root: object_root.join(directory),
+                root: directory.trim_matches('/').to_string(),
             },
         })
     }
@@ -114,18 +105,14 @@ impl CasStore {
             }
             Backend::Object { store, root } => {
                 let prefix = root.clone();
-                let objects = store
-                    .inner
-                    .list(Some(&prefix))
-                    .try_collect::<Vec<_>>()
-                    .await?;
+                let objects = store.list(&prefix).await?;
                 let mut out = Vec::new();
                 for object in objects {
-                    if object.location.extension() != Some("json") {
+                    if !object.path.ends_with(".json") {
                         continue;
                     }
                     if let Some((record, _)) =
-                        read_object_record(store, &object.location, self.name).await?
+                        read_object_record(store, &object.path, self.name).await?
                     {
                         out.push(record);
                     }
@@ -172,6 +159,11 @@ impl CasStore {
                 .await?
             }
             Backend::Object { store, root } => {
+                let fallback_lock = store.fallback_lock();
+                let _fallback_guard = match fallback_lock.as_ref() {
+                    Some(lock) => Some(lock.lock().await),
+                    None => None,
+                };
                 let path = object_record_path(root, key);
                 for _ in 0..CAS_RETRIES {
                     let current = read_object_record(store, &path, self.name).await?;
@@ -180,16 +172,22 @@ impl CasStore {
                         Mutation::Unchanged(value) => return Ok(value),
                         Mutation::Replace(record, value) => (record, value),
                     };
-                    let mode = match current {
-                        None => PutMode::Create,
-                        Some((_, version)) => PutMode::Update(version),
-                    };
+                    let version = current.as_ref().map(|(_, version)| version);
                     let bytes = serde_json::to_vec_pretty(&record)?;
-                    match store.inner.put_opts(&path, bytes.into(), mode.into()).await {
+                    let result = match version {
+                        None => store.write_create(&path, bytes).await,
+                        Some(version) => store.write_match(&path, bytes, version).await,
+                    };
+                    match result {
                         Ok(_) => return Ok(value),
-                        Err(ObjectStoreError::AlreadyExists { .. })
-                        | Err(ObjectStoreError::Precondition { .. }) => continue,
-                        Err(error) => return Err(error.into()),
+                        Err(error)
+                            if error
+                                .downcast_ref::<opendal::Error>()
+                                .is_some_and(opendal_store::is_conflict) =>
+                        {
+                            continue;
+                        }
+                        Err(error) => return Err(error),
                     }
                 }
                 bail!(
@@ -220,8 +218,8 @@ fn record_path(root: &Path, key: &str) -> PathBuf {
     root.join(format!("{}.json", encoded_id(key)))
 }
 
-fn object_record_path(root: &ObjectPath, key: &str) -> ObjectPath {
-    root.clone().join(format!("{}.json", encoded_id(key)))
+fn object_record_path(root: &str, key: &str) -> String {
+    format!("{}/{}.json", root.trim_matches('/'), encoded_id(key))
 }
 
 fn list_local_records<Record: DeserializeOwned>(
@@ -285,20 +283,13 @@ fn write_local_record<Record: Serialize>(
 }
 
 async fn read_object_record<Record: DeserializeOwned>(
-    store: &Arc<ObjectStore>,
-    path: &ObjectPath,
+    store: &Store,
+    path: &str,
     name: &'static str,
-) -> Result<Option<(Record, UpdateVersion)>> {
-    let result = match store.inner.get(path).await {
-        Ok(result) => result,
-        Err(ObjectStoreError::NotFound { .. }) => return Ok(None),
-        Err(error) => return Err(error.into()),
+) -> Result<Option<(Record, Version)>> {
+    let Some((bytes, version)) = store.read(path).await? else {
+        return Ok(None);
     };
-    let version = UpdateVersion {
-        e_tag: result.meta.e_tag.clone(),
-        version: result.meta.version.clone(),
-    };
-    let bytes = result.bytes().await?;
     let record =
         serde_json::from_slice(&bytes).with_context(|| format!("decode {name} object {path}"))?;
     Ok(Some((record, version)))

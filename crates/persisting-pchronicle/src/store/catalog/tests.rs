@@ -4,9 +4,9 @@ use crate::projection::{
     StorylineProjectionBuildOutcome, StorylineProjectionSyncMode, StorylineProjectionSyncOutcome,
     build_storyline_projection, rebuild_storyline_projection, sync_storyline_projection,
 };
+use crate::store::opendal_store::Store as OpendalStore;
 use crate::store::{RawEventLanceStore, StorylineLanceStore};
 use crate::{EventIdentity, StorylineAgent, StorylineTurn};
-use object_store::ObjectStoreExt;
 
 fn write_openai_source(path: &Path, event_id: &str) -> Result<()> {
     fs::write(
@@ -405,7 +405,7 @@ async fn catalog_downloads_only_selected_remote_file_source() -> Result<()> {
         "shared-memory://pchronicle-catalog-lazy-{}/root",
         uuid::Uuid::new_v4().simple()
     );
-    let (store, root) = LanceObjectStore::from_uri(&uri).await?;
+    let store = OpendalStore::from_uri(&uri).await?;
     for (file, content) in [
         (
             "one.json",
@@ -414,8 +414,7 @@ async fn catalog_downloads_only_selected_remote_file_source() -> Result<()> {
         ("two.json", "{"),
     ] {
         store
-            .inner
-            .put(&root.clone().join(file), content.to_string().into())
+            .write_overwrite(file, content.as_bytes().to_vec())
             .await?;
     }
     let snapshot = Arc::new(

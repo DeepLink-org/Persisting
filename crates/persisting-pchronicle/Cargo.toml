@@ -18,7 +18,7 @@ lance-store = [
     "dep:lance-datafusion",
     "dep:lance-file",
     "dep:lance-index",
-    "dep:object_store",
+    "dep:opendal",
 ]
 # Remote object stores are separated from the local Lance engine so pPilot and
 # other local-only consumers do not compile cloud SDKs. `s3-store` remains a
@@ -55,7 +55,7 @@ lance-datafusion = { workspace = true, optional = true }
 lance-index = { workspace = true, optional = true }
 lance-linalg = { workspace = true, optional = true }
 lance-table = { workspace = true, optional = true }
-object_store = { workspace = true, optional = true }
+opendal = { workspace = true, optional = true }
 persisting-agentctl.workspace = true
 persisting-events.workspace = true
 serde = { workspace = true, features = ["derive"] }

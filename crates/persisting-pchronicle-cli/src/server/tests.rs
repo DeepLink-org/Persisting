@@ -825,6 +825,7 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
         row_count: 2,
         duplicate_event_ids: 0,
         status: "completed".into(),
+        format: None,
     };
 
     let analysis = explorer::analyze(run, &turns, &events, CatalogEventProvenance::Canonical);
@@ -870,6 +871,7 @@ fn canonical_event_uri_resolves_write_coordinates_independent_of_mount_root() {
         row_count: 1,
         duplicate_event_ids: 0,
         status: "active".into(),
+        format: None,
     };
     let local = event_uri_coords("/tmp/capture/agent/run-1/events.lance", &run).unwrap();
     assert_eq!(local.storage, "/tmp/capture");

@@ -1,9 +1,13 @@
 # 导入与导出 Run
 
 Import 和 export 位于互操作边界。Import 可以创建、追加或替换 Dataset；export 从已有 Dataset 读取完整 Run。
-Import 与 export 均接受 ATIF、ACTF、OpenAI Messages 和 Storyline JSON。
+Import 与 export 均接受 ATIF、ACTF、OpenAI Messages、Storyline JSON 和记录级 Compact JSONL。
 Import 还接受仅解码的 Codex（`codex`）与 Claude Code（`claude-code`）会话 JSONL；
 export 拒绝这两种格式。
+
+Compact JSONL 每行保留一个 JSON object，不赋予轨迹语义。使用
+`--input-format compact-jsonl` 或 `--output-format compact-jsonl`；`--column` 映射与 snapshot sync
+限制见[命令参考](../reference/cli.md)。
 
 ## 导入到新 Dataset
 

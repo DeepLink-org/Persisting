@@ -1445,6 +1445,7 @@ mod tests {
                         row_count: 99,
                         duplicate_event_ids: 3,
                         status: "private-status".into(),
+                        format: None,
                     },
                 },
             ],

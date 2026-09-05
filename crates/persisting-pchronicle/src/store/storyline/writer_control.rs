@@ -1,11 +1,10 @@
 use anyhow::{Context, Result};
-use object_store::path::Path as ObjectPath;
-use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) use super::super::cas_store::unix_now_ms;
+use super::super::opendal_store::{self, Version};
 use super::{
     CURRENT_FILE, StorylineLanceStore, StorylineSnapshotPointer, validate_current_control,
     write_local_current,
@@ -38,7 +37,7 @@ pub(super) struct StorylineWriterLease {
 #[derive(Debug, Clone)]
 pub(super) struct CurrentControlState {
     pub(super) control: StorylineCurrentControl,
-    pub(super) version: Option<UpdateVersion>,
+    pub(super) version: Option<Version>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,29 +282,24 @@ pub(super) fn unleased_publish_transition(
 
 impl StorylineLanceStore {
     pub(super) async fn read_current_control(&self) -> Result<CurrentControlState> {
-        let pointer = self.object_root.clone().join(CURRENT_FILE);
-        let result = match self.object_store.inner.get(&pointer).await {
-            Ok(result) => result,
-            Err(ObjectStoreError::NotFound { .. }) => {
-                return Ok(CurrentControlState {
-                    control: empty_control(),
-                    version: None,
-                });
+        let result = if !self.root_uri.contains("://") {
+            match tokio::fs::read(self.root.join(CURRENT_FILE)).await {
+                Ok(contents) => Some((contents, None)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
             }
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("read Storyline commit pointer {}/CURRENT", self.root_uri)
-                });
-            }
+        } else {
+            self.control_store
+                .read(CURRENT_FILE)
+                .await?
+                .map(|(contents, version)| (contents, Some(version)))
         };
-        let version = UpdateVersion {
-            e_tag: result.meta.e_tag.clone(),
-            version: result.meta.version.clone(),
+        let Some((contents, version)) = result else {
+            return Ok(CurrentControlState {
+                control: empty_control(),
+                version: None,
+            });
         };
-        let contents = result
-            .bytes()
-            .await
-            .with_context(|| format!("read Storyline commit pointer {}/CURRENT", self.root_uri))?;
         let contents = std::str::from_utf8(&contents)
             .context("Storyline commit pointer is not valid UTF-8")?
             .trim();
@@ -317,16 +311,13 @@ impl StorylineLanceStore {
         }
         let control = decode_control(contents)?;
         validate_current_control(&control)?;
-        Ok(CurrentControlState {
-            control,
-            version: Some(version),
-        })
+        Ok(CurrentControlState { control, version })
     }
 
     async fn try_write_current_control(
         &self,
         control: &StorylineCurrentControl,
-        expected: Option<UpdateVersion>,
+        expected: Option<Version>,
     ) -> Result<bool> {
         validate_current_control(control)?;
         let contents = serde_json::to_vec(control).context("encode Storyline CURRENT control")?;
@@ -334,20 +325,27 @@ impl StorylineLanceStore {
             write_local_current(self.root.join(CURRENT_FILE), contents).await?;
             return Ok(true);
         }
-        let pointer: ObjectPath = self.object_root.clone().join(CURRENT_FILE);
-        let mode = match expected {
-            None => PutMode::Create,
-            Some(version) => PutMode::Update(version),
+        let result = match expected.as_ref() {
+            None => {
+                self.control_store
+                    .write_create(CURRENT_FILE, contents)
+                    .await
+            }
+            Some(version) => {
+                self.control_store
+                    .write_match(CURRENT_FILE, contents, version)
+                    .await
+            }
         };
-        match self
-            .object_store
-            .inner
-            .put_opts(&pointer, contents.into(), mode.into())
-            .await
-        {
+        match result {
             Ok(_) => Ok(true),
-            Err(ObjectStoreError::AlreadyExists { .. })
-            | Err(ObjectStoreError::Precondition { .. }) => Ok(false),
+            Err(error)
+                if error
+                    .downcast_ref::<opendal::Error>()
+                    .is_some_and(opendal_store::is_conflict) =>
+            {
+                Ok(false)
+            }
             Err(error) => Err(error)
                 .with_context(|| format!("update Storyline CURRENT control for {}", self.root_uri)),
         }

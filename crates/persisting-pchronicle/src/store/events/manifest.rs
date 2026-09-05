@@ -8,16 +8,13 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 use fs2::FileExt;
-use futures::TryStreamExt;
-use lance::io::ObjectStore;
-use object_store::path::Path as ObjectPath;
-use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
 use serde::{Deserialize, Serialize};
+
+use super::super::opendal_store::{self, Store, Version};
 
 const MANIFEST_FILE: &str = "_manifest.json";
 const MANIFEST_LOCK_FILE: &str = "_manifest.lock";
@@ -94,8 +91,8 @@ impl EventManifest {
 
 pub(super) async fn read(root_uri: &str) -> Result<Option<EventManifest>> {
     if is_object_store_uri(root_uri) {
-        let (store, root) = object_backend(root_uri).await?;
-        Ok(read_object_manifest(&store, &root.join(MANIFEST_FILE))
+        let store = Store::from_uri(root_uri).await?;
+        Ok(read_object_manifest(&store, MANIFEST_FILE)
             .await?
             .map(|(manifest, _)| manifest))
     } else {
@@ -380,20 +377,22 @@ pub(super) async fn cleanup_unreferenced_segments(
         .await?;
     }
 
-    let (store, root) = object_backend(root_uri).await?;
-    let segments_root = root.join("segments");
-    let prefix = format!("{}/", segments_root.as_ref().trim_end_matches('/'));
-    let cutoff = chrono::Utc::now()
-        - chrono::Duration::from_std(retention).context("event segment retention is too large")?;
-    let objects = store
-        .inner
-        .list(Some(&segments_root))
-        .try_collect::<Vec<_>>()
-        .await?;
+    let store = Store::from_uri(root_uri).await?;
+    let fallback_lock = store.fallback_lock();
+    let _fallback_guard = match fallback_lock.as_ref() {
+        Some(lock) => Some(lock.lock().await),
+        None => None,
+    };
+    let segments_root = "segments";
+    let prefix = "segments/";
+    let cutoff = SystemTime::now()
+        .checked_sub(retention)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let objects = store.list(segments_root).await?;
     let mut candidates: std::collections::BTreeMap<String, (bool, u64)> =
         std::collections::BTreeMap::new();
     for object in objects {
-        let Some(relative) = object.location.as_ref().strip_prefix(&prefix) else {
+        let Some(relative) = object.path.strip_prefix(prefix) else {
             continue;
         };
         let Some(directory) = relative.split('/').next() else {
@@ -403,8 +402,13 @@ pub(super) async fn cleanup_unreferenced_segments(
             continue;
         }
         let entry = candidates.entry(directory.to_string()).or_insert((true, 0));
-        entry.0 &= object.last_modified <= cutoff;
-        entry.1 = entry.1.saturating_add(object.size);
+        let modified = object
+            .metadata
+            .last_modified()
+            .map(SystemTime::from)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        entry.0 &= modified <= cutoff;
+        entry.1 = entry.1.saturating_add(object.metadata.content_length());
     }
     let mut stats = SegmentCleanupStats::default();
     for (directory, (expired, bytes)) in candidates {
@@ -412,7 +416,7 @@ pub(super) async fn cleanup_unreferenced_segments(
             continue;
         }
         store
-            .remove_dir_all(segments_root.clone().join(directory))
+            .remove(&format!("segments/{directory}"))
             .await
             .context("remove unreferenced event segment")?;
         stats.segments_removed += 1;
@@ -535,10 +539,15 @@ where
         .await?;
     }
 
-    let (store, root) = object_backend(root_uri).await?;
-    let path = root.join(MANIFEST_FILE);
+    let store = Store::from_uri(root_uri).await?;
+    let fallback_lock = store.fallback_lock();
+    let _fallback_guard = match fallback_lock.as_ref() {
+        Some(lock) => Some(lock.lock().await),
+        None => None,
+    };
+    let path = MANIFEST_FILE;
     for _ in 0..CAS_RETRIES {
-        let current = read_object_manifest(&store, &path).await?;
+        let current = read_object_manifest(&store, path).await?;
         let outcome = mutation(current.as_ref().map(|(manifest, _)| manifest))?;
         let (manifest, value) = match outcome {
             ManifestMutation::Unchanged(value) => {
@@ -550,19 +559,26 @@ where
             }
         };
         validate_manifest(&manifest)?;
-        let mode = match (write_mode, current) {
-            (_, None) => PutMode::Create,
-            (ObjectStoreManifestWriteMode::Conditional, Some((_, version))) => {
-                PutMode::Update(version)
-            }
-            (ObjectStoreManifestWriteMode::SingleWriter, Some(_)) => PutMode::Overwrite,
-        };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
-        match store.inner.put_opts(&path, bytes.into(), mode.into()).await {
+        let result = match (write_mode, current.as_ref().map(|(_, version)| version)) {
+            (_, None) => store.write_create(path, bytes).await,
+            (ObjectStoreManifestWriteMode::Conditional, Some(version)) => {
+                store.write_match(path, bytes, version).await
+            }
+            (ObjectStoreManifestWriteMode::SingleWriter, Some(_)) => {
+                store.write_overwrite(path, bytes).await
+            }
+        };
+        match result {
             Ok(_) => return Ok(ManifestWriteOutcome::Applied(value)),
-            Err(ObjectStoreError::AlreadyExists { .. })
-            | Err(ObjectStoreError::Precondition { .. }) => continue,
-            Err(error) => return Err(error.into()),
+            Err(error)
+                if error
+                    .downcast_ref::<opendal::Error>()
+                    .is_some_and(opendal_store::is_conflict) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
         }
     }
     Ok(ManifestWriteOutcome::Conflict(
@@ -627,27 +643,13 @@ fn write_local_manifest(path: &Path, manifest: &EventManifest) -> Result<()> {
     Ok(())
 }
 
-async fn object_backend(root_uri: &str) -> Result<(Arc<ObjectStore>, ObjectPath)> {
-    let (store, root) = ObjectStore::from_uri(root_uri)
-        .await
-        .with_context(|| format!("open event manifest object store {root_uri}"))?;
-    Ok((store, root))
-}
-
 async fn read_object_manifest(
-    store: &Arc<ObjectStore>,
-    path: &ObjectPath,
-) -> Result<Option<(EventManifest, UpdateVersion)>> {
-    let result = match store.inner.get(path).await {
-        Ok(result) => result,
-        Err(ObjectStoreError::NotFound { .. }) => return Ok(None),
-        Err(error) => return Err(error.into()),
+    store: &Store,
+    path: &str,
+) -> Result<Option<(EventManifest, Version)>> {
+    let Some((bytes, version)) = store.read(path).await? else {
+        return Ok(None);
     };
-    let version = UpdateVersion {
-        e_tag: result.meta.e_tag.clone(),
-        version: result.meta.version.clone(),
-    };
-    let bytes = result.bytes().await?;
     let manifest = decode_manifest(&bytes, format_args!("object {path}"))?;
     Ok(Some((manifest, version)))
 }
@@ -967,21 +969,17 @@ mod tests {
             "shared-memory://event-segment-cleanup-{}/events.lance",
             uuid::Uuid::new_v4()
         );
-        let (store, root) = object_backend(&uri).await.unwrap();
-        let orphan = root
-            .clone()
-            .join("segments")
-            .join("orphan.lance")
-            .join("data")
-            .join("file.lance");
-        let visible = root
-            .clone()
-            .join("segments")
-            .join("visible.lance")
-            .join("data")
-            .join("file.lance");
-        store.inner.put(&orphan, "orphan".into()).await.unwrap();
-        store.inner.put(&visible, "visible".into()).await.unwrap();
+        let store = Store::from_uri(&uri).await.unwrap();
+        let orphan = "segments/orphan.lance/data/file.lance";
+        let visible = "segments/visible.lance/data/file.lance";
+        store
+            .write_overwrite(orphan, b"orphan".to_vec())
+            .await
+            .unwrap();
+        store
+            .write_overwrite(visible, b"visible".to_vec())
+            .await
+            .unwrap();
 
         let stats = cleanup_unreferenced_segments(
             &uri,
@@ -997,11 +995,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(stats.segments_removed, 1);
-        assert!(matches!(
-            store.inner.get(&orphan).await,
-            Err(ObjectStoreError::NotFound { .. })
-        ));
-        assert!(store.inner.get(&visible).await.is_ok());
+        assert!(store.read(orphan).await.unwrap().is_none());
+        assert!(store.read(visible).await.unwrap().is_some());
     }
 }
 

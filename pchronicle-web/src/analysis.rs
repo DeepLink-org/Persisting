@@ -2503,6 +2503,7 @@ mod tests {
                 row_count: 1,
                 duplicate_event_ids: 0,
                 status: "ok".into(),
+                format: None,
             },
         };
 
@@ -2875,6 +2876,7 @@ mod tests {
                 row_count: 1,
                 duplicate_event_ids: 0,
                 status: "ok".into(),
+                format: None,
             },
         );
         let root_scope = AnalysisScope::from_root(&catalog, "default", "source.json", "root-a");

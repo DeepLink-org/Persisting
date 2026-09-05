@@ -1,5 +1,6 @@
 use super::content::CONTENT_REF_MAGIC;
 use super::*;
+use crate::store::opendal_store::Store as OpendalStore;
 use crate::{StorylineAgent, StorylineToolCall, StorylineTurn};
 
 fn remote_uri(label: &str) -> String {
@@ -55,8 +56,13 @@ fn create_projection_cleanup_failure_is_not_silently_discarded() {
 }
 
 async fn put_remote_object(uri: &str, relative: &str, contents: &[u8]) {
-    let (store, root) = ObjectStore::from_uri(uri).await.unwrap();
-    store.put(&root.join(relative), contents).await.unwrap();
+    let store = crate::store::opendal_store::Store::from_uri(uri)
+        .await
+        .unwrap();
+    store
+        .write_overwrite(relative, contents.to_vec())
+        .await
+        .unwrap();
 }
 
 struct CreateAfterEmptyReadBarrier;
@@ -1999,13 +2005,20 @@ async fn object_store_rejects_invalid_utf8_unsafe_and_dangling_current() {
 
 #[tokio::test]
 async fn object_store_detects_partially_deleted_generation() {
-    let uri = remote_uri("partial-generation");
-    let store = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let uri = temp.path().to_string_lossy().into_owned();
+    let store = StorylineLanceStore::open(&uri).await.unwrap();
     store.replace_storyline(&story("session")).await.unwrap();
     let paths = store.current_table_paths().await.unwrap().unwrap();
-    let steps_uri = paths.steps.to_string_lossy().into_owned();
-    let (object_store, steps_root) = ObjectStore::from_uri(&steps_uri).await.unwrap();
-    object_store.remove_dir_all(steps_root).await.unwrap();
+    OpendalStore::from_uri(&uri)
+        .await
+        .unwrap()
+        .remove(&format!(
+            "{GENERATIONS_DIR}/{}/{}.lance",
+            paths.table_generation, STORY_STEPS_TABLE
+        ))
+        .await
+        .unwrap();
 
     let error = StorylineLanceStore::open_uri(&uri).await.unwrap_err();
     assert!(error.to_string().contains("is incomplete"), "{error:#}");

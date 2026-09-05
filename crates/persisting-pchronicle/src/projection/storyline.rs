@@ -170,7 +170,15 @@ pub async fn build_storyline_projection(
 pub async fn storyline_projection_status(
     output_uri: impl AsRef<str>,
 ) -> Result<StorylineProjectionStatus> {
-    let output = StorylineLanceStore::open_uri(output_uri.as_ref()).await?;
+    let output_uri = output_uri.as_ref();
+    if !StorylineLanceStore::destination_exists(output_uri).await? {
+        return Ok(StorylineProjectionStatus {
+            output_uri: output_uri.to_string(),
+            generation: None,
+            lineage: None,
+        });
+    }
+    let output = StorylineLanceStore::open_uri(output_uri).await?;
     let paths = output.current_table_paths().await?;
     Ok(StorylineProjectionStatus {
         output_uri: output.root_uri().to_string(),

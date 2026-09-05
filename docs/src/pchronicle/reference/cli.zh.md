@@ -266,9 +266,9 @@ pchronicle analysis tools @prod --format csv --limit 20
 
 ```text
 pchronicle import -f|--from SOURCE -t|--to NEW_DATASET
-  [-i|--input-format FORMAT] [-o|--output-format preserve|storyline]
+  [-i|--input-format FORMAT] [-o|--output-format preserve|storyline|compact-jsonl]
   [--mode create|append|replace] [--on-duplicate suffix|skip] [--yes]
-  [--max-input-bytes BYTES]
+  [--column NAME=JSON_PATH]... [--max-input-bytes BYTES]
 ```
 
 ```bash
@@ -282,6 +282,11 @@ pchronicle import \
   -f more.json -t ./normalized --mode append --on-duplicate skip
 pchronicle import \
   -f rebuilt.json -t ./normalized --mode replace --yes
+pchronicle import \
+  -f ./jsonl-root -t ./records.lance \
+  -o compact-jsonl \
+  --column id=$.event.id --column timestamp=$.event.time \
+  --column model=$.payload.model
 ```
 
 长参数分别是 `--from`、`--to`、`--input-format` 和 `--output-format`。短 option 始终只有一个字符，
@@ -297,6 +302,7 @@ pchronicle import \
 | `storyline` | 是 | 是 |
 | `codex` | 是 | 否 |
 | `claude-code` | 是 | 否 |
+| `compact-jsonl` | 是 | 是 |
 
 Codex 和 Claude Code session 是 decode-only 输入格式。Canonical Event Store 会自动识别并投影为
 Storyline Dataset。默认 `create` 模式要求目标不存在。`append` 要求目标是已有 Storyline Dataset；
@@ -304,18 +310,32 @@ Storyline Dataset。默认 `create` 模式要求目标不存在。`append` 要�
 写入临时路径，再将旧本地 Dataset rename 到备份路径、将新 Dataset rename 到正式路径，确认新路径
 发布后才删除备份；因此必须交互确认或传入 `--yes`。已有对象存储 Dataset 当前不支持原地 replace。
 
+Compact JSONL 是记录存储，不会转换或推断轨迹语义。指定
+`--input-format compact-jsonl` 或 `--output-format compact-jsonl` 均会选择该格式。输入必须是本地
+`.jsonl` 文件或目录树；每个非空行必须是 JSON object，并包含唯一的标量 `id` 和标量
+`timestamp`，默认路径分别为 `$.id` 和 `$.timestamp`。`--column id=PATH` 与
+`--column timestamp=PATH` 用于覆盖默认路径，其他 `--column NAME=PATH` 会增加 nullable JSONB
+投影列。Compact import 支持本地 `create` 和经确认的 `replace`，不支持 stdin、对象存储目标或
+`append`。
+
 ### 2.10 `sync`
 
 ```text
 pchronicle sync --from DIRECTORY --to DIRECTORY --convert DIRECTORY
-  [--input-format FORMAT] [--interval DURATION] [--once]
+  [--input-format FORMAT] [--column NAME=JSON_PATH]...
+  [--interval DURATION] [--once]
 ```
 
-`sync` 是常驻轮询器：监听源目录下的 `.json`、`.jsonl` 和 `.ndjson`，将变更合并到
-pending 池，并按 `--interval` 将源文件逐字节批量镜像到本地 Warehouse 目录，同时将数据转换为
-Storyline Lance 写入 `--convert` 目标。一个批次成功后才清理 pending；失败会保留
+`sync` 是常驻轮询器：监听源目录下的 `.json`、`.jsonl` 和 `.ndjson`。对于运行数据格式，它会将
+变更合并到 pending 池，并按 `--interval` 将源文件逐字节批量镜像到本地 Warehouse 目录，同时将
+数据转换为 Storyline Lance 写入 `--convert` 目标。一个批次成功后才清理 pending；失败会保留
 变更并指数退避重试。`--once` 只执行一次初始批次后退出。当前目标必须是本地目录，两个目标
 必须位于源目录之外。
+
+指定 `--input-format compact-jsonl` 时，源目录必须是本地 `.jsonl` 目录树，列映射规则与 Compact
+import 相同。每个成功批次都会重新扫描整个目录，并原子替换 `--convert` 指向的 Compact Lance
+快照，因此新增、修改和删除都会反映在下一快照中，但不提供行级增量更新。此模式仍要求传入
+`--to` 作为兼容参数，但不会写入该路径。
 
 ### 2.11 `drop`
 
@@ -346,6 +366,9 @@ pchronicle export \
 `--document-id`、`--session-id` 和 `--where`；`--to -` 直接写 stdout。`--strict` 要求转换保留
 原始 exchange document，失败时不产生部分输出。文件和对象存储输出默认 create-only，只有显式
 `--overwrite` 才允许原子替换。
+
+导出 Compact JSONL 时使用 `--output-format compact-jsonl`，目标必须是本地目录，且不支持
+`--source`、ID 过滤或 `--where`，以保持原始 JSONL 文件的目录边界与字节内容。
 
 ### 2.13 `agent`
 

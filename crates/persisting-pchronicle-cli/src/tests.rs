@@ -303,7 +303,7 @@ fn command_tree_contains_the_product_commands() {
             .get_help()
             .unwrap()
             .to_string()
-            .contains("combine them into one Storyline Lance Store at the Dataset root")
+            .contains("combine all inputs into one Storyline Lance Store at the Dataset root")
     );
     assert!(Cli::try_parse_from(["pchronicle", "project", "status"]).is_err());
 
@@ -2095,6 +2095,7 @@ async fn directory_import_reads_atif_jsonl_and_ndjson_in_both_output_modes() -> 
                     assert!(output.join("CURRENT").is_file());
                     assert!(!staged.exists());
                 }
+                ImportOutputFormat::CompactJsonl => unreachable!(),
             }
         }
     }

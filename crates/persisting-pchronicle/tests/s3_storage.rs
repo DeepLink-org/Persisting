@@ -4,8 +4,7 @@
 //! `PCHRONICLE_S3_TEST_URI=s3://bucket/test-prefix cargo test -p persisting-pchronicle --test s3_storage -- --ignored`
 
 use anyhow::{Context, Result};
-use lance::io::ObjectStore;
-use object_store::ObjectStoreExt;
+use opendal::Operator;
 use persisting_pchronicle::document::{DocumentFormat, decode_json_storylines};
 use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument};
 use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
@@ -54,26 +53,20 @@ fn fixture_storyline_with_id(session_id: &str) -> Result<StorylineDocument> {
 }
 
 async fn write_replacement_outcome(root: &str, session_id: &str, outcome: &str) -> Result<()> {
-    let (store, path) = ObjectStore::from_uri(root).await?;
-    store
-        .inner
-        .put(
-            &path.join("replacement-outcomes").join(session_id),
-            outcome.to_string().into(),
+    Operator::from_uri(root)?
+        .write(
+            &format!("replacement-outcomes/{session_id}"),
+            outcome.as_bytes().to_vec(),
         )
         .await?;
     Ok(())
 }
 
 async fn read_replacement_outcome(root: &str, session_id: &str) -> Result<String> {
-    let (store, path) = ObjectStore::from_uri(root).await?;
-    let bytes = store
-        .inner
-        .get(&path.join("replacement-outcomes").join(session_id))
-        .await?
-        .bytes()
+    let bytes = Operator::from_uri(root)?
+        .read(&format!("replacement-outcomes/{session_id}"))
         .await?;
-    Ok(std::str::from_utf8(&bytes)?.to_string())
+    Ok(std::str::from_utf8(&bytes.to_vec())?.to_string())
 }
 
 fn event(content: &str) -> EventRecord {
@@ -323,8 +316,13 @@ async fn run_single_writer_manifest_contract(root: &str) -> Result<()> {
 }
 
 async fn cleanup(root: &str) -> Result<()> {
-    let (store, path) = ObjectStore::from_uri(root).await?;
-    store.remove_dir_all(path).await?;
+    if let Err(error) = Operator::from_uri(root)?
+        .delete_with(".")
+        .recursive(true)
+        .await
+    {
+        eprintln!("S3 test cleanup skipped for {root}: {error}");
+    }
     Ok(())
 }
 

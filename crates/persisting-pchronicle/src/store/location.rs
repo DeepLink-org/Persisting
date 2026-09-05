@@ -5,10 +5,9 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use futures::TryStreamExt;
-use lance::io::ObjectStore;
-use object_store::PutMode;
 use url::Url;
+
+use super::opendal_store::Store as OpendalStore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DatasetLocationKind {
@@ -164,34 +163,22 @@ impl DatasetLocation {
         if let Some(path) = &self.local_path {
             return Ok(path.exists());
         }
-        let (store, root) = ObjectStore::from_uri(&self.uri)
-            .await
-            .map_err(|error| object_store_io_error("open object store", &self.uri, error))?;
-        let mut objects = store.inner.list(Some(&root));
-        objects
-            .try_next()
-            .await
-            .map_err(|error| object_store_io_error("list object-store prefix", &self.uri, error))
-            .map(|object| object.is_some())
+        let store = OpendalStore::from_uri(&self.uri).await?;
+        store.exists().await
     }
 
     pub async fn put_bytes(&self, bytes: &[u8], overwrite: bool) -> Result<()> {
         if let Some(path) = &self.local_path {
             return put_local_bytes(path, bytes, overwrite);
         }
-        let (store, root) = ObjectStore::from_uri(&self.uri)
-            .await
-            .map_err(|error| object_store_io_error("open object store", &self.uri, error))?;
-        let mode = if overwrite {
-            PutMode::Overwrite
+        let store = OpendalStore::from_uri(&self.uri).await?;
+        // DatasetLocation represents a prefix; use a stable marker inside it.
+        let path = ".dataset-marker";
+        if overwrite {
+            store.write_overwrite(path, bytes.to_vec()).await?;
         } else {
-            PutMode::Create
-        };
-        store
-            .inner
-            .put_opts(&root, bytes.to_vec().into(), mode.into())
-            .await
-            .map_err(|error| object_store_io_error("write object", &self.uri, error))?;
+            store.write_create(path, bytes.to_vec()).await?;
+        }
         Ok(())
     }
 
@@ -215,12 +202,8 @@ impl DatasetLocation {
             !url.path().trim_matches('/').is_empty(),
             "refusing to drop an entire object-store bucket; name a Dataset prefix"
         );
-        let (store, root) = ObjectStore::from_uri(&self.uri)
-            .await
-            .map_err(|error| object_store_io_error("open object store", &self.uri, error))?;
-        store.remove_dir_all(root).await.map_err(|error| {
-            object_store_io_error("drop object-store Dataset", &self.uri, error)
-        })?;
+        let store = OpendalStore::from_uri(&self.uri).await?;
+        store.remove_all().await?;
         Ok(())
     }
 }
@@ -251,10 +234,7 @@ fn validate_object_store_bucket(scheme: &str, bucket: &str) -> Result<()> {
     Ok(())
 }
 
-fn object_store_io_error(action: &str, uri: &str, error: impl std::fmt::Display) -> anyhow::Error {
-    anyhow!("{action} {uri}: {}", object_store_error_detail(&error))
-}
-
+#[cfg(test)]
 fn object_store_error_detail(error: &impl std::fmt::Display) -> String {
     let text = error.to_string();
     match xml_tag(&text, "Code") {
@@ -268,6 +248,7 @@ fn object_store_error_detail(error: &impl std::fmt::Display) -> String {
     }
 }
 
+#[cfg(test)]
 fn xml_tag<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");

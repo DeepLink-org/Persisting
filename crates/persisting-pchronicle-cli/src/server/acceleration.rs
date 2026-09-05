@@ -910,6 +910,39 @@ async fn build_run_summaries(
         }
         let name = &dataset.mount.name;
         let event_stats = build_event_stats(engine, name).await?;
+        for source in dataset
+            .sources
+            .iter()
+            .filter(|source| source.format.as_deref() == Some("compact-jsonl/v1"))
+        {
+            if let Some(records) = snapshot.compact_records(name, &source.file).await? {
+                for record in records {
+                    let path = explorer::explorer_run_path(
+                        name,
+                        &source.file,
+                        &record.id,
+                        &record.id,
+                        None,
+                        None,
+                    );
+                    summaries.push(RunSummary {
+                        dataset: name.clone(),
+                        file: source.file.clone(),
+                        document_id: record.id.clone(),
+                        run_id: None,
+                        agent_id: "compact-jsonl".into(),
+                        model_name: None,
+                        session_id: record.id,
+                        root_session_id: None,
+                        path,
+                        row_count: 1,
+                        duplicate_event_ids: 0,
+                        status: "record".into(),
+                        format: Some("compact-jsonl/v1".into()),
+                    });
+                }
+            }
+        }
         let sql = format!(
             "SELECT r._file_, r.document_id, r.run_id, r.session_id, r.agent_id, r.agent_model_name, \
                     r.parent, r.final_metrics, r.extra, r.unknown_fields, \
@@ -982,6 +1015,7 @@ async fn build_run_summaries(
                 ),
                 duplicate_event_ids: event_stats.map_or(0, |stats| stats.duplicate_event_ids),
                 status,
+                format: None,
             });
         }
     }
