@@ -91,13 +91,12 @@ body {
 
 .ph-hero-copy {
   max-width: 780px;
+  margin: 0 auto;
+  text-align: center;
 }
 
 .ph-hero .ph-shell {
-  display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(360px, 1.1fr);
-  align-items: center;
-  gap: clamp(36px, 7vw, 96px);
+  display: block;
 }
 
 .ph-eyebrow,
@@ -136,7 +135,7 @@ body {
 
 .ph-lede {
   max-width: 640px;
-  margin: 16px 0 0;
+  margin: 16px auto 0;
   color: var(--ph-hero-dim);
   font-size: clamp(1.02rem, 1.7vw, 1.2rem);
   line-height: 1.66;
@@ -145,6 +144,7 @@ body {
 .ph-actions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 11px;
   margin-top: 34px;
 }
@@ -204,6 +204,8 @@ body {
   border-radius: 24px;
   background: #07101d url('../diagrams/persisting/hero-cyberpunk.svg') center / cover no-repeat;
   box-shadow: var(--ph-shadow);
+  max-width: 980px;
+  margin: 58px auto 0;
 }
 
 .ph-hero-art__label,
