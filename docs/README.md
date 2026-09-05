@@ -15,6 +15,9 @@ just docs-build   # build docs/website/build
 just docs-links   # build with broken-link checks enabled
 ```
 
+The published site includes a local search index, so search works on the static
+GitHub Pages deployment without a separate service.
+
 The site entry point is `docs/website/`. Markdown is organized by product in
 `docs/website/docs/en/` and `docs/website/docs/zh/`. The React homepage lives
 in `docs/website/src/pages/index.js`; shared visual tokens live in
