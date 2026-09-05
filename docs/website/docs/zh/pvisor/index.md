@@ -5,6 +5,11 @@
 
 在 Persisting“从模型状态到 Agent 历史”的主线中，pVisor 负责一个 Run 的执行边界与可审查记录。
 
+:::tip 你将完成什么
+完成第一次快速开始后，你会得到一个由 Run 拥有的 stage、一份解释实际控制机制的 Run Bundle，
+以及一次明确的选择：应用或丢弃产生的 filesystem Effect。
+:::
+
 pVisor 不替代 Agent 自己的推理循环。你可以继续使用已有的 Agent CLI、脚本和 framework。
 
 ## 运行、审查、决定
@@ -44,6 +49,16 @@ Run 描述得比它实际拥有的隔离程度更高。
 
 pVisor 的本地 run—review—apply 闭环可以独立工作。pChronicle 是可选项：当你希望在 Run
 结束后保留并查询轨迹 Dataset 时再使用它。
+
+## 推荐阅读顺序
+
+第一次使用时按下面的顺序阅读：
+
+1. [运行第一个 Agent](get-started.md)，完成一次完整成功闭环。
+2. 需要更细地控制修改时，阅读[审查和应用](guides/review-apply.md)。
+3. 执行 Provider 会影响边界时，阅读[执行布局](guides/execution.md)。
+4. 需要解释 Run Bundle 时，阅读[Capability 与 Evidence](concepts/capabilities-and-evidence.md)。
+5. 只有需要精确选项或输出字段时，再查阅[命令行参考](reference/cli.md)。
 
 ## 继续阅读
 

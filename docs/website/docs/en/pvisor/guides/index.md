@@ -3,6 +3,12 @@
 Follow the lifecycle of one Run, then connect execution to durable history when
 needed.
 
+:::note Start with the outcome
+Each guide below is task-shaped. Begin with the first outcome you need and
+keep the Run Bundle open while you work; it is the authoritative record of
+which controls were actually installed.
+:::
+
 1. [Choose an execution environment](execution.md).
 2. [Review and selectively apply filesystem effects](review-apply.md).
 3. [Control network access](network.md).

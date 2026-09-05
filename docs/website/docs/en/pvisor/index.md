@@ -8,6 +8,12 @@ before they reach the project.
 Within Persisting's model-state-to-Agent-history story, pVisor owns the
 execution boundary and the reviewable record of one Run.
 
+:::tip What you will complete
+By the end of the first walkthrough you will have a Run-owned stage, a Run
+Bundle that explains the controls actually installed, and a deliberate choice
+to apply or drop the resulting filesystem effects.
+:::
+
 pVisor does not replace the Agent's reasoning loop. You can keep using Agent
 CLIs, scripts, and frameworks you already have.
 
@@ -51,6 +57,14 @@ When you already know what you need, follow the matching path:
 
 pVisor's local run-review-apply loop works on its own. pChronicle is optional:
 use it when you want to retain and query trajectory Datasets after a Run.
+
+## A useful reading order
+
+1. [Run your first Agent](get-started.md) to see the complete success loop.
+2. [Review and apply](guides/review-apply.md) when you need finer control over changes.
+3. [Execution layouts](guides/execution.md) when provider boundaries affect your decision.
+4. [Capabilities and evidence](concepts/capabilities-and-evidence.md) when you need to interpret a Run Bundle.
+5. [CLI reference](reference/cli.md) only when you need an exact flag or output field.
 
 ## Keep reading
 
