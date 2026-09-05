@@ -91,6 +91,23 @@ fn skip_if_user_namespaces_are_explicitly_optional(
     true
 }
 
+fn skip_if_rootless_runtime_is_explicitly_optional() -> bool {
+    if std::env::var_os("PERSISTING_TEST_ALLOW_NO_USERNS").is_none() {
+        return false;
+    }
+    let available = Command::new("unshare")
+        .args(["--user", "--mount", "--pid", "--fork", "true"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !available {
+        eprintln!("skipping: the test host disables the rootless PID namespace");
+    }
+    !available
+}
+
 #[test]
 fn safe_local_executable_cannot_escape_the_workspace() {
     let temporary = tempfile::tempdir().unwrap();
@@ -644,6 +661,9 @@ fn synthetic_root_hides_ungranted_host_unix_sockets() {
 
 #[test]
 fn safe_run_reaps_setsid_double_fork_descendants_after_success() {
+    if skip_if_rootless_runtime_is_explicitly_optional() {
+        return;
+    }
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
