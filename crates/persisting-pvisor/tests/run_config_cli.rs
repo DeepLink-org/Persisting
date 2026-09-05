@@ -243,6 +243,7 @@ fn run_accepts_portable_object_store_chronicle_sink() {
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(target_os = "macos", ignore = "temporary OCI control mount is not visible to nested pVisor on macOS")]
 fn container_executor_runs_through_an_oci_compatible_control_surface() {
     let temporary = tempfile::tempdir().expect("create CLI fixture");
     let workspace = temporary.path().join("workspace");
