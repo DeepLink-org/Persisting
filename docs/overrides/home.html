@@ -16,6 +16,19 @@
     "chronicle_title": "pChronicle",
     "chronicle_body": "Pin, normalize, query, and exchange Agent trajectory Sources. Browse durable history without requiring a pVisor Run.",
     "chronicle_link": "Explore Datasets →",
+    "capabilities": "Everything needed for a durable Agent workflow",
+    "c1": "Governed execution",
+    "c1b": "Run existing Agent commands inside a provider-aware workspace.",
+    "c2": "Reviewable changes",
+    "c2b": "Inspect a complete stage before any file reaches the project.",
+    "c3": "Capability evidence",
+    "c3b": "See which filesystem, network, and process controls actually applied.",
+    "c4": "Trajectory Datasets",
+    "c4b": "Turn imported or captured history into normalized, queryable views.",
+    "c5": "Open formats",
+    "c5b": "Exchange supported trajectory formats without losing Source lineage.",
+    "c6": "Local first",
+    "c6b": "Start with a local path and move to object storage when the workflow is ready.",
     "architecture": "Product architecture",
     "architecture_body": "Execution and history are independent paths. Configured capture is an explicit handoff that carries selected lifecycle facts and trajectory events.",
     "principles": "Operating principles",
@@ -52,6 +65,19 @@
     "chronicle_title": "pChronicle",
     "chronicle_body": "固定、规范化、查询和交换 Agent 轨迹 Source。无需先运行 pVisor，也可以浏览持久历史。",
     "chronicle_link": "探索 Dataset →",
+    "capabilities": "一条持久化 Agent 工作流所需的一切",
+    "c1": "受治理执行",
+    "c1b": "在了解 Provider 边界的 workspace 中运行已有 Agent 命令。",
+    "c2": "可审查修改",
+    "c2b": "在文件进入真实项目之前，先检查完整 stage。",
+    "c3": "Capability Evidence",
+    "c3b": "查看实际生效的文件系统、网络和进程控制。",
+    "c4": "轨迹 Dataset",
+    "c4b": "把导入或捕获的历史转换为规范化、可查询的视图。",
+    "c5": "开放格式",
+    "c5b": "交换支持的轨迹格式，同时保留 Source lineage。",
+    "c6": "本地优先",
+    "c6b": "从本地路径开始，准备好后再迁移到对象存储。",
     "architecture": "产品架构",
     "architecture_body": "执行与历史是两条独立路径。配置后的 capture 是显式交接，只传递选定的生命周期事实与轨迹事件。",
     "principles": "运行原则",
@@ -115,6 +141,20 @@
             <p>{{ c.chronicle_body }}</p>
             <a href="pchronicle/get-started/">{{ c.chronicle_link }}</a>
           </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="ph-section ph-section--contrast">
+      <div class="ph-shell">
+        <p class="ph-kicker">{{ c.capabilities }}</p>
+        <div class="ph-capabilities">
+          <article><h3>{{ c.c1 }}</h3><p>{{ c.c1b }}</p></article>
+          <article><h3>{{ c.c2 }}</h3><p>{{ c.c2b }}</p></article>
+          <article><h3>{{ c.c3 }}</h3><p>{{ c.c3b }}</p></article>
+          <article><h3>{{ c.c4 }}</h3><p>{{ c.c4b }}</p></article>
+          <article><h3>{{ c.c5 }}</h3><p>{{ c.c5b }}</p></article>
+          <article><h3>{{ c.c6 }}</h3><p>{{ c.c6b }}</p></article>
         </div>
       </div>
     </section>

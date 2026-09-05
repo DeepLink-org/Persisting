@@ -501,6 +501,39 @@ body {
   line-height: 1.68;
 }
 
+/* Material-style feature grid: short, scannable capabilities before the
+   deeper workflow sections. */
+.ph-capabilities {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 42px;
+  overflow: hidden;
+  border: 1px solid var(--ph-line);
+  border-radius: 8px;
+  background: var(--ph-line);
+}
+
+.ph-capabilities article {
+  min-height: 150px;
+  padding: 26px 24px;
+  background: var(--ph-card);
+}
+
+.ph-capabilities h3 {
+  margin: 0 0 10px;
+  color: var(--ph-ink);
+  font-size: 1.02rem;
+  font-weight: 700;
+}
+
+.ph-capabilities p {
+  margin: 0;
+  color: var(--ph-muted);
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
 /* Wrap rather than scroll: a clipped command reads as broken on a landing page. */
 .ph-step code {
   display: block;
@@ -730,6 +763,7 @@ body {
   }
 
   .ph-flow,
+  .ph-capabilities,
   .ph-depth,
   .ph-start,
   .ph-start-paths {
