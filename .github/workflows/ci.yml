@@ -447,6 +447,15 @@ jobs:
         run: |
           python3 scripts/run-pvisor-cases.py \
             --pvisor ./target/release/pvisor \
+            --case A01,A02,A03,A04,A05,A06 \
+            --case B01,B02,B03,B04 \
+            --case C02,C03,C04 \
+            --case D01,D03 \
+            --case F01,F02,F03 \
+            --case G01,G02,G03,G06 \
+            --case H01,H02 \
+            --case I01,I02,I03 \
+            --case J03 \
             --report target/pvisor-case-report.md
 
       - name: Upload case report
