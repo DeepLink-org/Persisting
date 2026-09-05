@@ -7,9 +7,9 @@ and interpret guarantees with
 
 !!! note "Target architecture"
     This document combines current implementation with explicitly identified
-    target architecture. Linux `pvisor run --safe` implements the FUSE +
+    target architecture. Linux `pvisor --` implements the FUSE +
     synthetic root + rootless user/mount namespace + Landlock path described
-    in section 2. macOS `--safe` implements Seatbelt-enforced staged writes and
+    in section 2. macOS host execution uses Seatbelt when available and staged writes
     deny-all socket confinement; filesystem reads remain ambient and are
     reported separately. Docker and libkrun/KVM transports also exist.
     The Virtualization.framework backend in section 2.5, LiteBox VFS in
@@ -29,7 +29,7 @@ The multiple backends are an implementation portfolio, **not a configuration
 surface imposed on the user**. The normal product experience remains:
 
 ```bash
-pvisor run --safe <agent> [args...]
+pvisor -- <agent> [args...]
 ```
 
 pVisor probes the host, workload, and available placement, selects a backend,
@@ -615,7 +615,7 @@ The existing pVisor `vm` executor statically links libkrun and can either use
 an explicit Linux rootfs or pull a public OCI image without a container daemon.
 Verified image layers form an immutable cached lower rootfs, guest system writes
 stay in a reviewable upper layer. Host paths are not implicitly exposed. An
-explicit `--overlayfs-base` plus `--overlayfs-target` mounts a staged view at
+explicit `--overlayfs-compose` plus `--overlayfs-path` mounts a staged view at
 the selected guest path. A vendored libkrun serves both root and workspace
 copy-on-write unions directly over virtio-fs on Linux and macOS, without a
 host FUSE mount, materialization, or reconciliation. It uses KVM on Linux
@@ -701,7 +701,7 @@ workloads, and teardown.
 
 The selection belongs to pVisor and the placement control plane:
 
-1. A normal Linux `pvisor run --safe` uses FUSE + Workspace + synthetic root +
+1. A normal Linux `pvisor --` uses FUSE + Workspace + synthetic root +
    rootless namespaces + Landlock today. Required controls are installed
    fail-closed; an unavailable user namespace, mount, chroot, or Landlock ABI
    never falls back silently.
@@ -767,7 +767,7 @@ mechanisms.
 
 The default local path is complete only when all of the following hold:
 
-- one pVisor installation and one `pvisor run --safe` command are sufficient;
+- one pVisor installation and one `pvisor --` command are sufficient;
 - no root shell, setuid pVisor daemon, manual group membership, hand-written
   policy, mount command, or container security flags are required;
 - pVisor discovers the executable and its minimal runtime dependencies;

@@ -605,6 +605,22 @@ test-rust package="":
 test-pvisor:
     cargo nextest run -p persisting-pvisor --locked
 
+# Execute the bash blocks embedded in the pVisor Markdown case checklist.
+# VM/container cases are skipped unless their host prerequisites are supplied;
+# use --strict-skips through the script when a fully provisioned matrix is
+# required.
+[group('test')]
+test-pvisor-cases:
+    cargo build --release -p persisting-pvisor --locked
+    python3 scripts/run-pvisor-cases.py --report target/pvisor-case-report.md
+
+# Execute every documented case even when VM/container resources are absent;
+# missing prerequisites become real case failures for diagnosis.
+[group('test')]
+test-pvisor-cases-all:
+    cargo build --release -p persisting-pvisor --locked
+    python3 scripts/run-pvisor-cases.py --run-unavailable --keep --report target/pvisor-case-report.md
+
 # Mandatory pVisor ↔ pChronicle capture bridge feature profile.
 [group('test')]
 test-pvisor-lance:

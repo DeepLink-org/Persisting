@@ -27,10 +27,22 @@ The presence of an allow rule enables OverlayNet and changes the default
 action to deny. In this example, intercepted traffic may reach the two listed
 HTTPS destinations; other intercepted destinations are rejected.
 
+## Choose a driver mode
+
+Use `--overlaynet off|auto|proxy` as the primary OverlayNet switch:
+
+| Mode | Executor | Boundary |
+|---|---|---|
+| `off` | Any | Disable OverlayNet |
+| `proxy` | Host/container | Cooperative host proxy |
+| `auto` | VM (recommended) | Non-bypassable smoltcp data plane |
+
+If omitted, policy flags and Gateway capture infer the executor-appropriate mode.
+
 ## Choose a policy
 
-The visible CLI options infer the executor-appropriate driver mode and default
-action (`proxy` for host/container runs, `auto`/`vm-smoltcp` for VM runs):
+The policy options configure the selected driver (or infer one when no explicit
+mode is supplied):
 
 | Goal | Option | Behavior for other intercepted destinations |
 |---|---|---|
@@ -126,7 +138,7 @@ bytes_per_second = 250000
 Run it with:
 
 ```bash
-pvisor run --config run.toml
+pvisor run --spec run.toml
 ```
 
 Supported transport values are `http`, `https`, and `tcp_tunnel`. Empty
@@ -159,7 +171,7 @@ The following paths are outside that cooperative host/container boundary:
 
 Consequently, a host/container cooperative-proxy Run reports
 `safety.network_non_bypassable = false`. When direct network access must be
-blocked, use `pvisor run --safe --overlaynet-deny-all`: Linux adds a private
+blocked, use `pvisor -- --overlaynet-deny-all`: Linux adds a private
 network namespace; macOS blocks IP and ambient host Unix sockets with Seatbelt,
 retaining only the exact AgentCtl and Run-local IPC. Container Runs can instead
 use `--container-network none`. Selective allow/deny rules remain cooperative
@@ -172,7 +184,7 @@ the in-process proxy.
 ## Review the result
 
 The current directory is the default reusable workspace. Each invocation keeps
-an independent Run under `PERSISTING_RUN_HOME`:
+an independent Run under pVisor's default records root:
 
 ```bash
 pvisor run \

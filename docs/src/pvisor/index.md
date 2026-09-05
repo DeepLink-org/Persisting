@@ -16,12 +16,12 @@ CLIs, scripts, and frameworks you already have.
 From a project directory:
 
 ```bash
-pvisor run --safe codex
+pvisor -- codex
 pvisor review last
 pvisor apply last --path src
 ```
 
-With `--safe`, the Agent writes to a staged view of the project. After the Run,
+With `--stage ./runs/task-001`, the Agent writes to a staged view of the project. After the Run,
 you can apply all changes, accept selected paths in several batches, or discard
 the stage:
 

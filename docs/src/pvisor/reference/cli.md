@@ -23,18 +23,19 @@ pvisor
 ## Safe first run
 
 ```bash
-pvisor run --safe codex
+pvisor -- codex
 pvisor review last
 ```
 
-`--safe` uses the current directory as the reusable project workspace and
-OverlayFS base, creates an independent Run and writable stage under
-`PERSISTING_RUN_HOME` (default `~/.persisting/runs`), retains changes for
-manual review, and writes `run-bundle.json` with mode `0600`.
+Host execution uses safe-best-effort isolation by default. `--stage <PATH>` opts
+into an OverlayFS stage for the current workspace, creates an independent Run
+and writable stage at the supplied path (or in the generated Run record
+directory when no explicit stage is supplied),
+retains changes for manual review, and writes `run-bundle.json` with mode `0600`.
 On Linux, the default host executor self-executes through pVisor's rootless
 launcher before the async runtime reaches the Agent. User/mount/PID namespaces,
 an in-namespace PID 1 descendant reaper,
-minimal bind-projected root plus `chroot`, Landlock ABI v3 policy, closed
+minimal bind-projected root plus `chroot`, a kernel-negotiated Landlock ABI v1-v3 policy, closed
 inherited descriptors, `no_new_privs`, and an empty capability set make
 workspace containment non-bypassable for the Agent process tree.
 `--overlaynet-deny-all` adds a private network namespace; the
@@ -172,13 +173,15 @@ stop before live inference, or `--prepare-only` to construct it without executio
 ## One configuration model
 
 `pvisor run` has one canonical `RunConfig`. TOML and command-line options are
-two representations of the same fields. `--config` is optional and explicit;
-pVisor does not discover a hidden project configuration file.
+two representations of the same fields. `--spec` is optional and explicit; a
+file beginning with a JSON object is treated as a prepared RunSpec, otherwise
+it is read as TOML RunConfig. pVisor does not discover a hidden project file.
 
 ```bash
 pvisor run \
-  --agent codex \
-  --overlayfs-base /path/to/project \
+  --name codex \
+  --overlayfs-path /workspace \
+  --overlayfs-compose /path/to/project \
   --overlayfs-backend directory \
   --overlayfs-commit manual \
   --overlaynet-allow api.openai.com:443 \
@@ -218,7 +221,8 @@ image = "example/codex-agent:latest"
 network = "host"
 
 [overlayfs]
-base = "/path/to/project"
+path = "/workspace"
+compose = ["/path/to/project"]
 backend = "directory"
 commit = "manual"
 
@@ -250,7 +254,7 @@ api_key_env = "OPENAI_API_KEY"
 mode = "lance"
 ```
 
-Run it with `pvisor run --config run.toml`. Explicit CLI scalars replace TOML
+Run it with `pvisor run --spec run.toml`. Explicit CLI scalars replace TOML
 scalars. Supplying any repeated CLI field (`--overlayfs-compose`,
 `--overlaynet-allow`, `--overlaynet-deny`, `--overlaynet-limit`, or
 `--gateway-route`) replaces that complete TOML list.
@@ -260,8 +264,8 @@ The command after `--` replaces `run.command`.
 `--executor container` makes the choice explicit. The transport resolves a
 matching static `linux-amd64`/`linux-arm64` pVisor, mounts it into the image,
 overrides the entrypoint, and invokes the normal
-`pvisor run --executor host --run-spec ...` path. The Agent command is carried
-inside the RunSpec rather than exposed in Docker/Podman argv. The injected
+`pvisor run --executor host --spec ...` path. The Agent command is carried
+inside the RunSpec rather than exposed in OCI runner argv. The injected
 pVisor creates its own AgentCtl and returns a typed RunResult. The final
 OverlayFS cwd and session Gateway configuration are mounted at stable paths.
 User mounts are repeatable TOML inline tables, for example:
@@ -284,21 +288,26 @@ are off. The executor records container isolation but does not claim full
 capability enforcement.
 
 `--executor vm` uses statically linked libkrun and its embedded init to boot a
-minimal Linux guest. `--image IMAGE` selects this executor and pulls an
+minimal Linux guest. `--rootfs image=IMAGE` selects this executor and pulls an
 OCI/Docker image directly, without invoking Docker, Podman, or Buildah. When no
-explicit `--vm-rootfs` is supplied, the default is `ubuntu:latest`. Manifests
+explicit rootfs is supplied, the default is `ubuntu:latest`. Manifests
 and layer digests are verified, the host architecture selects `linux/arm64` or
 `linux/amd64`, and the unpacked rootfs becomes the immutable lower layer of a
 pVisor OverlayFS. `--image-store` overrides the platform cache directory.
 OCI cache targets are marked immutable, and this protection survives logical
 checkpoint/fork, so `pvisor apply` cannot mutate a rootfs shared by other Runs.
 
-On Linux, `--host-rootfs` selects the host `/` as the VM rootfs lower and
-selects the VM executor when `--executor` is omitted. It is mutually exclusive
-with `--image` and `--vm-rootfs`, and is rejected on macOS. This is a distinct
-semantic option rather than a CLI alias: `--overlayfs-base` and
-`--overlayfs-target` continue to select the project workspace independently.
-With a guest workspace target, writes outside that workspace use a temporary
+On Linux, `--rootfs host` selects the host `/` as the VM rootfs lower and
+selects the VM executor when `--executor` is omitted. `--rootfs <PATH>` selects
+a prepared directory and `--rootfs image=<PATH>` selects an OCI image or image
+path. These forms are mutually exclusive, and host rootfs is rejected on macOS.
+The OverlayFS view is selected with `--overlayfs-path`, the absolute path the
+Agent sees. Repeat `--overlayfs-compose` to layer host directories in
+bottom-to-top order; the current workspace remains the implicit bottom layer.
+When `--overlayfs-path` is omitted, the current workspace is used as the view
+source and pVisor places the merged mount in a managed per-Run path to avoid
+mounting over its own lower directory.
+With a guest workspace path, writes outside that workspace use a temporary
 root upper and are discarded when the VM exits; workspace changes use the
 durable OverlayFS stage.
 
@@ -318,12 +327,13 @@ user's host permissions, so the first OCI-image version must not be treated as
 a hostile multi-tenant boundary despite the guest-kernel isolation.
 
 On host/container execution, the four visible OverlayNet policy flags and
-Gateway capture automatically enable the proxy driver. Any `--overlayfs-base`,
+Gateway capture automatically enable the proxy driver. Any `--overlayfs-path`,
 `--overlayfs-compose`,
-`--overlayfs-stage`, `--overlayfs-backend`, or `--overlayfs-commit` option
-automatically enables OverlayFS; no separate mode switch exists. The base
-defaults to the workspace, and the stage defaults to the generated Run
-directory. When a stage is nested inside a base or compose layer, pVisor hides
+`--stage`, `--overlayfs-backend`, or `--overlayfs-commit` option
+automatically enables OverlayFS; no separate mode switch exists. The workspace
+is the implicit base; explicit compose layers are applied in the order given.
+An explicit `--stage` is the unified record
+directory for metadata, trajectory, and filesystem state. When a stage is nested inside a base or compose layer, pVisor hides
 that subtree from the merged view and rejects guest attempts to recreate it.
 libkrun Runs create no live host mountpoint, preventing host indexers from
 recursively entering `<stage>/merged`. The reverse topology, where a
@@ -342,8 +352,9 @@ virtual router for configured model traffic.
 ## Run project discovery
 
 The current directory is the default project association. When OverlayFS is
-enabled, `--overlayfs-base` identifies the reusable project directory. Each Run receives an
-independent directory under `PERSISTING_RUN_HOME`. If that root would be inside
+enabled, `--overlayfs-compose` identifies reusable host layers and
+`--overlayfs-path` identifies the Agent-visible view. Each Run receives an
+independent directory under pVisor's default records root. If that root would be inside
 the selected OverlayFS base or a compose layer, pVisor instead uses the system
 temporary Run root to keep the writable stage disjoint:
 

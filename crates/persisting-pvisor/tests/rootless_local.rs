@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 fn only_run(root: &Path) -> PathBuf {
+    if root.join("run-bundle.json").is_file() {
+        return root.to_path_buf();
+    }
     let runs = fs::read_dir(root)
         .expect("read Run root")
         .filter_map(Result::ok)
@@ -24,7 +27,22 @@ fn only_run(root: &Path) -> PathBuf {
     runs.into_iter().next().unwrap()
 }
 
+fn stage_root(run_home: &Path) -> PathBuf {
+    run_home
+        .parent()
+        .expect("temporary run root has a parent")
+        .join("stage")
+}
+
 fn setup_failure(root: &Path) -> Option<String> {
+    let root = if root.exists() {
+        root.to_path_buf()
+    } else {
+        stage_root(root)
+    };
+    if root.join("run-bundle.json").is_file() {
+        return RunBundle::read(&root).ok()?.run.output.stderr;
+    }
     let run = fs::read_dir(root)
         .ok()?
         .filter_map(Result::ok)
@@ -40,8 +58,8 @@ fn user_namespaces_are_unavailable(stderr: &str) -> bool {
         let Some((_, error)) = line.split_once(CONTEXT) else {
             return false;
         };
-        error == "Operation not permitted (os error 1)"
-            || error == "Permission denied (os error 13)"
+        error == "unshare user namespace: Operation not permitted (os error 1)"
+            || error == "unshare user namespace: Permission denied (os error 13)"
     })
 }
 
@@ -107,9 +125,10 @@ printf '%s:%s:%s\n' "$PERSISTING_SANDBOX_FILESYSTEM" "$PERSISTING_SANDBOX_LANDLO
         .env("OUTSIDE_WRITE", outside.join("escaped.txt"))
         .args([
             "run",
-            "--safe",
             "--stdio",
             "capture",
+            "--stage",
+            temporary.path().join("stage").to_str().unwrap(),
             "--pass-env",
             "OUTSIDE_SECRET",
             "--pass-env",
@@ -133,7 +152,7 @@ printf '%s:%s:%s\n' "$PERSISTING_SANDBOX_FILESYSTEM" "$PERSISTING_SANDBOX_LANDLO
     assert!(!outside.join("symlink-escaped.txt").exists());
     assert!(!workspace.join("staged.txt").exists());
 
-    let run = only_run(&run_home);
+    let run = only_run(&stage_root(&run_home));
     let bundle = RunBundle::read(&run).unwrap();
     assert_eq!(
         bundle
@@ -206,9 +225,10 @@ printf metadata-denied
         .env("OUTSIDE_DIR", &outside)
         .args([
             "run",
-            "--safe",
             "--stdio",
             "capture",
+            "--stage",
+            temporary.path().join("stage").to_str().unwrap(),
             "--pass-env",
             "OUTSIDE_FILE",
             "--pass-env",
@@ -238,7 +258,7 @@ printf metadata-denied
     assert!(!workspace.join("hardlink.txt").exists());
     assert!(!workspace.join("timestamp-copy").exists());
 
-    let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
+    let bundle = RunBundle::read(&only_run(&stage_root(&run_home))).unwrap();
     assert!(bundle.safety.filesystem_read_non_bypassable);
     assert!(bundle.safety.filesystem_write_non_bypassable);
     assert!(
@@ -261,7 +281,8 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["run", "--safe", "--stdio", "capture"])
+        .args(["run", "--stdio", "capture", "--stage"])
+        .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .args([
             "--",
@@ -284,7 +305,7 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
     assert!(!workspace.join("src/promote.txt").exists());
     assert!(!workspace.join("tests/defer.txt").exists());
 
-    let run = only_run(&run_home);
+    let run = only_run(&stage_root(&run_home));
     let apply = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
         .args(["apply"])
@@ -363,7 +384,8 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["run", "--safe", "--stdio", "capture"])
+        .args(["run", "--stdio", "capture", "--stage"])
+        .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .args(["--", "/bin/sh", "-c", "printf staged > value.txt"])
         .output()
@@ -375,7 +397,7 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
     assert_eq!(fs::read(workspace.join("value.txt")).unwrap(), b"original");
     fs::write(workspace.join("value.txt"), b"concurrent").unwrap();
 
-    let run = only_run(&run_home);
+    let run = only_run(&stage_root(&run_home));
     let apply = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
         .arg("apply")
@@ -432,9 +454,10 @@ fn safe_launcher_closes_inherited_host_file_descriptors() {
         .env("PERSISTING_LEAKED_SOCKET_FD", socket_fd.to_string())
         .args([
             "run",
-            "--safe",
             "--stdio",
             "capture",
+            "--stage",
+            temporary.path().join("stage").to_str().unwrap(),
             "--overlaynet-deny-all",
             "--pass-env",
             "PERSISTING_LEAKED_FD",
@@ -462,7 +485,7 @@ fn safe_launcher_closes_inherited_host_file_descriptors() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
+    let bundle = RunBundle::read(&only_run(&stage_root(&run_home))).unwrap();
     assert!(bundle.safety.filesystem_non_bypassable);
     assert!(
         bundle
@@ -523,9 +546,10 @@ printf 'network:%s\n' "$PERSISTING_SANDBOX_NETWORK"
         .env("HOST_PORT", host_port)
         .args([
             "run",
-            "--safe",
             "--stdio",
             "capture",
+            "--stage",
+            temporary.path().join("stage").to_str().unwrap(),
             "--overlaynet-deny-all",
             "--pass-env",
             "HOST_PORT",
@@ -545,7 +569,7 @@ printf 'network:%s\n' "$PERSISTING_SANDBOX_NETWORK"
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let run = only_run(&run_home);
+    let run = only_run(&stage_root(&run_home));
     let bundle = RunBundle::read(&run).unwrap();
     assert!(bundle.safety.network_non_bypassable);
     assert!(
@@ -582,7 +606,8 @@ fn synthetic_root_hides_ungranted_host_unix_sockets() {
         .env("PERSISTING_RUN_HOME", &run_home)
         .env("PERSISTING_SOCKET_PROBE", &host_socket)
         .env("SSH_AUTH_SOCK", &host_socket)
-        .args(["run", "--safe", "--stdio", "capture"])
+        .args(["run", "--stdio", "capture", "--stage"])
+        .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .arg("--")
         .arg(std::env::current_exe().unwrap())
@@ -599,7 +624,7 @@ fn synthetic_root_hides_ungranted_host_unix_sockets() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
+    let bundle = RunBundle::read(&only_run(&stage_root(&run_home))).unwrap();
     assert!(bundle.safety.filesystem_non_bypassable);
 }
 
@@ -612,7 +637,8 @@ fn safe_run_reaps_setsid_double_fork_descendants_after_success() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["run", "--safe", "--stdio", "capture"])
+        .args(["run", "--stdio", "capture", "--stage"])
+        .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .arg("--")
         .arg(std::env::current_exe().unwrap())
@@ -629,7 +655,7 @@ fn safe_run_reaps_setsid_double_fork_descendants_after_success() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
+    let bundle = RunBundle::read(&only_run(&stage_root(&run_home))).unwrap();
     let socket = bundle
         .filesystem
         .as_ref()
@@ -692,7 +718,8 @@ fn sandboxed_agent_may_legitimately_exit_with_reserved_launcher_code() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["run", "--safe", "--stdio", "capture"])
+        .args(["run", "--stdio", "capture", "--stage"])
+        .arg(temporary.path().join("stage"))
         .current_dir(&workspace)
         .args(["--", "/bin/sh", "-c", "exit 125"])
         .output()
@@ -702,7 +729,7 @@ fn sandboxed_agent_may_legitimately_exit_with_reserved_launcher_code() {
     }
 
     assert!(!output.status.success());
-    let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
+    let bundle = RunBundle::read(&only_run(&stage_root(&run_home))).unwrap();
     assert_eq!(bundle.run.exit_code, Some(SANDBOX_SETUP_EXIT_CODE));
     assert_eq!(
         bundle.run.failure.as_ref().map(|failure| failure.kind),
@@ -760,15 +787,18 @@ fn internal_launcher_reports_setup_failure_with_reserved_status() {
 #[test]
 fn namespace_setup_failure_classifier_is_narrow() {
     assert!(user_namespaces_are_unavailable(
-        "pVisor local sandbox setup failed: initialize rootless user and mount namespaces: Operation not permitted (os error 1)"
+        "pVisor local sandbox setup failed: initialize rootless user and mount namespaces: unshare user namespace: Operation not permitted (os error 1)"
     ));
     assert!(user_namespaces_are_unavailable(
-        "pVisor local sandbox setup failed: initialize rootless user and mount namespaces: Permission denied (os error 13)"
+        "pVisor local sandbox setup failed: initialize rootless user and mount namespaces: unshare user namespace: Permission denied (os error 13)"
     ));
     assert!(!user_namespaces_are_unavailable(
         "apply Landlock rules: Permission denied (os error 13)"
     ));
     assert!(!user_namespaces_are_unavailable(
         "initialize rootless user and mount namespaces: No such file or directory (os error 2)"
+    ));
+    assert!(!user_namespaces_are_unavailable(
+        "initialize rootless user and mount namespaces: unshare mount namespace: Operation not permitted (os error 1)"
     ));
 }

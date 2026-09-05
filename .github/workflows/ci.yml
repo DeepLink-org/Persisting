@@ -423,6 +423,40 @@ jobs:
       - name: Pytest
         run: uv run pytest tests/ -q
 
+  pvisor-cases:
+    name: pVisor case checklist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-nextest: "false"
+          install-zig: "false"
+          components: ""
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-pvisor-cases
+
+      - name: Build pVisor
+        run: cargo build --release -p persisting-pvisor --locked
+
+      - name: Run documented cases
+        run: |
+          python3 scripts/run-pvisor-cases.py \
+            --pvisor ./target/release/pvisor \
+            --report target/pvisor-case-report.md
+
+      - name: Upload case report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pvisor-case-report
+          path: target/pvisor-case-report.md
+          if-no-files-found: ignore
+
   examples:
     name: Examples / ${{ matrix.shard }}
     runs-on: ubuntu-latest
@@ -474,6 +508,7 @@ jobs:
       - pvisor-isolation-regression
       - s3-contract
       - python-test
+      - pvisor-cases
       - examples
     runs-on: ubuntu-latest
     steps:

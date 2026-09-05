@@ -13,13 +13,13 @@ use clap::{Parser, Subcommand};
 const ROOT_ABOUT: &str =
     "Foreground Agent Run manager with rootless Linux sandboxing and reviewable workspaces";
 #[cfg(target_os = "linux")]
-const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn Linux, `pvisor run --safe` automatically runs host executables inside a fail-closed rootless boundary: user and mount namespaces, a minimal synthetic root with chroot, Landlock, no_new_privs, and dropped capabilities. Add `--overlaynet-deny-all` to isolate direct network sockets in a private network namespace.";
+const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn Linux, host runs use safe-best-effort rootless isolation when supported: user and mount namespaces, a minimal synthetic root with chroot, Landlock, no_new_privs, and dropped capabilities. Add `--overlaynet-deny-all` to isolate direct network sockets in a private network namespace.";
 
 #[cfg(target_os = "macos")]
 const ROOT_ABOUT: &str =
     "Foreground Agent Run manager with Seatbelt isolation and reviewable workspaces";
 #[cfg(target_os = "macos")]
-const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn macOS, `pvisor run --safe` confines filesystem writes to the macFUSE-staged workspace and Run-scoped scratch directory with a fail-closed Seatbelt profile. Full-disk reads remain available for local toolchain compatibility. `--overlaynet-deny-all` also blocks IP and ambient host Unix sockets while retaining Run-local IPC.";
+const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn macOS, host runs use safe-best-effort Seatbelt confinement when supported. Full-disk reads remain available for local toolchain compatibility. `--overlaynet-deny-all` also blocks IP and ambient host Unix sockets while retaining Run-local IPC.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const ROOT_ABOUT: &str = "Foreground Agent Run manager with staged, reviewable workspaces";
@@ -163,7 +163,7 @@ mod tests {
             vec!["pvisor", "env", "status", "demo"],
             vec!["pvisor", "env", "delete", "demo", "--force"],
             vec!["pvisor", "run", "--", "/usr/bin/true"],
-            vec!["pvisor", "run", "--safe", "/usr/bin/true"],
+            vec!["pvisor", "run", "/usr/bin/true"],
             vec![
                 "pvisor",
                 "replay",
@@ -187,8 +187,7 @@ mod tests {
                 "Review the fresh observation.",
                 "--agent-entrypoint",
                 "/usr/bin/claude",
-                "--safe",
-                "--overlayfs-base",
+                "--overlayfs-path",
                 "/workspace",
             ],
         ] {
@@ -277,7 +276,8 @@ mod tests {
 
         #[cfg(target_os = "linux")]
         {
-            assert!(help.contains("rootless boundary"));
+            assert!(help.contains("safe-best-effort"));
+            assert!(help.contains("rootless isolation"));
             assert!(help.contains("namespace"));
             assert!(help.contains("Landlock"));
         }

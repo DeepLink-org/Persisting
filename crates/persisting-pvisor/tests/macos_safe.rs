@@ -45,7 +45,7 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
     command
         .env("PERSISTING_RUN_HOME", &run_home)
-        .args(["run", "--safe", "--stdio", "capture", "--overlayfs-base"])
+        .args(["run", "--stdio", "capture", "--overlayfs-compose"])
         .arg(&workspace)
         .args([
             "--",
@@ -170,11 +170,10 @@ fn deny_all_blocks_ip_and_host_unix_sockets_on_macos() {
         .env("PERSISTING_RUN_HOME", &run_home)
         .args([
             "run",
-            "--safe",
             "--overlaynet-deny-all",
             "--stdio",
             "capture",
-            "--overlayfs-base",
+            "--overlayfs-compose",
         ])
         .arg(&workspace)
         .args([

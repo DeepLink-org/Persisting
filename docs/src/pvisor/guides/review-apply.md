@@ -10,15 +10,15 @@ cross that boundary. This workflow applies the filesystem
 The short form is:
 
 ```bash
-pvisor run --safe codex
+pvisor -- codex
 ```
 
 For explicit paths and commit behavior:
 
 ```bash
 pvisor run \
-  --overlayfs-base "$PWD" \
-  --overlayfs-stage /tmp/my-agent-stage \
+  --overlayfs-compose "$PWD" \
+  --stage /tmp/my-agent-stage \
   --overlayfs-commit manual \
   -- codex
 ```

@@ -64,7 +64,11 @@ pub struct RunConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OverlayFsConfig {
-    pub base: Option<PathBuf>,
+    /// Absolute path visible to the replay Agent.
+    pub path: Option<PathBuf>,
+    /// Host layers composed in declaration order.
+    #[serde(default)]
+    pub compose: Vec<PathBuf>,
     pub backend: Option<String>,
     pub commit: Option<String>,
 }

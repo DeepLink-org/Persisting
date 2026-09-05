@@ -69,9 +69,9 @@ fn toml_and_cli_share_one_run_configuration() {
     std::fs::write(&config_path, toml::to_string_pretty(&config).unwrap()).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--config"])
+        .args(["run", "--spec"])
         .arg(&config_path)
-        .args(["--agent", "from-cli", "--", "/usr/bin/true"])
+        .args(["--name", "from-cli", "--", "/usr/bin/true"])
         .current_dir(&workspace)
         .env("PERSISTING_RUN_HOME", &run_home)
         .output()
@@ -96,7 +96,7 @@ fn toml_and_cli_share_one_run_configuration() {
     let bundle = RunBundle::read(&run_dir).expect("read generated Run Bundle");
     assert_eq!(bundle.run.run_id, record["run_id"]);
     assert_eq!(bundle.run.agent, "from-cli");
-    assert!(!bundle.safety.safe_profile_requested);
+    assert!(bundle.safety.safe_profile_requested);
 
     let review = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .args(["review", "--json"])
@@ -267,8 +267,8 @@ if [ "$1" = "run" ]; then
     shift
   done
   shift
-  exec "$PERSISTING_TEST_PVISOR" run --executor host \
-    --run-spec "$control/run-spec.json" \
+    exec "$PERSISTING_TEST_PVISOR" run --executor host \
+    --spec "$control/run-spec.json" \
     --result-file "$control/run-result.json"
 fi
 exit 0
@@ -348,8 +348,8 @@ if [ "$1" = "run" ]; then
     shift
   done
   shift
-  exec "$PERSISTING_TEST_PVISOR" run --executor host \
-    --run-spec "$control/run-spec.json" \
+    exec "$PERSISTING_TEST_PVISOR" run --executor host \
+    --spec "$control/run-spec.json" \
     --result-file "$control/run-result.json"
 fi
 exit 0
@@ -360,7 +360,7 @@ exit 0
 
     let started = std::time::Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--timeout-ms", "20", "--container-runtime"])
+        .args(["run", "--timeout", "20ms", "--container-runtime"])
         .arg(&runtime)
         .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
         .args([
@@ -394,4 +394,137 @@ exit 0
         Some(persisting_agentctl::RunFailureKind::DeadlineExceeded)
     );
     assert!(!bundle.safety.host_process);
+}
+
+#[test]
+fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
+    let cases: &[&[&str]] = &[
+        &["--spec", "config.toml"],
+        &["--result-file", "result.json"],
+        &["--stage", "runs/task"],
+        &["--stage", "drop"],
+        &["--stage", "drop:/tmp/task"],
+        &["--name", "smoke"],
+        &["--executor", "host"],
+        &["--executor", "container"],
+        &["--executor", "vm"],
+        &["--vm"],
+        &["--rootfs", "host"],
+        &["--rootfs", "/tmp/rootfs"],
+        &["--rootfs", "image=/tmp/image"],
+        &["--image-store", "/tmp/images"],
+        &["--vm-library-dir", "/tmp/libkrunfw"],
+        &["--memory", "256MiB"],
+        &["--mem", "256MiB"],
+        &["--cpu", "2"],
+        &["--strict"],
+        &["--timeout", "1s"],
+        &["--stdio", "capture"],
+        &["--pass-env", "PATH"],
+        &["--max-processes", "8"],
+        &["--max-cpu-time", "5s"],
+        &["--max-open-files", "32"],
+        &["--max-file-size", "1MiB"],
+        &["--max-stage-size", "2GiB"],
+        &["--container-runtime", "runc"],
+        &["--container-image", "alpine:latest"],
+        &["--container-rootfs", "/tmp/rootfs"],
+        &["--container-pvisor-binary", "/tmp/pvisor"],
+        &["--container-platform", "linux/amd64"],
+        &["--container-network", "none"],
+        &["--container-workdir", "/workspace"],
+        &["--container-user", "1000:1000"],
+        &["--container-read-only-rootfs"],
+        &["--container-mount", "source=\"/tmp\",target=\"/workspace\""],
+        &["--overlayfs-path", "/workspace"],
+        &["--overlayfs-compose", "/tmp/lower"],
+        &["--overlayfs-backend", "directory"],
+        &["--overlayfs-commit", "manual"],
+        &["--overlaynet", "proxy"],
+        &["--overlaynet", "auto"],
+        &["--overlaynet"],
+        &["--overlaynet-listen", "127.0.0.1:18080"],
+        &["--overlaynet-allow", "example.com:443"],
+        &["--overlaynet-deny", "10.0.0.0/8"],
+        &["--overlaynet-limit", "example.com=1mbps"],
+        &["--overlaynet-deny-all"],
+        &["--gateway-mode", "capture"],
+        &["--gateway-admin-listen", "127.0.0.1:19090"],
+        &["--gateway-level", "full"],
+        &["--gateway-session-header", "X-Session-ID"],
+        &["--gateway-debug"],
+        &["--gateway-stream-markdown"],
+        &[
+            "--gateway-route",
+            "name=\"default\",upstream=\"https://example.com\"",
+        ],
+        &["--record-format", "json"],
+        &["--record-destination", "/tmp/events.jsonl"],
+    ];
+    // `--help` short-circuits before execution, so this exercises the parser
+    // over the whole public surface without starting a Run.
+    for options in cases {
+        let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+            .arg("run")
+            .args(*options)
+            .arg("--help")
+            .output()
+            .expect("run pvisor CLI parser");
+        assert!(
+            output.status.success(),
+            "CLI rejected {:?}: {}",
+            options,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+fn advertised_run_options() -> std::collections::BTreeSet<String> {
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args(["run", "--help"])
+        .output()
+        .expect("render pvisor run --help");
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    let options = help
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '-')
+        .filter(|token| token.starts_with("--") && token.len() > 2)
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    for anchor in ["--executor", "--stage", "--strict"] {
+        assert!(
+            options.contains(anchor),
+            "help scraping is broken: {anchor} is missing from {options:?}"
+        );
+    }
+    options
+}
+
+#[test]
+fn removed_run_options_stay_off_the_cli_surface() {
+    // `run` takes a trailing var arg that allows hyphen values, so an unknown
+    // `--flag` joins the Agent command instead of failing to parse. Exit codes
+    // cannot separate a removed option from a resurrected one; the rendered
+    // option list can.
+    let advertised = advertised_run_options();
+    for option in [
+        "--safe",
+        "--workspace",
+        "--config",
+        "--run-spec",
+        "--run-home",
+        "--agent",
+        "--host-rootfs",
+        "--max-file-size-bytes",
+        "--timeout-ms",
+        "--max-cpu-time-ms",
+        "--overlaynet-mode",
+        "--overlayfs-base",
+        "--overlayfs-target",
+    ] {
+        assert!(
+            !advertised.contains(option),
+            "`pvisor run --help` advertises the removed option {option} again"
+        );
+    }
 }
