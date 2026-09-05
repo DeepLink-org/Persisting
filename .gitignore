@@ -32,3 +32,6 @@ pchronicle-web/dist
 pchronicle-web/target/
 crates/persisting-pchronicle-cli/web-assets/
 .worktrees/
+
+# Docusaurus generated metadata
+docs/website/.docusaurus/
