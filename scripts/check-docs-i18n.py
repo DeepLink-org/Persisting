@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Fail if translatable docs pages are missing a language twin.
+"""Fail if published docs pages are missing a language twin.
 
-For each ``docs/src/**/foo.md`` (not ``.zh.md``), require ``foo.zh.md``.
-Also flag orphan ``.zh.md`` files whose English twin is missing.
+The Docusaurus site keeps translations in parallel ``docs/en`` and ``docs/zh``
+trees. Every public English page must therefore have a page at the same
+relative path in the Chinese tree, and vice versa.
 
 Exempt (intentionally English-only or out of the published tree):
 
@@ -21,7 +22,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parent.parent / "docs" / "src"
+DOCS = Path(__file__).resolve().parent.parent / "docs" / "website" / "docs"
+LANGUAGES = ("en", "zh")
 
 EN_ONLY = {
     "api/index.md",
@@ -34,7 +36,7 @@ EN_ONLY = {
 # is being stabilized. Keep it in the published tree without making CI block
 # unrelated changes on a missing translation twin.
 ZH_ONLY = {
-    "pvisor/reference/cases.zh.md",
+    "pvisor/reference/cases.md",
 }
 
 
@@ -52,30 +54,24 @@ def is_translatable(rel: str) -> bool:
     return True
 
 
-def chinese_twin(page: Path) -> Path:
-    return page.with_name(page.name[:-3] + ".zh.md")
-
-
-def english_twin(page: Path) -> Path:
-    return page.with_name(page.name.removesuffix(".zh.md") + ".md")
-
-
-def collect_violations(src: Path = SRC) -> list[str]:
+def collect_violations(src: Path = DOCS) -> list[str]:
     violations: list[str] = []
-    for page in sorted(src.rglob("*.md")):
-        rel = page.relative_to(src).as_posix()
-        if is_archive(rel):
-            continue
-        if page.name.endswith(".zh.md"):
-            if rel in ZH_ONLY:
+    trees = {language: src / language for language in LANGUAGES}
+    pages = {
+        language: {
+            page.relative_to(root).as_posix()
+            for page in sorted(root.rglob("*.md"))
+        }
+        for language, root in trees.items()
+    }
+    for language, other in (("en", "zh"), ("zh", "en")):
+        for rel in sorted(pages[language]):
+            if is_archive(rel) or rel in EN_ONLY or is_rfc_body(rel):
                 continue
-            if not english_twin(page).exists():
-                violations.append(f"orphan zh: {rel}")
-            continue
-        if not is_translatable(rel):
-            continue
-        if not chinese_twin(page).exists():
-            violations.append(f"missing zh: {rel}")
+            if language == "zh" and rel in ZH_ONLY:
+                continue
+            if rel not in pages[other]:
+                violations.append(f"missing {other}: {language}/{rel}")
     return violations
 
 

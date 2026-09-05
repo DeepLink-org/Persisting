@@ -28,9 +28,9 @@ The public reading path is intentionally progressive:
 4. **Guides** solve task-shaped problems with verification steps.
 5. **Design and Reference** document implementation boundaries and exact syntax.
 
-The `ppilot` material remains outside the public navigation. Queue, search, and
-standalone capture documentation remain separate project areas and are not part
-of the default product onboarding path.
+Internal orchestration material remains outside the public navigation. Queue,
+search, and standalone capture documentation remain separate project areas and
+are not part of the default product onboarding path.
 
 ## Contributing
 
