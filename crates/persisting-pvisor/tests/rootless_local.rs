@@ -70,6 +70,14 @@ fn skip_if_user_namespaces_are_explicitly_optional(
     if std::env::var_os("PERSISTING_TEST_ALLOW_NO_USERNS").is_none() || output.status.success() {
         return false;
     }
+    let combined = String::from_utf8_lossy(&output.stderr);
+    // Safe-best-effort intentionally falls back to the host process when the
+    // runner cannot create namespaces. Treat that capability result as a
+    // skippable environment condition, just like the launcher setup error.
+    if combined.contains("falling back to host process") {
+        eprintln!("skipping: the test host disables required namespaces");
+        return true;
+    }
     let Some(stderr) = setup_failure(run_home) else {
         return false;
     };
