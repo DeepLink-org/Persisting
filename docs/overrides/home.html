@@ -92,24 +92,9 @@
             <a href="installation/" class="ph-btn ph-btn--quiet">{{ c.install }}</a>
           </div>
         </div>
-        <div class="ph-stage">
-          <figure class="ph-panel ph-panel--exec">
-            <div class="ph-term" role="img" aria-label="pVisor command workflow">
-              <span class="ph-term-dots" aria-hidden="true"></span>
-              <pre><code><span class="ph-l"><span class="ph-p">$</span> pvisor -- codex</span>
-<span class="ph-l"><span class="ph-p">$</span> pvisor review last</span>
-<span class="ph-l"><span class="ph-p">$</span> pvisor apply last --path src</span></code></pre>
-            </div>
-            <figcaption>pVisor / governed execution</figcaption>
-          </figure>
-          <span class="ph-beam" aria-hidden="true"></span>
-          <figure class="ph-panel ph-panel--hist">
-            <div class="ph-window">
-              <span class="ph-term-dots" aria-hidden="true"></span>
-              <img src="{{ base_url }}/assets/diagrams/persisting/system-products.svg" alt="{{ c.architecture }}" loading="lazy" width="1400" height="780" />
-            </div>
-            <figcaption>pChronicle / durable history</figcaption>
-          </figure>
+        <div class="ph-hero-art" role="img" aria-label="{{ c.architecture }}">
+          <span class="ph-hero-art__label">RUN / STATE / HISTORY</span>
+          <span class="ph-hero-art__caption">{{ c.architecture_body }}</span>
         </div>
       </div>
     </section>

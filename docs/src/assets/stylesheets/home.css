@@ -82,13 +82,22 @@ body {
 /* ---------------------------------------------------------------- hero -- */
 
 .ph-hero {
-  padding: 84px 0 92px;
+  position: relative;
+  overflow: hidden;
+  padding: 94px 0 104px;
   background: var(--ph-hero-bg);
   color: var(--ph-hero-ink);
 }
 
 .ph-hero-copy {
   max-width: 780px;
+}
+
+.ph-hero .ph-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(360px, 1.1fr);
+  align-items: center;
+  gap: clamp(36px, 7vw, 96px);
 }
 
 .ph-eyebrow,
@@ -116,6 +125,13 @@ body {
   font-weight: 650;
   letter-spacing: -0.022em;
   line-height: 1.28;
+}
+
+.ph-hero-copy .ph-positioning + .ph-positioning {
+  margin-top: 16px;
+  font-size: clamp(1.05rem, 1.7vw, 1.25rem);
+  font-weight: 450;
+  line-height: 1.65;
 }
 
 .ph-lede {
@@ -179,6 +195,31 @@ body {
   align-items: center;
   margin-top: 62px;
 }
+
+.ph-hero-art {
+  position: relative;
+  min-height: 430px;
+  overflow: hidden;
+  border: 1px solid rgba(94, 234, 212, 0.25);
+  border-radius: 24px;
+  background: #07101d url('../diagrams/persisting/hero-cyberpunk.svg') center / cover no-repeat;
+  box-shadow: var(--ph-shadow);
+}
+
+.ph-hero-art__label,
+.ph-hero-art__caption {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  color: #a7f3d0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.ph-hero-art__label { top: 22px; }
+.ph-hero-art__caption { bottom: 22px; color: #bfdbfe; font-family: inherit; letter-spacing: 0; text-transform: none; line-height: 1.5; }
 
 .ph-panel {
   margin: 0;
@@ -657,6 +698,14 @@ body {
 }
 
 @media (max-width: 920px) {
+  .ph-hero .ph-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .ph-hero-art {
+    min-height: 360px;
+  }
+
   /* Stack the dual visual; the beam turns vertical. */
   .ph-stage {
     grid-template-columns: 1fr;
