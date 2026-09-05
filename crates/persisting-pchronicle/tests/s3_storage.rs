@@ -316,7 +316,10 @@ async fn run_single_writer_manifest_contract(root: &str) -> Result<()> {
 }
 
 async fn cleanup(root: &str) -> Result<()> {
-    Operator::from_uri(root)?.remove_all("").await?;
+    Operator::from_uri(root)?
+        .delete_with(".")
+        .recursive(true)
+        .await?;
     Ok(())
 }
 
