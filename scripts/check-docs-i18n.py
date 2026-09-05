@@ -30,6 +30,13 @@ EN_ONLY = {
     "guide/queue.md",
 }
 
+# Some reference material is intentionally authored only in Chinese while it
+# is being stabilized. Keep it in the published tree without making CI block
+# unrelated changes on a missing translation twin.
+ZH_ONLY = {
+    "pvisor/reference/cases.zh.md",
+}
+
 
 def is_archive(rel: str) -> bool:
     return rel == "archive" or rel.startswith("archive/")
@@ -60,6 +67,8 @@ def collect_violations(src: Path = SRC) -> list[str]:
         if is_archive(rel):
             continue
         if page.name.endswith(".zh.md"):
+            if rel in ZH_ONLY:
+                continue
             if not english_twin(page).exists():
                 violations.append(f"orphan zh: {rel}")
             continue
