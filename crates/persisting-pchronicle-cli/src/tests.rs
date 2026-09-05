@@ -303,7 +303,7 @@ fn command_tree_contains_the_product_commands() {
             .get_help()
             .unwrap()
             .to_string()
-            .contains("combine them into one Storyline Lance Store at the Dataset root")
+            .contains("one squashed Storyline Lance Store at the Dataset root")
     );
     assert!(Cli::try_parse_from(["pchronicle", "project", "status"]).is_err());
 

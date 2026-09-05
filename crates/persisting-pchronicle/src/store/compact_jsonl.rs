@@ -242,7 +242,7 @@ impl CompactJsonlStore {
             }
             ensure!(rows.len() > first_row, "compact JSONL {relative} is empty");
         }
-        let schema = schema(options);
+        let schema = schema(options)?;
         let mut arrays: Vec<Arc<dyn Array>> = Vec::new();
         let required = |name: &str, default| -> Result<Vec<String>> {
             let path = options.path_for(name, default);
@@ -292,21 +292,20 @@ impl CompactJsonlStore {
         arrays.push(Arc::new(StringArray::from(ids)));
         arrays.push(Arc::new(StringArray::from(timestamps)));
         arrays.push(Arc::new(StringArray::from(filenames)));
+        let data = rows
+            .iter()
+            .zip(&offloads)
+            .map(|((value, _, _, _), offload)| {
+                let value = if offload.is_none() {
+                    serde_json::to_string(value)?
+                } else {
+                    "null".into()
+                };
+                encode_json_bytes(&value)
+            })
+            .collect::<Result<Vec<_>>>()?;
         arrays.push(Arc::new(LargeBinaryArray::from(
-            rows.iter()
-                .zip(&offloads)
-                .map(|((value, _, _, _), offload)| {
-                    let value = if offload.is_none() {
-                        serde_json::to_string(value).unwrap()
-                    } else {
-                        "null".into()
-                    };
-                    encode_json(&value).unwrap()
-                })
-                .collect::<Vec<_>>()
-                .iter()
-                .map(Vec::as_slice)
-                .collect::<Vec<_>>(),
+            data.iter().map(Vec::as_slice).collect::<Vec<_>>(),
         )));
         for column in &options.columns {
             if matches!(column.name.as_str(), "id" | "timestamp") {
@@ -314,24 +313,33 @@ impl CompactJsonlStore {
             }
             let values = rows
                 .iter()
-                .map(|(v, _, _, _)| {
+                .map(|(v, _, _, _)| -> Result<Option<Vec<u8>>> {
                     path_value(v, &column.path)
-                        .map(|x| encode_json(&serde_json::to_string(x).unwrap()).unwrap())
+                        .map(|x| {
+                            let json = serde_json::to_string(x)?;
+                            encode_json_bytes(&json)
+                        })
+                        .transpose()
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>>>()?;
             arrays.push(Arc::new(LargeBinaryArray::from(
                 values.iter().map(|x| x.as_deref()).collect::<Vec<_>>(),
             )));
         }
+        let offload_values = offloads
+            .iter()
+            .map(|value| -> Result<Option<Vec<u8>>> {
+                value
+                    .as_ref()
+                    .map(|value| {
+                        let json = serde_json::to_string(value)?;
+                        encode_json_bytes(&json)
+                    })
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>>>()?;
         arrays.push(Arc::new(LargeBinaryArray::from(
-            offloads
-                .iter()
-                .map(|value| {
-                    value
-                        .as_ref()
-                        .map(|value| encode_json(&serde_json::to_string(value).unwrap()).unwrap())
-                })
-                .collect::<Vec<_>>()
+            offload_values
                 .iter()
                 .map(|x| x.as_deref())
                 .collect::<Vec<_>>(),
@@ -490,7 +498,7 @@ fn validate_dataset_schema(dataset: &Dataset) -> Result<(usize, usize)> {
     ))
 }
 
-fn schema(options: &CompactJsonlOptions) -> Arc<Schema> {
+fn schema(options: &CompactJsonlOptions) -> Result<Arc<Schema>> {
     let mut fields = vec![
         Field::new("id", DataType::Utf8, false),
         Field::new("timestamp", DataType::Utf8, false),
@@ -506,16 +514,20 @@ fn schema(options: &CompactJsonlOptions) -> Arc<Schema> {
     );
     fields.push(json_field(OFFLOAD_COLUMN, true));
     fields.push(Field::new(RAW_COLUMN, DataType::LargeBinary, true));
-    Arc::new(Schema::new_with_metadata(
+    Ok(Arc::new(Schema::new_with_metadata(
         fields,
         std::collections::HashMap::from([
             (FORMAT_KEY.into(), FORMAT_NAME.into()),
             (
                 "pchronicle.columns".into(),
-                serde_json::to_string(&options.columns).expect("column mappings serialize"),
+                serde_json::to_string(&options.columns)?,
             ),
         ]),
-    ))
+    )))
+}
+
+fn encode_json_bytes(value: &str) -> Result<Vec<u8>> {
+    encode_json(value).map_err(|error| anyhow!("encode compact JSON value: {error}"))
 }
 
 fn collect_jsonl(input: &Path) -> Result<Vec<PathBuf>> {
