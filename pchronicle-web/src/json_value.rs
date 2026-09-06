@@ -95,6 +95,10 @@ fn scalar_text(value: &Value) -> String {
     }
 }
 
+fn json_literal(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| scalar_text(value))
+}
+
 fn json_type(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
@@ -185,16 +189,16 @@ fn JsonTree(value: Value, default_open: bool) -> Element {
             }
         },
         Value::Object(map) => rsx! {
-            div { class: "pc2-json-tree",
+            div { class: "pc2-json-tree pc2-json-object",
                 for (key, child) in map {
                     JsonTreeNode { key: "{key}", label: key, value: child, default_open }
                 }
             }
         },
         Value::Array(items) => rsx! {
-            div { class: "pc2-json-tree",
+            div { class: "pc2-json-tree pc2-json-array",
                 for (index, child) in items.into_iter().enumerate() {
-                    JsonTreeNode { key: "{index}", label: format!("[{index}]"), value: child, default_open: false }
+                    JsonTreeNode { key: "{index}", label: String::new(), value: child, default_open: false }
                 }
             }
         },
@@ -211,16 +215,18 @@ fn JsonTreeNode(label: String, value: Value, default_open: bool) -> Element {
     if is_scalar(&peeled) {
         return rsx! {
             div { class: "pc2-json-leaf",
-                span { class: "pc2-json-key", "{label}" }
-                span { class: "pc2-json-type", "{json_type(&peeled)}" }
-                span { class: "pc2-json-scalar", "{scalar_text(&peeled)}" }
+                if !label.is_empty() { span { class: "pc2-json-key", "{label}" span { class: "pc2-json-punctuation", ":" } } }
+                span { class: "pc2-json-value {json_type(&peeled)}", "{json_literal(&peeled)}" }
             }
         };
     }
     let summary = json_summary(&value);
     rsx! {
         details { class: "pc2-json-node", open: default_open,
-            summary { span { class: "pc2-json-key", "{label}" } span { class: "pc2-json-type", "{json_type(&peeled)}" } span { class: "pc2-json-size", "{summary}" } }
+            summary {
+                if !label.is_empty() { span { class: "pc2-json-key", "{label}" span { class: "pc2-json-punctuation", ":" } } }
+                span { class: "pc2-json-size", "{summary}" }
+            }
             JsonValue { value, default_open: false }
         }
     }
