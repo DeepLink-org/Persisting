@@ -157,8 +157,8 @@ IP/CIDR 策略时，应使用能返回具体地址的 resolver。
 因此 host/container cooperative-proxy Run 会报告
 `safety.network_non_bypassable = false`。如果必须
 彻底阻止直接联网，使用 `pvisor -- --overlaynet-deny-all`：Linux 会创建私有
-network namespace；macOS 会用 Seatbelt 阻断 IP 与宿主 ambient Unix socket，只保留精确的
-AgentCtl 和 Run 私有目录内 IPC。Container Run 也可以使用 `--container-network none`。
+network namespace；macOS 会用 Seatbelt 阻断非 loopback IP 与宿主 ambient Unix socket，同时保留
+loopback proxy、精确的 AgentCtl 和 Run 私有目录内 IPC。Container Run 也可以使用 `--container-network none`。
 两种本地 host 路径上的 selective allow/deny 仍是协作式。VM executor 默认使用
 `[overlaynet] mode = "auto"`，由 smoltcp 提供 DHCP、合成 DNS 与受策略控制的 IPv4 TCP；
 `mode = "off"` 会让 VM 离线。Gateway capture 通过 guest 虚拟路由器暴露；container
