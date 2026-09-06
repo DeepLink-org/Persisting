@@ -1,10 +1,12 @@
-# Persisting
+# <img src="docs/static/img/logos/persisting-icon.png" alt="Persisting" width="72" /> Persisting
 
 **Persistent infrastructure for the Agent era.**
 
 [![CI](https://github.com/DeepLink-org/Persisting/actions/workflows/ci.yml/badge.svg)](https://github.com/DeepLink-org/Persisting/actions/workflows/ci.yml)
 [![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://deeplink-org.github.io/Persisting/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+<img src="docs/static/img/logos/persisting-with-text.png" alt="Persisting logo" width="360" />
 
 Persisting connects durable model state—parameters and KV caches—with durable
 Agent history—trajectories and execution records. The current product is the

@@ -1,5 +1,7 @@
 # pChronicle
 
+<img src="/img/logos/pchronicle-icon.png" alt="pChronicle logo" width="96" />
+
 **pChronicle is an Agent trajectory storage engine.** Use it to browse, query,
 exchange, and serve run Datasets produced by Persisting or by supported
 external formats; pChronicle does not require pVisor to run.
