@@ -15,7 +15,7 @@ const capabilities = [
 ];
 
 export default function ChineseHome() {
-  const heroArtwork = useBaseUrl('/img/diagrams/persisting/hero-cyberpunk.svg');
+  const heroArtwork = useBaseUrl('/img/diagrams/persisting/hero-black-hole.png');
   const productDiagram = useBaseUrl('/img/diagrams/persisting/system-products.svg');
   return <Layout title="Agent 时代的持久化基础设施" description="在可审查的执行边界中运行 Agent，并保存可查询历史。">
     <header className={`hero hero--primary ${styles.hero}`}><div className="container">
@@ -23,7 +23,7 @@ export default function ChineseHome() {
       <h1 className="hero__title">Agent 时代的持久化基础设施</h1>
       <p className="hero__subtitle">在可审查的执行边界中运行 Agent，并将产生的历史保存为可查询 Dataset。</p>
       <div className="buttons"><Link className="button button--secondary button--lg" to="/zh/docs/">开始使用</Link><Link className="button button--outline button--lg" to="/zh/docs/system-design/">阅读系统设计</Link></div>
-      <img className="hero-cyberpunk" src={heroArtwork} alt="Persisting 执行与历史架构" />
+      <img className="hero-cyberpunk" src={heroArtwork} alt="持久化数据城市上方的赛博朋克黑洞" />
     </div></header>
     <main>
       <section className="container padding-vert--xl"><div className="row product-choices">
