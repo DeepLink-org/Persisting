@@ -24,6 +24,11 @@ The site entry point is `docs/website/`. Markdown is organized by product in
 in `docs/website/src/pages/index.js`; shared visual tokens live in
 `docs/website/src/css/custom.css`.
 
+Use `docs-serve` for a stable preview of the generated site. Use
+`docs-serve-dirty` only while editing and needing hot reload; it runs the
+Docusaurus watcher and uses substantially more memory for a large bilingual
+site.
+
 The public reading path is intentionally progressive:
 
 1. **Start here** explains which product matches the reader's task.
