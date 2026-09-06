@@ -11,6 +11,17 @@ export default function Root({children}) {
       'capricorn', 'aquarius', 'pisces', 'aries', 'taurus', 'gemini',
       'cancer', 'leo', 'virgo', 'libra', 'scorpio', 'sagittarius',
     ];
+    const observerLatitude = 40;
+    const toRadians = (degrees) => degrees * Math.PI / 180;
+    const toDegrees = (radians) => radians * 180 / Math.PI;
+    const julianDate = (date) => date.getTime() / 86400000 + 2440587.5;
+    const localSiderealTime = (date) => {
+      const jd = julianDate(date);
+      const centuries = (jd - 2451545) / 36525;
+      const gmst = 280.46061837 + 360.98564736629 * (jd - 2451545)
+        + 0.000387933 * centuries ** 2 - centuries ** 3 / 38710000;
+      return ((gmst % 360) + 360) % 360;
+    };
     const updateZodiac = () => {
       const now = new Date();
       const month = now.getMonth();
@@ -18,10 +29,17 @@ export default function Root({children}) {
       const monthStart = new Date(now.getFullYear(), month, 1);
       const monthProgress = (now - monthStart) / (nextMonth - monthStart);
       const signIndex = (month + 9) % 12;
+      const eclipticLongitude = (signIndex * 30 + 15 + monthProgress * 30) % 360;
+      const hourAngle = ((localSiderealTime(now) - eclipticLongitude + 540) % 360) - 180;
+      const altitude = toDegrees(Math.asin(
+        Math.sin(toRadians(observerLatitude)) * Math.cos(toRadians(hourAngle)),
+      ));
       document.documentElement.style.setProperty(
         '--zodiac-index',
-        (signIndex + monthProgress).toFixed(3),
+        (eclipticLongitude / 30).toFixed(3),
       );
+      document.documentElement.style.setProperty('--zodiac-angle', `${hourAngle.toFixed(2)}deg`);
+      document.documentElement.style.setProperty('--zodiac-elevation', `${altitude.toFixed(2)}deg`);
       document.documentElement.dataset.zodiacSign = northernHemisphereSigns[signIndex];
     };
     const updateScrollProgress = () => {
