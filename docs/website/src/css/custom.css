@@ -1,7 +1,8 @@
 :root { --scroll-progress: 0; --scroll-y: 0px; --ifm-color-primary: #67e8f9; --ifm-color-primary-dark: #22d3ee; --ifm-color-primary-light: #a5f3fc; --ifm-code-font-size: 90%; --ifm-font-family-base: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; --ifm-heading-font-family: var(--ifm-font-family-base); --ifm-line-height-base: 1.7; --ifm-background-color: #070b1e; --ifm-background-surface-color: #101a3a; --ifm-font-color-base: #e7edff; --ifm-heading-color: #ffffff; }
 body { min-height: 100vh; color: #e7edff; background: #050b22; overflow-x: hidden; }
-body::before { content: ''; position: fixed; z-index: -1; inset: -18%; pointer-events: none; background: linear-gradient(180deg, rgb(5 11 34 / 32%) 0%, rgb(5 11 34 / 78%) 78%, rgb(5 11 34 / 94%) 100%), url('../assets/zodiac-sky.svg') center / cover no-repeat; transform-origin: 50% 50%; transform: perspective(1200px) rotateX(calc(var(--scroll-progress) * 14deg)) translateY(calc(var(--scroll-progress) * -7%)) scale(calc(1.08 + var(--scroll-progress) * .1)); }
-@media (prefers-reduced-motion: reduce) { body::before { transform: scale(1.08); } }
+#__docusaurus { position: relative; z-index: 1; }
+body::before { content: ''; position: fixed; z-index: 0; inset: -3%; pointer-events: none; background: linear-gradient(90deg, rgb(5 11 34 / 48%), rgb(5 11 34 / 18%) 70%), url('../assets/zodiac-sky.svg') center / cover no-repeat; transform-origin: 50% 50%; transform: translateY(calc(var(--scroll-progress) * -2%)) scale(calc(1.03 + var(--scroll-progress) * .04)); }
+@media (prefers-reduced-motion: reduce) { body::before { transform: none; } }
 .main-wrapper { background: transparent; }
 .theme-doc-markdown { color: #e7edff; }
 .theme-doc-markdown a, .footer__link-item { color: #8ff7e8; }
@@ -14,7 +15,7 @@ body::before { content: ''; position: fixed; z-index: -1; inset: -18%; pointer-e
 .theme-doc-markdown h3 { margin-top: 2rem; }
 .theme-code-block { border: 1px solid rgb(148 163 184 / 18%); border-radius: .6rem; box-shadow: 0 10px 28px rgb(15 23 42 / 8%); }
 .theme-admonition { border-radius: .6rem; }
-.hero--primary { position: relative; background: #070f2d; }
+.hero--primary { position: relative; background: transparent; }
 .hero--primary::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, rgb(5 11 29 / 76%) 0%, rgb(5 11 29 / 56%) 38%, rgb(5 11 29 / 12%) 78%, rgb(5 11 29 / 4%) 100%), linear-gradient(0deg, rgb(5 11 29 / 64%) 0%, transparent 58%); pointer-events: none; }
 .hero .container { position: relative; z-index: 1; width: 100%; }
 .hero--primary .hero__title, .hero--primary .hero__subtitle { color: #fff !important; text-shadow: 0 3px 24px rgb(0 0 0 / 72%); }
@@ -22,7 +23,6 @@ body::before { content: ''; position: fixed; z-index: -1; inset: -18%; pointer-e
 .hero--primary .button--outline { color: #fff; border-color: rgb(255 255 255 / 62%); }
 .hero__title { max-width: 48rem; letter-spacing: -0.04em; font-size: clamp(2.75rem, 7vw, 5.5rem); line-height: 1.02; }
 .hero__subtitle { max-width: 38rem; margin: 1.5rem 0 2rem; font-size: 1.25rem; line-height: 1.55; }
-.hero-cyberpunk { position: absolute; z-index: 0; inset: -10%; display: block; width: 120%; height: 120%; max-width: none; margin: 0; border-radius: 0; object-fit: cover; object-position: center; opacity: .58; }
 
 .architecture-section { border-top: 1px solid rgb(148 163 184 / 24%); }
 .product-choices { row-gap: 1rem; }
