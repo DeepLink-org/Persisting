@@ -1,6 +1,9 @@
 import React, {useEffect} from 'react';
+import useBaseUrl from '@docusaurus/useBaseUrl';
 
 export default function Root({children}) {
+  const panorama = useBaseUrl('/img/diagrams/persisting/zodiac-figures.png');
+
   useEffect(() => {
     let frame = 0;
     const updateScrollProgress = () => {
@@ -23,5 +26,10 @@ export default function Root({children}) {
     };
   }, []);
 
-  return children;
+  return <>
+    <div className="site-sky-loop" aria-hidden="true">
+      <img src={panorama} alt="" /><img src={panorama} alt="" />
+    </div>
+    {children}
+  </>;
 }
