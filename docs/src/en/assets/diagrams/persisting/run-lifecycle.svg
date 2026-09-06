@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600" viewBox="0 0 1200 600" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Run lifecycle</title>
+  <desc id="desc">A Run moves from created to admitted and running. Running can checkpoint and resume, complete, fail, or cancel. Admitted Runs can also cancel.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#08111f"/><stop offset="1" stop-color="#17233a"/></linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#7dd3fc"/></marker>
+    <style>text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.title{font-size:32px;font-weight:700;fill:#f8fafc}.sub{font-size:16px;fill:#94a3b8}.label{font-size:18px;font-weight:700;fill:#f8fafc}.tiny{font-size:12px;fill:#94a3b8}.node{fill:#111c2e;stroke:#475569;stroke-width:1.6}.active{fill:#10333a;stroke:#5eead4;stroke-width:2}.terminal{fill:#172035;stroke:#86efac;stroke-width:1.7}.failed{fill:#2c1722;stroke:#fb7185;stroke-width:1.7}.line{fill:none;stroke:#7dd3fc;stroke-width:2.3;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="1200" height="600" rx="26" fill="url(#bg)"/>
+  <text x="48" y="55" class="title">Agent Run lifecycle</text>
+  <text x="48" y="84" class="sub">Run state is monotonic; checkpointed is resumable, not terminal</text>
+
+  <circle cx="73" cy="250" r="12" fill="#7dd3fc"/>
+  <path d="M85 250H142" class="line"/>
+  <rect x="145" y="205" width="160" height="90" rx="18" class="node"/>
+  <text x="190" y="246" class="label">created</text><text x="174" y="271" class="tiny">identity persisted</text>
+  <path d="M305 250H370" class="line"/>
+  <rect x="373" y="205" width="160" height="90" rx="18" class="node"/>
+  <text x="410" y="246" class="label">admitted</text><text x="398" y="271" class="tiny">capabilities checked</text>
+  <path d="M533 250H598" class="line"/>
+  <rect x="601" y="205" width="160" height="90" rx="18" class="active"/>
+  <text x="645" y="246" class="label">running</text><text x="629" y="271" class="tiny">active Attempt</text>
+
+  <path d="M680 205V150H844" class="line"/>
+  <rect x="847" y="106" width="190" height="88" rx="18" class="node"/>
+  <text x="885" y="146" class="label">checkpointed</text><text x="884" y="171" class="tiny">resume into running</text>
+  <path d="M847 167H800V218H761" class="line"/>
+
+  <path d="M761 235H861" class="line"/>
+  <rect x="864" y="204" width="165" height="82" rx="18" class="terminal"/>
+  <text x="904" y="252" class="label">completed</text>
+  <path d="M1029 245H1093" class="line"/>
+  <circle cx="1110" cy="245" r="15" fill="none" stroke="#86efac" stroke-width="3"/><circle cx="1110" cy="245" r="8" fill="#86efac"/>
+
+  <path d="M681 295V384H861" class="line"/>
+  <rect x="864" y="343" width="165" height="82" rx="18" class="failed"/>
+  <text x="915" y="391" class="label">failed</text>
+  <path d="M1029 384H1093" class="line"/><circle cx="1110" cy="384" r="15" fill="none" stroke="#fb7185" stroke-width="3"/><circle cx="1110" cy="384" r="8" fill="#fb7185"/>
+
+  <path d="M681 295V502H782" class="line"/>
+  <rect x="785" y="461" width="170" height="82" rx="18" class="node"/>
+  <text x="817" y="509" class="label">cancelling</text>
+  <path d="M955 502H1000" class="line"/>
+  <rect x="1003" y="461" width="150" height="82" rx="18" class="terminal"/>
+  <text x="1039" y="509" class="label">cancelled</text>
+  <path d="M453 295V528H785" class="line"/>
+</svg>

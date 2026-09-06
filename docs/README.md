@@ -1,116 +1,51 @@
 # Persisting Documentation
 
-This folder contains the documentation for Persisting.
+The documentation site is built with [Docusaurus](https://docusaurus.io/).
+English and Chinese are separate documentation instances so each language has
+stable routes, sidebars, and searchable content.
 
-## Prerequisites
+## Quick start
 
-- Python 3.10+
-- [uv](https://docs.astral.sh/uv/) package manager
-
-## Quick Start
-
-Run the documentation tasks from the repository root:
+Run these commands from the repository root:
 
 ```bash
-# Install the locked documentation environment
-just docs-sync
-
-# Local preview (auto-reload on src/ changes)
-just docs-serve
-
-# Force rebuild if auto-reload isn't working
-just docs-serve-dirty
-
-# Build static site
-just docs-build
-
-# Check dead links
-just docs-links
+just docs-sync    # install website dependencies
+just docs-serve   # build and start a stable static preview
+just docs-serve-dirty # start the hot-reload development server
+just docs-build   # build docs/build
+just docs-links   # build with broken-link checks enabled
 ```
 
-## Structure
+The published site includes a local search index, so search works on the static
+GitHub Pages deployment without a separate service.
 
-```
-docs/
-├── mkdocs.yml              # MkDocs configuration
-├── pyproject.toml          # Python dependencies
-├── overrides/              # Theme customizations
-│   └── home.html           # Custom homepage template
-└── src/                    # Documentation source files
-    ├── index.md            # Persisting homepage
-    ├── overview.md         # Product overview
-    ├── installation.md     # Shared installation
-    ├── pvisor/             # Overview, Get Started, Concepts, Guides, Design, Reference
-    ├── pchronicle/         # Overview, Get Started, Concepts, Guides, Design, Reference
-    ├── system-design/      # Cross-product architecture, navigated under Project
-    ├── project/            # Project overview, engineering, release, and examples
-    ├── rfcs/               # Accepted data and ownership decisions
-    ├── guide/              # Legacy redirects plus standalone Queue guides
-    ├── design/             # Legacy redirects, research, and standalone designs
-    └── api/                # Standalone Python API reference
-```
+The canonical Markdown sources are `docs/src/en/` and `docs/src/zh/`. Docusaurus
+reads these two trees directly; internal pPilot, Queue, and API material lives
+under `docs/src/internal/` and stays outside the public site.
+The Docusaurus site is rooted at `docs/`. Its React homepage lives in
+`docs/src/pages/index.js`, and shared visual tokens live in
+`docs/src/css/custom.css`.
 
-The primary documentation hierarchy is product-oriented. Both pVisor and
-pChronicle use the same internal sequence: **Overview → Get Started → Concepts
-→ Guides → Design → Reference**. Files left at previous `/guide/...`,
-`/design/...`, and `/quickstart/` locations are compatibility redirects and
-must not receive new content.
+Use `docs-serve` for a stable preview of the generated site. Use
+`docs-serve-dirty` only while editing and needing hot reload; it runs the
+Docusaurus watcher and uses substantially more memory for a large bilingual
+site. The stable preview is available at
+`http://localhost:3000/Persisting/`, matching the GitHub Pages base path.
 
-Each article type has one job:
+The public reading path is intentionally progressive:
 
-| Type | Answers | Links forward to |
-| --- | --- | --- |
-| Overview | What is the product, what does it own, and where do I start? | Get Started or the section index matching the reader's goal |
-| Get Started | What is the shortest verified success loop? | task Guides and Concepts, not implementation internals |
-| Concepts | What stable objects and distinctions form the mental model? | Guides for action and Design for mechanisms |
-| Guides | How do I complete one user goal, including decisions and verification? | Reference for exact flags and Design only when internals matter |
-| Design | How is one owned mechanism implemented, and what are its guarantees and gaps? | owning Concepts, Guides, related Design pages, and System Design contracts |
-| Reference | What is the exact current syntax, schema, or format? | Guides for workflows and Design for rationale |
-| System Design | Which product owns each cross-product object, transition, and failure? | product-specific pages; it must not duplicate their implementations |
-| Project | How is the repository delivered, governed, researched, and reproduced? | product contracts when user-visible behavior is discussed |
+1. **Start here** explains which product matches the reader's task.
+2. **Get Started** completes one useful Run or Dataset workflow.
+3. **Concepts** names the stable objects and guarantees.
+4. **Guides** solve task-shaped problems with verification steps.
+5. **Design and Reference** document implementation boundaries and exact syntax.
 
-Every non-index article should link back to its owning concept or workflow and
-forward to the next relevant layer. Cross-product links should cross only at a
-real handoff: pVisor Run output to pChronicle history, or pPilot orchestration
-to pVisor execution.
-
-`site/` is generated by MkDocs and is not a documentation source. Do not edit
-or commit generated HTML.
-
-## Source of truth
-
-Use this order when documentation disagrees:
-
-1. executable `--help`, public types, and contract tests define current
-   behavior;
-2. user guides and command references describe supported workflows;
-3. architecture pages explain current internals and must label roadmap or
-   target sections explicitly;
-4. RFCs preserve accepted decisions and history, but are not command
-   references;
-5. research and engineering notes are non-normative.
-
-The standalone component commands are the primary references:
-
-- `pvisor` — one Run and reusable environments;
-- `ppilot` — scalable Run orchestration and production;
-- `pchronicle` — trajectory Dataset catalog, SQL, analysis, exchange, and
-  read-only serving;
-
-## Translation
-
-Documentation supports English and Chinese. For each user-facing `.md` file
-where a translation is maintained:
-
-- `file.md` — English version
-- `file.zh.md` — Chinese version
-
-Not all files have both language versions. The i18n plugin falls back to English when a Chinese version is missing.
+Internal orchestration material remains outside the public navigation. Queue,
+search, and standalone capture documentation remain separate project areas and
+are not part of the default product onboarding path.
 
 ## Contributing
 
-1. Run `just docs-serve` for local preview
-2. Edit files under `src/` — browser should auto-reload
-3. Check command examples against the corresponding binary's `--help`
-4. Run `just docs-links` (strict MkDocs build)
-5. Submit a PR
+Edit the Markdown under `docs/src/en/` or `docs/src/zh/`, and the React/CSS files under
+`docs/src/pages/`, `docs/src/css/`, and `docs/src/theme/`. Check command examples against the corresponding binary's
+`--help`, then run `just docs-build` and `just docs-links` before opening a PR.
