@@ -8,8 +8,11 @@
 .theme-code-block { border: 1px solid rgb(148 163 184 / 18%); border-radius: .6rem; box-shadow: 0 10px 28px rgb(15 23 42 / 8%); }
 .theme-admonition { border-radius: .6rem; }
 .hero--primary { position: relative; background: #101936; }
-.hero--primary::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, rgb(5 11 29 / 94%) 0%, rgb(5 11 29 / 74%) 38%, rgb(5 11 29 / 20%) 78%, rgb(5 11 29 / 10%) 100%), linear-gradient(0deg, rgb(5 11 29 / 78%) 0%, transparent 52%); pointer-events: none; }
+.hero--primary::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, rgb(5 11 29 / 76%) 0%, rgb(5 11 29 / 56%) 38%, rgb(5 11 29 / 12%) 78%, rgb(5 11 29 / 4%) 100%), linear-gradient(0deg, rgb(5 11 29 / 64%) 0%, transparent 58%); pointer-events: none; }
 .hero .container { position: relative; z-index: 1; width: 100%; }
+.hero--primary .hero__title, .hero--primary .hero__subtitle { color: #fff; }
+.hero--primary .eyebrow { color: #8ff7e8; }
+.hero--primary .button--outline { color: #fff; border-color: rgb(255 255 255 / 62%); }
 .hero__title { max-width: 48rem; letter-spacing: -0.04em; font-size: clamp(2.75rem, 7vw, 5.5rem); line-height: 1.02; }
 .hero__subtitle { max-width: 38rem; margin: 1.5rem 0 2rem; font-size: 1.25rem; line-height: 1.55; }
 .hero-cyberpunk { position: absolute; z-index: 0; inset: 0; display: block; width: 100vw; height: 100%; max-width: none; margin: 0; border-radius: 0; object-fit: cover; object-position: center; opacity: .92; }
