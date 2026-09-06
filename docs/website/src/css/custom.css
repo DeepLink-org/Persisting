@@ -1,8 +1,7 @@
 :root { --scroll-progress: 0; --scroll-y: 0px; --ifm-color-primary: #67e8f9; --ifm-color-primary-dark: #22d3ee; --ifm-color-primary-light: #a5f3fc; --ifm-code-font-size: 90%; --ifm-font-family-base: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; --ifm-heading-font-family: var(--ifm-font-family-base); --ifm-line-height-base: 1.7; --ifm-background-color: #070b1e; --ifm-background-surface-color: #101a3a; --ifm-font-color-base: #e7edff; --ifm-heading-color: #ffffff; }
 body { min-height: 100vh; color: #e7edff; background: #050b22; overflow-x: hidden; }
-body::before { content: ''; position: fixed; z-index: -1; inset: -18%; pointer-events: none; background: linear-gradient(180deg, rgb(5 11 34 / 32%) 0%, rgb(5 11 34 / 78%) 78%, rgb(5 11 34 / 94%) 100%), url('../assets/zodiac-sky.svg') center / cover no-repeat; transform-origin: 50% 50%; transform: perspective(1200px) rotateX(calc(var(--scroll-progress) * 14deg)) translateY(calc(var(--scroll-progress) * -7%)) scale(calc(1.08 + var(--scroll-progress) * .1)); animation: zodiac-drift 180s linear infinite; }
-@keyframes zodiac-drift { from { transform: perspective(1200px) rotateX(calc(var(--scroll-progress) * 14deg)) translateY(calc(var(--scroll-progress) * -7%)) scale(calc(1.08 + var(--scroll-progress) * .1)) rotate(0deg); } to { transform: perspective(1200px) rotateX(calc(var(--scroll-progress) * 14deg)) translateY(calc(var(--scroll-progress) * -7%)) scale(calc(1.08 + var(--scroll-progress) * .1)) rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { body::before { animation: none; transform: scale(1.08); } }
+body::before { content: ''; position: fixed; z-index: -1; inset: -18%; pointer-events: none; background: linear-gradient(180deg, rgb(5 11 34 / 32%) 0%, rgb(5 11 34 / 78%) 78%, rgb(5 11 34 / 94%) 100%), url('../assets/zodiac-sky.svg') center / cover no-repeat; transform-origin: 50% 50%; transform: perspective(1200px) rotateX(calc(var(--scroll-progress) * 14deg)) translateY(calc(var(--scroll-progress) * -7%)) scale(calc(1.08 + var(--scroll-progress) * .1)); }
+@media (prefers-reduced-motion: reduce) { body::before { transform: scale(1.08); } }
 .main-wrapper { background: transparent; }
 .theme-doc-markdown { color: #e7edff; }
 .theme-doc-markdown a, .footer__link-item { color: #8ff7e8; }
@@ -23,8 +22,8 @@ body::before { content: ''; position: fixed; z-index: -1; inset: -18%; pointer-e
 .hero--primary .button--outline { color: #fff; border-color: rgb(255 255 255 / 62%); }
 .hero__title { max-width: 48rem; letter-spacing: -0.04em; font-size: clamp(2.75rem, 7vw, 5.5rem); line-height: 1.02; }
 .hero__subtitle { max-width: 38rem; margin: 1.5rem 0 2rem; font-size: 1.25rem; line-height: 1.55; }
-.hero-cyberpunk { position: absolute; z-index: 0; inset: -10%; display: block; width: 120%; height: 120%; max-width: none; margin: 0; border-radius: 0; object-fit: cover; object-position: center; opacity: .58; animation: zodiac-drift 180s linear infinite reverse; }
-@media (prefers-reduced-motion: reduce) { .hero-cyberpunk { animation: none; } }
+.hero-cyberpunk { position: absolute; z-index: 0; inset: -10%; display: block; width: 120%; height: 120%; max-width: none; margin: 0; border-radius: 0; object-fit: cover; object-position: center; opacity: .58; }
+
 .architecture-section { border-top: 1px solid rgb(148 163 184 / 24%); }
 .product-choices { row-gap: 1rem; }
 .product-card { height: 100%; padding: 2rem; border: 1px solid rgb(148 163 184 / 28%); border-radius: 1rem; background: rgb(12 21 49 / 86%); box-shadow: 0 12px 30px rgb(0 0 0 / 24%); transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease; }
