@@ -32,6 +32,12 @@ const config = {
   ],
   themeConfig: {
     image: 'img/diagrams/persisting/hero-cyberpunk.svg',
+    docs: {
+      sidebar: {
+        hideable: true,
+        autoCollapseCategories: true,
+      },
+    },
     announcementBar: {
       id: 'agent-era',
       content: 'Persistent Infrastructure for the Agent Era · Start with a Run or a Dataset',
