@@ -55,7 +55,7 @@ just benchmark-pvisor-compare \
 ### 环境
 
 ```bash
-pip install persisting[lance]
+pip install persisting
 ```
 
 从**仓库根目录**运行（以便正确解析 `persisting` 包）：

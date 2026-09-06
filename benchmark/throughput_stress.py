@@ -6,7 +6,7 @@ Persisting Queue 吞吐压测：可配置生产者/消费者数量，测试极�
     python benchmark/throughput_stress.py --producers 2 --consumers 2 --duration 10
     python benchmark/throughput_stress.py -p 4 -c 4 -d 30 --batch-size 50 --record-size 256
 
-依赖: pip install persisting[lance]
+依赖: pip install persisting
 """
 
 from __future__ import annotations

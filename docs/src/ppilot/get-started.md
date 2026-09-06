@@ -8,7 +8,7 @@ executed by multiple workers, with terminal results written to a durable sink.
 `ppilot` ships in the same Python wheel as `pvisor` and `pchronicle`:
 
 ```bash
-pip install persisting[lance]
+pip install persisting
 ppilot --version
 ```
 

@@ -5,13 +5,12 @@ Persisting gives you two public command-line paths:
 - `pvisor` runs an Agent inside a reviewable execution boundary.
 - `pchronicle` opens, queries, exchanges, and serves trajectory Datasets.
 
-The recommended install includes the Lance-backed Dataset features used by the
-pChronicle walkthroughs.
+The default install includes the complete public CLI and Dataset workflow.
 
 ## 1. Install the tools
 
 ```bash
-pip install 'persisting[lance]'
+pip install persisting
 ```
 
 Verify that the commands are available:
@@ -29,7 +28,7 @@ the project has other Python dependencies:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install 'persisting[lance]'
+pip install persisting
 ```
 
 :::tip You can start with either product
@@ -65,7 +64,7 @@ For local development, install the Python package from a checkout:
 ```bash
 git clone https://github.com/DeepLink-org/Persisting.git
 cd Persisting
-pip install -e '.[lance]'
+pip install -e .
 ```
 
 A source build of the CLI components is also available:

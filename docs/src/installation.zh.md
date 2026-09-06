@@ -5,12 +5,12 @@ Persisting 提供两条公开命令行路径：
 - `pvisor` 在可审查的执行边界中运行 Agent。
 - `pchronicle` 打开、查询、交换和服务轨迹 Dataset。
 
-推荐安装包含 pChronicle 快速开始所需的 Lance Dataset 能力。
+默认安装包含公开 CLI 和 Dataset 工作流所需的全部能力。
 
 ## 1. 安装工具
 
 ```bash
-pip install 'persisting[lance]'
+pip install persisting
 ```
 
 确认命令可用：
@@ -27,7 +27,7 @@ Python 依赖时，建议使用虚拟环境：
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install 'persisting[lance]'
+pip install persisting
 ```
 
 :::tip 可以从任意一个产品开始
@@ -60,7 +60,7 @@ curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/script
 ```bash
 git clone https://github.com/DeepLink-org/Persisting.git
 cd Persisting
-pip install -e '.[lance]'
+pip install -e .
 ```
 
 也可以从源码构建 CLI 组件：

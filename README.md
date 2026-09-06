@@ -22,7 +22,7 @@ review/apply → configured capture → a queryable Dataset.
 ## Install
 
 ```bash
-pip install persisting[lance]
+pip install persisting
 pvisor --version
 pchronicle --version
 ```

@@ -8,7 +8,7 @@
 `ppilot` 与 `pvisor`、`pchronicle` 装在同一个 Python wheel 里：
 
 ```bash
-pip install persisting[lance]
+pip install persisting
 ppilot --version
 ```
 

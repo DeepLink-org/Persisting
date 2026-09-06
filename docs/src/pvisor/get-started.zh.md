@@ -8,7 +8,7 @@
 Wheel 会同时安装 Persisting 当前的命令行入口：
 
 ```bash
-pip install persisting[lance]
+pip install persisting
 ```
 
 也可以安装当前 nightly build：
