@@ -220,6 +220,32 @@ async fn ignores_derived_lance_sidecars_during_discovery() -> Result<()> {
 }
 
 #[tokio::test]
+async fn discovers_extensionless_compact_lance_dataset() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("input.jsonl");
+    let compact = temp.path().join("compact");
+    fs::write(&input, b"{\"timestamp\":1,\"value\":\"ok\"}\n")?;
+    crate::storage::CompactJsonlStore::import_path(
+        &input,
+        &compact,
+        &crate::storage::CompactJsonlOptions::default(),
+    )
+    .await?;
+
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(temp.path().to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+    let sources = &snapshot.datasets()[0].sources;
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].file, "compact");
+    assert_eq!(sources[0].format.as_deref(), Some("compact-jsonl/v1"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn report_mode_skips_oversized_files_when_querying_all_runs() -> Result<()> {
     let temp = tempfile::tempdir()?;
     write_openai_source(&temp.path().join("good.json"), "event-good")?;
