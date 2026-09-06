@@ -941,14 +941,39 @@ secret_key = "d"
 [users.alice]
 access_key = "u"
 secret_key = "s"
+
+[users.bob]
+access_key = "bob-ak"
+secret_key = "bob-sk"
+
+[[grants]]
+user = "alice"
+dataset = "prod"
+permissions = ["read", "query"]
+
+[[grants]]
+user = "alice"
+dataset = "evals"
+permissions = ["read", "query"]
 "#,
         )
         .unwrap();
-        assert!(
-            result
-                .ticket_for(result.authenticate("u", "s").unwrap(), "prod")
-                .is_some()
-        );
+        let alice = result.authenticate("u", "s").unwrap();
+        for (name, uri, access_key, secret_key) in [
+            ("prod", "s3://bucket/prod", "a", "b"),
+            ("evals", "s3://bucket/evals", "c", "d"),
+        ] {
+            let ticket = result.ticket_for(alice, name).unwrap();
+            assert_eq!(ticket.name, name);
+            assert_eq!(ticket.uri, uri);
+            assert_eq!(ticket.access_key.as_deref(), Some(access_key));
+            assert_eq!(ticket.secret_key.as_deref(), Some(secret_key));
+        }
+
+        let bob = result.authenticate("bob-ak", "bob-sk").unwrap();
+        assert!(result.list_for(bob).is_empty());
+        assert!(result.ticket_for(bob, "prod").is_none());
+        assert!(result.ticket_for(bob, "evals").is_none());
     }
 
     #[test]
