@@ -34,12 +34,15 @@ export default function Root({children}) {
       const altitude = toDegrees(Math.asin(
         Math.sin(toRadians(observerLatitude)) * Math.cos(toRadians(hourAngle)),
       ));
+      const skyShift = 46 - (eclipticLongitude / 30) * 8.3333;
       document.documentElement.style.setProperty(
         '--zodiac-index',
         (eclipticLongitude / 30).toFixed(3),
       );
       document.documentElement.style.setProperty('--zodiac-angle', `${hourAngle.toFixed(2)}deg`);
       document.documentElement.style.setProperty('--zodiac-elevation', `${altitude.toFixed(2)}deg`);
+      document.documentElement.style.setProperty('--zodiac-shift', `${skyShift.toFixed(3)}%`);
+      document.documentElement.style.setProperty('--zodiac-yaw', `${(hourAngle * 0.025).toFixed(2)}deg`);
       document.documentElement.dataset.zodiacSign = northernHemisphereSigns[signIndex];
     };
     const updateScrollProgress = () => {
