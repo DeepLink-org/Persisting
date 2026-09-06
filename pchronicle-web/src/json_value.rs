@@ -183,7 +183,7 @@ fn JsonTree(value: Value, default_open: bool) -> Element {
         Value::Array(items) => rsx! {
             div { class: "pc2-json-tree",
                 for (index, child) in items.into_iter().enumerate() {
-                    JsonTreeNode { key: "{index}", label: format!("[{index}]"), value: child, default_open }
+                    JsonTreeNode { key: "{index}", label: format!("[{index}]"), value: child, default_open: false }
                 }
             }
         },
@@ -200,7 +200,7 @@ fn JsonTreeNode(label: String, value: Value, default_open: bool) -> Element {
     rsx! {
         details { class: "pc2-json-node", open: default_open,
             summary { span { class: "pc2-json-key", "{label}" } span { class: "pc2-json-size", "{summary}" } }
-            JsonValue { value, default_open }
+            JsonValue { value, default_open: false }
         }
     }
 }
