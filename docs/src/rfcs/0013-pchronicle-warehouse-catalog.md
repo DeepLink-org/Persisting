@@ -44,7 +44,7 @@ pchronicle query @team/prod 'SELECT 1'
 
 ### 目标
 
-- 用一份 `catalog.toml` 同时描述 libraries 和 users。
+- 用一份 `catalog.toml` 描述 users、datasets 和 grants。
 - 用 CLI 签发用户钥并改写 ACL：`pchronicle serve catalog issue|grant|revoke` 不启动 HTTP。
 - 让 `@name/library` 解析为一条 path（换票后的 `uri`）；引擎随后只打开该 path。
 - 换票后 CLI 自己访问存储；后端密钥只出现在票和 worker stdin 中，不写入用户 `config.toml`。
@@ -96,90 +96,79 @@ Directory 挂在现有 Warehouse listener 上。未传 `--catalog-config` 时，
 约束：
 
 1. Listener MUST 为 loopback。本 RFC 不把 catalog 头当作公网认证边界。
-2. 父进程 MUST NOT 打开 `catalog.toml` 中的 libraries。父进程使用空 mount 的 front-only Warehouse。
+2. 父进程 MUST NOT 打开 `catalog.toml` 中的 datasets。父进程使用空 mount 的 front-only Warehouse。
 3. Worker MUST 由 `Command` 启动新进程，MUST NOT `fork(2)` 已运行的 Tokio runtime。
 4. Worker MUST NOT 监听端口、MUST NOT 读取 `catalog.toml`、MUST NOT 读取用户钥。它只消费 stdin 中过滤后的 mounts 和原始请求。
 5. Worker 继承父进程环境（证书、`PATH` 等），但父进程 MUST NOT 预先把 catalog 后端密钥写入 `AWS_*`。Worker 在打开存储前为自己设置该用户票中的后端环境。
-6. 同一 `catalog.toml` 内所有 `s3://` library MUST 共用同一组 endpoint、region 和后端 ak/sk。进程级 AWS 环境一次只能持有一套凭据。
+6. 每个 Dataset 可以使用自己的 endpoint、region 和后端 ak/sk；worker 必须按 Dataset ticket 设置对应存储环境。
 7. 隐藏 flag `--catalog-query-worker` MUST NOT 出现在用户可见的 `serve --help` 中。
 
 Worker 超时后父进程 MUST 返回 `unavailable`，不得把 stdin 中的密钥写进日志。
 
 ## 配置
 
-`catalog.toml` 是唯一配置面：
+`catalog.toml` 只管理用户、Dataset 和授权关系。它是唯一事实来源；运行时服务配置仍由 `pchronicle serve` 参数提供。配置文件不存在时，Catalog 管理命令会创建一个空 Catalog。
 
 ```toml
-[libraries.prod]
+[meta]
+version = 1
+revision = 1
+name = "team-catalog"
+
+[users.alice]
+display_name = "Alice"
+status = "active"
+access_key = "USER_AK"
+secret_key = "USER_SK"
+
+[datasets.prod]
+display_name = "Production trajectories"
+description = "Production agent trajectories"
+status = "active"
 uri = "s3://bucket/prod"
 endpoint = "http://127.0.0.1:9000"
 region = "us-west-2"
 access_key = "BACKEND_AK"
 secret_key = "BACKEND_SK"
 
-[libraries.evals]
-uri = "s3://bucket/evals"
-endpoint = "http://127.0.0.1:9000"
-region = "us-west-2"
-access_key = "BACKEND_AK"
-secret_key = "BACKEND_SK"
-
-[users.alice]
-access_key = "USER_AK"
-secret_key = "USER_SK"
-datasets = ["prod", "evals"]
-
-[users.bob]
-access_key = "BOB_AK"
-secret_key = "BOB_SK"
-datasets = ["evals"]
+[[grants]]
+user = "alice"
+dataset = "prod"
+permissions = ["read", "query", "analyze"]
 ```
 
 规则：
 
-- 启动 `pchronicle serve --catalog-config` MUST 至少有一个 library 和一个 user。
-- `pchronicle serve catalog issue` MAY 在只有 `[libraries.*]`、尚无 `[users]` 的文件上签发第一个用户。
-- library 名与用户段名 MUST 是合法 Dataset mount 名（小写 `[A-Za-z_][A-Za-z0-9_]*`）。
-- `s3://` library MUST 同时设置后端 `access_key` 和 `secret_key`。
-- 非 `s3://` library MUST NOT 设置后端密钥。
-- 所有 `s3://` library 的 endpoint、region、后端密钥 MUST 完全一致。
-- `users.*.datasets` 引用的名字 MUST 存在于 `libraries`。
-- 用户 `access_key` MUST 全局唯一。
-- 配置文件 MUST 是普通文件，大小有上界；解析失败则 serve 拒绝启动。
+- `meta.version` 必须为支持的配置版本；每次成功写入 MUST 递增 `meta.revision`。
+- 用户名和 Dataset 名必须是小写 `[A-Za-z_][A-Za-z0-9_]*`。
+- `users.*.access_key` 必须全局唯一；第一版允许明文 `secret_key`。
+- Dataset 的 `uri` 必须是有效的本地、`s3://`、`az://`、`gs://` 或测试存储 URI。
+- 对象存储 Dataset 可以设置 `endpoint`、`region`、`access_key` 和 `secret_key`；本地 Dataset 不需要这些字段。
+- `grants.user` 和 `grants.dataset` 必须分别引用已存在的用户和 Dataset。
+- 同一用户和 Dataset 的 grant 不得重复；权限只能来自 `read`、`query`、`analyze`、`write`、`admin`。
+- 配置文件大小必须有上界；解析或校验失败时服务拒绝启动。
+- TOML 是权威配置，后续 SQLite/Postgres 只能作为索引和派生投影。
 
-本地路径 library 允许不设后端密钥，便于同机目录通过 catalog 做授权发现。客户端换票后仍按票中的 URI 打开。
+## CLI 管理
 
-## CLI 签发与授权
-
-签发和改授权是 **写 `catalog.toml` 的 CLI**，不是运行中 Warehouse 的 HTTP API。出现 `catalog` 子命令时 MUST NOT 启动 listener。正在运行的 serve MUST 重启后才读到新用户或新授权。
+Catalog 管理命令只修改配置文件，不启动 HTTP listener。文件不存在时，命令创建父目录和空配置文件。
 
 ```text
-pchronicle serve catalog issue  --catalog-config FILE NAME
-pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
-pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
-pchronicle serve --catalog-config FILE --listen 127.0.0.1:8081
+pchronicle serve catalog user create   --catalog-config FILE NAME
+pchronicle serve catalog user list     --catalog-config FILE
+pchronicle serve catalog user remove   --catalog-config FILE NAME
+
+pchronicle serve catalog dataset create --catalog-config FILE NAME URI [OPTIONS]
+pchronicle serve catalog dataset list   --catalog-config FILE
+pchronicle serve catalog dataset show   --catalog-config FILE NAME
+pchronicle serve catalog dataset remove --catalog-config FILE NAME
+
+pchronicle serve catalog grant  --catalog-config FILE USER DATASET --permission PERMISSION...
+pchronicle serve catalog revoke --catalog-config FILE USER DATASET --permission PERMISSION...
+pchronicle serve catalog grants --catalog-config FILE
 ```
 
-`catalog` 是 `serve` 的保留子命令。要挂载名为 `catalog` 的路径，使用 `./catalog` 或 `NAME=./catalog`。
-
-### `issue`
-
-- MUST NOT 启动 Warehouse。只改 `FILE` 后退出。
-- 已存在的用户名 MUST 拒绝，MUST NOT 覆盖或轮换密钥。本 RFC 不引入 `issue --rotate`。
-- 生成的用户钥：
-  - `access_key`：`pcak_` 前缀 + 24 字节小写 hex（48 个 hex 字符）
-  - `secret_key`：32 字节小写 hex（无前缀）
-- 写入 `[users.NAME]`：`access_key`、`secret_key`、`datasets = []`。签发 MUST NOT 授予任何 library。
-- stdout 打印该用户的 `name` / `access_key` / `secret_key`（表或 JSON）。secret MUST 只在这次 stdout 出现；stderr 只报 `config=<path> updated=true`，MUST NOT 打印 sk。`alias list` 等其它命令 MUST NOT 回显 catalog 用户 sk。
-- `access_key` 碰撞时 MUST 重试生成，MUST NOT 写入半截配置。
-
-### `grant` / `revoke`
-
-- `grant` 是累加：已授权的 library 保持不变，新名字追加。未知用户或未知 library MUST 失败，且 MUST NOT 改文件。
-- `revoke` 从该用户的 `datasets` 里去掉列出的名字。未知用户、或该用户当前并未持有的 library 名 MUST 失败。
-- 两个命令的 stdout 只报 `name` 与更新后的 `datasets`，MUST NOT 打印密钥。
-
-改写配置可以整表重写，不要求保留注释。新用户在重启 serve 之前无法登录。
+`user create` 生成用户 AK/SK；secret 只在本次 stdout 输出。`dataset create` 只登记 Dataset，不创建或删除后端数据。`grant` 和 `revoke` 修改独立的 `[[grants]]` 授权记录。所有写操作 MUST 原子替换文件，失败时保留原文件。
 
 ## HTTP
 
@@ -270,7 +259,7 @@ Worker 用票构造 `ChronicleServerConfig` mounts，执行与普通 Warehouse �
 
 拒绝。第二套 listener、端口和生命周期会与 Warehouse 文档分叉。Catalog 目录流量很小，适合挂在现有 `pchronicle serve` 上。
 
-### 父进程打开全部 libraries 再按用户过滤 SQL
+### 父进程打开全部 datasets 再按用户过滤 SQL
 
 拒绝。DataFusion 与对象存储客户端一旦持有全量后端密钥和 mount，过滤错误就会越权。Web 查询必须在只含授权 mounts 的进程里执行。
 

@@ -45,6 +45,20 @@ struct CatalogFile {
     libraries: BTreeMap<String, CatalogLibraryFile>,
     #[serde(default)]
     users: BTreeMap<String, CatalogUserFile>,
+    /// Canonical v1 catalog shape. `libraries`/`users.datasets` remain
+    /// accepted as a backwards-compatible input format.
+    #[serde(default)]
+    datasets: BTreeMap<String, CatalogLibraryFile>,
+    #[serde(default)]
+    grants: Vec<CatalogGrantFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CatalogGrantFile {
+    user: String,
+    dataset: String,
+    #[serde(default)]
+    permissions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +104,7 @@ impl CatalogAcl {
     }
 
     fn from_document(file: CatalogFile) -> Result<Self> {
+        let file = normalize_catalog_file(file)?;
         let libraries = build_libraries(&file)?;
         Ok(Self {
             users_by_access_key: build_users(&file, &libraries)?,
@@ -207,13 +222,57 @@ fn read_catalog_config(path: &Path) -> Result<String> {
 }
 
 fn parse_catalog_file(content: &str) -> Result<CatalogFile> {
+    // The canonical format is intentionally strict. Legacy
+    // `[libraries.*]` and `users.*.datasets` configuration is no longer
+    // accepted; callers must migrate to `[datasets.*]` and `[[grants]]`.
+    anyhow::ensure!(
+        !content
+            .lines()
+            .any(|line| line.trim_start().starts_with("[libraries.")),
+        "legacy catalog format is not supported; use [datasets.*]"
+    );
+    anyhow::ensure!(
+        !content
+            .lines()
+            .any(|line| line.trim_start().starts_with("datasets =")),
+        "legacy catalog grants are not supported; use [[grants]]"
+    );
     toml::from_str(content).context("parse catalog config")
 }
 
 fn load_editable_catalog(path: &Path) -> Result<CatalogFile> {
-    let file = parse_catalog_file(&read_catalog_config(path)?)?;
+    let file = normalize_catalog_file(parse_catalog_file(&read_catalog_config(path)?)?)?;
     let libraries = build_libraries(&file)?;
     build_users(&file, &libraries)?;
+    Ok(file)
+}
+
+fn normalize_catalog_file(mut file: CatalogFile) -> Result<CatalogFile> {
+    // New `[datasets.*]` entries are the canonical spelling. Accept legacy
+    // `[libraries.*]` entries while migrating them in memory.
+    for (name, dataset) in std::mem::take(&mut file.datasets) {
+        anyhow::ensure!(
+            !file.libraries.contains_key(&name),
+            "catalog dataset '{name}' is defined more than once"
+        );
+        file.libraries.insert(name, dataset);
+    }
+    for grant in std::mem::take(&mut file.grants) {
+        let user = file
+            .users
+            .get_mut(&grant.user)
+            .ok_or_else(|| anyhow!("catalog grant references unknown user '{}'", grant.user))?;
+        anyhow::ensure!(
+            !user
+                .datasets
+                .iter()
+                .any(|dataset| dataset == &grant.dataset),
+            "catalog grant for user '{}' and dataset '{}' is duplicated",
+            grant.user,
+            grant.dataset
+        );
+        user.datasets.push(grant.dataset);
+    }
     Ok(file)
 }
 
@@ -908,6 +967,58 @@ datasets = ["prod"]
                 .iter()
                 .all(|library| library.endpoint.is_some())
         );
+    }
+
+    #[test]
+    fn canonical_datasets_and_grants_format_is_accepted() {
+        let acl = CatalogAcl::parse(
+            r#"
+[datasets.prod]
+uri = "s3://bucket/prod"
+access_key = "BACKEND_AK"
+secret_key = "BACKEND_SK"
+
+[users.alice]
+access_key = "USER_AK"
+secret_key = "USER_SK"
+
+[[grants]]
+user = "alice"
+dataset = "prod"
+permissions = ["read", "query"]
+"#,
+        )
+        .unwrap();
+        let user = acl.authenticate("USER_AK", "USER_SK").unwrap();
+        assert_eq!(acl.list_for(user)[0].name, "prod");
+        assert_eq!(
+            acl.ticket_for(user, "prod").unwrap().secret_key.as_deref(),
+            Some("BACKEND_SK")
+        );
+    }
+
+    #[test]
+    fn duplicate_canonical_grants_are_rejected() {
+        let error = CatalogAcl::parse(
+            r#"
+[datasets.prod]
+uri = "./prod"
+
+[users.alice]
+access_key = "USER_AK"
+secret_key = "USER_SK"
+
+[[grants]]
+user = "alice"
+dataset = "prod"
+
+[[grants]]
+user = "alice"
+dataset = "prod"
+"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicated"));
     }
 
     #[test]

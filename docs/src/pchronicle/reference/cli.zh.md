@@ -412,7 +412,7 @@ pchronicle serve \
 
 未指定服务 flag 时，只读 Web/API 默认监听 `127.0.0.1:0`。多个 Dataset 使用
 `NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。`--catalog-config FILE`
-以 Directory 方式服务，父进程不打开 libraries；配合
+以 Directory 方式服务，父进程不打开 Datasets；配合
 `alias add NAME catalog://127.0.0.1:PORT --ak --sk`。
 `pchronicle serve catalog issue|grant|revoke` 只改该文件、不启动 HTTP；`issue` 把用户
 sk 只打印一次。改用户或授权后必须重启 serve。`catalog` 是 `serve` 的保留子命令，挂载同名
@@ -427,6 +427,25 @@ source 的最新 canonical manifest，正在进行中的 trace 不需要等待 p
 旧式转发 Gateway 仍可使用 `--gateway-config`，对象存储 capture 必须提供本地
 `--gateway-state`。所有 listener 只允许
 loopback；服务准备完成后，stdout 输出一行版本化 readiness JSON，endpoint 和诊断写 stderr。
+
+#### Catalog 管理
+
+Catalog 配置只包含用户、Dataset 和授权关系。配置文件不存在时，管理命令会自动创建。
+
+```text
+pchronicle serve catalog user create   --catalog-config FILE NAME
+pchronicle serve catalog user list     --catalog-config FILE
+pchronicle serve catalog user remove   --catalog-config FILE NAME
+pchronicle serve catalog dataset create --catalog-config FILE NAME URI [OPTIONS]
+pchronicle serve catalog dataset list   --catalog-config FILE
+pchronicle serve catalog dataset show   --catalog-config FILE NAME
+pchronicle serve catalog dataset remove --catalog-config FILE NAME
+pchronicle serve catalog grant  --catalog-config FILE USER DATASET --permission PERMISSION...
+pchronicle serve catalog revoke --catalog-config FILE USER DATASET --permission PERMISSION...
+pchronicle serve catalog grants --catalog-config FILE
+```
+
+`user create` 生成 AK/SK 并只显示一次 secret；`dataset create` 只登记 URI 和存储凭据，不删除或创建后端数据；`grant`/`revoke` 管理 `read`、`query`、`analyze`、`write`、`admin` 权限。
 
 ### 公共输出与退出状态
 
