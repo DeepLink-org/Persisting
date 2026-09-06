@@ -48,6 +48,9 @@ export default function Root({children}) {
       const progress = Math.min(1, Math.max(0, window.scrollY / maxScroll));
       document.documentElement.style.setProperty('--scroll-progress', progress.toFixed(4));
       document.documentElement.style.setProperty('--scroll-y', `${Math.round(window.scrollY)}px`);
+      // Treat scrolling as the observer changing pitch from the horizon toward the zenith.
+      document.documentElement.style.setProperty('--sky-pitch', `${((0.5 - progress) * 8).toFixed(2)}deg`);
+      document.documentElement.style.setProperty('--sky-lift', `${((progress - 0.5) * 72).toFixed(1)}px`);
     };
     const onScroll = () => {
       if (!frame) frame = window.requestAnimationFrame(updateScrollProgress);
