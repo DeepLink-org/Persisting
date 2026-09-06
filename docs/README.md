@@ -27,7 +27,8 @@ in `docs/website/src/pages/index.js`; shared visual tokens live in
 Use `docs-serve` for a stable preview of the generated site. Use
 `docs-serve-dirty` only while editing and needing hot reload; it runs the
 Docusaurus watcher and uses substantially more memory for a large bilingual
-site.
+site. The stable preview is available at
+`http://localhost:3000/Persisting/`, matching the GitHub Pages base path.
 
 The public reading path is intentionally progressive:
 

@@ -713,7 +713,7 @@ docs-sync:
     cd "{{ docs_dir }}/website" && if [[ ! -x node_modules/.bin/docusaurus ]]; then npm ci; fi
 
 docs-serve: docs-sync
-    cd "{{ docs_dir }}/website" && npm run build && python3 -m http.server 3000 --bind 0.0.0.0 --directory build
+    cd "{{ docs_dir }}/website" && npm run build && python3 "{{ repo }}/scripts/serve-docs.py" --host 0.0.0.0 --port 3000 --directory build
 
 # Hot-reload development mode. Use docs-serve for a stable static preview.
 docs-serve-dirty: docs-sync
