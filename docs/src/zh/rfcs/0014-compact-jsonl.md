@@ -63,8 +63,8 @@ MUST 递归选择这些普通文件，并 MUST 忽略符号链接和其他扩展
 4. 包含可映射为非空标量的 `timestamp`；缺失或无效的 `id` 和 `timestamp` 使用稳定的
    `source_filename#line_number` 值生成。
 
-`.json` 文件必须是一个 object 或 object 数组。object 数组的每个元素成为一条 record，数组
-元素按顺序使用从 1 开始的索引作为行号；导出时这类文件以 JSONL 记录写回。
+`.json` 文件必须是一个 object 或 array，并作为一条 record 导入；数组会作为 record 的 JSON
+值完整保留，不会按元素拆分。导出时保留该 JSON document。
 
 任一条件不满足时，整个 import/sync MUST 失败，不得发布部分 dataset。
 

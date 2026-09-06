@@ -211,7 +211,7 @@ replaced in place.
 Compact JSONL is a record store, not a trajectory conversion. Either
 `--input-format compact-jsonl` or `--output-format compact-jsonl` selects it.
 It recursively reads local `.json`, `.jsonl`, and `.ndjson` files. JSON objects
-and arrays of objects are accepted; array elements become individual records.
+and arrays are accepted; each JSON document becomes one record, with arrays kept intact.
 Missing or invalid `id` and `timestamp` values receive stable
 `source_filename#line_number` values. The default paths are `$.id` and
 `$.timestamp`. `--column id=PATH` and

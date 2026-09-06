@@ -221,22 +221,11 @@ impl CompactJsonlStore {
                 let raw = fs::read(&file)?;
                 let value: Value = serde_json::from_slice(&raw)
                     .with_context(|| format!("parse compact JSON {relative}"))?;
-                match value {
-                    Value::Object(_) => rows.push((value, raw, relative.clone(), 1)),
-                    Value::Array(values) => {
-                        for (index, value) in values.into_iter().enumerate() {
-                            ensure!(
-                                value.is_object(),
-                                "compact JSON {relative}:{} must be a JSON object",
-                                index + 1
-                            );
-                            let mut raw = serde_json::to_vec(&value)?;
-                            raw.push(b'\n');
-                            rows.push((value, raw, relative.clone(), index + 1));
-                        }
-                    }
-                    _ => anyhow::bail!("compact JSON {relative} must be an object or array"),
-                }
+                ensure!(
+                    matches!(value, Value::Object(_) | Value::Array(_)),
+                    "compact JSON {relative} must be an object or array"
+                );
+                rows.push((value, raw, relative.clone(), 1));
             } else {
                 let mut reader = BufReader::new(File::open(&file)?);
                 for line_no in 1usize.. {
@@ -769,7 +758,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn json_documents_and_arrays_are_imported() -> Result<()> {
+    async fn json_documents_and_arrays_are_imported_as_records() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let input = temp.path().join("input");
         let dataset = temp.path().join("data.lance");
@@ -781,7 +770,7 @@ mod tests {
         assert_eq!(
             CompactJsonlStore::import_path(&input, &dataset, &CompactJsonlOptions::default())
                 .await?,
-            3
+            2
         );
         let records = CompactJsonlStore::records(&dataset).await?;
         assert_eq!(
@@ -789,12 +778,12 @@ mod tests {
                 .iter()
                 .map(|record| record.id.as_str())
                 .collect::<Vec<_>>(),
-            ["array.json#1", "array.json#2", "object.json#1"]
+            ["array.json#1", "object.json#1"]
         );
         CompactJsonlStore::export_path(&dataset, &output).await?;
         assert_eq!(
             fs::read(output.join("array.json"))?,
-            b"{\"value\":2}\n{\"value\":3}\n"
+            b"[{\"value\":2},{\"value\":3}]"
         );
         assert_eq!(fs::read(output.join("object.json"))?, b"{\"value\":1}");
         Ok(())
