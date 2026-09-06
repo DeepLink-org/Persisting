@@ -94,29 +94,29 @@ Criterion.rs microbenchmarks and hyperfine lifecycle scenarios are compared
 against `main` in CI; see the [benchmark contract](benchmark/pchronicle/README.md).
 
 <!-- pchronicle-benchmark:start -->
-Latest nightly pChronicle benchmark: `708e6b96aae3` on `linux/x86_64` (2026-09-06T14:46:33.057218+00:00).
+Latest nightly pChronicle benchmark: `6c9e1cc346ed` on `linux/x86_64` (2026-09-06T15:39:32.711139+00:00).
 
 | Case | Metric | Value |
 |---|---:|---:|
-| `criterion/atif_conversion/parse_corpus` | `latency_median_ns` | 4.767e+06 ns |
-| `criterion/atif_conversion/roundtrip_corpus` | `latency_median_ns` | 6.31e+06 ns |
-| `criterion/projection_cpu/events_to_storyline_corpus` | `latency_median_ns` | 2.792e+05 ns |
-| `system/projection_pipeline/event_append` | `initial_append_ms` | 66.35 ms |
-| `system/projection_pipeline/projection_build` | `build_ms` | 5252.586 ms |
-| `system/projection_pipeline/projection_incremental` | `sync_ms` | 58.228 ms |
-| `system/lance_vs_json/lifecycle` | `cold_query_ms` | 2961.186 ms |
-| `system/lance_vs_json/lifecycle` | `get_storyline_full_ms` | 9.331 ms |
-| `system/lance_vs_json/lifecycle` | `replace_storyline_ms` | 41.977 ms |
-| `system/lance_vs_json/selective` | `lance_qps` | 331.2 ops/s |
-| `system/lance_vs_json/group_by` | `lance_qps` | 429.7 ops/s |
+| `criterion/atif_conversion/parse_corpus` | `latency_median_ns` | 4.563e+06 ns |
+| `criterion/atif_conversion/roundtrip_corpus` | `latency_median_ns` | 6.155e+06 ns |
+| `criterion/projection_cpu/events_to_storyline_corpus` | `latency_median_ns` | 2.584e+05 ns |
+| `system/projection_pipeline/event_append` | `initial_append_ms` | 65.368 ms |
+| `system/projection_pipeline/projection_build` | `build_ms` | 4220.377 ms |
+| `system/projection_pipeline/projection_incremental` | `sync_ms` | 49.452 ms |
+| `system/lance_vs_json/lifecycle` | `cold_query_ms` | 2407.903 ms |
+| `system/lance_vs_json/lifecycle` | `get_storyline_full_ms` | 7.441 ms |
+| `system/lance_vs_json/lifecycle` | `replace_storyline_ms` | 59.178 ms |
+| `system/lance_vs_json/selective` | `lance_qps` | 436.1 ops/s |
+| `system/lance_vs_json/group_by` | `lance_qps` | 571 ops/s |
 | `system/lance_vs_json/summary` | `lance_over_json` | 0.244 ratio |
-| `system/json_streaming_ndjson/json_streaming` | `p95_ms` | 12.731 ms |
-| `system/json_streaming_ndjson/json_streaming` | `rows_s` | 3.125e+05 ops/s |
-| `system/json_streaming_ndjson/json_streaming` | `process_peak_rss_mib` | 40.074 MiB |
-| `hyperfine/projection_pipeline` | `wall_median_seconds` | 5.437 s |
-| `hyperfine/lance_vs_json` | `wall_median_seconds` | 40.563 s |
+| `system/json_streaming_ndjson/json_streaming` | `p95_ms` | 15.127 ms |
+| `system/json_streaming_ndjson/json_streaming` | `rows_s` | 3.605e+05 ops/s |
+| `system/json_streaming_ndjson/json_streaming` | `process_peak_rss_mib` | 40.645 MiB |
+| `hyperfine/projection_pipeline` | `wall_median_seconds` | 4.393 s |
+| `hyperfine/lance_vs_json` | `wall_median_seconds` | 30.866 s |
 
-[Open the complete benchmark run](https://github.com/DeepLink-org/Persisting/actions/runs/34040184111).
+[Open the complete benchmark run](https://github.com/DeepLink-org/Persisting/actions/runs/34042978161).
 <!-- pchronicle-benchmark:end -->
 
 ## License
