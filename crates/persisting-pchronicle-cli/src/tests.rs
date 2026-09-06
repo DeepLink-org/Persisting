@@ -664,7 +664,7 @@ async fn serve_catalog_issue_grant_revoke_rewrites_config() -> Result<()> {
     fs::write(
         &catalog,
         r#"
-[libraries.prod]
+[datasets.prod]
 uri = "s3://bucket/prod"
 access_key = "BACKEND_AK"
 secret_key = "BACKEND_SK"

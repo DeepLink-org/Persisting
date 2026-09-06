@@ -218,6 +218,8 @@ nav:
           - pChronicle reference: pchronicle/reference/index.md
           - Product terminology: pchronicle/reference/terminology.md
           - pChronicle CLI: pchronicle/reference/cli.md
+          - Single-machine and self-service cases: pchronicle/reference/cases-self.md
+          - Cluster platform and Catalog Server cases: pchronicle/reference/cases-platform.md
           - Query model: pchronicle/reference/query-model.md
           - AgenticMD format: pchronicle/reference/agenticmd.md
           - Run data formats: pchronicle/reference/formats/index.md
