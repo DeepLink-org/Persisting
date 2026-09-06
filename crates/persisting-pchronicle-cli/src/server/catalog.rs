@@ -263,6 +263,10 @@ fn load_editable_catalog(path: &Path) -> Result<CatalogFile> {
 
 fn write_catalog_file(path: &Path, file: &CatalogFile) -> Result<()> {
     let serialized = toml::to_string_pretty(file).context("serialize catalog config")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create catalog config directory {}", parent.display()))?;
+    }
     let tmp_name = path
         .file_name()
         .and_then(|name| name.to_str())
