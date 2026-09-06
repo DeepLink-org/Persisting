@@ -1,6 +1,8 @@
 use dioxus::prelude::*;
 use serde_json::Value;
 
+const JSON_VALUE_PREVIEW_LIMIT: usize = 240;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JsonShape {
     Scalar,
@@ -99,6 +101,19 @@ fn json_literal(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| scalar_text(value))
 }
 
+fn json_preview(value: &str) -> String {
+    let mut chars = value.chars();
+    let preview = chars
+        .by_ref()
+        .take(JSON_VALUE_PREVIEW_LIMIT)
+        .collect::<String>();
+    if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
+    }
+}
+
 fn json_type(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
@@ -121,6 +136,22 @@ pub fn JsonValue(value: Value, #[props(default = false)] default_open: bool) -> 
         JsonShape::KvTable => rsx! { JsonKvTable { value: peeled, default_open } },
         JsonShape::RecordTable => rsx! { JsonRecordTable { value: peeled, default_open } },
         JsonShape::Tree => rsx! { JsonTree { value: peeled, default_open } },
+    }
+}
+
+#[component]
+fn JsonScalar(value: Value) -> Element {
+    let literal = json_literal(&value);
+    let kind = json_type(&value);
+    if literal.chars().count() > JSON_VALUE_PREVIEW_LIMIT {
+        rsx! {
+            details { class: "pc2-json-long-value",
+                summary { class: "pc2-json-value {kind}", "{json_preview(&literal)}" }
+                div { class: "pc2-json-expanded-value {kind}", "{literal}" }
+            }
+        }
+    } else {
+        rsx! { span { class: "pc2-json-value {kind}", "{literal}" } }
     }
 }
 
@@ -216,7 +247,7 @@ fn JsonTreeNode(label: String, value: Value, default_open: bool) -> Element {
         return rsx! {
             div { class: "pc2-json-leaf",
                 if !label.is_empty() { span { class: "pc2-json-key", "{label}" span { class: "pc2-json-punctuation", ":" } } }
-                span { class: "pc2-json-value {json_type(&peeled)}", "{json_literal(&peeled)}" }
+                JsonScalar { value: peeled }
             }
         };
     }
@@ -305,5 +336,14 @@ mod tests {
         assert_eq!(json_summary(&json!(true)), "boolean");
         assert_eq!(json_summary(&json!(1)), "number");
         assert_eq!(json_summary(&json!(null)), "null");
+    }
+
+    #[test]
+    fn long_json_values_get_single_line_previews() {
+        let value = "x".repeat(JSON_VALUE_PREVIEW_LIMIT + 1);
+        let preview = json_preview(&value);
+        assert_eq!(preview.chars().count(), JSON_VALUE_PREVIEW_LIMIT + 1);
+        assert!(preview.ends_with('…'));
+        assert_eq!(json_preview("short"), "short");
     }
 }
