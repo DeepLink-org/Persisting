@@ -31,7 +31,7 @@ const config = {
     }],
   ],
   themeConfig: {
-    image: 'img/diagrams/persisting/zodiac-sky.svg',
+    image: 'img/diagrams/persisting/zodiac-figures.png',
     docs: {
       sidebar: {
         hideable: true,
