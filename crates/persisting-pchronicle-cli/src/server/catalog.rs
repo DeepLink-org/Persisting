@@ -40,13 +40,12 @@ pub(crate) struct CatalogAcl {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CatalogFile {
     #[serde(default)]
-    libraries: BTreeMap<String, CatalogLibraryFile>,
+    meta: Option<CatalogMeta>,
     #[serde(default)]
     users: BTreeMap<String, CatalogUserFile>,
-    /// Canonical v1 catalog shape. `libraries`/`users.datasets` remain
-    /// accepted as a backwards-compatible input format.
     #[serde(default)]
     datasets: BTreeMap<String, CatalogLibraryFile>,
     #[serde(default)]
@@ -54,6 +53,17 @@ struct CatalogFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogMeta {
+    version: u32,
+    #[serde(default)]
+    revision: u64,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CatalogGrantFile {
     user: String,
     dataset: String,
@@ -62,6 +72,7 @@ struct CatalogGrantFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CatalogLibraryFile {
     uri: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,11 +86,10 @@ struct CatalogLibraryFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CatalogUserFile {
     access_key: String,
     secret_key: String,
-    #[serde(default)]
-    datasets: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -104,7 +114,6 @@ impl CatalogAcl {
     }
 
     fn from_document(file: CatalogFile) -> Result<Self> {
-        let file = normalize_catalog_file(file)?;
         let libraries = build_libraries(&file)?;
         Ok(Self {
             users_by_access_key: build_users(&file, &libraries)?,
@@ -155,7 +164,6 @@ pub(crate) fn issue_user(path: &Path, name: &str) -> Result<IssuedUser> {
         CatalogUserFile {
             access_key: access_key.clone(),
             secret_key: secret_key.clone(),
-            datasets: Vec::new(),
         },
     );
     write_catalog_file(path, &file)?;
@@ -170,17 +178,27 @@ pub(crate) fn grant_datasets(path: &Path, name: &str, datasets: &[String]) -> Re
     let name = canonical_user_name(name)?;
     let mut file = load_editable_catalog(path)?;
     let library_names = canonical_library_names(&file)?;
-    let user = file
-        .users
-        .get_mut(&name)
-        .ok_or_else(|| anyhow!("unknown user '{name}'"))?;
+    anyhow::ensure!(file.users.contains_key(&name), "unknown user '{name}'");
     for dataset in datasets {
         let dataset = granted_library_name(&library_names, dataset)?;
-        if !user.datasets.iter().any(|existing| existing == &dataset) {
-            user.datasets.push(dataset);
+        if !file
+            .grants
+            .iter()
+            .any(|grant| grant.user == name && grant.dataset == dataset)
+        {
+            file.grants.push(CatalogGrantFile {
+                user: name.clone(),
+                dataset,
+                permissions: vec!["read".into(), "query".into(), "analyze".into()],
+            });
         }
     }
-    let granted = user.datasets.clone();
+    let granted = file
+        .grants
+        .iter()
+        .filter(|grant| grant.user == name)
+        .map(|grant| grant.dataset.clone())
+        .collect();
     write_catalog_file(path, &file)?;
     Ok(granted)
 }
@@ -188,29 +206,37 @@ pub(crate) fn grant_datasets(path: &Path, name: &str, datasets: &[String]) -> Re
 pub(crate) fn revoke_datasets(path: &Path, name: &str, datasets: &[String]) -> Result<Vec<String>> {
     let name = canonical_user_name(name)?;
     let mut file = load_editable_catalog(path)?;
-    let user = file
-        .users
-        .get_mut(&name)
-        .ok_or_else(|| anyhow!("unknown user '{name}'"))?;
+    anyhow::ensure!(file.users.contains_key(&name), "unknown user '{name}'");
     let mut to_remove = Vec::new();
     for dataset in datasets {
         let dataset = DatasetMount::new(dataset, "validation")
             .with_context(|| format!("catalog library name '{dataset}'"))?
             .name;
         anyhow::ensure!(
-            user.datasets.iter().any(|existing| existing == &dataset),
+            file.grants
+                .iter()
+                .any(|grant| grant.user == name && grant.dataset == dataset),
             "catalog user '{name}' does not grant '{dataset}'"
         );
         to_remove.push(dataset);
     }
-    user.datasets
-        .retain(|existing| !to_remove.iter().any(|dataset| dataset == existing));
-    let remaining = user.datasets.clone();
+    file.grants.retain(|grant| {
+        !(grant.user == name && to_remove.iter().any(|dataset| dataset == &grant.dataset))
+    });
+    let remaining = file
+        .grants
+        .iter()
+        .filter(|grant| grant.user == name)
+        .map(|grant| grant.dataset.clone())
+        .collect();
     write_catalog_file(path, &file)?;
     Ok(remaining)
 }
 
 fn read_catalog_config(path: &Path) -> Result<String> {
+    if !path.exists() {
+        return Ok("[meta]\nversion = 1\nrevision = 0\n".to_owned());
+    }
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("read catalog config metadata {}", path.display()))?;
     anyhow::ensure!(metadata.is_file(), "catalog config must be a regular file");
@@ -222,57 +248,16 @@ fn read_catalog_config(path: &Path) -> Result<String> {
 }
 
 fn parse_catalog_file(content: &str) -> Result<CatalogFile> {
-    // The canonical format is intentionally strict. Legacy
-    // `[libraries.*]` and `users.*.datasets` configuration is no longer
-    // accepted; callers must migrate to `[datasets.*]` and `[[grants]]`.
-    anyhow::ensure!(
-        !content
-            .lines()
-            .any(|line| line.trim_start().starts_with("[libraries.")),
-        "legacy catalog format is not supported; use [datasets.*]"
-    );
-    anyhow::ensure!(
-        !content
-            .lines()
-            .any(|line| line.trim_start().starts_with("datasets =")),
-        "legacy catalog grants are not supported; use [[grants]]"
-    );
     toml::from_str(content).context("parse catalog config")
 }
 
 fn load_editable_catalog(path: &Path) -> Result<CatalogFile> {
-    let file = normalize_catalog_file(parse_catalog_file(&read_catalog_config(path)?)?)?;
+    let file = parse_catalog_file(&read_catalog_config(path)?)?;
+    if file.datasets.is_empty() && file.users.is_empty() && file.grants.is_empty() {
+        return Ok(file);
+    }
     let libraries = build_libraries(&file)?;
     build_users(&file, &libraries)?;
-    Ok(file)
-}
-
-fn normalize_catalog_file(mut file: CatalogFile) -> Result<CatalogFile> {
-    // New `[datasets.*]` entries are the canonical spelling. Accept legacy
-    // `[libraries.*]` entries while migrating them in memory.
-    for (name, dataset) in std::mem::take(&mut file.datasets) {
-        anyhow::ensure!(
-            !file.libraries.contains_key(&name),
-            "catalog dataset '{name}' is defined more than once"
-        );
-        file.libraries.insert(name, dataset);
-    }
-    for grant in std::mem::take(&mut file.grants) {
-        let user = file
-            .users
-            .get_mut(&grant.user)
-            .ok_or_else(|| anyhow!("catalog grant references unknown user '{}'", grant.user))?;
-        anyhow::ensure!(
-            !user
-                .datasets
-                .iter()
-                .any(|dataset| dataset == &grant.dataset),
-            "catalog grant for user '{}' and dataset '{}' is duplicated",
-            grant.user,
-            grant.dataset
-        );
-        user.datasets.push(grant.dataset);
-    }
     Ok(file)
 }
 
@@ -292,12 +277,11 @@ fn write_catalog_file(path: &Path, file: &CatalogFile) -> Result<()> {
 
 fn build_libraries(file: &CatalogFile) -> Result<BTreeMap<String, CatalogLibrary>> {
     anyhow::ensure!(
-        !file.libraries.is_empty(),
-        "catalog config needs at least one library"
+        !file.datasets.is_empty(),
+        "catalog config needs at least one dataset"
     );
     let mut libraries = BTreeMap::new();
-    let mut s3_credential: Option<(Option<String>, Option<String>, String, String)> = None;
-    for (name, library) in &file.libraries {
+    for (name, library) in &file.datasets {
         let mount = DatasetMount::new(name, "validation")
             .with_context(|| format!("catalog library name '{name}'"))?;
         let location = DatasetLocation::parse(&library.uri)
@@ -324,19 +308,6 @@ fn build_libraries(file: &CatalogFile) -> Result<BTreeMap<String, CatalogLibrary
                     !secret_key.is_empty(),
                     "catalog library '{name}' secret_key is empty"
                 );
-                let tuple = (
-                    library.endpoint.clone(),
-                    library.region.clone(),
-                    access_key.to_owned(),
-                    secret_key.to_owned(),
-                );
-                match &s3_credential {
-                    None => s3_credential = Some(tuple),
-                    Some(existing) => anyhow::ensure!(
-                        existing == &tuple,
-                        "all s3:// libraries must share the same endpoint, region, and backend keys"
-                    ),
-                }
             }
             _ => anyhow::bail!("catalog library '{name}' must set both access_key and secret_key"),
         }
@@ -366,6 +337,27 @@ fn build_users(
     libraries: &BTreeMap<String, CatalogLibrary>,
 ) -> Result<HashMap<String, CatalogUser>> {
     let mut users_by_access_key = HashMap::new();
+    let mut datasets_by_user: HashMap<String, Vec<String>> = HashMap::new();
+    for grant in &file.grants {
+        anyhow::ensure!(
+            file.users.contains_key(&grant.user),
+            "catalog grant references unknown user '{}'",
+            grant.user
+        );
+        anyhow::ensure!(
+            libraries.contains_key(&grant.dataset),
+            "catalog grant references unknown dataset '{}'",
+            grant.dataset
+        );
+        let entry = datasets_by_user.entry(grant.user.clone()).or_default();
+        anyhow::ensure!(
+            !entry.contains(&grant.dataset),
+            "catalog grant for user '{}' and dataset '{}' is duplicated",
+            grant.user,
+            grant.dataset
+        );
+        entry.push(grant.dataset.clone());
+    }
     for (name, user) in &file.users {
         let access_key = user.access_key.trim().to_owned();
         let secret_key = user.secret_key.trim().to_owned();
@@ -377,16 +369,10 @@ fn build_users(
             !secret_key.is_empty(),
             "catalog user '{name}' secret_key is empty"
         );
-        for dataset in &user.datasets {
-            anyhow::ensure!(
-                libraries.contains_key(dataset),
-                "catalog user '{name}' grants unknown library '{dataset}'"
-            );
-        }
         let catalog_user = CatalogUser {
             name: name.clone(),
             secret_key,
-            datasets: user.datasets.clone(),
+            datasets: datasets_by_user.remove(name).unwrap_or_default(),
         };
         anyhow::ensure!(
             users_by_access_key
@@ -409,22 +395,22 @@ fn canonical_user_name(name: &str) -> Result<String> {
 }
 
 fn canonical_library_names(file: &CatalogFile) -> Result<BTreeSet<String>> {
-    file.libraries
+    file.datasets
         .keys()
         .map(|name| {
             DatasetMount::new(name, "validation")
                 .map(|mount| mount.name)
-                .with_context(|| format!("catalog library name '{name}'"))
+                .with_context(|| format!("catalog dataset name '{name}'"))
         })
         .collect()
 }
 
 fn granted_library_name(library_names: &BTreeSet<String>, dataset: &str) -> Result<String> {
     let mount = DatasetMount::new(dataset, "validation")
-        .with_context(|| format!("catalog library name '{dataset}'"))?;
+        .with_context(|| format!("catalog dataset name '{dataset}'"))?;
     anyhow::ensure!(
         library_names.contains(&mount.name),
-        "unknown library '{dataset}'"
+        "unknown dataset '{dataset}'"
     );
     Ok(mount.name)
 }
@@ -855,14 +841,14 @@ mod tests {
     use super::*;
 
     const SAMPLE: &str = r#"
-[libraries.prod]
+[datasets.prod]
 uri = "s3://bucket/prod"
 endpoint = "http://127.0.0.1:9000"
 region = "us-west-2"
 access_key = "BACKEND_AK"
 secret_key = "BACKEND_SK"
 
-[libraries.evals]
+[datasets.evals]
 uri = "s3://bucket/evals"
 endpoint = "http://127.0.0.1:9000"
 region = "us-west-2"
@@ -872,49 +858,63 @@ secret_key = "BACKEND_SK"
 [users.alice]
 access_key = "USER_AK"
 secret_key = "USER_SK"
-datasets = ["prod", "evals"]
 
 [users.bob]
 access_key = "BOB_AK"
 secret_key = "BOB_SK"
-datasets = ["evals"]
+
+[[grants]]
+user = "alice"
+dataset = "prod"
+permissions = ["read", "query", "analyze"]
+
+[[grants]]
+user = "alice"
+dataset = "evals"
+permissions = ["read", "query", "analyze"]
+
+[[grants]]
+user = "bob"
+dataset = "evals"
+permissions = ["read", "query"]
 "#;
 
     #[test]
     fn parse_rejects_unknown_grant() {
         let error = CatalogAcl::parse(
             r#"
-[libraries.prod]
+[datasets.prod]
 uri = "s3://bucket/prod"
 access_key = "a"
 secret_key = "b"
 [users.alice]
 access_key = "u"
 secret_key = "s"
-datasets = ["missing"]
+
+[[grants]]
+user = "alice"
+dataset = "missing"
 "#,
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("unknown library 'missing'"), "{error}");
+        assert!(error.contains("unknown dataset 'missing'"), "{error}");
     }
 
     #[test]
     fn parse_rejects_duplicate_user_keys() {
         let error = CatalogAcl::parse(
             r#"
-[libraries.prod]
+[datasets.prod]
 uri = "s3://bucket/prod"
 access_key = "a"
 secret_key = "b"
 [users.alice]
 access_key = "same"
 secret_key = "s1"
-datasets = ["prod"]
 [users.bob]
 access_key = "same"
 secret_key = "s2"
-datasets = ["prod"]
 "#,
         )
         .unwrap_err()
@@ -923,26 +923,28 @@ datasets = ["prod"]
     }
 
     #[test]
-    fn parse_rejects_mismatched_s3_backend_keys() {
-        let error = CatalogAcl::parse(
+    fn parse_accepts_independent_s3_backend_keys() {
+        let result = CatalogAcl::parse(
             r#"
-[libraries.prod]
+[datasets.prod]
 uri = "s3://bucket/prod"
 access_key = "a"
 secret_key = "b"
-[libraries.evals]
+[datasets.evals]
 uri = "s3://bucket/evals"
 access_key = "c"
 secret_key = "d"
 [users.alice]
 access_key = "u"
 secret_key = "s"
-datasets = ["prod"]
 "#,
         )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("share the same"), "{error}");
+        .unwrap();
+        assert!(
+            result
+                .ticket_for(result.authenticate("u", "s").unwrap(), "prod")
+                .is_some()
+        );
     }
 
     #[test]
@@ -1196,14 +1198,14 @@ dataset = "prod"
     }
 
     const LIBRARIES_ONLY: &str = r#"
-[libraries.prod]
+[datasets.prod]
 uri = "s3://bucket/prod"
 endpoint = "http://127.0.0.1:9000"
 region = "us-west-2"
 access_key = "BACKEND_AK"
 secret_key = "BACKEND_SK"
 
-[libraries.evals]
+[datasets.evals]
 uri = "s3://bucket/evals"
 endpoint = "http://127.0.0.1:9000"
 region = "us-west-2"
@@ -1237,7 +1239,7 @@ secret_key = "BACKEND_SK"
     }
 
     #[test]
-    fn parse_rejects_libraries_only_catalog() {
+    fn parse_rejects_catalog_without_users() {
         let error = CatalogAcl::parse(LIBRARIES_ONLY).unwrap_err().to_string();
         assert!(error.contains("at least one user"), "{error}");
     }
@@ -1259,7 +1261,7 @@ secret_key = "BACKEND_SK"
         assert_eq!(user.name, "alice");
         assert!(acl.list_for(user).is_empty());
         let stored = path_text(&path);
-        assert!(stored.contains("datasets = []"), "{stored}");
+        assert!(!stored.contains("datasets = ["), "{stored}");
         assert!(stored.contains(&issued.access_key), "{stored}");
         assert!(stored.contains(&issued.secret_key), "{stored}");
     }
@@ -1293,7 +1295,7 @@ secret_key = "BACKEND_SK"
             .unwrap_err()
             .to_string();
         assert!(
-            missing_library.contains("unknown library 'missing'"),
+            missing_library.contains("unknown dataset 'missing'"),
             "{missing_library}"
         );
 
