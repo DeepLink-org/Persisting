@@ -1,6 +1,6 @@
 # pVisor
 
-<img src="/img/logos/pvisor-icon.png" alt="pVisor logo" width="96" />
+<img src="/img/logos/pvisor-with-text.png" alt="pVisor logo" width="240" />
 
 **pVisor 在受控执行环境中运行现有的 Agent 命令。** 它为每个 Run 提供独立的工作区边界，
 记录实际生效的控制机制，并让你在文件变更进入项目之前先进行审查。

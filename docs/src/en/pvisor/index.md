@@ -1,6 +1,6 @@
 # pVisor
 
-<img src="/img/logos/pvisor-icon.png" alt="pVisor logo" width="96" />
+<img src="/img/logos/pvisor-with-text.png" alt="pVisor logo" width="240" />
 
 **pVisor runs an existing Agent command inside a controlled execution
 environment.** It gives each Run its own workspace boundary, records the
