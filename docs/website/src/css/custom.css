@@ -1,7 +1,8 @@
 :root { --scroll-progress: 0; --scroll-y: 0px; --sky-pitch: 4deg; --sky-lift: -36px; --zodiac-index: 0; --zodiac-angle: 0deg; --zodiac-elevation: 0deg; --ifm-color-primary: #67e8f9; --ifm-color-primary-dark: #22d3ee; --ifm-color-primary-light: #a5f3fc; --ifm-code-font-size: 90%; --ifm-font-family-base: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; --ifm-heading-font-family: var(--ifm-font-family-base); --ifm-line-height-base: 1.7; --ifm-background-color: #070b1e; --ifm-background-surface-color: #101a3a; --ifm-font-color-base: #e7edff; --ifm-heading-color: #ffffff; }
 body { min-height: 100vh; color: #e7edff; background: #050b22; overflow-x: hidden; }
-#__docusaurus { position: relative; isolation: isolate; }
-.site-sky-loop { position: fixed; z-index: -1; top: calc(-75vh + var(--zodiac-elevation) * .22 + var(--sky-lift)); left: 0; right: auto; bottom: auto; display: flex; width: max-content; height: 250vh; overflow: hidden; background-color: #050b22; background-image: radial-gradient(circle at 18% 30%, rgb(126 185 255 / 24%) 0 1px, transparent 1.5px), radial-gradient(circle at 76% 22%, rgb(220 210 255 / 26%) 0 1px, transparent 1.6px), radial-gradient(circle at 52% 78%, rgb(111 247 229 / 18%) 0 1px, transparent 1.4px), radial-gradient(ellipse at 50% 108%, rgb(42 74 154 / 35%), transparent 62%), linear-gradient(180deg, #050b22 0%, #091943 58%, #14285a 100%); background-size: 173px 151px, 229px 197px, 311px 263px, 100% 100%, 100% 100%; transform: translateX(calc(46% - var(--zodiac-index) * 8.3333%)) rotateX(var(--sky-pitch)) rotateY(calc(var(--zodiac-angle) * .025)); transform-origin: 50% 100%; transition: top 18s cubic-bezier(.2,.7,.2,1), transform 18s cubic-bezier(.2,.7,.2,1); }
+#__docusaurus { position: relative; isolation: isolate; background: transparent; }
+#__docusaurus > *:not(.site-sky-loop) { position: relative; z-index: 2; }
+.site-sky-loop { position: fixed; z-index: 1; top: calc(-75vh + var(--zodiac-elevation) * .22 + var(--sky-lift)); left: 0; right: auto; display: flex; width: max-content; height: 250vh; overflow: hidden; pointer-events: none; background-color: #050b22; background-image: radial-gradient(circle at 18% 30%, rgb(126 185 255 / 24%) 0 1px, transparent 1.5px), radial-gradient(circle at 76% 22%, rgb(220 210 255 / 26%) 0 1px, transparent 1.6px), radial-gradient(circle at 52% 78%, rgb(111 247 229 / 18%) 0 1px, transparent 1.4px), radial-gradient(ellipse at 50% 108%, rgb(42 74 154 / 35%), transparent 62%), linear-gradient(180deg, #050b22 0%, #091943 58%, #14285a 100%); background-repeat: repeat, repeat, repeat, no-repeat, no-repeat; background-size: 173px 151px, 229px 197px, 311px 263px, 100% 100%, 100% 100%; transform: translateX(calc(46% - var(--zodiac-index) * 8.3333%)) rotateX(var(--sky-pitch)) rotateY(calc(var(--zodiac-angle) * .025)); transform-origin: 50% 100%; transition: top 18s cubic-bezier(.2,.7,.2,1), transform 18s cubic-bezier(.2,.7,.2,1); }
 .site-sky-loop::before { content: ''; position: fixed; z-index: 1; inset: -12%; pointer-events: none; background: radial-gradient(ellipse at 50% 104%, rgb(100 198 255 / 12%), transparent 46%), radial-gradient(ellipse at 50% -12%, rgb(19 34 91 / 32%), transparent 58%); transform: rotateX(var(--sky-pitch)) translateY(calc(var(--sky-lift) * .35)); transform-origin: 50% 100%; }
 .site-sky-loop::after { content: ''; position: fixed; z-index: 2; inset: 0; pointer-events: none; background: linear-gradient(90deg, rgb(5 11 34 / 58%), rgb(5 11 34 / 18%) 70%), linear-gradient(180deg, rgb(5 11 34 / 18%), rgb(5 11 34 / 72%)); }
 .site-sky-loop img { position: relative; z-index: 1; display: block; flex: 0 0 auto; width: auto; height: 250vh; max-width: none; object-fit: cover; mix-blend-mode: screen; opacity: .9; }
@@ -12,6 +13,8 @@ body { min-height: 100vh; color: #e7edff; background: #050b22; overflow-x: hidde
 .theme-doc-markdown a, .footer__link-item { color: #8ff7e8; }
 .theme-doc-markdown a:hover, .footer__link-item:hover { color: #ffffff; }
 .navbar { background: rgb(63 81 181 / 96%); box-shadow: 0 2px 16px rgb(15 23 42 / 16%); backdrop-filter: blur(12px); }
+.theme-announcement-bar { background: rgb(7 16 45 / 96%); color: #dbeafe; border-bottom: 1px solid rgb(103 232 249 / 20%); }
+[class*="announcementBar_"] { background: rgb(7 16 45 / 96%); color: #dbeafe; border-bottom: 1px solid rgb(103 232 249 / 20%); }
 .navbar__title { letter-spacing: -.02em; }
 .theme-doc-markdown { max-width: 52rem; }
 .theme-doc-markdown h1 { letter-spacing: -.035em; }
@@ -20,6 +23,9 @@ body { min-height: 100vh; color: #e7edff; background: #050b22; overflow-x: hidde
 .theme-code-block { border: 1px solid rgb(148 163 184 / 18%); border-radius: .6rem; box-shadow: 0 10px 28px rgb(15 23 42 / 8%); }
 .theme-admonition { border-radius: .6rem; }
 .hero--primary { position: relative; background: transparent; }
+.hero-sky-art { position: absolute; z-index: 0; inset: 0; overflow: hidden; opacity: .72; pointer-events: none; }
+.hero-sky-art::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, rgb(5 11 29 / 92%) 0%, rgb(5 11 29 / 58%) 45%, rgb(5 11 29 / 20%) 100%), linear-gradient(180deg, rgb(5 11 29 / 20%), rgb(5 11 29 / 82%)); }
+.hero-sky-art img { width: 100%; height: 100%; object-fit: cover; object-position: center; mix-blend-mode: screen; }
 .hero--primary::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, rgb(5 11 29 / 76%) 0%, rgb(5 11 29 / 56%) 38%, rgb(5 11 29 / 12%) 78%, rgb(5 11 29 / 4%) 100%), linear-gradient(0deg, rgb(5 11 29 / 64%) 0%, transparent 58%); pointer-events: none; }
 .hero .container { position: relative; z-index: 1; width: 100%; }
 .hero--primary .hero__title, .hero--primary .hero__subtitle { color: #fff !important; text-shadow: 0 3px 24px rgb(0 0 0 / 72%); }

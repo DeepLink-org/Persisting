@@ -1,2 +1,2 @@
-.hero { position: relative; min-height: 46rem; padding: 8rem 0 6rem; text-align: left; overflow: hidden; display: flex; align-items: flex-end; }
+.hero { position: relative; min-height: 40rem; padding: 7rem 0 5rem; text-align: left; overflow: hidden; display: flex; align-items: center; }
 .eyebrow { color: #5eead4; font-size: .75rem; font-weight: 700; letter-spacing: .16em; }
