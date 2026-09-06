@@ -95,6 +95,17 @@ fn scalar_text(value: &Value) -> String {
     }
 }
 
+fn json_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 #[component]
 pub fn JsonValue(value: Value, #[props(default = false)] default_open: bool) -> Element {
     let peeled = peel_json(&value);
@@ -196,10 +207,20 @@ fn JsonTree(value: Value, default_open: bool) -> Element {
 
 #[component]
 fn JsonTreeNode(label: String, value: Value, default_open: bool) -> Element {
+    let peeled = peel_json(&value);
+    if is_scalar(&peeled) {
+        return rsx! {
+            div { class: "pc2-json-leaf",
+                span { class: "pc2-json-key", "{label}" }
+                span { class: "pc2-json-type", "{json_type(&peeled)}" }
+                span { class: "pc2-json-scalar", "{scalar_text(&peeled)}" }
+            }
+        };
+    }
     let summary = json_summary(&value);
     rsx! {
         details { class: "pc2-json-node", open: default_open,
-            summary { span { class: "pc2-json-key", "{label}" } span { class: "pc2-json-size", "{summary}" } }
+            summary { span { class: "pc2-json-key", "{label}" } span { class: "pc2-json-type", "{json_type(&peeled)}" } span { class: "pc2-json-size", "{summary}" } }
             JsonValue { value, default_open: false }
         }
     }
