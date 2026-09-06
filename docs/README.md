@@ -19,9 +19,9 @@ just docs-links   # build with broken-link checks enabled
 The published site includes a local search index, so search works on the static
 GitHub Pages deployment without a separate service.
 
-The canonical Markdown source is `docs/src/`. Public English and Chinese pages
-are selected from that tree at build time; internal pPilot, Queue, and API
-material stays in the source tree without entering the public Docusaurus site.
+The canonical Markdown sources are `docs/src/en/` and `docs/src/zh/`. Docusaurus
+reads these two trees directly; internal pPilot, Queue, and API material lives
+under `docs/src/internal/` and stays outside the public site.
 The Docusaurus shell lives in `docs/website/`, with the React homepage in
 `docs/website/src/pages/index.js` and shared visual tokens in
 `docs/website/src/css/custom.css`.
@@ -46,6 +46,6 @@ are not part of the default product onboarding path.
 
 ## Contributing
 
-Edit the Markdown under `docs/src/` and the React/CSS files under
+Edit the Markdown under `docs/src/en/` or `docs/src/zh/`, and the React/CSS files under
 `docs/website/src/`. Check command examples against the corresponding binary's
 `--help`, then run `just docs-build` and `just docs-links` before opening a PR.

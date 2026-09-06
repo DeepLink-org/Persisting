@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail if published docs pages are missing a language twin.
 
-The Docusaurus site keeps translations in parallel ``docs/en`` and ``docs/zh``
+The Docusaurus site keeps translations in parallel ``docs/src/en`` and ``docs/src/zh``
 trees. Every public English page must therefore have a page at the same
 relative path in the Chinese tree, and vice versa.
 
@@ -22,7 +22,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-DOCS = Path(__file__).resolve().parent.parent / "docs" / "website" / "docs"
+DOCS = Path(__file__).resolve().parent.parent / "docs" / "src"
 LANGUAGES = ("en", "zh")
 
 EN_ONLY = {

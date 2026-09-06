@@ -17,10 +17,10 @@ const config = {
   ],
   plugins: [
     [require.resolve('@docusaurus/plugin-content-docs'), {
-      path: 'docs/en', routeBasePath: 'docs', sidebarPath: require.resolve('./sidebars.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/website/'
+      path: '../src/en', routeBasePath: 'docs', sidebarPath: require.resolve('./sidebars.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/website/'
     }],
     [require.resolve('@docusaurus/plugin-content-docs'), {
-      id: 'zh', path: 'docs/zh', routeBasePath: 'zh/docs', sidebarPath: require.resolve('./sidebars.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/website/'
+      id: 'zh', path: '../src/zh', routeBasePath: 'zh/docs', sidebarPath: require.resolve('./sidebars.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/website/'
     }],
     [require.resolve('@easyops-cn/docusaurus-search-local'), {
       hashed: true,

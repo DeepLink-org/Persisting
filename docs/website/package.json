@@ -6,9 +6,7 @@
     "build": "docusaurus build",
     "serve": "docusaurus serve",
     "clear": "docusaurus clear",
-    "typecheck": "tsc",
-    "prestart": "python3 ../../scripts/sync-docusaurus-docs.py",
-    "prebuild": "python3 ../../scripts/sync-docusaurus-docs.py"
+    "typecheck": "tsc"
   },
   "dependencies": {
     "@docusaurus/core": "^3.8.1",
