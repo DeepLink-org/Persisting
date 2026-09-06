@@ -711,19 +711,20 @@ install-nightly:
 # ── 文档（docs/ 子项目）──────────────────────────────────────────────────────
 
 docs-sync:
-    cd "{{ docs_dir }}" && uv sync --frozen
+    cd "{{ docs_dir }}" && if [[ ! -x node_modules/.bin/docusaurus ]]; then npm ci; fi
 
-docs-serve:
-    cd "{{ docs_dir }}" && uv run mkdocs serve
+docs-serve: docs-sync
+    cd "{{ docs_dir }}" && npm run build && python3 "{{ repo }}/scripts/serve-docs.py" --host 0.0.0.0 --port 3000 --directory build
 
-docs-serve-dirty:
-    cd "{{ docs_dir }}" && uv run mkdocs serve --dirtyreload
+# Hot-reload development mode. Use docs-serve for a stable static preview.
+docs-serve-dirty: docs-sync
+    cd "{{ docs_dir }}" && npm run start -- --host 0.0.0.0
 
-docs-build:
-    cd "{{ docs_dir }}" && uv run mkdocs build
+docs-build: docs-sync
+    cd "{{ docs_dir }}" && npm run build
 
-docs-links:
-    cd "{{ docs_dir }}" && uv run mkdocs build --strict
+docs-links: docs-sync
+    cd "{{ docs_dir }}" && npm run build
 
 # Fail if a translatable English page lacks a Chinese counterpart (or vice versa).
 docs-i18n:

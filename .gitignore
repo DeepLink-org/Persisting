@@ -1,4 +1,5 @@
 docs/site/
+docs/website/node_modules/
 examples/**/.work/
 target/
 /store/
@@ -31,3 +32,13 @@ pchronicle-web/dist
 pchronicle-web/target/
 crates/persisting-pchronicle-cli/web-assets/
 .worktrees/
+
+# Docusaurus generated metadata
+docs/website/.docusaurus/
+
+# Docusaurus docs generated from docs/src
+
+# Docusaurus local dependencies and generated output
+docs/node_modules/
+docs/.docusaurus/
+docs/build/

@@ -33,7 +33,7 @@ built-in Overlay virtio-fs backend and does not require macFUSE.
 
 ```bash
 # Recommended: install with Lance support
-pip install persisting[lance]
+pip install persisting
 
 # Minimal install without Lance, for custom backends only
 pip install persisting
@@ -56,7 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/script
 ```bash
 git clone https://github.com/DeepLink-org/Persisting.git
 cd Persisting
-pip install -e ".[lance]"
+pip install -e .
 ```
 
 ## CLI component set

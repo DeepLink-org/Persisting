@@ -30,7 +30,7 @@ host Run 不依赖 macFUSE；`--safe` 在挂载能力不可用时会 fail closed
 
 ```bash
 # 推荐：带 Lance 支持
-pip install persisting[lance]
+pip install persisting
 
 # 最小安装（不含 Lance，仅用于自定义后端）
 pip install persisting
@@ -52,7 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/script
 ```bash
 git clone https://github.com/DeepLink-org/Persisting.git
 cd Persisting
-pip install -e ".[lance]"
+pip install -e .
 ```
 
 ## CLI 组件集
