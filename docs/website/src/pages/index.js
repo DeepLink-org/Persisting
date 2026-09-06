@@ -16,7 +16,7 @@ const capabilities = [
 ];
 
 export default function Home() {
-  const heroArtwork = useBaseUrl('/img/diagrams/persisting/hero-gentle-cyberpunk.png');
+  const heroArtwork = useBaseUrl('/img/diagrams/persisting/zodiac-sky.svg');
   const productDiagram = useBaseUrl('/img/diagrams/persisting/system-products.svg');
   return <Layout title="Persistent Infrastructure for the Agent Era" description="Run Agents under a reviewable execution boundary and preserve queryable history.">
     <header className={clsx('hero hero--primary', styles.hero)}><div className="container">
@@ -24,7 +24,7 @@ export default function Home() {
       <h1 className="hero__title">Persistent Infrastructure for the Agent Era</h1>
       <p className="hero__subtitle">Run an Agent with a reviewable execution boundary. Preserve the resulting history as a queryable Dataset.</p>
       <div className="buttons"><Link className="button button--secondary button--lg" to="/docs/">Get started</Link><Link className="button button--outline button--lg" to="/docs/system-design/">Read the system design</Link></div>
-      <img className="hero-cyberpunk" src={heroArtwork} alt="A calm abstract cyberpunk data sanctuary with flowing cyan and coral light" />
+      <img className="hero-cyberpunk" src={heroArtwork} alt="A quiet field of twelve constellations around a deep-space ring" />
     </div></header>
     <main>
       <section className="container padding-vert--xl"><div className="row product-choices">

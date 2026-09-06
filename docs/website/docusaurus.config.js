@@ -31,7 +31,7 @@ const config = {
     }],
   ],
   themeConfig: {
-    image: 'img/diagrams/persisting/hero-gentle-cyberpunk.png',
+    image: 'img/diagrams/persisting/zodiac-sky.svg',
     docs: {
       sidebar: {
         hideable: true,
