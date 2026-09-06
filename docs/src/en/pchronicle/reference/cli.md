@@ -306,7 +306,7 @@ pchronicle serve \
 Every listener must use a loopback address. A bare single Dataset is mounted as
 `default`; with several Datasets, use `NAME=DATASET` when a stable mount name is
 needed. Control requires a mount named `default`.
-`--catalog-config FILE` serves a path Directory instead of opening libraries
+`--catalog-config FILE` serves a path Directory instead of opening Datasets
 in the parent process. Pair it with `alias add NAME catalog://127.0.0.1:PORT --ak --sk`.
 `pchronicle serve catalog issue|grant|revoke` rewrites that file and does not
 start HTTP; `issue` prints the user secret once. Restart serve after changing
@@ -334,3 +334,22 @@ Use [Discover and query](../guides/discover-and-query.md) for the locate-then-SQ
 workflow, [Import and export](../guides/exchange.md) for interchange, and
 [Serve Datasets locally](../guides/serve.md) for the read-only server. Snapshot
 construction is explained in [Snapshot design](../design/catalog.md).
+
+#### Catalog management
+
+Catalog configuration contains only users, Datasets, and grants. Management commands create the file when it does not exist.
+
+```text
+pchronicle serve catalog user create   --catalog-config FILE NAME
+pchronicle serve catalog user list     --catalog-config FILE
+pchronicle serve catalog user remove   --catalog-config FILE NAME
+pchronicle serve catalog dataset create --catalog-config FILE NAME URI [OPTIONS]
+pchronicle serve catalog dataset list   --catalog-config FILE
+pchronicle serve catalog dataset show   --catalog-config FILE NAME
+pchronicle serve catalog dataset remove --catalog-config FILE NAME
+pchronicle serve catalog grant  --catalog-config FILE USER DATASET --permission PERMISSION...
+pchronicle serve catalog revoke --catalog-config FILE USER DATASET --permission PERMISSION...
+pchronicle serve catalog grants --catalog-config FILE
+```
+
+`user create` generates AK/SK and prints the secret once. `dataset create` registers the URI and storage credentials without creating or deleting backend data. `grant` and `revoke` manage `read`, `query`, `analyze`, `write`, and `admin` permissions.

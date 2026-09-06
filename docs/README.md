@@ -12,7 +12,7 @@ Run these commands from the repository root:
 just docs-sync    # install website dependencies
 just docs-serve   # build and start a stable static preview
 just docs-serve-dirty # start the hot-reload development server
-just docs-build   # build docs/website/build
+just docs-build   # build docs/build
 just docs-links   # build with broken-link checks enabled
 ```
 
@@ -22,9 +22,9 @@ GitHub Pages deployment without a separate service.
 The canonical Markdown sources are `docs/src/en/` and `docs/src/zh/`. Docusaurus
 reads these two trees directly; internal pPilot, Queue, and API material lives
 under `docs/src/internal/` and stays outside the public site.
-The Docusaurus shell lives in `docs/website/`, with the React homepage in
-`docs/website/src/pages/index.js` and shared visual tokens in
-`docs/website/src/css/custom.css`.
+The Docusaurus site is rooted at `docs/`. Its React homepage lives in
+`docs/src/pages/index.js`, and shared visual tokens live in
+`docs/src/css/custom.css`.
 
 Use `docs-serve` for a stable preview of the generated site. Use
 `docs-serve-dirty` only while editing and needing hot reload; it runs the
@@ -47,5 +47,5 @@ are not part of the default product onboarding path.
 ## Contributing
 
 Edit the Markdown under `docs/src/en/` or `docs/src/zh/`, and the React/CSS files under
-`docs/website/src/`. Check command examples against the corresponding binary's
+`docs/src/pages/`, `docs/src/css/`, and `docs/src/theme/`. Check command examples against the corresponding binary's
 `--help`, then run `just docs-build` and `just docs-links` before opening a PR.

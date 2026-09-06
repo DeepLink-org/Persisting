@@ -1,3 +1,5 @@
+const path = require('path');
+
 const config = {
   title: 'Persisting',
   tagline: 'Persistent Infrastructure for the Agent Era',
@@ -17,14 +19,14 @@ const config = {
   ],
   plugins: [
     [require.resolve('@docusaurus/plugin-content-docs'), {
-      path: '../src/en', routeBasePath: 'docs', sidebarPath: require.resolve('./sidebars.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/website/'
+      path: path.resolve(__dirname, 'src/en'), routeBasePath: 'docs', sidebarPath: require.resolve('./sidebars.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/'
     }],
     [require.resolve('@docusaurus/plugin-content-docs'), {
-      id: 'zh', path: '../src/zh', routeBasePath: 'zh/docs', sidebarPath: require.resolve('./sidebars.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/website/'
+      id: 'zh', path: path.resolve(__dirname, 'src/zh'), routeBasePath: 'zh/docs', sidebarPath: require.resolve('./sidebars.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/'
     }],
     [require.resolve('@easyops-cn/docusaurus-search-local'), {
       hashed: true,
-      docsDir: ['../src/en', '../src/zh'],
+      docsDir: [path.resolve(__dirname, 'src/en'), path.resolve(__dirname, 'src/zh')],
       language: ['en', 'zh'],
       indexDocs: true,
       indexBlog: false,

@@ -64,6 +64,7 @@ test-list:
         just gateway-fuzz         一分钟 Gateway 四类 fuzz 汇总
         just gateway-fuzz-formats / gateway-fuzz-forwarding
         just gateway-fuzz-storage / gateway-fuzz-network
+        just cases pvisor|pchronicle|pchronicle-cluster
 
       组件示例
         just examples-pvisor              全部 pVisor 场景
@@ -710,20 +711,20 @@ install-nightly:
 # ── 文档（docs/ 子项目）──────────────────────────────────────────────────────
 
 docs-sync:
-    cd "{{ docs_dir }}/website" && if [[ ! -x node_modules/.bin/docusaurus ]]; then npm ci; fi
+    cd "{{ docs_dir }}" && if [[ ! -x node_modules/.bin/docusaurus ]]; then npm ci; fi
 
 docs-serve: docs-sync
-    cd "{{ docs_dir }}/website" && npm run build && python3 "{{ repo }}/scripts/serve-docs.py" --host 0.0.0.0 --port 3000 --directory build
+    cd "{{ docs_dir }}" && npm run build && python3 "{{ repo }}/scripts/serve-docs.py" --host 0.0.0.0 --port 3000 --directory build
 
 # Hot-reload development mode. Use docs-serve for a stable static preview.
 docs-serve-dirty: docs-sync
-    cd "{{ docs_dir }}/website" && npm run start -- --host 0.0.0.0
+    cd "{{ docs_dir }}" && npm run start -- --host 0.0.0.0
 
 docs-build: docs-sync
-    cd "{{ docs_dir }}/website" && npm run build
+    cd "{{ docs_dir }}" && npm run build
 
 docs-links: docs-sync
-    cd "{{ docs_dir }}/website" && npm run build
+    cd "{{ docs_dir }}" && npm run build
 
 # Fail if a translatable English page lacks a Chinese counterpart (or vice versa).
 docs-i18n:
@@ -755,3 +756,40 @@ check-quick:
 # capture 相关 Rust 测试（Gateway 包测试已覆盖全部 capture targets）。
 capture-test:
     just test-crate capture
+
+# Execute pChronicle single-machine/self-service cases.
+[group('test')]
+test-pchronicle-cases:
+    cargo build --release -p persisting-pchronicle-cli --locked
+    python3 scripts/run-pchronicle-cases.py --document docs/src/pchronicle/reference/cases-self.md --pchronicle target/release/pchronicle --report target/pchronicle-self-case-report.md
+
+# List and execute pChronicle platform/Catalog cases. Server lifecycle cases are
+# reported as MANUAL unless explicitly selected with PCHRONICLE_CASE_MODE.
+[group('test')]
+test-pchronicle-cases-platform:
+    cargo build --release -p persisting-pchronicle-cli --locked
+    python3 scripts/run-pchronicle-cases.py --document docs/src/pchronicle/reference/cases-platform.md --pchronicle target/release/pchronicle --report target/pchronicle-platform-case-report.md
+
+# Run documented integration cases by component.
+# Examples: just cases pvisor | pchronicle | pchronicle-cluster
+cases target:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{target}}" in
+      pvisor)
+        cargo build --release -p persisting-pvisor --locked
+        python3 scripts/run-pvisor-cases.py --report target/pvisor-case-report.md
+        ;;
+      pchronicle)
+        cargo build --release -p persisting-pchronicle-cli --locked
+        python3 scripts/run-pchronicle-cases.py --document docs/src/pchronicle/reference/cases-self.md --pchronicle target/release/pchronicle --report target/pchronicle-self-case-report.md
+        ;;
+      pchronicle-cluster)
+        cargo build --release -p persisting-pchronicle-cli --locked
+        python3 scripts/run-pchronicle-cases.py --document docs/src/pchronicle/reference/cases-platform.md --pchronicle target/release/pchronicle --report target/pchronicle-platform-case-report.md
+        ;;
+      *)
+        echo "usage: just cases pvisor|pchronicle|pchronicle-cluster" >&2
+        exit 2
+        ;;
+    esac

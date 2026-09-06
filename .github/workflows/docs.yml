@@ -4,12 +4,12 @@ on:
   push:
     branches: [main, master]
     paths:
-      - 'docs/website/**'
+      - 'docs/**'
       - '.github/workflows/docs.yml'
   pull_request:
     branches: [main, master]
     paths:
-      - 'docs/website/**'
+      - 'docs/**'
       - '.github/workflows/docs.yml'
 
 permissions:
@@ -25,8 +25,8 @@ jobs:
         with:
           node-version: 20
       - name: Install website dependencies
-        working-directory: docs/website
+        working-directory: docs
         run: npm ci
       - name: Build documentation
-        working-directory: docs/website
+        working-directory: docs
         run: npm run build
