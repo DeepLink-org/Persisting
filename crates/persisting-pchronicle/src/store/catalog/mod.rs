@@ -836,6 +836,7 @@ fn is_lance_directory(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("lance"))
+        || path.join("_versions").is_dir()
 }
 
 fn path_is_inside_lance_directory(path: &str) -> bool {
