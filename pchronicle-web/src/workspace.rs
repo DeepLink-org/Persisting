@@ -18,7 +18,7 @@ use crate::copilot_sessions::{
     page_after_history_switch, persist_indexed_thread, relative_time, restore_for_run, save_index,
     session_storage_key, title_from_thread,
 };
-use crate::json_value::JsonValue;
+use crate::json_value::JsonViewer;
 use crate::llm;
 use crate::llm_settings::LlmSettings;
 #[cfg(test)]
@@ -1488,7 +1488,7 @@ fn RunDetailWorkspace(
                         if loading && compact_record.is_none() {
                             div { class: "pc2-inline-loading", span { class: "spinner" } "Loading record…" }
                         } else if let Some(detail) = compact_record {
-                            JsonValue { value: detail.record, default_open: true }
+                            JsonViewer { value: detail.record }
                         } else {
                             div { class: "pc2-empty", strong { "Record unavailable" } }
                         }

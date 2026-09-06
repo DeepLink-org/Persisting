@@ -76,17 +76,6 @@ pub fn record_columns(rows: &[Value]) -> Vec<String> {
     columns
 }
 
-pub fn json_summary(value: &Value) -> String {
-    match peel_json(value) {
-        Value::Object(object) => format!("{{{} keys}}", object.len()),
-        Value::Array(items) => format!("[{} items]", items.len()),
-        Value::String(_) => "string".into(),
-        Value::Number(_) => "number".into(),
-        Value::Bool(_) => "boolean".into(),
-        Value::Null => "null".into(),
-    }
-}
-
 fn scalar_text(value: &Value) -> String {
     match value {
         Value::Null => "null".into(),
@@ -125,6 +114,14 @@ fn json_type(value: &Value) -> &'static str {
     }
 }
 
+fn json_kind_icon(value: &Value) -> &'static str {
+    match value {
+        Value::Array(_) => "[]",
+        Value::Object(_) => "{}",
+        _ => "",
+    }
+}
+
 #[component]
 pub fn JsonValue(value: Value, #[props(default = false)] default_open: bool) -> Element {
     let peeled = peel_json(&value);
@@ -136,6 +133,21 @@ pub fn JsonValue(value: Value, #[props(default = false)] default_open: bool) -> 
         JsonShape::KvTable => rsx! { JsonKvTable { value: peeled, default_open } },
         JsonShape::RecordTable => rsx! { JsonRecordTable { value: peeled, default_open } },
         JsonShape::Tree => rsx! { JsonTree { value: peeled, default_open } },
+    }
+}
+
+#[component]
+pub fn JsonViewer(value: Value) -> Element {
+    let peeled = peel_json(&value);
+    let kind = json_type(&peeled);
+    rsx! {
+        details { class: "pc2-json-root {kind}", open: true,
+            summary {
+                span { class: "pc2-json-kind", "{json_kind_icon(&peeled)}" }
+                strong { "JSON" }
+            }
+            JsonTree { value: peeled, default_open: false }
+        }
     }
 }
 
@@ -214,20 +226,16 @@ fn JsonRecordTable(value: Value, default_open: bool) -> Element {
 #[component]
 fn JsonTree(value: Value, default_open: bool) -> Element {
     match value {
-        Value::Array(items) if items.is_empty() => rsx! {
-            details { class: "pc2-json-node", open: default_open,
-                summary { span { class: "pc2-json-size", "[0 items]" } }
-            }
-        },
+        Value::Array(items) if items.is_empty() => rsx! { div { class: "pc2-json-tree" } },
         Value::Object(map) => rsx! {
-            div { class: "pc2-json-tree pc2-json-object",
+            div { class: "pc2-json-tree",
                 for (key, child) in map {
                     JsonTreeNode { key: "{key}", label: key, value: child, default_open }
                 }
             }
         },
         Value::Array(items) => rsx! {
-            div { class: "pc2-json-tree pc2-json-array",
+            div { class: "pc2-json-tree",
                 for (index, child) in items.into_iter().enumerate() {
                     JsonTreeNode { key: "{index}", label: String::new(), value: child, default_open: false }
                 }
@@ -243,22 +251,23 @@ fn JsonTree(value: Value, default_open: bool) -> Element {
 #[component]
 fn JsonTreeNode(label: String, value: Value, default_open: bool) -> Element {
     let peeled = peel_json(&value);
+    let kind = json_type(&peeled);
     if is_scalar(&peeled) {
         return rsx! {
             div { class: "pc2-json-leaf",
+                span { class: "pc2-json-leaf-icon {kind}" }
                 if !label.is_empty() { span { class: "pc2-json-key", "{label}" span { class: "pc2-json-punctuation", ":" } } }
                 JsonScalar { value: peeled }
             }
         };
     }
-    let summary = json_summary(&value);
     rsx! {
-        details { class: "pc2-json-node", open: default_open,
+        details { class: "pc2-json-node {kind}", open: default_open,
             summary {
+                span { class: "pc2-json-kind", "{json_kind_icon(&peeled)}" }
                 if !label.is_empty() { span { class: "pc2-json-key", "{label}" span { class: "pc2-json-punctuation", ":" } } }
-                span { class: "pc2-json-size", "{summary}" }
             }
-            JsonValue { value, default_open: false }
+            JsonTree { value: peeled, default_open: false }
         }
     }
 }
@@ -324,18 +333,6 @@ mod tests {
     fn record_columns_keep_first_seen_union() {
         let rows = vec![json!({"b": 2, "a": 1}), json!({"a": 3, "c": null})];
         assert_eq!(record_columns(&rows), vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn json_summary_peels_and_names_types() {
-        assert_eq!(json_summary(&json!({"a": 1, "b": 2})), "{2 keys}");
-        assert_eq!(json_summary(&json!([1, 2, 3])), "[3 items]");
-        assert_eq!(json_summary(&json!([])), "[0 items]");
-        assert_eq!(json_summary(&json!("{}")), "{0 keys}");
-        assert_eq!(json_summary(&json!("hello")), "string");
-        assert_eq!(json_summary(&json!(true)), "boolean");
-        assert_eq!(json_summary(&json!(1)), "number");
-        assert_eq!(json_summary(&json!(null)), "null");
     }
 
     #[test]
