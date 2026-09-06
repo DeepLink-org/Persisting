@@ -1,5 +1,7 @@
 # pVisor
 
+<img src="/img/logos/pvisor-icon.png" alt="pVisor logo" width="96" />
+
 **pVisor runs an existing Agent command inside a controlled execution
 environment.** It gives each Run its own workspace boundary, records the
 controls that were actually installed, and lets you review filesystem changes

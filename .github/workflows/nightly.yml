@@ -129,7 +129,6 @@ jobs:
 
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
-        with:
 
       - name: Install hyperfine
         uses: taiki-e/install-action@v2
