@@ -5,7 +5,8 @@ const config = {
   tagline: 'Persistent Infrastructure for the Agent Era',
   favicon: 'img/logo-mark.svg',
   url: 'https://deeplink-org.github.io',
-  baseUrl: '/Persisting/',
+  // Use `/` for local previews; GitHub Pages sets DOCUSAURUS_BASE_URL=/Persisting/.
+  baseUrl: process.env.DOCUSAURUS_BASE_URL || '/',
   organizationName: 'DeepLink-org',
   projectName: 'Persisting',
   onBrokenLinks: 'throw',
