@@ -2,7 +2,7 @@
 
 The portable unit is a logical Run, not a live virtual machine.
 
-![The AgentVisor execution continuum](../assets/diagrams/agentvisor/execution-continuum.svg)
+![The AgentVisor execution continuum](/img/diagrams/agentvisor/execution-continuum.svg)
 
 Across local and fleet placement, the following must remain stable:
 

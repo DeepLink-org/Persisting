@@ -61,7 +61,7 @@ canonical 数据，也不要求后台同步任务。代码类型名 `DatasetCata
 
 ## 3. 核心模型
 
-![Snapshot 查询路径](../../assets/diagrams/persisting/dataset-catalog.svg)
+![Snapshot 查询路径](/img/diagrams/persisting/dataset-catalog.svg)
 
 核心对象分为七层：
 

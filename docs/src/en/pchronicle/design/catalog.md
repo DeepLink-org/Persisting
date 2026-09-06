@@ -89,7 +89,7 @@ or require a background sync job. The code type name
 
 ## 3. Core model
 
-![Snapshot query path](../../assets/diagrams/persisting/dataset-catalog.svg)
+![Snapshot query path](/img/diagrams/persisting/dataset-catalog.svg)
 
 The core objects have seven layers:
 

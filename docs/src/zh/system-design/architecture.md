@@ -3,7 +3,7 @@
 本文只定义 Persisting 产品之间的契约。Provider 机制属于 pVisor Design，存储布局属于
 pChronicle Design，命令属于各产品 Reference。
 
-![Persisting 产品域与集成关系](../assets/diagrams/persisting/system-products.svg)
+![Persisting 产品域与集成关系](/img/diagrams/persisting/system-products.svg)
 
 ## 产品 Ownership
 

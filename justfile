@@ -726,9 +726,6 @@ docs-build: docs-sync
 docs-links: docs-sync
     cd "{{ docs_dir }}" && npm run build
 
-# Fail if a translatable English page lacks a Chinese counterpart (or vice versa).
-docs-i18n:
-    python3 "{{ repo }}/scripts/check-docs-i18n.py"
 
 # ── 数据与 fixture ───────────────────────────────────────────────────────────
 

@@ -2,7 +2,7 @@
 
 可移植单位是逻辑 Run，而不是一台正在运行的虚拟机。
 
-![AgentVisor 执行连续体](../assets/diagrams/agentvisor/execution-continuum.svg)
+![AgentVisor 执行连续体](/img/diagrams/agentvisor/execution-continuum.svg)
 
 从本地 placement 迁移到集群时，以下内容必须保持稳定：
 

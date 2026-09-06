@@ -38,7 +38,7 @@ The left rail separates the common tasks into five surfaces:
 **Local** at the bottom of the rail indicates that the UI is connected to the
 local pChronicle server.
 
-![The Datasets page shows the test and data Datasets and their Run counts](../../assets/screenshots/pchronicle/data-overview.jpg)
+![The Datasets page shows the test and data Datasets and their Run counts](/img/screenshots/pchronicle/data-overview.jpg)
 
 **Datasets** is the landing page. Each card shows a Dataset name and Run count.
 Select a card to open that Dataset's data overview, then use **Open in Runs**
@@ -47,7 +47,7 @@ opens all Runs.
 
 ## Browse and filter Runs
 
-![The Runs page combines a path tree with a filterable Run table](../../assets/screenshots/pchronicle/runs-browser.jpg)
+![The Runs page combines a path tree with a filterable Run table](/img/screenshots/pchronicle/runs-browser.jpg)
 
 The Runs page combines a path tree and a result table:
 
@@ -66,7 +66,7 @@ paste a known Session ID directly into the search box.
 
 ## Read one Run
 
-![The Run detail page shows summary metrics, coverage, and ordered steps](../../assets/screenshots/pchronicle/run-detail.jpg)
+![The Run detail page shows summary metrics, coverage, and ordered steps](/img/screenshots/pchronicle/run-detail.jpg)
 
 The Run page has three layers:
 
@@ -84,7 +84,7 @@ not a wall-clock latency chart. Captured text, tool calls, and metrics remain us
 
 ## Analyze Datasets
 
-![Analysis runs read-only SQL and profiles the returned rows in Result Explorer](../../assets/screenshots/pchronicle/analysis-sql.jpg)
+![Analysis runs read-only SQL and profiles the returned rows in Result Explorer](/img/screenshots/pchronicle/analysis-sql.jpg)
 
 The left panel lists the queryable tables and fields for each Dataset. A mount
 name is also its SQL schema, so this example exposes `test.runs`, `data.runs`,
@@ -115,7 +115,7 @@ discarding the results.
 
 ## Inspect Lance storage
 
-![Storage shows Lance data groups, column value distributions, and storage size](../../assets/screenshots/pchronicle/storage-layout.jpg)
+![Storage shows Lance data groups, column value distributions, and storage size](/img/screenshots/pchronicle/storage-layout.jpg)
 
 Storage is an advanced diagnostic surface, not a prerequisite for browsing
 Runs. The left panel shows Lance tables and their data groups by Dataset. The
@@ -131,7 +131,7 @@ or maintenance operations.
 
 ## Configure Assistant
 
-![Assistant Browser BYOK settings include API base, API key, and Model](../../assets/screenshots/pchronicle/assistant-settings.jpg)
+![Assistant Browser BYOK settings include API base, API key, and Model](/img/screenshots/pchronicle/assistant-settings.jpg)
 
 1. Open **Assistant** from the left rail, then select the settings gear.
 2. Enter the OpenAI-compatible **API base**, **API key**, and **Model**.

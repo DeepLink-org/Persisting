@@ -232,7 +232,7 @@ summary fields are optional).
 **Egress**: events replay / subscribe → storyline → derived-format
 persist; decoupled from the capture hot path.
 
-![Gateway event write and derived data flow](../../assets/diagrams/persisting/gateway-dataflow.svg)
+![Gateway event write and derived data flow](/img/diagrams/persisting/gateway-dataflow.svg)
 
 ### 4.3 Write path and derived path
 
@@ -318,7 +318,7 @@ Main path: **HTTP → events stream → (record | trigger) → persist**.
 
 ### 6.1 One dialogue request (conceptual sequence)
 
-![Gateway capture sequence for one dialogue request](../../assets/diagrams/persisting/gateway-request.svg)
+![Gateway capture sequence for one dialogue request](/img/diagrams/persisting/gateway-request.svg)
 
 Key points:
 

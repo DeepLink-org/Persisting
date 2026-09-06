@@ -4,7 +4,7 @@
 [Guides](../guides/index.md)，精确命令属于[Reference](../reference/cli.md)，跨产品 ownership
 属于 [System Design](../../system-design/architecture.md)。
 
-![pChronicle 产品边界](../../assets/diagrams/persisting/pchronicle-product.svg)
+![pChronicle 产品边界](/img/diagrams/persisting/pchronicle-product.svg)
 
 ## 产品边界
 

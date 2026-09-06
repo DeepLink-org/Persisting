@@ -197,7 +197,7 @@ events 流  ──────────────────────�
 **Ingress**：协议层 → events（尽量保留 wire；摘要字段可选）。
 **Egress**：events 重放 / 订阅 → storyline → 派生格式落盘；与采集主路径解耦。
 
-![Gateway event 写入与派生数据流](../../assets/diagrams/persisting/gateway-dataflow.svg)
+![Gateway event 写入与派生数据流](/img/diagrams/persisting/gateway-dataflow.svg)
 
 ### 4.3 写路径与派生路径
 
@@ -270,7 +270,7 @@ Gateway 在**配置语义与路由模型**上借鉴 agentgateway 子集，并可
 
 ### 6.1 一次对话请求（概念时序）
 
-![一次对话请求的 Gateway capture 时序](../../assets/diagrams/persisting/gateway-request.svg)
+![一次对话请求的 Gateway capture 时序](/img/diagrams/persisting/gateway-request.svg)
 
 要点：
 

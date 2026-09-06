@@ -5,7 +5,7 @@ resource-limited read surfaces. User workflows belong to [Guides](../guides/inde
 exact commands to [Reference](../reference/cli.md), and cross-product ownership to
 [System Design](../../system-design/architecture.md).
 
-![pChronicle product boundary](../../assets/diagrams/persisting/pchronicle-product.svg)
+![pChronicle product boundary](/img/diagrams/persisting/pchronicle-product.svg)
 
 ## Product boundary
 

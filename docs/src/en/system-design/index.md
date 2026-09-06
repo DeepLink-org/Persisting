@@ -12,7 +12,7 @@ Gateway, OverlayFS, and OverlayNet are pVisor runtime mechanisms. Where
 available, stable Run identity connects the domains, but each also has a
 standalone entry path.
 
-![Persisting product domains and integration](../assets/diagrams/persisting/system-products.svg)
+![Persisting product domains and integration](/img/diagrams/persisting/system-products.svg)
 
 ## Cross-product contract
 

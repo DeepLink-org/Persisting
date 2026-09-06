@@ -9,7 +9,7 @@ Persisting 是横跨模型状态——参数与 KV Cache——以及 Agent 历�
 Gateway、OverlayFS 与 OverlayNet 是 pVisor 运行时机制。存在稳定 Run identity 时，它会连接
 这些产品域，但各域也有独立入口。
 
-![Persisting 产品域与集成关系](../assets/diagrams/persisting/system-products.svg)
+![Persisting 产品域与集成关系](/img/diagrams/persisting/system-products.svg)
 
 ## 跨产品契约
 

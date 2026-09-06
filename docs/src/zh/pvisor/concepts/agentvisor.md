@@ -7,7 +7,7 @@
 不同 Agent 可以复用同一套底层环境资源，但各自拥有独立的身份、工作区、权限、状态、
 外部 Effect 和故障边界。
 
-![Agent 基础设施中的 AgentVisor 品类](../../assets/diagrams/agentvisor/agentvisor-stack.svg)
+![Agent 基础设施中的 AgentVisor 品类](/img/diagrams/agentvisor/agentvisor-stack.svg)
 
 ## AgentVisor 的定义
 
@@ -150,7 +150,7 @@ Credential、Artifact 和因果历史。AgentVisor 定义一种**语义 Checkpoi
 
 ## 治理 Effect 闭环
 
-![AgentVisor Effect 治理闭环](../../assets/diagrams/agentvisor/effect-governance.svg)
+![AgentVisor Effect 治理闭环](/img/diagrams/agentvisor/effect-governance.svg)
 
 Effect 治理从执行前开始，在结果得到确认后才结束。完整生命周期包括：
 
@@ -194,7 +194,7 @@ AgentVisor 应当按维度独立报告证据，并在请求的保证无法实现
 
 ## 从个人设备到集群
 
-![AgentVisor 执行连续体](../../assets/diagrams/agentvisor/execution-continuum.svg)
+![AgentVisor 执行连续体](/img/diagrams/agentvisor/execution-continuum.svg)
 
 AgentVisor 对个人电脑和多租户集群同样重要。
 

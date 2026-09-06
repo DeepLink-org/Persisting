@@ -9,7 +9,7 @@ execution environment**. Multiple Agents can reuse the same underlying
 environment resources without sharing identity, workspace, authority, state,
 external effects, or failure domains.
 
-![The AgentVisor category in the Agent infrastructure stack](../../assets/diagrams/agentvisor/agentvisor-stack.svg)
+![The AgentVisor category in the Agent infrastructure stack](/img/diagrams/agentvisor/agentvisor-stack.svg)
 
 ## Definition
 
@@ -172,7 +172,7 @@ container format, cloud, or Agent framework.
 
 ## Governing the effect loop
 
-![The AgentVisor effect governance loop](../../assets/diagrams/agentvisor/effect-governance.svg)
+![The AgentVisor effect governance loop](/img/diagrams/agentvisor/effect-governance.svg)
 
 The effect loop begins before execution and ends after the consequence is
 known. A useful effect lifecycle includes:
@@ -225,7 +225,7 @@ meaning of delegated authority.
 
 ## From personal device to fleet
 
-![The AgentVisor execution continuum](../../assets/diagrams/agentvisor/execution-continuum.svg)
+![The AgentVisor execution continuum](/img/diagrams/agentvisor/execution-continuum.svg)
 
 The same category matters on both a personal computer and a multi-tenant
 cluster.

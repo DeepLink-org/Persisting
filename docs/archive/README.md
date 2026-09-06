@@ -13,6 +13,5 @@ current pVisor → pChronicle product path.
 
 Redirect stubs from the pre-restructure `/design/`, `/guide/`, `/dev/`, and
 `/quickstart` URL space. The current navigation under `pvisor/`, `pchronicle/`,
-`ppilot/`, `project/`, and `system-design/` has absorbed their targets, so the
-stubs no longer serve external links. Archived 2026-08-30; excluded from the
-MkDocs build because they live outside `src/`.
+`project/`, and `system-design/` has absorbed their targets, so the
+stubs no longer serve external links. Archived 2026-08-30; kept outside the Docusaurus source trees because they are not published.
