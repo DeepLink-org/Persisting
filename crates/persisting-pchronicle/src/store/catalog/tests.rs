@@ -231,6 +231,7 @@ async fn discovers_extensionless_compact_lance_dataset() -> Result<()> {
         &crate::storage::CompactJsonlOptions::default(),
     )
     .await?;
+    fs::remove_file(input)?;
 
     let snapshot = DatasetCatalogSnapshot::discover(
         vec![DatasetMount::default(temp.path().to_string_lossy())?],
