@@ -31,7 +31,7 @@ const config = {
     }],
   ],
   themeConfig: {
-    image: 'img/diagrams/persisting/hero-black-hole.png',
+    image: 'img/diagrams/persisting/hero-gentle-cyberpunk.png',
     docs: {
       sidebar: {
         hideable: true,
