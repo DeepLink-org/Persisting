@@ -331,17 +331,51 @@ def container_runtime() -> str | None:
 def requirement_reason(requirement: str) -> str | None:
     """Return None when the prerequisite holds, else a human-readable reason.
 
-    Requirements are descriptive metadata only. Cases are intentionally not
-    skipped: defaults are rendered and the real pVisor/runtime result is
-    reported, including missing KVM, rootfs, images, or optional features.
+    ``--run-unavailable`` intentionally bypasses these checks for diagnostics.
     """
     environment = os.environ
-    # Requirements document useful capabilities, but never suppress a case.
-    # The runner always executes with safe defaults so the report contains the
-    # real pVisor/runtime error instead of hiding it as SKIP.
+    if requirement == "linux" and sys.platform != "linux":
+        return "requires Linux"
+    if requirement == "kvm" and not Path("/dev/kvm").exists():
+        return "requires /dev/kvm"
+    if requirement == "rootless" and not rootless_available():
+        return "requires Linux user/mount namespaces"
+    if requirement == "curl" and shutil.which("curl") is None:
+        return "requires curl"
+    if requirement == "python3" and not executable(sys.executable):
+        return "requires Python 3"
+    if requirement == "rootfs":
+        rootfs = environment.get("PVISOR_CASE_ROOTFS")
+        if rootfs and not Path(rootfs).is_dir():
+            return f"rootfs is not a directory: {rootfs}"
+        if sys.platform != "linux" and not rootfs:
+            return "requires a Linux rootfs via PVISOR_CASE_ROOTFS"
+    if requirement == "firmware":
+        firmware = environment.get("PVISOR_CASE_FIRMWARE")
+        cache = Path.home() / ".cache/persisting/pvisor/firmware/5.5.0/linux-x86_64"
+        if sys.platform == "darwin":
+            cache = Path.home() / "Library/Caches/persisting/pvisor/firmware/5.5.0/macos-aarch64"
+        if not (firmware and Path(firmware).is_dir()) and not cache.is_dir():
+            return "requires libkrunfw (set PVISOR_CASE_FIRMWARE)"
+    if requirement in {"container", "container-runtime"} and not container_runtime():
+        return "requires crun or runc"
+    if requirement == "agent" and not environment.get("PVISOR_CASE_AGENT"):
+        return "requires PVISOR_CASE_AGENT"
+    if requirement == "lance" and environment.get("PVISOR_CASE_LANCE") != "1":
+        return "requires PVISOR_CASE_LANCE=1"
     if requirement in {
-        "linux", "kvm", "rootless", "curl", "python3", "rootfs", "image",
-        "firmware", "container", "container-runtime", "agent", "lance",
+        "curl",
+        "firmware",
+        "image",
+        "kvm",
+        "linux",
+        "python3",
+        "rootfs",
+        "rootless",
+        "agent",
+        "lance",
+        "container",
+        "container-runtime",
     }:
         return None
     return f"unknown requirement {requirement!r}"
@@ -355,15 +389,16 @@ def free_loopback_port() -> int:
 
 def prepare_workspace(workspace: Path) -> None:
     workspace.mkdir(parents=True)
+    true_program = "/usr/bin/true" if sys.platform == "darwin" else "/bin/true"
     (workspace / "pvisor.toml").write_text(
-        '[run]\ncommand = ["/bin/true"]\n', encoding="utf-8"
+        f'[run]\ncommand = ["{true_program}"]\n', encoding="utf-8"
     )
     (workspace / "spec-without-extension").write_text(
-        '[run]\ncommand = ["/bin/true"]\n', encoding="utf-8"
+        f'[run]\ncommand = ["{true_program}"]\n', encoding="utf-8"
     )
     (workspace / "run-spec.json").write_text(
-        '{"run_id":"case-i02","agent":{"name":"case-i02"},'
-        '"invocation":{"kind":"process","program":"/bin/true"}}\n',
+        f'{{"run_id":"case-i02","agent":{{"name":"case-i02"}},'
+        f'"invocation":{{"kind":"process","program":"{true_program}"}}}}\n',
         encoding="utf-8",
     )
 
@@ -377,6 +412,7 @@ def render_command(code: str, case_root: Path, pvisor: Path, ports: dict[str, st
     is meaningful in the first place.
     """
     environment = os.environ
+    true_program = "/usr/bin/true" if sys.platform == "darwin" else "/bin/true"
     default_rootfs = "/" if sys.platform == "linux" else "/path/to/rootfs"
     default_firmware = "/path/to/libkrunfw"
     firmware_cache = Path.home() / ".cache/persisting/pvisor/firmware/5.5.0"
@@ -385,10 +421,11 @@ def render_command(code: str, case_root: Path, pvisor: Path, ports: dict[str, st
     replacements = {
         "/tmp/pvisor-cases": str(case_root),
         "./target/release/pvisor": str(pvisor),
+        "/bin/true": true_program,
         "/path/to/rootfs": environment.get("PVISOR_CASE_ROOTFS", default_rootfs),
         "/path/to/image": environment.get("PVISOR_CASE_IMAGE", "ubuntu:latest"),
         "/path/to/libkrunfw": environment.get("PVISOR_CASE_FIRMWARE", default_firmware),
-        "/usr/local/bin/agent": environment.get("PVISOR_CASE_AGENT", "/bin/true"),
+        "/usr/local/bin/agent": environment.get("PVISOR_CASE_AGENT", true_program),
         "alpine:latest": environment.get("PVISOR_CASE_CONTAINER_IMAGE", "ubuntu:latest"),
         **ports,
     }

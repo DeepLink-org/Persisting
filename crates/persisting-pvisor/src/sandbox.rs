@@ -47,6 +47,20 @@ const LANDLOCK_ACCESS_FS_V3: u64 = (1 << 15) - 1;
 const LANDLOCK_ACCESS_FS_READ: u64 =
     LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum NetworkIsolation {
+    Ambient,
+    LoopbackOnly,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl NetworkIsolation {
+    pub(crate) const fn is_loopback_only(self) -> bool {
+        matches!(self, Self::LoopbackOnly)
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SandboxPlan {
@@ -55,7 +69,7 @@ pub(crate) struct SandboxPlan {
     pub attestation: PathBuf,
     pub read_only: Vec<PathBuf>,
     pub read_write: Vec<PathBuf>,
-    pub deny_network: bool,
+    pub network: NetworkIsolation,
     /// Applied after the private PID namespace is initialized so the trusted
     /// launcher itself can still create its init/reaper process.
     #[serde(default)]
@@ -66,7 +80,7 @@ pub(crate) struct SandboxPlan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SeatbeltPlan {
     pub attestation: PathBuf,
-    pub deny_network: bool,
+    pub network: NetworkIsolation,
 }
 
 /// Enter the hidden launcher when the first argument is the internal marker.
@@ -99,7 +113,7 @@ fn run_internal() -> anyhow::Result<()> {
         .context("rootless sandbox invocation is missing the Agent executable")?;
     let arguments = arguments.collect::<Vec<_>>();
 
-    enter_rootless_namespaces(plan.deny_network)
+    enter_rootless_namespaces(plan.network)
         .context("initialize rootless user and mount namespaces")?;
     enter_child_pid_namespace().context("initialize private PID namespace")?;
     if let Some(limit) = plan.process_limit {
@@ -141,7 +155,11 @@ fn run_internal() -> anyhow::Result<()> {
         std::env::set_var("PERSISTING_SANDBOX_USER_NAMESPACE", "1");
         std::env::set_var(
             "PERSISTING_SANDBOX_NETWORK",
-            if plan.deny_network { "deny" } else { "ambient" },
+            if plan.network.is_loopback_only() {
+                "deny"
+            } else {
+                "ambient"
+            },
         );
     }
 
@@ -199,7 +217,11 @@ fn run_internal() -> anyhow::Result<()> {
         std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "seatbelt-write");
         std::env::set_var(
             "PERSISTING_SANDBOX_NETWORK",
-            if plan.deny_network { "deny" } else { "ambient" },
+            if plan.network.is_loopback_only() {
+                "deny"
+            } else {
+                "ambient"
+            },
         );
     }
 
@@ -321,7 +343,7 @@ pub(crate) fn restrict_krun_runner(
 ) -> anyhow::Result<u32> {
     use anyhow::Context;
 
-    enter_rootless_namespaces(true)
+    enter_rootless_namespaces(NetworkIsolation::LoopbackOnly)
         .context("initialize libkrun user, mount, and network namespaces")?;
     let mut read_only = [
         "/usr/lib",
@@ -349,7 +371,7 @@ pub(crate) fn restrict_krun_runner(
         attestation: PathBuf::from("/dev/null"),
         read_only,
         read_write,
-        deny_network: true,
+        network: NetworkIsolation::LoopbackOnly,
         process_limit: None,
     };
     let abi = install_landlock(&plan).context("install libkrun Landlock policy")?;
@@ -468,15 +490,15 @@ fn run_internal() -> anyhow::Result<()> {
 /// Generate a compatibility-oriented Seatbelt profile.
 ///
 /// Reads remain ambient so ordinary developer toolchains keep working. Every
-/// pathname write outside `writable_paths` is denied by Seatbelt. A deny-all
-/// network Run instead starts from `deny default` and admits only the exact
-/// Run-scoped Unix sockets plus sockets rooted in Run-owned directories.
+/// pathname write outside `writable_paths` is denied by Seatbelt. A
+/// network-isolated Run starts from `deny default` and admits loopback IP,
+/// exact Run-scoped Unix sockets, and sockets rooted in Run-owned directories.
 #[cfg(target_os = "macos")]
 pub(crate) fn seatbelt_profile(
     writable_paths: &[PathBuf],
     allowed_unix_sockets: &[PathBuf],
     local_socket_roots: &[PathBuf],
-    deny_network: bool,
+    network: NetworkIsolation,
 ) -> std::io::Result<(String, Vec<(String, PathBuf)>)> {
     use std::io::{Error, ErrorKind};
 
@@ -502,7 +524,7 @@ pub(crate) fn seatbelt_profile(
         parameters.push((key, path.clone()));
     }
 
-    if deny_network {
+    if network.is_loopback_only() {
         let allowed_unix_sockets = canonical_seatbelt_paths(allowed_unix_sockets, "Unix socket")?;
         let local_socket_roots = canonical_seatbelt_paths(local_socket_roots, "local socket root")?;
         parameters.reserve(allowed_unix_sockets.len() + local_socket_roots.len());
@@ -513,11 +535,12 @@ pub(crate) fn seatbelt_profile(
             parameters.push((format!("PVISOR_SOCKET_ROOT_{index}"), path.clone()));
         }
 
-        // Deny by default for a genuine no-network Run. The allowlist below is
+        // Deny by default for a network-isolated Run. The allowlist below is
         // intentionally small and mirrors the system services required by
         // shells, language runtimes, PTYs, and read-only preferences. Socket
         // operations are admitted only so the filtered denies below can retain
-        // Run-local Unix IPC while rejecting IP and ambient host Unix sockets.
+        // Run-local Unix IPC while rejecting non-loopback IP and ambient host
+        // Unix sockets.
         let mut profile = String::from(
             "(version 1)\n\
              (deny default)\n\
@@ -548,7 +571,11 @@ pub(crate) fn seatbelt_profile(
              (allow network*)\n\
              (deny network-bind (local ip))\n\
              (deny network-inbound (local ip))\n\
-             (deny network-outbound (remote ip))\n",
+             (deny network-outbound\n\
+               (require-all\n\
+                 (remote ip)\n\
+                 (require-not (remote ip \"localhost:*\"))))\n\
+             (allow network-outbound (remote ip \"localhost:*\"))\n",
         );
         profile.push_str("(allow file-write*\n");
         for index in 0..writable_paths.len() {
@@ -624,7 +651,7 @@ fn canonical_seatbelt_paths(paths: &[PathBuf], kind: &str) -> std::io::Result<Ve
 }
 
 #[cfg(target_os = "linux")]
-fn enter_rootless_namespaces(deny_network: bool) -> std::io::Result<()> {
+fn enter_rootless_namespaces(network: NetworkIsolation) -> std::io::Result<()> {
     let uid = unsafe { libc::getuid() };
     let gid = unsafe { libc::getgid() };
     if unsafe { libc::unshare(libc::CLONE_NEWUSER) } != 0 {
@@ -651,10 +678,10 @@ fn enter_rootless_namespaces(deny_network: bool) -> std::io::Result<()> {
     if unsafe { libc::unshare(libc::CLONE_NEWNS) } != 0 {
         return Err(namespace_stage_error("unshare mount namespace"));
     }
-    if deny_network && unsafe { libc::unshare(libc::CLONE_NEWNET) } != 0 {
+    if network.is_loopback_only() && unsafe { libc::unshare(libc::CLONE_NEWNET) } != 0 {
         return Err(namespace_stage_error("unshare network namespace"));
     }
-    if deny_network {
+    if network.is_loopback_only() {
         bring_loopback_up()
             .map_err(|error| with_io_context("enable network namespace loopback", error))?;
     }
@@ -1229,15 +1256,22 @@ mod tests {
             .tempdir()
             .unwrap();
         let canonical = temporary.path().canonicalize().unwrap();
-        let (profile, parameters) =
-            seatbelt_profile(&[temporary.path().to_owned()], &[], &[], true).unwrap();
+        let (profile, parameters) = seatbelt_profile(
+            &[temporary.path().to_owned()],
+            &[],
+            &[],
+            NetworkIsolation::LoopbackOnly,
+        )
+        .unwrap();
 
         assert!(!profile.contains(canonical.to_str().unwrap()));
         assert_eq!(parameters, [("PVISOR_WRITABLE_0".into(), canonical)]);
         assert!(profile.contains("(deny default)"));
-        assert!(!profile.contains("(allow network-outbound"));
+        assert!(profile.contains("(remote ip \"localhost:*\")"));
+        assert!(profile.contains("(allow network-outbound (remote ip \"localhost:*\"))"));
 
-        let error = seatbelt_profile(&[PathBuf::from("/")], &[], &[], false).unwrap_err();
+        let error = seatbelt_profile(&[PathBuf::from("/")], &[], &[], NetworkIsolation::Ambient)
+            .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

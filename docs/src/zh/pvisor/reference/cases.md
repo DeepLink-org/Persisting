@@ -48,10 +48,9 @@ python3 scripts/run-pvisor-cases.py --pvisor target/release/pvisor --report targ
 断言中的 `bundle_expect` 等函数由脚本提供，用于读取本次运行的
 `run-bundle.json` 和 `run.json`；它们不是 pVisor 命令。
 
-case 注释中的 `requires` 只描述建议的运行环境，不会导致 case 被跳过；脚本总是
-使用默认值执行，并把缺少 KVM、rootfs、Lance 或 OCI runtime 的真实错误记录为
-`FAIL`。`--keep` 保留现场；`--strict-skips` 为兼容旧用法保留，但正常情况下不会产生
-`SKIP`。Linux 未提供 rootfs 时，目录 rootfs case 使用宿主 `/` 进行 smoke test，
+case 注释中的 `requires` 描述运行环境；缺少前置条件时脚本将 case 标为 `SKIP`，并在
+`--run-unavailable` 下强制执行以便记录真实错误。`--keep` 保留现场；
+`--strict-skips` 可将跳过视为失败。Linux 未提供 rootfs 时，目录 rootfs case 使用宿主 `/` 进行 smoke test，
 这只能验证流程，不能代表独立的 guest rootfs，也不应作为生产隔离边界。
 
 | 测试资源 | 脚本配置 |
@@ -185,11 +184,11 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   用途：要求严格执行能力检查。`--strict` 不接受所请求能力缺少强制执行证据；这里同时要求禁止网络。
 
-  准备：Linux user/mount namespace 可用。
+  准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
   预期：当前 host 执行路径在启动 Agent 前拒绝请求，并列出缺少执行证据的能力。此例验证拒绝路径，不代表 strict 在所有 executor 上都不可用。
 
-  <!-- pvisor-case: expect=nonzero requires=rootless -->
+  <!-- pvisor-case: expect=nonzero -->
 
   ```bash
   pvisor --strict --overlaynet-deny-all -- /bin/true
@@ -327,11 +326,9 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   用途：为持久 stage 请求 1GiB 的总大小限制。它限制的是 stage 总量，和 B02 的单个文件大小不是同一个概念。
 
-  准备：Linux user/mount namespace 可用。
+  准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
   预期：stage 成功建立并保存在指定路径。此例只验证参数可用和目录建立；当前产物未记录该上限，也未在此例中尝试写满 stage。
-
-  <!-- pvisor-case: requires=rootless -->
 
   ```bash
   pvisor --stage /tmp/pvisor-cases/limited-stage --max-stage-size 1GiB -- /bin/true
@@ -345,7 +342,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   ```bash
   bundle_expect filesystem.state staged
   bundle_expect safety.filesystem_changes_staged true
-  record_expect storage "$PVISOR_CASE_ROOT/limited-stage"
+  record_expect storage "$(realpath "$PVISOR_CASE_ROOT/limited-stage")"
   ```
 
   </details>
@@ -360,11 +357,9 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   用途：把本次运行的文件改动放进一个保留的 stage。命令在 workspace 里创建 `result.txt`。
 
-  准备：Linux user/mount namespace 可用。
+  准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
   预期：原 workspace 没有 `result.txt`；变更清单中出现该文件，指定 stage 内保留 `run-bundle.json`，便于之后查看。
-
-  <!-- pvisor-case: requires=rootless -->
 
   ```bash
   pvisor --stage /tmp/pvisor-cases/stage-keep -- /bin/sh -c 'printf changed > result.txt'
@@ -378,7 +373,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
   ```bash
   bundle_expect filesystem.state staged
   bundle_contains filesystem.changes result.txt
-  bundle_expect safety.filesystem_non_bypassable true
+  bundle_expect safety.filesystem_write_non_bypassable true
   test ! -e result.txt
   test -f "$PVISOR_CASE_ROOT/stage-keep/run-bundle.json"
   ```
@@ -391,11 +386,9 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   用途：运行一次不需要保留改动的任务。`--stage drop` 自动选择系统临时目录，退出后删除该目录。
 
-  准备：Linux user/mount namespace 可用。
+  准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
   预期：命令成功，日志中给出的临时存储目录已删除，原 workspace 也没有新建的文件。
-
-  <!-- pvisor-case: requires=rootless -->
 
   ```bash
   pvisor --stage drop -- /bin/sh -c 'printf changed > result.txt'
@@ -421,11 +414,9 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   用途：自己选择临时 stage 路径，但仍要求运行结束后自动删除。示例先创建一个空目录。
 
-  准备：Linux user/mount namespace 可用。
+  准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
   预期：运行完成后 `stage-drop` 目录不存在。请使用专用空目录，不要指定含有用户文件的目录。
-
-  <!-- pvisor-case: requires=rootless -->
 
   ```bash
   mkdir -p /tmp/pvisor-cases/stage-drop
@@ -477,7 +468,7 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   用途：比较 workspace 写入和 sandbox 临时目录写入。前者用于保留任务改动，后者只供本次运行临时使用。
 
-  准备：Linux user/mount namespace 可用。
+  准备：Linux user/mount namespace 可用；macOS Seatbelt 不提供此例要求的 whole-rootfs/tmpfs 隔离。
 
   预期：workspace 的改动出现在 stage，宿主 workspace 和宿主 `/tmp` 均不出现新文件。这里不验证 workspace 以外普通 rootfs 路径的持久化。
 
@@ -511,11 +502,9 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   用途：把宿主的两个目录依次叠加到工作区视图，并指定 Agent 看到的路径。`directory` 选择目录后端，`manual` 表示退出后不自动应用改动。
 
-  准备：Linux user/mount namespace 可用。
+  准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
   预期：记录的目标为 `view`，从顶层到底层依次为 `layer`、`base`、当前 workspace。目录为空，因此此例检查配置顺序，不检查同名文件覆盖内容。
-
-  <!-- pvisor-case: requires=rootless -->
 
   ```bash
   mkdir -p /tmp/pvisor-cases/base /tmp/pvisor-cases/layer "$PWD/view"
@@ -536,9 +525,9 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   ```bash
   bundle_expect filesystem.state staged
-  record_expect overlay_lowers.0 "$PVISOR_CASE_ROOT/layer"
-  record_expect overlay_lowers.1 "$PVISOR_CASE_ROOT/base"
-  record_expect overlay_lowers.2 "$PVISOR_CASE_WORKSPACE"
+  record_expect overlay_lowers.0 "$(realpath "$PVISOR_CASE_ROOT/layer")"
+  record_expect overlay_lowers.1 "$(realpath "$PVISOR_CASE_ROOT/base")"
+  record_expect overlay_lowers.2 "$(realpath "$PVISOR_CASE_WORKSPACE")"
   ```
 
   </details>
@@ -549,7 +538,11 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   用途：显式选择 host executor，观察当前系统上的隔离类型。
 
-  预期：在支持 user namespace 的 Linux 上，记录为 `rootless_process`。本例断言针对该环境；若系统正常降级到 host process，这组断言会失败，需要结合 warning 判断。
+  准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
+
+  预期：Linux 记录为 `rootless_process`，macOS 记录为 `sandboxed_process`；两者都不应降级为 host process。
+
+  <!-- pvisor-case -->
 
   ```bash
   pvisor --executor host -- /bin/true
@@ -562,7 +555,11 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   ```bash
   bundle_expect run.executor.kind process
-  bundle_expect run.executor.isolation rootless_process
+  if [ "$(uname -s)" = "Darwin" ]; then
+    bundle_expect run.executor.isolation sandboxed_process
+  else
+    bundle_expect run.executor.isolation rootless_process
+  fi
   bundle_expect safety.host_process false
   ```
 
@@ -574,7 +571,7 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   用途：观察启用 stage 后子进程的 cwd 和 procfs 路径。三条命令的输出保存到 `views.txt`。
 
-  准备：Linux user/mount namespace 可用。
+  准备：Linux user/mount namespace 可用；macOS 不支持此例的 procfs/mount namespace 路径隐藏语义。
 
   预期：cwd 指向 stage 的 merged 目录，输出中不出现原 workspace 路径。此例只检查路径显示，不证明所有原路径或继承 FD 访问都已被禁止。
 
@@ -1014,13 +1011,13 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   建议场景：适合配置出站网络、代理访问或禁止网络的任务。
 
-  用途：验证禁止网络后，清除常见代理变量仍不能访问外网。需要宿主安装 curl；命令故意发起网络请求。
+  用途：验证禁止网络后，清除常见代理变量仍不能访问外网。Linux 使用 network namespace，macOS 使用 Seatbelt；需要宿主安装 curl，命令故意发起网络请求。
 
-  准备：Linux user/mount namespace 可用；安装 curl。
+  准备：安装 curl。
 
   预期：命令失败，结果记录 no-network 和不可绕过边界。外网自身不可用也会使 curl 失败，因此本例不能单独证明隔离有效。
 
-  <!-- pvisor-case: expect=nonzero requires=rootless,curl -->
+  <!-- pvisor-case: expect=nonzero requires=curl -->
 
   ```bash
   pvisor --overlaynet-deny-all -- /bin/sh -c \
@@ -1103,11 +1100,9 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   用途：为需要模型请求记录的 Agent 配置 Gateway。示例设置路由、管理监听端口、完整记录级别、会话头、诊断输出和 Markdown 投影，并保留 stage。
 
-  准备：Linux user/mount namespace 可用。
+  准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
   预期：Gateway 与 stage 成功建立。示例上游是占位地址，`/bin/true` 不发送模型请求；此例不验证对话内容。管理监听地址与运行记录中的 `gateway_listen` 不是同一个服务地址。
-
-  <!-- pvisor-case: requires=rootless -->
 
   ```bash
   pvisor \
@@ -1221,11 +1216,9 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   用途：执行已准备好的 JSON RunSpec，并把结果原子写入指定文件。手工运行前准备包含 run_id、agent 和 process invocation 的 `run-spec.json`；脚本预置的是运行 `/bin/true` 的 `case-i02`。
 
-  准备：Linux user/mount namespace 可用。
+  准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
   预期：运行名称为 `case-i02`，`run-result.json` 非空。该委托路径当前只支持 host executor，不套用普通 Run 的 rootless safe profile；不要把此例视为隔离模式示例。
-
-  <!-- pvisor-case: requires=rootless -->
 
   ```bash
   pvisor --spec ./run-spec.json --result-file ./run-result.json --stage ./delegated-stage
@@ -1277,11 +1270,9 @@ D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 
 
   用途：组合使用 host stage、禁止网络、输出采集、JSON 事件和资源限制。命令在隔离视图中写入一个结果文件。
 
-  准备：Linux user/mount namespace 可用。
+  准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
   预期：原 workspace 不变；stage 记录 `result.txt`，结果保存 stdout 和资源请求，事件写入指定 JSONL 文件，网络标记为禁止连接。
-
-  <!-- pvisor-case: requires=rootless -->
 
   ```bash
   pvisor --name host-full \

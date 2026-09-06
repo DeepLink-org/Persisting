@@ -3,6 +3,7 @@
 use persisting_agentctl::IsolationKind;
 use persisting_pvisor::RunBundle;
 use std::fs;
+use std::net::TcpListener;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -163,11 +164,14 @@ fn deny_all_blocks_ip_and_host_unix_sockets_on_macos() {
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
     let outside_socket = temporary.path().join("host.sock");
+    let loopback_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let loopback_port = loopback_listener.local_addr().unwrap().port();
     fs::create_dir(&workspace).unwrap();
     let _listener = UnixListener::bind(&outside_socket).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PERSISTING_RUN_HOME", &run_home)
+        .env("LOOPBACK_PORT", loopback_port.to_string())
         .args([
             "run",
             "--overlaynet-deny-all",
@@ -176,6 +180,7 @@ fn deny_all_blocks_ip_and_host_unix_sockets_on_macos() {
             "--overlayfs-compose",
         ])
         .arg(&workspace)
+        .args(["--pass-env", "LOOPBACK_PORT"])
         .args([
             "--",
             "/usr/bin/python3",
@@ -190,9 +195,12 @@ agentctl.close()
 
 try:
     inet = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    inet_code = inet.connect_ex(("127.0.0.1", 9))
+    inet_code = inet.connect_ex(("192.0.2.1", 9))
 except PermissionError as error:
     inet_code = error.errno
+
+loopback = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+loopback_code = loopback.connect_ex(("127.0.0.1", int(os.environ["LOOPBACK_PORT"])))
 
 try:
     host = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -203,8 +211,8 @@ except PermissionError as error:
 local = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 local.bind(os.path.join(os.environ["TMPDIR"], "local.sock"))
 local.close()
-print(inet_code, host_code)
-raise SystemExit(0 if inet_code in denied and host_code in denied else 1)"#,
+print(inet_code, loopback_code, host_code)
+raise SystemExit(0 if inet_code in denied and loopback_code == 0 and host_code in denied else 1)"#,
         ])
         .arg(&outside_socket)
         .output()

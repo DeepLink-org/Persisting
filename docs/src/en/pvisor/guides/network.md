@@ -172,8 +172,8 @@ The following paths are outside that cooperative host/container boundary:
 Consequently, a host/container cooperative-proxy Run reports
 `safety.network_non_bypassable = false`. When direct network access must be
 blocked, use `pvisor -- --overlaynet-deny-all`: Linux adds a private
-network namespace; macOS blocks IP and ambient host Unix sockets with Seatbelt,
-retaining only the exact AgentCtl and Run-local IPC. Container Runs can instead
+network namespace; macOS blocks non-loopback IP and ambient host Unix sockets with Seatbelt,
+while retaining loopback proxy access and the exact AgentCtl and Run-local IPC. Container Runs can instead
 use `--container-network none`. Selective allow/deny rules remain cooperative
 on both native host paths. The VM executor defaults to `[overlaynet] mode =
 "auto"`, which supplies DHCP, synthetic DNS, and policy-controlled IPv4 TCP;
