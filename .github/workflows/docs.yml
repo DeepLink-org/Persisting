@@ -30,3 +30,5 @@ jobs:
       - name: Build documentation
         working-directory: docs
         run: npm run build
+        env:
+          DOCUSAURUS_BASE_URL: /Persisting/
