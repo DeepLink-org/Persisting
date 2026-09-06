@@ -86,8 +86,8 @@ JSON Pointer。
 | --- | --- |
 | `/schema_version` | `/origin/schema_version` |
 | `/session_id` | `/session` |
-| `/trajectory_id` | `/trajectory`<br>`/session` |
-| `/agent/name` | `/agent/id`<br>`/agent/name` |
+| `/trajectory_id` | `/trajectory`<br />`/session` |
+| `/agent/name` | `/agent/id`<br />`/agent/name` |
 | `/agent/version` | `/agent/ver` |
 | `/agent/model_name` | `/agent/model` |
 | `/agent/tool_definitions` | `/agent/tools` |
@@ -98,32 +98,32 @@ JSON Pointer。
 | `/extra` | `/extra` |
 | `/steps/{s}/step_id` | `/turns/{t}/id` |
 | `/steps/{s}/timestamp` | `/turns/{t}/ts` |
-| `/steps/{s}/source` | `/turns/{t}/src`<br>`/turns/{t}/kind` |
+| `/steps/{s}/source` | `/turns/{t}/src`<br />`/turns/{t}/kind` |
 | `/steps/{s}/message` | `/turns/{t}/msg` |
 | `/steps/{s}/model_name` | `/turns/{t}/model` |
 | `/steps/{s}/reasoning_effort` | `/turns/{t}/effort` |
 | `/steps/{s}/reasoning_content` | `/turns/{t}/reason` |
-| `/steps/{s}/tool_calls` | `/turns/{t}/tool_calls`<br>`/turns/{t}/kind` |
+| `/steps/{s}/tool_calls` | `/turns/{t}/tool_calls`<br />`/turns/{t}/kind` |
 | `/steps/{s}/tool_calls/{c}/tool_call_id` | `/turns/{t}/tool_calls/{c}/tcid` |
 | `/steps/{s}/tool_calls/{c}/function_name` | `/turns/{t}/tool_calls/{c}/fn` |
 | `/steps/{s}/tool_calls/{c}/arguments` | `/turns/{t}/tool_calls/{c}/args` |
 | `/steps/{s}/tool_calls/{c}/result` | `/turns/{t}/tool_calls/{c}/result` |
 | `/steps/{s}/tool_calls/{c}/extra` | `/turns/{t}/tool_calls/{c}/extra` |
-| `/steps/{s}/tool_calls/{c}/extra/duration_ms` | `/turns/{t}/tool_calls/{c}/extra/duration_ms`<br>`/turns/{t}/tool_calls/{c}/duration_ms` |
+| `/steps/{s}/tool_calls/{c}/extra/duration_ms` | `/turns/{t}/tool_calls/{c}/extra/duration_ms`<br />`/turns/{t}/tool_calls/{c}/duration_ms` |
 | `/steps/{s}/observation/results` | `/turns/{t}/observation/results` |
 | `/steps/{s}/metrics` | `/turns/{t}/metrics` |
-| `/steps/{s}/metrics/latency_ms` | `/turns/{t}/metrics/latency_ms`<br>`/turns/{t}/latency_ms` |
-| `/steps/{s}/metrics/elapsed_ms` | `/turns/{t}/metrics/elapsed_ms`<br>`/turns/{t}/latency_ms` |
-| `/steps/{s}/metrics/duration_ms` | `/turns/{t}/metrics/duration_ms`<br>`/turns/{t}/latency_ms` |
-| `/steps/{s}/metrics/ttft_ms` | `/turns/{t}/metrics/ttft_ms`<br>`/turns/{t}/ttft_ms` |
+| `/steps/{s}/metrics/latency_ms` | `/turns/{t}/metrics/latency_ms`<br />`/turns/{t}/latency_ms` |
+| `/steps/{s}/metrics/elapsed_ms` | `/turns/{t}/metrics/elapsed_ms`<br />`/turns/{t}/latency_ms` |
+| `/steps/{s}/metrics/duration_ms` | `/turns/{t}/metrics/duration_ms`<br />`/turns/{t}/latency_ms` |
+| `/steps/{s}/metrics/ttft_ms` | `/turns/{t}/metrics/ttft_ms`<br />`/turns/{t}/ttft_ms` |
 | `/steps/{s}/extra` | `/turns/{t}/extra` |
 | `/steps/{s}/llm_call_count` | `/turns/{t}/nllm` |
 | `/steps/{s}/is_copied_context` | `/turns/{t}/copied` |
 | `/subagent_trajectories/{c}` | `""` |
 | `/subagent_trajectories/{c}/session_id` | `/session` |
-| `/subagent_trajectories/{c}/trajectory_id` | `/children/{c}`<br>`/trajectory`<br>`/session` |
-| `/session_id`<br>`/trajectory_id` | `/parent/psid` |
-| `/{unmapped-root}`<br>`/agent/{unmapped-agent}`<br>`/steps/{s}/{unmapped-step}`<br>`/steps/{s}/tool_calls/{c}/{unmapped-tool}`<br>`/steps/{s}/observation/{unmapped-observation}` | `/unknown_fields/sources/atif/fields/{E(P)}` |
+| `/subagent_trajectories/{c}/trajectory_id` | `/children/{c}`<br />`/trajectory`<br />`/session` |
+| `/session_id`<br />`/trajectory_id` | `/parent/psid` |
+| `/{unmapped-root}`<br />`/agent/{unmapped-agent}`<br />`/steps/{s}/{unmapped-step}`<br />`/steps/{s}/tool_calls/{c}/{unmapped-tool}`<br />`/steps/{s}/observation/{unmapped-observation}` | `/unknown_fields/sources/atif/fields/{E(P)}` |
 
 条件和规范化规则：
 

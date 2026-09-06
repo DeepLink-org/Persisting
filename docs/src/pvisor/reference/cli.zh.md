@@ -4,6 +4,25 @@
 Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 [使用 pVisor 运行工作负载](../guides/execution.md)。
 
+## 按任务查找命令
+
+- **运行 Agent：** 从[`pvisor run`](../get-started.md)开始，再用 `review`、
+  `inspect` 和 `apply` 决定哪些修改进入项目。
+- **理解执行边界：** 使用 `status` 和 `inspect`，然后阅读[执行指南](../guides/execution.md)。
+- **保留工作区：** 用 `env create` 和 `env exec` 管理可复用的 staged environment，
+  用 `env apply` 或 `env drop` 收尾。
+- **继续轨迹：** 只有在已有受支持轨迹时才使用 `replay`，先阅读[回放指南](../guides/sandbox-replay.md)。
+
+第一次使用时，先复制最小闭环：
+
+```bash
+pvisor run --stage ./runs/task-001 -- codex
+pvisor review last
+pvisor apply last --path src
+```
+
+下面的参考按 Run 生命周期组织；每组参数都配有验证下一步。
+
 ```text
 pvisor
 ├── run                 execute one Agent Run

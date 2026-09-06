@@ -3,6 +3,32 @@
 This page is the English reference for the canonical `pchronicle` command
 line. New commands and scripts should use the syntax documented here.
 
+## Find the command you need
+
+Start with the shortest path to a useful answer:
+
+- **Try the product:** `pchronicle onboard query` uses temporary example data
+  and needs no Dataset path.
+- **Check a Dataset:** use `ls` and `analysis overview` before writing SQL.
+- **Locate a run or phrase:** use `find --run-id`, `--session-id`, or
+  `--match`; inspect the returned identity before querying more data.
+- **Ask a repeatable question:** use `query --sql` or `query --file` and set
+  output and resource limits for automation.
+- **Expose history:** use `serve` only after the read-only query works; the
+  [serve guide](../guides/serve.md) explains the lifecycle and shutdown path.
+
+For a first interaction, copy this sequence:
+
+```bash
+pchronicle onboard query
+pchronicle ls ./trajectory-data
+pchronicle query ./trajectory-data --sql 'SELECT COUNT(*) FROM dataset.runs'
+```
+
+The second and third commands require a Dataset you already have. If you do
+not have one, stop after `onboard query` and continue with the
+[Dataset walkthrough](../get-started.md).
+
 ## Dataset
 
 A Dataset is a **path**. pChronicle opens that path as the trajectory store.

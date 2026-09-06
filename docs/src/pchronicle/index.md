@@ -8,6 +8,12 @@ Within Persisting's model-state-to-Agent-history story, pChronicle is the
 durable store and query engine for Agent history. It can run as a local tool
 or be deployed as a platform in front of many paths.
 
+:::tip What you will complete
+The first walkthrough creates temporary data, opens it as a Dataset, runs a
+read-only summary, and answers one SQL question. You can learn the query model
+without preparing a production store first.
+:::
+
 ## The one object you work with
 
 A **Dataset** is a path: a local directory or file, or an object-store URI
@@ -61,6 +67,14 @@ When you already have a question, follow the matching path:
 pChronicle reads and organizes run history. It does not execute or schedule
 Agents. To run an Agent in a controlled workspace, start with
 [pVisor](../pvisor/index.md).
+
+## A useful reading order
+
+1. [Explore your first Dataset](get-started.md) to complete a read-only query.
+2. [Discover and query](guides/discover-and-query.md) when you are ready to inspect real data.
+3. [Exchange data](guides/exchange.md) when a supported external format is involved.
+4. [Serve a Dataset](guides/serve.md) when another tool needs local access.
+5. [CLI reference](reference/cli.md) when you need exact flags, budgets, or output formats.
 
 ## Keep reading
 

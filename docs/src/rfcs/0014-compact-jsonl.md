@@ -133,14 +133,10 @@ reader 遇到其他组合 MUST 拒绝导出。
 
 `offload_threshold = 0` 禁用 offload。否则 raw record 长度大于或等于阈值时 MUST offload。
 
-descriptor 的 JSONB schema 为：
-
-```json
-{"path":"_offload","key":"<64 lowercase hexadecimal characters>"}
-```
+descriptor 的 JSONB schema 在实现中包含 `path` 与 `key` 两个字段。
 
 - `key` MUST 等于 raw record 的 BLAKE3-256 hex digest；
-- object MUST 位于 `<dataset>/<path>/<key>`；
+- object MUST 位于 `dataset/path/key`；
 - 相同 key MUST 内容相同，可在多行间共享；
 - import 发现已有 key 但内容不同 MUST 失败；
 - export MUST 重新计算 digest，不匹配时 MUST 失败；
@@ -194,7 +190,7 @@ pchronicle export \
   --output-format compact-jsonl
 ```
 
-export MUST：
+`export` MUST：
 
 1. 验证 `pchronicle.format=compact-jsonl/v1`；
 2. 验证 `filename` 是相对路径且不含 `..`；

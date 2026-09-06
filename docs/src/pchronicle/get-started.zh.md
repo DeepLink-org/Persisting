@@ -17,7 +17,9 @@ pchronicle onboard query
 
 两条命令都不要求源码 checkout，也不要求已有 Dataset。
 
-## 2. 浏览自己的 Dataset
+## 2. 浏览已有的 Dataset
+
+onboarding 创建的 Dataset 是临时数据，Walkthrough 结束后会被清理。要进行持久查询，请把下面的命令替换为你已有的 Dataset 路径；如果还没有数据，完成 onboarding 查询后继续阅读[发现并查询自己的 Dataset](guides/discover-and-query.md)即可。
 
 Dataset 可以是本地路径、对象存储 URI 前缀，或 `@prod` 这样的用户 alias：
 
@@ -56,7 +58,7 @@ pchronicle query ./trajectory-data \
 
 - [发现并查询自己的 Dataset](guides/discover-and-query.md)
 - [导入或导出 Run](guides/exchange.md)
-- [查看统一产品术语](reference/terminology.zh.md)
+- [查看统一产品术语](reference/terminology.md)
 - [使用 alias 并查阅完整命令行](reference/cli.md)
 - [使用 pVisor 采集新 Run](../pvisor/guides/capture.md)
 - [理解 pChronicle 核心概念](concepts/index.md)

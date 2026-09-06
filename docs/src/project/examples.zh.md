@@ -8,7 +8,6 @@
 just examples
 just examples-pvisor
 just examples-pchronicle
-just examples-ppilot
 ```
 
 ## pVisor
@@ -20,7 +19,7 @@ just examples-ppilot
 | `03-network-isolation` | 显式代理策略及其边界 |
 | `04-gateway-llm-control` | 内嵌 Gateway 路由与捕获 |
 
-## pPilot
+## orchestration layer
 
 | 示例 | 可复现结论 |
 |---|---|
@@ -46,9 +45,9 @@ Python 3 和 `jq` 等常见 POSIX 工具；pVisor 文件系统示例另需 macFU
 `just examples-pvisor-portable` 运行不需要 FUSE 的 03/04。
 
 建议从 `pvisor/01-filesystem-isolation` 开始，再进入 changeset management；需要多 Run
-生产时运行 pPilot 示例；准备从执行进入历史时，再运行 pChronicle 示例。
+生产时运行 orchestration layer 示例；准备从执行进入历史时，再运行 pChronicle 示例。
 
 任务解释见 [pVisor Guides](../pvisor/guides/index.md)，多 Run 工作流见
-[pPilot 编排](../ppilot/guides/orchestrate.md)，Dataset 工作流见
+批量 Run 工作流见
 [pChronicle Guides](../pchronicle/guides/index.md)。示例用于验证产品路径；精确命令语法仍以
 各产品 Reference 为准。

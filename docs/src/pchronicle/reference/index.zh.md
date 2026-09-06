@@ -1,7 +1,7 @@
 # pChronicle Reference
 
 - [`pchronicle` 命令行设计与使用指南](cli.md)
-- [产品术语](terminology.zh.md)
+- [产品术语](terminology.md)
 - [Query Model](query-model.md)
 - [AgenticMD 格式](agenticmd.md)
 - [运行数据格式与 RFC](formats/index.md)

@@ -13,16 +13,16 @@ Run these from the repository root. `just --list` shows the full recipe set.
 | `just test` | Workspace Rust tests through `cargo nextest`, then the Python suite |
 | `just test <package>` | One crate or Cargo package (for example `pvisor` or `persisting-pvisor`) |
 | `just docs-sync` | Install the locked documentation environment |
-| `just docs-serve` | Local MkDocs preview with auto-reload |
-| `just docs-serve-dirty` | Preview with `--dirtyreload` when auto-reload stalls |
+| `just docs-serve` | Local Docusaurus preview with automatic reload when files change |
+| `just docs-serve-dirty` | Local Docusaurus preview when automatic reload stalls |
 | `just docs-build` | Build the static documentation site |
-| `just docs-links` | Strict MkDocs build that fails on dead links |
-| `just examples` | All product example suites (pVisor, pChronicle, and pPilot) |
+| `just docs-links` | Docusaurus production build with broken-link checks |
+| `just examples` | pVisor and pChronicle product example suites |
 | `just gate` | Format, lint, and the full Rust test workspace |
 | `just dev` | Scoped runtime-crate check; not the full workspace matrix |
 
 `just test` uses the debug nextest profile for faster iteration. Pass a Cargo
-package name or a short crate alias (`pvisor`, `ppilot`, `pchronicle`,
+package name or a short crate alias (`pvisor`, `pchronicle`,
 `pchronicle-cli`, `agentctl`, `capture`). The no-argument form also runs
 `just test-py`.
 
@@ -75,7 +75,7 @@ they rebuild the standard library and are intended for focused debugging
 sessions.
 
 For supported behavior, start with [pVisor Guides](../pvisor/guides/index.md),
-[pPilot orchestration](../ppilot/guides/orchestrate.md), or
+批量 Run 工作流，或
 [pChronicle Guides](../pchronicle/guides/index.md), and consult
 [System Design](../system-design/index.md) for the rationale behind an
 implementation.

@@ -35,3 +35,6 @@ crates/persisting-pchronicle-cli/web-assets/
 
 # Docusaurus generated metadata
 docs/website/.docusaurus/
+
+# Docusaurus docs generated from docs/src
+docs/website/docs/
