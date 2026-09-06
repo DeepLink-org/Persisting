@@ -24,6 +24,7 @@ const config = {
     }],
     [require.resolve('@easyops-cn/docusaurus-search-local'), {
       hashed: true,
+      docsDir: ['../src/en', '../src/zh'],
       language: ['en', 'zh'],
       indexDocs: true,
       indexBlog: false,
