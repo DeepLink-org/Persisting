@@ -3,9 +3,8 @@
   <desc id="desc">One or two large constellations drift slowly across a deep blue sky, with star connections and faint mythological outlines.</desc>
   <style>
 .constellation { opacity: 0; animation: sky-transit 720s linear infinite; }
-.myth-outline { fill: none; stroke: #aac5f4; stroke-opacity: .24; stroke-width: 1; }
 .constellation-lines { fill: none; stroke: #a9caef; stroke-opacity: .65; stroke-width: 1.1; }
-.constellation-lines line, .myth-outline { vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; }
+.constellation-lines line { vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; }
 .constellation-label { fill: #bed1f5; opacity: .6; font: 15px ui-sans-serif, system-ui, sans-serif; letter-spacing: 3px; text-anchor: middle; }
 .constellation-glyph { fill: #d5e5ff; opacity: .8; font: 30px serif; text-anchor: middle; }
 
@@ -82,7 +81,6 @@
   <g class="zodiac-constellations" transform="translate(800 420)">
     <g class="constellation" data-sign="Aries">
       <g transform="scale(21.42857) translate(-22.500 -14.000)">
-        <path class="myth-outline" d="M-8 29 Q3 6 22 10 Q34 12 46 5 Q42 18 31 21 Q39 30 51 28 Q39 40 24 34 Q10 39-8 29 M22 10 Q25 0 19 -7 M31 21 Q37 12 46 5" vector-effect="non-scaling-stroke" />
         <g class="constellation-lines">
           <line x1="0" y1="28" x2="24" y2="0" />
           <line x1="24" y1="0" x2="45" y2="25" />
@@ -99,7 +97,6 @@
     </g>
     <g class="constellation" data-sign="Taurus">
       <g transform="scale(11.32075) translate(-37.500 -26.500)">
-        <path class="myth-outline" d="M-8 22 Q7 7 20 12 Q30 2 43 13 Q57 2 75 22 Q60 18 49 29 Q33 43 14 34 Q1 30-8 22 M20 12 Q17 2 11 -5 M43 13 Q50 3 58 -2 M14 34 Q8 44 1 48 M49 29 Q57 39 66 43" vector-effect="non-scaling-stroke" />
         <g class="constellation-lines">
           <line x1="0" y1="28" x2="22" y2="3" />
           <line x1="22" y1="3" x2="42" y2="0" />
@@ -124,7 +121,6 @@
     </g>
     <g class="constellation" data-sign="Gemini">
       <g transform="scale(8.00000) translate(-32.500 -37.500)">
-        <path class="myth-outline" d="M2 6 Q13 13 16 27 L9 69 Q18 82 31 72 L39 29 Q43 14 57 6 M9 18 Q25 26 43 17 M9 69 L0 81 M39 72 L50 82" vector-effect="non-scaling-stroke" />
         <g class="constellation-lines">
           <line x1="0" y1="0" x2="8" y2="28" />
           <line x1="8" y1="28" x2="14" y2="57" />
@@ -156,7 +152,6 @@
     </g>
     <g class="constellation" data-sign="Cancer">
       <g transform="scale(13.04348) translate(-22.500 -25.000)">
-        <path class="myth-outline" d="M-8 28 Q4 8 21 11 Q31 1 45 13 Q56 5 58 25 Q49 42 33 36 Q22 48 8 39 Q1 35-8 28 M8 39 L-1 50 M33 36 L43 49" vector-effect="non-scaling-stroke" />
         <g class="constellation-lines">
           <line x1="0" y1="25" x2="22" y2="2" />
           <line x1="22" y1="2" x2="45" y2="25" />
@@ -179,7 +174,6 @@
     </g>
     <g class="constellation" data-sign="Leo">
       <g transform="scale(10.34483) translate(-46.500 -29.000)">
-        <path class="myth-outline" d="M-8 22 Q8 5 28 15 Q39 4 52 18 Q45 31 55 38 Q70 32 93 41 Q78 56 58 52 Q39 49 24 40 Q7 38-8 22 M24 40 Q12 51 2 56 M55 38 L67 26 M67 26 L78 19" vector-effect="non-scaling-stroke" />
         <g class="constellation-lines">
           <line x1="0" y1="17" x2="20" y2="0" />
           <line x1="20" y1="0" x2="39" y2="15" />
@@ -211,7 +205,6 @@
     </g>
     <g class="constellation" data-sign="Virgo">
       <g transform="scale(8.95522) translate(-45.000 -33.500)">
-        <path class="myth-outline" d="M-9 43 Q6 28 18 9 Q28 25 38 8 Q43 27 55 18 Q60 36 84 47 Q63 59 38 51 Q13 52-9 43 M18 9 L8 -4 M55 18 L65 3 M38 51 Q30 62 21 68" vector-effect="non-scaling-stroke" />
         <g class="constellation-lines">
           <line x1="0" y1="44" x2="18" y2="23" />
           <line x1="18" y1="23" x2="39" y2="0" />
@@ -237,7 +230,6 @@
     </g>
     <g class="constellation" data-sign="Libra">
       <g transform="scale(11.11111) translate(-28.500 -27.000)">
-        <path class="myth-outline" d="M-6 31 L29 3 L64 31 M5 31 Q29 48 53 31 M-2 12 Q29 -1 60 12 M29 3 L29 -9 M5 31 L-4 45 M53 31 L62 45" vector-effect="non-scaling-stroke" />
         <g class="constellation-lines">
           <line x1="0" y1="28" x2="28" y2="0" />
           <line x1="28" y1="0" x2="57" y2="28" />
@@ -257,7 +249,6 @@
     </g>
     <g class="constellation" data-sign="Scorpius">
       <g transform="scale(5.30233) translate(-107.500 -34.000)">
-        <path class="myth-outline" d="M-8 5 Q12 9 29 34 Q53 57 83 53 Q112 50 145 22 Q158 12 171 27 Q158 19 151 38 Q145 57 128 60 M29 34 Q21 47 13 53 M83 53 Q90 65 101 69 M171 27 L183 17 M171 27 L186 32" vector-effect="non-scaling-stroke" />
         <g class="constellation-lines">
           <line x1="0" y1="2" x2="25" y2="22" />
           <line x1="25" y1="22" x2="43" y2="45" />
@@ -294,7 +285,6 @@
     </g>
     <g class="constellation" data-sign="Sagittarius">
       <g transform="scale(6.16216) translate(-92.500 -32.500)">
-        <path class="myth-outline" d="M-8 58 L40 3 L70 31 L99 3 M25 40 Q62 25 106 48 M90 49 Q121 45 154 17 M40 3 L29 -7 M70 31 L82 42 M106 48 L119 61" vector-effect="non-scaling-stroke" />
         <g class="constellation-lines">
           <line x1="0" y1="56" x2="20" y2="27" />
           <line x1="20" y1="27" x2="43" y2="45" />
@@ -335,7 +325,6 @@
     </g>
     <g class="constellation" data-sign="Capricornus">
       <g transform="scale(8.57143) translate(-46.000 -35.000)">
-        <path class="myth-outline" d="M-8 41 Q11 17 32 28 Q53 41 76 23 Q91 11 102 30 Q76 59 48 54 Q19 51-8 41 M32 28 Q27 15 17 8 M76 23 L88 5 M48 54 Q57 66 69 71" vector-effect="non-scaling-stroke" />
         <g class="constellation-lines">
           <line x1="0" y1="36" x2="24" y2="5" />
           <line x1="24" y1="5" x2="53" y2="0" />
@@ -364,7 +353,6 @@
     </g>
     <g class="constellation" data-sign="Aquarius">
       <g transform="scale(6.33333) translate(-90.000 -19.000)">
-        <path class="myth-outline" d="M-8 13 Q12 28 30 13 T68 13 T106 13 M-8 36 Q12 51 30 36 T68 36 T106 36 M30 13 L22 0 M68 36 L78 51" vector-effect="non-scaling-stroke" />
         <g class="constellation-lines">
           <line x1="0" y1="4" x2="30" y2="20" />
           <line x1="30" y1="20" x2="61" y2="8" />
@@ -390,7 +378,6 @@
     </g>
     <g class="constellation" data-sign="Pisces">
       <g transform="scale(7.45098) translate(-76.500 -30.500)">
-        <path class="myth-outline" d="M-8 28 Q22 1 52 22 Q79 43 105 25 Q133 6 160 31 Q132 25 111 49 Q80 71 54 48 Q25 26-8 28Z M52 22 L44 8 M105 25 L116 11 M54 48 L47 61 M111 49 L120 63" vector-effect="non-scaling-stroke" />
         <g class="constellation-lines">
           <line x1="0" y1="28" x2="24" y2="5" />
           <line x1="24" y1="5" x2="50" y2="0" />
