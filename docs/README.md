@@ -10,7 +10,8 @@ Run these commands from the repository root:
 
 ```bash
 just docs-sync    # install website dependencies
-just docs-serve   # start the local preview
+just docs-serve   # build and start a stable static preview
+just docs-serve-dirty # start the hot-reload development server
 just docs-build   # build docs/website/build
 just docs-links   # build with broken-link checks enabled
 ```
