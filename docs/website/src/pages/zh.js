@@ -16,7 +16,7 @@ const capabilities = [
 
 export default function ChineseHome() {
   const productDiagram = useBaseUrl('/img/diagrams/persisting/system-products.svg');
-  const zodiacPanorama = useBaseUrl('/img/diagrams/persisting/zodiac-figures.png');
+  const zodiacPanorama = useBaseUrl('/img/diagrams/persisting/zodiac-figures-mechanical.png');
   return <Layout title="Agent 时代的持久化基础设施" description="在可审查的执行边界中运行 Agent，并保存可查询历史。">
     <header className={`hero hero--primary ${styles.hero}`}><div className="hero-sky-art" aria-hidden="true"><img src={zodiacPanorama} alt="" /></div><div className="container">
       <p className={styles.eyebrow}>面向 AGENT 的持久化基础设施</p>

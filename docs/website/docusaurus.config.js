@@ -31,7 +31,7 @@ const config = {
     }],
   ],
   themeConfig: {
-    image: 'img/diagrams/persisting/zodiac-figures.png',
+    image: 'img/diagrams/persisting/zodiac-figures-mechanical.png',
     docs: {
       sidebar: {
         hideable: true,
