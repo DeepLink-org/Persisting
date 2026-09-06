@@ -60,7 +60,8 @@ Storyline，也不推断轨迹语义。
 1. 不是空行或纯空白行；
 2. 是 UTF-8 JSON；
 3. 顶层值是 JSON object；
-4. 包含可映射为非空标量的 `id` 和 `timestamp`。
+4. 包含可映射为非空标量的 `timestamp`；如果 `id` 缺失或不能映射为非空标量，实现 MUST
+   生成稳定的 `source_filename#line_number` ID。
 
 任一条件不满足时，整个 import/sync MUST 失败，不得发布部分 dataset。
 
@@ -78,7 +79,9 @@ index      = "[" 1*DIGIT "]"
 示例：`$`、`$.id`、`$.user.id`、`$.messages[0].role`。
 
 不支持 wildcard、slice、filter、递归下降、quoted member、负数 index 或一段中的多个 index。
-映射缺失时，附加列写 Arrow null；`id` 或 `timestamp` 映射缺失时必须拒绝该 record。
+映射缺失时，附加列写 Arrow null；`timestamp` 映射缺失时必须拒绝该 record。`id` 映射缺失
+或无效时，使用该 record 的规范化 source filename 和 1-based line number 生成 ID，格式为
+`source_filename#line_number`。生成的 ID 只写入 Lance `id` 列，不修改 `_raw_` 或 `data`。
 
 ### 列映射
 
@@ -95,9 +98,9 @@ timestamp=$.timestamp
 `NAME` MUST 符合上述 `identifier`。映射名 MUST 唯一。`filename`、`data`、`_raw_` 和
 `_offload_` 是保留名，MUST NOT 用作用户映射名。
 
-`id` 和 `timestamp` 的来源值 MUST 是 JSON string 或 number。string 原样写入；number 使用
-JSON 规范表示写为 UTF-8。null、boolean、array、object 与空 string 均无效。dataset 内的
-`id` MUST 唯一。
+`timestamp` 的来源值 MUST 是 JSON string 或 number。string 原样写入；number 使用 JSON
+规范表示写为 UTF-8。有效的 `id` 来源值也按同样规则写入；其他 `id` 值触发上述生成规则。
+dataset 内的 `id` MUST 唯一。
 
 ## Lance 物理 schema
 

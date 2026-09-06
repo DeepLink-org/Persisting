@@ -330,8 +330,9 @@ Storyline Dataset。默认 `create` 模式要求目标不存在。`append` 要�
 
 Compact JSONL 是记录存储，不会转换或推断轨迹语义。指定
 `--input-format compact-jsonl` 或 `--output-format compact-jsonl` 均会选择该格式。输入必须是本地
-`.jsonl` 文件或目录树；每个非空行必须是 JSON object，并包含唯一的标量 `id` 和标量
-`timestamp`，默认路径分别为 `$.id` 和 `$.timestamp`。`--column id=PATH` 与
+`.jsonl` 文件或目录树；每个非空行必须是 JSON object，并包含标量 `timestamp`，默认路径为
+`$.timestamp`。缺失或无效的 `id` 会获得稳定的 `source_filename#line_number` ID，默认路径为
+`$.id`。`--column id=PATH` 与
 `--column timestamp=PATH` 用于覆盖默认路径，其他 `--column NAME=PATH` 会增加 nullable JSONB
 投影列。Compact import 支持本地 `create` 和经确认的 `replace`，不支持 stdin、对象存储目标或
 `append`。

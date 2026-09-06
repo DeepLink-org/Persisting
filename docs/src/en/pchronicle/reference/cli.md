@@ -211,8 +211,9 @@ replaced in place.
 Compact JSONL is a record store, not a trajectory conversion. Either
 `--input-format compact-jsonl` or `--output-format compact-jsonl` selects it.
 It recursively reads local `.jsonl` files and requires every non-empty line to
-be a JSON object with a unique scalar `id` and scalar `timestamp`; their default
-paths are `$.id` and `$.timestamp`. `--column id=PATH` and
+be a JSON object with a scalar `timestamp`; its default path is `$.timestamp`.
+Missing or invalid `id` values receive a stable `source_filename#line_number` ID;
+the default path is `$.id`. `--column id=PATH` and
 `--column timestamp=PATH` override those paths, while any other
 `--column NAME=PATH` adds a nullable JSONB projection. Compact import supports
 local `create` and confirmed `replace`, but not stdin, object-store targets, or

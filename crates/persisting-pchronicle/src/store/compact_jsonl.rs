@@ -257,7 +257,15 @@ impl CompactJsonlStore {
                 })
                 .collect()
         };
-        let ids = required("id", "$.id")?;
+        let ids = rows
+            .iter()
+            .map(|(value, _, file, line)| {
+                path_value(value, options.path_for("id", "$.id"))
+                    .and_then(scalar_string)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| format!("{file}#{line}"))
+            })
+            .collect::<Vec<_>>();
         let timestamps = required("timestamp", "$.timestamp")?;
         let mut unique_ids = std::collections::HashSet::new();
         for id in &ids {
@@ -723,6 +731,29 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("requires scalar timestamp"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn missing_id_uses_source_line_and_preserves_input() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let input = temp.path().join("events.jsonl");
+        let dataset = temp.path().join("data.lance");
+        let output = temp.path().join("out");
+        let raw = b"{\"timestamp\":1,\"event\":\"start\"}\n{\"timestamp\":2,\"event\":\"end\"}\n";
+        fs::write(&input, raw)?;
+
+        CompactJsonlStore::import_path(&input, &dataset, &CompactJsonlOptions::default()).await?;
+        let records = CompactJsonlStore::records(&dataset).await?;
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["events.jsonl#1", "events.jsonl#2"]
+        );
+        CompactJsonlStore::export_path(&dataset, &output).await?;
+        assert_eq!(fs::read(output.join("events.jsonl"))?, raw);
         Ok(())
     }
 }

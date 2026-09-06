@@ -730,7 +730,8 @@ struct ImportArgs {
     #[arg(long, value_parser = parse_byte_size, default_value = "256MiB")]
     max_input_bytes: Option<usize>,
 
-    /// Compact JSONL mapping. id/timestamp override $.id/$.timestamp; other names add JSONB columns.
+    /// Compact JSONL mapping. id/timestamp override $.id/$.timestamp; missing or invalid id values
+    /// use source_filename#line_number; other names add JSONB columns.
     /// Example: --column id=$.event.id --column model=$.payload.model.
     #[arg(long = "column", value_name = "NAME=JSON_PATH", action = clap::ArgAction::Append)]
     columns: Vec<String>,
