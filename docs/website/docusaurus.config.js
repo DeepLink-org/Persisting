@@ -31,7 +31,6 @@ const config = {
     }],
   ],
   themeConfig: {
-    image: 'img/diagrams/persisting/hero-black-hole.svg',
     docs: {
       sidebar: {
         hideable: true,

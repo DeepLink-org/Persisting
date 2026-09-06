@@ -18,7 +18,7 @@ const capabilities = [
 export default function Home() {
   const productDiagram = useBaseUrl('/img/diagrams/persisting/system-products.svg');
   return <Layout title="Persistent Infrastructure for the Agent Era" description="Run Agents under a reviewable execution boundary and preserve queryable history.">
-    <header className={clsx('hero hero--primary', styles.hero)}><div className="hero-sky-art" aria-hidden="true"><img src={useBaseUrl('/img/diagrams/persisting/hero-black-hole.svg')} alt="" /></div><div className="container">
+    <header className={clsx('hero hero--primary', styles.hero)}><div className="container">
       <p className={styles.eyebrow}>PERSISTENT INFRASTRUCTURE FOR AGENTS</p>
       <h1 className="hero__title">Persistent Infrastructure for the Agent Era</h1>
       <p className="hero__subtitle">Run Agents inside a reviewable execution boundary. Preserve accepted decisions and resulting history as a queryable Dataset.</p>
