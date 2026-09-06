@@ -1,0 +1,4465 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Persistent infrastructure for the Agent era—from model parameters and KV caches to Agent trajectories">
+      
+      
+      
+        <link rel="canonical" href="https://deeplink-org.github.io/Persisting/pchronicle/design/storyline-lance/">
+      
+      
+        <link rel="prev" href="../trajectory-storage/">
+      
+      
+        <link rel="next" href="../../reference/">
+      
+      
+        
+          <link rel="alternate" href="./" hreflang="en">
+        
+          <link rel="alternate" href="../../../zh/pchronicle/design/storyline-lance/" hreflang="zh">
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>Storyline Lance projection - Persisting Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/home.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#storyline-three-table-lance-storage" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Persisting Documentation" class="md-header__button md-logo" aria-label="Persisting Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Persisting Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Storyline Lance projection
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="Select language">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="./" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="../../../zh/pchronicle/design/storyline-lance/" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/DeepLink-org/Persisting" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../.." class="md-tabs__link">
+          
+  
+  
+    
+  
+  Home
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../pvisor/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  pVisor
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  pChronicle
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../project/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Persisting Documentation" class="md-nav__button md-logo" aria-label="Persisting Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Persisting Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/DeepLink-org/Persisting" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../.." class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_1" id="__nav_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Home
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Choose a workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pVisor
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    pVisor
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/get-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_3" id="__nav_2_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/concepts/agentvisor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AgentVisor category
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/concepts/run-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run, Attempt, and Effect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/concepts/capabilities-and-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capabilities and evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/guides/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_4" id="__nav_2_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/execution/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution environments
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/review-apply/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Review and apply effects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/network/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Network control
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/capture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capture trajectories
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/guides/sandbox-replay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Replay Agent trajectories
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/design/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_5" id="__nav_2_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/design/isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Isolation architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/design/overlaynet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    OverlayNet architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/design/gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pvisor/reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_6" id="__nav_2_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pvisor/reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pVisor CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pChronicle
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    pChronicle
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../get-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_3" id="__nav_3_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/dataset-and-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataset discovery and versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/facts-and-projections/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Recorded data, views, and versions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../guides/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_4" id="__nav_3_4_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/discover-and-query/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discover and query
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/exchange/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Import and export
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/serve/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local read-only Dataset server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/ui/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local Dataset Web UI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/serve-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway forwarding, rewriting, and capture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_5" id="__nav_3_5_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Snapshot
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../trajectory-storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storyline Lance projection
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storyline Lance projection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#projection-contract-and-closed-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Projection contract and closed loop
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#table-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#large-content-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Large content layer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Large content layer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#goals-and-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Goals and bounds
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#internal-descriptor-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Internal descriptor protocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#write-reuse-and-publication" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write, reuse, and publication
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#query-time-lazy-materialization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Query-time lazy materialization
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#commit-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Commit layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rust-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rust API
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#datafusion-datasource" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DataFusion datasource
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#unified-query-engine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unified query engine
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Unified query engine">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#pchronicle-json-projection-query-fast-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pChronicle + JSON projection query fast path
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related-documents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Related documents
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_6" id="__nav_3_6_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/terminology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Product terminology
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pChronicle CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cases-self/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Single-machine and self-service cases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cases-platform/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cluster platform and Catalog Server cases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/query-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/agenticmd/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AgenticMD format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/formats/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run data formats
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../project/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../system-design/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    End-to-end architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/local-to-fleet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local to fleet
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/security-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security and evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Engineering
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/engineering/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/releasing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing persisting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reproducible examples
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../rfcs/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decisions and RFCs
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Decisions and RFCs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0001-storyline-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0001 Storyline format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0002-events-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0002 Events format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0003-pchronicle-ownership/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0003 pChronicle ownership
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0004-actf-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0004 ACTF format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0005-pchronicle-revision-lineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0005 pChronicle revision lineage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0006-pchronicle-vortex-backend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0006 pChronicle Vortex backend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0007-events-contract-pchronicle-sidecar/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0007 Events contract and pChronicle sidecar
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0008-atif-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0008 ATIF format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0009-openai-messages-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0009 OpenAI Messages format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0010-agent-corpus-lance-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0010 Agent corpus Lance layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0012-pchronicle-find-query-syntax/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0012 pChronicle find query syntax
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0013-pchronicle-warehouse-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0013 pChronicle path Directory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0014-compact-jsonl/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0014 Compact JSONL
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../api/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Standalone systems
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_5" id="__nav_4_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Standalone systems
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../guide/queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../guide/custom-backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom queue backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#projection-contract-and-closed-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Projection contract and closed loop
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#table-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#large-content-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Large content layer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Large content layer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#goals-and-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Goals and bounds
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#internal-descriptor-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Internal descriptor protocol
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#write-reuse-and-publication" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write, reuse, and publication
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#query-time-lazy-materialization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Query-time lazy materialization
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#commit-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Commit layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rust-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rust API
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#datafusion-datasource" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DataFusion datasource
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#unified-query-engine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unified query engine
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Unified query engine">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#pchronicle-json-projection-query-fast-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pChronicle + JSON projection query fast path
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related-documents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Related documents
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="storyline-three-table-lance-storage">Storyline three-table Lance storage<a class="headerlink" href="#storyline-three-table-lance-storage" title="Permanent link">&para;</a></h1>
+<p><code>StorylineLanceStore</code> is pChronicle's Storyline-native normalized storage
+representation. It sits beside the raw <code>events.lance</code> event log and does
+not replace it.</p>
+<p>The logical wire schema follows
+<a href="../../../rfcs/0001-storyline-format/#wire-schema">RFC-0001 § Wire schema</a>.
+Field-by-field conversions for ACTF, ATIF, and OpenAI Messages follow the
+mapping sections of
+<a href="../../../rfcs/0004-actf-format/#actf-storyline-json-pointer-mapping">RFC-0004</a>,
+<a href="../../../rfcs/0008-atif-format/#atif-storyline-json-pointer-mapping">RFC-0008</a>,
+and
+<a href="../../../rfcs/0009-openai-messages-format/#openai-storyline-json-pointer-mapping">RFC-0009</a>.
+This design defines only the Lance physical projection of Storyline.</p>
+<h2 id="projection-contract-and-closed-loop">Projection contract and closed loop<a class="headerlink" href="#projection-contract-and-closed-loop" title="Permanent link">&para;</a></h2>
+<p>Storyline retains the Hub interchange contract (path A), while the
+three-table store is a rebuildable silver projection of canonical
+<code>events.lance</code> (path B). The two uses share a schema, but not write
+identity: interchange imports and direct <code>replace_storyline</code> calls carry
+no canonical lineage. Only the events projector may publish a <code>CURRENT</code>
+with projection lineage.</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>events.lance (source of truth)
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  ├─ serve startup/runtime ─► runs + steps + tool_calls + objects
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  ├─ append-compatible sync ─► replace only sessions touched by the append suffix
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  └─ Catalog fallback ──────► project a pinned events snapshot when missing or stale
+</span></code></pre></div>
+<p><code>CURRENT</code> pins exact Lance versions for all four tables and records the
+source URI and source identity, <code>fact_version</code>, <code>fact_rows</code>, the source
+layout revision at build time, projector and recipe identity, recipe hash,
+and completeness. <code>fact_version</code> and <code>fact_rows</code> are the freshness
+watermark. Compaction changes only the layout revision and does not stale
+a projection. Direct document writes clear lineage; maintenance preserves
+it.</p>
+<p>Incremental sync treats <code>[previous_fact_rows, fact_rows)</code> as an append
+range only because the canonical manifest validates
+<code>fact_rows == total_rows()</code>. Layout maintenance must preserve both
+replacement row count and segment order, so compaction cannot move that
+logical watermark. After reading the range, the projector also requires
+the returned record count to equal the exact range length; violating any
+of these proof obligations fails closed instead of silently skipping
+facts.</p>
+<p>Operational commands:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pchronicle<span class="w"> </span>serve<span class="w"> </span>--control<span class="w"> </span><span class="m">127</span>.0.0.1:0<span class="w"> </span>./trajectory-data
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>pchronicle<span class="w"> </span>status<span class="w"> </span>./trajectory-data<span class="w"> </span>--format<span class="w"> </span>json
+</span></code></pre></div>
+<p>Before readiness, <code>serve</code> discovers every validated non-empty canonical
+Store and converges its deterministic sibling <code>storyline</code>. At runtime it
+discovers new Stores, performs append-compatible sync or full rebuild as
+required, and retries bounded failures without blocking durable canonical
+writes. A destination without matching lineage is foreign and is never
+overwritten. <code>status</code> reports <code>fresh</code>, <code>stale</code>, <code>missing</code>, or <code>error</code>
+plus the source watermark and selected generation.</p>
+<p>Catalog merges a lineage-linked sidecar with the events source into one
+logical source. When <code>sources.projection_status</code> is <code>fresh</code>, normalized
+queries use the three tables. When it is <code>stale</code>, Catalog hides the
+sidecar and falls back to a deterministic projection of the pinned events
+snapshot. <code>projection_generation</code> exposes the generation actually
+selected. A Storyline document store without lineage is never inferred to
+be a projection of canonical events.</p>
+<p>The Gateway-backed Warehouse has an explicit live-read path for point
+trace observation: after the Catalog resolves an already discovered
+canonical source, <code>/api/events</code>, <code>/api/storyline</code>, and
+<code>/api/trajectory-view</code> reopen its latest visible events manifest. This
+does not change the immutable snapshot semantics of broad SQL queries,
+and it does not make the derived Storyline sidecar authoritative.</p>
+<p>The projection supervisor is part of <code>serve</code>, applies bounded concurrency
+and retry, and shuts down with the process. It remains outside the
+Gateway capture write path, so projection or Catalog refresh failures
+cannot block canonical event writes.</p>
+<p>This page owns the three-table physical schema, the content layer,
+Snapshot publication, query integration, and maintenance semantics. Fact
+source and projection ownership are in
+<a href="../trajectory-storage/">Run storage</a>. The user query workflow is in
+<a href="../../guides/discover-and-query/">Discover and query</a>.</p>
+<p>This is pChronicle's only normalized three-table model. The older ATIF
+<code>sessions</code> / <code>steps</code> / <code>tool_calls</code> layout, <code>NormalizedStore</code>, and
+in-memory joined views have been removed. ATIF still exists as an
+import/export format, but a query first converts it to Storyline and then
+projects it onto the <code>runs</code> / <code>steps</code> / <code>tool_calls</code> schema defined here.
+A second table structure is not maintained.</p>
+<h2 id="table-model">Table model<a class="headerlink" href="#table-model" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Table</th>
+<th>Grain</th>
+<th>Logical primary key</th>
+<th>Foreign key</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>runs.lance</code></td>
+<td>one row per Storyline</td>
+<td><code>document_id</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>steps.lance</code></td>
+<td>one row per turn</td>
+<td>(<code>document_id</code>, <code>step_id</code>)</td>
+<td><code>document_id</code> → runs</td>
+</tr>
+<tr>
+<td><code>tool_calls.lance</code></td>
+<td>one row per tool call</td>
+<td>(<code>document_id</code>, <code>step_id</code>, <code>call_index</code>)</td>
+<td>(<code>document_id</code>, <code>step_id</code>) → steps</td>
+</tr>
+</tbody>
+</table>
+<p><code>run_id</code> is a Run grouping key. One Run can contain a main Story and
+several subagent Stories, so several rows in <code>runs.lance</code> may share the
+same <code>run_id</code>. The internal <code>document_id</code> uses an explicit
+<code>trajectory_id</code> and falls back to <code>session_id</code>. It is the document-scope
+key for three-table mutation.</p>
+<p><code>steps.message</code> is stored as <code>message_kind</code> plus <code>message_value</code>. The
+kind is a fixed enum for <code>null</code>, <code>text</code>, <code>parts</code>, or <code>json</code>. The value
+holds the normalized JSON raw value and remains protected by the large-
+object offload path. <code>reasoning_effort</code> is split the same way into
+<code>reasoning_effort_kind</code> and <code>reasoning_effort_value</code>; the kind is a
+fixed enum that distinguishes string, number, and JSON escape. Larger
+JSON values such as <code>arguments</code>, <code>observation</code>, and <code>result</code> stay as
+UTF-8 JSON columns and remain under the content/offload layer. Identity,
+order, type, time, and performance fields use independent Arrow scalar
+columns so they can be filtered and analyzed.</p>
+<p><code>runs.schema_version</code> and <code>runs.origin</code> store the strict Storyline wire
+version and origin identity. <code>runs.task</code> and <code>runs.prompt</code> store
+document-level <code>/task</code> and <code>/prompt</code>. <code>runs.started_at</code> and
+<code>runs.finished_at</code> are UTC nanosecond Timestamp columns. <code>runs.extra</code>
+and <code>runs.meta</code> store document-level <code>/extra</code> and <code>/meta</code>.
+<code>steps.finished_at</code> is also a UTC Timestamp column. <code>steps.env</code> and
+<code>steps.prompt</code> store turn env and turn <code>/prompt</code>. <code>tool_calls.kind</code> and
+<code>tool_calls.response</code> store the tool-event type and <code>response</code>.
+<code>agent_extra</code>, <code>final_metrics</code>, <code>extra</code>, <code>meta</code>, <code>unknown_fields</code>,
+<code>metrics</code>, and <code>response</code> use the Lance <code>lance.json</code> extension type
+(JSONB, physically <code>LargeBinary</code>). Lance/DataFusion expose them as Arrow
+JSON strings on read and support JSON path functions and predicate
+pushdown. Offload does not replace a whole JSON cell. It walks
+objects/arrays recursively and replaces values above the threshold with a
+content descriptor. The outer envelope remains queryable with
+<code>json_get_*</code>; a full read restores recursively. <code>message_value</code>,
+<code>observation</code>, <code>arguments</code>, <code>result</code>, <code>results</code>, and other potentially
+large fields continue to use the content/offload layer.
+<code>steps.turn_ordinal</code> is the authoritative turn-array order; <code>step_id</code> is
+identity only and does not participate in reordering. <code>had_tool_calls</code>
+keeps an explicit empty array distinguishable from a missing field.
+Missing columns in older tables decode as field absence.
+<code>message_kind</code>/<code>message_value</code> and
+<code>reasoning_effort_kind</code>/<code>reasoning_effort_value</code> exist together as grouped
+schema fields. These objects are not split into independent SQL columns.</p>
+<p><code>steps.timestamp</code> is a UTC-normalized <code>Timestamp(Nanosecond, "UTC")</code>
+query column. The writer rejects a non-null time that is invalid, out of
+range, or not exactly representable as nanoseconds. SQL sort, range
+filters, and time aggregation use <code>timestamp</code> directly. Storyline
+reconstruction uses the normalized UTC time. The reader still accepts the
+older <code>Timestamp(Millisecond, "UTC")</code> layout.</p>
+<p><code>steps.latency</code>, <code>steps.ttft</code>, and <code>tool_calls.duration</code> are nullable
+<code>BIGINT</code> columns in milliseconds. The unit comes from field semantics and
+query-field documentation; it is no longer encoded in a column-name
+suffix.</p>
+<p><code>steps.observation</code> stores the complete, authoritative arbitrary JSON
+observation. <code>had_observation</code> stores presence semantics.
+<code>tool_calls.results</code> is only a query column derived from associable
+<code>observation.results[]</code> items. It does not rebuild observation in
+reverse. A read fails closed if the derived column disagrees with the
+authoritative observation. Turn ordinals and call indexes must also be
+unique and contiguous from zero.</p>
+<h2 id="large-content-layer">Large content layer<a class="headerlink" href="#large-content-layer" title="Permanent link">&para;</a></h2>
+<h3 id="goals-and-bounds">Goals and bounds<a class="headerlink" href="#goals-and-bounds" title="Permanent link">&para;</a></h3>
+<p>Long reasoning, tool output, source code, logs, and multimodal payloads
+in Agent trajectories produce a few oversized cells in columnar tables.
+Inlining them next to identity, order, type, and metrics forces ordinary
+filters and aggregations to pay for larger fragments, page cache, and
+decode cost. pChronicle therefore adds a shared content layer beside the
+three tables, under three constraints:</p>
+<ol>
+<li>Inside one schema version, the Arrow schema and SQL results of
+   <code>runs</code> / <code>steps</code> / <code>tool_calls</code> stay stable. Schema changes are
+   published explicitly through <code>CURRENT.schema_version</code>. The content
+   layer is an internal physical optimization.</li>
+<li>Small values stay inline. Only UTF-8/JSON cells that reach the
+   threshold are offloaded, so every read does not degrade into a KV
+   lookup.</li>
+<li>Content is addressed by raw bytes and reused across Storylines. The
+   content layer does not mix in trajectory primary keys, lifecycle, or
+   business-level deduplication.</li>
+</ol>
+<p>The current implementation does not invent a custom Lance file format or
+a private index type. It composes Lance Blob v2, ordinary BTree scalar
+indexes, and a DataFusion execution node. That gives the needed lazy
+materialization while keeping the maintenance surface inside
+pChronicle's own protocol and execution plan.</p>
+<h3 id="internal-descriptor-protocol">Internal descriptor protocol<a class="headerlink" href="#internal-descriptor-protocol" title="Permanent link">&para;</a></h3>
+<p>Content columns above the default 64 KiB are temporarily encoded in the
+three tables as:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>&lt;RS&gt;PCHRONICLE-CONTENT:&lt;type&gt;:&lt;codec&gt;:&lt;blake3-256&gt;:&lt;raw_length&gt;:&lt;preview-base64url&gt;
+</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Current encoding</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>magic</td>
+<td><code>PCHRONICLE-CONTENT</code></td>
+<td>strict recognition of an internal reference</td>
+</tr>
+<tr>
+<td>logical type</td>
+<td><code>u</code> / <code>j</code> / <code>b</code></td>
+<td>UTF-8, JSON; the binary tag is reserved for later binary columns</td>
+</tr>
+<tr>
+<td>codec</td>
+<td><code>i</code> / <code>z</code></td>
+<td>identity or Zstd</td>
+</tr>
+<tr>
+<td>content id</td>
+<td>64-digit hex BLAKE3-256</td>
+<td>address, checksum, and cross-trajectory reuse of uncompressed raw bytes</td>
+</tr>
+<tr>
+<td>raw length</td>
+<td><code>u64</code></td>
+<td>post-decompress length check, and cost judgment without the payload</td>
+</tr>
+<tr>
+<td>preview</td>
+<td>URL-safe Base64</td>
+<td>a safe prefix of at most 256 UTF-8 bytes by default</td>
+</tr>
+</tbody>
+</table>
+<p>Descriptors may exist only in internal physical columns. User text that
+happens to start with the magic is forced offload and restored on read,
+so a user string cannot be mistaken for a reference. Public read, SQL,
+conversion, and export APIs must return the full value or an explicit
+preview. They must not leak the descriptor.</p>
+<p><code>objects.lance</code> uses these physical columns:</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>content_id</code></td>
+<td>BLAKE3 content address; has a BTree index</td>
+</tr>
+<tr>
+<td><code>logical_type</code>, <code>media_type</code></td>
+<td>logical type and MIME hint</td>
+</tr>
+<tr>
+<td><code>raw_length</code>, <code>stored_length</code>, <code>codec</code></td>
+<td>integrity check and storage cost</td>
+</tr>
+<tr>
+<td><code>preview</code></td>
+<td>safe preview with no Blob I/O</td>
+</tr>
+<tr>
+<td><code>payload</code></td>
+<td>Lance Blob v2 holding identity/Zstd bytes</td>
+</tr>
+<tr>
+<td><code>created_at_ms</code></td>
+<td>object creation time</td>
+</tr>
+</tbody>
+</table>
+<h3 id="write-reuse-and-publication">Write, reuse, and publication<a class="headerlink" href="#write-reuse-and-publication" title="Permanent link">&para;</a></h3>
+<p>The writer handles candidate cells in this order:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>raw UTF-8/JSON
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>  ├─ below threshold ───────────────────────────────► inline original
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>  └─ at threshold / magic hit
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>       ├─ BLAKE3(raw bytes) + UTF-8 preview
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>       ├─ Zstd; keep identity if there is no net gain
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>       ├─ merge by content_id inside the batch and check collisions
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>       ├─ BTree batch lookup in objects.lance; skip existing objects
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>       └─ commit object version first, then write three-table descriptors, then publish CURRENT
+</span></code></pre></div>
+<p>Objects must be durable before the reference. <code>CURRENT</code> pins the exact
+Lance versions of the three business tables and the object table
+together. Failure at any step does not publish a new Snapshot:
+unreachable objects may remain, but dangling references and half-commits
+across tables are not published. Cross-trajectory reuse depends only on
+the content address, not on session lifetime, so the same long text is
+stored once across Runs. A write is rejected if the same content id
+appears in one batch with disagreeing codec, raw length, or stored bytes.</p>
+<p>The object layer stays append-only during ordinary writes. GC is not on
+the write hot path. Explicit <code>maintain</code> scans only the three tables'
+content-reference columns, computes the reachable content ids of the
+current Snapshot, and drops unreachable payloads. Production still needs
+metrics for object growth rate, unreachable bytes, and maintenance time.</p>
+<h3 id="query-time-lazy-materialization">Query-time lazy materialization<a class="headerlink" href="#query-time-lazy-materialization" title="Permanent link">&para;</a></h3>
+<p><code>StorylineDataSource</code> lets Lance finish business-table projection, safe
+predicates, scalar indexes, limit, and parallel scan first, then inserts
+<code>ContentHydrationExec</code> into the plan:</p>
+<ul>
+<li>if the query does not reference a content column, <code>objects.lance</code>
+  payloads are not opened;</li>
+<li>only content ids that actually appear in the projection are collected,
+  then looked up through BTree in groups of at most 512;</li>
+<li>Blobs are read in batches by row address, decompressed, checked for
+  length and BLAKE3, then restored as the original Utf8 column;</li>
+<li>content-column predicates must not run against the descriptor; they
+  stay after hydration for DataFusion to evaluate;</li>
+<li><code>Preview</code> mode returns only the UTF-8 prefix from the descriptor, does
+  zero payload I/O, and rejects content-column predicates so a preview
+  cannot be mistaken for the full value.</li>
+</ul>
+<p>Large-content cost is therefore paid only by queries that actually read
+that content. Identity filters, counts, grouping, and metric analysis
+keep the compact three-table columnar path.</p>
+<h2 id="commit-layout">Commit layout<a class="headerlink" href="#commit-layout" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>root/
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>├── CURRENT
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>├── objects.lance/
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>└── generations/
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    └── &lt;table-generation&gt;/
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>        ├── runs.lance/
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>        ├── steps.lance/
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>        └── tool_calls.lance/
+</span></code></pre></div>
+<p>The first import creates the three normalized Lance datasets, the shared
+<code>objects.lance</code>, and the scalar indexes. Later <code>replace_storyline</code> no
+longer reads or rewrites the whole store. It merge-upserts by each
+table's primary key and deletes only old keys that no longer exist under
+the specified <code>document_id</code>. Each replace produces a new logical
+snapshot. <code>CURRENT</code> is JSON that records the required store
+<code>schema_version: 1</code>, the logical snapshot id, the physical
+<code>table_generation</code>, and the exact Lance version id of each of the three
+tables plus the object table. Objects are persisted first, then the
+three business tables, and <code>CURRENT</code> is updated last. Failure can leave
+unreachable objects at worst; it does not publish dangling references or
+a half-commit across tables.</p>
+<p>Threshold, preview length, and Zstd level are configurable through
+<code>StorylineContentOptions</code>. The current three-table schema is fixed at
+version 1.</p>
+<p>Older Lance MVCC versions are retained by default so an already-open
+reader can pin a Snapshot and recover from failure. Frequent incremental
+updates accumulate fragments, delete files, and unmerged index deltas.
+Ordinary replace does not refresh indexes or compact, so one write
+request does not grow a maintenance tail. Production uses <code>maintain</code> to
+compact the three tables in parallel, fill/refresh indexes, GC content,
+and vacuum by retention window. The four dataset versions produced by
+maintenance still update <code>CURRENT</code> atomically first, then reclaim older
+versions and expired non-current physical generations. <code>CURRENT</code> must be
+a JSON pointer that contains the schema version and every exact version.
+A missing or unknown schema version fails closed before any Lance table
+is opened, and the old plain-text generation pointer is not read.</p>
+<p>Local writes are serialized by an in-process lock and a file lock. Object
+stores use optimistic CAS through a conditional ETag/version update of
+<code>CURRENT</code>. A stale commit cannot move <code>CURRENT</code>. After a CAS conflict,
+<code>StorylineLanceStore</code> returns an error; it does not re-read, merge, or
+retry automatically. A caller that chooses to retry must start a complete
+replace from the latest snapshot. An upper lease can reduce conflicts; it
+does not change this failure semantic.</p>
+<h2 id="rust-api">Rust API<a class="headerlink" href="#rust-api" title="Permanent link">&para;</a></h2>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">store</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">StorylineLanceStore</span><span class="p">::</span><span class="n">open</span><span class="p">(</span><span class="n">path</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">store</span><span class="p">.</span><span class="n">replace_storyline</span><span class="p">(</span><span class="o">&amp;</span><span class="n">storyline</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="kd">let</span><span class="w"> </span><span class="n">restored</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">store</span><span class="p">.</span><span class="n">get_storyline_full</span><span class="p">(</span><span class="s">&quot;session-id&quot;</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="kd">let</span><span class="w"> </span><span class="n">report</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">store</span><span class="p">.</span><span class="n">maintain</span><span class="p">(</span><span class="o">&amp;</span><span class="n">LanceMaintenanceOptions</span><span class="p">::</span><span class="n">default</span><span class="p">()).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span></code></pre></div>
+<p><code>replace_storyline</code> replaces the related rows in the three tables at
+<code>document_id</code> granularity and keeps the other Storylines in the same
+store.</p>
+<p><code>get_storyline_full</code> means it will read the three tables and restore the
+full content of that Storyline. Store-local paging APIs that were unused
+by CLI or Web have been removed. Product-level listing, paging, and
+projection are owned by Catalog, the Warehouse API, and DataFusion query,
+so a second unreachable read protocol is not maintained.</p>
+<p>First import and replace both write the three tables in parallel. Arrow
+rows are lazily encoded in batches of at most 8192 and streamed into
+Lance, so a large import does not keep a full-table Arrow copy.
+<code>CURRENT</code> is parsed once. The DataSource then opens each table directly
+at the pointed-to version instead of validating and reopening the same
+dataset.</p>
+<p>Production maintenance goes through the <code>StorylineLanceStore::maintain</code>
+Rust API. The public CLI does not expose a maintenance command.</p>
+<h2 id="datafusion-datasource">DataFusion datasource<a class="headerlink" href="#datafusion-datasource" title="Permanent link">&para;</a></h2>
+<p><code>StorylineDataSource</code> pins the three business-table versions and the
+object-table version from <code>CURRENT</code> at open time, and registers the three
+datasets as <code>runs</code>, <code>steps</code>, and <code>tool_calls</code>. Even if the writer later
+switches <code>CURRENT</code>, an already-open query keeps the same three-table
+Snapshot.</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">StorylineDataSource</span><span class="p">::</span><span class="n">open</span><span class="p">(</span><span class="n">path</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">source</span><span class="p">.</span><span class="n">session_context</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="kd">let</span><span class="w"> </span><span class="n">rows</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;SELECT step_id, source FROM steps WHERE session_id = &#39;s-1&#39; ORDER BY step_id&quot;</span><span class="p">)</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">    </span><span class="p">.</span><span class="n">collect</span><span class="p">()</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span></code></pre></div>
+<p>The datasource uses Lance's native DataFusion execution plan. It supports
+column pruning, predicate and limit pushdown, and an unordered physical
+scan that allows parallel reads. Queries that need order must write
+<code>ORDER BY step_id, call_index</code> explicitly. Queries that do not reference
+large content columns do not open Blobs. When a content column is
+referenced, restoration happens in batches after Lance projection, safe
+predicates, and limit. Predicates on content columns are not pushed down
+onto the internal reference; DataFusion evaluates them after restoration
+so SQL semantics stay the same. Internal references are never returned by
+pChronicle read, query, or export APIs. Scanning the underlying Lance
+files while bypassing pChronicle is a diagnostic interface and is outside
+that guarantee.</p>
+<p>A preview UI can set <code>StorylineDataSourceOptions::content_read_mode</code> to
+<code>StorylineContentReadMode::Preview</code>. That mode returns a short UTF-8-safe
+preview directly from the descriptor with zero Blob payload I/O. Content-
+column predicates are rejected in preview mode so a preview cannot be
+treated as the full value.</p>
+<p>These scalar indexes are built when a table generation is first created:</p>
+<table>
+<thead>
+<tr>
+<th>Table</th>
+<th>BTree</th>
+<th>Bitmap</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>runs</td>
+<td><code>document_id</code>, <code>session_id</code>, <code>run_id</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td>steps</td>
+<td><code>document_id</code>, <code>session_id</code>, <code>timestamp</code></td>
+<td><code>effective_kind</code>, <code>source</code></td>
+</tr>
+<tr>
+<td>tool_calls</td>
+<td><code>document_id</code>, <code>session_id</code>, <code>tool_call_id</code></td>
+<td><code>function_name</code></td>
+</tr>
+</tbody>
+</table>
+<p>The indexes target Story/Run location, tool-call lookup, and type
+filters. <code>step_id</code> recounts from small values inside each Storyline and
+has low global selectivity, so it does not get its own BTree. A combined
+predicate first locates one Storyline with <code>session_id</code>, then filters a
+short step range. DataFusion index predicates are pushed down as Lance
+<code>ScalarIndexQuery</code>.</p>
+<p><code>StorylineDataSourceOptions</code> can set <code>use_scalar_indexes</code> and
+<code>scan_in_order</code> explicitly. The default enables indexes for online
+analytic queries and turns physical order off. Turning indexes off is
+mainly for benchmarks, diagnosis, or a full-scan control on a tiny table.</p>
+<h2 id="unified-query-engine">Unified query engine<a class="headerlink" href="#unified-query-engine" title="Permanent link">&para;</a></h2>
+<p><code>ChronicleQueryEngine</code> is the public read-only SQL facade. All six disk
+formats (Canonical Event, Storyline Lance, AgenticMD, ATIF, OpenAI Msg,
+ACTF) open through the single entry
+<code>ChronicleQueryEngine::open(format, path, options)</code> and register the
+semantically matching query tables, so SQL does not change with the
+physical format:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">use</span><span class="w"> </span><span class="n">persisting_pchronicle</span><span class="p">::</span><span class="n">query</span><span class="p">::{</span><span class="n">ChronicleQueryEngine</span><span class="p">,</span><span class="w"> </span><span class="n">ChronicleQueryExecutionOptions</span><span class="p">};</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="k">use</span><span class="w"> </span><span class="n">persisting_pchronicle</span><span class="p">::</span><span class="n">document</span><span class="p">::</span><span class="n">DocumentFormat</span><span class="p">;</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="kd">let</span><span class="w"> </span><span class="n">engine</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ChronicleQueryEngine</span><span class="p">::</span><span class="n">open</span><span class="p">(</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="n">DocumentFormat</span><span class="p">::</span><span class="n">Storyline</span><span class="p">,</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">    </span><span class="s">&quot;./storyline-store&quot;</span><span class="p">,</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">    </span><span class="n">ChronicleQueryExecutionOptions</span><span class="p">::</span><span class="n">default</span><span class="p">(),</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="kd">let</span><span class="w"> </span><span class="n">batches</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">engine</span><span class="p">.</span><span class="n">query</span><span class="p">(</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="w">    </span><span class="s">&quot;SELECT session_id, step_id, source FROM steps WHERE step_id &gt;= 10&quot;</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="kd">let</span><span class="w"> </span><span class="n">atif</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ChronicleQueryEngine</span><span class="p">::</span><span class="n">open</span><span class="p">(</span>
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="w">    </span><span class="n">DocumentFormat</span><span class="p">::</span><span class="n">Atif</span><span class="p">,</span>
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="w">    </span><span class="s">&quot;./trajectories.ndjson&quot;</span><span class="p">,</span>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a><span class="w">    </span><span class="n">ChronicleQueryExecutionOptions</span><span class="p">::</span><span class="n">default</span><span class="p">(),</span>
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a><span class="kd">let</span><span class="w"> </span><span class="n">jsonl</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">atif</span><span class="p">.</span><span class="n">query_jsonl</span><span class="p">(</span>
+</span><span id="__span-7-19"><a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a><span class="w">    </span><span class="s">&quot;SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source&quot;</span>
+</span><span id="__span-7-20"><a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span></code></pre></div>
+<p><code>DocumentFormat::CanonicalEvent</code> registers the <code>events</code> table;
+<code>runs</code>/<code>steps</code>/<code>tool_calls</code> are not registered live by default —
+Storyline query surfaces prefer the lineage-fresh Storyline Lance
+projection, and without one a bounded row/byte-budget fallback runs
+(budget exhaustion is an explicit error, never a silent truncation). The
+other five formats register <code>runs</code>/<code>steps</code>/<code>tool_calls</code>.</p>
+<p><code>query</code> returns Arrow <code>RecordBatch</code> values, which suits further
+server-side processing. <code>dataframe</code> returns a lazy DataFrame for extra
+DataFusion transforms or plan inspection. <code>query_jsonl</code> is for CLI/API
+boundaries. Callers can also take the <code>SessionContext</code> from <code>context()</code>
+to register UDFs or extra tables. <code>backend_info()</code> returns a
+<code>QueryBackendInfo</code> that reports <code>format</code> / <code>tables</code> / <code>capabilities</code> /
+<code>snapshot</code> per the provider's real implementation; filter pushdown
+capability distinguishes <code>Unsupported</code> / <code>Inexact</code> / <code>Exact</code> /
+<code>ExpressionDependent</code> and is never overstated.</p>
+<p>The unified document source entry <code>open_document(format, path)</code> accepts a
+single ATIF JSON object, a JSON array, JSONL/NDJSON with one complete
+trajectory per line, and directories containing such ATIF documents. File
+paths register as per-file lazy <code>StreamingTable</code>s by default: the
+manifest freezes paths and file identities at open time and scans read
+only the hit files; directories are discovered in stable order, each file
+is an independent partition, and fixed-size Arrow batches provide
+backpressure.</p>
+<h3 id="pchronicle-json-projection-query-fast-path">pChronicle + JSON projection query fast path<a class="headerlink" href="#pchronicle-json-projection-query-fast-path" title="Permanent link">&para;</a></h3>
+<p>The old path fully parsed each JSON document into a format object, then
+ran <code>ATIF → Storyline → three-table rows → full-width Arrow</code> before SQL.
+Even a query that only needed <code>source</code> or <code>COUNT(*)</code> constructed unused
+large fields such as message, reasoning, metrics, and tool calls. The new
+path moves the optimization boundary forward to <code>TableProvider::scan</code>:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>SQL / DataFrame
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>  → DataFusion projection + filters
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>  → FileScanSpec
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>      ├─ _file_ = / IN / LIKE: manifest file prune
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>      ├─ session_id: trajectory prune
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>      ├─ step_id / source: step prune
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>      └─ projected column set
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>  → BufRead / serde streaming decoder
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>      └─ DeserializeSeed + Visitor + IgnoredAny
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>  → decode only referenced fields of hit rows
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>  → projected Arrow RecordBatch
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>  → DataFusion keeps the inexact filter and rechecks
+</span></code></pre></div>
+<p>The current fast path covers ATIF single objects, arrays (including
+pretty JSON), and JSONL/NDJSON, plus ACTF single objects and arrays. The
+target table is <code>steps</code>, and the physical plan must have strict column
+pruning. The path is intentionally conservative:</p>
+<table>
+<thead>
+<tr>
+<th>Input/query</th>
+<th>Execution path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ATIF object/pretty object + projected <code>steps</code></td>
+<td>reader-backed seeded projected decoder</td>
+</tr>
+<tr>
+<td>ATIF array/pretty array + projected <code>steps</code></td>
+<td><code>fill_buf</code> structural scan + bounded element buffer + seeded <code>from_slice</code></td>
+</tr>
+<tr>
+<td>ATIF JSONL/NDJSON + projected <code>steps</code></td>
+<td><code>BufRead</code> per record, bounded record buffer</td>
+</tr>
+<tr>
+<td>ACTF object/array + projected <code>steps</code></td>
+<td>reader/slice seeded projected decoder</td>
+</tr>
+<tr>
+<td>Safe simple predicates on <code>_file_</code>, <code>session_id</code>, <code>step_id</code>, <code>source</code></td>
+<td>may prune early; DataFusion still rechecks</td>
+</tr>
+<tr>
+<td><code>SELECT *</code></td>
+<td>full-normalization fallback</td>
+</tr>
+<tr>
+<td><code>runs</code> / <code>tool_calls</code></td>
+<td>full-normalization fallback</td>
+</tr>
+<tr>
+<td>OpenAI-message</td>
+<td>full-normalization fallback</td>
+</tr>
+<tr>
+<td>Unproven-safe expressions, OR/functions/cross-column conditions</td>
+<td>no pre-prune; DataFusion evaluates</td>
+</tr>
+</tbody>
+</table>
+<p><code>DeserializeSeed</code> passes the query projection and safe predicates into
+the <code>Visitor</code>. Unreferenced fields go to <code>IgnoredAny</code> for a syntactic
+scan and do not construct a <code>Value</code>/Storyline. ATIF JSONL/NDJSON is read
+record-by-record with <code>BufRead</code>. The JSON-array structural scanner
+recognizes strings and escapes, extracts one trajectory/document without
+building a DOM, then runs projected parse through the slice decoder.
+Callers can set <code>max_record_bytes</code> to bound a single document/record.
+There is no default per-record cap; only the <code>max_file_bytes</code> file bound
+remains. None of the three paths copy the whole file first.
+The Arrow encoder also creates only projected columns. <code>COUNT(*)</code> uses a
+legal zero-column batch. The lightweight path checks JSON, required
+fields, duplicate sessions, duplicate steps inside a hit document, and
+in-table constraints. Cross-table referential integrity stays with the
+import path or the full fallback. That boundary keeps ad-hoc queries from
+taking on import semantics without lowering SQL result correctness.</p>
+<p>Query metrics additionally report <code>projected_files</code>, <code>streamed_records</code>,
+<code>streaming_buffer_peak_bytes</code>, scanned/pruned documents,
+scanned/pruned/emitted rows, and <code>projected_arrow_bytes</code>, so the four
+costs — source-byte scan, input buffer, JSON-field materialization, and
+Arrow output — can be distinguished. Repository benchmarks report
+median/P95, rows/s, independent-process peak RSS, and allocation
+calls/bytes observed by a counting allocator. Those are regression
+numbers for a specified corpus, query, and machine, not a cross-
+environment SLA.</p>
+<p>The path still sequentially scans every JSON byte of a hit file. It is
+not an in-file index. One-shot or controlled-batch queries can use JSON
+directly. Very large, remote, or repeated queries should convert to Lance
+first and use Snapshot, column pruning, parallel fragment scan, and
+scalar indexes.</p>
+<p>ATIF import also defaults to <code>AtifReader</code>. An empty store uses one
+producer pass for validation, Storyline normalization, and three-table
+split, then creates the three Lance datasets in parallel over three
+bounded Arrow channels. An existing store replace in incremental batches
+of at most 256 Storylines. Both paths switch <code>CURRENT</code> atomically once,
+only after every input and three-table write succeeds.</p>
+<p>The CLI uses the same engine and emits stable JSONL:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>pchronicle<span class="w"> </span>query<span class="w"> </span>./trajectories.ndjson<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span>--sql<span class="w"> </span><span class="s1">&#39;SELECT source, COUNT(*) AS steps FROM dataset.steps GROUP BY source ORDER BY source&#39;</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># A three-table store root that contains CURRENT is auto-detected as Lance</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>pchronicle<span class="w"> </span>query<span class="w"> </span>./storyline-store<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">  </span>--sql<span class="w"> </span><span class="s1">&#39;SELECT step_id, source FROM dataset.steps WHERE session_id = &#39;</span><span class="se">\&#39;</span><span class="s1">&#39;s-1&#39;</span><span class="se">\&#39;</span><span class="s1">&#39; ORDER BY step_id&#39;</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="c1"># Query an OpenAI/ACTF directory directly; _file_ is a query-time relative path column and is not written to Lance</span>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>pchronicle<span class="w"> </span>query<span class="w"> </span>./openai-data<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">  </span>--sql<span class="w"> </span><span class="s2">&quot;SELECT _file_, COUNT(*) FROM dataset.steps WHERE _file_ LIKE &#39;batch/%&#39; GROUP BY _file_&quot;</span>
+</span></code></pre></div>
+<p>Queries are read-only. SQL may use SELECT, CTE, JOIN, aggregation, and
+built-in DataFusion functions, but this facade does not run DDL/DML. When
+the Lance engine opens, it pins the three versions pointed to by
+<code>CURRENT</code>, so the three tables in one query session come from the same
+Snapshot.</p>
+<p>The repository uses a unified Criterion.rs + hyperfine benchmark runner.
+Criterion owns CPU-bound conversion, events→Storyline, and three-table
+split/reconstruct microbenchmarks. Canonical event append, projection
+build/sync/verify, Lance/DataFusion lifetime, JSON streaming, and RSS
+scenarios are repeated by hyperfine in independent processes and then
+folded into unified JSON, Markdown, and HTML:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># PR/local smoke workload</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>just<span class="w"> </span>benchmark-pchronicle
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="c1"># larger nightly workload</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>just<span class="w"> </span>benchmark-pchronicle<span class="w"> </span>nightly<span class="w"> </span>target/pchronicle-benchmark/nightly
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="c1"># compare two raw reports produced on the same testbed</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>just<span class="w"> </span>benchmark-pchronicle-compare<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">  </span>target/pchronicle-benchmark/main/raw-report.json<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">  </span>target/pchronicle-benchmark/current/raw-report.json
+</span></code></pre></div>
+<p><code>raw-report.json</code> stores raw metrics and environment at
+<code>$["measurements"]...</code> JSONPath addresses. <code>bencher.json</code> is the flat
+projection used by the historical platform. <code>report.md</code> is written to the
+GitHub Actions Job Summary. <code>report.html</code> and Criterion detail become
+artifacts.</p>
+<p>JSON comparisons use a single NDJSON file to avoid the open cost of many
+tiny files. A direct ATIF <code>steps</code> query passes the DataFusion projection
+and the safely pre-prunable <code>session_id</code>, <code>step_id</code>, and <code>source</code>
+predicates to the projected decoder. Unreferenced JSON fields are scanned
+syntactically only; no Storyline/three-table object is constructed, and
+the Arrow batch contains only the columns the plan needs. Object, array,
+pretty JSON, and JSONL/NDJSON share the streaming projection decoder.
+ACTF <code>steps</code> uses the matching projected decoder. <code>SELECT *</code>, the other
+tables, and OpenAI-message still take the full-normalization fallback.
+The lightweight path checks JSON, required fields, and in-table
+constraints. Cross-table referential integrity is checked by import or
+the full fallback. A pre-parsed in-memory JSON control measures query
+logic only, so product workflow cost can be separated from pure in-memory
+traversal. The benchmark also reports DataSource cold-open-plus-SQL,
+<code>get_storyline_full</code> point-lookup, and single-Storyline replace latency,
+so warm SQL throughput does not hide write amplification on the online
+read/write path.</p>
+<p>Performance conclusions should not be written as "Lance is always faster
+at every scale and query". An explicitly constructed <code>MemTable</code> or
+pre-parsed in-memory JSON can still be faster on small data. Default ATIF
+streaming solves an upper memory bound; it does not provide a physical
+index. Lance's main advantages remain a smaller physical footprint,
+near-constant datasource open time, and the gains from column pruning,
+parallel scan, and selective indexes.</p>
+<h2 id="related-documents">Related documents<a class="headerlink" href="#related-documents" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../../concepts/facts-and-projections/">Recorded data, views, and versions</a>:
+  why Storyline is a projection.</li>
+<li><a href="../architecture/">pChronicle architecture</a>: publication and read-
+  consistency guarantees.</li>
+<li><a href="../catalog/">Snapshot</a>: how Source discovery and a pinned Snapshot open
+  this store.</li>
+<li><a href="../../reference/cli/"><code>pchronicle</code> reference</a>: current public query,
+  import/export, and serve commands.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2025–2026 Persisting. All rights reserved.
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/DeepLink-org/Persisting" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.indexes", "navigation.tracking", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

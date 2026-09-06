@@ -1,0 +1,4739 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Persistent infrastructure for the Agent era—from model parameters and KV caches to Agent trajectories">
+      
+      
+      
+        <link rel="canonical" href="https://deeplink-org.github.io/Persisting/zh/pvisor/reference/cases/">
+      
+      
+      
+      
+        
+          <link rel="alternate" href="/Persisting/" hreflang="en">
+        
+          <link rel="alternate" href="./" hreflang="zh">
+        
+      
+      
+      <link rel="icon" href="../../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>pVisor run 用户场景与回归示例 - Persisting 文档</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../../assets/stylesheets/home.css">
+    
+    <script>__md_scope=new URL("../../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#pvisor-run" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href="../../../" title="Persisting 文档" class="md-header__button md-logo" aria-label="Persisting 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Persisting 文档
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              pVisor run 用户场景与回归示例
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="选择当前语言">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="/Persisting/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="./" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="分享" aria-label="分享" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/DeepLink-org/Persisting" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="标签" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  首页
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  pVisor
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../pchronicle/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  pChronicle
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../project/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  项目
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../../" title="Persisting 文档" class="md-nav__button md-logo" aria-label="Persisting 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Persisting 文档
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/DeepLink-org/Persisting" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_1" id="__nav_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    首页
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    选择工作流
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安装指南
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pVisor
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    pVisor
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../get-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    核心概念
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_3" id="__nav_2_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    核心概念
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/agentvisor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AgentVisor 品类
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/run-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run、Attempt 与 Effect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/capabilities-and-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capability 与 Evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../guides/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    指南
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_4" id="__nav_2_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    指南
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/execution/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    执行环境
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/review-apply/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    审查并应用 Effect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/network/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    网络控制
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/capture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    捕获轨迹
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/sandbox-replay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    回放 Agent 轨迹
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../design/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    设计
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_5" id="__nav_2_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    设计
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    隔离架构
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/overlaynet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    OverlayNet 架构
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway 架构
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    参考
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_6" id="__nav_2_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    参考
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pVisor CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pChronicle
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    pChronicle
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/get-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    核心概念
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_3" id="__nav_3_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    核心概念
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/concepts/dataset-and-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataset 发现与版本固定
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/concepts/facts-and-projections/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    记录数据、视图与版本
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/guides/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    指南
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_4" id="__nav_3_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    指南
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/discover-and-query/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    发现与查询
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/exchange/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    导入与导出
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/serve/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    本地只读 Dataset 服务
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/ui/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    本地 Dataset Web UI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/serve-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway 转发、改写与捕获
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/design/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    设计
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_5" id="__nav_3_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    设计
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/design/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    产品架构
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/design/catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Snapshot
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/design/trajectory-storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    运行存储
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/design/storyline-lance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storyline Lance 投影
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    参考
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_6" id="__nav_3_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    参考
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/terminology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    产品术语
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pChronicle 命令参考
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/cases-self/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Single-machine and self-service cases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/cases-platform/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cluster platform and Catalog Server cases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/query-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/agenticmd/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AgenticMD 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/formats/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    运行数据格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../project/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    项目
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    项目
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../system-design/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    架构
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    端到端架构
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/local-to-fleet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    从本地到集群
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/security-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安全与 Evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    工程
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    工程
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/engineering/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    工程说明
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/releasing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    发布 Persisting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    可复现示例
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../rfcs/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    决策与 RFC
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    决策与 RFC
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0001-storyline-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0001 Storyline 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0002-events-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0002 Events 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0003-pchronicle-ownership/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0003 pChronicle 所有权
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0004-actf-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0004 ACTF 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0005-pchronicle-revision-lineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0005 pChronicle 修订谱系
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0006-pchronicle-vortex-backend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0006 pChronicle Vortex 后端
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0007-events-contract-pchronicle-sidecar/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0007 事件契约与 pChronicle Sidecar
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0008-atif-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0008 ATIF 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0009-openai-messages-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0009 OpenAI Messages 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0010-agent-corpus-lance-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0010 Agent 评测语料 Lance 布局
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0012-pchronicle-find-query-syntax/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0012 pChronicle find 查询语法
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0013-pchronicle-warehouse-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0013 pChronicle path Directory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0014-compact-jsonl/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0014 Compact JSONL
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../api/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    独立系统
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_5" id="__nav_4_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    独立系统
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../guide/queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue 指南
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../guide/custom-backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    自定义 Queue backend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        按需求选择
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        如何使用
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#case" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        可执行 Case
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="可执行 Case">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#a" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A. 基础调用与身份
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#b" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        B. 资源限制
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#c-stage-whole-rootfs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        C. Stage 与 whole-rootfs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#d-overlayfs-host" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        D. OverlayFS 与 Host 安全边界
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#e-vm-rootfs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        E. VM 与 rootfs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#f-container" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        F. Container
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#g-overlaynet" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        G. OverlayNet
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#h-gateway" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        H. Gateway 与记录
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#i-spec" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        I. Spec 与控制面
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#j" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        J. 复杂组合
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="pvisor-run">pVisor <code>run</code> 用户场景与回归示例<a class="headerlink" href="#pvisor-run" title="Permanent link">&para;</a></h1>
+<p>从最简单的命令开始，逐步加入资源限制、stage、VM、容器和网络功能。
+每个 case 先说明用途、准备和预期结果，再给出可执行命令；编号便于单独回归。
+本文只讨论 <code>run</code>，其它子命令请参阅各自的使用文档。编号（如 A01）只用于回归报告和问题定位；阅读时请按场景选择命令。</p>
+<h2 id="_1">按需求选择<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>你的需求</th>
+<th>建议先看</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>只想运行一个命令</td>
+<td>A01–A03</td>
+</tr>
+<tr>
+<td>需要超时、内存或文件限制</td>
+<td>A04、B01–B04</td>
+</tr>
+<tr>
+<td>想保留、丢弃或检查文件改动</td>
+<td>C01–C05</td>
+</tr>
+<tr>
+<td>需要组合多个 OverlayFS 层</td>
+<td>D01</td>
+</tr>
+<tr>
+<td>想了解 host 默认隔离</td>
+<td>D02–D03</td>
+</tr>
+<tr>
+<td>使用 VM、宿主 rootfs 或 OCI 镜像</td>
+<td>E01–E06</td>
+</tr>
+<tr>
+<td>使用原生 OCI 容器</td>
+<td>F01–F04</td>
+</tr>
+<tr>
+<td>配置网络代理或禁止网络</td>
+<td>G01–G06</td>
+</tr>
+<tr>
+<td>接入 Gateway 或记录轨迹</td>
+<td>H01–H03</td>
+</tr>
+<tr>
+<td>从配置文件或 RunSpec 执行</td>
+<td>I01–I03</td>
+</tr>
+<tr>
+<td>参考完整生产组合</td>
+<td>J01–J03</td>
+</tr>
+</tbody>
+</table>
+<p>每个场景都包含三层信息：命令是用户实际输入，正文说明适用场景和预期，
+折叠的断言是自动回归使用的实现检查。你可以只复制命令，也可以运行脚本做完整验证。</p>
+<h2 id="_2">如何使用<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<p>手工执行时，先准备一个测试工作目录。各例中的 <code>pvisor</code> 应已在 <code>PATH</code> 中；
+<code>/path/to/...</code> 需要替换成自己的路径或镜像引用。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>/tmp/pvisor-cases/workspace
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>/tmp/pvisor-cases/workspace
+</span></code></pre></div>
+<p>也可以让脚本逐条执行，并自动检查各例的结果：</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>python3<span class="w"> </span>scripts/run-pvisor-cases.py<span class="w"> </span>--list
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>python3<span class="w"> </span>scripts/run-pvisor-cases.py<span class="w"> </span>--pvisor<span class="w"> </span>target/release/pvisor<span class="w"> </span>--case<span class="w"> </span>A01,C01<span class="w"> </span>--keep
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>python3<span class="w"> </span>scripts/run-pvisor-cases.py<span class="w"> </span>--pvisor<span class="w"> </span>target/release/pvisor<span class="w"> </span>--report<span class="w"> </span>target/pvisor-case-report.md
+</span></code></pre></div>
+<p>脚本为每个 case 创建独立的临时 workspace，把文档中的 <code>/tmp/pvisor-cases</code>
+换成该 case 的目录。测试断言折叠在命令下方，由脚本执行，不需要手工复制。
+断言中的 <code>bundle_expect</code> 等函数由脚本提供，用于读取本次运行的
+<code>run-bundle.json</code> 和 <code>run.json</code>；它们不是 pVisor 命令。</p>
+<p>case 注释中的 <code>requires</code> 只描述建议的运行环境，不会导致 case 被跳过；脚本总是
+使用默认值执行，并把缺少 KVM、rootfs、Lance 或 OCI runtime 的真实错误记录为
+<code>FAIL</code>。<code>--keep</code> 保留现场；<code>--strict-skips</code> 为兼容旧用法保留，但正常情况下不会产生
+<code>SKIP</code>。Linux 未提供 rootfs 时，目录 rootfs case 使用宿主 <code>/</code> 进行 smoke test，
+这只能验证流程，不能代表独立的 guest rootfs，也不应作为生产隔离边界。</p>
+<table>
+<thead>
+<tr>
+<th>测试资源</th>
+<th>脚本配置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>已准备好的 Linux rootfs</td>
+<td><code>PVISOR_CASE_ROOTFS</code>，用于替换 <code>/path/to/rootfs</code>；未设置时 Linux 使用宿主 <code>/</code></td>
+</tr>
+<tr>
+<td>VM 镜像引用</td>
+<td><code>PVISOR_CASE_IMAGE</code>，用于替换 <code>/path/to/image</code>；未设置时使用 <code>ubuntu:latest</code></td>
+</tr>
+<tr>
+<td>容器镜像引用</td>
+<td><code>PVISOR_CASE_CONTAINER_IMAGE</code>，用于替换 <code>alpine:latest</code>；未设置时使用 <code>ubuntu:latest</code>（与动态 pVisor ABI 兼容）</td>
+</tr>
+<tr>
+<td>OCI runtime</td>
+<td>安装 <code>crun</code>；F04 显式使用 <code>runc</code>，也需要安装它</td>
+</tr>
+<tr>
+<td>自定义 libkrunfw 目录</td>
+<td><code>PVISOR_CASE_FIRMWARE</code>；未设置时脚本尝试查找本机缓存</td>
+</tr>
+<tr>
+<td>VM 中要执行的 Agent</td>
+<td><code>PVISOR_CASE_AGENT</code>，用于替换 <code>/usr/local/bin/agent</code>；此路径必须在 guest 中也可执行</td>
+</tr>
+<tr>
+<td>Lance 记录</td>
+<td>安装带相应支持的组件，并设置 <code>PVISOR_CASE_LANCE=1</code></td>
+</tr>
+</tbody>
+</table>
+<p>Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可访问的
+<code>/dev/kvm</code>。容器需要本机 OCI runtime 具备实际启动容器的权限；
+装有 runtime 可执行文件本身并不保证权限齐备。</p>
+<h2 id="case">可执行 Case<a class="headerlink" href="#case" title="Permanent link">&para;</a></h2>
+<h3 id="a">A. 基础调用与身份<a class="headerlink" href="#a" title="Permanent link">&para;</a></h3>
+<p>这一组适合第一次使用 pVisor。先从 A01 开始；只有需要固定显示名、采集输出或显式传递环境变量时，再选择后续例子。</p>
+<ul>
+<li>[ ] <strong>A01：省略 <code>run</code> 的最简调用</strong></li>
+</ul>
+<p>建议场景：适合第一次使用 pVisor、确认命令和 Run 身份。</p>
+<p>用途：在当前目录执行一个命令，不需要显式写出 <code>run</code>。<code>--</code> 后全部是交给 Agent 的命令和参数。</p>
+<p>预期：输出当前 workspace 的绝对路径并成功退出。默认使用 host executor，不启用 stage；未配置网络策略时记录为 ambient。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>pvisor<span class="w"> </span>--<span class="w"> </span>/bin/pwd
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>stdout_has<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span><span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_WORKSPACE</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">pwd</span><span class="w"> </span>-P<span class="k">)</span><span class="s2">&quot;</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>bundle_expect<span class="w"> </span>run.state<span class="w"> </span>completed
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>bundle_expect<span class="w"> </span>run.exit_code<span class="w"> </span><span class="m">0</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>bundle_expect<span class="w"> </span>run.agent<span class="w"> </span><span class="nb">pwd</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>bundle_expect<span class="w"> </span>network.policy.mode<span class="w"> </span>ambient
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>A02：显式 <code>run</code> 与省略形式等价</strong></li>
+</ul>
+<p>建议场景：适合第一次使用 pVisor、确认命令和 Run 身份。</p>
+<p>用途：对比省略和显式写出 <code>run</code> 的两种调用。分别保存 Agent 的标准输出，便于比较。</p>
+<p>预期：两个输出文件内容相同，都是当前工作目录。两次运行会各自生成记录，Run ID 和时间可以不同。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>pvisor<span class="w"> </span>--<span class="w"> </span>/bin/pwd<span class="w"> </span>&gt;<span class="w"> </span>implicit.txt
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>pvisor<span class="w"> </span>run<span class="w"> </span>--<span class="w"> </span>/bin/pwd<span class="w"> </span>&gt;<span class="w"> </span>explicit.txt
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>diff<span class="w"> </span>implicit.txt<span class="w"> </span>explicit.txt
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nb">test</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span>implicit.txt<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span><span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_WORKSPACE</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">pwd</span><span class="w"> </span>-P<span class="k">)</span><span class="s2">&quot;</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>bundle_expect<span class="w"> </span>run.agent<span class="w"> </span><span class="nb">pwd</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>A03：Run 名称和 stdio capture</strong></li>
+</ul>
+<p>建议场景：适合第一次使用 pVisor、确认命令和 Run 身份。</p>
+<p>用途：为这次运行命名，并将 Agent 输出保存到运行结果。<code>--name smoke</code> 指定显示名，<code>--stdio capture</code> 开启输出采集。</p>
+<p>预期：Run 名称为 <code>smoke</code>，结果中的标准输出为 <code>hello</code>，未被截断。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>pvisor<span class="w"> </span>--name<span class="w"> </span>smoke<span class="w"> </span>--stdio<span class="w"> </span>capture<span class="w"> </span>--<span class="w"> </span>/bin/sh<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;printf hello&#39;</span>
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>bundle_expect<span class="w"> </span>run.agent<span class="w"> </span>smoke
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>bundle_expect<span class="w"> </span>run.output.stdout<span class="w"> </span>hello
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>bundle_expect<span class="w"> </span>run.output.stdout_truncated<span class="w"> </span><span class="nb">false</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>A04：超时</strong></li>
+</ul>
+<p>建议场景：适合第一次使用 pVisor、确认命令和 Run 身份。</p>
+<p>用途：给运行设置墙钟超时。<code>100ms</code> 是从运行开始计时的持续时间，不是 CPU 时间；命令故意睡眠 10 秒。</p>
+<p>预期：pVisor 非零退出，运行结果的失败类型为 <code>deadline_exceeded</code>。</p>
+<!-- pvisor-case: expect=nonzero -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>pvisor<span class="w"> </span>--timeout<span class="w"> </span>100ms<span class="w"> </span>--<span class="w"> </span>/bin/sleep<span class="w"> </span><span class="m">10</span>
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>bundle_expect<span class="w"> </span>run.state<span class="w"> </span>failed
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>bundle_expect<span class="w"> </span>run.failure.kind<span class="w"> </span>deadline_exceeded
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>bundle_expect<span class="w"> </span>run.failure.retryable<span class="w"> </span><span class="nb">false</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>A05：严格执行模式拒绝 best-effort 边界</strong></li>
+</ul>
+<p>建议场景：适合第一次使用 pVisor、确认命令和 Run 身份。</p>
+<p>用途：要求严格执行能力检查。<code>--strict</code> 不接受所请求能力缺少强制执行证据；这里同时要求禁止网络。</p>
+<p>准备：Linux user/mount namespace 可用。</p>
+<p>预期：当前 host 执行路径在启动 Agent 前拒绝请求，并列出缺少执行证据的能力。此例验证拒绝路径，不代表 strict 在所有 executor 上都不可用。</p>
+<!-- pvisor-case: expect=nonzero requires=rootless -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>pvisor<span class="w"> </span>--strict<span class="w"> </span>--overlaynet-deny-all<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>stdout_has<span class="w"> </span><span class="s2">&quot;lacks enforced evidence for requested capability dimensions&quot;</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>A06：显式环境投影</strong></li>
+</ul>
+<p>建议场景：适合第一次使用 pVisor、确认命令和 Run 身份。</p>
+<p>用途：只把指定的宿主环境变量传给子进程。变量仅为这条命令设置，通过 <code>--pass-env</code> 显式允许投影。</p>
+<p>预期：子进程可见 <code>TEST_PVISOR_VALUE=visible</code>；运行记录列出这个变量，但不声明整体继承宿主环境。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nv">TEST_PVISOR_VALUE</span><span class="o">=</span>visible<span class="w"> </span>pvisor<span class="w"> </span>--pass-env<span class="w"> </span>TEST_PVISOR_VALUE<span class="w"> </span>--<span class="w"> </span>/usr/bin/env
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>stdout_has<span class="w"> </span><span class="s2">&quot;TEST_PVISOR_VALUE=visible&quot;</span>
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>bundle_contains<span class="w"> </span>environment.projected_keys<span class="w"> </span>TEST_PVISOR_VALUE
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>bundle_expect<span class="w"> </span>environment.inherits_host<span class="w"> </span><span class="nb">false</span>
+</span></code></pre></div>
+
+  </details>
+
+<h3 id="b">B. 资源限制<a class="headerlink" href="#b" title="Permanent link">&para;</a></h3>
+<p>这一组展示“请求限制”和“实际强制”之间的区别。B01 用于查看完整配置，B02 才真正尝试触发文件大小限制。</p>
+<ul>
+<li>[ ] <strong>B01：组合使用所有资源限制</strong></li>
+</ul>
+<p>建议场景：适合需要控制或验证资源限制的任务。</p>
+<p>用途：组合设置内存、进程数、CPU 时间、打开文件数和单文件大小。<code>MiB</code> 是二进制单位；<code>--max-cpu-time</code> 与墙钟超时不同。</p>
+<p>预期：命令成功退出，五个请求值出现在运行记录中，同时报告生效值和限制机制。<code>/bin/true</code> 不消耗这些额度，此例不测试超限行为。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>pvisor<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span>--memory<span class="w"> </span>256MiB<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">  </span>--max-processes<span class="w"> </span><span class="m">32</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span>--max-cpu-time<span class="w"> </span>5s<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">  </span>--max-open-files<span class="w"> </span><span class="m">128</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">  </span>--max-file-size<span class="w"> </span>1MiB<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">  </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>bundle_expect<span class="w"> </span>resources.requested.memory_bytes<span class="w"> </span><span class="m">268435456</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>bundle_expect<span class="w"> </span>resources.requested.processes<span class="w"> </span><span class="m">32</span>
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>bundle_expect<span class="w"> </span>resources.requested.cpu_time_ms<span class="w"> </span><span class="m">5000</span>
+</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>bundle_expect<span class="w"> </span>resources.requested.open_files<span class="w"> </span><span class="m">128</span>
+</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>bundle_expect<span class="w"> </span>resources.requested.file_size_bytes<span class="w"> </span><span class="m">1048576</span>
+</span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>bundle_expect<span class="w"> </span>resources.effective.file_size_bytes<span class="w"> </span><span class="m">1048576</span>
+</span><span id="__span-15-7"><a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>bundle_contains<span class="w"> </span>resources.mechanisms<span class="w"> </span>rlimit
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>B02：文件大小限制实际生效</strong></li>
+</ul>
+<p>建议场景：适合需要控制或验证资源限制的任务。</p>
+<p>用途：验证单文件大小限制：将上限设为 1KiB，再尝试用 <code>dd</code> 写入 4KiB。</p>
+<p>预期：写入命令失败，落盘文件如果存在，其大小不超过 1024 字节；运行结果记录进程退出失败。</p>
+<!-- pvisor-case: expect=nonzero -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>pvisor<span class="w"> </span>--max-file-size<span class="w"> </span>1KiB<span class="w"> </span>--<span class="w"> </span>/bin/sh<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;dd if=/dev/zero of=large bs=4096 count=1&#39;</span>
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>bundle_expect<span class="w"> </span>resources.requested.file_size_bytes<span class="w"> </span><span class="m">1024</span>
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>bundle_expect<span class="w"> </span>run.state<span class="w"> </span>failed
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>bundle_expect<span class="w"> </span>run.failure.kind<span class="w"> </span>process_exit
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="nb">test</span><span class="w"> </span>!<span class="w"> </span>-f<span class="w"> </span>large<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">[</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>wc<span class="w"> </span>-c<span class="w"> </span>&lt;<span class="w"> </span>large<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span>-le<span class="w"> </span><span class="m">1024</span><span class="w"> </span><span class="o">]</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>B03：内存参数短别名</strong></li>
+</ul>
+<p>建议场景：适合需要控制或验证资源限制的任务。</p>
+<p>用途：使用 <code>--memory</code> 的别名 <code>--mem</code>，为一个简单命令设置 256MiB 内存额度。</p>
+<p>预期：命令成功，记录中的请求值为 268435456 字节，与 <code>--memory 256MiB</code> 一致。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>pvisor<span class="w"> </span>--mem<span class="w"> </span>256MiB<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>bundle_expect<span class="w"> </span>resources.requested.memory_bytes<span class="w"> </span><span class="m">268435456</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>B04：Stage 总大小限制</strong></li>
+</ul>
+<p>建议场景：适合需要控制或验证资源限制的任务。</p>
+<p>用途：为持久 stage 请求 1GiB 的总大小限制。它限制的是 stage 总量，和 B02 的单个文件大小不是同一个概念。</p>
+<p>准备：Linux user/mount namespace 可用。</p>
+<p>预期：stage 成功建立并保存在指定路径。此例只验证参数可用和目录建立；当前产物未记录该上限，也未在此例中尝试写满 stage。</p>
+<!-- pvisor-case: requires=rootless -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>pvisor<span class="w"> </span>--stage<span class="w"> </span>/tmp/pvisor-cases/limited-stage<span class="w"> </span>--max-stage-size<span class="w"> </span>1GiB<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>bundle_expect<span class="w"> </span>filesystem.state<span class="w"> </span>staged
+</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>bundle_expect<span class="w"> </span>safety.filesystem_changes_staged<span class="w"> </span><span class="nb">true</span>
+</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>record_expect<span class="w"> </span>storage<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/limited-stage&quot;</span>
+</span></code></pre></div>
+
+  </details>
+
+<h3 id="c-stage-whole-rootfs">C. Stage 与 whole-rootfs<a class="headerlink" href="#c-stage-whole-rootfs" title="Permanent link">&para;</a></h3>
+<p>当你希望 Agent 可以自由修改文件、但不污染当前 workspace 时使用这一组。C01 是最常用的持久模式；C02/C03 适合一次性试运行。</p>
+<ul>
+<li>[ ] <strong>C01：持久 stage</strong></li>
+</ul>
+<p>建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。</p>
+<p>用途：把本次运行的文件改动放进一个保留的 stage。命令在 workspace 里创建 <code>result.txt</code>。</p>
+<p>准备：Linux user/mount namespace 可用。</p>
+<p>预期：原 workspace 没有 <code>result.txt</code>；变更清单中出现该文件，指定 stage 内保留 <code>run-bundle.json</code>，便于之后查看。</p>
+<!-- pvisor-case: requires=rootless -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>pvisor<span class="w"> </span>--stage<span class="w"> </span>/tmp/pvisor-cases/stage-keep<span class="w"> </span>--<span class="w"> </span>/bin/sh<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;printf changed &gt; result.txt&#39;</span>
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>bundle_expect<span class="w"> </span>filesystem.state<span class="w"> </span>staged
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>bundle_contains<span class="w"> </span>filesystem.changes<span class="w"> </span>result.txt
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>bundle_expect<span class="w"> </span>safety.filesystem_non_bypassable<span class="w"> </span><span class="nb">true</span>
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="nb">test</span><span class="w"> </span>!<span class="w"> </span>-e<span class="w"> </span>result.txt
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="nb">test</span><span class="w"> </span>-f<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/stage-keep/run-bundle.json&quot;</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>C02：自动临时 stage</strong></li>
+</ul>
+<p>建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。</p>
+<p>用途：运行一次不需要保留改动的任务。<code>--stage drop</code> 自动选择系统临时目录，退出后删除该目录。</p>
+<p>准备：Linux user/mount namespace 可用。</p>
+<p>预期：命令成功，日志中给出的临时存储目录已删除，原 workspace 也没有新建的文件。</p>
+<!-- pvisor-case: requires=rootless -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>pvisor<span class="w"> </span>--stage<span class="w"> </span>drop<span class="w"> </span>--<span class="w"> </span>/bin/sh<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;printf changed &gt; result.txt&#39;</span>
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="nv">storage</span><span class="o">=</span><span class="k">$(</span>grep<span class="w"> </span>-m1<span class="w"> </span><span class="s1">&#39;^Run storage: &#39;</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_STDOUT</span><span class="s2">&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>cut<span class="w"> </span>-d<span class="s1">&#39; &#39;</span><span class="w"> </span>-f3-<span class="k">)</span>
+</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a><span class="nb">test</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$storage</span><span class="s2">&quot;</span>
+</span><span id="__span-25-3"><a id="__codelineno-25-3" name="__codelineno-25-3" href="#__codelineno-25-3"></a><span class="nb">test</span><span class="w"> </span>!<span class="w"> </span>-e<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$storage</span><span class="s2">&quot;</span>
+</span><span id="__span-25-4"><a id="__codelineno-25-4" name="__codelineno-25-4" href="#__codelineno-25-4"></a><span class="nb">test</span><span class="w"> </span>!<span class="w"> </span>-e<span class="w"> </span>result.txt
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>C03：指定自动删除目录</strong></li>
+</ul>
+<p>建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。</p>
+<p>用途：自己选择临时 stage 路径，但仍要求运行结束后自动删除。示例先创建一个空目录。</p>
+<p>准备：Linux user/mount namespace 可用。</p>
+<p>预期：运行完成后 <code>stage-drop</code> 目录不存在。请使用专用空目录，不要指定含有用户文件的目录。</p>
+<!-- pvisor-case: requires=rootless -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>/tmp/pvisor-cases/stage-drop
+</span><span id="__span-26-2"><a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a>pvisor<span class="w"> </span>--stage<span class="w"> </span>drop:/tmp/pvisor-cases/stage-drop<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="nb">test</span><span class="w"> </span>!<span class="w"> </span>-e<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/stage-drop&quot;</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>C04：拒绝删除非空目录</strong></li>
+</ul>
+<p>建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。</p>
+<p>用途：验证误用保护：把 <code>drop:</code> 指向已有用户文件的目录。</p>
+<p>预期：启动前报错，提示临时 stage 必须为空；原有的 <code>user-file</code> 保持完整。此例预期非零退出。</p>
+<!-- pvisor-case: expect=nonzero -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>/tmp/pvisor-cases/not-owned
+</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a>touch<span class="w"> </span>/tmp/pvisor-cases/not-owned/user-file
+</span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a>pvisor<span class="w"> </span>--stage<span class="w"> </span>drop:/tmp/pvisor-cases/not-owned<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>stdout_has<span class="w"> </span><span class="s2">&quot;temporary stage must be empty before use&quot;</span>
+</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a><span class="nb">test</span><span class="w"> </span>-f<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/not-owned/user-file&quot;</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>C05：whole-rootfs 捕获与 tmpfs 隔离</strong></li>
+</ul>
+<p>建议场景：适合隔离文件变更、保留 stage 或验证 whole-rootfs 的任务。</p>
+<p>用途：比较 workspace 写入和 sandbox 临时目录写入。前者用于保留任务改动，后者只供本次运行临时使用。</p>
+<p>准备：Linux user/mount namespace 可用。</p>
+<p>预期：workspace 的改动出现在 stage，宿主 workspace 和宿主 <code>/tmp</code> 均不出现新文件。这里不验证 workspace 以外普通 rootfs 路径的持久化。</p>
+<!-- pvisor-case: requires=rootless -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>pvisor<span class="w"> </span>--stage<span class="w"> </span>/tmp/pvisor-cases/root-stage<span class="w"> </span>--<span class="w"> </span>/bin/sh<span class="w"> </span>-c<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a><span class="w">  </span><span class="s1">&#39;printf workspace &gt; ./workspace-change; printf tmp &gt; /tmp/pvisor-root-change&#39;</span>
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>bundle_contains<span class="w"> </span>filesystem.changes<span class="w"> </span>workspace-change
+</span><span id="__span-31-2"><a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a><span class="nb">test</span><span class="w"> </span>!<span class="w"> </span>-e<span class="w"> </span>workspace-change
+</span><span id="__span-31-3"><a id="__codelineno-31-3" name="__codelineno-31-3" href="#__codelineno-31-3"></a><span class="nb">test</span><span class="w"> </span>!<span class="w"> </span>-e<span class="w"> </span>/tmp/pvisor-root-change
+</span></code></pre></div>
+
+  </details>
+
+<h3 id="d-overlayfs-host">D. OverlayFS 与 Host 安全边界<a class="headerlink" href="#d-overlayfs-host" title="Permanent link">&para;</a></h3>
+<p>D01 讲视图层组合，D02/D03 讲 host executor 的默认隔离和 workspace 可见性。生产使用前建议先阅读这组三个例子。</p>
+<ul>
+<li>[ ] <strong>D01：高级 OverlayFS 组合</strong></li>
+</ul>
+<p>建议场景：适合检查 OverlayFS 视图和 host 安全边界。</p>
+<p>用途：把宿主的两个目录依次叠加到工作区视图，并指定 Agent 看到的路径。<code>directory</code> 选择目录后端，<code>manual</code> 表示退出后不自动应用改动。</p>
+<p>准备：Linux user/mount namespace 可用。</p>
+<p>预期：记录的目标为 <code>view</code>，从顶层到底层依次为 <code>layer</code>、<code>base</code>、当前 workspace。目录为空，因此此例检查配置顺序，不检查同名文件覆盖内容。</p>
+<!-- pvisor-case: requires=rootless -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>/tmp/pvisor-cases/base<span class="w"> </span>/tmp/pvisor-cases/layer<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PWD</span><span class="s2">/view&quot;</span>
+</span><span id="__span-32-2"><a id="__codelineno-32-2" name="__codelineno-32-2" href="#__codelineno-32-2"></a>pvisor<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-32-3"><a id="__codelineno-32-3" name="__codelineno-32-3" href="#__codelineno-32-3"></a><span class="w">  </span>--stage<span class="w"> </span>/tmp/pvisor-cases/composed-stage<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-32-4"><a id="__codelineno-32-4" name="__codelineno-32-4" href="#__codelineno-32-4"></a><span class="w">  </span>--overlayfs-path<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PWD</span><span class="s2">/view&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-32-5"><a id="__codelineno-32-5" name="__codelineno-32-5" href="#__codelineno-32-5"></a><span class="w">  </span>--overlayfs-compose<span class="w"> </span>/tmp/pvisor-cases/base<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-32-6"><a id="__codelineno-32-6" name="__codelineno-32-6" href="#__codelineno-32-6"></a><span class="w">  </span>--overlayfs-compose<span class="w"> </span>/tmp/pvisor-cases/layer<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-32-7"><a id="__codelineno-32-7" name="__codelineno-32-7" href="#__codelineno-32-7"></a><span class="w">  </span>--overlayfs-backend<span class="w"> </span>directory<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-32-8"><a id="__codelineno-32-8" name="__codelineno-32-8" href="#__codelineno-32-8"></a><span class="w">  </span>--overlayfs-commit<span class="w"> </span>manual<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-32-9"><a id="__codelineno-32-9" name="__codelineno-32-9" href="#__codelineno-32-9"></a><span class="w">  </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>bundle_expect<span class="w"> </span>filesystem.state<span class="w"> </span>staged
+</span><span id="__span-33-2"><a id="__codelineno-33-2" name="__codelineno-33-2" href="#__codelineno-33-2"></a>record_expect<span class="w"> </span>overlay_lowers.0<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/layer&quot;</span>
+</span><span id="__span-33-3"><a id="__codelineno-33-3" name="__codelineno-33-3" href="#__codelineno-33-3"></a>record_expect<span class="w"> </span>overlay_lowers.1<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/base&quot;</span>
+</span><span id="__span-33-4"><a id="__codelineno-33-4" name="__codelineno-33-4" href="#__codelineno-33-4"></a>record_expect<span class="w"> </span>overlay_lowers.2<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_WORKSPACE</span><span class="s2">&quot;</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>D02：显式 host executor</strong></li>
+</ul>
+<p>建议场景：适合检查 OverlayFS 视图和 host 安全边界。</p>
+<p>用途：显式选择 host executor，观察当前系统上的隔离类型。</p>
+<p>预期：在支持 user namespace 的 Linux 上，记录为 <code>rootless_process</code>。本例断言针对该环境；若系统正常降级到 host process，这组断言会失败，需要结合 warning 判断。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-34-1"><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>pvisor<span class="w"> </span>--executor<span class="w"> </span>host<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-35-1"><a id="__codelineno-35-1" name="__codelineno-35-1" href="#__codelineno-35-1"></a>bundle_expect<span class="w"> </span>run.executor.kind<span class="w"> </span>process
+</span><span id="__span-35-2"><a id="__codelineno-35-2" name="__codelineno-35-2" href="#__codelineno-35-2"></a>bundle_expect<span class="w"> </span>run.executor.isolation<span class="w"> </span>rootless_process
+</span><span id="__span-35-3"><a id="__codelineno-35-3" name="__codelineno-35-3" href="#__codelineno-35-3"></a>bundle_expect<span class="w"> </span>safety.host_process<span class="w"> </span><span class="nb">false</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>D03：host stage 隐藏原 workspace</strong></li>
+</ul>
+<p>建议场景：适合检查 OverlayFS 视图和 host 安全边界。</p>
+<p>用途：观察启用 stage 后子进程的 cwd 和 procfs 路径。三条命令的输出保存到 <code>views.txt</code>。</p>
+<p>准备：Linux user/mount namespace 可用。</p>
+<p>预期：cwd 指向 stage 的 merged 目录，输出中不出现原 workspace 路径。此例只检查路径显示，不证明所有原路径或继承 FD 访问都已被禁止。</p>
+<!-- pvisor-case: requires=rootless -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-36-1"><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>pvisor<span class="w"> </span>--executor<span class="w"> </span>host<span class="w"> </span>--stage<span class="w"> </span>/tmp/pvisor-cases/host-stage<span class="w"> </span>--<span class="w"> </span>/bin/sh<span class="w"> </span>-c<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-36-2"><a id="__codelineno-36-2" name="__codelineno-36-2" href="#__codelineno-36-2"></a><span class="w">  </span><span class="s1">&#39;pwd; readlink /proc/self/root; readlink /proc/self/cwd&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>views.txt
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-37-1"><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a><span class="nv">merged</span><span class="o">=</span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/host-stage/merged&quot;</span>
+</span><span id="__span-37-2"><a id="__codelineno-37-2" name="__codelineno-37-2" href="#__codelineno-37-2"></a><span class="nb">test</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>sed<span class="w"> </span>-n<span class="w"> </span>1p<span class="w"> </span>views.txt<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$merged</span><span class="s2">&quot;</span>
+</span><span id="__span-37-3"><a id="__codelineno-37-3" name="__codelineno-37-3" href="#__codelineno-37-3"></a><span class="nb">test</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>sed<span class="w"> </span>-n<span class="w"> </span>3p<span class="w"> </span>views.txt<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$merged</span><span class="s2">&quot;</span>
+</span><span id="__span-37-4"><a id="__codelineno-37-4" name="__codelineno-37-4" href="#__codelineno-37-4"></a>!<span class="w"> </span>grep<span class="w"> </span>-Fq<span class="w"> </span>--<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span><span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_WORKSPACE</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">pwd</span><span class="w"> </span>-P<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span>views.txt
+</span></code></pre></div>
+
+  </details>
+
+<h3 id="e-vm-rootfs">E. VM 与 rootfs<a class="headerlink" href="#e-vm-rootfs" title="Permanent link">&para;</a></h3>
+<p>需要更强边界、独立 guest kernel 或 OCI rootfs 时使用 VM。E01 最接近“直接运行”，E02/E03 展示目录和镜像来源，E04/E05 再加入资源与 stage。</p>
+<ul>
+<li>[ ] <strong>E01：<code>--vm</code> 简写与 host rootfs</strong></li>
+</ul>
+<p>建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。</p>
+<p>用途：用 <code>--vm</code> 选择 VM executor，并以宿主根目录作为 guest rootfs。该方式扩大了 guest 可读取的宿主文件范围，只应在可信测试环境使用。</p>
+<p>准备：Linux；可访问 /dev/kvm。</p>
+<p>预期：guest 输出与宿主 workspace 相同的绝对路径。运行结果标记为虚拟机，网络使用 pVisor 的 smoltcp 驱动。</p>
+<!-- pvisor-case: requires=linux,kvm -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-38-1"><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>pvisor<span class="w"> </span>--vm<span class="w"> </span>--rootfs<span class="w"> </span>host<span class="w"> </span>--<span class="w"> </span>/bin/pwd<span class="w"> </span>&gt;<span class="w"> </span>guest-cwd.txt
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-39-1"><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a><span class="nb">test</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span>guest-cwd.txt<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span><span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_WORKSPACE</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">pwd</span><span class="w"> </span>-P<span class="k">)</span><span class="s2">&quot;</span>
+</span><span id="__span-39-2"><a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a>bundle_expect<span class="w"> </span>run.executor.kind<span class="w"> </span>virtual_machine
+</span><span id="__span-39-3"><a id="__codelineno-39-3" name="__codelineno-39-3" href="#__codelineno-39-3"></a>bundle_expect<span class="w"> </span>run.executor.isolation<span class="w"> </span>virtual_machine
+</span><span id="__span-39-4"><a id="__codelineno-39-4" name="__codelineno-39-4" href="#__codelineno-39-4"></a>bundle_expect<span class="w"> </span>network.interception.driver<span class="w"> </span>vm-smoltcp
+</span><span id="__span-39-5"><a id="__codelineno-39-5" name="__codelineno-39-5" href="#__codelineno-39-5"></a>bundle_expect<span class="w"> </span>network.interception.strength<span class="w"> </span>non-bypassable
+</span><span id="__span-39-6"><a id="__codelineno-39-6" name="__codelineno-39-6" href="#__codelineno-39-6"></a>bundle_expect<span class="w"> </span>safety.network_non_bypassable<span class="w"> </span><span class="nb">true</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>E02：显式 VM executor 与目录 rootfs</strong></li>
+</ul>
+<p>建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。</p>
+<p>用途：已有 Linux rootfs 时，直接把目录交给 VM 使用。目录内需要有可执行的 <code>/bin/pwd</code> 及其运行依赖。</p>
+<p>准备：Linux；可访问 /dev/kvm；准备好 Linux rootfs，并为脚本设置 PVISOR_CASE_ROOTFS。</p>
+<p>预期：虚拟机成功执行命令，guest cwd 与宿主 workspace 路径一致。</p>
+<!-- pvisor-case: requires=linux,kvm,rootfs -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-40-1"><a id="__codelineno-40-1" name="__codelineno-40-1" href="#__codelineno-40-1"></a>pvisor<span class="w"> </span>--executor<span class="w"> </span>vm<span class="w"> </span>--rootfs<span class="w"> </span>/path/to/rootfs<span class="w"> </span>--<span class="w"> </span>/bin/pwd<span class="w"> </span>&gt;<span class="w"> </span>guest-cwd.txt
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-41-1"><a id="__codelineno-41-1" name="__codelineno-41-1" href="#__codelineno-41-1"></a><span class="nb">test</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span>guest-cwd.txt<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span><span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_WORKSPACE</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">pwd</span><span class="w"> </span>-P<span class="k">)</span><span class="s2">&quot;</span>
+</span><span id="__span-41-2"><a id="__codelineno-41-2" name="__codelineno-41-2" href="#__codelineno-41-2"></a>bundle_expect<span class="w"> </span>run.executor.isolation<span class="w"> </span>virtual_machine
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>E03：image rootfs</strong></li>
+</ul>
+<p>建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。</p>
+<p>用途：使用 OCI 镜像准备 VM 的 rootfs，不依赖 Docker/Podman daemon。将 <code>image=</code> 后的占位符替换为可获取的镜像引用。</p>
+<p>准备：Linux；可访问 /dev/kvm；为脚本设置 PVISOR_CASE_IMAGE。</p>
+<p>预期：镜像准备后启动 VM，guest 的工作目录与宿主 workspace 路径一致。</p>
+<!-- pvisor-case: requires=linux,kvm,image -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-42-1"><a id="__codelineno-42-1" name="__codelineno-42-1" href="#__codelineno-42-1"></a>pvisor<span class="w"> </span>--vm<span class="w"> </span>--rootfs<span class="w"> </span><span class="nv">image</span><span class="o">=</span>/path/to/image<span class="w"> </span>--<span class="w"> </span>/bin/pwd<span class="w"> </span>&gt;<span class="w"> </span>guest-cwd.txt
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-43-1"><a id="__codelineno-43-1" name="__codelineno-43-1" href="#__codelineno-43-1"></a><span class="nb">test</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span>guest-cwd.txt<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span><span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_WORKSPACE</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">pwd</span><span class="w"> </span>-P<span class="k">)</span><span class="s2">&quot;</span>
+</span><span id="__span-43-2"><a id="__codelineno-43-2" name="__codelineno-43-2" href="#__codelineno-43-2"></a>bundle_expect<span class="w"> </span>run.executor.isolation<span class="w"> </span>virtual_machine
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>E04：VM 资源和 firmware 配置</strong></li>
+</ul>
+<p>建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。</p>
+<p>用途：使用已有 rootfs 启动 VM，同时指定 firmware 目录、2GiB 内存和 2 个虚拟 CPU。</p>
+<p>准备：Linux；可访问 /dev/kvm；准备好 Linux rootfs，并为脚本设置 PVISOR_CASE_ROOTFS；libkrunfw 目录或本机缓存可用。</p>
+<p>预期：VM 成功运行，内存请求记录为 2147483648 字节。这里使用目录 rootfs，<code>--image-store</code> 不会触发镜像下载；CPU 数量未由本例断言核验。</p>
+<!-- pvisor-case: requires=linux,kvm,rootfs,firmware -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-44-1"><a id="__codelineno-44-1" name="__codelineno-44-1" href="#__codelineno-44-1"></a>pvisor<span class="w"> </span>--vm<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-44-2"><a id="__codelineno-44-2" name="__codelineno-44-2" href="#__codelineno-44-2"></a><span class="w">  </span>--rootfs<span class="w"> </span>/path/to/rootfs<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-44-3"><a id="__codelineno-44-3" name="__codelineno-44-3" href="#__codelineno-44-3"></a><span class="w">  </span>--image-store<span class="w"> </span>/tmp/pvisor-cases/images<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-44-4"><a id="__codelineno-44-4" name="__codelineno-44-4" href="#__codelineno-44-4"></a><span class="w">  </span>--vm-library-dir<span class="w"> </span>/path/to/libkrunfw<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-44-5"><a id="__codelineno-44-5" name="__codelineno-44-5" href="#__codelineno-44-5"></a><span class="w">  </span>--memory<span class="w"> </span>2GiB<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-44-6"><a id="__codelineno-44-6" name="__codelineno-44-6" href="#__codelineno-44-6"></a><span class="w">  </span>--cpu<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-44-7"><a id="__codelineno-44-7" name="__codelineno-44-7" href="#__codelineno-44-7"></a><span class="w">  </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-45-1"><a id="__codelineno-45-1" name="__codelineno-45-1" href="#__codelineno-45-1"></a>bundle_expect<span class="w"> </span>run.executor.isolation<span class="w"> </span>virtual_machine
+</span><span id="__span-45-2"><a id="__codelineno-45-2" name="__codelineno-45-2" href="#__codelineno-45-2"></a>bundle_expect<span class="w"> </span>resources.requested.memory_bytes<span class="w"> </span><span class="m">2147483648</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>E05：VM workspace 与 whole-rootfs stage 组合</strong></li>
+</ul>
+<p>建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。</p>
+<p>用途：在 VM 镜像运行基础上增加持久 stage，并显式要求工作区视图位于宿主 cwd 的同一路径。</p>
+<p>准备：Linux；可访问 /dev/kvm；为脚本设置 PVISOR_CASE_IMAGE。</p>
+<p>预期：guest cwd 保持一致，stage 保留在 <code>vm-stage</code>。本例只执行 <code>pwd</code>，验证路径和 stage 建立，不验证写入捕获。</p>
+<!-- pvisor-case: requires=linux,kvm,image -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-46-1"><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a>pvisor<span class="w"> </span>--vm<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-46-2"><a id="__codelineno-46-2" name="__codelineno-46-2" href="#__codelineno-46-2"></a><span class="w">  </span>--rootfs<span class="w"> </span><span class="nv">image</span><span class="o">=</span>/path/to/image<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-46-3"><a id="__codelineno-46-3" name="__codelineno-46-3" href="#__codelineno-46-3"></a><span class="w">  </span>--stage<span class="w"> </span>/tmp/pvisor-cases/vm-stage<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-46-4"><a id="__codelineno-46-4" name="__codelineno-46-4" href="#__codelineno-46-4"></a><span class="w">  </span>--overlayfs-path<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PWD</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-46-5"><a id="__codelineno-46-5" name="__codelineno-46-5" href="#__codelineno-46-5"></a><span class="w">  </span>--<span class="w"> </span>/bin/pwd<span class="w"> </span>&gt;<span class="w"> </span>guest-cwd.txt
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-47-1"><a id="__codelineno-47-1" name="__codelineno-47-1" href="#__codelineno-47-1"></a><span class="nb">test</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>cat<span class="w"> </span>guest-cwd.txt<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span><span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_WORKSPACE</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">pwd</span><span class="w"> </span>-P<span class="k">)</span><span class="s2">&quot;</span>
+</span><span id="__span-47-2"><a id="__codelineno-47-2" name="__codelineno-47-2" href="#__codelineno-47-2"></a>bundle_expect<span class="w"> </span>filesystem.state<span class="w"> </span>staged
+</span><span id="__span-47-3"><a id="__codelineno-47-3" name="__codelineno-47-3" href="#__codelineno-47-3"></a>record_expect<span class="w"> </span>storage<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/vm-stage&quot;</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>E06：拒绝 executor 冲突</strong></li>
+</ul>
+<p>建议场景：适合需要 VM guest kernel、独立 rootfs 或更强隔离的任务。</p>
+<p>用途：验证互相冲突的 executor 参数不能一起使用：<code>--vm</code> 选择虚拟机，<code>--executor host</code> 却选择宿主。</p>
+<p>预期：参数归一化阶段失败，错误信息明确指出 <code>--vm</code> 与非 VM executor 冲突。</p>
+<!-- pvisor-case: expect=nonzero -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-48-1"><a id="__codelineno-48-1" name="__codelineno-48-1" href="#__codelineno-48-1"></a>pvisor<span class="w"> </span>--vm<span class="w"> </span>--executor<span class="w"> </span>host<span class="w"> </span>--rootfs<span class="w"> </span>host<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-49-1"><a id="__codelineno-49-1" name="__codelineno-49-1" href="#__codelineno-49-1"></a>stdout_has<span class="w"> </span><span class="s2">&quot;--vm cannot be combined with a non-vm --executor&quot;</span>
+</span></code></pre></div>
+
+  </details>
+
+<h3 id="f-container">F. Container<a class="headerlink" href="#f-container" title="Permanent link">&para;</a></h3>
+<p>需要复用 OCI rootfs、但不想运行 Docker/Podman daemon 时使用原生 OCI container。请按 F01 → F04 逐步增加复杂度；F04 适合验证跨 ABI 注入和 mount 配置。</p>
+<p>这些例子使用原生 OCI bundle，由 pVisor 准备文件系统并调用 runc/crun，
+不依赖 Docker/Podman daemon。F01–F03 使用默认 runtime crun，F04 显式选择 runc。
+镜像或目录需与本机架构兼容；如果当前 pVisor 是动态链接构建，guest 必须提供
+相应的动态加载器和库，否则应像 F04 一样指定兼容的静态构建。
+默认注入当前 pVisor，不需要在最小命令中显式指定 binary。</p>
+<p>当前容器执行仍有 OCI 命令行兼容性问题，这些例子可能在 runner 启动阶段失败。
+下面保留期望成功的命令和断言，便于重构完成后直接回归。</p>
+<ul>
+<li>[ ] <strong>F01：最小 container Run</strong></li>
+</ul>
+<p>建议场景：适合由 runc/crun 直接启动 OCI 容器的任务。</p>
+<p>用途：以 OCI 镜像启动最小容器运行。<code>--executor container</code> 选择原生 OCI runtime，<code>--rootfs image=...</code> 指定容器文件系统来源。</p>
+<p>准备：OCI runtime 可运行，并为脚本设置 PVISOR_CASE_CONTAINER_IMAGE。</p>
+<p>预期：pVisor 准备 OCI bundle、注入自身并执行 <code>/bin/true</code>，运行结果记录为 container 且退出码为 0。</p>
+<!-- pvisor-case: requires=container -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-50-1"><a id="__codelineno-50-1" name="__codelineno-50-1" href="#__codelineno-50-1"></a>pvisor<span class="w"> </span>--executor<span class="w"> </span>container<span class="w"> </span>--rootfs<span class="w"> </span><span class="nv">image</span><span class="o">=</span>alpine:latest<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-51-1"><a id="__codelineno-51-1" name="__codelineno-51-1" href="#__codelineno-51-1"></a>bundle_expect<span class="w"> </span>run.executor.kind<span class="w"> </span>container
+</span><span id="__span-51-2"><a id="__codelineno-51-2" name="__codelineno-51-2" href="#__codelineno-51-2"></a>bundle_expect<span class="w"> </span>run.state<span class="w"> </span>completed
+</span><span id="__span-51-3"><a id="__codelineno-51-3" name="__codelineno-51-3" href="#__codelineno-51-3"></a>bundle_expect<span class="w"> </span>run.exit_code<span class="w"> </span><span class="m">0</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>F02：container rootfs 与隔离网络</strong></li>
+</ul>
+<p>建议场景：适合由 runc/crun 直接启动 OCI 容器的任务。</p>
+<p>用途：在 F01 基础上只增加 <code>--container-network none</code>，让容器使用独立的网络 namespace，不配置外部连接。</p>
+<p>准备：OCI runtime 可运行，并为脚本设置 PVISOR_CASE_CONTAINER_IMAGE。</p>
+<p>预期：容器中的 <code>/bin/true</code> 成功退出。此命令不发起网络请求，因此断言只检查启动成功，不验证网络是否能被绕过。</p>
+<!-- pvisor-case: requires=container -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-52-1"><a id="__codelineno-52-1" name="__codelineno-52-1" href="#__codelineno-52-1"></a>pvisor<span class="w"> </span>--executor<span class="w"> </span>container<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-52-2"><a id="__codelineno-52-2" name="__codelineno-52-2" href="#__codelineno-52-2"></a><span class="w">  </span>--rootfs<span class="w"> </span><span class="nv">image</span><span class="o">=</span>alpine:latest<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-52-3"><a id="__codelineno-52-3" name="__codelineno-52-3" href="#__codelineno-52-3"></a><span class="w">  </span>--container-network<span class="w"> </span>none<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-52-4"><a id="__codelineno-52-4" name="__codelineno-52-4" href="#__codelineno-52-4"></a><span class="w">  </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-53-1"><a id="__codelineno-53-1" name="__codelineno-53-1" href="#__codelineno-53-1"></a>bundle_expect<span class="w"> </span>run.executor.kind<span class="w"> </span>container
+</span><span id="__span-53-2"><a id="__codelineno-53-2" name="__codelineno-53-2" href="#__codelineno-53-2"></a>bundle_expect<span class="w"> </span>run.state<span class="w"> </span>completed
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>F03：使用宿主 rootfs 的 OCI bundle</strong></li>
+</ul>
+<p>建议场景：适合由 runc/crun 直接启动 OCI 容器的任务。</p>
+<p>用途：不提供容器镜像，直接以宿主 <code>/</code> 作为只读 lower。pVisor 会先建立独立 synthetic rootfs，再把宿主标准目录以只读方式映射进去。</p>
+<p>准备：Linux、可运行的 OCI runtime，以及允许 rootless container 的 user namespace。</p>
+<p>预期：以指定目录作为容器根文件系统执行命令，不需要配置镜像仓库。使用专用测试 rootfs，不要把宿主 <code>/</code> 当作此例的测试目录。</p>
+<!-- pvisor-case: requires=container-runtime,linux -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-54-1"><a id="__codelineno-54-1" name="__codelineno-54-1" href="#__codelineno-54-1"></a>pvisor<span class="w"> </span>--executor<span class="w"> </span>container<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-54-2"><a id="__codelineno-54-2" name="__codelineno-54-2" href="#__codelineno-54-2"></a><span class="w">  </span>--rootfs<span class="w"> </span>host<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-54-3"><a id="__codelineno-54-3" name="__codelineno-54-3" href="#__codelineno-54-3"></a><span class="w">  </span>--container-network<span class="w"> </span>none<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-54-4"><a id="__codelineno-54-4" name="__codelineno-54-4" href="#__codelineno-54-4"></a><span class="w">  </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-55-1"><a id="__codelineno-55-1" name="__codelineno-55-1" href="#__codelineno-55-1"></a>bundle_expect<span class="w"> </span>run.executor.kind<span class="w"> </span>container
+</span><span id="__span-55-2"><a id="__codelineno-55-2" name="__codelineno-55-2" href="#__codelineno-55-2"></a>bundle_expect<span class="w"> </span>run.state<span class="w"> </span>completed
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>F04：显式 OCI runtime 与高级 container 参数</strong></li>
+</ul>
+<p>建议场景：适合由 runc/crun 直接启动 OCI 容器的任务。</p>
+<p>用途：显式覆盖高级容器选项：使用 runc 和指定 pVisor 构建，声明平台、uid/gid、工作目录、只读 rootfs，并把宿主目录绑定到 <code>/workspace</code>。</p>
+<p>准备：OCI runtime 可运行，并为脚本设置 PVISOR_CASE_CONTAINER_IMAGE。</p>
+<p>预期：容器成功退出。<code>read_only=false</code> 使绑定目录可写，即使 rootfs 只读；<code>--container-workdir</code> 在 Run 没有 cwd 时才作为回退。此例仅检查组合启动，未分别检查用户身份和读写行为。</p>
+<!-- pvisor-case: requires=container -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-56-1"><a id="__codelineno-56-1" name="__codelineno-56-1" href="#__codelineno-56-1"></a>pvisor<span class="w"> </span>--executor<span class="w"> </span>container<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-56-2"><a id="__codelineno-56-2" name="__codelineno-56-2" href="#__codelineno-56-2"></a><span class="w">  </span>--container-runtime<span class="w"> </span>runc<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-56-3"><a id="__codelineno-56-3" name="__codelineno-56-3" href="#__codelineno-56-3"></a><span class="w">  </span>--rootfs<span class="w"> </span><span class="nv">image</span><span class="o">=</span>alpine:latest<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-56-4"><a id="__codelineno-56-4" name="__codelineno-56-4" href="#__codelineno-56-4"></a><span class="w">  </span>--container-pvisor-binary<span class="w"> </span>./target/release/pvisor<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-56-5"><a id="__codelineno-56-5" name="__codelineno-56-5" href="#__codelineno-56-5"></a><span class="w">  </span>--container-platform<span class="w"> </span>linux/amd64<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-56-6"><a id="__codelineno-56-6" name="__codelineno-56-6" href="#__codelineno-56-6"></a><span class="w">  </span>--container-network<span class="w"> </span>none<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-56-7"><a id="__codelineno-56-7" name="__codelineno-56-7" href="#__codelineno-56-7"></a><span class="w">  </span>--container-workdir<span class="w"> </span>/workspace<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-56-8"><a id="__codelineno-56-8" name="__codelineno-56-8" href="#__codelineno-56-8"></a><span class="w">  </span>--container-user<span class="w"> </span><span class="m">1000</span>:1000<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-56-9"><a id="__codelineno-56-9" name="__codelineno-56-9" href="#__codelineno-56-9"></a><span class="w">  </span>--container-read-only-rootfs<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-56-10"><a id="__codelineno-56-10" name="__codelineno-56-10" href="#__codelineno-56-10"></a><span class="w">  </span>--container-mount<span class="w"> </span><span class="s1">&#39;source=&quot;/tmp/pvisor-cases/workspace&quot;,target=&quot;/workspace&quot;,read_only=false&#39;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-56-11"><a id="__codelineno-56-11" name="__codelineno-56-11" href="#__codelineno-56-11"></a><span class="w">  </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-57-1"><a id="__codelineno-57-1" name="__codelineno-57-1" href="#__codelineno-57-1"></a>bundle_expect<span class="w"> </span>run.executor.kind<span class="w"> </span>container
+</span><span id="__span-57-2"><a id="__codelineno-57-2" name="__codelineno-57-2" href="#__codelineno-57-2"></a>bundle_expect<span class="w"> </span>run.state<span class="w"> </span>completed
+</span></code></pre></div>
+
+  </details>
+
+<h3 id="g-overlaynet">G. OverlayNet<a class="headerlink" href="#g-overlaynet" title="Permanent link">&para;</a></h3>
+<p>这一组只讨论网络边界。proxy 适合需要 host Gateway 的协作式访问，VM auto 和 host deny-all 才适合需要更强网络边界的场景。</p>
+<ul>
+<li>[ ] <strong>G01：启用默认 proxy</strong></li>
+</ul>
+<p>建议场景：适合配置出站网络、代理访问或禁止网络的任务。</p>
+<p>用途：只给出 <code>--overlaynet</code>，省略值时启用默认 proxy 模式。</p>
+<p>预期：记录为 explicit-proxy，拦截强度为 cooperative。它只约束经过代理的流量，不能据此认为直接 socket 已被禁止。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-58-1"><a id="__codelineno-58-1" name="__codelineno-58-1" href="#__codelineno-58-1"></a>pvisor<span class="w"> </span>--overlaynet<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-59-1"><a id="__codelineno-59-1" name="__codelineno-59-1" href="#__codelineno-59-1"></a>bundle_expect<span class="w"> </span>network.interception.driver<span class="w"> </span>explicit-proxy
+</span><span id="__span-59-2"><a id="__codelineno-59-2" name="__codelineno-59-2" href="#__codelineno-59-2"></a>bundle_expect<span class="w"> </span>network.interception.strength<span class="w"> </span>cooperative
+</span><span id="__span-59-3"><a id="__codelineno-59-3" name="__codelineno-59-3" href="#__codelineno-59-3"></a>bundle_contains<span class="w"> </span>artifacts<span class="w"> </span>capture
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>G02：显式 proxy 地址和 mode</strong></li>
+</ul>
+<p>建议场景：适合配置出站网络、代理访问或禁止网络的任务。</p>
+<p>用途：显式选择 proxy，并指定代理监听地址。手工运行时确保 18080 端口未被占用；脚本会替换为空闲端口。</p>
+<p>预期：记录的 OverlayNet 监听地址与请求一致，网络驱动为 explicit-proxy。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-60-1"><a id="__codelineno-60-1" name="__codelineno-60-1" href="#__codelineno-60-1"></a>pvisor<span class="w"> </span>--overlaynet<span class="w"> </span>proxy<span class="w"> </span>--overlaynet-listen<span class="w"> </span><span class="m">127</span>.0.0.1:18080<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-61-1"><a id="__codelineno-61-1" name="__codelineno-61-1" href="#__codelineno-61-1"></a>record_expect<span class="w"> </span>overlaynet_listen<span class="w"> </span><span class="m">127</span>.0.0.1:18080
+</span><span id="__span-61-2"><a id="__codelineno-61-2" name="__codelineno-61-2" href="#__codelineno-61-2"></a>bundle_expect<span class="w"> </span>network.interception.driver<span class="w"> </span>explicit-proxy
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>G03：allow、deny 和带宽限制组合</strong></li>
+</ul>
+<p>建议场景：适合配置出站网络、代理访问或禁止网络的任务。</p>
+<p>用途：组合配置允许目标、拒绝网段和针对目标的带宽上限。只有通过代理的流量才受这些规则约束。</p>
+<p>预期：记录为 allowlist 模式，允许 <code>api.example.com:443</code>，拒绝 <code>10.0.0.0/8</code>，并把 <code>1mbps</code> 记录为每秒 125000 字节。本例不实际发请求。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-62-1"><a id="__codelineno-62-1" name="__codelineno-62-1" href="#__codelineno-62-1"></a>pvisor<span class="w"> </span>--overlaynet<span class="w"> </span>proxy<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-62-2"><a id="__codelineno-62-2" name="__codelineno-62-2" href="#__codelineno-62-2"></a><span class="w">  </span>--overlaynet-allow<span class="w"> </span>api.example.com:443<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-62-3"><a id="__codelineno-62-3" name="__codelineno-62-3" href="#__codelineno-62-3"></a><span class="w">  </span>--overlaynet-deny<span class="w"> </span><span class="m">10</span>.0.0.0/8<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-62-4"><a id="__codelineno-62-4" name="__codelineno-62-4" href="#__codelineno-62-4"></a><span class="w">  </span>--overlaynet-limit<span class="w"> </span>api.example.com<span class="o">=</span>1mbps<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-62-5"><a id="__codelineno-62-5" name="__codelineno-62-5" href="#__codelineno-62-5"></a><span class="w">  </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-63-1"><a id="__codelineno-63-1" name="__codelineno-63-1" href="#__codelineno-63-1"></a>bundle_expect<span class="w"> </span>network.policy.mode<span class="w"> </span>allowlist
+</span><span id="__span-63-2"><a id="__codelineno-63-2" name="__codelineno-63-2" href="#__codelineno-63-2"></a>bundle_expect<span class="w"> </span>network.policy.rules.0.host<span class="w"> </span>api.example.com
+</span><span id="__span-63-3"><a id="__codelineno-63-3" name="__codelineno-63-3" href="#__codelineno-63-3"></a>bundle_expect<span class="w"> </span>network.policy.rules.0.ports.0<span class="w"> </span><span class="m">443</span>
+</span><span id="__span-63-4"><a id="__codelineno-63-4" name="__codelineno-63-4" href="#__codelineno-63-4"></a>bundle_expect<span class="w"> </span>network.policy.deny_rules.0.host<span class="w"> </span><span class="m">10</span>.0.0.0/8
+</span><span id="__span-63-5"><a id="__codelineno-63-5" name="__codelineno-63-5" href="#__codelineno-63-5"></a>bundle_expect<span class="w"> </span>network.policy.limits.0.host<span class="w"> </span>api.example.com
+</span><span id="__span-63-6"><a id="__codelineno-63-6" name="__codelineno-63-6" href="#__codelineno-63-6"></a>bundle_expect<span class="w"> </span>network.policy.limits.0.bytes_per_second<span class="w"> </span><span class="m">125000</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>G04：deny-all 不可通过环境变量绕过</strong></li>
+</ul>
+<p>建议场景：适合配置出站网络、代理访问或禁止网络的任务。</p>
+<p>用途：验证禁止网络后，清除常见代理变量仍不能访问外网。需要宿主安装 curl；命令故意发起网络请求。</p>
+<p>准备：Linux user/mount namespace 可用；安装 curl。</p>
+<p>预期：命令失败，结果记录 no-network 和不可绕过边界。外网自身不可用也会使 curl 失败，因此本例不能单独证明隔离有效。</p>
+<!-- pvisor-case: expect=nonzero requires=rootless,curl -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-64-1"><a id="__codelineno-64-1" name="__codelineno-64-1" href="#__codelineno-64-1"></a>pvisor<span class="w"> </span>--overlaynet-deny-all<span class="w"> </span>--<span class="w"> </span>/bin/sh<span class="w"> </span>-c<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-64-2"><a id="__codelineno-64-2" name="__codelineno-64-2" href="#__codelineno-64-2"></a><span class="w">  </span><span class="s1">&#39;unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; curl --max-time 2 https://example.com&#39;</span>
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-65-1"><a id="__codelineno-65-1" name="__codelineno-65-1" href="#__codelineno-65-1"></a>bundle_expect<span class="w"> </span>network.policy.mode<span class="w"> </span>no-network
+</span><span id="__span-65-2"><a id="__codelineno-65-2" name="__codelineno-65-2" href="#__codelineno-65-2"></a>bundle_expect<span class="w"> </span>safety.network_non_bypassable<span class="w"> </span><span class="nb">true</span>
+</span><span id="__span-65-3"><a id="__codelineno-65-3" name="__codelineno-65-3" href="#__codelineno-65-3"></a>bundle_expect<span class="w"> </span>run.state<span class="w"> </span>failed
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>G05：VM OverlayNet auto</strong></li>
+</ul>
+<p>建议场景：适合配置出站网络、代理访问或禁止网络的任务。</p>
+<p>用途：显式为 VM 选择 OverlayNet auto，使流量经过虚拟机的 smoltcp 网络驱动。</p>
+<p>准备：Linux；可访问 /dev/kvm；准备好 Linux rootfs，并为脚本设置 PVISOR_CASE_ROOTFS。</p>
+<p>预期：记录为 vm-smoltcp 和 non-bypassable，而不是 host 的协作式代理。</p>
+<!-- pvisor-case: requires=linux,kvm,rootfs -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-66-1"><a id="__codelineno-66-1" name="__codelineno-66-1" href="#__codelineno-66-1"></a>pvisor<span class="w"> </span>--vm<span class="w"> </span>--rootfs<span class="w"> </span>/path/to/rootfs<span class="w"> </span>--overlaynet<span class="w"> </span>auto<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-67-1"><a id="__codelineno-67-1" name="__codelineno-67-1" href="#__codelineno-67-1"></a>bundle_expect<span class="w"> </span>network.interception.driver<span class="w"> </span>vm-smoltcp
+</span><span id="__span-67-2"><a id="__codelineno-67-2" name="__codelineno-67-2" href="#__codelineno-67-2"></a>bundle_expect<span class="w"> </span>network.interception.strength<span class="w"> </span>non-bypassable
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>G06：关闭 OverlayNet 时拒绝策略参数</strong></li>
+</ul>
+<p>建议场景：适合配置出站网络、代理访问或禁止网络的任务。</p>
+<p>用途：检查关闭 OverlayNet 后不能继续提供网络策略。</p>
+<p>预期：启动前失败，错误提示策略需要 <code>auto</code> 或 <code>proxy</code>。如果只想关闭 OverlayNet，请不要附带 allow/deny/limit。</p>
+<!-- pvisor-case: expect=nonzero -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-68-1"><a id="__codelineno-68-1" name="__codelineno-68-1" href="#__codelineno-68-1"></a>pvisor<span class="w"> </span>--overlaynet<span class="w"> </span>off<span class="w"> </span>--overlaynet-allow<span class="w"> </span>example.com:443<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-69-1"><a id="__codelineno-69-1" name="__codelineno-69-1" href="#__codelineno-69-1"></a>stdout_has<span class="w"> </span><span class="s2">&quot;OverlayNet policy options require --overlaynet auto or proxy&quot;</span>
+</span></code></pre></div>
+
+  </details>
+
+<h3 id="h-gateway">H. Gateway 与记录<a class="headerlink" href="#h-gateway" title="Permanent link">&para;</a></h3>
+<p>需要审计、模型路由或轨迹回放时使用这一组。H01 是 Gateway 配置示例，H02 适合轻量 JSONL，H03 适合 Lance warehouse。</p>
+<ul>
+<li>[ ] <strong>H01：Gateway capture 完整组合</strong></li>
+</ul>
+<p>建议场景：适合接入 Gateway、模型路由或记录轨迹的任务。</p>
+<p>用途：为需要模型请求记录的 Agent 配置 Gateway。示例设置路由、管理监听端口、完整记录级别、会话头、诊断输出和 Markdown 投影，并保留 stage。</p>
+<p>准备：Linux user/mount namespace 可用。</p>
+<p>预期：Gateway 与 stage 成功建立。示例上游是占位地址，<code>/bin/true</code> 不发送模型请求；此例不验证对话内容。管理监听地址与运行记录中的 <code>gateway_listen</code> 不是同一个服务地址。</p>
+<!-- pvisor-case: requires=rootless -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-70-1"><a id="__codelineno-70-1" name="__codelineno-70-1" href="#__codelineno-70-1"></a>pvisor<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-70-2"><a id="__codelineno-70-2" name="__codelineno-70-2" href="#__codelineno-70-2"></a><span class="w">  </span>--stage<span class="w"> </span>/tmp/pvisor-cases/gateway-stage<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-70-3"><a id="__codelineno-70-3" name="__codelineno-70-3" href="#__codelineno-70-3"></a><span class="w">  </span>--gateway-mode<span class="w"> </span>capture<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-70-4"><a id="__codelineno-70-4" name="__codelineno-70-4" href="#__codelineno-70-4"></a><span class="w">  </span>--gateway-admin-listen<span class="w"> </span><span class="m">127</span>.0.0.1:19090<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-70-5"><a id="__codelineno-70-5" name="__codelineno-70-5" href="#__codelineno-70-5"></a><span class="w">  </span>--gateway-level<span class="w"> </span>full<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-70-6"><a id="__codelineno-70-6" name="__codelineno-70-6" href="#__codelineno-70-6"></a><span class="w">  </span>--gateway-session-header<span class="w"> </span>X-Session-ID<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-70-7"><a id="__codelineno-70-7" name="__codelineno-70-7" href="#__codelineno-70-7"></a><span class="w">  </span>--gateway-debug<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-70-8"><a id="__codelineno-70-8" name="__codelineno-70-8" href="#__codelineno-70-8"></a><span class="w">  </span>--gateway-stream-markdown<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-70-9"><a id="__codelineno-70-9" name="__codelineno-70-9" href="#__codelineno-70-9"></a><span class="w">  </span>--gateway-route<span class="w"> </span><span class="s1">&#39;name=&quot;default&quot;,upstream=&quot;https://example.com/v1&quot;&#39;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-70-10"><a id="__codelineno-70-10" name="__codelineno-70-10" href="#__codelineno-70-10"></a><span class="w">  </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-71-1"><a id="__codelineno-71-1" name="__codelineno-71-1" href="#__codelineno-71-1"></a>record_get<span class="w"> </span>gateway_listen<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-Eq<span class="w"> </span><span class="s1">&#39;^127\.0\.0\.1:[0-9]+$&#39;</span>
+</span><span id="__span-71-2"><a id="__codelineno-71-2" name="__codelineno-71-2" href="#__codelineno-71-2"></a>bundle_expect<span class="w"> </span>network.interception.driver<span class="w"> </span>explicit-proxy
+</span><span id="__span-71-3"><a id="__codelineno-71-3" name="__codelineno-71-3" href="#__codelineno-71-3"></a>bundle_expect<span class="w"> </span>filesystem.state<span class="w"> </span>staged
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>H02：JSON 记录</strong></li>
+</ul>
+<p>建议场景：适合接入 Gateway、模型路由或记录轨迹的任务。</p>
+<p>用途：把本次运行事件写成轻量的 JSONL 文件，不启动 Lance warehouse。</p>
+<p>预期：指定文件非空，首行具有 JSON 对象形式。每行应是一个事件；本例只检查文件建立和首行外观。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-72-1"><a id="__codelineno-72-1" name="__codelineno-72-1" href="#__codelineno-72-1"></a>pvisor<span class="w"> </span>--record-format<span class="w"> </span>json<span class="w"> </span>--record-destination<span class="w"> </span>/tmp/pvisor-cases/events.jsonl<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-73-1"><a id="__codelineno-73-1" name="__codelineno-73-1" href="#__codelineno-73-1"></a><span class="nb">test</span><span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/events.jsonl&quot;</span>
+</span><span id="__span-73-2"><a id="__codelineno-73-2" name="__codelineno-73-2" href="#__codelineno-73-2"></a>head<span class="w"> </span>-n<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/events.jsonl&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-q<span class="w"> </span><span class="s1">&#39;^{&#39;</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>H03：Lance 记录</strong></li>
+</ul>
+<p>建议场景：适合接入 Gateway、模型路由或记录轨迹的任务。</p>
+<p>用途：需要 warehouse 形式的记录时选择 Lance。先安装相应构建和运行依赖，再让脚本启用该例。</p>
+<p>准备：Lance 运行依赖齐备，脚本设置 PVISOR_CASE_LANCE=1。</p>
+<p>预期：运行完成，指定位置建立 warehouse 目录；本例未查询其中的记录。</p>
+<!-- pvisor-case: requires=lance -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-74-1"><a id="__codelineno-74-1" name="__codelineno-74-1" href="#__codelineno-74-1"></a>pvisor<span class="w"> </span>--record-format<span class="w"> </span>lance<span class="w"> </span>--record-destination<span class="w"> </span>/tmp/pvisor-cases/warehouse<span class="w"> </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-75-1"><a id="__codelineno-75-1" name="__codelineno-75-1" href="#__codelineno-75-1"></a>bundle_expect<span class="w"> </span>run.state<span class="w"> </span>completed
+</span><span id="__span-75-2"><a id="__codelineno-75-2" name="__codelineno-75-2" href="#__codelineno-75-2"></a><span class="nb">test</span><span class="w"> </span>-d<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/warehouse&quot;</span>
+</span></code></pre></div>
+
+  </details>
+
+<h3 id="i-spec">I. Spec 与控制面<a class="headerlink" href="#i-spec" title="Permanent link">&para;</a></h3>
+<p>已有自动化控制面或需要把 RunSpec 作为文件传递时使用这一组。I01 是 TOML 配置，I02 是 JSON 委托，I03 验证无扩展名文件。</p>
+<ul>
+<li>[ ] <strong>I01：TOML config</strong></li>
+</ul>
+<p>建议场景：适合从 TOML/JSON 文件或控制面执行 RunSpec 的任务。</p>
+<p>用途：把命令写进 TOML 后通过 <code>--spec</code> 运行。手工执行前创建 <code>pvisor.toml</code>，内容为 <code>[run]</code> 下的 <code>command = ["/bin/true"]</code>；脚本会预置此文件。</p>
+<p>预期：命令来自配置文件，无需在 CLI 重复；运行正常结束。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-76-1"><a id="__codelineno-76-1" name="__codelineno-76-1" href="#__codelineno-76-1"></a>pvisor<span class="w"> </span>--spec<span class="w"> </span>./pvisor.toml
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-77-1"><a id="__codelineno-77-1" name="__codelineno-77-1" href="#__codelineno-77-1"></a>bundle_expect<span class="w"> </span>run.state<span class="w"> </span>completed
+</span><span id="__span-77-2"><a id="__codelineno-77-2" name="__codelineno-77-2" href="#__codelineno-77-2"></a>bundle_expect<span class="w"> </span>run.agent<span class="w"> </span><span class="nb">true</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>I02：JSON RunSpec</strong></li>
+</ul>
+<p>建议场景：适合从 TOML/JSON 文件或控制面执行 RunSpec 的任务。</p>
+<p>用途：执行已准备好的 JSON RunSpec，并把结果原子写入指定文件。手工运行前准备包含 run_id、agent 和 process invocation 的 <code>run-spec.json</code>；脚本预置的是运行 <code>/bin/true</code> 的 <code>case-i02</code>。</p>
+<p>准备：Linux user/mount namespace 可用。</p>
+<p>预期：运行名称为 <code>case-i02</code>，<code>run-result.json</code> 非空。该委托路径当前只支持 host executor，不套用普通 Run 的 rootless safe profile；不要把此例视为隔离模式示例。</p>
+<!-- pvisor-case: requires=rootless -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-78-1"><a id="__codelineno-78-1" name="__codelineno-78-1" href="#__codelineno-78-1"></a>pvisor<span class="w"> </span>--spec<span class="w"> </span>./run-spec.json<span class="w"> </span>--result-file<span class="w"> </span>./run-result.json<span class="w"> </span>--stage<span class="w"> </span>./delegated-stage
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-79-1"><a id="__codelineno-79-1" name="__codelineno-79-1" href="#__codelineno-79-1"></a>bundle_expect<span class="w"> </span>run.agent<span class="w"> </span><span class="k">case</span>-i02
+</span><span id="__span-79-2"><a id="__codelineno-79-2" name="__codelineno-79-2" href="#__codelineno-79-2"></a>bundle_expect<span class="w"> </span>run.executor.isolation<span class="w"> </span>host_process
+</span><span id="__span-79-3"><a id="__codelineno-79-3" name="__codelineno-79-3" href="#__codelineno-79-3"></a><span class="nb">test</span><span class="w"> </span>-s<span class="w"> </span>run-result.json
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>I03：无扩展名 spec</strong></li>
+</ul>
+<p>建议场景：适合从 TOML/JSON 文件或控制面执行 RunSpec 的任务。</p>
+<p>用途：验证 spec 的识别不依赖扩展名。手工执行时把 I01 的 TOML 内容保存成 <code>spec-without-extension</code>；脚本会预置该文件。</p>
+<p>预期：按内容识别 TOML 并完成运行，不要求文件名以 <code>.toml</code> 结尾。</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-80-1"><a id="__codelineno-80-1" name="__codelineno-80-1" href="#__codelineno-80-1"></a>pvisor<span class="w"> </span>--spec<span class="w"> </span>./spec-without-extension
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-81-1"><a id="__codelineno-81-1" name="__codelineno-81-1" href="#__codelineno-81-1"></a>bundle_expect<span class="w"> </span>run.state<span class="w"> </span>completed
+</span></code></pre></div>
+
+  </details>
+
+<h3 id="j">J. 复杂组合<a class="headerlink" href="#j" title="Permanent link">&para;</a></h3>
+<p>这些不是入门命令，而是上线前的组合参考：J01 偏 host 安全，J02 偏 VM 生产链路，J03 偏容器链路。遇到问题时请拆回对应的 A–I 场景定位。</p>
+<ul>
+<li>[ ] <strong>J01：host + persistent stage + deny-all + capture + limits</strong></li>
+</ul>
+<p>建议场景：适合上线前验证多项能力组合的端到端任务。</p>
+<p>用途：组合使用 host stage、禁止网络、输出采集、JSON 事件和资源限制。命令在隔离视图中写入一个结果文件。</p>
+<p>准备：Linux user/mount namespace 可用。</p>
+<p>预期：原 workspace 不变；stage 记录 <code>result.txt</code>，结果保存 stdout 和资源请求，事件写入指定 JSONL 文件，网络标记为禁止连接。</p>
+<!-- pvisor-case: requires=rootless -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-82-1"><a id="__codelineno-82-1" name="__codelineno-82-1" href="#__codelineno-82-1"></a>pvisor<span class="w"> </span>--name<span class="w"> </span>host-full<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-82-2"><a id="__codelineno-82-2" name="__codelineno-82-2" href="#__codelineno-82-2"></a><span class="w">  </span>--executor<span class="w"> </span>host<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-82-3"><a id="__codelineno-82-3" name="__codelineno-82-3" href="#__codelineno-82-3"></a><span class="w">  </span>--stage<span class="w"> </span>/tmp/pvisor-cases/host-full<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-82-4"><a id="__codelineno-82-4" name="__codelineno-82-4" href="#__codelineno-82-4"></a><span class="w">  </span>--overlaynet-deny-all<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-82-5"><a id="__codelineno-82-5" name="__codelineno-82-5" href="#__codelineno-82-5"></a><span class="w">  </span>--stdio<span class="w"> </span>capture<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-82-6"><a id="__codelineno-82-6" name="__codelineno-82-6" href="#__codelineno-82-6"></a><span class="w">  </span>--record-format<span class="w"> </span>json<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-82-7"><a id="__codelineno-82-7" name="__codelineno-82-7" href="#__codelineno-82-7"></a><span class="w">  </span>--record-destination<span class="w"> </span>/tmp/pvisor-cases/host-full/trajectory/events.jsonl<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-82-8"><a id="__codelineno-82-8" name="__codelineno-82-8" href="#__codelineno-82-8"></a><span class="w">  </span>--memory<span class="w"> </span>512MiB<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-82-9"><a id="__codelineno-82-9" name="__codelineno-82-9" href="#__codelineno-82-9"></a><span class="w">  </span>--max-processes<span class="w"> </span><span class="m">64</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-82-10"><a id="__codelineno-82-10" name="__codelineno-82-10" href="#__codelineno-82-10"></a><span class="w">  </span>--max-stage-size<span class="w"> </span>2GiB<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-82-11"><a id="__codelineno-82-11" name="__codelineno-82-11" href="#__codelineno-82-11"></a><span class="w">  </span>--max-cpu-time<span class="w"> </span>30s<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-82-12"><a id="__codelineno-82-12" name="__codelineno-82-12" href="#__codelineno-82-12"></a><span class="w">  </span>--<span class="w"> </span>/bin/sh<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;pwd; printf changed &gt; result.txt&#39;</span>
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-83-1"><a id="__codelineno-83-1" name="__codelineno-83-1" href="#__codelineno-83-1"></a>bundle_expect<span class="w"> </span>run.agent<span class="w"> </span>host-full
+</span><span id="__span-83-2"><a id="__codelineno-83-2" name="__codelineno-83-2" href="#__codelineno-83-2"></a>bundle_contains<span class="w"> </span>run.output.stdout<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/host-full/merged&quot;</span>
+</span><span id="__span-83-3"><a id="__codelineno-83-3" name="__codelineno-83-3" href="#__codelineno-83-3"></a>bundle_expect<span class="w"> </span>network.policy.mode<span class="w"> </span>no-network
+</span><span id="__span-83-4"><a id="__codelineno-83-4" name="__codelineno-83-4" href="#__codelineno-83-4"></a>bundle_expect<span class="w"> </span>safety.network_non_bypassable<span class="w"> </span><span class="nb">true</span>
+</span><span id="__span-83-5"><a id="__codelineno-83-5" name="__codelineno-83-5" href="#__codelineno-83-5"></a>bundle_expect<span class="w"> </span>safety.filesystem_changes_staged<span class="w"> </span><span class="nb">true</span>
+</span><span id="__span-83-6"><a id="__codelineno-83-6" name="__codelineno-83-6" href="#__codelineno-83-6"></a>bundle_contains<span class="w"> </span>filesystem.changes<span class="w"> </span>result.txt
+</span><span id="__span-83-7"><a id="__codelineno-83-7" name="__codelineno-83-7" href="#__codelineno-83-7"></a>bundle_expect<span class="w"> </span>resources.requested.memory_bytes<span class="w"> </span><span class="m">536870912</span>
+</span><span id="__span-83-8"><a id="__codelineno-83-8" name="__codelineno-83-8" href="#__codelineno-83-8"></a>bundle_expect<span class="w"> </span>resources.requested.processes<span class="w"> </span><span class="m">64</span>
+</span><span id="__span-83-9"><a id="__codelineno-83-9" name="__codelineno-83-9" href="#__codelineno-83-9"></a>bundle_expect<span class="w"> </span>resources.requested.cpu_time_ms<span class="w"> </span><span class="m">30000</span>
+</span><span id="__span-83-10"><a id="__codelineno-83-10" name="__codelineno-83-10" href="#__codelineno-83-10"></a><span class="nb">test</span><span class="w"> </span>!<span class="w"> </span>-e<span class="w"> </span>result.txt
+</span><span id="__span-83-11"><a id="__codelineno-83-11" name="__codelineno-83-11" href="#__codelineno-83-11"></a><span class="nb">test</span><span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/host-full/trajectory/events.jsonl&quot;</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>J02：VM + image rootfs + stage + OverlayNet + Gateway</strong></li>
+</ul>
+<p>建议场景：适合上线前验证多项能力组合的端到端任务。</p>
+<p>用途：在 VM 中运行真实 Agent，同时保留 stage、使用 smoltcp 网络、Gateway 和 Lance 轨迹记录。需提供含 Agent 及其依赖的镜像，并把示例上游替换为实际服务。</p>
+<p>准备：Linux；可访问 /dev/kvm；为脚本设置 PVISOR_CASE_IMAGE；PVISOR_CASE_AGENT 指向 guest 中也可执行的 Agent；Lance 运行依赖齐备，脚本设置 PVISOR_CASE_LANCE=1。</p>
+<p>预期：VM 以请求的内存运行，保留 stage 和轨迹目录。是否产生模型对话取决于 Agent 是否真的调用 Gateway；当前断言不检查对话内容。</p>
+<!-- pvisor-case: requires=linux,kvm,image,agent,lance -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-84-1"><a id="__codelineno-84-1" name="__codelineno-84-1" href="#__codelineno-84-1"></a>pvisor<span class="w"> </span>--name<span class="w"> </span>vm-full<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-84-2"><a id="__codelineno-84-2" name="__codelineno-84-2" href="#__codelineno-84-2"></a><span class="w">  </span>--vm<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-84-3"><a id="__codelineno-84-3" name="__codelineno-84-3" href="#__codelineno-84-3"></a><span class="w">  </span>--rootfs<span class="w"> </span><span class="nv">image</span><span class="o">=</span>/path/to/image<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-84-4"><a id="__codelineno-84-4" name="__codelineno-84-4" href="#__codelineno-84-4"></a><span class="w">  </span>--stage<span class="w"> </span>/tmp/pvisor-cases/vm-full<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-84-5"><a id="__codelineno-84-5" name="__codelineno-84-5" href="#__codelineno-84-5"></a><span class="w">  </span>--overlaynet<span class="w"> </span>auto<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-84-6"><a id="__codelineno-84-6" name="__codelineno-84-6" href="#__codelineno-84-6"></a><span class="w">  </span>--gateway-mode<span class="w"> </span>capture<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-84-7"><a id="__codelineno-84-7" name="__codelineno-84-7" href="#__codelineno-84-7"></a><span class="w">  </span>--gateway-level<span class="w"> </span>dialogue<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-84-8"><a id="__codelineno-84-8" name="__codelineno-84-8" href="#__codelineno-84-8"></a><span class="w">  </span>--gateway-route<span class="w"> </span><span class="s1">&#39;name=&quot;default&quot;,upstream=&quot;https://example.com/v1&quot;&#39;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-84-9"><a id="__codelineno-84-9" name="__codelineno-84-9" href="#__codelineno-84-9"></a><span class="w">  </span>--record-format<span class="w"> </span>lance<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-84-10"><a id="__codelineno-84-10" name="__codelineno-84-10" href="#__codelineno-84-10"></a><span class="w">  </span>--record-destination<span class="w"> </span>/tmp/pvisor-cases/vm-full/trajectory<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-84-11"><a id="__codelineno-84-11" name="__codelineno-84-11" href="#__codelineno-84-11"></a><span class="w">  </span>--memory<span class="w"> </span>4GiB<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-84-12"><a id="__codelineno-84-12" name="__codelineno-84-12" href="#__codelineno-84-12"></a><span class="w">  </span>--cpu<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-84-13"><a id="__codelineno-84-13" name="__codelineno-84-13" href="#__codelineno-84-13"></a><span class="w">  </span>--<span class="w"> </span>/usr/local/bin/agent
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-85-1"><a id="__codelineno-85-1" name="__codelineno-85-1" href="#__codelineno-85-1"></a>bundle_expect<span class="w"> </span>run.agent<span class="w"> </span>vm-full
+</span><span id="__span-85-2"><a id="__codelineno-85-2" name="__codelineno-85-2" href="#__codelineno-85-2"></a>bundle_expect<span class="w"> </span>run.executor.isolation<span class="w"> </span>virtual_machine
+</span><span id="__span-85-3"><a id="__codelineno-85-3" name="__codelineno-85-3" href="#__codelineno-85-3"></a>bundle_expect<span class="w"> </span>network.interception.driver<span class="w"> </span>vm-smoltcp
+</span><span id="__span-85-4"><a id="__codelineno-85-4" name="__codelineno-85-4" href="#__codelineno-85-4"></a>bundle_expect<span class="w"> </span>filesystem.state<span class="w"> </span>staged
+</span><span id="__span-85-5"><a id="__codelineno-85-5" name="__codelineno-85-5" href="#__codelineno-85-5"></a>bundle_expect<span class="w"> </span>resources.requested.memory_bytes<span class="w"> </span><span class="m">4294967296</span>
+</span><span id="__span-85-6"><a id="__codelineno-85-6" name="__codelineno-85-6" href="#__codelineno-85-6"></a><span class="nb">test</span><span class="w"> </span>-d<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PVISOR_CASE_ROOT</span><span class="s2">/vm-full/trajectory&quot;</span>
+</span></code></pre></div>
+
+  </details>
+
+<ul>
+<li>[ ] <strong>J03：Container + stage + read-only root + no network</strong></li>
+</ul>
+<p>建议场景：适合上线前验证多项能力组合的端到端任务。</p>
+<p>用途：在容器中组合持久 stage、只读 rootfs、隔离网络和 stdout 采集。只读 rootfs 与可写 stage 是不同层面的设置。</p>
+<p>准备：OCI runtime 可运行，并为脚本设置 PVISOR_CASE_CONTAINER_IMAGE。</p>
+<p>预期：容器成功退出并留下 stage。命令为 <code>/bin/true</code>，不会生成文件变更或有意义的 stdout；本例不验证 stage 写入和网络阻断行为。</p>
+<!-- pvisor-case: requires=container -->
+
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-86-1"><a id="__codelineno-86-1" name="__codelineno-86-1" href="#__codelineno-86-1"></a>pvisor<span class="w"> </span>--name<span class="w"> </span>container-full<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-86-2"><a id="__codelineno-86-2" name="__codelineno-86-2" href="#__codelineno-86-2"></a><span class="w">  </span>--executor<span class="w"> </span>container<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-86-3"><a id="__codelineno-86-3" name="__codelineno-86-3" href="#__codelineno-86-3"></a><span class="w">  </span>--rootfs<span class="w"> </span><span class="nv">image</span><span class="o">=</span>alpine:latest<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-86-4"><a id="__codelineno-86-4" name="__codelineno-86-4" href="#__codelineno-86-4"></a><span class="w">  </span>--container-read-only-rootfs<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-86-5"><a id="__codelineno-86-5" name="__codelineno-86-5" href="#__codelineno-86-5"></a><span class="w">  </span>--container-network<span class="w"> </span>none<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-86-6"><a id="__codelineno-86-6" name="__codelineno-86-6" href="#__codelineno-86-6"></a><span class="w">  </span>--stage<span class="w"> </span>/tmp/pvisor-cases/container-full<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-86-7"><a id="__codelineno-86-7" name="__codelineno-86-7" href="#__codelineno-86-7"></a><span class="w">  </span>--stdio<span class="w"> </span>capture<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-86-8"><a id="__codelineno-86-8" name="__codelineno-86-8" href="#__codelineno-86-8"></a><span class="w">  </span>--<span class="w"> </span>/bin/true
+</span></code></pre></div>
+<details>
+  <summary>自动回归断言（由脚本执行）</summary>
+
+  <!-- pvisor-assert -->
+
+  <div class="language-bash highlight"><pre><span></span><code><span id="__span-87-1"><a id="__codelineno-87-1" name="__codelineno-87-1" href="#__codelineno-87-1"></a>bundle_expect<span class="w"> </span>run.agent<span class="w"> </span>container-full
+</span><span id="__span-87-2"><a id="__codelineno-87-2" name="__codelineno-87-2" href="#__codelineno-87-2"></a>bundle_expect<span class="w"> </span>run.executor.kind<span class="w"> </span>container
+</span><span id="__span-87-3"><a id="__codelineno-87-3" name="__codelineno-87-3" href="#__codelineno-87-3"></a>bundle_expect<span class="w"> </span>run.state<span class="w"> </span>completed
+</span><span id="__span-87-4"><a id="__codelineno-87-4" name="__codelineno-87-4" href="#__codelineno-87-4"></a>bundle_expect<span class="w"> </span>filesystem.state<span class="w"> </span>staged
+</span></code></pre></div>
+
+  </details>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2025–2026 Persisting. All rights reserved.
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/DeepLink-org/Persisting" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.indexes", "navigation.tracking", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,4996 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Persistent infrastructure for the Agent era—from model parameters and KV caches to Agent trajectories">
+      
+      
+      
+        <link rel="canonical" href="https://deeplink-org.github.io/Persisting/zh/pvisor/design/isolation/">
+      
+      
+        <link rel="prev" href="../">
+      
+      
+        <link rel="next" href="../overlaynet/">
+      
+      
+        
+          <link rel="alternate" href="../../../../pvisor/design/isolation/" hreflang="en">
+        
+          <link rel="alternate" href="./" hreflang="zh">
+        
+      
+      
+      <link rel="icon" href="../../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>隔离架构 - Persisting 文档</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../../assets/stylesheets/home.css">
+    
+    <script>__md_scope=new URL("../../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#pvisor" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href="../../../" title="Persisting 文档" class="md-header__button md-logo" aria-label="Persisting 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Persisting 文档
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              隔离架构
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="选择当前语言">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="../../../../pvisor/design/isolation/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="./" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="分享" aria-label="分享" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/DeepLink-org/Persisting" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="标签" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  首页
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  pVisor
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../pchronicle/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  pChronicle
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../project/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  项目
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../../" title="Persisting 文档" class="md-nav__button md-logo" aria-label="Persisting 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Persisting 文档
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/DeepLink-org/Persisting" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_1" id="__nav_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    首页
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    选择工作流
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安装指南
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pVisor
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    pVisor
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../get-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    核心概念
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_3" id="__nav_2_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    核心概念
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/agentvisor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AgentVisor 品类
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/run-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run、Attempt 与 Effect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/capabilities-and-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capability 与 Evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../guides/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    指南
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_4" id="__nav_2_4_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    指南
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/execution/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    执行环境
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/review-apply/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    审查并应用 Effect
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/network/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    网络控制
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/capture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    捕获轨迹
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/sandbox-replay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    回放 Agent 轨迹
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_5" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    设计
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_5" id="__nav_2_5_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    设计
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    隔离架构
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    隔离架构
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. 共同模型
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-host" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 原生 host 路径
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. 原生 host 路径">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-linuxfuse-workspace-landlock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Linux：FUSE + Workspace + Landlock
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.1 Linux：FUSE + Workspace + Landlock">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        当前实现
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 最小策略
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 安全与运维性质
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-macosfuse-seatbelt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 macOS：FUSE + Seatbelt
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25-macosvirtualizationframework-host-root-overlay" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 macOS：Virtualization.framework + host-root overlay
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.5 macOS：Virtualization.framework + host-root overlay">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ghostvm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GhostVM 研究
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        文件系统与身份语义
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        生命周期与安全 profile
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        可行性门
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-blitebox-vfs-overlayfs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 路径 B：LiteBox + VFS 中的 OverlayFS 语义
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. 路径 B：LiteBox + VFS 中的 OverlayFS 语义">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 定位
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 安全与运维性质
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 工作区传输
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-cdocker-oci-container" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. 路径 C：Docker / OCI container
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. 路径 C：Docker / OCI container">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 定位
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 生产 profile
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 安全与运维性质
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-dfirecracker-microvm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. 路径 D：Firecracker microVM
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. 路径 D：Firecracker microVM">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 定位
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 安全与运维性质
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. 比较与选择
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. 比较与选择">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        推荐组合
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. 一份 backend 契约
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. 零配置验收标准
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. 校验与 benchmark
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        参考
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overlaynet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    OverlayNet 架构
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway 架构
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    参考
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2_6" id="__nav_2_6_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    参考
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pVisor CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pChronicle
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    pChronicle
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/get-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    核心概念
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_3" id="__nav_3_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    核心概念
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/concepts/dataset-and-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataset 发现与版本固定
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/concepts/facts-and-projections/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    记录数据、视图与版本
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/guides/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    指南
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_4" id="__nav_3_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    指南
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/discover-and-query/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    发现与查询
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/exchange/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    导入与导出
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/serve/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    本地只读 Dataset 服务
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/ui/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    本地 Dataset Web UI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/guides/serve-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway 转发、改写与捕获
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/design/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    设计
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_5" id="__nav_3_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    设计
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/design/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    产品架构
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/design/catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Snapshot
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/design/trajectory-storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    运行存储
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/design/storyline-lance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storyline Lance 投影
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../pchronicle/reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    参考
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_6" id="__nav_3_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    参考
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/terminology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    产品术语
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pChronicle 命令参考
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/cases-self/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Single-machine and self-service cases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/cases-platform/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cluster platform and Catalog Server cases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/query-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Query Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/agenticmd/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AgenticMD 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../pchronicle/reference/formats/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    运行数据格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../project/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    项目
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    项目
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../system-design/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    架构
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    端到端架构
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/local-to-fleet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    从本地到集群
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../system-design/security-evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安全与 Evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    工程
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    工程
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/engineering/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    工程说明
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/releasing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    发布 Persisting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    可复现示例
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../rfcs/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    决策与 RFC
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    决策与 RFC
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0001-storyline-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0001 Storyline 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0002-events-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0002 Events 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0003-pchronicle-ownership/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0003 pChronicle 所有权
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0004-actf-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0004 ACTF 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0005-pchronicle-revision-lineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0005 pChronicle 修订谱系
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0006-pchronicle-vortex-backend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0006 pChronicle Vortex 后端
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0007-events-contract-pchronicle-sidecar/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0007 事件契约与 pChronicle Sidecar
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0008-atif-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0008 ATIF 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0009-openai-messages-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0009 OpenAI Messages 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0010-agent-corpus-lance-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0010 Agent 评测语料 Lance 布局
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0012-pchronicle-find-query-syntax/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0012 pChronicle find 查询语法
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0013-pchronicle-warehouse-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0013 pChronicle path Directory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../rfcs/0014-compact-jsonl/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0014 Compact JSONL
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../api/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    独立系统
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_5" id="__nav_4_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    独立系统
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../guide/queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue 指南
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../guide/custom-backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    自定义 Queue backend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. 共同模型
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-host" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 原生 host 路径
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. 原生 host 路径">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-linuxfuse-workspace-landlock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Linux：FUSE + Workspace + Landlock
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.1 Linux：FUSE + Workspace + Landlock">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        当前实现
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 最小策略
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 安全与运维性质
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-macosfuse-seatbelt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 macOS：FUSE + Seatbelt
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25-macosvirtualizationframework-host-root-overlay" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 macOS：Virtualization.framework + host-root overlay
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2.5 macOS：Virtualization.framework + host-root overlay">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ghostvm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GhostVM 研究
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        文件系统与身份语义
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        生命周期与安全 profile
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        可行性门
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-blitebox-vfs-overlayfs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 路径 B：LiteBox + VFS 中的 OverlayFS 语义
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. 路径 B：LiteBox + VFS 中的 OverlayFS 语义">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 定位
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 安全与运维性质
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 工作区传输
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-cdocker-oci-container" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. 路径 C：Docker / OCI container
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. 路径 C：Docker / OCI container">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 定位
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 生产 profile
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 安全与运维性质
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-dfirecracker-microvm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. 路径 D：Firecracker microVM
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. 路径 D：Firecracker microVM">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 定位
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 安全与运维性质
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. 比较与选择
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. 比较与选择">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        推荐组合
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. 一份 backend 契约
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. 零配置验收标准
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. 校验与 benchmark
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        参考
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="pvisor">pVisor 隔离架构<a class="headerlink" href="#pvisor" title="Permanent link">&para;</a></h1>
+<p>本文比较各 provider 机制及其真实安全性质。用
+<a href="../../guides/execution/">执行指南</a> 选择 provider，用
+<a href="../../concepts/capabilities-and-evidence/">Capability 与 Evidence</a> 解读保证。</p>
+<div class="admonition note">
+<p class="admonition-title">Target architecture</p>
+<p>本文把当前实现与明确标出的目标架构写在一起。Linux <code>pvisor --</code>
+实现第 2 节描述的 FUSE + 合成 root + rootless user/mount namespace +
+Landlock 路径。macOS host 执行在可用时使用 Seatbelt 强制 staged 写入和 deny-all
+socket 约束；文件系统读取仍是 ambient，并单独报告。Docker 与
+libkrun/KVM 传输也已存在。第 2.5 节的 Virtualization.framework backend、
+第 3 节的 LiteBox VFS、第 4.2 节的 Docker 生产 profile，以及第 5 节的
+Firecracker 架构是目标，不是已实现 backend。Seccomp 与完整资源强制仍是
+验收标准和路线图工作。</p>
+</div>
+<p>pVisor 需要不止一种隔离 backend。本地 coding Agent 看重快速启动和对开发者
+工作区的精确视图；不受信任的租户则需要在 guest runtime 被攻破后仍然有用的
+边界。因此设计把<strong>事务性工作区</strong>与<strong>强制边界</strong>分开，而不是让一种机制同时
+承担两种角色。</p>
+<p>多种 backend 是实现组合，<strong>不是强加给用户的配置面</strong>。正常产品体验仍然是：</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pvisor<span class="w"> </span>--<span class="w"> </span>&lt;agent&gt;<span class="w"> </span><span class="o">[</span>args...<span class="o">]</span>
+</span></code></pre></div>
+<p>pVisor 探测 host、工作负载和可用 placement，选择 backend，构造工作区并应用
+策略。用户不配置 Landlock 权限、mount 传播、UID map、9P 传输、seccomp JSON、
+container capability、TAP 设备或 microVM 镜像。专家级 backend 标志可以存在
+于开发和诊断，但不得成为正常路径的前提。</p>
+<p>易用并不意味着不可见的安全降级。若请求的保证无法提供，pVisor 要么选择另一
+个可用 backend，要么返回一条可行动的错误。它从不把仅 <code>cwd</code> 的 Run 报告为
+已安全沙箱化。</p>
+<h2 id="1">1. 共同模型<a class="headerlink" href="#1" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>RunSpec / capability policy
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>            |
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>            v
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>        pVisor supervisor (trusted)
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>            |
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>            +-- WorkspaceOverlay
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>            |     lower + compose + writable upper
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>            |     review / checkpoint / apply / drop
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>            |
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>            +-- IsolationBackend
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>                  workspace-landlock | workspace-seatbelt
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>                  litebox | container | microvm
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>            |
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>            v
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>       Agent process tree (untrusted)
+</span></code></pre></div>
+<p><code>WorkspaceOverlay</code> 是文件改动的 data plane。它提供隔离的 Run 视图、
+copy-on-write、whiteout 和可审计 changeset。它<strong>本身</strong>并不能阻止进程打开
+该视图之外的路径。</p>
+<p><code>IsolationBackend</code> 是安全平面。它决定 Agent 能到达哪些 kernel、syscall
+面、namespace、host 路径、文件描述符和网络路径。每个 backend 消费同一逻辑
+工作区，并必须返回具有相同 review/apply/drop 语义的 changeset。</p>
+<p>以下不变量适用于声称完整 capability enforcement 的 backend。部分原生
+backend 可以只强制更小的维度，前提是 Run Bundle 明确标识该维度并记录剩余
+ambient 访问：</p>
+<ol>
+<li>默认拒绝；每个 host 文件、socket、凭据、设备和端点都是显式 capability。</li>
+<li>Agent 从不收到 host 控制面凭据或 Docker socket。</li>
+<li>只有 <code>stdin</code>、<code>stdout</code>、<code>stderr</code>、Run 范围的 AgentCtl 传输，以及显式授予
+   的资源句柄穿过执行边界。</li>
+<li>可写工作区与只读 base 分离。进程成功退出从不意味着有权 apply 其改动。</li>
+<li>请求的 enforcement 与有效 enforcement 分开记录。enforce 请求在 backend
+   不可用时 fail closed；从不静默回退到当前仅 <code>cwd</code> 的行为。</li>
+<li>pVisor 记录足够的 Evidence 以审计边界：backend/version、工作区 digest、
+   有效 UID/capability、kernel 特性探测、网络模式、资源限制、image/rootfs
+   digest 以及降级原因。</li>
+</ol>
+<h2 id="2-host">2. 原生 host 路径<a class="headerlink" href="#2-host" title="Permanent link">&para;</a></h2>
+<h3 id="21-linuxfuse-workspace-landlock">2.1 Linux：FUSE + Workspace + Landlock<a class="headerlink" href="#21-linuxfuse-workspace-landlock" title="Permanent link">&para;</a></h3>
+<p>这是首选的轻量 Linux host 路径。它保留今天的嵌入式 FUSE OverlayFS，并为
+Agent 进程树加上内核强制、无特权的文件系统策略。</p>
+<p>Landlock 完全是内部的：不向用户暴露系统策略文件、root helper、daemon 或
+按项目规则配置。pVisor 从工作区、可执行文件/runtime 闭包、显式输入和 Run
+范围的 scratch 目录推导规则。</p>
+<h4 id="_1">当前实现<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h4>
+<p>原生 Linux safe 路径已对普通本地可执行文件可用：</p>
+<ul>
+<li>pVisor 在 Agent 代码启动前自执行一个隐藏 launcher；</li>
+<li>launcher 创建 one-ID user 以及私有 mount 与子 PID namespace，不需要
+  <code>/etc/subuid</code>、<code>newuidmap</code>、setuid 二进制或 daemon；</li>
+<li>私有 tmpfs root 只 bind-project runtime、staged 工作区、精确设备节点、
+  Run 范围的 AgentCtl socket 和显式 capability，然后 launcher 用 <code>chroot</code>
+  进入；任意 host pathname Unix socket 因此是缺席的，而不是留给 Landlock；</li>
+<li>stderr 以上的继承描述符被关闭，Landlock ABI v3 通过 <code>TRUNCATE</code> 处理全部
+  文件系统权限，设置 <code>no_new_privs</code>，清空 namespace 与 ambient capability，
+  并由受信任的 namespace PID 1 监督并回收 Agent 树；</li>
+<li>主进程成功退出、取消和强制终止都在 PID namespace 边界结束，因此 <code>setsid</code>
+  和 double-fork 后代无法在 Run 之后存活；</li>
+<li>可写的 FUSE 合并工作区和显式读/写 capability 被准入，可执行文件和宽 host
+  runtime 只读；</li>
+<li><code>NetworkCapability::Deny</code> 还会创建私有 network namespace。Public 与
+  allowlist 代理策略仍是协作式，不会被报告为不可绕过；</li>
+<li>任何 namespace 或 Landlock setup 错误都会在 Agent 执行前以保留的
+  infrastructure 结果和 Run Bundle 降级警告终止。</li>
+</ul>
+<p>当前宽不可变 runtime 包括已有的 <code>/bin</code>、<code>/sbin</code>、<code>/usr</code>、<code>/lib*</code>、<code>/etc</code>
+以及进程本地 procfs 视图。这有利于与 shell、Python、Node 和动态链接本地
+工具兼容。后续可用可度量的 runtime-closure builder 收窄它；当前策略从不让
+这些层级可写。</p>
+<p>默认 pVisor 依赖图不包含 pChronicle 存储 backend、Lance 或 DataFusion。
+Durable Attempt 与轨迹发布使用轻量 <code>persisting-events</code> control feature 来
+启动并与 <code>pchronicle serve</code> 的 Control 组件通信；存储引擎和云 SDK 依赖留在
+该进程。<code>jujutsu-overlay</code> 增加 Jujutsu OverlayFS upper。依赖边界见
+<a href="../../../rfcs/0007-events-contract-pchronicle-sidecar/">RFC-0007</a>。</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>pVisor process
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  +-- embedded FUSE server
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  |     base/compose (read-only) + upper (writable)
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>  |                         |
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>  |                         v
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>  |                    merged workspace
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>  |
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>  +-- small sandbox launcher
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>        close unrelated FDs
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>        synthetic bind-projected root + chroot
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>        PR_SET_NO_NEW_PRIVS
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>        Landlock ruleset
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>             |
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>             v
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>        Agent process tree
+</span></code></pre></div>
+<p>pVisor supervisor 和 FUSE 请求循环留在 chroot 与 Landlock 域外。子进程获得
+合并工作区的读/写、runtime 的读/执行，以及显式输入的只读。未投影路径在合成
+root 中缺席；Landlock 独立对已投影层级强制访问权。绝对路径在该 root 内解析，
+而不是重定向进工作区。</p>
+<h3 id="22">2.2 最小策略<a class="headerlink" href="#22" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>层级</th>
+<th>有效访问</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>合并工作区</td>
+<td>按需读、写、创建、删除、重命名、链接</td>
+</tr>
+<tr>
+<td>Agent 可执行文件与 loader</td>
+<td>读、执行</td>
+</tr>
+<tr>
+<td>所需共享库与 runtime 数据</td>
+<td>只读</td>
+</tr>
+<tr>
+<td>显式输入 Dataset</td>
+<td>只读</td>
+</tr>
+<tr>
+<td>Run scratch 目录</td>
+<td>读/写；最好是有大小限制的 tmpfs</td>
+</tr>
+<tr>
+<td>pVisor 状态、pChronicle、源凭据、home 目录</td>
+<td>拒绝</td>
+</tr>
+<tr>
+<td><code>/proc</code>、<code>/sys</code>、host socket</td>
+<td>除非显式投影或另行虚拟化，否则不给 Agent 访问</td>
+</tr>
+<tr>
+<td>最小设备</td>
+<td>仅精确的 null、zero/full、random/urandom 和 tty 节点</td>
+</tr>
+</tbody>
+</table>
+<p>Landlock 叠加在普通 DAC/ACL/LSM 检查之上；它不授予进程原本没有的访问。
+launcher 必须协商运行中 kernel 的 Landlock ABI，并处理该 ABI 支持的全部
+安全相关权限。较旧 ABI 可能缺少跨目录 refer 或 truncate 等控制，因此
+pVisor 必须发布有效保证，而不是一个布尔的 “Landlock enabled” 标志。</p>
+<p>在 <code>landlock_restrict_self</code> 之前打开的文件不会被回溯约束。因此 FD 卫生是
+边界的一部分：准备目录句柄，关闭未授予的一切，安装 <code>no_new_privs</code> 和
+ruleset，然后 <code>exec</code>。这套 setup 属于小型可审计 launcher，而不是多线程
+supervisor 的复杂 post-fork 闭包。</p>
+<h3 id="23">2.3 安全与运维性质<a class="headerlink" href="#23" title="Permanent link">&para;</a></h3>
+<p><strong>优势</strong></p>
+<ul>
+<li>不需要 host root 或持久特权 daemon。</li>
+<li>启动与稳态开销小；文件内容仍走现有 FUSE/OverlayFS 路径。</li>
+<li>工作区保真度是原生 host 路径中最好的，包括当前 review、checkpoint、apply
+  和 drop 行为。</li>
+<li>子进程不能再仅靠 <code>..</code> 或绝对 host 路径逃逸。</li>
+</ul>
+<p><strong>限制</strong></p>
+<ul>
+<li>Agent 仍使用 host kernel 及其原生 syscall ABI。</li>
+<li>Landlock 是文件系统访问控制层，不是 root 文件系统、network namespace、
+  资源控制器或完整进程 sandbox。</li>
+<li>除非 pVisor 构建最小 runtime bundle，动态语言栈的 runtime allowlist 很难。</li>
+<li>工作区 I/O 热路径上仍有 FUSE 上下文切换。</li>
+<li>仅 Linux。macOS 姊妹路径有不同且明确更窄的 Seatbelt 边界。</li>
+</ul>
+<p>实现已经把 Landlock 与空 capability 集、<code>no_new_privs</code>、rootless
+user/mount/PID namespace，以及 deny-all Run 的 network namespace 组合在
+一起。Seccomp、完整聚合资源限制，以及选择性出口的透明强制，仍是必要加固，
+且不改变工作区契约。</p>
+<h3 id="24-macosfuse-seatbelt">2.4 macOS：FUSE + Seatbelt<a class="headerlink" href="#24-macosfuse-seatbelt" title="Permanent link">&para;</a></h3>
+<p>原生 macOS safe 路径已对普通本地可执行文件可用。它保留同一 staged macFUSE
+工作区，同时为完整 Agent 后代进程树加上内核强制的 Seatbelt 策略：</p>
+<ul>
+<li>pVisor 只调用固定系统 <code>/usr/bin/sandbox-exec</code>，从不做 PATH 查找或使用
+  项目提供的 wrapper；</li>
+<li>生成的 SBPL 对每个可写路径使用 <code>-D</code> 参数，因此工作区名不能注入策略文本；</li>
+<li>路径参数化的 <code>file-write*</code> 规则只准入已挂载的 staged 工作区、显式读写
+  文件系统 capability、精确 terminal/设备句柄、Run 拥有的临时目录，以及
+  一次性 setup attestation；</li>
+<li>隐藏 launcher 在 <code>exec</code> Agent 之前写入并 unlink 该 attestation。因此
+  profile 编译/应用失败不能被误认为 Agent 退出，而会把 Run 作为
+  infrastructure 失败终止；</li>
+<li><code>NetworkCapability::Deny</code> 从默认拒绝 profile 开始，拦截 IP socket 和出站
+  ambient host Unix socket，只保留精确的 Run 范围 AgentCtl 以及根植于 Run
+  拥有目录的 Unix IPC；</li>
+<li>public 与选择性代理模式仍是协作式，因为第一版实现尚未把直接 socket
+  约束到仅进程内代理端点。</li>
+</ul>
+<p>兼容 profile 刻意让文件系统读取保持 ambient。这避免硬编码脆弱的 Homebrew、
+Xcode、Python、Node、Rustup、SDK、framework 和用户安装 runtime 路径闭包。
+因此 Run Bundle 设置 <code>filesystem_write_non_bypassable=true</code>，但保持
+<code>filesystem_read_non_bypassable=false</code> 以及聚合
+<code>filesystem_non_bypassable=false</code>。未来可度量的 runtime-closure 模式可以让
+读取默认拒绝，而不改变工作区契约。</p>
+<p>Seatbelt 实质改善了本地 macOS 边界，但它不是 VM 或完整进程 sandbox：host
+kernel、PID namespace、syscall 面和资源记账仍然共享。<code>sandbox-exec</code> 接口
+已被 Apple 弃用，尽管仍随系统提供，因此 pVisor 探测该固定二进制并 fail
+closed，而不是承诺无限期的平台可用性。在 FSKit backend 可用之前，事务性
+staging 仍需要 macFUSE。</p>
+<h3 id="25-macosvirtualizationframework-host-root-overlay">2.5 macOS：Virtualization.framework + host-root overlay<a class="headerlink" href="#25-macosvirtualizationframework-host-root-overlay" title="Permanent link">&para;</a></h3>
+<p>这是为原生 Mach-O 工作负载提出的 macOS 内核隔离路径。它是已实现 Linux
+libkrun full-root executor 的 macOS 对应物，但不能使用 libkrun：macOS
+guest 必须由 Apple Silicon 上的 Virtualization.framework 启动。目标是让
+可执行文件看到调用方 host 的根文件系统，所有写入由 pVisor upper 捕获，
+同时在单独的 macOS 内核边界后执行。</p>
+<p>guest 的 boot disk 不是 Agent 的逻辑 root。它只包含兼容的 macOS 安装和一个
+特权 pVisor guest supervisor。host 通过 OverlayFS/macFUSE 构造
+<code>host / + Run upper</code>，用 VirtioFS 导出合并视图，并要求 guest supervisor 在
+执行目标前进入该视图：</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>host pVisor (Rust)
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>  +-- host / (lower, access still limited by the invoking host identity)
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>  +-- per-Run upper
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>  +-- merged pVisor root (macFUSE / future FSKit)
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>  +-- MacVmExecutor
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>          |
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>          | private Unix socket / framed control protocol
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>          v
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>     pvisor-vz-helper (Swift, one helper process per active VM)
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>       Virtualization.framework
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>       +-- compatible macOS boot disk
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>       +-- stable VirtioFS share tag -&gt; merged pVisor root
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>       +-- VZVirtioSocket control and AgentCtl transports
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>                    |
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>                    v
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>          pvisor-guestd (root LaunchDaemon)
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>            mount VirtioFS at a private path
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>            chroot into the pVisor root
+</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>            setgroups / setgid / setuid
+</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>            set cwd, environment, limits, and stdio
+</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>            execve host Mach-O
+</span></code></pre></div>
+<p>Swift helper 刻意放在 Rust supervisor 之外。它只拥有 Objective-C/Swift
+Virtualization.framework 生命周期，并把它转换成小型带版本协议。现有
+<code>RunExecutor</code> 契约仍是产品边界，因此选择、取消、Evidence、review、
+checkpoint、apply 和 drop 与其他 pVisor executor 保持相同语义。</p>
+<h4 id="ghostvm">GhostVM 研究<a class="headerlink" href="#ghostvm" title="Permanent link">&para;</a></h4>
+<p><a href="https://github.com/groundwater/GhostVM">GhostVM</a> 是最近考察的参考实现。
+在 commit
+<a href="https://github.com/groundwater/GhostVM/tree/fe88d5862f74ddb05ce79e04028b84c7f70482f6"><code>fe88d586</code></a>
+它演示了所需的控制面原语：</p>
+<ul>
+<li><code>VZMacOSBootLoader</code>、Mac 平台身份、macOS disk、headless 显示配置、
+  VirtioFS 和 virtio socket 在一个
+  <a href="https://github.com/groundwater/GhostVM/blob/fe88d5862f74ddb05ce79e04028b84c7f70482f6/macOS/GhostVMKit/Configuration/VMConfigurationBuilder.swift">configuration builder</a>
+  中组装；</li>
+<li>一个 helper 进程拥有活动 VM，并暴露 host Unix-socket API；</li>
+<li>host 请求经 <code>VZVirtioSocket</code> 到达 guest agent，后者可以执行原生 macOS
+  程序；</li>
+<li>运行中的 VirtioFS 设备可通过
+  <a href="https://github.com/groundwater/GhostVM/blob/fe88d5862f74ddb05ce79e04028b84c7f70482f6/macOS/GhostVM/Services/FolderShareService.swift">FolderShareService</a>
+  接收重建的目录 share；</li>
+<li>VM suspend/resume 使用 <code>saveMachineStateTo</code> 和 <code>restoreMachineStateFrom</code>；
+  APFS <code>clonefile()</code> 在
+  <a href="https://github.com/groundwater/GhostVM/blob/fe88d5862f74ddb05ce79e04028b84c7f70482f6/macOS/GhostVMKit/Operations/VMController.swift#L519">VMController</a>
+  中创建 copy-on-write VM clone。</li>
+</ul>
+<p>这些是架构参考，不是文件系统执行方案。GhostVM 对着它私有的 <code>disk.img</code>
+启动和执行；VirtioFS 目录仍是挂在普通 guest root 下的 share。它的 guest
+<code>exec</code> 端点是调用 Swift <code>Process.run()</code> 并用缓冲 stdout/stderr 的用户
+LaunchAgent。它不 chroot、不复现凭据、不流式 stdio、不转发信号、不控制
+进程组，也不暴露 pVisor changeset。因此 pVisor guest supervisor 必须是独立
+实现的 root LaunchDaemon。</p>
+<p>以下拆分是有意的：</p>
+<table>
+<thead>
+<tr>
+<th>GhostVM 机制</th>
+<th>pVisor 决策</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>VM configuration builder</td>
+<td>在 <code>pvisor-vz-helper</code> 中复现最小 headless 子集</td>
+</tr>
+<tr>
+<td>每个 VM 一个 helper 进程</td>
+<td>保留，用于 VMM 崩溃与生命周期隔离</td>
+</tr>
+<tr>
+<td>host Unix socket 加 vsock</td>
+<td>保留拓扑；使用有界、带版本、流式协议</td>
+</tr>
+<tr>
+<td>运行时 VirtioFS 替换</td>
+<td>适配到一个稳定的 pVisor-root tag</td>
+</tr>
+<tr>
+<td>VM suspend/resume</td>
+<td>用来摊薄启动成本，并严格要求模板兼容</td>
+</tr>
+<tr>
+<td>APFS VM clone</td>
+<td>可选用于创建干净 boot 模板</td>
+</tr>
+<tr>
+<td>GhostTools 命令执行</td>
+<td>用特权 <code>pvisor-guestd</code> 替换</td>
+</tr>
+<tr>
+<td>NAT、bridge、剪贴板、音频、GUI 自动化</td>
+<td>从默认进程隔离 VM 中省略</td>
+</tr>
+<tr>
+<td>把私有 guest root 当作工作负载 root</td>
+<td>拒绝；导出的 pVisor 合并 root 才是工作负载 root</td>
+</tr>
+</tbody>
+</table>
+<p>GhostVM 的 README 目前写明其源码许可尚未确定。pVisor 可以研究公开行为与
+架构，但在兼容许可发布之前不得复制其实现。helper 与 guest supervisor 是
+对着 Apple 公开 API 的干净独立实现。</p>
+<h4 id="_2">文件系统与身份语义<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h4>
+<p>“使用 host UID 和权限”意味着保留普通 POSIX 文件语义，而不是继承每一种
+macOS 安全身份。host pVisor 在调用方 host 身份下打开并服务 lower 文件；
+guest supervisor 随后在 <code>execve</code> 前安装匹配的数字 UID、GID 和补充组。实现
+必须证明 VirtioFS 如何表示 owner、mode、ACL、symlink、hard-link、xattr、
+设备和 rename 语义，而不是假定数字身份就足够。</p>
+<p>仅因数字 UID 匹配，以下 host 设施不会自动变得透明：</p>
+<ul>
+<li>TCC 决策、Keychain access group、代码签名身份与 entitlement；</li>
+<li>host login/GUI bootstrap 会话、launchd 服务、Mach port、Apple Events 和
+  host Unix socket；</li>
+<li>host kernel 状态、设备、导出 root 中不可见的已挂载卷，以及仅由 host 进程
+  持有的凭据。</li>
+</ul>
+<p>现代 macOS 还通过密封系统卷、可写数据卷和 firmlink 呈现 <code>/</code>。pVisor 必须
+验证导出 host root 能呈现一个连贯命名空间，并且 whiteout/copy-up 行为在
+<code>/System/Volumes/Data</code> 上仍然正确。访问受隐私保护的 host 文件可能要求受
+信任 host 组件具备 Full Disk Access；pVisor 必须报告该要求，而不是静默
+返回部分 root。</p>
+<p>host 与 guest 最初应要求相同架构和精确 macOS build。host 可执行文件可以
+依赖匹配的 dyld shared cache、framework ABI、代码签名策略和 kernel 行为。
+在兼容矩阵证明之前，跨 build 执行不受支持。</p>
+<h4 id="profile">生命周期与安全 profile<a class="headerlink" href="#profile" title="Permanent link">&para;</a></h4>
+<p>按 Run 冷安装 macOS 不可行。预期生命周期是：</p>
+<ol>
+<li>供应并证明一个最小、匹配的 macOS boot 模板；</li>
+<li>启动一次，安装 <code>pvisor-guestd</code>，并保存干净的挂起状态；</li>
+<li>恢复 warm VM，或从小型版本匹配池中获取一个；</li>
+<li>只附加该 Run 的 VirtioFS root 和每 Run 的 vsock 端点；</li>
+<li>在 guest 执行前轮换 Run 身份、鉴权材料、熵、IPC 和网络状态；</li>
+<li>恰好执行一棵不受信任的进程树，经普通 pVisor review 路径导出 upper，然后
+   销毁或把擦洗后的 VM 还回池中。</li>
+</ol>
+<p>默认 VM 没有 NAT 或桥接网络设备。网络访问穿过 OverlayNet 拥有的显式 vsock
+relay。剪贴板、host 音频、GUI 设备、任意共享文件夹、端口转发和 ambient
+host socket 都不存在。host VMM helper 只获得对已准备合并 root、VM 模板、
+其私有 control socket 以及所需 Virtualization.framework 资源的访问；它不得
+继承 pChronicle、源凭据或不相关描述符。</p>
+<p>VirtioFS 是最大的可行性风险。GhostVM 有一份关于 macOS guest 下
+<a href="https://github.com/groundwater/GhostVM/issues/255">空 mount 与不可读文件</a>
+的公开报告。pVisor 的设计把 dyld、framework、SDK、包管理器和元数据密集
+工具链放在这条路径上，比共享项目目录更苛刻。因此 VM 启动成功不是 backend
+可用或安全的证据。</p>
+<h4 id="_3">可行性门<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h4>
+<p>该 backend 保持实验性，直到一个聚焦原型在受支持的 host/guest build 对上
+通过以下全部条件：</p>
+<ol>
+<li>用稳定 VirtioFS tag 导出 pVisor 合并 root，并在没有 Finder 或 login-session
+   自动化的情况下挂载它；</li>
+<li>在 <code>chroot</code> 后运行 <code>/usr/bin/true</code>、<code>/bin/zsh</code> 以及有代表性的
+   <code>xcrun</code>/编译器工具，并具备正确的 cwd、环境、UID、GID、组、退出状态、
+   流式 stdio、信号、取消和后代清理；</li>
+<li>证明 lower 文件不变，且所有创建、修改、重命名、删除、whiteout、xattr、
+   ACL、symlink 和 hard link 进入 Run upper，并在 review/checkpoint/apply/drop
+   后存活；</li>
+<li>演练 dyld/framework 加载、代码签名、密封系统/数据 firmlink 布局、大输出、
+   大文件、大量小文件、并发改写、崩溃恢复以及 warm-restore 附加变更；</li>
+<li>证明网络、剪贴板、任意 share、过期 vsock token、先前 Run 的 upper 或
+   不相关 host 描述符都不可达；</li>
+<li>发布冷/热延迟和 RSS，并与 Seatbelt 以及 Linux libkrun Run 比较。</li>
+</ol>
+<p>通过该门确立透明 CLI 与开发工具执行。GUI 应用和 host-session 服务需要单独
+Evidence，不由进程级 backend 的成功隐含。</p>
+<h2 id="3-blitebox-vfs-overlayfs">3. 路径 B：LiteBox + VFS 中的 OverlayFS 语义<a class="headerlink" href="#3-blitebox-vfs-overlayfs" title="Permanent link">&para;</a></h2>
+<h3 id="31">3.1 定位<a class="headerlink" href="#31" title="Permanent link">&para;</a></h3>
+<p>这是高密度 libOS 路径。LiteBox 在 userspace 处理 guest Linux ABI 和路径
+解析。pVisor 应把它的 overlay 语义实现为 LiteBox 文件系统 backend 或
+composer，而不是 FUSE 挂载一条 host 路径，再把 guest 路径字符串转发给 host
+<code>openat</code>。</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>pVisor supervisor
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>  +-- build content-addressed root/workspace bundle
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>  +-- pass sealed bundle FD + policy + AgentCtl FD
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>  |
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>  `-- LiteBox runner process
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>        LiteBox Linux shim
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>                 |
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>                 v
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>        LiteBox VFS resolver
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>          +-- read-only root/runtime
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>          +-- read-only workspace layers
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>          `-- writable in-memory/delta upper
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>                         |
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>                         v
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>                 exported changeset
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>                         |
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>                         v
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>          pVisor review / apply / drop
+</span></code></pre></div>
+<p>适配器保留 pVisor 的逻辑操作：</p>
+<ul>
+<li>有序只读 base 与 compose 层；</li>
+<li>首次写入时 copy-up；</li>
+<li>whiteout 与不透明目录语义；</li>
+<li>确定性目录合并；</li>
+<li>mode、时间戳、symlink、hard link 和 xattr 的元数据策略；</li>
+<li>有界可写 upper，可以在不遍历不相关 host 路径的情况下导出。</li>
+</ul>
+<p>初始实现可以复用 LiteBox 的只读 tar 和内存文件系统，但生产采用需要一份
+文件系统语义矩阵。不支持的元数据必须显式失败，或按文档化策略规范化；静默
+丢失会破坏 pVisor 的 changeset 契约。</p>
+<h3 id="32">3.2 安全与运维性质<a class="headerlink" href="#32" title="Permanent link">&para;</a></h3>
+<p><strong>优势</strong></p>
+<ul>
+<li>guest 路径终止于 LiteBox VFS；正常路径不包含 host pathname 查找。</li>
+<li>比原生 Linux 进程或通用 OCI container 更小的 host 接口，使 syscall 级策略
+  和确定性 I/O 变得可行。</li>
+<li>只读内容寻址 bundle 可以跨 Run 缓存和共享；可写状态保持每 Run。</li>
+<li>完全在 runner 内处理的 VFS 操作不需要 kernel FUSE 往返，这可能有利于
+  元数据密集工作负载。</li>
+</ul>
+<p><strong>限制</strong></p>
+<ul>
+<li>Linux syscall 与文件系统兼容面比 Docker 或 VM 更窄。</li>
+<li>LiteBox 及其 pVisor 适配器仍在演进，并扩大 pVisor 的可信计算基。</li>
+<li>userspace libOS 并不自动成为硬件或 kernel 安全边界。必须假定 runner、
+  loader、syscall 拦截或共享地址空间中的缺陷可能存在。</li>
+<li>打包原生库、动态 runtime、JIT 和异常文件系统行为需要显式兼容测试。</li>
+</ul>
+<p>因此 LiteBox runner 必须在单独的无特权进程中执行，并带 Landlock、seccomp、
+<code>no_new_privs</code>、空 capability、关闭的 FD 和资源限制。若 guest 逃出 LiteBox
+抽象，外层 kernel 策略才是包含边界。禁止把不受信任的 LiteBox guest 嵌入
+pVisor supervisor 进程。</p>
+<h3 id="33">3.3 工作区传输<a class="headerlink" href="#33" title="Permanent link">&para;</a></h3>
+<p>避免长期、任意 pathname broker。优先不可变且有界的对象：</p>
+<ol>
+<li>pVisor 快照逻辑 lower 层并计算 digest。</li>
+<li>向 runner 提供密封 <code>memfd</code> 或只读文件描述符。</li>
+<li>LiteBox 通过其 VFS 读取 root 和工作区。</li>
+<li>写入进入带字节/inode 配额的每 Run upper。</li>
+<li>runner 导出规范、有界的 changeset。</li>
+<li>pVisor 在把 changeset 暴露给 review/apply 之前校验路径、条目类型、元数据、
+   大小和 digest。</li>
+</ol>
+<h2 id="4-cdocker-oci-container">4. 路径 C：Docker / OCI container<a class="headerlink" href="#4-cdocker-oci-container" title="Permanent link">&para;</a></h2>
+<h3 id="41">4.1 定位<a class="headerlink" href="#41" title="Permanent link">&para;</a></h3>
+<p>这是兼容与生态路径。它支持现有 Agent 镜像和常规 Linux runtime，隔离强于
+host executor，同时共享 host kernel。</p>
+<p>当前 pVisor Docker/Podman executor 已经向镜像注入匹配的静态 pVisor，并委托
+同一 <code>RunSpec</code>。它挂载最终工作区并返回类型化 <code>RunResult</code>。它尚未把每项
+pVisor capability 翻译成 OCI 限制，且注入的 pVisor 当前以 container root
+启动；这些是实现缺口，不是目标设计的性质。</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>host pVisor
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>  +-- WorkspaceOverlay / merged view
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>  +-- Docker or Podman transport
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>          |
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>          v
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>     OCI container
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>       read-only image rootfs
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>       /workspace -&gt; pVisor Run view
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>       tmpfs /tmp
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>       injected pVisor -&gt; Agent
+</span></code></pre></div>
+<p>Docker 的镜像层 OverlayFS 与 pVisor 的 WorkspaceOverlay 角色不同。前者组装
+OCI 根文件系统；后者拥有 Agent 改动和 review/apply/drop。container 拆除不得
+把 OCI 可写层提交为 Run 结果。</p>
+<h3 id="42-profile">4.2 生产 profile<a class="headerlink" href="#42-profile" title="Permanent link">&para;</a></h3>
+<p>目标 profile 是：</p>
+<ul>
+<li>支持时使用 rootless Docker/Podman，或 user namespace remapping；</li>
+<li>去掉注入 pVisor 的 bootstrap 问题后，Agent UID 非 root；</li>
+<li>丢掉全部 capability，<code>no-new-privileges</code>，默认或更紧的 seccomp；</li>
+<li>只读 container rootfs 和私有、有界的 <code>/tmp</code>；</li>
+<li>PID、内存、CPU、文件大小和进程数限制；</li>
+<li>默认无网络，否则使用连到 pVisor 拥有 broker 的专用 namespace；</li>
+<li>无 host PID/IPC namespace、privileged 模式、设备透传、任意可写 mount 或
+  Docker socket；</li>
+<li>镜像 digest pinning 以及可审计的 mount/capability manifest。</li>
+</ul>
+<h3 id="43">4.3 安全与运维性质<a class="headerlink" href="#43" title="Permanent link">&para;</a></h3>
+<p><strong>优势</strong></p>
+<ul>
+<li>除 VM 外最高的工作负载兼容性。</li>
+<li>成熟的镜像构建、分发、缓存、可观测性与运维工具。</li>
+<li>Namespace、cgroup、capability、seccomp 和 host LSM 组合成实用生产边界。</li>
+<li>对 Kubernetes 和现有 CI 基础设施是自然部署路径。</li>
+</ul>
+<p><strong>限制</strong></p>
+<ul>
+<li>Container 共享 host kernel；kernel 或 container-runtime 逃逸在 pVisor
+  自身强制之外。</li>
+<li>冷启动成本、镜像存储、daemon/runtime 依赖和 mount plumbing 高于本地和
+  LiteBox 路径。</li>
+<li>Rootful daemon 部署会制造更大的特权控制面。</li>
+<li>Host 网络、宽 bind mount、<code>--privileged</code> 或 Docker socket 可以抹掉大部分
+  隔离价值。</li>
+<li>当前 Gateway loopback 集成在某些配置下需要 host 网络；生产 enforcement
+  需要 guest 可见 broker 之后才能去掉该限制。</li>
+</ul>
+<p>Docker 是推荐的兼容 fallback，不是 pVisor capability 模型的定义。</p>
+<h2 id="5-dfirecracker-microvm">5. 路径 D：Firecracker microVM<a class="headerlink" href="#5-dfirecracker-microvm" title="Permanent link">&para;</a></h2>
+<h3 id="51">5.1 定位<a class="headerlink" href="#51" title="Permanent link">&para;</a></h3>
+<p>这是最强的多租户路径。每个 Run 或 warm Run 槽在 KVM 下获得单独的 guest
+kernel。Firecracker 刻意暴露小型设备模型，并提供 jailer，为主机侧
+namespace/cgroup 隔离并丢掉 VMM 特权。</p>
+<p>现有 pVisor <code>vm</code> executor 静态链接 libkrun，可以使用显式 Linux rootfs，或
+在没有 container daemon 的情况下拉取公开 OCI 镜像。已校验的镜像层形成不可变
+缓存 lower rootfs，guest 系统写入留在可审查 upper。host 路径不会被隐式暴露。
+显式 <code>--overlayfs-compose</code> 加 <code>--overlayfs-path</code> 在所选 guest 路径挂载 staged
+视图。vendored libkrun 在 Linux 和 macOS 上通过 virtio-fs 直接服务 root 与
+工作区 copy-on-write union，没有 host FUSE mount、物化或对账。Linux 使用
+KVM，Apple Silicon macOS 使用 HVF。Linux 另外用 user/mount/network
+namespace 和 Landlock 约束 VMM。macOS VMM 尚未包进等价的 host 文件系统
+sandbox，因此 libkrun 的 virtio-fs proxy 仍处于调用用户的安全上下文。
+OverlayNet 与 AgentCtl guest relay 在本阶段尚未实现。这不是下面的敌对多租户
+Firecracker 设计：</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>host pVisor / microVM manager
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>  +-- immutable kernel + rootfs image
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>  +-- read-only workspace/base block image
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>  +-- per-Run writable delta block image
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>  +-- vsock control and AgentCtl transport
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>  +-- TAP/network broker under policy
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>          |
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>          v
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>  Firecracker + jailer
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>          |
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>          v
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>  guest kernel + injected pVisor + Agent
+</span></code></pre></div>
+<p>rootfs 和工作区作为文件后备块设备附加。Run 完成时，guest 静止文件系统并
+经 vsock 返回 manifest；host 校验并把 delta 转成普通 pVisor changeset。
+Firecracker snapshot 可以摊薄启动成本，但 VM 状态、guest 内存、块设备、网络
+设备和 vsock 端点有各自的生命周期与兼容要求。Snapshot 复用必须轮换 Run
+身份、熵、凭据和网络状态。</p>
+<h3 id="52">5.2 安全与运维性质<a class="headerlink" href="#52" title="Permanent link">&para;</a></h3>
+<p><strong>优势</strong></p>
+<ul>
+<li>单独 guest kernel 为互不信任租户和敌对原生代码提供最清晰的边界。</li>
+<li>最小设备模拟相对通用机器模拟器减少 VMM 攻击面。</li>
+<li>资源记账和网络拓扑在 VM 边界上是显式的。</li>
+<li>Warm pool 与 snapshot 可以让重复 Run 启动变得可行。</li>
+</ul>
+<p><strong>限制</strong></p>
+<ul>
+<li>需要 Linux、KVM、kernel/rootfs 镜像生产、jailer、TAP/网络 setup 以及
+  microVM 生命周期服务。</li>
+<li>即使 VMM 很轻，基线内存和运维复杂度也高于进程/container 路径。</li>
+<li>工作区块镜像创建和 delta 提取，不如直接挂载的 FUSE 工作区交互。</li>
+<li>Kernel、rootfs、snapshot 和 VMM 版本形成更大的兼容与补丁管理面。</li>
+<li>直接共享 host 目录会削弱干净边界，不应成为生产工作区设计。</li>
+</ul>
+<p>生产 Firecracker 执行必须使用 jailer 或等价更强的 host 策略、专用无特权
+VMM 身份、cgroup、seccomp、隔离网络、受信任不可变输入，并且没有对 host
+路径的 ambient 访问。</p>
+<h2 id="6">6. 比较与选择<a class="headerlink" href="#6" title="Permanent link">&para;</a></h2>
+<p>该表描述预期生产形态，而不只是仓库里当前已有的代码。性能刻意保持相对，
+直到共同 benchmark 测过冷/热启动、RSS、syscall 密集与数据密集工作负载，
+以及拆除。</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>FUSE + Landlock</th>
+<th>FUSE + Seatbelt</th>
+<th>macOS VM + VirtioFS</th>
+<th>LiteBox VFS</th>
+<th>Docker/OCI</th>
+<th>Firecracker</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>主要目标</td>
+<td>最快的 Linux 最小特权</td>
+<td>零配置 macOS 写约束</td>
+<td>带 guest-kernel 边界的透明 Mach-O 执行</td>
+<td>高密度 libOS 隔离</td>
+<td>兼容与部署</td>
+<td>敌对多租户隔离</td>
+</tr>
+<tr>
+<td>安全边界</td>
+<td>合成 root + host LSM/namespace 策略</td>
+<td>host 进程上的 Seatbelt 写/socket 策略</td>
+<td>macOS guest kernel + Virtualization.framework VMM</td>
+<td>libOS 加外层 host 策略</td>
+<td>namespace/cgroup/LSM，共享 kernel</td>
+<td>guest kernel + KVM + jailed VMM</td>
+</tr>
+<tr>
+<td>是否需要 host root</td>
+<td>否</td>
+<td>否</td>
+<td>作为 pVisor 合并 root 导出</td>
+<td>否</td>
+<td>rootless 模式下否</td>
+<td>通常需要 host 供应</td>
+</tr>
+<tr>
+<td>Guest 兼容性</td>
+<td>原生 Linux ABI</td>
+<td>原生 macOS ABI；ambient 读取</td>
+<td>原生 Mach-O，最初仅精确 host/guest build</td>
+<td>受约束的 Linux ABI</td>
+<td>宽 Linux userspace</td>
+<td>完整 guest Linux</td>
+</tr>
+<tr>
+<td>工作区保真度</td>
+<td>最高</td>
+<td>配合 macFUSE 最高</td>
+<td>目标是 full-root 保真；VirtioFS 上未证明</td>
+<td>需要语义适配器</td>
+<td>经 mount/volume 高</td>
+<td>显式块/delta 转换</td>
+</tr>
+<tr>
+<td>启动成本</td>
+<td>最低</td>
+<td>最低</td>
+<td>冷启动高；目标是热恢复/池</td>
+<td>目标低</td>
+<td>中等，取决于镜像</td>
+<td>冷启动最高；目标是热 snapshot</td>
+</tr>
+<tr>
+<td>每 Run 内存</td>
+<td>最低</td>
+<td>最低</td>
+<td>高</td>
+<td>目标低</td>
+<td>中等</td>
+<td>最高</td>
+</tr>
+<tr>
+<td>Kernel 逃逸爆炸半径</td>
+<td>host</td>
+<td>host</td>
+<td>先 guest，再 VMM 边界</td>
+<td>外层逃逸后是 host</td>
+<td>host</td>
+<td>先 guest，再 VMM/KVM 边界</td>
+</tr>
+<tr>
+<td>可移植性</td>
+<td>Linux</td>
+<td>macOS；依赖已弃用 launcher</td>
+<td>支持 macOS 虚拟化的 Apple Silicon Mac</td>
+<td>取决于平台/ABI</td>
+<td>宽 OCI host</td>
+<td>Linux + KVM</td>
+</tr>
+<tr>
+<td>当前 pVisor 状态</td>
+<td>已实现；seccomp/limits 待定</td>
+<td>写约束与 deny-all socket 策略已实现</td>
+<td>已研究设计；需要可行性原型</td>
+<td>计划中</td>
+<td>已实现，存在加固缺口</td>
+<td>libkrun full-root 模式已存在；Firecracker 计划中</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_4">推荐组合<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h3>
+<p>选择权属于 pVisor 和 placement 控制面：</p>
+<ol>
+<li>普通 Linux <code>pvisor --</code> 今天使用 FUSE + Workspace + 合成 root +
+   rootless namespace + Landlock。所需控制 fail-closed 安装；不可用的 user
+   namespace、mount、chroot 或 Landlock ABI 从不静默回退。</li>
+<li>当 LiteBox 能为兼容的打包工作负载提供更小、可度量的 host 接口时，pVisor
+   可以自动选择它；用户仍调用同一命令。</li>
+<li>提供 OCI 镜像自然选择 Docker/Podman。否则 pVisor 可以把已经可用的
+   rootless runtime 当作兼容 fallback；它不要求用户构造 capability 或 mount
+   标志。</li>
+<li>为敌对多租户执行配置的集群把 Run 放到 Firecracker worker。Kernel 镜像、
+   snapshot、网络和 jailer setup 是运营商拥有的集群基础设施，不是每用户
+   配置。</li>
+<li>macOS 保持同一命令，并对已实现的低延迟本地路径使用 Seatbelt 写约束。
+   可行性门通过后，要求 guest-kernel 边界的策略可以自动选择
+   Virtualization.framework backend。在此之前，Bundle 单独报告 ambient 读取
+   和协作式选择性网络；更严的请求路由到另一有能力的 placement，或带着一条
+   修复建议失败。</li>
+</ol>
+<p>这些路径是组合，不是强制迁移阶梯。客户声明工作负载意图，并在必要时声明
+最低安全要求；placement 只选择其已度量能力满足该要求的 backend。客户不选择
+kernel 机制。</p>
+<h2 id="7-backend">7. 一份 backend 契约<a class="headerlink" href="#7-backend" title="Permanent link">&para;</a></h2>
+<p>所有实现都应把一次请求编译成一份带 Evidence 的结果：</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>IsolationRequest {
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>  minimum_boundary,
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>  filesystem_capabilities,
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>  network_capabilities,
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>  compute_limits,
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>  credential_refs,
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>  require_enforcement,
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>}
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>IsolationEvidence {
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>  requested_class,
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>  effective_backend,
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>  backend_version,
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>  effective_controls,
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>  unsupported_controls,
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>  workspace_digest,
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>  runtime_or_image_digest,
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a>  identity_and_capabilities,
+</span><span id="__span-7-19"><a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a>  kernel_features,
+</span><span id="__span-7-20"><a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a>}
+</span></code></pre></div>
+<p>只有当测试证明完整 Agent 进程树无法到达未授予层级时，
+<code>RuntimeCapabilities.filesystem = true</code> 才有效。仅有已挂载工作区或成功的
+setup 调用不是 Evidence。</p>
+<p>该契约是 admission、placement 与 runtime driver 之间的内部契约。它不是用户
+必须理解或配置 backend 特定机制的要求。</p>
+<h2 id="8">8. 零配置验收标准<a class="headerlink" href="#8" title="Permanent link">&para;</a></h2>
+<p>默认本地路径只有在以下全部成立时才算完整：</p>
+<ul>
+<li>一次 pVisor 安装和一条 <code>pvisor --</code> 命令就足够；</li>
+<li>不需要 root shell、setuid pVisor daemon、手工加组、手写策略、mount 命令
+  或 container 安全标志；</li>
+<li>pVisor 发现可执行文件及其最小 runtime 依赖；</li>
+<li>工作区 setup、隔离、清理和 changeset 恢复是自动的；</li>
+<li>不受支持的 host 产生一条稳定错误，带具体修复或自动可用的 placement，而
+  不是一串 kernel 细节；</li>
+<li><code>pvisor status</code> 和 Run Bundle 解释有效边界供审计，但不把该解释当作使用
+  前提；</li>
+<li>升级保留高层命令和 Run 契约，同时允许所选 backend 变化。</li>
+</ul>
+<p>该标准排除把 9P 当作面向用户的 Docker setup 步骤。当远程 backend 需要时，
+pVisor 可以在内部使用文件系统协议，但用户绝不能为普通 Run 供应 9P server、
+挂载它，或授予 container mount capability。</p>
+<h2 id="9-benchmark">9. 校验与 benchmark<a class="headerlink" href="#9-benchmark" title="Permanent link">&para;</a></h2>
+<p>每个 backend 必须跑同一套对抗套件：</p>
+<ul>
+<li>绝对路径、<code>..</code>、symlink 链、hard link、rename 竞态、magic link、
+  <code>/proc/self/fd</code>、继承目录 FD、UNIX socket、设备节点和描述符传递；</li>
+<li>fork/clone/exec 后代、原始 syscall、静态二进制、JIT 生成代码、信号、
+  ptrace 尝试，以及适用处的 namespace 操作；</li>
+<li>直接 socket、DNS rebinding、字面量 IP、UDP/QUIC、loopback、link-local
+  和元数据服务地址；</li>
+<li>字节/inode/进程/CPU/内存/网络耗尽以及取消清理；</li>
+<li>工作区导出、review 和 apply 期间的掉电或 supervisor 崩溃；</li>
+<li>同一 changeset 在全部四种 backend 上的语义比较。</li>
+</ul>
+<p>共享 benchmark 报告分布，而不是单个演示数字：</p>
+<ul>
+<li>冷启动与热启动 P50/P95/P99；</li>
+<li>空闲与峰值 RSS；</li>
+<li>顺序与随机工作区吞吐；</li>
+<li>每秒小文件元数据操作；</li>
+<li>syscall 密集以及 Python/Node/原生 Agent 工作负载；</li>
+<li>checkpoint/export/apply 延迟与产出字节；</li>
+<li>host CPU 成本、上下文切换、缺页，以及 FUSE/VMM/broker 开销。</li>
+</ul>
+<p>已实现的 Linux 套件目前证明 staged 写入，以及拒绝绝对路径读/写、symlink
+逃逸、<code>/proc/self/root</code> 逃逸、未授予 pathname Unix socket、精确 AgentCtl
+socket 的保留，以及 deny-all 模式下的 host-loopback 访问。它也证明 setup
+失败在 Agent 执行前报告。这是有用的回归下限，还不是上面列出的完整对抗/
+kernel 矩阵。没有 backend 仅凭架构预期就能成为生产默认；它必须发布可重复
+测量，并在每个受支持 host/kernel 上通过该矩阵。</p>
+<h2 id="_5">参考<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="https://developer.apple.com/documentation/virtualization/running-macos-in-a-virtual-machine-on-apple-silicon">Apple: Running macOS in a virtual machine on Apple silicon</a></li>
+<li><a href="https://developer.apple.com/documentation/virtualization/vzvirtiofilesystemdeviceconfiguration">Apple: VZVirtioFileSystemDeviceConfiguration</a></li>
+<li><a href="https://github.com/groundwater/GhostVM">GhostVM</a></li>
+<li><a href="https://github.com/groundwater/GhostVM/issues/255">GhostVM VirtioFS instability report</a></li>
+<li><a href="https://docs.kernel.org/userspace-api/landlock.html">Linux Landlock userspace API</a></li>
+<li><a href="https://docs.docker.com/engine/security/rootless/">Docker rootless mode</a></li>
+<li><a href="https://docs.docker.com/engine/security/seccomp/">Docker default seccomp profile</a></li>
+<li><a href="https://github.com/firecracker-microvm/firecracker">Firecracker</a></li>
+<li><a href="https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md">Firecracker jailer</a></li>
+<li><a href="https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/snapshot-support.md">Firecracker snapshot support</a></li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2025–2026 Persisting. All rights reserved.
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/DeepLink-org/Persisting" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.indexes", "navigation.tracking", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
