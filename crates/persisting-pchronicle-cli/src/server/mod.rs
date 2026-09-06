@@ -843,6 +843,8 @@ async fn explorer_tree(
         let (duration_ms, total_tokens) = tree_prefix_metrics(&runtime, &name, &tree.prefix).await;
         tree.duration_ms = duration_ms;
         tree.total_tokens = total_tokens;
+        let file_tokens = tree_file_tokens(&runtime, &name, &tree.prefix).await;
+        explorer::apply_total_tokens(&mut tree.children, &file_tokens);
     }
     Ok(Json(tree))
 }
@@ -870,7 +872,11 @@ async fn tree_prefix_metrics(
         format!(" WHERE _file_ = '{escaped}' OR _file_ LIKE '{escaped}/%'")
     };
     let sql = format!(
-        "SELECT MIN(timestamp) AS start_ts, MAX(timestamp) AS end_ts FROM {ident}.steps{file_clause}"
+        "SELECT MIN(timestamp) AS start_ts, MAX(timestamp) AS end_ts, SUM(COALESCE(\
+            json_get_int(metrics, 'total_tokens'),\
+            json_get_int(metrics, 'prompt_tokens') + json_get_int(metrics, 'completion_tokens'),\
+            json_get_int(metrics, 'prompt_tokens_len') + json_get_int(metrics, 'completion_tokens_len')\
+        )) AS total_tokens FROM {ident}.steps{file_clause}"
     );
     let mut buffer = Vec::new();
     let write = tokio::time::timeout(
@@ -892,6 +898,56 @@ async fn tree_prefix_metrics(
         timestamp_span_ms(row.get("start_ts"), row.get("end_ts")),
         row.get("total_tokens").and_then(Value::as_u64),
     )
+}
+
+async fn tree_file_tokens(
+    runtime: &CatalogRuntime,
+    dataset: &str,
+    prefix: &str,
+) -> BTreeMap<String, u64> {
+    let Some(ident) = sql_ident(dataset) else {
+        return BTreeMap::new();
+    };
+    let file_clause = if prefix.is_empty() {
+        String::new()
+    } else {
+        let escaped = prefix.replace('\'', "''");
+        format!(" WHERE _file_ = '{escaped}' OR _file_ LIKE '{escaped}/%'")
+    };
+    let sql = format!(
+        "SELECT _file_, SUM(COALESCE(\
+            json_get_int(metrics, 'total_tokens'),\
+            json_get_int(metrics, 'prompt_tokens') + json_get_int(metrics, 'completion_tokens'),\
+            json_get_int(metrics, 'prompt_tokens_len') + json_get_int(metrics, 'completion_tokens_len')\
+        )) AS total_tokens FROM {ident}.steps{file_clause} GROUP BY _file_"
+    );
+    let mut buffer = Vec::new();
+    let write = tokio::time::timeout(
+        Duration::from_secs(3),
+        runtime
+            .engine
+            .write_query_jsonl_with_max_rows(&sql, &mut buffer, None),
+    )
+    .await;
+    let Ok(Ok(())) = write else {
+        return BTreeMap::new();
+    };
+    buffer
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| {
+            let row: Value = serde_json::from_slice(line).ok()?;
+            let file = row.get("_file_")?.as_str()?.to_owned();
+            let tokens = row
+                .get("total_tokens")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    row.get("total_tokens")
+                        .and_then(Value::as_i64)
+                        .map(|value| value.max(0) as u64)
+                })?;
+            Some((file, tokens))
+        })
+        .collect()
 }
 
 fn timestamp_span_ms(start: Option<&Value>, end: Option<&Value>) -> Option<i64> {

@@ -52,9 +52,12 @@ pub(crate) struct CatalogTree {
 pub(crate) struct CatalogTreeChild {
     pub(crate) name: String,
     pub(crate) kind: String,
+    pub(crate) data_type: String,
     pub(crate) path: String,
     pub(crate) run_count: usize,
     pub(crate) failed_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) total_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) entries: Vec<CatalogTreeChild>,
 }
@@ -105,6 +108,27 @@ struct ChildAcc {
     run_count: usize,
     failed_count: usize,
     has_deeper: bool,
+    data_types: BTreeSet<String>,
+}
+
+fn data_type(format: Option<&str>) -> &'static str {
+    match format {
+        Some("compact-jsonl/v1") => "compact-jsonl",
+        Some("storyline-lance") | None => "storyline",
+        Some(_) => "other",
+    }
+}
+
+fn combined_data_type(data_types: &BTreeSet<String>) -> String {
+    match data_types.len() {
+        0 => "unknown".into(),
+        1 => data_types
+            .iter()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "unknown".into()),
+        _ => "mixed".into(),
+    }
 }
 
 fn dataset_children(runs: &[&RunSummary]) -> Vec<CatalogTreeChild> {
@@ -114,8 +138,12 @@ fn dataset_children(runs: &[&RunSummary]) -> Vec<CatalogTreeChild> {
             run_count: 0,
             failed_count: 0,
             has_deeper: false,
+            data_types: BTreeSet::new(),
         });
         entry.run_count += 1;
+        entry
+            .data_types
+            .insert(data_type(run.format.as_deref()).into());
         if is_failed_status(&run.status) {
             entry.failed_count += 1;
         }
@@ -125,9 +153,11 @@ fn dataset_children(runs: &[&RunSummary]) -> Vec<CatalogTreeChild> {
         .map(|(name, acc)| CatalogTreeChild {
             name: name.clone(),
             kind: "dataset".into(),
+            data_type: combined_data_type(&acc.data_types),
             path: name,
             run_count: acc.run_count,
             failed_count: acc.failed_count,
+            total_tokens: None,
             entries: Vec::new(),
         })
         .collect()
@@ -161,8 +191,12 @@ fn file_children(runs: &[&RunSummary], prefix: &str) -> Vec<CatalogTreeChild> {
             run_count: 0,
             failed_count: 0,
             has_deeper: false,
+            data_types: BTreeSet::new(),
         });
         entry.run_count += 1;
+        entry
+            .data_types
+            .insert(data_type(run.format.as_deref()).into());
         if is_failed_status(&run.status) {
             entry.failed_count += 1;
         }
@@ -184,6 +218,8 @@ fn file_children(runs: &[&RunSummary], prefix: &str) -> Vec<CatalogTreeChild> {
             name,
             run_count: acc.run_count,
             failed_count: acc.failed_count,
+            data_type: combined_data_type(&acc.data_types),
+            total_tokens: None,
             entries: Vec::new(),
         })
         .collect()
@@ -208,12 +244,38 @@ fn fold_tree_children(
     children.push(CatalogTreeChild {
         name: "other".into(),
         kind: "other".into(),
+        data_type: "mixed".into(),
         path: prefix.to_string(),
         run_count: rest.iter().map(|child| child.run_count).sum(),
         failed_count: rest.iter().map(|child| child.failed_count).sum(),
+        total_tokens: None,
         entries: rest,
     });
     children
+}
+
+pub(crate) fn apply_total_tokens(
+    children: &mut [CatalogTreeChild],
+    file_tokens: &BTreeMap<String, u64>,
+) {
+    for child in children {
+        apply_total_tokens(&mut child.entries, file_tokens);
+        child.total_tokens = if child.entries.is_empty() {
+            file_tokens
+                .iter()
+                .filter(|(file, _)| {
+                    *file == &child.path || file.starts_with(&format!("{}/", child.path))
+                })
+                .map(|(_, tokens)| *tokens)
+                .reduce(u64::saturating_add)
+        } else {
+            child
+                .entries
+                .iter()
+                .filter_map(|entry| entry.total_tokens)
+                .reduce(u64::saturating_add)
+        };
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
