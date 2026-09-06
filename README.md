@@ -12,6 +12,11 @@ Persisting connects durable model state—parameters and KV caches—with durabl
 Agent history—trajectories and execution records. The current product is the
 path from execution to queryable history:
 
+| Governed execution | Durable history |
+| --- | --- |
+| <img src="docs/static/img/logos/pvisor-with-text.png" alt="pVisor" width="220" /> | <img src="docs/static/img/logos/pchronicle-with-text.png" alt="pChronicle" width="220" /> |
+
+
 - **`pvisor`** is an executor that produces persistable, reviewable facts:
   staged Effects and execution records from one Agent Run;
 - **`pchronicle`** browses, queries, exchanges, and serves trajectory Datasets.

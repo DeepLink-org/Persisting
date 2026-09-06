@@ -1,6 +1,6 @@
 # pChronicle
 
-<img src="/img/logos/pchronicle-icon.png" alt="pChronicle logo" width="96" />
+<img src="/img/logos/pchronicle-with-text.png" alt="pChronicle logo" width="240" />
 
 **pChronicle 是 Agent 轨迹存储引擎。** 用于浏览、查询、交换和服务运行 Dataset；既可以读取
 Persisting 产生的运行记录，也可以直接读取受支持的外部格式；不要求先运行 pVisor。
