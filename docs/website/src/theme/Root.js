@@ -2,7 +2,7 @@ import React, {useEffect} from 'react';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 
 export default function Root({children}) {
-  const panorama = useBaseUrl('/img/diagrams/persisting/zodiac-figures-mechanical.png');
+  const panorama = useBaseUrl('/img/diagrams/persisting/hero-black-hole.svg');
 
   useEffect(() => {
     let frame = 0;

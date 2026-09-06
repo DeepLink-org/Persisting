@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2400 1200" role="img" aria-labelledby="title desc">
+  <title id="title">Black hole observatory</title>
+  <desc id="desc">An abstract black hole and accretion disk in deep space, representing persistent infrastructure and durable history.</desc>
+  <defs>
+    <radialGradient id="space"><stop stop-color="#172c67"/><stop offset=".5" stop-color="#071332"/><stop offset="1" stop-color="#020617"/></radialGradient>
+    <radialGradient id="halo"><stop stop-color="#8ff7e8" stop-opacity=".7"/><stop offset=".35" stop-color="#4c8dff" stop-opacity=".42"/><stop offset="1" stop-color="#182b67" stop-opacity="0"/></radialGradient>
+    <linearGradient id="disk" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#39e6d3" stop-opacity="0"/><stop offset=".25" stop-color="#39e6d3"/><stop offset=".52" stop-color="#7c5cff"/><stop offset=".8" stop-color="#ff6bd6"/><stop offset="1" stop-color="#ff6bd6" stop-opacity="0"/></linearGradient>
+    <filter id="blur"><feGaussianBlur stdDeviation="24"/></filter>
+    <filter id="glow"><feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <pattern id="stars" width="180" height="150" patternUnits="userSpaceOnUse"><circle cx="24" cy="31" r="1.5" fill="#c7e7ff"/><circle cx="112" cy="93" r="1" fill="#8ff7e8"/><circle cx="158" cy="44" r="1.2" fill="#b9a8ff"/><circle cx="72" cy="132" r=".8" fill="#fff"/></pattern>
+  </defs>
+  <rect width="2400" height="1200" fill="url(#space)"/>
+  <rect width="2400" height="1200" fill="url(#stars)" opacity=".72"/>
+  <ellipse cx="1580" cy="570" rx="670" ry="360" fill="url(#halo)" filter="url(#blur)"/>
+  <g transform="translate(1580 570) rotate(-12)" filter="url(#glow)">
+    <ellipse rx="610" ry="174" fill="none" stroke="url(#disk)" stroke-width="78" opacity=".22" filter="url(#blur)"/>
+    <ellipse rx="610" ry="174" fill="none" stroke="url(#disk)" stroke-width="25" opacity=".9"/>
+    <ellipse rx="470" ry="126" fill="none" stroke="#8ff7e8" stroke-width="3" opacity=".65"/>
+    <ellipse rx="375" ry="94" fill="none" stroke="#a78bfa" stroke-width="3" opacity=".65"/>
+    <circle r="218" fill="#01030b" stroke="#72f4e5" stroke-width="5"/>
+    <circle r="245" fill="none" stroke="#6a63ff" stroke-width="9" stroke-dasharray="22 30" opacity=".8"/>
+  </g>
+  <g fill="none" stroke="#6fd9ff" stroke-width="3" opacity=".32"><path d="M160 950C500 790 640 850 850 1020"/><path d="M1520 1100c280-230 540-260 780-120"/><path d="M360 180c180 80 280 70 420-20"/></g>
+  <g fill="#d7f9ff"><circle cx="280" cy="260" r="3"/><circle cx="540" cy="780" r="3"/><circle cx="2160" cy="270" r="3"/><circle cx="2030" cy="970" r="2"/></g>
+</svg>
