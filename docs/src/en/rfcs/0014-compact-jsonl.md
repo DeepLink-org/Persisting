@@ -51,17 +51,20 @@ Storyline，也不推断轨迹语义。
 
 ### 文件集合
 
-显式文件输入 MUST 是扩展名大小写不敏感的 `.jsonl` 普通文件。目录输入 MUST 递归选择
-`.jsonl` 普通文件，并 MUST 忽略符号链接和其他扩展名。实现 MUST 按规范化相对文件名的
+显式文件输入 MUST 是扩展名大小写不敏感的 `.json`、`.jsonl` 或 `.ndjson` 普通文件。目录输入
+MUST 递归选择这些普通文件，并 MUST 忽略符号链接和其他扩展名。实现 MUST 按规范化相对文件名的
 字节序处理文件；单个文件内部 MUST 按原始行顺序处理。
 
-每个被选择的文件 MUST 至少包含一条 record。每一物理行 MUST：
+`.jsonl` 和 `.ndjson` 文件中的每一物理行 MUST：
 
 1. 不是空行或纯空白行；
 2. 是 UTF-8 JSON；
 3. 顶层值是 JSON object；
-4. 包含可映射为非空标量的 `timestamp`；如果 `id` 缺失或不能映射为非空标量，实现 MUST
-   生成稳定的 `source_filename#line_number` ID。
+4. 包含可映射为非空标量的 `timestamp`；缺失或无效的 `id` 和 `timestamp` 使用稳定的
+   `source_filename#line_number` 值生成。
+
+`.json` 文件 MUST 是一个 object 或 object 数组。object 数组的每个元素成为一条 record，数组
+元素按顺序使用 1-based index 作为 line number；导出时这类文件以 JSONL 记录写回。
 
 任一条件不满足时，整个 import/sync MUST 失败，不得发布部分 dataset。
 
@@ -79,9 +82,9 @@ index      = "[" 1*DIGIT "]"
 示例：`$`、`$.id`、`$.user.id`、`$.messages[0].role`。
 
 不支持 wildcard、slice、filter、递归下降、quoted member、负数 index 或一段中的多个 index。
-映射缺失时，附加列写 Arrow null；`timestamp` 映射缺失时必须拒绝该 record。`id` 映射缺失
-或无效时，使用该 record 的规范化 source filename 和 1-based line number 生成 ID，格式为
-`source_filename#line_number`。生成的 ID 只写入 Lance `id` 列，不修改 `_raw_` 或 `data`。
+映射缺失时，附加列写 Arrow null；`id` 或 `timestamp` 映射缺失或无效时，使用该 record 的
+规范化 source filename 和 1-based line number 生成值，格式为 `source_filename#line_number`。
+生成的值只写入 Lance 基础列，不修改 `_raw_` 或 `data`。
 
 ### 列映射
 

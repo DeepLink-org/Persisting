@@ -210,10 +210,11 @@ replaced in place.
 
 Compact JSONL is a record store, not a trajectory conversion. Either
 `--input-format compact-jsonl` or `--output-format compact-jsonl` selects it.
-It recursively reads local `.jsonl` files and requires every non-empty line to
-be a JSON object with a scalar `timestamp`; its default path is `$.timestamp`.
-Missing or invalid `id` values receive a stable `source_filename#line_number` ID;
-the default path is `$.id`. `--column id=PATH` and
+It recursively reads local `.json`, `.jsonl`, and `.ndjson` files. JSON objects
+and arrays of objects are accepted; array elements become individual records.
+Missing or invalid `id` and `timestamp` values receive stable
+`source_filename#line_number` values. The default paths are `$.id` and
+`$.timestamp`. `--column id=PATH` and
 `--column timestamp=PATH` override those paths, while any other
 `--column NAME=PATH` adds a nullable JSONB projection. Compact import supports
 local `create` and confirmed `replace`, but not stdin, object-store targets, or
@@ -236,7 +237,8 @@ the set and retry with bounded exponential backoff. Use `--once` for one
 initial batch and exit. The two destinations must be local directories outside
 the source directory.
 
-With `--input-format compact-jsonl`, the source must be a local `.jsonl` tree
+With `--input-format compact-jsonl`, the source must be a local `.json`, `.jsonl`,
+or `.ndjson` tree
 and the same `--column` rules as compact import apply. Every successful batch
 rescans the whole tree and atomically replaces the compact Lance snapshot at
 `--convert`, so additions, changes, and deletions are reflected without

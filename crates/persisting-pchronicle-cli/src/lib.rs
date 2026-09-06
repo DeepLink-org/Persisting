@@ -207,7 +207,7 @@ enum Command {
     ///
     /// Compact JSONL stores each JSON object as one record without trajectory semantics.
     /// Select it with either --input-format compact-jsonl or
-    /// --output-format compact-jsonl; it accepts local .jsonl input and supports
+    /// --output-format compact-jsonl; it accepts local JSON/JSONL input and supports
     /// create or replace, not stdin or append.
     Import(ImportArgs),
     /// Permanently delete a Dataset directory or object-store prefix.
@@ -702,7 +702,7 @@ struct ImportArgs {
     output: Option<String>,
 
     /// Input exchange format. Auto detects run data; compact-jsonl is explicit.
-    /// Compact JSONL recursively reads local .jsonl files, one object per line.
+    /// Compact JSONL recursively reads local .json, .jsonl, or .ndjson files.
     #[arg(short = 'i', long = "input-format", alias = "format", value_enum, default_value_t = ExchangeFormat::Auto)]
     format: ExchangeFormat,
 

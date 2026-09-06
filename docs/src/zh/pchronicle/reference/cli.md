@@ -330,9 +330,9 @@ Storyline Dataset。默认 `create` 模式要求目标不存在。`append` 要�
 
 Compact JSONL 是记录存储，不会转换或推断轨迹语义。指定
 `--input-format compact-jsonl` 或 `--output-format compact-jsonl` 均会选择该格式。输入必须是本地
-`.jsonl` 文件或目录树；每个非空行必须是 JSON object，并包含标量 `timestamp`，默认路径为
-`$.timestamp`。缺失或无效的 `id` 会获得稳定的 `source_filename#line_number` ID，默认路径为
-`$.id`。`--column id=PATH` 与
+`.json`、`.jsonl` 或 `.ndjson` 文件或目录树；JSON object 和 object 数组都会被接受，数组元素
+会成为独立 record。缺失或无效的 `id` 和 `timestamp` 会获得稳定的
+`source_filename#line_number` 值，默认路径分别为 `$.id` 和 `$.timestamp`。`--column id=PATH` 与
 `--column timestamp=PATH` 用于覆盖默认路径，其他 `--column NAME=PATH` 会增加 nullable JSONB
 投影列。Compact import 支持本地 `create` 和经确认的 `replace`，不支持 stdin、对象存储目标或
 `append`。
@@ -351,7 +351,7 @@ pchronicle sync --from DIRECTORY --to DIRECTORY --convert DIRECTORY
 变更并指数退避重试。`--once` 只执行一次初始批次后退出。当前目标必须是本地目录，两个目标
 必须位于源目录之外。
 
-指定 `--input-format compact-jsonl` 时，源目录必须是本地 `.jsonl` 目录树，列映射规则与 Compact
+指定 `--input-format compact-jsonl` 时，源目录必须是本地 `.json`、`.jsonl` 或 `.ndjson` 目录树，列映射规则与 Compact
 import 相同。每个成功批次都会重新扫描整个目录，并原子替换 `--convert` 指向的 Compact Lance
 快照，因此新增、修改和删除都会反映在下一快照中，但不提供行级增量更新。此模式仍要求传入
 `--to` 作为兼容参数，但不会写入该路径。
