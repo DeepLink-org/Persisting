@@ -1,4 +1,12 @@
-:root { --ifm-color-primary: #3f51b5; --ifm-color-primary-dark: #303f9f; --ifm-color-primary-light: #7986cb; --ifm-code-font-size: 90%; }
+:root { --ifm-color-primary: #3f51b5; --ifm-color-primary-dark: #303f9f; --ifm-color-primary-light: #7986cb; --ifm-code-font-size: 90%; --ifm-font-family-base: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; --ifm-heading-font-family: var(--ifm-font-family-base); --ifm-line-height-base: 1.7; }
+.navbar { background: rgb(63 81 181 / 96%); box-shadow: 0 2px 16px rgb(15 23 42 / 16%); backdrop-filter: blur(12px); }
+.navbar__title { letter-spacing: -.02em; }
+.theme-doc-markdown { max-width: 52rem; }
+.theme-doc-markdown h1 { letter-spacing: -.035em; }
+.theme-doc-markdown h2 { margin-top: 2.5rem; letter-spacing: -.025em; }
+.theme-doc-markdown h3 { margin-top: 2rem; }
+.theme-code-block { border: 1px solid rgb(148 163 184 / 18%); border-radius: .6rem; box-shadow: 0 10px 28px rgb(15 23 42 / 8%); }
+.theme-admonition { border-radius: .6rem; }
 .hero--primary { position: relative; background: #101936; }
 .hero--primary::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, rgb(5 11 29 / 94%) 0%, rgb(5 11 29 / 74%) 38%, rgb(5 11 29 / 20%) 78%, rgb(5 11 29 / 10%) 100%), linear-gradient(0deg, rgb(5 11 29 / 78%) 0%, transparent 52%); pointer-events: none; }
 .hero .container { position: relative; z-index: 1; width: 100%; }
