@@ -356,8 +356,11 @@ S3-compatible endpoints can be stored separately with `--endpoint URL` and are
 applied as AWS_ENDPOINT_URL_S3 when the alias is used.
 HTTP endpoints automatically enable AWS_ALLOW_HTTP for local S3-compatible
 services such as MinIO.
-An optional `--region REGION` is stored per alias; when omitted, the client
-falls back to `us-west-2` only when it needs a region.
+An optional `--region REGION` is stored per alias; when omitted for an
+`s3://` alias, pChronicle applies `AWS_REGION` / `AWS_DEFAULT_REGION` as
+`us-west-2` before opening the store (OpenDAL requires a region).
+Endpoint, region, and credentials are applied before the Tokio runtime starts
+so local MinIO-style endpoints work without exporting AWS_* in the shell.
 A `catalog://127.0.0.1:PORT` alias is a Directory locator: `@team/prod` fetches a
 ticket and opens the ticket path. User `--ak/--sk` are required;
 `--endpoint` and `--region` are not accepted. Backend object-store keys stay on
@@ -386,7 +389,7 @@ enum AliasCommand {
         /// S3-compatible service endpoint, stored separately from the Dataset URI.
         #[arg(long, value_name = "URL")]
         endpoint: Option<String>,
-        /// S3 region. If omitted, the client default (`us-west-2`) is used when needed.
+        /// S3 region. If omitted for s3:// aliases, defaults to us-west-2.
         #[arg(long, value_name = "REGION")]
         region: Option<String>,
         /// S3 access key ID. Must be provided together with --sk.
@@ -420,7 +423,7 @@ enum AliasCommand {
         /// Replace the S3-compatible service endpoint stored for this alias.
         #[arg(long, value_name = "URL")]
         endpoint: Option<String>,
-        /// Replace the S3 region stored for this alias.
+        /// Replace the S3 region stored for this alias (omit to keep; clear by re-adding).
         #[arg(long, value_name = "REGION")]
         region: Option<String>,
         /// Replace the S3 access key ID stored for this alias.
@@ -904,7 +907,7 @@ struct ExportArgs {
     )
 )]
 struct ServeArgs {
-    /// Issue catalog users or change grants without starting Warehouse.
+    /// Manage Directory ACL or start Warehouse without a catalog subcommand.
     #[command(subcommand)]
     command: Option<ServeSubcommand>,
 
@@ -994,8 +997,10 @@ struct ServeArgs {
     #[arg(long = "gateway-debug", alias = "debug", requires = "gateway_config")]
     debug: bool,
 
-    /// Directory ACL file (libraries + users). Enables catalog:// locators and
-    /// per-user query workers for the Web API.
+    /// Directory ACL file (libraries + users). Mounts every [datasets.*] entry
+    /// into Warehouse and enables catalog:// locators. Mutually exclusive with
+    /// positional Dataset mounts. Apply S3 endpoint/region/keys from the file
+    /// before opening stores.
     #[arg(
         long = "catalog-config",
         value_name = "FILE",
@@ -1010,7 +1015,7 @@ struct ServeArgs {
 
 #[derive(Debug, Subcommand)]
 enum ServeSubcommand {
-    /// Issue catalog users and grant libraries without starting HTTP.
+    /// Manage Directory ACL (users, grants, datasets) without starting HTTP.
     Catalog(CatalogManageArgs),
 }
 
@@ -1059,16 +1064,22 @@ enum CatalogDatasetCommand {
 struct CatalogDatasetAddArgs {
     #[command(flatten)]
     file: CatalogFileArg,
+    /// Library / mount name (becomes the Warehouse dataset name).
     #[arg(value_name = "NAME")]
     name: String,
+    /// Dataset URI (local path or s3://bucket/prefix).
     #[arg(long = "uri", value_name = "URI")]
     uri: String,
+    /// S3-compatible endpoint for this library (required consistency across s3:// entries).
     #[arg(long = "endpoint", value_name = "URL")]
     endpoint: Option<String>,
+    /// S3 region for this library (required for s3:// when not relying on process env).
     #[arg(long = "region", value_name = "REGION")]
     region: Option<String>,
+    /// Backend object-store access key (not a Directory user key).
     #[arg(long = "access-key", value_name = "KEY")]
     access_key: Option<String>,
+    /// Backend object-store secret key (not a Directory user key).
     #[arg(long = "secret-key", value_name = "KEY")]
     secret_key: Option<String>,
     #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]

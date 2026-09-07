@@ -1,44 +1,48 @@
-# pChronicle 集群平台与 Catalog Server 场景
+# pChronicle Directory and platform cases
 
-本文覆盖平台化部署。Catalog 配置只管理用户、Dataset 和授权；Warehouse 的服务参数仍由 `pchronicle serve` 提供。
+Platform-oriented Directory setup. The ACL file manages users, datasets
+(libraries), and grants; Warehouse listen/Gateway options still come from
+`pchronicle serve`.
 
-## P01：从空配置创建 Catalog 用户
+## P01: Issue a Directory user from an empty config
 
 ```bash
-pchronicle serve catalog user create \
+pchronicle serve catalog issue \
   --catalog-config ./catalog.toml alice
 ```
 
-如果文件不存在，命令创建配置文件、生成用户 AK/SK，并只在本次输出 secret。
+If the file does not exist, the command creates it, writes a user with empty
+grants, and prints the secret once on stdout.
 
-## P02：登记 Dataset
+## P02: Register a dataset library
 
 ```bash
-pchronicle serve catalog dataset create \
+pchronicle serve catalog dataset add \
   --catalog-config ./catalog.toml \
-  prod s3://bucket/prod \
+  prod \
+  --uri s3://bucket/prod \
   --endpoint http://127.0.0.1:9000 \
   --region us-west-2 \
-  --ak BACKEND_AK \
-  --sk BACKEND_SK
+  --access-key BACKEND_AK \
+  --secret-key BACKEND_SK
 ```
 
-该命令只登记 Dataset，不创建或删除后端数据。
+This only registers the URI and backend credentials. It does not create or
+delete object-store data. All `s3://` libraries in one file must share the same
+endpoint, region, and backend keys.
 
-## P03：授权用户
+## P03: Grant libraries to a user
 
 ```bash
 pchronicle serve catalog grant \
   --catalog-config ./catalog.toml \
-  alice prod \
-  --permission read \
-  --permission query \
-  --permission analyze
+  alice prod
 ```
 
-预期：配置中出现独立的 `[[grants]]` 记录。
+Expected: a `[[grants]]` entry lists `prod` under that user. v1 grants are
+library membership (not `--permission` flags).
 
-## P04：启动 Catalog Server
+## P04: Serve with catalog mounts
 
 ```bash
 pchronicle serve \
@@ -46,9 +50,10 @@ pchronicle serve \
   --listen 127.0.0.1:8081
 ```
 
-父进程负责用户认证、Dataset 列表和 ticket；查询数据面在授权 mounts 的 worker 中执行。
+Every `[datasets.*]` entry is mounted into Warehouse. Directory ticket routes
+remain available for `catalog://` aliases. Restart after editing the ACL file.
 
-## P05：访问授权 Dataset
+## P05: Open an authorized dataset via Directory alias
 
 ```bash
 pchronicle alias add team catalog://127.0.0.1:8081 \
@@ -57,21 +62,21 @@ pchronicle query @team/prod \
   --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
 ```
 
-预期：授权用户可以查询 `prod`；未授权用户或未知 Dataset 返回相同的 404 资源错误。
+Expected: an authorized user can query `prod`; unknown datasets fail closed.
 
-## P06：撤销授权
+## P06: Revoke a library grant
 
 ```bash
 pchronicle serve catalog revoke \
   --catalog-config ./catalog.toml \
-  alice prod --permission query
+  alice prod
 ```
 
-预期：后续查询被拒绝，但 `read` 和其它仍保留的权限不受影响。
+Expected: later `@team/prod` access is denied for that user.
 
-## P07：RustFS Warehouse 回归
+## P07: RustFS Warehouse regression
 
-准备 RustFS，并设置：
+Prepare RustFS and set:
 
 ```bash
 export PCHRONICLE_RUSTFS_ENDPOINT=http://127.0.0.1:9000
@@ -80,13 +85,15 @@ export PCHRONICLE_RUSTFS_SECRET_KEY=rustfsadmin
 export PCHRONICLE_RUSTFS_BUCKET=pchronicle-cases
 ```
 
-然后运行 RustFS 回归测试，验证 Dataset 写入、Catalog discovery、SQL 查询、Explorer 和 refresh 行为。
+Then run the RustFS regression coverage for Dataset writes, Snapshot discovery
+(including `chronicle.manifest` when present), SQL, Explorer, and refresh.
 
-平台验收重点：
+Platform checks:
 
-- Catalog 文件可从空文件开始构建；
-- 用户、Dataset 和 grants 修改是确定性的；
-- Dataset 后端凭据只在授权 ticket 中使用；
-- Worker 只收到当前用户被授权的 mounts；
-- Catalog refresh 不影响已完成查询的 snapshot；
-- RustFS 上的 Warehouse 行为与本地 Dataset 一致。
+- ACL files can be built from empty;
+- user, dataset, and grant edits are deterministic;
+- backend object-store keys stay in the catalog file / ticket path, not in
+  `alias list` output;
+- Warehouse mounts every registered library when serving `--catalog-config`;
+- Snapshot refresh does not mutate an in-flight Snapshot;
+- RustFS Warehouse behavior matches local Datasets for the covered paths.

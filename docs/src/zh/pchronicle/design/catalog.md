@@ -194,6 +194,12 @@ Catalog 产生四个 source：
 `live` 和 `events.lance` 的内部文件不会再次成为 source。这一“识别复合根后停止下探”的规则
 避免把 manifest、generation、segment 或 `objects.lance` 错当成用户输入。
 
+当目录含有 `chronicle.manifest`
+（[RFC-0015](../../rfcs/0015-chronicle-manifest.md)）时，discovery 优先采用该 sidecar：
+`leaf` 且 `format = compact-jsonl/v1` 时可不打开 Lance 即归类为 Compact source；
+`branch` 只扫描同样含有 sidecar 的一层子目录。Explorer 目录合计可对 leaf
+`record_count` 做读侧汇总；写入方只更新 leaf manifest，不回写祖先。
+
 ### 5.2 本地发现
 
 本地 URI 支持普通路径、`local://` 和 `file://`：

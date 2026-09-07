@@ -320,12 +320,25 @@ fn command_tree_contains_the_product_commands() {
         .map(|command| command.get_name())
         .collect::<Vec<_>>();
     assert_eq!(catalog_commands, ["issue", "grant", "revoke", "dataset"]);
+    let dataset = catalog
+        .get_subcommands()
+        .find(|command| command.get_name() == "dataset")
+        .unwrap();
+    let dataset_commands = dataset
+        .get_subcommands()
+        .map(|command| command.get_name())
+        .collect::<Vec<_>>();
+    assert_eq!(dataset_commands, ["add", "remove", "list"]);
     let mut serve_command = Cli::command();
     let serve_help = serve_command.find_subcommand_mut("serve").unwrap();
     let mut help = Vec::new();
     serve_help.write_long_help(&mut help).unwrap();
     let help = String::from_utf8(help).unwrap();
     assert!(help.contains("pchronicle serve catalog"), "{help}");
+    assert!(
+        help.contains("Mounts every [datasets.*] entry"),
+        "{help}"
+    );
 }
 
 #[test]

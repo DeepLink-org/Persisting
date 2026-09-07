@@ -242,6 +242,14 @@ Stopping descent after a composite root is recognized keeps manifests,
 generations, segments, and `objects.lance` from being treated as user
 input.
 
+When a directory contains `chronicle.manifest`
+([RFC-0015](../../rfcs/0015-chronicle-manifest.md)), discovery prefers that
+sidecar: a `leaf` with `format = compact-jsonl/v1` becomes a Compact source
+without opening Lance solely to classify it; a `branch` scans only immediate
+child directories that also have the sidecar. Explorer folder totals may use
+leaf `record_count` with read-side roll-up; writers update only the leaf
+manifest and do not rewrite ancestors.
+
 ### 5.2 Local discovery
 
 Local URIs accept ordinary paths, `local://`, and `file://`:
