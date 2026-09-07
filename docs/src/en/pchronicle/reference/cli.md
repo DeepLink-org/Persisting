@@ -87,7 +87,7 @@ pchronicle alias [list|add|remove|rename|get-url|set-url] [ARGUMENTS]
 ```bash
 pchronicle alias add prod s3://bucket/evals
 pchronicle alias add secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
-pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --ak 123 --sk 123
+pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --region us-west-2 --ak 123 --sk 123
 pchronicle alias add regional s3://bucket/evals --region us-west-2
 pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 pchronicle alias set-url prod s3://new-bucket/evals
@@ -114,8 +114,10 @@ For `http://` endpoints, pChronicle also enables `AWS_ALLOW_HTTP` automatically
 for local S3-compatible services such as MinIO.
 `alias set-url` accepts the same `--endpoint` option and preserves the existing
 endpoint when changing between two S3 URIs without specifying a new one.
-The optional `--region` is also stored per alias; when omitted, the S3 client
-uses its default region (`us-west-2` when a fallback is required).
+The optional `--region` is stored per alias. When an `s3://` alias omits it,
+pChronicle applies `us-west-2` as `AWS_REGION` / `AWS_DEFAULT_REGION` before
+opening the store. Endpoint, region, and credentials are applied before the
+Tokio runtime starts so OpenDAL sees them reliably.
 
 ### Inspect and find
 
@@ -293,6 +295,9 @@ pchronicle serve
   [--gateway-stream-markdown] [--gateway-debug]
   [--catalog-config FILE]
   [<[NAME=]DATASET> ...]
+pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI [OPTIONS]
+pchronicle serve catalog dataset remove --catalog-config FILE NAME...
+pchronicle serve catalog dataset list   --catalog-config FILE
 pchronicle serve catalog issue  --catalog-config FILE NAME
 pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
 pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
@@ -309,13 +314,17 @@ pchronicle serve \
 Every listener must use a loopback address. A bare single Dataset is mounted as
 `default`; with several Datasets, use `NAME=DATASET` when a stable mount name is
 needed. Control requires a mount named `default`.
-`--catalog-config FILE` serves a path Directory instead of opening Datasets
-in the parent process. Pair it with `alias add NAME catalog://127.0.0.1:PORT --ak --sk`.
-`pchronicle serve catalog issue|grant|revoke` rewrites that file and does not
-start HTTP; `issue` prints the user secret once. Restart serve after changing
-users or grants. `catalog` is a reserved `serve` subcommand; mount a path of
-that name as `./catalog`.
-See [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md).
+`--catalog-config FILE` mounts every `[datasets.*]` library in the Directory
+file into Warehouse and enables `catalog://` locators. It conflicts with
+positional Dataset mounts. Pair Directory clients with
+`alias add NAME catalog://127.0.0.1:PORT --ak --sk`.
+`pchronicle serve catalog dataset add|remove|list` and
+`issue|grant|revoke` rewrite that file and do not start HTTP; `issue` prints
+the user secret once. Restart serve after changing libraries, users, or grants.
+`catalog` is a reserved `serve` subcommand; mount a path of that name as
+`./catalog`.
+See [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md) and
+[RFC-0015](../../rfcs/0015-chronicle-manifest.md) for nested discovery sidecars.
 The config-free Gateway accepts canonical trajectory events at
 `POST /v1/events`. `--gateway-dataset` is an output URI and is auto-mounted;
 it is no longer a mounted Dataset name. Split templates accept the exact
@@ -340,19 +349,20 @@ construction is explained in [Snapshot design](../design/catalog.md).
 
 #### Catalog management
 
-Catalog configuration contains only users, Datasets, and grants. Management commands create the file when it does not exist.
+The Directory ACL file contains users, datasets (libraries), and grants.
+Management commands create the file when it does not exist.
 
 ```text
-pchronicle serve catalog user create   --catalog-config FILE NAME
-pchronicle serve catalog user list     --catalog-config FILE
-pchronicle serve catalog user remove   --catalog-config FILE NAME
-pchronicle serve catalog dataset create --catalog-config FILE NAME URI [OPTIONS]
+pchronicle serve catalog issue  --catalog-config FILE NAME
+pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
+pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
+pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI
+  [--endpoint URL] [--region REGION] [--access-key KEY] [--secret-key KEY]
+pchronicle serve catalog dataset remove --catalog-config FILE NAME...
 pchronicle serve catalog dataset list   --catalog-config FILE
-pchronicle serve catalog dataset show   --catalog-config FILE NAME
-pchronicle serve catalog dataset remove --catalog-config FILE NAME
-pchronicle serve catalog grant  --catalog-config FILE USER DATASET --permission PERMISSION...
-pchronicle serve catalog revoke --catalog-config FILE USER DATASET --permission PERMISSION...
-pchronicle serve catalog grants --catalog-config FILE
 ```
 
-`user create` generates AK/SK and prints the secret once. `dataset create` registers the URI and storage credentials without creating or deleting backend data. `grant` and `revoke` manage `read`, `query`, `analyze`, `write`, and `admin` permissions.
+`issue` generates a user AK/SK and prints the secret once. `dataset add`
+registers the URI and optional backend storage credentials without creating or
+deleting object-store data. `grant` / `revoke` add or remove library names on
+that user (v1 grants are library membership, not fine-grained permission flags).

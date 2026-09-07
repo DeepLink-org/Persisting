@@ -139,7 +139,7 @@ pchronicle alias [list|add|remove|rename|get-url|set-url] [ARGUMENTS]
 pchronicle alias add local ./trajectory-data
 pchronicle alias add prod s3://bucket/evals
 pchronicle alias add secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
-pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --ak 123 --sk 123
+pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --region us-west-2 --ak 123 --sk 123
 pchronicle alias add regional s3://bucket/evals --region us-west-2
 pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 pchronicle alias
@@ -167,7 +167,9 @@ Agent 会话目录。
 [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。
 `alias set-url` 也支持相同的 `--endpoint` 参数；在两个 S3 URI 之间切换且未指定新 endpoint 时，
 会保留原有 endpoint。
-可选的 `--region` 也会按 alias 保存；省略时由 S3 客户端自行处理，需要回退时默认使用 `us-west-2`。
+可选的 `--region` 按 alias 保存；`s3://` alias 省略时，打开存储前会把
+`AWS_REGION` / `AWS_DEFAULT_REGION` 设为 `us-west-2`。endpoint、region 与凭证在 Tokio
+runtime 启动前写入进程环境，避免 OpenDAL 读不到 region。
 
 ### 2.4 `ls`
 
@@ -416,6 +418,9 @@ pchronicle serve
   [--gateway-stream-markdown] [--gateway-debug]
   [--catalog-config FILE]
   [<[NAME=]DATASET> ...]
+pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI [OPTIONS]
+pchronicle serve catalog dataset remove --catalog-config FILE NAME...
+pchronicle serve catalog dataset list   --catalog-config FILE
 pchronicle serve catalog issue  --catalog-config FILE NAME
 pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
 pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
@@ -431,12 +436,13 @@ pchronicle serve \
 
 未指定服务 flag 时，只读 Web/API 默认监听 `127.0.0.1:0`。多个 Dataset 使用
 `NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。`--catalog-config FILE`
-以 Directory 方式服务，父进程不打开 Datasets；配合
-`alias add NAME catalog://127.0.0.1:PORT --ak --sk`。
-`pchronicle serve catalog issue|grant|revoke` 只改该文件、不启动 HTTP；`issue` 把用户
-sk 只打印一次。改用户或授权后必须重启 serve。`catalog` 是 `serve` 的保留子命令，挂载同名
-路径请用 `./catalog`。见
-[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。无需配置的 `--gateway`
+会把文件中全部 `[datasets.*]` 挂进 Warehouse，并启用 `catalog://` locator；不能与位置参数
+Dataset 同时使用。配合 `alias add NAME catalog://127.0.0.1:PORT --ak --sk`。
+`pchronicle serve catalog dataset add|remove|list` 与 `issue|grant|revoke` 只改该文件、
+不启动 HTTP；`issue` 把用户 sk 只打印一次。改 library、用户或授权后必须重启 serve。
+`catalog` 是 `serve` 的保留子命令，挂载同名路径请用 `./catalog`。见
+[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md) 与
+[RFC-0015](../../rfcs/0015-chronicle-manifest.md)。无需配置的 `--gateway`
 在 `POST /v1/events` 接收 canonical trajectory events；`--gateway-dataset` 是自动挂载的
 输出 URI，不再是 mount name。`--gateway-split` 支持 `{user}`、`{date}`、`{hour}`。
 已有 canonical source 默认在最后一条事件后空闲 30 分钟才自动刷新 Storyline projection；
@@ -449,22 +455,21 @@ loopback；服务准备完成后，stdout 输出一行版本化 readiness JSON�
 
 #### Catalog 管理
 
-Catalog 配置只包含用户、Dataset 和授权关系。配置文件不存在时，管理命令会自动创建。
+Directory ACL 文件包含用户、datasets（libraries）和 grants。配置文件不存在时，管理命令会自动创建。
 
 ```text
-pchronicle serve catalog user create   --catalog-config FILE NAME
-pchronicle serve catalog user list     --catalog-config FILE
-pchronicle serve catalog user remove   --catalog-config FILE NAME
-pchronicle serve catalog dataset create --catalog-config FILE NAME URI [OPTIONS]
+pchronicle serve catalog issue  --catalog-config FILE NAME
+pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
+pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
+pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI
+  [--endpoint URL] [--region REGION] [--access-key KEY] [--secret-key KEY]
+pchronicle serve catalog dataset remove --catalog-config FILE NAME...
 pchronicle serve catalog dataset list   --catalog-config FILE
-pchronicle serve catalog dataset show   --catalog-config FILE NAME
-pchronicle serve catalog dataset remove --catalog-config FILE NAME
-pchronicle serve catalog grant  --catalog-config FILE USER DATASET --permission PERMISSION...
-pchronicle serve catalog revoke --catalog-config FILE USER DATASET --permission PERMISSION...
-pchronicle serve catalog grants --catalog-config FILE
 ```
 
-`user create` 生成 AK/SK 并只显示一次 secret；`dataset create` 只登记 URI 和存储凭据，不删除或创建后端数据；`grant`/`revoke` 管理 `read`、`query`、`analyze`、`write`、`admin` 权限。
+`issue` 生成用户 AK/SK 并只显示一次 secret；`dataset add` 只登记 URI 与可选后端存储凭据，
+不创建或删除对象存储数据；`grant`/`revoke` 增减该用户可打开的 library 名称（v1 是库成员关系，
+不是细粒度 `--permission` 标志）。
 
 ### 公共输出与退出状态
 

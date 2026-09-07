@@ -14,6 +14,9 @@ pchronicle serve
   [--gateway-stream-markdown] [--gateway-debug]
   [--catalog-config FILE]
   [<[NAME=]DATASET> ...]
+pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI [OPTIONS]
+pchronicle serve catalog dataset remove --catalog-config FILE NAME...
+pchronicle serve catalog dataset list   --catalog-config FILE
 pchronicle serve catalog issue  --catalog-config FILE NAME
 pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
 pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
@@ -45,25 +48,38 @@ Mount name 会成为 SQL schema 和 API 名称。需要稳定名称时使用 `NA
 ## 启动 Directory
 
 ```bash
+pchronicle serve catalog dataset add \
+  --catalog-config catalog.toml prod \
+  --uri s3://bucket/prod \
+  --endpoint http://127.0.0.1:9000 \
+  --region us-west-2 \
+  --access-key BACKEND_AK \
+  --secret-key BACKEND_SK
 pchronicle serve catalog issue --catalog-config catalog.toml alice
 pchronicle serve catalog grant --catalog-config catalog.toml alice prod evals
 pchronicle serve --catalog-config catalog.toml --listen 127.0.0.1:8081
 ```
 
-`catalog.toml` 列出 libraries（每条都是 path）和 users。`serve catalog issue` 写入一个无授权
-用户，并把 sk 只打印到这次 stdout；`grant` / `revoke` 改 `datasets`，不启动 HTTP。改文件后
-必须重启 serve。父进程不打开这些 path。Web UI 通过请求头发送用户 ak/sk；查询在一次性
-worker 中执行，worker 只拿到该用户被授权的 path。另一终端：
+`catalog.toml` 列出 libraries（`[datasets.*]`，本地 path 或 `s3://`）和 users。
+`serve catalog dataset add|remove|list` 改写 libraries，不启动 HTTP。
+`serve catalog issue` 写入一个无授权用户，并把 sk 只打印到这次 stdout；
+`grant` / `revoke` 改该用户可打开的 library 名称。改文件后必须重启 serve。
+
+`pchronicle serve --catalog-config` 会把文件中的 **全部** library 挂进 Warehouse
+（与位置参数挂载等价），并启用 `catalog://` 换票路由。不要与位置参数 Dataset
+同时使用。文件里的 S3 endpoint / region / 后端密钥会在打开存储前写入进程环境。
+使用 Directory 用户钥时，Web UI 可通过请求头发送 ak/sk。另一终端：
 
 ```bash
 pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 pchronicle query @team/prod --sql 'SELECT 1'
 ```
 
-`@team` 是 Directory locator，不是 Dataset。`@team/prod` 换票后打开票里的 `uri`（一条 path）。
-同一 Directory 文件里所有 `s3://` 库必须共用同一组 endpoint、region 和后端密钥。
-listener 仍只允许 loopback。设计见
-[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。
+`@team` 是 Directory locator，不是 Dataset。`@team/prod` 换票后打开票里的 `uri`
+（一条 path）。同一 Directory 文件里所有 `s3://` 库必须共用同一组 endpoint、region
+和后端密钥。listener 仍只允许 loopback。嵌套 Dataset 发现可使用
+`chronicle.manifest`（[RFC-0015](../../rfcs/0015-chronicle-manifest.md)）。
+Directory 设计见 [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。
 
 ## 启用 Control 或 Gateway 集成
 

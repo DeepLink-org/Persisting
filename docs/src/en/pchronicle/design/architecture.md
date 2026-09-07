@@ -149,11 +149,12 @@ Snapshot before switching readers. Dataset tables prune by Source before
 opening matching fixed versions; caches and routing indexes are tied to that
 Snapshot generation.
 
-With `--catalog-config`, the parent process serves Directory list/ticket routes
-and does not open those paths itself. Authorized Web queries run in a worker
-that only receives the caller's paths. After a CLI ticket, the client opens the
-ticket `uri` (a path) with storage credentials. That is platform addressing over
-paths, not a new Dataset kind.
+With `--catalog-config`, Warehouse mounts every `[datasets.*]` library from the
+Directory ACL file (same data plane as positional mounts) and also serves
+Directory list/ticket routes for `catalog://` aliases. Backend S3 endpoint,
+region, and keys from the file are applied before stores open. After a CLI
+ticket, the client opens the ticket `uri` (a path) with storage credentials.
+That is platform addressing over paths, not a new Dataset kind.
 
 The Web application and API are consumers of the same read model. They do not
 become another source of truth. Unknown API routes remain errors rather than SPA
@@ -178,7 +179,9 @@ Gateway composition belong to the [`pchronicle` reference](../reference/cli.md).
 - [Snapshot design](catalog.md): discovery, Snapshot construction, lazy Source
   resolution, and pruning.
 - [RFC-0013 path Directory](../../rfcs/0013-pchronicle-warehouse-catalog.md):
-  name-to-path resolution, ACL, tickets, and query workers.
+  name-to-path resolution, ACL, and tickets.
+- [RFC-0015 `chronicle.manifest`](../../rfcs/0015-chronicle-manifest.md): nested
+  Dataset discovery and aggregate-stat sidecars.
 - [Run storage](trajectory-storage.md): canonical facts, storage layouts, and
   write ownership.
 - [Storyline Lance](storyline-lance.md): three-table projection, content layer,

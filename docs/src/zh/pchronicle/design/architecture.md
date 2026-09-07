@@ -130,9 +130,11 @@ Server 静态挂载命名 path。Refresh 先完整构造新 Snapshot，再切换
 Dataset table 先按 Source 裁剪，再打开命中的固定 version；cache 和 routing index 与 Snapshot
 generation 绑定。
 
-使用 `--catalog-config` 时，父进程只提供 Directory 列表/换票，自己不打开这些 path。
-已授权的 Web 查询在只含该用户 path 的 worker 中执行。CLI 换票后打开票里的 `uri`（一条 path）
-并注入存储钥。这是 path 上的平台寻址，不是新的 Dataset 种类。
+使用 `--catalog-config` 时，Warehouse 会把 Directory ACL 文件中的全部
+`[datasets.*]` library 挂进数据面（与位置参数挂载等价），并同时提供
+`catalog://` 列表/换票路由。文件中的 S3 endpoint、region 与后端密钥在打开存储前
+写入进程环境。CLI 换票后打开票里的 `uri`（一条 path）并注入存储钥。这是 path 上的
+平台寻址，不是新的 Dataset 种类。
 
 Web 与 API 是同一读取模型的 consumer，不形成新事实源。未知 API route 保持 error，不进入
 SPA fallback；只接受 loopback listener。
@@ -154,7 +156,8 @@ SPA fallback；只接受 loopback listener。
 ## 相关设计
 
 - [Snapshot 设计](catalog.md)：discovery、Snapshot 构造、惰性 Source resolve 与裁剪。
-- [RFC-0013 path Directory](../../rfcs/0013-pchronicle-warehouse-catalog.md)：名字→path、ACL、换票与 query worker。
+- [RFC-0013 path Directory](../../rfcs/0013-pchronicle-warehouse-catalog.md)：名字→path、ACL、换票。
+- [RFC-0015 `chronicle.manifest`](../../rfcs/0015-chronicle-manifest.md)：嵌套 Dataset 发现与聚合统计 sidecar。
 - [运行存储](trajectory-storage.md)：canonical fact、存储布局与写入 ownership。
 - [Storyline Lance](storyline-lance.md)：三表 projection、内容层、发布与维护。
 - [记录数据、视图与版本](../concepts/facts-and-projections.md)：这些层次的用户心智模型。

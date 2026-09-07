@@ -10,7 +10,11 @@ session JSONL. Export refuses those two formats.
 Compact JSONL keeps one JSON object per row without assigning trajectory
 semantics. Use `--input-format compact-jsonl` or
 `--output-format compact-jsonl`; see the [CLI reference](../reference/cli.md)
-for the `--column` mapping and snapshot-sync restrictions.
+for the `--column` mapping and snapshot-sync restrictions. Records without a
+usable `id` receive a stable `source_filename#line_number` identity; export
+preserves original input bytes. Successful compact import also writes a leaf
+`chronicle.manifest` at the dataset root so later discovery can avoid opening
+Lance only to classify the tree ([RFC-0015](../../rfcs/0015-chronicle-manifest.md)).
 
 ## Import into a new Dataset
 
