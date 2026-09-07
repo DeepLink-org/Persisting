@@ -7,20 +7,18 @@ sidebar_label: 从这里开始
 
 Persisting 提供两条独立的产品路径，请按当前任务选择入口：
 
-- [使用 pVisor 安全运行 Agent](pvisor/get-started.md)：暂存 workspace 修改，检查 Run Bundle，只应用你批准的内容。
-- [使用 pChronicle 探索持久历史](pchronicle/get-started.md)：打开 Dataset，执行只读查询，并追踪 Source lineage。
-- [理解产品边界](overview.md)：了解执行与历史如何连接，同时保持边界清晰。
+- [使用 pVisor 安全运行 Agent](pvisor/get-started.md)：在暂存工作区里跑 Agent，检查改动，只把你批准的内容写入项目。
+- [使用 pChronicle 探索持久历史](pchronicle/get-started.md)：打开一份轨迹数据，跑只读查询，弄清查的是哪份数据、哪个来源。
+- [选择工作流](overview.md)：弄清该走哪条路径，以及执行与历史如何可选地连接。
 
 如果你正在评估 Persisting，先阅读[选择工作流](overview.md)，再进入对应的产品快速开始。
 
 ## 完成第一次 walkthrough 后你会得到什么
 
-- **pVisor** walkthrough 会以停止的 Run、可读取的 Run Bundle，以及明确的 apply 或 drop
-  决策结束。只有你选择 apply，项目才会收到 staged Effect。
-- **pChronicle** walkthrough 会以一次只读 Dataset 查询结束，并明确区分正在读取的 Dataset、
-  Source 和 Snapshot。
+- **pVisor**：Agent 已停止；改动仍在暂存目录；你明确选择写入项目或丢弃。只有你选择写入，项目才会变化。
+- **pChronicle**：你对一份轨迹数据跑过只读查询，并知道查的是哪份数据、哪个来源。
 
-开始时不需要同时使用两个产品。只有在需要把执行证据与持久轨迹历史关联起来时，才配置 capture 交接。
+开始时不需要同时使用两个产品。只有在需要把一次执行与持久轨迹关联起来时，再配置 capture 交接。
 
 ## 开始前准备
 

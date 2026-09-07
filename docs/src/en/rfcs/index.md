@@ -20,3 +20,4 @@ each product's Reference and Guides.
 | [0012](0012-pchronicle-find-query-syntax.md) | pChronicle `find` query expression | Proposed |
 | [0013](0013-pchronicle-warehouse-catalog.md) | pChronicle path Directory | Proposed |
 | [0014](0014-compact-jsonl.md) | Compact JSONL Lance storage format (`compact-jsonl/v1`) | Accepted |
+| [0015](0015-chronicle-manifest.md) | `chronicle.manifest` Dataset sidecar (TOML) | Proposed |

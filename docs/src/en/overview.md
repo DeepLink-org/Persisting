@@ -5,17 +5,17 @@ the work in front of you, then follow the short path to a useful result.
 
 ## I want to run an Agent safely and review its changes
 
-Start with **pVisor**. It gives one Agent a Run-owned workspace, records the
-execution boundary, and leaves filesystem changes staged until you decide what
-enters the real project.
+Start with **pVisor**. It lets one Agent work in an isolated Run, records the execution boundary, and
+leaves filesystem changes staged until you decide to write them into the real
+project or discard them.
 
 1. [Install the command line tools](installation.md).
 2. [Run your first Agent](pvisor/get-started.md).
 3. [Review and selectively apply changes](pvisor/guides/review-apply.md).
 4. [Choose a host, OCI, or VM environment](pvisor/guides/execution.md).
 
-You should finish with a completed Run, a readable Run Bundle, and either an
-applied or discarded stage.
+When it finishes, the Agent has stopped and its changes remain staged for you to
+review, apply, or discard.
 
 ```bash
 pvisor run --stage ./runs/task-001 -- codex
@@ -34,8 +34,8 @@ example data, so you can learn the query flow before preparing a Dataset.
 3. [Import or export a supported format](pchronicle/guides/exchange.md).
 4. [Serve a Dataset locally](pchronicle/guides/serve.md).
 
-You should finish with a read-only query, a normalized view, and a clear Source
-lineage for the data you inspected.
+You should finish with a read-only query, a normalized view, and a clear sense
+of which data and which source you inspected.
 
 ```bash
 pchronicle onboard query
@@ -51,8 +51,13 @@ records into pChronicle. The handoff is explicit and narrow: it does not move
 the private Run Bundle or invent evidence that the original Source did not
 provide.
 
+pVisor capture and `pchronicle serve --gateway` are separate entry points: pVisor capture
+shares an Agent Run lifecycle and boundary; `pchronicle serve --gateway` receives or forwards
+traffic from an existing Agent or SDK without starting a pVisor Run.
+
 1. [Capture Agent trajectories](pvisor/guides/capture.md).
-2. [Understand the event and sidecar contract](rfcs/0007-events-contract-pchronicle-sidecar.md).
+2. [Understand the event and sidecar contract](rfcs/0007-events-contract-pchronicle-sidecar.md)
+   (for protocol changes or troubleshooting).
 3. [Read the execution-to-history architecture](system-design/architecture.md).
 
 ```text

@@ -594,13 +594,52 @@ fn apply_alias_endpoint(settings: &LocalSettings, name: &str) {
     }
 }
 
-fn apply_alias_region(settings: &LocalSettings, name: &str) {
-    let Some(region) = settings.alias_regions.get(name) else {
-        return;
+const DEFAULT_S3_ALIAS_REGION: &str = "us-west-2";
+
+fn apply_alias_region(settings: &LocalSettings, name: &str, s3_uri: bool) {
+    let region = match settings.alias_regions.get(name) {
+        Some(region) => region.as_str(),
+        // Documented fallback when an s3:// alias omits --region. OpenDAL
+        // requires AWS_REGION or AWS_DEFAULT_REGION at Builder::build.
+        None if s3_uri => DEFAULT_S3_ALIAS_REGION,
+        None => return,
     };
     unsafe {
         std::env::set_var("AWS_REGION", region);
+        std::env::set_var("AWS_DEFAULT_REGION", region);
     }
+}
+
+/// Apply local `@alias` S3 backend keys before the multi-threaded Tokio runtime
+/// starts. Same macOS `set_var` race as catalog serve: OpenDAL must see
+/// `AWS_REGION` before worker threads exist.
+pub(super) fn apply_local_alias_backend_env_before_runtime(
+    reference: Option<&str>,
+    settings_override: Option<&Path>,
+) -> Result<()> {
+    let Some(reference) = reference.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    let Some(rest) = reference.strip_prefix('@') else {
+        return Ok(());
+    };
+    let (name, _) = rest.split_once('/').unwrap_or((rest, ""));
+    if name.is_empty() || RESERVED_ALIASES.contains(&name) {
+        return Ok(());
+    }
+    validate_alias_name(name)?;
+    let path = settings_path(settings_override)?;
+    let settings = load_local_settings_or_default(&path)?;
+    let Some(root) = settings.aliases.get(name) else {
+        return Ok(());
+    };
+    if !root.starts_with("s3://") {
+        return Ok(());
+    }
+    apply_alias_credentials(&settings, name);
+    apply_alias_endpoint(&settings, name);
+    apply_alias_region(&settings, name, true);
+    Ok(())
 }
 
 fn expand_catalog_alias(
@@ -648,10 +687,107 @@ fn expand_catalog_alias(
     Ok(location.as_str().to_owned())
 }
 
+/// When `input` is a bare catalog alias (`@team` / `@team/`), return the alias
+/// name and Directory URL. Dataset-qualified refs (`@team/prod`) return `None`.
+pub(super) fn catalog_alias_directory_target(
+    input: &str,
+    settings_override: Option<&Path>,
+) -> Result<Option<(String, String)>> {
+    let input = input.trim();
+    let Some(rest) = input.strip_prefix('@') else {
+        return Ok(None);
+    };
+    let (name, suffix) = rest.split_once('/').unwrap_or((rest, ""));
+    if !suffix.is_empty() || RESERVED_ALIASES.contains(&name) {
+        return Ok(None);
+    }
+    validate_alias_name(name)?;
+    let path = settings_path(settings_override)?;
+    let settings = load_local_settings_or_default(&path)?;
+    let root = settings.aliases.get(name).ok_or_else(|| {
+        cli_boundary_error(
+            BoundaryCode::NotFound,
+            format!("unknown Dataset alias '@{name}'"),
+        )
+    })?;
+    if !root.starts_with("catalog://") {
+        return Ok(None);
+    }
+    Ok(Some((name.to_owned(), root.clone())))
+}
+
+/// List libraries visible to a catalog alias's user credentials.
+pub(super) fn list_catalog_alias_datasets(
+    input: &str,
+    settings_override: Option<&Path>,
+) -> Result<Option<CatalogAliasDatasetList>> {
+    let Some((alias, catalog_url)) = catalog_alias_directory_target(input, settings_override)?
+    else {
+        return Ok(None);
+    };
+    let path = settings_path(settings_override)?;
+    let settings = load_local_settings_or_default(&path)?;
+    let credentials = settings.alias_credentials.get(&alias).ok_or_else(|| {
+        cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            format!("catalog alias '@{alias}' requires --ak and --sk"),
+        )
+    })?;
+    let datasets = fetch_catalog_datasets(
+        &catalog_url,
+        &credentials.access_key,
+        &credentials.secret_key,
+    )?;
+    Ok(Some(CatalogAliasDatasetList {
+        alias: format!("@{alias}"),
+        catalog: catalog_url,
+        datasets,
+    }))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct CatalogAliasDatasetList {
+    pub alias: String,
+    pub catalog: String,
+    pub datasets: Vec<crate::server::catalog::CatalogLibraryPublic>,
+}
+
 thread_local! {
     static CATALOG_TICKETS: std::cell::RefCell<
         HashMap<(String, String, String), crate::server::catalog::CatalogLibrary>,
     > = std::cell::RefCell::new(HashMap::new());
+}
+
+fn fetch_catalog_datasets(
+    catalog_url: &str,
+    access_key: &str,
+    secret_key: &str,
+) -> Result<Vec<crate::server::catalog::CatalogLibraryPublic>> {
+    use crate::server::catalog::{ACCESS_KEY_HEADER, SECRET_KEY_HEADER, catalog_http_base};
+
+    let base = catalog_http_base(catalog_url)?;
+    let url = format!("{base}/api/v1/catalog/datasets");
+    let response = reqwest::blocking::Client::new()
+        .get(&url)
+        .header(ACCESS_KEY_HEADER, access_key)
+        .header(SECRET_KEY_HEADER, secret_key)
+        .send()
+        .with_context(|| format!("list catalog datasets at {catalog_url}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .context("read catalog dataset list response")?;
+    if !status.is_success() {
+        return Err(cli_boundary_error(
+            if status.as_u16() == 401 {
+                BoundaryCode::InvalidRequest
+            } else {
+                BoundaryCode::Unavailable
+            },
+            format!("catalog dataset list failed ({status}): {body}"),
+        ));
+    }
+    serde_json::from_str(&body).context("decode catalog dataset list")
 }
 
 fn fetch_catalog_ticket(
@@ -747,7 +883,7 @@ pub(super) fn expand_dataset_reference(
                 let expanded = join_alias_target(root, suffix)?;
                 apply_alias_credentials(&settings, name);
                 apply_alias_endpoint(&settings, name);
-                apply_alias_region(&settings, name);
+                apply_alias_region(&settings, name, root.starts_with("s3://"));
                 expanded
             }
         }

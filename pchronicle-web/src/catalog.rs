@@ -2,66 +2,6 @@ use dioxus::prelude::*;
 
 use crate::model::{CatalogTree, CatalogTreeChild};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TileBox {
-    pub x: f64,
-    pub y: f64,
-    pub w: f64,
-    pub h: f64,
-}
-
-pub fn layout_treemap(sizes: &[f64], width: f64, height: f64) -> Vec<TileBox> {
-    if sizes.is_empty() || width <= 0.0 || height <= 0.0 {
-        return Vec::new();
-    }
-    let total: f64 = sizes.iter().copied().sum();
-    if total <= 0.0 {
-        return sizes
-            .iter()
-            .map(|_| TileBox {
-                x: 0.0,
-                y: 0.0,
-                w: 0.0,
-                h: 0.0,
-            })
-            .collect();
-    }
-    split(sizes, 0.0, 0.0, width, height)
-}
-
-fn split(areas: &[f64], x: f64, y: f64, w: f64, h: f64) -> Vec<TileBox> {
-    match areas {
-        [] => Vec::new(),
-        [_] => vec![TileBox { x, y, w, h }],
-        _ => {
-            let total: f64 = areas.iter().sum();
-            let mut acc = 0.0;
-            let mut cut = 1;
-            for (index, area) in areas.iter().enumerate() {
-                acc += area;
-                cut = index + 1;
-                if acc >= total / 2.0 {
-                    break;
-                }
-            }
-            cut = cut.clamp(1, areas.len() - 1);
-            let left_sum: f64 = areas[..cut].iter().sum();
-            let frac = left_sum / total;
-            if w >= h {
-                let left = w * frac;
-                let mut tiles = split(&areas[..cut], x, y, left, h);
-                tiles.extend(split(&areas[cut..], x + left, y, w - left, h));
-                tiles
-            } else {
-                let top = h * frac;
-                let mut tiles = split(&areas[..cut], x, y, w, top);
-                tiles.extend(split(&areas[cut..], x, y + top, w, h - top));
-                tiles
-            }
-        }
-    }
-}
-
 #[component]
 pub fn CatalogExplorer(
     tree: Option<CatalogTree>,
@@ -111,7 +51,7 @@ pub fn CatalogExplorer(
                         span { "This path contains one source file. Open it in Runs to inspect its runs." }
                     }
                 } else {
-                    CatalogMosaic {
+                    CatalogFolders {
                         tree: tree.clone().unwrap(),
                         on_open,
                         on_runs,
@@ -208,46 +148,23 @@ fn CatalogStats(tree: Option<CatalogTree>) -> Element {
 }
 
 #[component]
-fn CatalogMosaic(
+fn CatalogFolders(
     tree: CatalogTree,
     on_open: EventHandler<(String, String)>,
     on_runs: EventHandler<(String, String)>,
     on_other: EventHandler<MouseEvent>,
 ) -> Element {
-    let sizes = tree
-        .children
-        .iter()
-        .map(|child| child.run_count.max(1) as f64)
-        .collect::<Vec<_>>();
-    let boxes = layout_treemap(&sizes, 100.0, 100.0);
     let dataset = tree.dataset.clone().unwrap_or_default();
-    // A treemap with one or two children stretches a single tile across the
-    // whole viewport. Render those as fixed-size cards instead.
-    let compact = tree.children.len() <= 2;
-    let tree_class = if compact {
-        "pc-catalog-tree compact"
-    } else {
-        "pc-catalog-tree"
-    };
     rsx! {
-        div { class: "{tree_class}",
-            for (index, child) in tree.children.iter().cloned().enumerate() {
-                {
-                    let tile = boxes.get(index).copied().unwrap_or(TileBox { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
-                    let tone = index % 6;
-                    rsx! {
-                        CatalogTile {
-                            key: "{child.kind}:{child.path}",
-                            child,
-                            dataset: dataset.clone(),
-                            tile,
-                            tone,
-                            compact,
-                            on_open,
-                            on_runs,
-                            on_other,
-                        }
-                    }
+        div { class: "pc-catalog-folders",
+            for child in tree.children.iter().cloned() {
+                CatalogFolder {
+                    key: "{child.kind}:{child.path}",
+                    child,
+                    dataset: dataset.clone(),
+                    on_open,
+                    on_runs,
+                    on_other,
                 }
             }
         }
@@ -255,32 +172,22 @@ fn CatalogMosaic(
 }
 
 #[component]
-fn CatalogTile(
+fn CatalogFolder(
     child: CatalogTreeChild,
     dataset: String,
-    tile: TileBox,
-    tone: usize,
-    compact: bool,
     on_open: EventHandler<(String, String)>,
     on_runs: EventHandler<(String, String)>,
     on_other: EventHandler<MouseEvent>,
 ) -> Element {
-    let style = if compact {
-        String::new()
-    } else {
-        format!(
-            "left:{:.3}%;top:{:.3}%;width:{:.3}%;height:{:.3}%;",
-            tile.x, tile.y, tile.w, tile.h
-        )
-    };
     let kind = child.kind.clone();
     let path = child.path.clone();
     let name = child.name.clone();
+    let data_type = child.data_type.clone();
+    let tokens = format_tokens(child.total_tokens);
     rsx! {
         button {
-            class: "pc-catalog-tile tone-{tone} kind-{kind}",
-            style,
-            title: "{name} · {child.run_count} runs",
+            class: "pc-catalog-folder type-{data_type} kind-{kind}",
+            title: "{name} · {child.run_count} trajectories · {tokens} tokens",
             onclick: move |event| {
                 match kind.as_str() {
                     "other" => on_other.call(event),
@@ -289,8 +196,15 @@ fn CatalogTile(
                     _ => on_open.call((dataset.clone(), path.clone())),
                 }
             },
-            strong { "{child.name}" }
-            small { "{child.run_count}" }
+            div { class: "pc-catalog-folder-title",
+                span { class: "pc-catalog-folder-icon", if child.kind == "file" { "▤" } else { "▰" } }
+                strong { "{child.name}" }
+            }
+            span { class: "pc-catalog-folder-type", "{data_type}" }
+            div { class: "pc-catalog-folder-meta",
+                span { "{child.run_count} trajectories" }
+                span { "{tokens} tokens" }
+            }
         }
     }
 }
@@ -364,24 +278,5 @@ fn format_tokens(tokens: Option<u64>) -> String {
         format!("{:.1}k", tokens as f64 / 1_000.0)
     } else {
         tokens.to_string()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn treemap_covers_the_canvas_and_keeps_area_proportional() {
-        let boxes = layout_treemap(&[2.0, 1.0, 1.0], 100.0, 100.0);
-        assert_eq!(boxes.len(), 3);
-        let area: f64 = boxes.iter().map(|tile| tile.w * tile.h).sum();
-        assert!((area - 10_000.0).abs() < 0.01);
-        assert!((boxes[0].w * boxes[0].h - 5_000.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn empty_sizes_yield_no_tiles() {
-        assert!(layout_treemap(&[], 100.0, 100.0).is_empty());
     }
 }

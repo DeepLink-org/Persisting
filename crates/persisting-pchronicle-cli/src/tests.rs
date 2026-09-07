@@ -319,7 +319,7 @@ fn command_tree_contains_the_product_commands() {
         .get_subcommands()
         .map(|command| command.get_name())
         .collect::<Vec<_>>();
-    assert_eq!(catalog_commands, ["issue", "grant", "revoke"]);
+    assert_eq!(catalog_commands, ["issue", "grant", "revoke", "dataset"]);
     let mut serve_command = Cli::command();
     let serve_help = serve_command.find_subcommand_mut("serve").unwrap();
     let mut help = Vec::new();
@@ -547,6 +547,7 @@ async fn alias_s3_credentials_are_stored_separately_and_applied_on_expansion() -
     let _generic_endpoint = EnvGuard::unset("AWS_ENDPOINT");
     let _allow_http = EnvGuard::unset("AWS_ALLOW_HTTP");
     let _region = EnvGuard::unset("AWS_REGION");
+    let _default_region = EnvGuard::unset("AWS_DEFAULT_REGION");
     assert_eq!(
         expand_dataset_reference("@prod", Some(&config), false)?,
         "s3://example-bucket/evals"
@@ -569,6 +570,10 @@ async fn alias_s3_credentials_are_stored_separately_and_applied_on_expansion() -
     );
     assert_eq!(std::env::var("AWS_ALLOW_HTTP").as_deref(), Ok("true"));
     assert_eq!(std::env::var("AWS_REGION").as_deref(), Ok("us-west-2"));
+    assert_eq!(
+        std::env::var("AWS_DEFAULT_REGION").as_deref(),
+        Ok("us-west-2")
+    );
 
     let cli = Cli::try_parse_from([
         "pchronicle",
@@ -584,6 +589,59 @@ async fn alias_s3_credentials_are_stored_separately_and_applied_on_expansion() -
     let output = String::from_utf8(stdout)?;
     assert!(!output.contains("access-test"));
     assert!(!output.contains("secret-test"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn s3_alias_without_region_falls_back_to_documented_default() -> Result<()> {
+    let _env_guard = DATASET_ALIAS_ENV_LOCK.lock().await;
+    let temporary = tempfile::tempdir()?;
+    let config = temporary.path().join("config.toml");
+    let config_arg = config.to_string_lossy().into_owned();
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "add",
+        "minio",
+        "s3://test/test",
+        "--endpoint",
+        "http://127.0.0.1:9000",
+        "--ak",
+        "123",
+        "--sk",
+        "123",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+    let config_text = fs::read_to_string(&config)?;
+    assert!(!config_text.contains("[alias_regions]"), "{config_text}");
+
+    let _region = EnvGuard::unset("AWS_REGION");
+    let _default_region = EnvGuard::unset("AWS_DEFAULT_REGION");
+    let _endpoint = EnvGuard::unset("AWS_ENDPOINT_URL_S3");
+    assert_eq!(
+        expand_dataset_reference("@minio", Some(&config), false)?,
+        "s3://test/test"
+    );
+    assert_eq!(std::env::var("AWS_REGION").as_deref(), Ok("us-west-2"));
+    assert_eq!(
+        std::env::var("AWS_DEFAULT_REGION").as_deref(),
+        Ok("us-west-2")
+    );
+    assert_eq!(
+        std::env::var("AWS_ENDPOINT_URL_S3").as_deref(),
+        Ok("http://127.0.0.1:9000")
+    );
+
+    let ls = Cli::try_parse_from(["pchronicle", "-c", &config_arg, "ls", "@minio"])?;
+    unsafe {
+        std::env::remove_var("AWS_REGION");
+        std::env::remove_var("AWS_DEFAULT_REGION");
+    }
+    apply_catalog_backend_env_before_runtime(&ls)?;
+    assert_eq!(std::env::var("AWS_REGION").as_deref(), Ok("us-west-2"));
+    assert_eq!(std::env::var("AWS_ACCESS_KEY_ID").as_deref(), Ok("123"));
     Ok(())
 }
 
@@ -650,6 +708,100 @@ async fn catalog_alias_stores_user_keys_and_rejects_endpoint() -> Result<()> {
     assert!(!config_text.contains("alias_endpoints"));
     assert!(!config_text.contains("BACKEND"));
 
+    let error = expand_dataset_reference("@team", Some(&config), false)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("requires a dataset"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn ls_catalog_alias_lists_authorized_datasets() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let catalog = temporary.path().join("catalog.toml");
+    fs::write(
+        &catalog,
+        r#"
+[datasets.prod]
+uri = "s3://bucket/prod"
+endpoint = "http://127.0.0.1:9000"
+region = "us-west-2"
+access_key = "BACKEND_AK"
+secret_key = "BACKEND_SK"
+
+[datasets.evals]
+uri = "s3://bucket/evals"
+endpoint = "http://127.0.0.1:9000"
+region = "us-west-2"
+access_key = "BACKEND_AK"
+secret_key = "BACKEND_SK"
+
+[users.alice]
+access_key = "USER_AK"
+secret_key = "USER_SK"
+
+[[grants]]
+user = "alice"
+dataset = "prod"
+permissions = ["read"]
+
+[[grants]]
+user = "alice"
+dataset = "evals"
+permissions = ["read"]
+"#,
+    )?;
+    let acl = server::catalog::CatalogAcl::load(&catalog)?;
+    let app = server::PreparedWarehouse::prepare_catalog_front(acl)
+        .await?
+        .router();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+    tokio::task::yield_now().await;
+
+    let config = temporary.path().join("config.toml");
+    let config_arg = config.to_string_lossy().into_owned();
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "-c",
+        &config_arg,
+        "alias",
+        "add",
+        "team",
+        &format!("catalog://127.0.0.1:{port}"),
+        "--ak",
+        "USER_AK",
+        "--sk",
+        "USER_SK",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+
+    for reference in ["@team", "@team/"] {
+        let ls = Cli::try_parse_from([
+            "pchronicle",
+            "-c",
+            &config_arg,
+            "ls",
+            reference,
+            "--format",
+            "json",
+        ])?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        run(ls, false, &mut stdout, &mut stderr).await?;
+        let body = String::from_utf8(stdout)?;
+        assert!(body.contains("\"name\": \"prod\""), "{reference}: {body}");
+        assert!(body.contains("\"name\": \"evals\""), "{reference}: {body}");
+        assert!(body.contains("s3://bucket/prod"), "{reference}: {body}");
+        assert!(!body.contains("BACKEND_AK"), "{reference}: {body}");
+        assert!(!body.contains("BACKEND_SK"), "{reference}: {body}");
+        assert!(!body.contains("USER_SK"), "{reference}: {body}");
+    }
+
+    // Keep non-ls resolution strict: bare catalog aliases still need a dataset.
     let error = expand_dataset_reference("@team", Some(&config), false)
         .unwrap_err()
         .to_string();
@@ -758,6 +910,88 @@ secret_key = "BACKEND_SK"
     run(revoke, false, &mut stdout, &mut Vec::new()).await?;
     let revoked: Value = serde_json::from_slice(&stdout)?;
     assert_eq!(revoked["datasets"], serde_json::json!([]));
+    Ok(())
+}
+
+#[tokio::test]
+async fn serve_catalog_dataset_add_list_remove_rewrites_config() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let root = temporary.path().join("data");
+    fs::create_dir_all(&root)?;
+    let catalog = temporary.path().join("catalog.toml");
+    fs::write(
+        &catalog,
+        format!(
+            r#"
+[datasets.seed]
+uri = "{}"
+"#,
+            root.display()
+        ),
+    )?;
+    let catalog_arg = catalog.to_string_lossy().into_owned();
+    let extra = temporary.path().join("extra");
+    fs::create_dir_all(&extra)?;
+    let extra_uri = extra.to_string_lossy().into_owned();
+
+    let add = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "catalog",
+        "dataset",
+        "add",
+        "--catalog-config",
+        &catalog_arg,
+        "extra",
+        "--uri",
+        &extra_uri,
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(add, false, &mut stdout, &mut Vec::new()).await?;
+    let added: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(added["name"], "extra");
+
+    let list = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "catalog",
+        "dataset",
+        "list",
+        "--catalog-config",
+        &catalog_arg,
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(list, false, &mut stdout, &mut Vec::new()).await?;
+    let listed: Value = serde_json::from_slice(&stdout)?;
+    let names = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["name"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"seed".to_string()));
+    assert!(names.contains(&"extra".to_string()));
+
+    let remove = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "catalog",
+        "dataset",
+        "remove",
+        "--catalog-config",
+        &catalog_arg,
+        "extra",
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(remove, false, &mut stdout, &mut Vec::new()).await?;
+    let remaining: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(remaining["datasets"], serde_json::json!(["seed"]));
     Ok(())
 }
 
@@ -876,6 +1110,8 @@ fn list_source_status_does_not_serialize_catalog_diagnostics() -> Result<()> {
         last_modified: None,
         status: CatalogSourceStatus::Error,
         error: Some("list-secret-sentinel /private/list/path".into()),
+        record_count: None,
+        failed_count: None,
     };
 
     let output = serde_json::to_string(&source_response(&source))?;

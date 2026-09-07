@@ -137,11 +137,15 @@ pub struct CatalogTreeChild {
     pub name: String,
     pub kind: String,
     #[serde(default)]
+    pub data_type: String,
+    #[serde(default)]
     pub path: String,
     #[serde(default)]
     pub run_count: usize,
     #[serde(default)]
     pub failed_count: usize,
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
     #[serde(default)]
     pub entries: Vec<CatalogTreeChild>,
 }

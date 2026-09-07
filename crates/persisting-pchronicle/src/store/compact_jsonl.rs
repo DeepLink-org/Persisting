@@ -19,6 +19,8 @@ use lance_arrow::json::{decode_json, encode_json, json_field};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::store::ChronicleManifest;
+
 const RAW_COLUMN: &str = "_raw_";
 const OFFLOAD_COLUMN: &str = "_offload_";
 const FORMAT_KEY: &str = "pchronicle.format";
@@ -113,8 +115,130 @@ pub struct CompactJsonlRecord {
 pub struct CompactJsonlStore;
 
 impl CompactJsonlStore {
+    /// Store-layer publish: every successful compact-jsonl Lance write MUST end
+    /// here so catalog/CLI paths cannot skip `chronicle.manifest`.
+    pub async fn publish_manifest(root: impl AsRef<Path>) -> Result<ChronicleManifest> {
+        let root = root.as_ref();
+        let dataset = Dataset::open(root.to_string_lossy().as_ref())
+            .await
+            .with_context(|| {
+                format!(
+                    "open compact JSONL for chronicle.manifest {}",
+                    root.display()
+                )
+            })?;
+        validate_dataset_schema(&dataset)?;
+        let version = dataset.version_id();
+        let record_count = dataset.count_rows(None).await? as u64;
+        crate::store::chronicle_manifest::write_compact_jsonl_manifest(
+            root,
+            version,
+            record_count,
+        )?;
+        crate::store::chronicle_manifest::load_manifest(root)?
+            .context("chronicle.manifest missing after publish")
+    }
+
+    /// Ensure the sidecar matches the opened Lance revision. Missing or stale
+    /// manifests are rewritten; compatible old datasets are upgraded in place.
+    pub async fn ensure_manifest(root: impl AsRef<Path>) -> Result<Option<ChronicleManifest>> {
+        let root = root.as_ref();
+        let dataset = match Dataset::open(root.to_string_lossy().as_ref()).await {
+            Ok(dataset) => dataset,
+            Err(_) => return Ok(None),
+        };
+        if validate_dataset_schema(&dataset).is_err() {
+            return Ok(None);
+        }
+        let version = dataset.version_id();
+        if let Some(manifest) = crate::store::chronicle_manifest::try_load_manifest(root)
+            && crate::store::chronicle_manifest::compact_jsonl_manifest_matches(&manifest, version)
+        {
+            return Ok(Some(manifest));
+        }
+        let record_count = dataset.count_rows(None).await? as u64;
+        match crate::store::chronicle_manifest::write_compact_jsonl_manifest(
+            root,
+            version,
+            record_count,
+        ) {
+            Ok(()) => Ok(crate::store::chronicle_manifest::try_load_manifest(root)),
+            Err(error) => {
+                tracing::warn!(
+                    target: "persisting_pchronicle::compact_jsonl",
+                    error = %error,
+                    path = %root.display(),
+                    "failed to ensure chronicle.manifest for compact JSONL dataset"
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    /// Page compact record identities without loading the full table into memory.
+    pub async fn records_page(
+        input: impl AsRef<Path>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<CompactJsonlRecord>, u64)> {
+        let input = input.as_ref();
+        let limit = limit.max(1);
+        let manifest = Self::ensure_manifest(input).await?;
+        let dataset = Dataset::open(input.to_string_lossy().as_ref()).await?;
+        validate_dataset_schema(&dataset)?;
+        let total = if let Some(count) = manifest
+            .as_ref()
+            .and_then(|manifest| manifest.stats.as_ref())
+            .map(|stats| stats.record_count)
+        {
+            count
+        } else {
+            dataset.count_rows(None).await? as u64
+        };
+        if offset as u64 >= total || limit == 0 {
+            return Ok((Vec::new(), total));
+        }
+        let mut scan = dataset.scan();
+        scan.scan_in_order(true);
+        scan.limit(Some(limit as i64), (offset > 0).then_some(offset as i64))
+            .context("apply compact JSONL page offset/limit")?;
+        let stream = scan.try_into_stream().await?;
+        let mut stream = stream;
+        let mut out = Vec::with_capacity(limit.min(4096));
+        while let Some(batch) = stream.try_next().await? {
+            let ids = batch
+                .column(batch.schema().index_of("id")?)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .context("compact JSONL id must be Utf8")?;
+            let timestamps = batch
+                .column(batch.schema().index_of("timestamp")?)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .context("compact JSONL timestamp must be Utf8")?;
+            let filenames = batch
+                .column(batch.schema().index_of("filename")?)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .context("compact JSONL filename must be Utf8")?;
+            for row in 0..batch.num_rows() {
+                if out.len() >= limit {
+                    return Ok((out, total));
+                }
+                out.push(CompactJsonlRecord {
+                    id: ids.value(row).into(),
+                    timestamp: timestamps.value(row).into(),
+                    filename: filenames.value(row).into(),
+                });
+            }
+        }
+        Ok((out, total))
+    }
+
     pub async fn records(input: impl AsRef<Path>) -> Result<Vec<CompactJsonlRecord>> {
-        let dataset = Dataset::open(input.as_ref().to_string_lossy().as_ref()).await?;
+        let input = input.as_ref();
+        let _ = Self::ensure_manifest(input).await?;
+        let dataset = Dataset::open(input.to_string_lossy().as_ref()).await?;
         validate_dataset_schema(&dataset)?;
         let stream = dataset.scan().scan_in_order(true).try_into_stream().await?;
         let mut stream = stream;
@@ -149,7 +273,9 @@ impl CompactJsonlStore {
     /// Read one record for the Web explorer without assigning trajectory
     /// semantics to the compact row.
     pub async fn read_record(input: impl AsRef<Path>, id: &str) -> Result<Option<Value>> {
-        let dataset = Dataset::open(input.as_ref().to_string_lossy().as_ref()).await?;
+        let input = input.as_ref();
+        let _ = Self::ensure_manifest(input).await?;
+        let dataset = Dataset::open(input.to_string_lossy().as_ref()).await?;
         let (_, offload_idx) = validate_dataset_schema(&dataset)?;
         let stream = dataset.scan().scan_in_order(true).try_into_stream().await?;
         let mut stream = stream;
@@ -173,8 +299,7 @@ impl CompactJsonlStore {
                     let descriptor = json_text_at(offloads.as_ref(), row)?
                         .context("compact JSONL row has neither data nor offload")?;
                     let reference: CompactJsonlOffload = serde_json::from_str(&descriptor)?;
-                    let bytes =
-                        fs::read(input.as_ref().join(&reference.path).join(&reference.key))?;
+                    let bytes = fs::read(input.join(&reference.path).join(&reference.key))?;
                     ensure!(
                         blake3::hash(&bytes).to_hex().as_str() == reference.key,
                         "compact JSONL offload digest mismatch"
@@ -195,10 +320,10 @@ impl CompactJsonlStore {
         let input = input.as_ref();
         let output = output.as_ref();
         options.validate()?;
-        let files = collect_jsonl(input)?;
+        let files = collect_json_inputs(input)?;
         ensure!(
             !files.is_empty(),
-            "compact JSONL input contains no .jsonl files"
+            "compact JSONL input contains no .json, .jsonl, or .ndjson files"
         );
         if output.exists() {
             fs::remove_dir_all(output)
@@ -216,49 +341,63 @@ impl CompactJsonlStore {
                 .to_str()
                 .context("compact JSONL filename is not UTF-8")?
                 .replace('\\', "/");
-            let mut reader = BufReader::new(File::open(&file)?);
             let first_row = rows.len();
-            for line_no in 1usize.. {
-                let mut raw = Vec::new();
-                if reader.read_until(b'\n', &mut raw)? == 0 {
-                    break;
+            if is_json_document(&file) {
+                let raw = fs::read(&file)?;
+                let value: Value = serde_json::from_slice(&raw)
+                    .with_context(|| format!("parse compact JSON {relative}"))?;
+                ensure!(
+                    matches!(value, Value::Object(_) | Value::Array(_)),
+                    "compact JSON {relative} must be an object or array"
+                );
+                rows.push((value, raw, relative.clone(), 1));
+            } else {
+                let mut reader = BufReader::new(File::open(&file)?);
+                for line_no in 1usize.. {
+                    let mut raw = Vec::new();
+                    if reader.read_until(b'\n', &mut raw)? == 0 {
+                        break;
+                    }
+                    let mut end = raw.len() - usize::from(raw.ends_with(b"\n"));
+                    end -= usize::from(raw[..end].ends_with(b"\r"));
+                    let json = &raw[..end];
+                    ensure!(
+                        !json.iter().all(u8::is_ascii_whitespace),
+                        "compact JSONL {}:{} is empty",
+                        relative,
+                        line_no
+                    );
+                    let value: Value = serde_json::from_slice(json)
+                        .with_context(|| format!("parse compact JSONL {relative}:{line_no}"))?;
+                    ensure!(
+                        value.is_object(),
+                        "compact JSONL {relative}:{line_no} must be a JSON object"
+                    );
+                    rows.push((value, raw, relative.clone(), line_no));
                 }
-                let mut end = raw.len() - usize::from(raw.ends_with(b"\n"));
-                end -= usize::from(raw[..end].ends_with(b"\r"));
-                let json = &raw[..end];
-                ensure!(
-                    !json.iter().all(u8::is_ascii_whitespace),
-                    "compact JSONL {}:{} is empty",
-                    relative,
-                    line_no
-                );
-                let value: Value = serde_json::from_slice(json)
-                    .with_context(|| format!("parse compact JSONL {relative}:{line_no}"))?;
-                ensure!(
-                    value.is_object(),
-                    "compact JSONL {relative}:{line_no} must be a JSON object"
-                );
-                rows.push((value, raw, relative.clone(), line_no));
             }
             ensure!(rows.len() > first_row, "compact JSONL {relative} is empty");
         }
         let schema = schema(options)?;
         let mut arrays: Vec<Arc<dyn Array>> = Vec::new();
-        let required = |name: &str, default| -> Result<Vec<String>> {
-            let path = options.path_for(name, default);
-            rows.iter()
-                .map(|(value, _, file, line)| {
-                    path_value(value, path)
+        let (ids, timestamps): (Vec<_>, Vec<_>) = rows
+            .iter()
+            .map(|(value, _, file, line)| {
+                let generated = generated_record_key(file, *line);
+                let timestamp = path_value(value, options.path_for("timestamp", "$.timestamp"))
+                    .and_then(scalar_string)
+                    .filter(|value| !value.is_empty());
+                let id = if timestamp.is_none() {
+                    generated.clone()
+                } else {
+                    path_value(value, options.path_for("id", "$.id"))
                         .and_then(scalar_string)
                         .filter(|value| !value.is_empty())
-                        .with_context(|| {
-                            format!("compact JSONL {file}:{line} requires scalar {name} at {path}")
-                        })
-                })
-                .collect()
-        };
-        let ids = required("id", "$.id")?;
-        let timestamps = required("timestamp", "$.timestamp")?;
+                        .unwrap_or_else(|| generated.clone())
+                };
+                (id, timestamp.unwrap_or(generated))
+            })
+            .unzip();
         let mut unique_ids = std::collections::HashSet::new();
         for id in &ids {
             ensure!(unique_ids.insert(id), "duplicate compact JSONL id '{id}'");
@@ -359,6 +498,9 @@ impl CompactJsonlStore {
             .execute_stream(RecordBatchIterator::new(vec![Ok(batch)], schema))
             .await
             .context("write compact JSONL Lance dataset")?;
+        // Store-layer contract: every published compact dataset carries
+        // chronicle.manifest. import and sync both end here.
+        Self::publish_manifest(output).await?;
         Ok(rows.len())
     }
 
@@ -530,7 +672,7 @@ fn encode_json_bytes(value: &str) -> Result<Vec<u8>> {
     encode_json(value).map_err(|error| anyhow!("encode compact JSON value: {error}"))
 }
 
-fn collect_jsonl(input: &Path) -> Result<Vec<PathBuf>> {
+fn collect_json_inputs(input: &Path) -> Result<Vec<PathBuf>> {
     let metadata = fs::symlink_metadata(input)
         .with_context(|| format!("inspect compact JSONL input {}", input.display()))?;
     ensure!(
@@ -542,8 +684,11 @@ fn collect_jsonl(input: &Path) -> Result<Vec<PathBuf>> {
             input
                 .extension()
                 .and_then(|x| x.to_str())
-                .is_some_and(|x| x.eq_ignore_ascii_case("jsonl")),
-            "compact JSONL input must be .jsonl"
+                .is_some_and(|x| matches!(
+                    x.to_ascii_lowercase().as_str(),
+                    "json" | "jsonl" | "ndjson"
+                )),
+            "compact JSONL input must be .json, .jsonl, or .ndjson"
         );
         return Ok(vec![input.to_path_buf()]);
     }
@@ -563,17 +708,34 @@ fn collect_jsonl(input: &Path) -> Result<Vec<PathBuf>> {
             let p = entry.path();
             if file_type.is_dir() {
                 stack.push(p);
-            } else if file_type.is_file()
-                && p.extension()
-                    .and_then(|x| x.to_str())
-                    .is_some_and(|x| x.eq_ignore_ascii_case("jsonl"))
-            {
+            } else if file_type.is_file() && is_json_input(&p) {
                 out.push(p);
             }
         }
     }
     out.sort();
     Ok(out)
+}
+
+fn is_json_input(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "json" | "jsonl" | "ndjson"
+            )
+        })
+}
+
+fn is_json_document(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+}
+
+fn generated_record_key(file: &str, line: usize) -> String {
+    format!("{file}#{line}")
 }
 
 fn valid_path(path: &str) -> bool {
@@ -690,6 +852,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ensure_manifest_backfills_missing_sidecar_for_legacy_datasets() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let input = temp.path().join("input.jsonl");
+        let dataset = temp.path().join("data.lance");
+        fs::write(
+            &input,
+            b"{\"id\":\"a\",\"timestamp\":1}\n{\"id\":\"b\",\"timestamp\":2}\n",
+        )?;
+        CompactJsonlStore::import_path(&input, &dataset, &CompactJsonlOptions::default()).await?;
+        fs::remove_file(crate::store::chronicle_manifest::manifest_path(&dataset))?;
+        assert!(crate::store::load_manifest(&dataset)?.is_none());
+
+        let ensured = CompactJsonlStore::ensure_manifest(&dataset)
+            .await?
+            .expect("ensure rewrites manifesto");
+        assert!(ensured.is_compact_jsonl_leaf());
+        assert_eq!(ensured.stats.as_ref().unwrap().record_count, 2);
+        assert!(crate::store::load_manifest(&dataset)?.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn records_page_returns_offset_window_and_manifest_total() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let input = temp.path().join("input.jsonl");
+        let dataset = temp.path().join("data.lance");
+        let mut body = String::new();
+        for index in 0..4 {
+            body.push_str(&format!(
+                "{{\"id\":\"id-{index}\",\"timestamp\":{index}}}\n"
+            ));
+        }
+        fs::write(&input, body)?;
+        CompactJsonlStore::import_path(&input, &dataset, &CompactJsonlOptions::default()).await?;
+
+        let (page, total) = CompactJsonlStore::records_page(&dataset, 1, 2).await?;
+        assert_eq!(total, 4);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].id, "id-1");
+        assert_eq!(page[1].id, "id-2");
+        Ok(())
+    }
+
+    #[tokio::test]
+
     async fn required_columns_can_be_remapped_and_final_newline_is_exact() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let input = temp.path().join("input.jsonl");
@@ -711,18 +918,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_required_timestamp_rejects_the_snapshot() -> Result<()> {
+    async fn missing_base_columns_use_source_line_values() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let input = temp.path().join("input.jsonl");
         fs::write(&input, b"{\"id\":\"only\"}\n")?;
-        let error = CompactJsonlStore::import_path(
-            &input,
-            temp.path().join("data.lance"),
-            &CompactJsonlOptions::default(),
-        )
-        .await
-        .unwrap_err();
-        assert!(error.to_string().contains("requires scalar timestamp"));
+        let dataset = temp.path().join("data.lance");
+        CompactJsonlStore::import_path(&input, &dataset, &CompactJsonlOptions::default()).await?;
+        let record = &CompactJsonlStore::records(&dataset).await?[0];
+        assert_eq!(record.id, "input.jsonl#1");
+        assert_eq!(record.timestamp, "input.jsonl#1");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn json_documents_and_arrays_are_imported_as_records() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let input = temp.path().join("input");
+        let dataset = temp.path().join("data.lance");
+        let output = temp.path().join("out");
+        fs::create_dir_all(&input)?;
+        fs::write(input.join("object.json"), b"{\"value\":1}")?;
+        fs::write(input.join("array.json"), b"[{\"value\":2},{\"value\":3}]")?;
+
+        assert_eq!(
+            CompactJsonlStore::import_path(&input, &dataset, &CompactJsonlOptions::default())
+                .await?,
+            2
+        );
+        let records = CompactJsonlStore::records(&dataset).await?;
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["array.json#1", "object.json#1"]
+        );
+        CompactJsonlStore::export_path(&dataset, &output).await?;
+        assert_eq!(
+            fs::read(output.join("array.json"))?,
+            b"[{\"value\":2},{\"value\":3}]"
+        );
+        assert_eq!(fs::read(output.join("object.json"))?, b"{\"value\":1}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn missing_id_uses_source_line_and_preserves_input() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let input = temp.path().join("events.jsonl");
+        let dataset = temp.path().join("data.lance");
+        let output = temp.path().join("out");
+        let raw = b"{\"timestamp\":1,\"event\":\"start\"}\n{\"timestamp\":2,\"event\":\"end\"}\n";
+        fs::write(&input, raw)?;
+
+        CompactJsonlStore::import_path(&input, &dataset, &CompactJsonlOptions::default()).await?;
+        let records = CompactJsonlStore::records(&dataset).await?;
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["events.jsonl#1", "events.jsonl#2"]
+        );
+        CompactJsonlStore::export_path(&dataset, &output).await?;
+        assert_eq!(fs::read(output.join("events.jsonl"))?, raw);
         Ok(())
     }
 }

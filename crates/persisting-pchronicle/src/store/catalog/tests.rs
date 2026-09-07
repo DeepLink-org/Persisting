@@ -220,6 +220,169 @@ async fn ignores_derived_lance_sidecars_during_discovery() -> Result<()> {
 }
 
 #[tokio::test]
+async fn discovers_extensionless_compact_lance_dataset() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("input.jsonl");
+    let compact = temp.path().join("compact");
+    fs::write(&input, b"{\"timestamp\":1,\"value\":\"ok\"}\n")?;
+    crate::storage::CompactJsonlStore::import_path(
+        &input,
+        &compact,
+        &crate::storage::CompactJsonlOptions::default(),
+    )
+    .await?;
+    fs::remove_file(input)?;
+
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(temp.path().to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+    let sources = &snapshot.datasets()[0].sources;
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].file, "compact");
+    assert_eq!(sources[0].format.as_deref(), Some("compact-jsonl/v1"));
+
+    let manifest = crate::storage::load_manifest(&compact)?.expect("import writes manifesto");
+    assert!(manifest.is_compact_jsonl_leaf());
+    assert_eq!(manifest.stats.as_ref().unwrap().record_count, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn discovers_nested_branch_and_leaf_chronicle_manifests_without_opening_lance() -> Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    let warehouse = temp.path().join("warehouse");
+    let leaf = warehouse.join("codex_jsonl");
+    fs::create_dir_all(&leaf)?;
+    crate::store::chronicle_manifest::atomic_write_manifest(
+        &warehouse,
+        &crate::store::ChronicleManifest::branch(),
+    )?;
+    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&leaf, 1, 42)?;
+    // No Lance data/ tree: discovery must trust the leaf manifesto.
+
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(warehouse.to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+    let sources = &snapshot.datasets()[0].sources;
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].file, "codex_jsonl");
+    assert_eq!(sources[0].format.as_deref(), Some("compact-jsonl/v1"));
+    assert_eq!(sources[0].record_count, Some(42));
+    assert_eq!(sources[0].failed_count, Some(0));
+    Ok(())
+}
+
+#[tokio::test]
+async fn discovers_multi_level_branch_tree_and_preserves_leaf_counts() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let warehouse = temp.path().join("warehouse");
+    let team = warehouse.join("team");
+    let leaf_a = team.join("codex_jsonl");
+    let leaf_b = team.join("evals");
+    let sibling = warehouse.join("archive");
+    for dir in [&warehouse, &team, &leaf_a, &leaf_b, &sibling] {
+        fs::create_dir_all(dir)?;
+    }
+    crate::store::chronicle_manifest::atomic_write_manifest(
+        &warehouse,
+        &crate::store::ChronicleManifest::branch(),
+    )?;
+    crate::store::chronicle_manifest::atomic_write_manifest(
+        &team,
+        &crate::store::ChronicleManifest::branch(),
+    )?;
+    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&leaf_a, 1, 10)?;
+    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&leaf_b, 2, 20)?;
+    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&sibling, 3, 7)?;
+
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(warehouse.to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+    let sources = &snapshot.datasets()[0].sources;
+    let counts = sources
+        .iter()
+        .map(|source| (source.file.as_str(), source.record_count))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        counts,
+        vec![
+            ("archive", Some(7)),
+            ("team/codex_jsonl", Some(10)),
+            ("team/evals", Some(20)),
+        ]
+    );
+    // Branches are nesting only — never sources of their own.
+    assert!(sources.iter().all(|source| {
+        source.format.as_deref() == Some("compact-jsonl/v1")
+            && source.file != "team"
+            && source.file != "."
+    }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn leaf_manifest_does_not_recurse_into_nested_child_manifest() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let leaf = temp.path().join("leaf");
+    let nested = leaf.join("nested_child");
+    fs::create_dir_all(&nested)?;
+    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&leaf, 1, 5)?;
+    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&nested, 1, 99)?;
+
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(leaf.to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+    let sources = &snapshot.datasets()[0].sources;
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].file, ".");
+    assert_eq!(sources[0].record_count, Some(5));
+    Ok(())
+}
+
+#[tokio::test]
+async fn updating_one_leaf_manifest_does_not_require_rewriting_parent_branch() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let warehouse = temp.path().join("warehouse");
+    let leaf = warehouse.join("codex_jsonl");
+    fs::create_dir_all(&leaf)?;
+    crate::store::chronicle_manifest::atomic_write_manifest(
+        &warehouse,
+        &crate::store::ChronicleManifest::branch(),
+    )?;
+    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&leaf, 1, 10)?;
+    let parent_before = fs::read(warehouse.join("chronicle.manifest"))?;
+
+    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&leaf, 2, 42)?;
+    let parent_after = fs::read(warehouse.join("chronicle.manifest"))?;
+    assert_eq!(
+        parent_before, parent_after,
+        "leaf publish must not rewrite ancestor branch manifesto"
+    );
+
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(warehouse.to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+    assert_eq!(snapshot.datasets()[0].sources[0].record_count, Some(42));
+    Ok(())
+}
+
+#[tokio::test]
 async fn report_mode_skips_oversized_files_when_querying_all_runs() -> Result<()> {
     let temp = tempfile::tempdir()?;
     write_openai_source(&temp.path().join("good.json"), "event-good")?;
@@ -1064,6 +1227,8 @@ fn report_mode_source_status_does_not_serialize_operational_diagnostics() -> Res
         last_modified: None,
         status: CatalogSourceStatus::Ready,
         error: None,
+        record_count: None,
+        failed_count: None,
     };
     let source = reported_source_failure(
         stub,
@@ -1118,6 +1283,8 @@ mod proptests {
                     last_modified: None,
                     status: CatalogSourceStatus::Ready,
                     error: None,
+                    record_count: None,
+                    failed_count: None,
                 },
                 anyhow::anyhow!("secret diagnostic: {secret}"),
             );

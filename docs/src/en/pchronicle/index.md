@@ -6,14 +6,13 @@
 exchange, and serve run Datasets produced by Persisting or by supported
 external formats; pChronicle does not require pVisor to run.
 
-Within Persisting's model-state-to-Agent-history story, pChronicle is the
-durable store and query engine for Agent history. It can run as a local tool
-or be deployed as a platform in front of many paths.
+In Persisting, pChronicle stores and queries trajectory history. It does not
+require pVisor. It can run as a local tool or be deployed as a service in front
+of many paths.
 
 :::tip What you will complete
-The first walkthrough creates temporary data, opens it as a Dataset, runs a
-read-only summary, and answers one SQL question. You can learn the query model
-without preparing a production store first.
+The first walkthrough creates temporary data, opens it, runs a read-only
+summary, and answers one SQL question. You do not need a production store first.
 :::
 
 ## The one object you work with

@@ -52,9 +52,12 @@ pub(crate) struct CatalogTree {
 pub(crate) struct CatalogTreeChild {
     pub(crate) name: String,
     pub(crate) kind: String,
+    pub(crate) data_type: String,
     pub(crate) path: String,
     pub(crate) run_count: usize,
     pub(crate) failed_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) total_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) entries: Vec<CatalogTreeChild>,
 }
@@ -73,11 +76,17 @@ pub(crate) fn catalog_tree(
                 && (dataset.is_none() || file_matches_prefix(&run.file, prefix))
         })
         .collect::<Vec<_>>();
-    let run_count = scoped.len();
+    let run_count = scoped.iter().map(|run| explorer_weight(run)).sum();
     let failed_count = scoped
         .iter()
-        .filter(|run| is_failed_status(&run.status))
-        .count();
+        .map(|run| {
+            if is_failed_status(&run.status) {
+                explorer_weight(run)
+            } else {
+                0
+            }
+        })
+        .sum();
     let children = if dataset.is_none() {
         fold_tree_children(dataset_children(&scoped), max_children, prefix)
     } else {
@@ -97,6 +106,10 @@ fn is_failed_status(status: &str) -> bool {
     matches!(status, "failed" | "error")
 }
 
+fn explorer_weight(run: &RunSummary) -> usize {
+    run.explorer_weight.unwrap_or(1).max(1)
+}
+
 fn file_matches_prefix(file: &str, prefix: &str) -> bool {
     prefix.is_empty() || file == prefix || file.starts_with(&format!("{prefix}/"))
 }
@@ -105,6 +118,27 @@ struct ChildAcc {
     run_count: usize,
     failed_count: usize,
     has_deeper: bool,
+    data_types: BTreeSet<String>,
+}
+
+fn data_type(format: Option<&str>) -> &'static str {
+    match format {
+        Some("compact-jsonl/v1") => "compact-jsonl",
+        Some("storyline-lance") | None => "storyline",
+        Some(_) => "other",
+    }
+}
+
+fn combined_data_type(data_types: &BTreeSet<String>) -> String {
+    match data_types.len() {
+        0 => "unknown".into(),
+        1 => data_types
+            .iter()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "unknown".into()),
+        _ => "mixed".into(),
+    }
 }
 
 fn dataset_children(runs: &[&RunSummary]) -> Vec<CatalogTreeChild> {
@@ -114,10 +148,15 @@ fn dataset_children(runs: &[&RunSummary]) -> Vec<CatalogTreeChild> {
             run_count: 0,
             failed_count: 0,
             has_deeper: false,
+            data_types: BTreeSet::new(),
         });
-        entry.run_count += 1;
+        let weight = explorer_weight(run);
+        entry.run_count += weight;
+        entry
+            .data_types
+            .insert(data_type(run.format.as_deref()).into());
         if is_failed_status(&run.status) {
-            entry.failed_count += 1;
+            entry.failed_count += weight;
         }
     }
     groups
@@ -125,9 +164,11 @@ fn dataset_children(runs: &[&RunSummary]) -> Vec<CatalogTreeChild> {
         .map(|(name, acc)| CatalogTreeChild {
             name: name.clone(),
             kind: "dataset".into(),
+            data_type: combined_data_type(&acc.data_types),
             path: name,
             run_count: acc.run_count,
             failed_count: acc.failed_count,
+            total_tokens: None,
             entries: Vec::new(),
         })
         .collect()
@@ -161,10 +202,15 @@ fn file_children(runs: &[&RunSummary], prefix: &str) -> Vec<CatalogTreeChild> {
             run_count: 0,
             failed_count: 0,
             has_deeper: false,
+            data_types: BTreeSet::new(),
         });
-        entry.run_count += 1;
+        let weight = explorer_weight(run);
+        entry.run_count += weight;
+        entry
+            .data_types
+            .insert(data_type(run.format.as_deref()).into());
         if is_failed_status(&run.status) {
-            entry.failed_count += 1;
+            entry.failed_count += weight;
         }
         entry.has_deeper |= has_deeper;
     }
@@ -184,6 +230,8 @@ fn file_children(runs: &[&RunSummary], prefix: &str) -> Vec<CatalogTreeChild> {
             name,
             run_count: acc.run_count,
             failed_count: acc.failed_count,
+            data_type: combined_data_type(&acc.data_types),
+            total_tokens: None,
             entries: Vec::new(),
         })
         .collect()
@@ -208,12 +256,38 @@ fn fold_tree_children(
     children.push(CatalogTreeChild {
         name: "other".into(),
         kind: "other".into(),
+        data_type: "mixed".into(),
         path: prefix.to_string(),
         run_count: rest.iter().map(|child| child.run_count).sum(),
         failed_count: rest.iter().map(|child| child.failed_count).sum(),
+        total_tokens: None,
         entries: rest,
     });
     children
+}
+
+pub(crate) fn apply_total_tokens(
+    children: &mut [CatalogTreeChild],
+    file_tokens: &BTreeMap<String, u64>,
+) {
+    for child in children {
+        apply_total_tokens(&mut child.entries, file_tokens);
+        child.total_tokens = if child.entries.is_empty() {
+            file_tokens
+                .iter()
+                .filter(|(file, _)| {
+                    *file == &child.path || file.starts_with(&format!("{}/", child.path))
+                })
+                .map(|(_, tokens)| *tokens)
+                .reduce(u64::saturating_add)
+        } else {
+            child
+                .entries
+                .iter()
+                .filter_map(|entry| entry.total_tokens)
+                .reduce(u64::saturating_add)
+        };
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -436,7 +510,37 @@ pub(crate) fn run_page_with_fts(
                 )
         })
         .collect::<Vec<_>>();
-    let path_index = records.iter().map(|item| item.run.clone()).collect();
+    let path_index_limit = 2_000usize;
+    let path_index = if records.len() > path_index_limit {
+        // Huge compact-jsonl sources must not ship every identity into the
+        // browser path explorer. Keep one representative per file plus a
+        // bounded sample so WASM stays responsive.
+        let mut index = Vec::with_capacity(path_index_limit);
+        let mut seen_files = BTreeSet::new();
+        for item in &records {
+            if seen_files.insert(item.run.file.clone()) {
+                index.push(item.run.clone());
+            }
+            if index.len() >= path_index_limit {
+                break;
+            }
+        }
+        for item in records
+            .iter()
+            .take(path_index_limit.saturating_sub(index.len()))
+        {
+            if index.iter().any(|run| run.path == item.run.path) {
+                continue;
+            }
+            index.push(item.run.clone());
+            if index.len() >= path_index_limit {
+                break;
+            }
+        }
+        index
+    } else {
+        records.iter().map(|item| item.run.clone()).collect()
+    };
     if let Some(path) = query
         .path
         .as_deref()
@@ -1310,6 +1414,16 @@ mod tests {
     }
 
     fn sample_run(dataset: &str, file: &str, status: &str, session: &str) -> RunSummary {
+        sample_weighted_run(dataset, file, status, session, None)
+    }
+
+    fn sample_weighted_run(
+        dataset: &str,
+        file: &str,
+        status: &str,
+        session: &str,
+        explorer_weight: Option<usize>,
+    ) -> RunSummary {
         RunSummary {
             dataset: dataset.into(),
             file: file.into(),
@@ -1320,11 +1434,50 @@ mod tests {
             session_id: session.into(),
             root_session_id: None,
             path: format!("{dataset}/{file}/{session}"),
-            row_count: 1,
+            row_count: explorer_weight.unwrap_or(1),
             duplicate_event_ids: 0,
             status: status.into(),
-            format: None,
+            format: Some("compact-jsonl/v1".into()),
+            explorer_weight,
         }
+    }
+
+    #[test]
+    fn nested_manifest_leaf_weights_roll_up_to_ancestor_prefixes() {
+        let runs = [
+            sample_weighted_run("default", "archive", "record", "archive", Some(7)),
+            sample_weighted_run(
+                "default",
+                "team/codex_jsonl",
+                "record",
+                "codex_jsonl",
+                Some(10),
+            ),
+            sample_weighted_run("default", "team/evals", "record", "evals", Some(20)),
+        ];
+
+        let root = catalog_tree(&runs, Some("default"), "", 16);
+        assert_eq!(root.run_count, 37);
+        let children: Vec<_> = root
+            .children
+            .iter()
+            .map(|child| (child.name.as_str(), child.kind.as_str(), child.run_count))
+            .collect();
+        assert_eq!(children, vec![("team", "dir", 30), ("archive", "file", 7)]);
+
+        let team = catalog_tree(&runs, Some("default"), "team", 16);
+        assert_eq!(team.run_count, 30);
+        assert_eq!(
+            team.children
+                .iter()
+                .map(|child| (child.name.as_str(), child.run_count))
+                .collect::<Vec<_>>(),
+            vec![("evals", 20), ("codex_jsonl", 10)]
+        );
+
+        let leaf = catalog_tree(&runs, Some("default"), "team/codex_jsonl", 16);
+        assert_eq!(leaf.run_count, 10);
+        assert!(leaf.children.is_empty());
     }
 
     #[test]

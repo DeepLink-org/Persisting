@@ -7,22 +7,18 @@ sidebar_label: Start here
 
 Persisting gives you two independent product paths. Choose the one that matches the work in front of you:
 
-- [Run an Agent safely with pVisor](pvisor/get-started.md): stage workspace changes, inspect the Run Bundle, and apply only what you approve.
-- [Explore durable history with pChronicle](pchronicle/get-started.md): open a Dataset, run a read-only query, and follow Source lineage.
-- [Understand the product boundary](overview.md): see how execution and history connect without becoming one opaque system.
+- [Run an Agent safely with pVisor](pvisor/get-started.md): run the Agent in a staged workspace, inspect its changes, and write only what you approve into the project.
+- [Explore durable history with pChronicle](pchronicle/get-started.md): open trajectory data, run a read-only query, and know which data and which source you are reading.
+- [Choose a workflow](overview.md): decide which path to take, and how execution and history can optionally connect.
 
-If you are evaluating the system, start with [Choose a workflow](overview.md), then follow the product walkthrough that matches your data.
+If you are evaluating the system, start with [Choose a workflow](overview.md), then follow the matching product walkthrough.
 
 ## What you will have after the first walkthrough
 
-- A **pVisor** walkthrough ends with a stopped Run, a readable Run Bundle, and
-  a deliberate apply or drop decision. Your project is changed only when you
-  choose to apply the staged Effect.
-- A **pChronicle** walkthrough ends with a read-only Dataset query and a clear
-  distinction between the Dataset, its Source, and the Snapshot being read.
+- **pVisor**: the Agent has stopped; its changes remain in a staging directory; you deliberately write them into the project or discard them. The project changes only when you choose to write.
+- **pChronicle**: you have run a read-only query against trajectory data and know which data and which source you inspected.
 
-You do not need both products to begin. Add the capture handoff only when you
-need to correlate execution evidence with durable trajectory history.
+You do not need both products to begin. Add the capture handoff only when you need to correlate one execution with durable trajectory history.
 
 ## Before you start
 

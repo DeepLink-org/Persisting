@@ -151,6 +151,11 @@ pub struct DiscoveredSource {
     pub last_modified: Option<String>,
     pub status: CatalogSourceStatus,
     pub error: Option<String>,
+    /// Aggregate record/run count from `chronicle.manifest` when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_count: Option<u64>,
 }
 
 impl DiscoveredSource {
@@ -463,6 +468,29 @@ impl DatasetCatalogSnapshot {
             return Ok(None);
         };
         Ok(Some(crate::store::CompactJsonlStore::records(uri).await?))
+    }
+
+    /// Page compact-jsonl identities without materializing the full source.
+    pub async fn compact_records_page(
+        &self,
+        dataset: &str,
+        file: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Option<(Vec<crate::store::CompactJsonlRecord>, u64)>> {
+        let key = CatalogStorylineKey {
+            dataset: dataset.into(),
+            file: file.into(),
+            document_id: String::new(),
+            session_id: String::new(),
+        };
+        let source = self.lazy_source(&key)?;
+        let LazySourceSpec::Compact { uri } = &source.spec else {
+            return Ok(None);
+        };
+        Ok(Some(
+            crate::store::CompactJsonlStore::records_page(uri, offset, limit).await?,
+        ))
     }
 
     pub async fn compact_record(
@@ -836,6 +864,7 @@ fn is_lance_directory(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("lance"))
+        || path.join("_versions").is_dir()
 }
 
 fn path_is_inside_lance_directory(path: &str) -> bool {

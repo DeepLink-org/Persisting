@@ -11,20 +11,19 @@
 .pc-catalog-stats strong{color:#101828;font:600 18px ui-monospace,SFMono-Regular,Menlo,monospace}
 .pc-catalog-errors{margin:0 0 10px;color:#b42318;font-size:11px}
 .pc-catalog-mosaic{min-height:0;flex:1;display:flex;flex-direction:column}
-.pc-catalog-tree{position:relative;min-height:0;flex:1;border:1px solid #dfe3e8;border-radius:12px;background:#eef2f6;overflow:hidden}
-.pc-catalog-tree.compact{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:10px;padding:12px;overflow:visible}
-.pc-catalog-tree.compact .pc-catalog-tile{position:static;width:260px;height:120px}
-.pc-catalog-tile{position:absolute;display:flex;flex-direction:column;align-items:flex-start;justify-content:space-between;padding:10px;border:1px solid #ffffffaa;border-radius:8px;color:#102033;text-align:left;cursor:pointer;overflow:hidden}
-.pc-catalog-tile strong{max-width:100%;overflow:hidden;font-size:13px;text-overflow:ellipsis;white-space:nowrap}
-.pc-catalog-tile small{color:#1f2937cc;font:11px ui-monospace,SFMono-Regular,Menlo,monospace}
-.pc-catalog-tile.tone-0{background:#93c5fd}
-.pc-catalog-tile.tone-1{background:#6ea8ff}
-.pc-catalog-tile.tone-2{background:#67e8f9}
-.pc-catalog-tile.tone-3{background:#86efac}
-.pc-catalog-tile.tone-4{background:#fde68a}
-.pc-catalog-tile.tone-5{background:#e2e8f0}
-.pc-catalog-tile.kind-other{background:#cbd5e1}
-.pc-catalog-tile:hover,.pc-catalog-tile:focus-visible{outline:0;box-shadow:inset 0 0 0 2px #1d4ed8}
+.pc-catalog-folders{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;min-height:220px;padding:14px;border:1px solid #dfe3e8;border-radius:12px;background:#f8fafc;overflow:auto}
+.pc-catalog-folder{display:flex;min-height:132px;flex-direction:column;align-items:flex-start;justify-content:space-between;padding:14px;border:1px solid #d0d5dd;border-radius:10px;background:#fff;color:#102033;text-align:left;cursor:pointer;box-shadow:0 1px 2px #1018280d}
+.pc-catalog-folder-title{display:flex;align-items:center;gap:9px;width:100%;min-width:0}
+.pc-catalog-folder-title strong{overflow:hidden;font-size:14px;text-overflow:ellipsis;white-space:nowrap}
+.pc-catalog-folder-icon{display:grid;width:28px;height:24px;flex:none;place-items:center;border-radius:6px;background:#dbeafe;color:#2563eb;font-size:16px}
+.pc-catalog-folder-type{padding:3px 7px;border-radius:999px;background:#eef2ff;color:#4338ca;font:700 9px ui-monospace,SFMono-Regular,Menlo,monospace}
+.pc-catalog-folder-meta{display:flex;justify-content:space-between;gap:12px;width:100%;color:#667085;font:11px ui-monospace,SFMono-Regular,Menlo,monospace}
+.pc-catalog-folder.type-compact-jsonl{border-top:3px solid #06b6d4}
+.pc-catalog-folder.type-storyline{border-top:3px solid #2563eb}
+.pc-catalog-folder.type-mixed{border-top:3px solid #8b5cf6}
+.pc-catalog-folder.type-other{border-top:3px solid #f59e0b}
+.pc-catalog-folder.kind-other{background:#f1f5f9}
+.pc-catalog-folder:hover,.pc-catalog-folder:focus-visible{outline:0;box-shadow:0 0 0 2px #1d4ed8,0 4px 12px #10182814}
 .pc-catalog-empty{min-height:220px;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;border:1px dashed #d0d5dd;border-radius:12px;color:#98a2b3;text-align:center}
 .pc-catalog-empty strong{color:#475467;font-size:13px}
 .pc-catalog-empty span{font-size:11px}

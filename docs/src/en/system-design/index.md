@@ -1,7 +1,7 @@
 # System Design
 
-Persisting is persistent infrastructure for the Agent era, spanning model
-state—parameters and KV caches—and Agent history. This section focuses on the
+Persisting provides durable infrastructure for Agent execution and trajectory
+history. This section focuses on the
 current public product path:
 
 - [pVisor](../pvisor/index.md) virtualizes and governs one Agent Run;
