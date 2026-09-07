@@ -282,7 +282,7 @@ enum Command {
     #[command(hide = true)]
     Dev(DevArgs),
     /// Run explicitly enabled Warehouse, Control, and Gateway services.
-    Serve(ServeArgs),
+    Serve(Box<ServeArgs>),
 }
 
 #[derive(Debug, Args)]
@@ -1615,7 +1615,7 @@ pub async fn run_with_stdio(
             if let Some(command) = args.command {
                 return run_serve_catalog(command, stdout_is_terminal, stdout, &mut diagnostics);
             }
-            run_serve(args, config, cli.log_level, stdout, &mut diagnostics).await
+            run_serve(*args, config, cli.log_level, stdout, &mut diagnostics).await
         }
     }
 }
