@@ -8,6 +8,7 @@
 mod adapter;
 mod claude_bridge;
 mod claude_resume;
+mod codex_bridge;
 mod comparison;
 mod config;
 mod engine;

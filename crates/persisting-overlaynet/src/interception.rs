@@ -198,11 +198,19 @@ impl InterceptionMetrics {
     }
 
     pub(crate) fn tcp_flow_closed(&self) {
-        let _ = self.counters.active_tcp_flows.try_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |active| active.checked_sub(1),
-        );
+        let active_tcp_flows = &self.counters.active_tcp_flows;
+        let mut current = active_tcp_flows.load(Ordering::Relaxed);
+        while current > 0 {
+            match active_tcp_flows.compare_exchange_weak(
+                current,
+                current - 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(next) => current = next,
+            }
+        }
     }
 
     pub(crate) fn tcp_flow_denied(&self) {

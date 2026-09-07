@@ -129,7 +129,7 @@ pvisor replay \
   --boundary-user-prompt 'Review the fresh observation before continuing.'
 ```
 
-OpenHands, mini-swe-agent, Pi agent, and SWE-agent use the model endpoint and
+OpenHands, mini-swe-agent, Pi agent, OpenCode, Codex, and SWE-agent use the model endpoint and
 credentials already present in their environment. Pi requires its exact
 `0.83.0` runtime and accepts native RPC event JSONL containing the core
 `read`, `bash`, `edit`, and `write` tools. Claude Code uses a temporary bridge owned
@@ -137,6 +137,14 @@ by SandboxReplay because its native resume transport inserts wake-up messages.
 The bridge validates and removes that exact Resume Transport envelope before
 forwarding the model request. It does not enable pVisor Gateway, capture model
 traffic, or persist a bridge audit.
+
+OpenCode requires the exact `1.17.7` runtime and its native
+`opencode run --format=json` event JSONL. Codex requires the exact `0.149.0`
+runtime and Codex rollout `response_item` JSONL. Both rebuild the native prefix
+in the fresh sandbox and invoke their native resume command for continuation.
+Codex derives its native session ID from the trajectory's `session_meta`; the
+request `session_id` is only a model-router/Run key and cannot override it.
+Continuation fails closed when the native session is missing.
 
 The equivalent strict replay TOML is:
 
@@ -153,8 +161,8 @@ disable_thinking = true
 boundary_user_prompt = "Review the fresh observation before continuing."
 ```
 
-Pi uses the same CLI/TOML surface. Its default SweEval entrypoint is
-`/opt/pi-agent/bin/pi`, for example:
+Pi uses the same CLI/TOML surface. When the runtime is installed at
+`/opt/pi-agent`, for example:
 
 ```bash
 pvisor replay --agent pi-agent \
@@ -184,9 +192,11 @@ structured failure. Existing non-Claude callers that used `replay_only = true`
 only to construct a prefix must migrate to `prepare_only = true`.
 
 `disable_thinking` belongs to `[replay]` and is also exposed as
-`--disable-thinking`; it is applied by the Claude protocol bridge without
-turning on Gateway capture. Optional `[run]`, `[overlayfs]`, and `[overlaynet]` sections create an outer
-managed `pvisor run`; they do not change the inner replay model path.
+`--disable-thinking`. Claude Code's protocol bridge applies it to the upstream
+request; OpenCode omits its `--thinking` flag when it is set. It does not turn
+on Gateway capture. Optional `[run]`, `[overlayfs]`, and `[overlaynet]` sections
+create an outer managed `pvisor run`; they do not change the inner replay model
+path.
 
 By default, replay's internal state, WAL, manifest, fresh-observation
 comparisons, and native working files remain under
