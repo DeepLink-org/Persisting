@@ -915,6 +915,12 @@ async fn build_run_summaries(
             .iter()
             .filter(|source| source.format.as_deref() == Some("compact-jsonl/v1"))
         {
+            // Manifest-backed compact sources are paged on demand by the runs
+            // API. Expanding hundreds of thousands of identities here freezes
+            // both Warehouse refresh and the WebAssembly client path_index.
+            if source.record_count.is_some() {
+                continue;
+            }
             if let Some(records) = snapshot.compact_records(name, &source.file).await? {
                 for record in records {
                     let path = explorer::explorer_run_path(
@@ -939,6 +945,7 @@ async fn build_run_summaries(
                         duplicate_event_ids: 0,
                         status: "record".into(),
                         format: Some("compact-jsonl/v1".into()),
+                        explorer_weight: None,
                     });
                 }
             }
@@ -1016,6 +1023,7 @@ async fn build_run_summaries(
                 duplicate_event_ids: event_stats.map_or(0, |stats| stats.duplicate_event_ids),
                 status,
                 format: None,
+                explorer_weight: None,
             });
         }
     }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::store::chronicle_manifest::{ManifestKind, try_load_manifest};
 use crate::store::opendal_store::Store as OpendalStore;
 
 #[derive(Debug)]
@@ -116,6 +117,8 @@ impl Candidate {
             last_modified,
             status: CatalogSourceStatus::Ready,
             error: None,
+            record_count: None,
+            failed_count: None,
         }
     }
 }
@@ -171,15 +174,24 @@ pub(super) async fn freeze_candidate(
                 )),
             ))
         }
-        Candidate::Compact { file, uri, .. } => Ok((
-            source_row,
-            Arc::new(LazySource::new(
-                file,
-                LazySourceSpec::Compact { uri },
-                options,
-                temporary_files,
-            )),
-        )),
+        Candidate::Compact { file, uri, .. } => {
+            if let Some(manifest) =
+                crate::store::chronicle_manifest::try_load_manifest(Path::new(&uri))
+                && let Some(stats) = manifest.stats
+            {
+                source_row.record_count = Some(stats.record_count);
+                source_row.failed_count = Some(stats.failed_count);
+            }
+            Ok((
+                source_row,
+                Arc::new(LazySource::new(
+                    file,
+                    LazySourceSpec::Compact { uri },
+                    options,
+                    temporary_files,
+                )),
+            ))
+        }
         Candidate::LocalFile {
             file,
             root,
@@ -540,6 +552,10 @@ async fn discover_local_candidates(
         "Dataset input is not a directory: {original_uri}"
     );
 
+    if let Some(manifest) = try_load_manifest(root) {
+        return collect_manifest_subtree(root, root, &manifest, options).await;
+    }
+
     if root.join("CURRENT").is_file() {
         let metadata = fs::metadata(root.join("CURRENT"))?;
         return Ok(vec![Candidate::Storyline {
@@ -591,7 +607,10 @@ async fn discover_local_candidates(
             }
             let path = entry.path();
             if file_type.is_dir() {
-                if path.join("CURRENT").is_file() {
+                if let Some(manifest) = try_load_manifest(&path) {
+                    let nested = collect_manifest_subtree(root, &path, &manifest, options).await?;
+                    candidates.extend(nested);
+                } else if path.join("CURRENT").is_file() {
                     let metadata = fs::metadata(path.join("CURRENT"))?;
                     candidates.push(Candidate::Storyline {
                         file: relative_catalog_path(root, &path, true)?,
@@ -646,16 +665,89 @@ async fn discover_local_candidates(
     Ok(candidates)
 }
 
+async fn collect_manifest_subtree(
+    mount_root: &Path,
+    node: &Path,
+    manifest: &crate::store::ChronicleManifest,
+    options: LocalQueryManifestOptions,
+) -> Result<Vec<Candidate>> {
+    let mut candidates = Vec::new();
+    let mut stack = vec![(node.to_path_buf(), manifest.clone())];
+    while let Some((current, current_manifest)) = stack.pop() {
+        match current_manifest.kind {
+            ManifestKind::Leaf => {
+                anyhow::ensure!(
+                    current_manifest.is_compact_jsonl_leaf(),
+                    "chronicle.manifest leaf format {:?} is not supported for discovery yet",
+                    current_manifest.format
+                );
+                let metadata = fs::metadata(&current)?;
+                let file = if current == mount_root {
+                    ".".into()
+                } else {
+                    relative_catalog_path(mount_root, &current, true)?
+                };
+                candidates.push(Candidate::Compact {
+                    file,
+                    uri: canonical_local_uri(&current)?,
+                    size_bytes: Some(metadata.len()),
+                    last_modified: modified_string(&metadata),
+                });
+            }
+            ManifestKind::Branch => {
+                let mut entries = fs::read_dir(&current)
+                    .with_context(|| {
+                        format!("read chronicle.manifest branch {}", current.display())
+                    })?
+                    .collect::<std::io::Result<Vec<_>>>()?;
+                entries.sort_by_key(|entry| entry.path());
+                for entry in entries.into_iter().rev() {
+                    anyhow::ensure!(
+                        candidates.len() < options.max_files,
+                        "Dataset manifest exceeds max_files limit of {}",
+                        options.max_files
+                    );
+                    let file_type = entry.file_type()?;
+                    if file_type.is_symlink() || !file_type.is_dir() {
+                        continue;
+                    }
+                    let child = entry.path();
+                    let Some(child_manifest) = try_load_manifest(&child) else {
+                        continue;
+                    };
+                    stack.push((child, child_manifest));
+                }
+            }
+        }
+        anyhow::ensure!(
+            candidates.len() <= options.max_files,
+            "Dataset manifest exceeds max_files limit of {}",
+            options.max_files
+        );
+    }
+    candidates.sort_by(|left, right| left.source_stub().file.cmp(&right.source_stub().file));
+    Ok(candidates)
+}
+
 async fn is_compact_jsonl_directory(path: &Path) -> Result<bool> {
+    if let Some(manifest) = try_load_manifest(path) {
+        return Ok(manifest.is_compact_jsonl_leaf());
+    }
     let dataset = match lance::Dataset::open(path.to_string_lossy().as_ref()).await {
         Ok(dataset) => dataset,
         Err(_) => return Ok(false),
     };
-    Ok(dataset
+    let is_compact = dataset
         .schema()
         .metadata
         .get("pchronicle.format")
-        .is_some_and(|value| value == "compact-jsonl/v1"))
+        .is_some_and(|value| value == "compact-jsonl/v1");
+    if is_compact {
+        // Store-layer upgrade path for pre-manifest datasets: first discovery
+        // that opens Lance also publishes chronicle.manifest.
+        let _ = crate::store::CompactJsonlStore::ensure_manifest(path).await?;
+    }
+    Ok(is_compact)
 }
 
 async fn discover_object_candidates(

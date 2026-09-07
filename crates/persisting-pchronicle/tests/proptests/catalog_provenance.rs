@@ -64,6 +64,8 @@ proptest! {
                     CatalogSourceStatus::Error
                 },
                 error: None,
+                record_count: None,
+                failed_count: None,
             })
             .collect();
         let dataset = CatalogDataset {

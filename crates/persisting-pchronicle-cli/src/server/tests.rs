@@ -826,6 +826,7 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
         duplicate_event_ids: 0,
         status: "completed".into(),
         format: None,
+        explorer_weight: None,
     };
 
     let analysis = explorer::analyze(run, &turns, &events, CatalogEventProvenance::Canonical);
@@ -872,6 +873,7 @@ fn canonical_event_uri_resolves_write_coordinates_independent_of_mount_root() {
         duplicate_event_ids: 0,
         status: "active".into(),
         format: None,
+        explorer_weight: None,
     };
     let local = event_uri_coords("/tmp/capture/agent/run-1/events.lance", &run).unwrap();
     assert_eq!(local.storage, "/tmp/capture");
@@ -991,6 +993,23 @@ async fn explorer_automatically_refreshes_new_dataset_sources() {
     assert_eq!(initial["snapshot"]["total"], 1);
 
     write_gateway_fixture(&root, "second.json", "second-session", "second-job");
+    let tree = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(format!(
+                    "/api/explorer/tree?dataset={}",
+                    encode_query(DEFAULT_DATASET_NAME)
+                ))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let tree: Value =
+        serde_json::from_slice(&tree.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(tree["run_count"], 2);
+
     let refreshed = app
         .oneshot(
             axum::http::Request::builder()
@@ -1011,6 +1030,77 @@ async fn explorer_automatically_refreshes_new_dataset_sources() {
             .any(|run| run["session_id"] == "second-session")
     );
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn explorer_pages_manifest_backed_compact_jsonl_without_expanding_all_records() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.jsonl");
+    let compact = temp.path().join("codex_jsonl");
+    let mut body = String::new();
+    for index in 0..5 {
+        body.push_str(&format!(
+            "{{\"timestamp\":{index},\"value\":\"row-{index}\"}}\n"
+        ));
+    }
+    std::fs::write(&input, body).unwrap();
+    persisting_pchronicle::storage::CompactJsonlStore::import_path(
+        &input,
+        &compact,
+        &persisting_pchronicle::storage::CompactJsonlOptions::default(),
+    )
+    .await
+    .unwrap();
+    std::fs::remove_file(input).unwrap();
+
+    let app = router(temp.path().to_string_lossy().to_string());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(format!(
+                    "/api/explorer/runs?dataset={}&file=codex_jsonl&limit=2&offset=0",
+                    encode_query(DEFAULT_DATASET_NAME)
+                ))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let page: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(page["snapshot"]["total"], 5);
+    assert_eq!(page["snapshot"]["limit"], 2);
+    assert_eq!(page["snapshot"]["has_more"], true);
+    assert_eq!(page["records"].as_array().unwrap().len(), 2);
+    assert_eq!(page["path_index"].as_array().unwrap().len(), 2);
+    assert_eq!(page["path_index"][0]["file"], "codex_jsonl");
+    assert_eq!(
+        page["path_index"][0]["session_id"],
+        page["records"][0]["session_id"]
+    );
+
+    let page2 = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(format!(
+                    "/api/explorer/runs?dataset={}&file=codex_jsonl&limit=2&offset=4",
+                    encode_query(DEFAULT_DATASET_NAME)
+                ))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let page2: Value =
+        serde_json::from_slice(&page2.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(page2["snapshot"]["total"], 5);
+    assert_eq!(page2["records"].as_array().unwrap().len(), 1);
+    assert_eq!(page2["snapshot"]["has_more"], false);
 }
 
 #[tokio::test]

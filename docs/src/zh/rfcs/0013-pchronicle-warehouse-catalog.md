@@ -19,10 +19,17 @@ CLI 标志、配置文件和 HTTP 路径为兼容性仍使用 `catalog` 一词�
 
 规范实现挂在现有 `pchronicle serve --catalog-config` 上，不引入独立 `catalog serve` 进程，也不把 listener 从 loopback 打开。
 
-- **CLI**：`@team` 解析为 `catalog://127.0.0.1:PORT` Directory locator；`@team/prod` 换票后客户端打开票里的 path（透传后端密钥）。
-- **Web**：用户钥存在浏览器 `localStorage`；数据面查询在 **新进程 worker** 中执行。父进程负责鉴权和换票，不拿全量后端密钥跑 DataFusion。
+- **Serve 挂载**：`pchronicle serve --catalog-config FILE` MUST 把 `catalog.toml` 中的 **全部**
+  `[datasets.*]` 挂进 Warehouse（与位置参数挂载等价）。本机 Web / 无用户钥的数据面请求在
+  **父进程内**打开这些 mount，不再 front-only。
+- **CLI 配置**：`pchronicle serve catalog dataset add|remove|list` 改写 libraries；
+  `issue|grant|revoke` 改写用户与授权。
+- **Directory 换票**：`@team` 解析为 `catalog://…`；`@team/prod` 换票后客户端打开票里的 path。
+  `/api/v1/catalog/datasets` 仍按用户钥过滤可见 library。
 
 ```text
+pchronicle serve catalog dataset add --catalog-config catalog.toml prod --uri s3://bucket/prod \
+  --access-key BACKEND_AK --secret-key BACKEND_SK
 pchronicle serve catalog issue --catalog-config catalog.toml alice
 pchronicle serve catalog grant --catalog-config catalog.toml alice prod evals
 pchronicle serve --catalog-config catalog.toml --listen 127.0.0.1:8081
@@ -154,21 +161,16 @@ permissions = ["read", "query", "analyze"]
 Catalog 管理命令只修改配置文件，不启动 HTTP listener。文件不存在时，命令创建父目录和空配置文件。
 
 ```text
-pchronicle serve catalog user create   --catalog-config FILE NAME
-pchronicle serve catalog user list     --catalog-config FILE
-pchronicle serve catalog user remove   --catalog-config FILE NAME
-
-pchronicle serve catalog dataset create --catalog-config FILE NAME URI [OPTIONS]
+pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI [OPTIONS]
+pchronicle serve catalog dataset remove --catalog-config FILE NAME...
 pchronicle serve catalog dataset list   --catalog-config FILE
-pchronicle serve catalog dataset show   --catalog-config FILE NAME
-pchronicle serve catalog dataset remove --catalog-config FILE NAME
 
-pchronicle serve catalog grant  --catalog-config FILE USER DATASET --permission PERMISSION...
-pchronicle serve catalog revoke --catalog-config FILE USER DATASET --permission PERMISSION...
-pchronicle serve catalog grants --catalog-config FILE
+pchronicle serve catalog issue  --catalog-config FILE NAME
+pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
+pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
 ```
 
-`user create` 生成用户 AK/SK；secret 只在本次 stdout 输出。`dataset create` 只登记 Dataset，不创建或删除后端数据。`grant` 和 `revoke` 修改独立的 `[[grants]]` 授权记录。所有写操作 MUST 原子替换文件，失败时保留原文件。
+`dataset add` 只登记 Dataset，不创建或删除后端数据。`issue` 生成用户 AK/SK（secret 只在本次 stdout 输出）。`grant` / `revoke` 修改 `[[grants]]`。所有写操作 MUST 原子替换文件，失败时保留原文件。`serve --catalog-config` MUST 挂载文件中全部 datasets。
 
 ## HTTP
 

@@ -19,10 +19,17 @@ CLI 标志、配置文件和 HTTP 路径为兼容性仍使用 `catalog` 一词�
 
 规范实现挂在现有 `pchronicle serve --catalog-config` 上，不引入独立 `catalog serve` 进程，也不把 listener 从 loopback 打开。
 
-- **CLI**：`@team` 解析为 `catalog://127.0.0.1:PORT` Directory locator；`@team/prod` 换票后客户端打开票里的 path（透传后端密钥）。
-- **Web**：用户钥存在浏览器 `localStorage`；数据面查询在 **新进程 worker** 中执行。父进程负责鉴权和换票，不拿全量后端密钥跑 DataFusion。
+- **Serve 挂载**：`pchronicle serve --catalog-config FILE` MUST 把 `catalog.toml` 中的 **全部**
+  `[datasets.*]` 挂进 Warehouse（与位置参数挂载等价）。本机 Web / 无用户钥的数据面请求在
+  **父进程内**打开这些 mount，不再 front-only。
+- **CLI 配置**：`pchronicle serve catalog dataset add|remove|list` 改写 libraries；
+  `issue|grant|revoke` 改写用户与授权。
+- **Directory 换票**：`@team` 解析为 `catalog://…`；`@team/prod` 换票后客户端打开票里的 path。
+  `/api/v1/catalog/datasets` 仍按用户钥过滤可见 library。
 
 ```text
+pchronicle serve catalog dataset add --catalog-config catalog.toml prod --uri s3://bucket/prod \
+  --access-key BACKEND_AK --secret-key BACKEND_SK
 pchronicle serve catalog issue --catalog-config catalog.toml alice
 pchronicle serve catalog grant --catalog-config catalog.toml alice prod evals
 pchronicle serve --catalog-config catalog.toml --listen 127.0.0.1:8081
@@ -154,6 +161,9 @@ datasets = ["evals"]
 签发和改授权是 **写 `catalog.toml` 的 CLI**，不是运行中 Warehouse 的 HTTP API。出现 `catalog` 子命令时 MUST NOT 启动 listener。正在运行的 serve MUST 重启后才读到新用户或新授权。
 
 ```text
+pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI [--endpoint URL] [--region REGION] [--access-key KEY] [--secret-key KEY]
+pchronicle serve catalog dataset remove --catalog-config FILE NAME...
+pchronicle serve catalog dataset list   --catalog-config FILE
 pchronicle serve catalog issue  --catalog-config FILE NAME
 pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
 pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
@@ -161,6 +171,14 @@ pchronicle serve --catalog-config FILE --listen 127.0.0.1:8081
 ```
 
 `catalog` 是 `serve` 的保留子命令。要挂载名为 `catalog` 的路径，使用 `./catalog` 或 `NAME=./catalog`。
+`--catalog-config` MUST NOT 与位置参数 Dataset 同时使用。
+
+### `dataset add` / `remove` / `list`
+
+- MUST NOT 启动 Warehouse。只改 `FILE` 后退出。
+- `add` 写入 `[datasets.NAME]`。已存在的名字 MUST 拒绝。`s3://` MUST 设置后端钥，且 MUST 与文件中已有 s3 library 的 endpoint/region/ak/sk 完全一致；非 `s3://` MUST NOT 设置后端钥。
+- `remove` 删除列出的 library。若仍有 grant 引用该 library，MUST 失败且 MUST NOT 改文件。
+- `list` 打印 `name` / `uri`（及可选 endpoint/region），MUST NOT 打印后端密钥。
 
 ### `issue`
 

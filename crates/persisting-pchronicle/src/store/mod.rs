@@ -16,6 +16,8 @@ mod cas_store;
 #[cfg(feature = "lance-store")]
 mod catalog;
 #[cfg(feature = "lance-store")]
+mod chronicle_manifest;
+#[cfg(feature = "lance-store")]
 mod compact_jsonl;
 #[cfg(feature = "lance-store")]
 mod datafusion_bridge;
@@ -69,6 +71,12 @@ pub use catalog::{
     CatalogSourceRevision, CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle,
     DEFAULT_DATASET_NAME, DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS,
     DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, NamespacePath,
+};
+#[cfg(feature = "lance-store")]
+#[allow(unused_imports)]
+pub use chronicle_manifest::{
+    CHRONICLE_MANIFEST_FILE, ChronicleManifest, ManifestKind, ManifestStats, atomic_write_manifest,
+    compact_jsonl_manifest_matches, load_manifest, try_load_manifest, write_compact_jsonl_manifest,
 };
 #[cfg(feature = "lance-store")]
 pub use compact_jsonl::{

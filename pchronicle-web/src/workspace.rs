@@ -32,6 +32,7 @@ use crate::notice::{ErrorNotice, WorkspaceNotice, workspace_notice};
 use crate::terminology::{ANALYSIS, ASSISTANT, DATASETS, RUNS, STEPS, STORAGE, TIMELINE};
 
 const SEARCH_DEBOUNCE_MS: u32 = 1_000;
+const CATALOG_REFRESH_MS: u32 = 5_000;
 
 fn evidence_notice(turn_id: i64, detail: &str) -> WorkspaceNotice {
     WorkspaceNotice {
@@ -201,13 +202,31 @@ pub fn App() -> Element {
         if page() != "catalog" {
             return;
         }
+        let dataset = catalog_dataset();
+        let prefix = catalog_prefix();
         load_catalog_tree(
-            catalog_dataset(),
-            catalog_prefix(),
+            dataset.clone(),
+            prefix.clone(),
             catalog_tree,
             catalog_loading,
             error,
         );
+        spawn(async move {
+            loop {
+                TimeoutFuture::new(CATALOG_REFRESH_MS).await;
+                if page() != "catalog" || catalog_dataset() != dataset || catalog_prefix() != prefix
+                {
+                    break;
+                }
+                load_catalog_tree(
+                    dataset.clone(),
+                    prefix.clone(),
+                    catalog_tree,
+                    catalog_loading,
+                    error,
+                );
+            }
+        });
     });
 
     use_effect(move || {

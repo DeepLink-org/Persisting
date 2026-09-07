@@ -124,6 +124,10 @@ pub(crate) struct RunSummary {
     pub(crate) status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) format: Option<String>,
+    /// When set, explorer tree counts this summary as `explorer_weight` runs
+    /// instead of 1. Used for compact-jsonl leaves backed by chronicle.manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) explorer_weight: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -185,10 +189,32 @@ impl PreparedWarehouse {
         Ok(warehouse)
     }
 
+    /// Directory front-only mode: parent authenticates and dispatches query
+    /// workers. Retained for isolation tests; `serve --catalog-config` uses
+    /// [`Self::prepare_catalog`] (inline mounts) instead.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn prepare_catalog_front(acl: catalog::CatalogAcl) -> anyhow::Result<Self> {
         let mut state = app_state(ChronicleServerConfig::front_only());
         state.catalog_acl = Some(Arc::new(acl));
         Ok(Self { state })
+    }
+
+    /// Mount every library from `catalog.toml` into the Warehouse process.
+    /// Directory ticket routes remain available when users exist; the data
+    /// plane serves in-process mounts instead of spawning query workers.
+    pub(crate) async fn prepare_catalog(acl: catalog::CatalogAcl) -> anyhow::Result<Self> {
+        acl.apply_backend_env();
+        let mounts = acl.mounts()?;
+        anyhow::ensure!(
+            !mounts.is_empty(),
+            "catalog config needs at least one dataset"
+        );
+        let config = ChronicleServerConfig::mounted(mounts)?;
+        let mut state = app_state(config);
+        state.catalog_acl = Some(Arc::new(acl));
+        let warehouse = Self { state };
+        warehouse.install_initial_runtime().await?;
+        Ok(warehouse)
     }
 
     pub(crate) async fn prepare_query_worker(
@@ -569,6 +595,138 @@ async fn explorer_query_jsonl(
     })
 }
 
+/// Serve manifesto-backed compact-jsonl leaves as a true page, instead of
+/// expanding every record identity into `run_summaries` (which freezes WASM).
+async fn try_compact_jsonl_runs_page(
+    state: &AppState,
+    query: &explorer::ExplorerRunsQuery,
+    request_id: &RequestId,
+) -> Result<Option<explorer::RunExplorerPage>, ApiError> {
+    if query
+        .q
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Ok(None);
+    }
+    let file_filter = query
+        .file
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(file_filter) = file_filter else {
+        return Ok(None);
+    };
+    let dataset_filter = query
+        .dataset
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "all");
+
+    let runtime = current_catalog(state, request_id).await?;
+    let mut matched: Option<(String, String, Option<u64>)> = None;
+    for dataset in runtime.snapshot.datasets() {
+        if dataset_filter.is_some_and(|filter| dataset.mount.name != filter) {
+            continue;
+        }
+        for source in &dataset.sources {
+            if source.format.as_deref() != Some("compact-jsonl/v1") {
+                continue;
+            }
+            if source.record_count.is_none() {
+                continue;
+            }
+            if source.file != file_filter && !source.file.starts_with(&format!("{file_filter}/")) {
+                continue;
+            }
+            if matched.is_some() {
+                // Ambiguous prefix across multiple compact leaves: fall back.
+                return Ok(None);
+            }
+            matched = Some((
+                dataset.mount.name.clone(),
+                source.file.clone(),
+                source.record_count,
+            ));
+        }
+    }
+    let Some((dataset_name, source_file, record_count)) = matched else {
+        return Ok(None);
+    };
+
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let (records, total) = runtime
+        .snapshot
+        .compact_records_page(&dataset_name, &source_file, offset, limit)
+        .await
+        .map_err(|error| fail(request_id, "explorer_runs", error))?
+        .ok_or_else(|| {
+            fail(
+                request_id,
+                "explorer_runs",
+                anyhow::anyhow!("compact-jsonl source `{source_file}` is not resolvable"),
+            )
+        })?;
+    let total = record_count.unwrap_or(total);
+    let total_usize = usize::try_from(total).unwrap_or(usize::MAX);
+
+    let page_records = records
+        .into_iter()
+        .map(|record| {
+            let path = explorer::explorer_run_path(
+                &dataset_name,
+                &source_file,
+                &record.id,
+                &record.id,
+                None,
+                None,
+            );
+            explorer::RunExplorerItem {
+                model: None,
+                search_preview: None,
+                run: RunSummary {
+                    dataset: dataset_name.clone(),
+                    file: source_file.clone(),
+                    document_id: record.id.clone(),
+                    run_id: None,
+                    agent_id: "compact-jsonl".into(),
+                    model_name: None,
+                    session_id: record.id,
+                    root_session_id: None,
+                    path,
+                    row_count: 1,
+                    duplicate_event_ids: 0,
+                    status: "record".into(),
+                    format: Some("compact-jsonl/v1".into()),
+                    explorer_weight: None,
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let next_offset = offset.saturating_add(page_records.len());
+    let path_index = page_records
+        .iter()
+        .map(|item| item.run.clone())
+        .collect::<Vec<_>>();
+
+    Ok(Some(explorer::RunExplorerPage {
+        snapshot: explorer::PageSnapshot {
+            offset,
+            next_offset,
+            total: total_usize,
+            has_more: next_offset < total_usize,
+            limit,
+        },
+        records: page_records,
+        // Mirror the current page into PathExplorer. Shipping every identity
+        // freezes WASM; an empty/stub-only index leaves the left nav blank.
+        path_index,
+        search: explorer::RunSearchStatus::default(),
+    }))
+}
+
 async fn explorer_runs(
     State(state): State<AppState>,
     request_id: RequestId,
@@ -576,6 +734,9 @@ async fn explorer_runs(
     query: Result<Query<explorer::ExplorerRunsQuery>, QueryRejection>,
 ) -> Result<Json<explorer::RunExplorerPage>, ApiError> {
     let query = api_query(query)?;
+    if let Some(page) = try_compact_jsonl_runs_page(&state, &query, &request_id).await? {
+        return Ok(Json(page));
+    }
     let dataset_filter = query
         .dataset
         .as_deref()
@@ -816,16 +977,8 @@ async fn explorer_tree(
     query: Result<Query<explorer::ExplorerTreeQuery>, QueryRejection>,
 ) -> Result<Json<explorer::CatalogTree>, ApiError> {
     let query = api_query(query)?;
-    // Tree navigation is a read of the already-installed catalog. Do not run
-    // the five-second automatic catalog refresh on every folder interaction;
-    // the runs endpoint remains the freshness boundary for live summaries.
-    let runtime = current_catalog(&state, &request_id).await?;
-    let summaries = runtime
-        .acceleration
-        .run_summaries(&runtime.snapshot, &runtime.engine)
-        .await
-        .map(|summaries| summaries.as_ref().clone())
-        .map_err(|error| fail(&request_id, "explorer_tree", error))?;
+    let runtime = current_catalog_for_runs(&state, &request_id).await?;
+    let summaries = tree_run_summaries(&runtime, &request_id).await?;
     let dataset = query
         .dataset
         .as_deref()
@@ -847,6 +1000,69 @@ async fn explorer_tree(
         explorer::apply_total_tokens(&mut tree.children, &file_tokens);
     }
     Ok(Json(tree))
+}
+
+async fn tree_run_summaries(
+    runtime: &CatalogRuntime,
+    request_id: &RequestId,
+) -> Result<Vec<RunSummary>, ApiError> {
+    let mut summaries = Vec::new();
+    let mut compact_with_manifest = BTreeSet::new();
+    for dataset in runtime.snapshot.datasets() {
+        for source in &dataset.sources {
+            if source.format.as_deref() != Some("compact-jsonl/v1") {
+                continue;
+            }
+            let Some(record_count) = source.record_count else {
+                continue;
+            };
+            let weight = usize::try_from(record_count).unwrap_or(usize::MAX);
+            let path = explorer::explorer_run_path(
+                &dataset.mount.name,
+                &source.file,
+                "",
+                &source.file,
+                None,
+                None,
+            );
+            summaries.push(RunSummary {
+                dataset: dataset.mount.name.clone(),
+                file: source.file.clone(),
+                document_id: String::new(),
+                run_id: None,
+                agent_id: "compact-jsonl".into(),
+                model_name: None,
+                session_id: source.file.clone(),
+                root_session_id: None,
+                path,
+                row_count: weight,
+                duplicate_event_ids: 0,
+                status: "record".into(),
+                format: source.format.clone(),
+                explorer_weight: Some(weight.max(1)),
+            });
+            compact_with_manifest.insert((dataset.mount.name.clone(), source.file.clone()));
+        }
+    }
+    if !runtime.snapshot.datasets().iter().any(|dataset| {
+        dataset.sources.iter().any(|source| {
+            source.format.as_deref() != Some("compact-jsonl/v1") || source.record_count.is_none()
+        })
+    }) {
+        return Ok(summaries);
+    }
+    let full = runtime
+        .acceleration
+        .run_summaries(&runtime.snapshot, &runtime.engine)
+        .await
+        .map_err(|error| fail(request_id, "explorer_tree", error))?;
+    for summary in full.iter() {
+        if compact_with_manifest.contains(&(summary.dataset.clone(), summary.file.clone())) {
+            continue;
+        }
+        summaries.push(summary.clone());
+    }
+    Ok(summaries)
 }
 
 fn sql_ident(name: &str) -> Option<&str> {

@@ -123,6 +123,62 @@ impl Cli {
     }
 }
 
+/// Apply S3 backend keys from `--catalog-config` and local `@alias` settings
+/// before the multi-threaded Tokio runtime starts. `std::env::set_var` after
+/// worker threads exist is racy on macOS and can leave OpenDAL unable to see
+/// `AWS_REGION`.
+pub fn apply_catalog_backend_env_before_runtime(cli: &Cli) -> Result<()> {
+    apply_serve_catalog_backend_env(cli)?;
+    apply_command_alias_backend_env(cli)?;
+    Ok(())
+}
+
+fn apply_serve_catalog_backend_env(cli: &Cli) -> Result<()> {
+    let Command::Serve(args) = &cli.command else {
+        return Ok(());
+    };
+    if args.command.is_some() || args.catalog_query_worker {
+        return Ok(());
+    }
+    let Some(path) = args.catalog_config.as_ref() else {
+        return Ok(());
+    };
+    let acl = server::catalog::CatalogAcl::load(path)?;
+    acl.apply_backend_env();
+    Ok(())
+}
+
+fn apply_command_alias_backend_env(cli: &Cli) -> Result<()> {
+    let reference = primary_dataset_reference(&cli.command);
+    apply_local_alias_backend_env_before_runtime(reference, cli.config.as_deref())
+}
+
+fn primary_dataset_reference(command: &Command) -> Option<&str> {
+    match command {
+        Command::Ls(args) => args.dataset_uri.as_deref(),
+        Command::Status(args) => args.dataset_uri.as_deref(),
+        Command::Query(args) => args.dataset_uri.as_deref(),
+        Command::Analysis(args) => match &args.command {
+            AnalysisCommand::Overview(options)
+            | AnalysisCommand::Agents(options)
+            | AnalysisCommand::Models(options)
+            | AnalysisCommand::Tools(options) => options.dataset_uri.as_deref(),
+        },
+        Command::Find(args) => args.dataset_uri.as_deref(),
+        Command::Drop(args) => Some(args.dataset_uri.as_str()),
+        Command::Export(args) => args.from.as_deref(),
+        Command::Agent(args) => args.dataset_reference(),
+        Command::Import(args) => args.output.as_deref(),
+        Command::Onboard(_)
+        | Command::Default(_)
+        | Command::Alias(_)
+        | Command::Sync(_)
+        | Command::Echo(_)
+        | Command::Dev(_)
+        | Command::Serve(_) => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum LogLevel {
     Error,
@@ -979,6 +1035,62 @@ enum CatalogCommand {
     Grant(CatalogGrantArgs),
     /// Remove library names from a user's grants.
     Revoke(CatalogRevokeArgs),
+    /// Add, remove, or list datasets (libraries) in the catalog file.
+    Dataset(CatalogDatasetManageArgs),
+}
+
+#[derive(Debug, Args)]
+struct CatalogDatasetManageArgs {
+    #[command(subcommand)]
+    command: CatalogDatasetCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum CatalogDatasetCommand {
+    /// Register a dataset URI in the catalog file.
+    Add(CatalogDatasetAddArgs),
+    /// Remove dataset entries that are not referenced by grants.
+    Remove(CatalogDatasetRemoveArgs),
+    /// List datasets without printing backend secrets.
+    List(CatalogDatasetListArgs),
+}
+
+#[derive(Debug, Args)]
+struct CatalogDatasetAddArgs {
+    #[command(flatten)]
+    file: CatalogFileArg,
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[arg(long = "uri", value_name = "URI")]
+    uri: String,
+    #[arg(long = "endpoint", value_name = "URL")]
+    endpoint: Option<String>,
+    #[arg(long = "region", value_name = "REGION")]
+    region: Option<String>,
+    #[arg(long = "access-key", value_name = "KEY")]
+    access_key: Option<String>,
+    #[arg(long = "secret-key", value_name = "KEY")]
+    secret_key: Option<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
+    format: OutputFormat,
+}
+
+#[derive(Debug, Args)]
+struct CatalogDatasetRemoveArgs {
+    #[command(flatten)]
+    file: CatalogFileArg,
+    #[arg(value_name = "NAME", required = true, num_args = 1..)]
+    names: Vec<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
+    format: OutputFormat,
+}
+
+#[derive(Debug, Args)]
+struct CatalogDatasetListArgs {
+    #[command(flatten)]
+    file: CatalogFileArg,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
+    format: OutputFormat,
 }
 
 #[derive(Debug, Args)]
@@ -1945,6 +2057,48 @@ fn run_serve_catalog(
                 &datasets,
             )
         }
+        CatalogCommand::Dataset(dataset) => match dataset.command {
+            CatalogDatasetCommand::Add(add) => {
+                let library = server::catalog::add_dataset(
+                    &add.file.catalog_config,
+                    server::catalog::DatasetAddSpec {
+                        name: add.name,
+                        uri: add.uri,
+                        endpoint: add.endpoint,
+                        region: add.region,
+                        access_key: add.access_key,
+                        secret_key: add.secret_key,
+                    },
+                )?;
+                write_catalog_updated(stderr, &add.file.catalog_config)?;
+                write_catalog_dataset(
+                    stdout,
+                    resolve_output_format(add.format, stdout_is_terminal),
+                    &library,
+                )
+            }
+            CatalogDatasetCommand::Remove(remove) => {
+                let remaining = server::catalog::remove_datasets(
+                    &remove.file.catalog_config,
+                    &remove.names,
+                )?;
+                write_catalog_updated(stderr, &remove.file.catalog_config)?;
+                write_catalog_dataset_names(
+                    stdout,
+                    resolve_output_format(remove.format, stdout_is_terminal),
+                    &remaining,
+                )
+            }
+            CatalogDatasetCommand::List(list) => {
+                let libraries =
+                    server::catalog::list_datasets_config(&list.file.catalog_config)?;
+                write_catalog_datasets(
+                    stdout,
+                    resolve_output_format(list.format, stdout_is_terminal),
+                    &libraries,
+                )
+            }
+        },
     }
 }
 
@@ -2010,6 +2164,69 @@ fn write_user_grants(
     }
 }
 
+fn write_catalog_dataset(
+    stdout: &mut dyn Write,
+    format: OutputFormat,
+    library: &server::catalog::CatalogLibraryPublic,
+) -> Result<()> {
+    match format {
+        OutputFormat::Table => {
+            writeln!(stdout, "NAME\tURI")?;
+            writeln!(stdout, "{}\t{}", library.name, library.uri)
+                .context("write catalog dataset table")
+        }
+        OutputFormat::Json => {
+            serde_json::to_writer(&mut *stdout, library).context("write catalog dataset JSON")?;
+            writeln!(stdout).context("finish catalog dataset JSON")
+        }
+        OutputFormat::Auto => unreachable!("auto output format was resolved"),
+    }
+}
+
+fn write_catalog_datasets(
+    stdout: &mut dyn Write,
+    format: OutputFormat,
+    libraries: &[server::catalog::CatalogLibraryPublic],
+) -> Result<()> {
+    match format {
+        OutputFormat::Table => {
+            writeln!(stdout, "NAME\tURI")?;
+            for library in libraries {
+                writeln!(stdout, "{}\t{}", library.name, library.uri)
+                    .context("write catalog dataset row")?;
+            }
+            Ok(())
+        }
+        OutputFormat::Json => {
+            serde_json::to_writer(&mut *stdout, libraries).context("write catalog datasets JSON")?;
+            writeln!(stdout).context("finish catalog datasets JSON")
+        }
+        OutputFormat::Auto => unreachable!("auto output format was resolved"),
+    }
+}
+
+fn write_catalog_dataset_names(
+    stdout: &mut dyn Write,
+    format: OutputFormat,
+    names: &[String],
+) -> Result<()> {
+    match format {
+        OutputFormat::Table => {
+            writeln!(stdout, "NAME")?;
+            for name in names {
+                writeln!(stdout, "{name}").context("write catalog dataset name")?;
+            }
+            Ok(())
+        }
+        OutputFormat::Json => {
+            serde_json::to_writer(&mut *stdout, &serde_json::json!({ "datasets": names }))
+                .context("write catalog dataset names JSON")?;
+            writeln!(stdout).context("finish catalog dataset names JSON")
+        }
+        OutputFormat::Auto => unreachable!("auto output format was resolved"),
+    }
+}
+
 async fn run_serve(
     args: ServeArgs,
     settings_override: Option<&Path>,
@@ -2024,7 +2241,18 @@ async fn run_serve(
     }
     let catalog_only = args.catalog_config.is_some();
     let config = if catalog_only {
-        server::ChronicleServerConfig::front_only()
+        // Projection supervisor still needs the mount list; Warehouse prepare
+        // reloads the same catalog. Avoid front_only here so Gateway/Control
+        // siblings see the configured datasets.
+        let acl = server::catalog::CatalogAcl::load(
+            args.catalog_config
+                .as_ref()
+                .expect("catalog_only implies catalog_config"),
+        )?;
+        // OpenDAL/Lance read AWS_* from the process environment. Apply catalog
+        // backend keys before any discover/projection work touches s3:// mounts.
+        acl.apply_backend_env();
+        server::ChronicleServerConfig::mounted(acl.mounts()?)?
     } else {
         resolve_serve_config_with_settings(&args, settings_override)?
     };
@@ -2060,7 +2288,7 @@ async fn run_serve(
                 .with_context(|| format!("bind pChronicle Warehouse to {listen}"))?;
             let warehouse = if let Some(path) = args.catalog_config.as_ref() {
                 let acl = server::catalog::CatalogAcl::load(path)?;
-                server::PreparedWarehouse::prepare_catalog_front(acl).await?
+                server::PreparedWarehouse::prepare_catalog(acl).await?
             } else if args.gateway.is_some() {
                 server::PreparedWarehouse::prepare_live(config.clone()).await?
             } else {
@@ -2439,6 +2667,24 @@ async fn run_list(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
+    if let Some(reference) = args.dataset_uri.as_deref() {
+        let reference = reference.to_owned();
+        let settings_path = settings_override.map(Path::to_path_buf);
+        let listing = tokio::task::spawn_blocking(move || {
+            list_catalog_alias_datasets(&reference, settings_path.as_deref())
+        })
+        .await
+        .context("list catalog alias datasets")??;
+        if let Some(listing) = listing {
+            return write_catalog_alias_dataset_list(
+                listing,
+                args.format,
+                stdout_is_terminal,
+                stdout,
+                stderr,
+            );
+        }
+    }
     let dataset_uri = resolve_dataset_uri(args.dataset_uri.as_deref(), settings_override)?;
     let (dataset_uri, snapshot) =
         discover_snapshot(&dataset_uri, args.errors, args.max_files, args.max_entries).await?;
@@ -2476,6 +2722,51 @@ async fn run_list(
         dataset.error_source_count(),
     )
     .context("write pChronicle ls metadata")?;
+    Ok(())
+}
+
+fn write_catalog_alias_dataset_list(
+    listing: CatalogAliasDatasetList,
+    format: OutputFormat,
+    stdout_is_terminal: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    let output_format = match format {
+        OutputFormat::Auto if stdout_is_terminal => OutputFormat::Table,
+        OutputFormat::Auto => OutputFormat::Json,
+        explicit => explicit,
+    };
+    match output_format {
+        OutputFormat::Table => {
+            writeln!(stdout, "DATASET\tURI\tENDPOINT\tREGION").context("write catalog ls header")?;
+            for dataset in &listing.datasets {
+                writeln!(
+                    stdout,
+                    "{}\t{}\t{}\t{}",
+                    dataset.name,
+                    dataset.uri,
+                    dataset.endpoint.as_deref().unwrap_or("-"),
+                    dataset.region.as_deref().unwrap_or("-"),
+                )
+                .context("write catalog ls row")?;
+            }
+        }
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut *stdout, &listing)
+                .context("encode catalog alias ls JSON")?;
+            writeln!(stdout).context("write catalog alias ls JSON")?;
+        }
+        OutputFormat::Auto => unreachable!("auto output format was resolved"),
+    }
+    writeln!(
+        stderr,
+        "alias={} catalog={} datasets={}",
+        listing.alias,
+        listing.catalog,
+        listing.datasets.len(),
+    )
+    .context("write catalog alias ls metadata")?;
     Ok(())
 }
 

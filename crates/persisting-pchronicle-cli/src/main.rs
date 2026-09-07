@@ -4,12 +4,39 @@ use std::io::{self, IsTerminal};
 use std::process::ExitCode;
 
 use clap::Parser;
-use persisting_pchronicle_cli::{Cli, error_code, error_exit_code, run_with_stdio};
+use persisting_pchronicle_cli::{
+    Cli, apply_catalog_backend_env_before_runtime, error_code, error_exit_code, run_with_stdio,
+};
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let cli = Cli::parse();
     let debug_errors = cli.debug_errors();
+    // OpenDAL/Lance read AWS_* from the process environment. Applying catalog
+    // backend keys after the multi-threaded Tokio runtime starts is racy on
+    // macOS; do it before any worker threads exist.
+    if let Err(error) = apply_catalog_backend_env_before_runtime(&cli) {
+        use std::io::Write as _;
+        let code = error_code(&error);
+        let rendered = render_error(&error, debug_errors);
+        let _ = writeln!(io::stderr(), "error[{code}]: {rendered}");
+        return ExitCode::from(error_exit_code(&error));
+    }
+
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            use std::io::Write as _;
+            let _ = writeln!(io::stderr(), "error[internal]: start tokio runtime: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    runtime.block_on(async_main(cli, debug_errors))
+}
+
+async fn async_main(cli: Cli, debug_errors: bool) -> ExitCode {
     let stdin_is_terminal = io::stdin().is_terminal();
     let stdout_is_terminal = io::stdout().is_terminal();
     // Do not hold StdoutLock/StderrLock for the process lifetime. `pchronicle
