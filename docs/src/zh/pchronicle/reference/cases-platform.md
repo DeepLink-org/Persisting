@@ -50,10 +50,10 @@ pchronicle serve \
 文件中每个 `[datasets.*]` 都会挂进 Warehouse；`catalog://` 换票路由仍可用。
 改 ACL 后需重启 serve。
 
-## P05：经 Directory alias 访问授权 Dataset
+## P05：经 Directory pin 访问授权 Dataset
 
 ```bash
-pchronicle alias add team catalog://127.0.0.1:8081 \
+pchronicle dataset pin team catalog://127.0.0.1:8081 \
   --ak USER_AK --sk USER_SK
 pchronicle query @team/prod \
   --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
@@ -89,7 +89,7 @@ export PCHRONICLE_RUSTFS_BUCKET=pchronicle-cases
 
 - ACL 可从空文件开始构建；
 - 用户、dataset 与 grants 修改是确定性的；
-- 后端对象存储密钥留在 catalog 文件 / ticket 路径，不出现在 `alias list`；
+- 后端对象存储密钥留在 catalog 文件 / ticket 路径，不出现在 `dataset list`；
 - `--catalog-config` serve 会挂载全部已登记 library；
 - Snapshot refresh 不改动进行中查询的 Snapshot；
 - 覆盖路径上 RustFS Warehouse 行为与本地 Dataset 一致。

@@ -6,29 +6,29 @@ an empty result, and a resource limit from looking like the same failure.
 
 ## Confirm the Dataset first
 
-Use a concrete path while investigating. An alias adds one more resolution step:
+Use a concrete path while investigating. A pin adds one more resolution step:
 
 ```bash
-pchronicle alias list
-pchronicle status ./trajectory-data --format json
-pchronicle ls ./trajectory-data --format json
+pchronicle dataset list
+pchronicle stats ./trajectory-data --format json
+pchronicle list ./trajectory-data --format json
 ```
 
-If an alias fails, resolve the alias before debugging storage credentials or SQL:
+If a pin fails, resolve the pin before debugging storage credentials or SQL:
 
 ```bash
-pchronicle alias get-url prod
-pchronicle status @prod --format json
+pchronicle dataset show prod
+pchronicle stats @prod --format json
 ```
 
-An alias points to a Dataset; it does not copy or move the underlying data.
+A pin points to a Dataset; it does not copy or move the underlying data.
 
 ## The Dataset opens but appears empty
 
 Check the summary before writing a more selective query:
 
 ```bash
-pchronicle analysis overview ./trajectory-data
+pchronicle stats overview ./trajectory-data
 pchronicle find ./trajectory-data --match "" --format json
 ```
 
@@ -76,7 +76,7 @@ the normalized view when provenance matters.
 
 ## Before opening an issue
 
-Include the pChronicle version, Dataset path or alias name (without credentials),
+Include the pChronicle version, Dataset path or pin name (without credentials),
 the output of `status --format json`, the exact query, and its resource limits.
 For object storage, include the provider type and region or endpoint, never
 access keys or signed URLs.

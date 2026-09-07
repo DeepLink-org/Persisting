@@ -29,7 +29,7 @@ The following terms are reserved for technical documentation and APIs:
 - **projection**, **revision**, **fragment**, and **column page** describe
   storage and consistency mechanisms, not primary user workflows.
 
-Aliases (`@name`), Warehouse mount names, and Directory library names are
+Dataset pins (`@name`), Warehouse mount names, and Directory library names are
 locators. After resolution the engine only sees a path.
 
 Older API paths and schema fields may retain these technical names for

@@ -77,8 +77,8 @@ cat input.json | pchronicle import --from - \
 导入后检查新边界：
 
 ```bash
-pchronicle status ./imported
-pchronicle analysis overview ./imported
+pchronicle stats ./imported
+pchronicle stats overview ./imported
 ```
 
 ## 导出完整 Run

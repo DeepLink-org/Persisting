@@ -181,8 +181,9 @@ pchronicle query \
 `--mount` and a positional Dataset are mutually exclusive. A positional
 argument is mounted as the fixed schema `dataset`. With only `--mount`,
 the caller must write the mount name; there is no implicit `dataset`
-schema. The user config file (`-c`) stores aliases and a default Dataset
-only. It does not provide a query mount table.
+schema. The user config file (`-c`) stores dataset pins as `[pins.<name>]`
+tables (including the reserved `default` pin). It does not provide a query mount
+table.
 
 ```bash
 pchronicle query --mount current=local:///srv/pchronicle/current \
@@ -479,7 +480,7 @@ lifetime.
 
 ## 8. Error policy and resource bounds
 
-`ls` and `status` expose two strategies through `--errors`:
+`list`/`ls` and `stats` expose two strategies through `--errors`:
 
 | Strategy | One candidate cannot pin a description or pass initial validation | Dataset root missing, listing/walk failed, or a global limit exceeded |
 |---|---|---|

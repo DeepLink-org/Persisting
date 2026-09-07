@@ -51,12 +51,12 @@ pchronicle serve \
 ```
 
 Every `[datasets.*]` entry is mounted into Warehouse. Directory ticket routes
-remain available for `catalog://` aliases. Restart after editing the ACL file.
+remain available for `catalog://` pins. Restart after editing the ACL file.
 
-## P05: Open an authorized dataset via Directory alias
+## P05: Open an authorized dataset via a Directory pin
 
 ```bash
-pchronicle alias add team catalog://127.0.0.1:8081 \
+pchronicle dataset pin team catalog://127.0.0.1:8081 \
   --ak USER_AK --sk USER_SK
 pchronicle query @team/prod \
   --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
@@ -93,7 +93,7 @@ Platform checks:
 - ACL files can be built from empty;
 - user, dataset, and grant edits are deterministic;
 - backend object-store keys stay in the catalog file / ticket path, not in
-  `alias list` output;
+  `dataset list` output;
 - Warehouse mounts every registered library when serving `--catalog-config`;
 - Snapshot refresh does not mutate an in-flight Snapshot;
 - RustFS Warehouse behavior matches local Datasets for the covered paths.

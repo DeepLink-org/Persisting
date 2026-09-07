@@ -33,7 +33,7 @@ pchronicle serve catalog dataset add --catalog-config catalog.toml prod --uri s3
 pchronicle serve catalog issue --catalog-config catalog.toml alice
 pchronicle serve catalog grant --catalog-config catalog.toml alice prod evals
 pchronicle serve --catalog-config catalog.toml --listen 127.0.0.1:8081
-pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
+pchronicle dataset pin team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 pchronicle query @team/prod 'SELECT 1'
 ```
 
@@ -42,7 +42,7 @@ pchronicle query @team/prod 'SELECT 1'
 本机路径和静态 Warehouse mount 假设操作者已经能看见全部 Dataset。把对象存储上的多个评测库交给一组人使用时，出现三个缺口：
 
 1. **发现与授权混在一起**。用户需要一份目录，列出自己可以打开的 library 名，而不是把所有 bucket URI 写进每人的 `config.toml`。
-2. **后端密钥不能进用户配置**。对象存储 ak/sk 属于存储账户；用户钥只用于 Directory 鉴权。把后端钥写入本机 alias 会扩散到每台笔记本，也无法按人裁剪可见库。
+2. **后端密钥不能进用户配置**。对象存储 ak/sk 属于存储账户；用户钥只用于 Directory 鉴权。把后端钥写入本机 dataset pin 会扩散到每台笔记本，也无法按人裁剪可见库。
 3. **Web 与 CLI 的数据面不同**。CLI 可以在换票后自己打开 `s3://`。Web 的查询跑在 serve 进程里；若父进程加载全部 library 的后端密钥并执行 SQL，一次鉴权绕过就会看到未授权库。
 
 本 RFC 把 Directory 定义为 **目录 + ACL + 换票**，把存储访问留给已有 `open(path)`，并把 Web 数据面隔离到一次性 worker。
@@ -65,7 +65,7 @@ pchronicle query @team/prod 'SELECT 1'
 - 在运行中的 Warehouse 上提供 HTTP 签发接口。
 - 把 listener bind 到非环回地址，或提供独立 `catalog serve` 二进制。
 - 在已运行的 Tokio runtime 上 `fork(2)`（未定义行为）。
-- 把后端对象存储密钥写入本机 alias 配置。
+- 把后端对象存储密钥写入本机 dataset pin 配置。
 - 改变 Snapshot 协议、SQL schema 或 Gateway/Control 协议。
 
 本 RFC 的 Directory 与打开 path 之后的 **Snapshot**（见 [Snapshot 设计](../pchronicle/design/catalog.md)）不是同一对象。Directory 列出授权 path；Snapshot 钉住一条已打开 path 上的 Source 成员与版本。
@@ -76,7 +76,7 @@ pchronicle query @team/prod 'SELECT 1'
 |---|---|---|
 | 存储账户 | 后端 `access_key` / `secret_key`，以及可选 endpoint、region | 打开 `s3://` library |
 | Directory 用户 | 用户 `access_key` / `secret_key` | 列出/领取被授权 library 的票 |
-| 本机 CLI | 用户钥（存在 alias 配置） | 换票后把后端钥注入进程环境并打开票中的 path |
+| 本机 CLI | 用户钥（存在 dataset pin 配置） | 换票后把后端钥注入进程环境并打开票中的 path |
 | 浏览器 | 用户钥（`localStorage`） | 作为请求头发给 loopback serve |
 | serve 父进程 | 完整 `catalog.toml` | 鉴权、返回票、spawn worker；不把后端钥写入 AWS 环境 |
 | query worker | 该用户被授权 library 的票 | 一次性执行 Warehouse 数据面请求 |
@@ -188,7 +188,7 @@ pchronicle serve --catalog-config FILE --listen 127.0.0.1:8081
   - `access_key`：`pcak_` 前缀 + 24 字节小写 hex（48 个 hex 字符）
   - `secret_key`：32 字节小写 hex（无前缀）
 - 写入 `[users.NAME]`：`access_key`、`secret_key`、`datasets = []`。签发 MUST NOT 授予任何 library。
-- stdout 打印该用户的 `name` / `access_key` / `secret_key`（表或 JSON）。secret MUST 只在这次 stdout 出现；stderr 只报 `config=<path> updated=true`，MUST NOT 打印 sk。`alias list` 等其它命令 MUST NOT 回显 catalog 用户 sk。
+- stdout 打印该用户的 `name` / `access_key` / `secret_key`（表或 JSON）。secret MUST 只在这次 stdout 出现；stderr 只报 `config=<path> updated=true`，MUST NOT 打印 sk。`dataset list` 等其它命令 MUST NOT 回显 catalog 用户 sk。
 - `access_key` 碰撞时 MUST 重试生成，MUST NOT 写入半截配置。
 
 ### `grant` / `revoke`
@@ -224,12 +224,12 @@ Directory 路由与 Warehouse 共用 `/api` 与 `/api/v1` 前缀。鉴权头：
 
 `GET /api/v1/catalog/datasets/{name}` 是 CLI 换票接口。拿到票的客户端随后直接打开 `uri`（Dataset path），不再把查询代理回 Directory。
 
-## CLI alias
+## CLI dataset pin
 
-`catalog://` 是 alias **类型**，不是 DatasetLocation 可解析的存储 URI。换票成功后 Dataset 身份是票里的 path，不是 `catalog://…` 本身。
+`catalog://` 是 pin **类型**，不是 DatasetLocation 可解析的存储 URI。换票成功后 Dataset 身份是票里的 path，不是 `catalog://…` 本身。
 
 ```bash
-pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
+pchronicle dataset pin team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 ```
 
 规范化规则：
@@ -237,17 +237,17 @@ pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 - scheme MUST 为 `catalog`；
 - host MUST 是环回 IP（如 `127.0.0.1`），MUST 带端口；
 - MUST NOT 包含 userinfo、path、query 或 fragment；
-- MUST NOT 接受 `--endpoint` / `--region`（那是对象存储参数，来自票而不是 alias）。
+- MUST NOT 接受 `--endpoint` / `--region`（那是对象存储参数，来自票而不是 pin）。
 
-解析按 alias **类型** 分派，而不是把所有 `@name/suffix` 都做路径拼接：
+解析按 pin **类型** 分派，而不是把所有 `@name/suffix` 都做路径拼接：
 
-| 引用 | catalog alias | 普通 URI alias |
+| 引用 | catalog pin | 普通 URI pin |
 |---|---|---|
-| `@team` | 错误：Directory locator 不是 path | 解析为 alias 根 URI |
+| `@team` / `@team/` | `ls` 列出该用户可访问的 Datasets | 解析为 pin 根 URI |
 | `@team/prod` | 向 Directory 领取 library `prod` 的票，打开票中 path | 根 URI 再拼接路径 `prod` |
 | `@team/prod/more` | 先领 `prod`，再把 `more` 拼到票的 path 上 | 根 URI 拼接 `prod/more` |
 
-用户 `--ak/--sk` 存入本机 alias 凭据表，与 S3 alias 相同的隔离方式：不出现在 `alias list` / `alias get-url` 的 URI 里。后端密钥 MUST NOT 写入该文件。
+用户 `--ak/--sk` 存入本机 dataset pin 凭据表，与 S3 pin 相同的隔离方式：不出现在 `dataset list` / `dataset show` 的 URI 里。后端密钥 MUST NOT 写入该文件。
 
 换到的票缓存在 CLI 进程内（`thread_local`），按 catalog URL、用户 access key 和 library 名索引。长生命周期的 `serve` 进程不使用这份 CLI 缓存；Web 每次请求重新鉴权。进程退出即丢弃缓存。
 
@@ -298,9 +298,9 @@ Worker 用票构造 `ChronicleServerConfig` mounts，执行与普通 Warehouse �
 
 ### STS / 短时会话券
 
-拒绝。当前目标是本机协作目录，不是云上身份联邦。透传后端密钥给已授权客户端，配置更简单，也与现有 S3 alias 注入 `AWS_*` 的方式一致。
+拒绝。当前目标是本机协作目录，不是云上身份联邦。透传后端密钥给已授权客户端，配置更简单，也与现有 S3 pin 注入 `AWS_*` 的方式一致。
 
-### 把 catalog 做成普通路径拼接 alias
+### 把 catalog 做成普通路径拼接 pin
 
 拒绝。`@prod/evals` 对 `s3://bucket` 是路径拼接；对 Directory locator 则是“名字 + library 名”，换票后打开票中 path。混用会让 `@team/prod` 被拼成非法 URI `catalog://127.0.0.1:8081/prod`。
 
@@ -310,8 +310,8 @@ Worker 用票构造 `ChronicleServerConfig` mounts，执行与普通 Warehouse �
 
 ## 兼容性与演进
 
-- 无 `--catalog-config` 时，现有 Dataset 引用、普通 alias 的 `@name/suffix` 路径拼接、以及无鉴权 loopback Warehouse MUST 保持不变。
-- `catalog://` MUST NOT 成为 `DatasetLocation` 可打开的存储 scheme；只有 alias 解析器认识它。
+- 无 `--catalog-config` 时，现有 Dataset 引用、普通 pin 的 `@name/suffix` 路径拼接、以及无鉴权 loopback Warehouse MUST 保持不变。
+- `catalog://` MUST NOT 成为 `DatasetLocation` 可打开的存储 scheme；只有 dataset pin 解析器认识它。
 - 新增 library 字段、鉴权头或 worker 协议属于破坏性变更，需要修订本 RFC。
 - 未来的 STS 或热加载可以作为后续 RFC，不得 silently 改变“透传后端密钥 / 重启生效”的语义。
 
@@ -325,7 +325,7 @@ Worker 用票构造 `ChronicleServerConfig` mounts，执行与普通 Warehouse �
 - `pchronicle serve catalog issue|grant|revoke` 改写 ACL（签发不授权，sk 只打一次 stdout）；
 - `GET /api/v1/catalog/datasets` 与 `/{name}`；
 - `--catalog-config` front-only 父进程与 `--catalog-query-worker`；
-- `catalog://` alias、`@team/prod` 换票与进程内票缓存；
+- `catalog://` pin、`@team/prod` 换票与进程内票缓存；
 - Web `localStorage` 用户钥与数据面请求头。
 
 后续工作：

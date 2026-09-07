@@ -13,16 +13,16 @@ Does not own the Web UI source —
 [`pchronicle-web`](../../pchronicle-web/README.md) does. Does not start, schedule,
 or isolate Agent Runs (pVisor / pPilot).
 
-Current commands include `onboard`, `default`, `alias`, `ls`/`list`, `status`,
-bounded read-only `query`, built-in `analysis`, assisted `agent` sessions,
-Source-local `find`, create/append/replace `import`, destructive `drop`,
-complete-trajectory `export`, directory `sync`, `echo`, and loopback-only
-`serve`. Import and export support ATIF, OpenAI Messages, ACTF, Storyline JSON,
-and record-level Compact JSONL. `sync --from SOURCE --to WAREHOUSE --convert
-OUTPUT` polls a local source directory, atomically mirrors supported JSON files
-into a local Warehouse Dataset byte-for-byte, and rebuilds a Storyline Lance
-Dataset at the conversion output on each coalesced batch. With
-`--input-format compact-jsonl`, each batch instead replaces a compact Lance
+Current commands include `onboard`, `dataset` (pin/unpin/list/show/set/rename),
+`list`/`ls`, `stats`, bounded read-only `query`, built-in `stats` reports, assisted
+`agent` sessions, Source-local `find`, create/append/replace `import`,
+destructive `drop`, complete-trajectory `export`, directory `sync`, `echo`, and
+loopback-only `serve`. Import and export support ATIF, OpenAI Messages, ACTF,
+Storyline JSON, and record-level Compact JSONL. `sync --from SOURCE --to
+WAREHOUSE --convert OUTPUT` polls a local source directory, atomically mirrors
+supported JSON files into a local Warehouse Dataset byte-for-byte, and rebuilds
+a Storyline Lance Dataset at the conversion output on each coalesced batch.
+With `--input-format compact-jsonl`, each batch instead replaces a compact Lance
 snapshot at `OUTPUT`; `--to` remains required but is not written. Use `--once`
 for a finite run.
 

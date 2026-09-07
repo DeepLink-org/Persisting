@@ -668,43 +668,43 @@ pub(super) fn catalog_unauthorized() -> ApiError {
     ApiError::unauthorized("catalog credentials are invalid")
 }
 
-pub(crate) fn parse_catalog_alias_target(input: &str) -> Result<String> {
+pub(crate) fn parse_catalog_pin_target(input: &str) -> Result<String> {
     let input = input.trim();
-    let url = Url::parse(input).context("parse catalog alias URL")?;
+    let url = Url::parse(input).context("parse catalog pin URL")?;
     anyhow::ensure!(
         url.scheme() == "catalog",
-        "catalog alias target must use catalog://"
+        "catalog pin target must use catalog://"
     );
     anyhow::ensure!(
         url.username().is_empty() && url.password().is_none(),
-        "catalog alias URL must not contain embedded credentials"
+        "catalog pin URL must not contain embedded credentials"
     );
     anyhow::ensure!(
         url.query().is_none() && url.fragment().is_none(),
-        "catalog alias URL must not contain a query string or fragment"
+        "catalog pin URL must not contain a query string or fragment"
     );
     anyhow::ensure!(
         url.path() == "/" || url.path().is_empty(),
-        "catalog alias URL must not contain a path"
+        "catalog pin URL must not contain a path"
     );
     let host = url
         .host_str()
-        .ok_or_else(|| anyhow!("catalog alias URL must include a host"))?;
+        .ok_or_else(|| anyhow!("catalog pin URL must include a host"))?;
     let address: std::net::IpAddr = host
         .parse()
-        .with_context(|| format!("catalog alias host '{host}' must be a loopback IP"))?;
+        .with_context(|| format!("catalog pin host '{host}' must be a loopback IP"))?;
     anyhow::ensure!(
         address.is_loopback(),
-        "catalog alias host must be a loopback address"
+        "catalog pin host must be a loopback address"
     );
     let port = url
         .port()
-        .ok_or_else(|| anyhow!("catalog alias URL must include a port"))?;
+        .ok_or_else(|| anyhow!("catalog pin URL must include a port"))?;
     Ok(format!("catalog://{host}:{port}"))
 }
 
 pub(crate) fn catalog_http_base(catalog_url: &str) -> Result<String> {
-    let normalized = parse_catalog_alias_target(catalog_url)?;
+    let normalized = parse_catalog_pin_target(catalog_url)?;
     Ok(normalized.replacen("catalog://", "http://", 1))
 }
 
@@ -1228,11 +1228,11 @@ dataset = "prod"
     }
 
     #[test]
-    fn catalog_alias_target_must_be_loopback_with_port() {
-        assert!(parse_catalog_alias_target("catalog://127.0.0.1:8081").is_ok());
-        assert!(parse_catalog_alias_target("catalog://8.8.8.8:8081").is_err());
-        assert!(parse_catalog_alias_target("catalog://127.0.0.1").is_err());
-        assert!(parse_catalog_alias_target("s3://bucket/prod").is_err());
+    fn catalog_pin_target_must_be_loopback_with_port() {
+        assert!(parse_catalog_pin_target("catalog://127.0.0.1:8081").is_ok());
+        assert!(parse_catalog_pin_target("catalog://8.8.8.8:8081").is_err());
+        assert!(parse_catalog_pin_target("catalog://127.0.0.1").is_err());
+        assert!(parse_catalog_pin_target("s3://bucket/prod").is_err());
     }
 
     #[test]

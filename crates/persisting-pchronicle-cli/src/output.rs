@@ -310,35 +310,37 @@ pub(super) fn sql_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-pub(super) fn expand_dataset_alias(input: &str) -> Result<String> {
+pub(super) fn expand_builtin_pin(input: &str) -> Result<String> {
     let input = input.trim();
     if !input.starts_with('@') {
         return Ok(input.to_string());
     }
     anyhow::ensure!(
         !input[1..].contains("://"),
-        "dataset alias must not contain a URI scheme"
+        "dataset pin must not contain a URI scheme"
     );
     let rest = &input[1..];
     let (name, suffix) = rest.split_once('/').unwrap_or((rest, ""));
     anyhow::ensure!(
         !name.is_empty(),
-        "dataset alias must include a name after '@'"
+        "dataset pin must include a name after '@'"
     );
     let remainder = suffix.trim_start_matches('/');
     if !remainder.is_empty() {
         for component in remainder.split('/') {
             anyhow::ensure!(
                 !component.is_empty() && component != "..",
-                "dataset alias path must not contain empty or parent segments"
+                "dataset pin path must not contain empty or parent segments"
             );
         }
     }
     let root = match name {
-        "codex" => alias_root("CODEX_HOME", ".codex", "sessions", "@codex")?,
-        "claude" => alias_root("CLAUDE_CONFIG_DIR", ".claude", "projects", "@claude")?,
-        "claude-code" => alias_root("CLAUDE_CONFIG_DIR", ".claude", "projects", "@claude-code")?,
-        other => anyhow::bail!("unknown dataset alias '@{other}'; expected @codex or @claude"),
+        "codex" => builtin_pin_root("CODEX_HOME", ".codex", "sessions", "@codex")?,
+        "claude" => builtin_pin_root("CLAUDE_CONFIG_DIR", ".claude", "projects", "@claude")?,
+        "claude-code" => {
+            builtin_pin_root("CLAUDE_CONFIG_DIR", ".claude", "projects", "@claude-code")?
+        }
+        other => anyhow::bail!("unknown dataset pin '@{other}'; expected @codex or @claude"),
     };
     if remainder.is_empty() {
         return Ok(root.to_string_lossy().into_owned());
@@ -346,7 +348,7 @@ pub(super) fn expand_dataset_alias(input: &str) -> Result<String> {
     Ok(root.join(remainder).to_string_lossy().into_owned())
 }
 
-fn alias_root(env_key: &str, home_subdir: &str, leaf: &str, label: &str) -> Result<PathBuf> {
+fn builtin_pin_root(env_key: &str, home_subdir: &str, leaf: &str, label: &str) -> Result<PathBuf> {
     let configured = std::env::var_os(env_key).filter(|value| !value.is_empty());
     let base = match configured {
         Some(value) => {
@@ -369,7 +371,7 @@ fn alias_root(env_key: &str, home_subdir: &str, leaf: &str, label: &str) -> Resu
 }
 
 pub(super) fn normalize_and_validate_dataset_uri(input: &str) -> Result<String> {
-    let input = expand_dataset_alias(input)?;
+    let input = expand_builtin_pin(input)?;
     Ok(DatasetLocation::parse(&input)?
         .into_existing()?
         .as_str()

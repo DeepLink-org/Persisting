@@ -20,7 +20,7 @@ fn jsonl_rows(bytes: &[u8]) -> Result<Vec<Value>> {
 #[tokio::test]
 async fn overview_reports_stable_cross_format_totals() -> Result<()> {
     let dataset = examples_root().to_string_lossy().into_owned();
-    let output = run_cli(["analysis", "overview", &dataset, "--format", "jsonl"]).await?;
+    let output = run_cli(["stats", "overview", &dataset, "--format", "jsonl"]).await?;
     assert_eq!(
         output.json()?,
         json!({
@@ -44,7 +44,7 @@ async fn overview_reports_stable_cross_format_totals() -> Result<()> {
 async fn grouped_analysis_subcommands_have_deterministic_semantics() -> Result<()> {
     let dataset = examples_root().to_string_lossy().into_owned();
 
-    let agents = run_cli(["analysis", "agents", &dataset, "--format", "jsonl"]).await?;
+    let agents = run_cli(["stats", "agents", &dataset, "--format", "jsonl"]).await?;
     assert_eq!(
         jsonl_rows(&agents.stdout)?,
         vec![
@@ -54,7 +54,7 @@ async fn grouped_analysis_subcommands_have_deterministic_semantics() -> Result<(
         ]
     );
 
-    let models = run_cli(["analysis", "models", &dataset, "--format", "jsonl"]).await?;
+    let models = run_cli(["stats", "models", &dataset, "--format", "jsonl"]).await?;
     assert_eq!(
         jsonl_rows(&models.stdout)?,
         vec![json!({
@@ -64,7 +64,7 @@ async fn grouped_analysis_subcommands_have_deterministic_semantics() -> Result<(
         })]
     );
 
-    let tools = run_cli(["analysis", "tools", &dataset, "--format", "jsonl"]).await?;
+    let tools = run_cli(["stats", "tools", &dataset, "--format", "jsonl"]).await?;
     assert_eq!(
         jsonl_rows(&tools.stdout)?,
         vec![
@@ -101,13 +101,13 @@ async fn grouped_analysis_uses_document_identity_when_sessions_are_shared() -> R
     )?;
     let dataset = temp.path().to_string_lossy().into_owned();
 
-    let agents = run_cli(["analysis", "agents", &dataset, "--format", "jsonl"]).await?;
+    let agents = run_cli(["stats", "agents", &dataset, "--format", "jsonl"]).await?;
     let agent_rows = jsonl_rows(&agents.stdout)?;
     assert_eq!(agent_rows[0]["trajectories"], 2);
     assert_eq!(agent_rows[0]["steps"], 2);
     assert_eq!(agent_rows[0]["tool_calls"], 2);
 
-    let tools = run_cli(["analysis", "tools", &dataset, "--format", "jsonl"]).await?;
+    let tools = run_cli(["stats", "tools", &dataset, "--format", "jsonl"]).await?;
     let tool_rows = jsonl_rows(&tools.stdout)?;
     assert_eq!(tool_rows[0]["calls"], 2);
     assert_eq!(tool_rows[0]["trajectories"], 2);
@@ -115,23 +115,21 @@ async fn grouped_analysis_uses_document_identity_when_sessions_are_shared() -> R
 }
 
 #[tokio::test]
-async fn analysis_uses_default_warehouse_and_explicit_dataset_overrides_it() -> Result<()> {
+async fn analysis_uses_default_pin_and_explicit_dataset_overrides_it() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let settings = temp
         .path()
-        .join("settings.toml")
+        .join("config.toml")
         .to_string_lossy()
         .into_owned();
     let warehouse = examples_root().to_string_lossy().into_owned();
-    run_cli(["--settings", &settings, "default", &warehouse]).await?;
+    run_cli([
+        "--config", &settings, "dataset", "pin", "default", &warehouse,
+    ])
+    .await?;
 
     let default = run_cli([
-        "--settings",
-        &settings,
-        "analysis",
-        "overview",
-        "--format",
-        "jsonl",
+        "--config", &settings, "stats", "overview", "--format", "jsonl",
     ])
     .await?
     .json()?;
@@ -139,13 +137,7 @@ async fn analysis_uses_default_warehouse_and_explicit_dataset_overrides_it() -> 
 
     let atif = examples_root().join("atif").to_string_lossy().into_owned();
     let explicit = run_cli([
-        "--settings",
-        &settings,
-        "analysis",
-        "overview",
-        &atif,
-        "--format",
-        "jsonl",
+        "--config", &settings, "stats", "overview", &atif, "--format", "jsonl",
     ])
     .await?
     .json()?;
@@ -157,12 +149,12 @@ async fn analysis_uses_default_warehouse_and_explicit_dataset_overrides_it() -> 
 #[tokio::test]
 async fn analysis_supports_table_csv_and_group_limits() -> Result<()> {
     let dataset = examples_root().to_string_lossy().into_owned();
-    let table = run_cli(["analysis", "models", &dataset, "--format", "table"]).await?;
+    let table = run_cli(["stats", "models", &dataset, "--format", "table"]).await?;
     let table = std::str::from_utf8(&table.stdout)?;
     assert!(table.lines().next().unwrap().contains("model"));
     assert!(table.contains("example-model"));
 
-    let csv = run_cli(["analysis", "tools", &dataset, "--format", "csv"]).await?;
+    let csv = run_cli(["stats", "tools", &dataset, "--format", "csv"]).await?;
     let csv = std::str::from_utf8(&csv.stdout)?;
     assert_eq!(
         csv.lines().next(),
@@ -171,13 +163,13 @@ async fn analysis_supports_table_csv_and_group_limits() -> Result<()> {
     assert_eq!(csv.lines().count(), 3);
 
     let limited = run_cli([
-        "analysis", "agents", &dataset, "--format", "jsonl", "--limit", "1",
+        "stats", "agents", &dataset, "--format", "jsonl", "--limit", "1",
     ])
     .await?;
     assert_eq!(jsonl_rows(&limited.stdout)?.len(), 1);
 
-    let alias = run_cli([
-        "analysis",
+    let toolcalls = run_cli([
+        "stats",
         "toolcalls",
         &dataset,
         "--format",
@@ -186,7 +178,7 @@ async fn analysis_supports_table_csv_and_group_limits() -> Result<()> {
         "1",
     ])
     .await?;
-    assert_eq!(jsonl_rows(&alias.stdout)?[0]["function_name"], "Bash");
+    assert_eq!(jsonl_rows(&toolcalls.stdout)?[0]["function_name"], "Bash");
     Ok(())
 }
 
@@ -194,14 +186,14 @@ async fn analysis_supports_table_csv_and_group_limits() -> Result<()> {
 async fn empty_warehouse_has_an_overview_and_empty_grouped_analyses() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let dataset = temp.path().to_string_lossy().into_owned();
-    let overview = run_cli(["analysis", "overview", &dataset, "--format", "jsonl"])
+    let overview = run_cli(["stats", "overview", &dataset, "--format", "jsonl"])
         .await?
         .json()?;
     assert_eq!(overview["sources"], 0);
     assert_eq!(overview["trajectories"], 0);
 
     for command in ["agents", "models", "tools"] {
-        let output = run_cli(["analysis", command, &dataset, "--format", "jsonl"]).await?;
+        let output = run_cli(["stats", command, &dataset, "--format", "jsonl"]).await?;
         assert!(output.stdout.is_empty(), "analysis={command}");
     }
     Ok(())
@@ -211,10 +203,10 @@ async fn empty_warehouse_has_an_overview_and_empty_grouped_analyses() -> Result<
 async fn analysis_rejects_zero_limits_and_bounded_output_without_partial_stdout() -> Result<()> {
     let dataset = examples_root().to_string_lossy().into_owned();
     for args in [
-        vec!["analysis", "agents", &dataset, "--limit", "0"],
-        vec!["analysis", "agents", &dataset, "--limit", "10001"],
-        vec!["analysis", "overview", &dataset, "--max-output-bytes", "8"],
-        vec!["analysis", "overview", &dataset, "--timeout-seconds", "0"],
+        vec!["stats", "agents", &dataset, "--limit", "0"],
+        vec!["stats", "agents", &dataset, "--limit", "10001"],
+        vec!["stats", "overview", &dataset, "--max-output-bytes", "8"],
+        vec!["stats", "overview", &dataset, "--timeout-seconds", "0"],
     ] {
         let error = run_cli(args).await.unwrap_err();
         assert!(!format!("{error:#}").is_empty());

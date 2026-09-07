@@ -5,29 +5,29 @@
 
 ## 先确认 Dataset
 
-排查时先使用具体路径。alias 会增加一次解析步骤：
+排查时先使用具体路径。pin 会增加一次解析步骤：
 
 ```bash
-pchronicle alias list
-pchronicle status ./trajectory-data --format json
-pchronicle ls ./trajectory-data --format json
+pchronicle dataset list
+pchronicle stats ./trajectory-data --format json
+pchronicle list ./trajectory-data --format json
 ```
 
-如果 alias 失败，先解析 alias，再排查存储凭据或 SQL：
+如果 pin 失败，先解析 pin，再排查存储凭据或 SQL：
 
 ```bash
-pchronicle alias get-url prod
-pchronicle status @prod --format json
+pchronicle dataset show prod
+pchronicle stats @prod --format json
 ```
 
-Alias 只指向 Dataset，不会复制或移动底层数据。
+Pin 只指向 Dataset，不会复制或移动底层数据。
 
 ## Dataset 能打开但看起来为空
 
 在编写更复杂的过滤器前先看汇总：
 
 ```bash
-pchronicle analysis overview ./trajectory-data
+pchronicle stats overview ./trajectory-data
 pchronicle find ./trajectory-data --match "" --format json
 ```
 
@@ -70,6 +70,6 @@ Source 与规范化视图。
 
 ## 提交 issue 前
 
-请提供 pChronicle 版本、Dataset 路径或 alias 名称（不要包含凭据）、`status --format json` 输出、
+请提供 pChronicle 版本、Dataset 路径或 pin 名称（不要包含凭据）、`status --format json` 输出、
 完整查询和资源限制。对象存储还应说明 Provider 类型及 region 或 endpoint，但不要提供 access key
 或签名 URL。

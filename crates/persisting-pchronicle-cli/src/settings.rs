@@ -3,39 +3,59 @@ use super::*;
 const MAX_WAREHOUSE_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_WAREHOUSE_DATASETS: usize = 128;
 const CONFIG_ENV: &str = "PCHRONICLE_CONFIG";
-const LEGACY_SETTINGS_ENV: &str = "PCHRONICLE_SETTINGS";
-const RESERVED_ALIASES: [&str; 3] = ["codex", "claude", "claude-code"];
+const RESERVED_PIN_NAMES: [&str; 3] = ["codex", "claude", "claude-code"];
+const DEFAULT_PIN_NAME: &str = "default";
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct LocalSettings {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    default_warehouse: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    aliases: BTreeMap<String, String>,
-    /// Credentials are deliberately kept out of the alias URI so they cannot
-    /// leak through `alias list`, logs, or generated Dataset paths.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    alias_credentials: BTreeMap<String, S3Credentials>,
-    /// S3-compatible endpoints are kept separate from the canonical s3:// URI.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    alias_endpoints: BTreeMap<String, String>,
-    /// Optional S3 regions are kept separate from the canonical s3:// URI.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    alias_regions: BTreeMap<String, String>,
+    pins: BTreeMap<String, PinConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-struct S3Credentials {
-    access_key: String,
-    secret_key: String,
+#[serde(deny_unknown_fields)]
+struct PinConfig {
+    uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    access_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret_key: Option<String>,
+}
+
+impl PinConfig {
+    fn new_uri(uri: String) -> Self {
+        Self {
+            uri,
+            endpoint: None,
+            region: None,
+            access_key: None,
+            secret_key: None,
+        }
+    }
+
+    fn credentials_pair(&self) -> Result<Option<(&str, &str)>> {
+        match (&self.access_key, &self.secret_key) {
+            (None, None) => Ok(None),
+            (Some(access_key), Some(secret_key)) => {
+                anyhow::ensure!(!access_key.is_empty(), "pin access_key must not be empty");
+                anyhow::ensure!(!secret_key.is_empty(), "pin secret_key must not be empty");
+                Ok(Some((access_key.as_str(), secret_key.as_str())))
+            }
+            _ => Err(cli_boundary_error(
+                BoundaryCode::InvalidRequest,
+                "pin access_key and secret_key must be set together",
+            )),
+        }
+    }
 }
 
 pub(super) fn default_settings_path() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os(CONFIG_ENV).filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(path));
-    }
-    if let Some(path) = std::env::var_os(LEGACY_SETTINGS_ENV).filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(path));
     }
     #[cfg(target_os = "windows")]
@@ -72,7 +92,18 @@ fn load_local_settings(path: &Path) -> Result<LocalSettings> {
         .with_context(|| format!("read pChronicle settings {}", path.display()))?;
     let settings: LocalSettings = toml::from_str(&content)
         .with_context(|| format!("parse pChronicle settings {}", path.display()))?;
+    validate_loaded_settings(&settings)?;
     Ok(settings)
+}
+
+fn validate_loaded_settings(settings: &LocalSettings) -> Result<()> {
+    for (name, pin) in &settings.pins {
+        if name != DEFAULT_PIN_NAME {
+            validate_pin_name(name)?;
+        }
+        let _ = pin.credentials_pair()?;
+    }
+    Ok(())
 }
 
 fn load_local_settings_or_default(path: &Path) -> Result<LocalSettings> {
@@ -83,23 +114,27 @@ fn load_local_settings_or_default(path: &Path) -> Result<LocalSettings> {
     }
 }
 
-pub(super) fn resolve_default_warehouse(settings_override: Option<&Path>) -> Result<String> {
+pub(super) fn resolve_default_pin(settings_override: Option<&Path>) -> Result<String> {
     let path = settings_path(settings_override)?;
     if !path.exists() {
         return Err(cli_boundary_error(
             BoundaryCode::NotFound,
             format!(
-                "default Dataset is not configured; run `pchronicle default set <LOCAL_DATASET>` (config: {})",
+                "default Dataset is not configured; run `pchronicle dataset pin default <LOCAL_DATASET>` (config: {})",
                 path.display()
             ),
         ));
     }
     let settings = load_local_settings(&path)?;
-    let configured = settings.default_warehouse.as_deref().ok_or_else(|| {
+    let configured = settings
+        .pins
+        .get(DEFAULT_PIN_NAME)
+        .map(|pin| pin.uri.as_str())
+        .ok_or_else(|| {
         cli_boundary_error(
             BoundaryCode::NotFound,
             format!(
-                "default Dataset is not configured; run `pchronicle default set <LOCAL_DATASET>` (config: {})",
+                "default Dataset is not configured; run `pchronicle dataset pin default <LOCAL_DATASET>` (config: {})",
                 path.display()
             ),
         )
@@ -152,74 +187,20 @@ fn write_local_settings(path: &Path, settings: &LocalSettings) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn run_default(
-    args: DefaultArgs,
-    settings_override: Option<&Path>,
-    stdout: &mut dyn Write,
-    stderr: &mut dyn Write,
-) -> Result<()> {
-    let path = settings_path(settings_override)?;
-    let command = match (args.command, args.legacy_directory) {
-        (Some(command), None) => command,
-        (None, Some(directory)) => DefaultCommand::Set {
-            dataset: directory.to_string_lossy().into_owned(),
-        },
-        (None, None) => DefaultCommand::Show,
-        (Some(_), Some(_)) => unreachable!("clap rejects mixed default forms"),
-    };
-    match command {
-        DefaultCommand::Show => {
-            let warehouse = resolve_default_warehouse(settings_override)?;
-            writeln!(stdout, "{warehouse}").context("write default Dataset")
-        }
-        DefaultCommand::Set { dataset } => {
-            let expanded = expand_dataset_reference(&dataset, settings_override, false)?;
-            let location = DatasetLocation::parse(&expanded)?;
-            let directory = location
-                .local_path()
-                .context("default Dataset must be a local directory")?;
-            if !directory.exists() {
-                std::fs::create_dir_all(directory).with_context(|| {
-                    format!("create default Dataset directory {}", directory.display())
-                })?;
-            }
-            anyhow::ensure!(directory.is_dir(), "default Dataset must be a directory");
-            let warehouse = std::fs::canonicalize(directory)
-                .context("canonicalize default Dataset directory")?
-                .to_string_lossy()
-                .into_owned();
-            let mut settings = load_local_settings_or_default(&path)?;
-            settings.default_warehouse = Some(warehouse.clone());
-            write_local_settings(&path, &settings)?;
-            writeln!(stderr, "config={} updated=true", path.display())
-                .context("write pChronicle default metadata")?;
-            writeln!(stdout, "{warehouse}").context("write default Dataset")
-        }
-        DefaultCommand::Clear => {
-            let mut settings = load_local_settings_or_default(&path)?;
-            settings.default_warehouse = None;
-            write_local_settings(&path, &settings)?;
-            writeln!(stderr, "config={} updated=true", path.display())
-                .context("write pChronicle default metadata")?;
-            writeln!(stdout, "cleared").context("write default clear result")
-        }
-    }
-}
-
 #[derive(Serialize)]
-struct AliasListResponse<'a> {
+struct PinListResponse<'a> {
     schema_version: &'static str,
-    aliases: Vec<AliasResponse<'a>>,
+    pins: Vec<PinResponse<'a>>,
 }
 
 #[derive(Serialize)]
-struct AliasResponse<'a> {
+struct PinResponse<'a> {
     name: &'a str,
     dataset: &'a str,
 }
 
-pub(super) fn run_alias(
-    args: AliasArgs,
+pub(super) fn run_dataset(
+    args: DatasetArgs,
     settings_override: Option<&Path>,
     stdout_is_terminal: bool,
     stdout: &mut dyn Write,
@@ -227,10 +208,10 @@ pub(super) fn run_alias(
 ) -> Result<()> {
     let path = settings_path(settings_override)?;
     let mut settings = load_local_settings_or_default(&path)?;
-    match args.command.unwrap_or(AliasCommand::List {
+    match args.command.unwrap_or(DatasetCommand::List {
         format: OutputFormat::Auto,
     }) {
-        AliasCommand::List { format } => {
+        DatasetCommand::List { format } => {
             let format = match format {
                 OutputFormat::Auto if stdout_is_terminal => OutputFormat::Table,
                 OutputFormat::Auto => OutputFormat::Json,
@@ -239,17 +220,17 @@ pub(super) fn run_alias(
             match format {
                 OutputFormat::Table => {
                     writeln!(stdout, "NAME\tDATASET")?;
-                    for (name, dataset) in alias_list_entries(&settings)? {
+                    for (name, dataset) in pin_list_entries(&settings)? {
                         writeln!(stdout, "{name}\t{dataset}")?;
                     }
                 }
                 OutputFormat::Json => {
-                    let entries = alias_list_entries(&settings)?;
-                    let response = AliasListResponse {
-                        schema_version: "pchronicle-aliases/v1",
-                        aliases: entries
+                    let entries = pin_list_entries(&settings)?;
+                    let response = PinListResponse {
+                        schema_version: "pchronicle-dataset-pins/v1",
+                        pins: entries
                             .iter()
-                            .map(|(name, dataset)| AliasResponse { name, dataset })
+                            .map(|(name, dataset)| PinResponse { name, dataset })
                             .collect(),
                     };
                     serde_json::to_writer_pretty(&mut *stdout, &response)?;
@@ -259,7 +240,7 @@ pub(super) fn run_alias(
             }
             Ok(())
         }
-        AliasCommand::Add {
+        DatasetCommand::Pin {
             name,
             dataset,
             endpoint,
@@ -267,53 +248,48 @@ pub(super) fn run_alias(
             access_key,
             secret_key,
         } => {
-            validate_alias_name(&name)?;
-            if settings.aliases.contains_key(&name) {
+            if name == DEFAULT_PIN_NAME {
+                anyhow::ensure!(
+                    endpoint.is_none()
+                        && region.is_none()
+                        && access_key.is_none()
+                        && secret_key.is_none(),
+                    "default pin is a local Dataset and does not accept --endpoint, --region, --ak, or --sk"
+                );
+                return pin_default_dataset(&path, &dataset, settings_override, stdout, stderr);
+            }
+            validate_pin_name(&name)?;
+            if settings.pins.contains_key(&name) {
                 return Err(cli_boundary_error(
                     BoundaryCode::Conflict,
-                    format!("alias '{name}' already exists"),
+                    format!("dataset pin '{name}' already exists"),
                 ));
             }
-            let dataset = normalize_alias_target(&dataset)?;
-            let catalog = dataset.starts_with("catalog://");
-            anyhow::ensure!(
-                !catalog || (endpoint.is_none() && region.is_none()),
-                "catalog aliases do not accept --endpoint or --region"
-            );
-            let endpoint = s3_endpoint_for(&dataset, endpoint)?;
-            let region = s3_region_for(&dataset, region)?;
-            let credentials = s3_credentials_for(&dataset, access_key, secret_key)?;
-            anyhow::ensure!(
-                !catalog || credentials.is_some(),
-                "catalog aliases require --ak and --sk"
-            );
-            settings.aliases.insert(name.clone(), dataset.clone());
-            if let Some(endpoint) = endpoint {
-                settings.alias_endpoints.insert(name.clone(), endpoint);
-            }
-            if let Some(region) = region {
-                settings.alias_regions.insert(name.clone(), region);
-            }
-            if let Some(credentials) = credentials {
-                settings.alias_credentials.insert(name.clone(), credentials);
-            }
+            let pin = build_pin_config(&dataset, endpoint, region, access_key, secret_key)?;
+            let uri = pin.uri.clone();
+            settings.pins.insert(name.clone(), pin);
             write_local_settings(&path, &settings)?;
             writeln!(stderr, "config={} updated=true", path.display())?;
-            writeln!(stdout, "{name}\t{dataset}")?;
+            writeln!(stdout, "{name}\t{uri}")?;
             Ok(())
         }
-        AliasCommand::GetUrl { name } => {
-            validate_alias_name(&name)?;
-            let dataset = settings.aliases.get(&name).ok_or_else(|| {
+        DatasetCommand::Show { name } => {
+            if name == DEFAULT_PIN_NAME {
+                let warehouse = resolve_default_pin(settings_override)?;
+                writeln!(stdout, "{warehouse}")?;
+                return Ok(());
+            }
+            validate_pin_name(&name)?;
+            let pin = settings.pins.get(&name).ok_or_else(|| {
                 cli_boundary_error(
                     BoundaryCode::NotFound,
-                    format!("alias '{name}' does not exist"),
+                    format!("dataset pin '{name}' does not exist"),
                 )
             })?;
-            writeln!(stdout, "{dataset}")?;
+            writeln!(stdout, "{}", pin.uri)?;
             Ok(())
         }
-        AliasCommand::SetUrl {
+        DatasetCommand::Set {
             name,
             dataset,
             endpoint,
@@ -321,100 +297,77 @@ pub(super) fn run_alias(
             access_key,
             secret_key,
         } => {
-            validate_alias_name(&name)?;
-            if !settings.aliases.contains_key(&name) {
-                return Err(cli_boundary_error(
-                    BoundaryCode::NotFound,
-                    format!("alias '{name}' does not exist"),
-                ));
+            if name == DEFAULT_PIN_NAME {
+                anyhow::ensure!(
+                    endpoint.is_none()
+                        && region.is_none()
+                        && access_key.is_none()
+                        && secret_key.is_none(),
+                    "default pin is a local Dataset and does not accept --endpoint, --region, --ak, or --sk"
+                );
+                return pin_default_dataset(&path, &dataset, settings_override, stdout, stderr);
             }
-            let dataset = normalize_alias_target(&dataset)?;
-            let catalog = dataset.starts_with("catalog://");
-            anyhow::ensure!(
-                !catalog || (endpoint.is_none() && region.is_none()),
-                "catalog aliases do not accept --endpoint or --region"
-            );
-            let endpoint = s3_endpoint_for(&dataset, endpoint)?;
-            let region = s3_region_for(&dataset, region)?;
-            let credentials = s3_credentials_for(&dataset, access_key, secret_key)?;
-            anyhow::ensure!(
-                !catalog || credentials.is_some(),
-                "catalog aliases require --ak and --sk"
-            );
-            settings.aliases.insert(name.clone(), dataset.clone());
-            match endpoint {
-                Some(endpoint) => {
-                    settings.alias_endpoints.insert(name.clone(), endpoint);
-                }
-                None if !dataset.starts_with("s3://") => {
-                    settings.alias_endpoints.remove(&name);
-                }
-                None => {}
-            }
-            match region {
-                Some(region) => {
-                    settings.alias_regions.insert(name.clone(), region);
-                }
-                None if !dataset.starts_with("s3://") => {
-                    settings.alias_regions.remove(&name);
-                }
-                None => {}
-            }
-            match credentials {
-                Some(credentials) => {
-                    settings.alias_credentials.insert(name.clone(), credentials);
-                }
-                None if !dataset.starts_with("s3://") => {
-                    settings.alias_credentials.remove(&name);
-                }
-                None => {}
-            }
-            write_local_settings(&path, &settings)?;
-            writeln!(stderr, "config={} updated=true", path.display())?;
-            writeln!(stdout, "{name}\t{dataset}")?;
-            Ok(())
-        }
-        AliasCommand::Rename { old, new } => {
-            validate_alias_name(&old)?;
-            validate_alias_name(&new)?;
-            if settings.aliases.contains_key(&new) {
-                return Err(cli_boundary_error(
-                    BoundaryCode::Conflict,
-                    format!("alias '{new}' already exists"),
-                ));
-            }
-            let dataset = settings.aliases.remove(&old).ok_or_else(|| {
+            validate_pin_name(&name)?;
+            let existing = settings.pins.get(&name).ok_or_else(|| {
                 cli_boundary_error(
                     BoundaryCode::NotFound,
-                    format!("alias '{old}' does not exist"),
+                    format!("dataset pin '{name}' does not exist"),
                 )
             })?;
-            settings.aliases.insert(new.clone(), dataset);
-            if let Some(credentials) = settings.alias_credentials.remove(&old) {
-                settings.alias_credentials.insert(new.clone(), credentials);
+            let pin =
+                merge_pin_config(existing, &dataset, endpoint, region, access_key, secret_key)?;
+            let uri = pin.uri.clone();
+            settings.pins.insert(name.clone(), pin);
+            write_local_settings(&path, &settings)?;
+            writeln!(stderr, "config={} updated=true", path.display())?;
+            writeln!(stdout, "{name}\t{uri}")?;
+            Ok(())
+        }
+        DatasetCommand::Rename { old, new } => {
+            anyhow::ensure!(
+                old != DEFAULT_PIN_NAME && new != DEFAULT_PIN_NAME,
+                "the default pin cannot be renamed; unpin it or pin default to a new path"
+            );
+            validate_pin_name(&old)?;
+            validate_pin_name(&new)?;
+            if settings.pins.contains_key(&new) {
+                return Err(cli_boundary_error(
+                    BoundaryCode::Conflict,
+                    format!("dataset pin '{new}' already exists"),
+                ));
             }
-            if let Some(endpoint) = settings.alias_endpoints.remove(&old) {
-                settings.alias_endpoints.insert(new.clone(), endpoint);
-            }
-            if let Some(region) = settings.alias_regions.remove(&old) {
-                settings.alias_regions.insert(new.clone(), region);
-            }
+            let pin = settings.pins.remove(&old).ok_or_else(|| {
+                cli_boundary_error(
+                    BoundaryCode::NotFound,
+                    format!("dataset pin '{old}' does not exist"),
+                )
+            })?;
+            settings.pins.insert(new.clone(), pin);
             write_local_settings(&path, &settings)?;
             writeln!(stderr, "config={} updated=true", path.display())?;
             writeln!(stdout, "{new}")?;
             Ok(())
         }
-        AliasCommand::Remove { name } => {
-            validate_alias_name(&name)?;
-            if settings.aliases.remove(&name).is_none() {
+        DatasetCommand::Unpin { name } => {
+            if name == DEFAULT_PIN_NAME {
+                if settings.pins.remove(DEFAULT_PIN_NAME).is_none() {
+                    return Err(cli_boundary_error(
+                        BoundaryCode::NotFound,
+                        "dataset pin 'default' does not exist",
+                    ));
+                }
+                write_local_settings(&path, &settings)?;
+                writeln!(stderr, "config={} updated=true", path.display())?;
+                writeln!(stdout, "cleared")?;
+                return Ok(());
+            }
+            validate_pin_name(&name)?;
+            if settings.pins.remove(&name).is_none() {
                 return Err(cli_boundary_error(
                     BoundaryCode::NotFound,
-                    format!("alias '{name}' does not exist"),
+                    format!("dataset pin '{name}' does not exist"),
                 ));
             }
-            settings.alias_credentials.remove(&name);
-            settings.alias_endpoints.remove(&name);
-            settings.alias_regions.remove(&name);
             write_local_settings(&path, &settings)?;
             writeln!(stderr, "config={} updated=true", path.display())?;
             writeln!(stdout, "{name}")?;
@@ -423,22 +376,138 @@ pub(super) fn run_alias(
     }
 }
 
-fn alias_list_entries(settings: &LocalSettings) -> Result<Vec<(String, String)>> {
-    let mut entries = Vec::with_capacity(settings.aliases.len() + RESERVED_ALIASES.len());
-    for name in RESERVED_ALIASES {
-        let dataset = expand_dataset_alias(&format!("@{name}"))?;
+fn build_pin_config(
+    dataset: &str,
+    endpoint: Option<String>,
+    region: Option<String>,
+    access_key: Option<String>,
+    secret_key: Option<String>,
+) -> Result<PinConfig> {
+    let uri = normalize_pin_target(dataset)?;
+    let catalog = uri.starts_with("catalog://");
+    anyhow::ensure!(
+        !catalog || (endpoint.is_none() && region.is_none()),
+        "catalog pins do not accept --endpoint or --region"
+    );
+    let endpoint = s3_endpoint_for(&uri, endpoint)?;
+    let region = s3_region_for(&uri, region)?;
+    let credentials = s3_credentials_for(&uri, access_key, secret_key)?;
+    anyhow::ensure!(
+        !catalog || credentials.is_some(),
+        "catalog pins require --ak and --sk"
+    );
+    Ok(PinConfig {
+        uri,
+        endpoint,
+        region,
+        access_key: credentials.as_ref().map(|value| value.access_key.clone()),
+        secret_key: credentials.as_ref().map(|value| value.secret_key.clone()),
+    })
+}
+
+fn merge_pin_config(
+    existing: &PinConfig,
+    dataset: &str,
+    endpoint: Option<String>,
+    region: Option<String>,
+    access_key: Option<String>,
+    secret_key: Option<String>,
+) -> Result<PinConfig> {
+    let uri = normalize_pin_target(dataset)?;
+    let catalog = uri.starts_with("catalog://");
+    anyhow::ensure!(
+        !catalog || (endpoint.is_none() && region.is_none()),
+        "catalog pins do not accept --endpoint or --region"
+    );
+    let mut pin = PinConfig::new_uri(uri.clone());
+    pin.endpoint = match s3_endpoint_for(&uri, endpoint)? {
+        Some(endpoint) => Some(endpoint),
+        None if !uri.starts_with("s3://") => None,
+        None => existing.endpoint.clone(),
+    };
+    pin.region = match s3_region_for(&uri, region)? {
+        Some(region) => Some(region),
+        None if !uri.starts_with("s3://") => None,
+        None => existing.region.clone(),
+    };
+    match s3_credentials_for(&uri, access_key, secret_key)? {
+        Some(credentials) => {
+            pin.access_key = Some(credentials.access_key);
+            pin.secret_key = Some(credentials.secret_key);
+        }
+        None if !uri.starts_with("s3://") && !catalog => {
+            pin.access_key = None;
+            pin.secret_key = None;
+        }
+        None => {
+            pin.access_key = existing.access_key.clone();
+            pin.secret_key = existing.secret_key.clone();
+        }
+    }
+    anyhow::ensure!(
+        !catalog || pin.credentials_pair()?.is_some(),
+        "catalog pins require --ak and --sk"
+    );
+    Ok(pin)
+}
+
+fn pin_default_dataset(
+    path: &Path,
+    dataset: &str,
+    settings_override: Option<&Path>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    let expanded = expand_dataset_reference(dataset, settings_override, false)?;
+    let location = DatasetLocation::parse(&expanded)?;
+    let directory = location
+        .local_path()
+        .context("default Dataset must be a local directory")?;
+    if !directory.exists() {
+        std::fs::create_dir_all(directory)
+            .with_context(|| format!("create default Dataset directory {}", directory.display()))?;
+    }
+    anyhow::ensure!(directory.is_dir(), "default Dataset must be a directory");
+    let warehouse = std::fs::canonicalize(directory)
+        .context("canonicalize default Dataset directory")?
+        .to_string_lossy()
+        .into_owned();
+    let mut settings = load_local_settings_or_default(path)?;
+    settings.pins.insert(
+        DEFAULT_PIN_NAME.to_owned(),
+        PinConfig::new_uri(warehouse.clone()),
+    );
+    write_local_settings(path, &settings)?;
+    writeln!(stderr, "config={} updated=true", path.display())
+        .context("write pChronicle default metadata")?;
+    writeln!(stdout, "{warehouse}").context("write default Dataset")
+}
+
+fn pin_list_entries(settings: &LocalSettings) -> Result<Vec<(String, String)>> {
+    let mut entries = Vec::with_capacity(settings.pins.len() + RESERVED_PIN_NAMES.len());
+    if let Some(default) = settings.pins.get(DEFAULT_PIN_NAME) {
+        entries.push((DEFAULT_PIN_NAME.to_owned(), default.uri.clone()));
+    }
+    for name in RESERVED_PIN_NAMES {
+        let dataset = expand_builtin_pin(&format!("@{name}"))?;
         entries.push((format!("@{name}"), dataset));
     }
-    entries.extend(
-        settings
-            .aliases
-            .iter()
-            .map(|(name, dataset)| (name.clone(), dataset.clone())),
-    );
+    for (name, pin) in &settings.pins {
+        if name == DEFAULT_PIN_NAME {
+            continue;
+        }
+        entries.push((name.clone(), pin.uri.clone()));
+    }
     Ok(entries)
 }
 
-fn validate_alias_name(name: &str) -> Result<()> {
+fn validate_pin_name(name: &str) -> Result<()> {
+    if name == DEFAULT_PIN_NAME {
+        return Err(cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            "pin name 'default' is reserved for the default Dataset; use `dataset pin default <LOCAL_DATASET>`",
+        ));
+    }
     let mut chars = name.chars();
     let first = chars.next();
     let valid = name.len() <= 64
@@ -451,26 +520,26 @@ fn validate_alias_name(name: &str) -> Result<()> {
     if !valid {
         return Err(cli_boundary_error(
             BoundaryCode::InvalidRequest,
-            "alias name must match [a-z][a-z0-9._-]{0,63}",
+            "pin name must match [a-z][a-z0-9._-]{0,63}",
         ));
     }
-    if RESERVED_ALIASES.contains(&name) {
+    if RESERVED_PIN_NAMES.contains(&name) {
         return Err(cli_boundary_error(
             BoundaryCode::InvalidRequest,
-            format!("alias name '{name}' is reserved"),
+            format!("pin name '{name}' is reserved"),
         ));
     }
     Ok(())
 }
 
-fn normalize_alias_target(dataset: &str) -> Result<String> {
+fn normalize_pin_target(dataset: &str) -> Result<String> {
     let dataset = dataset.trim();
     anyhow::ensure!(
         !dataset.starts_with('@'),
-        "an alias cannot point to another alias"
+        "a pin cannot point to another pin"
     );
     if dataset.starts_with("catalog://") {
-        return crate::server::catalog::parse_catalog_alias_target(dataset);
+        return crate::server::catalog::parse_catalog_pin_target(dataset);
     }
     let location = DatasetLocation::parse(dataset)?;
     if location.is_object_store() || dataset.contains("://") {
@@ -478,34 +547,40 @@ fn normalize_alias_target(dataset: &str) -> Result<String> {
     }
     let path = location
         .local_path()
-        .context("local alias target has no path")?;
+        .context("local pin target has no path")?;
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir()
-            .context("locate current directory for alias target")?
+            .context("locate current directory for pin target")?
             .join(path)
     };
     Ok(absolute.to_string_lossy().into_owned())
+}
+
+#[derive(Debug, Clone)]
+struct PinCredentials {
+    access_key: String,
+    secret_key: String,
 }
 
 fn s3_credentials_for(
     dataset: &str,
     access_key: Option<String>,
     secret_key: Option<String>,
-) -> Result<Option<S3Credentials>> {
+) -> Result<Option<PinCredentials>> {
     match (access_key, secret_key) {
         (None, None) => Ok(None),
         (Some(access_key), Some(secret_key)) => {
             anyhow::ensure!(
                 dataset.starts_with("s3://") || dataset.starts_with("catalog://"),
-                "--ak/--sk can only be used with an s3:// Dataset or a catalog:// alias"
+                "--ak/--sk can only be used with an s3:// Dataset or a catalog:// pin"
             );
             let access_key = access_key.trim().to_string();
             let secret_key = secret_key.trim().to_string();
             anyhow::ensure!(!access_key.is_empty(), "S3 access key must not be empty");
             anyhow::ensure!(!secret_key.is_empty(), "S3 secret key must not be empty");
-            Ok(Some(S3Credentials {
+            Ok(Some(PinCredentials {
                 access_key,
                 secret_key,
             }))
@@ -565,43 +640,25 @@ fn s3_region_for(dataset: &str, region: Option<String>) -> Result<Option<String>
     Ok(Some(region))
 }
 
-fn apply_alias_credentials(settings: &LocalSettings, name: &str) {
-    let Some(credentials) = settings.alias_credentials.get(name) else {
-        return;
-    };
-    // Object-store clients read these standard variables when opening the
-    // resolved S3 URI. The values are never included in the URI or output.
-    unsafe {
-        std::env::set_var("AWS_ACCESS_KEY_ID", &credentials.access_key);
-        std::env::set_var("AWS_SECRET_ACCESS_KEY", &credentials.secret_key);
-    }
-}
-
-fn apply_alias_endpoint(settings: &LocalSettings, name: &str) {
-    let Some(endpoint) = settings.alias_endpoints.get(name) else {
-        return;
-    };
-    // Set both names: Lance uses the generic endpoint key to skip AWS region
-    // discovery, while object_store also recognizes the S3-specific spelling.
-    unsafe {
-        std::env::set_var("AWS_ENDPOINT", endpoint);
-        std::env::set_var("AWS_ENDPOINT_URL_S3", endpoint);
-        if endpoint.starts_with("http://") {
-            // object_store rejects plaintext HTTP by default. Local MinIO and
-            // other development S3-compatible services commonly use it.
-            std::env::set_var("AWS_ALLOW_HTTP", "true");
+fn apply_pin_backend_env(pin: &PinConfig) {
+    if let Ok(Some((access_key, secret_key))) = pin.credentials_pair() {
+        unsafe {
+            std::env::set_var("AWS_ACCESS_KEY_ID", access_key);
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", secret_key);
         }
     }
-}
-
-const DEFAULT_S3_ALIAS_REGION: &str = "us-west-2";
-
-fn apply_alias_region(settings: &LocalSettings, name: &str, s3_uri: bool) {
-    let region = match settings.alias_regions.get(name) {
-        Some(region) => region.as_str(),
-        // Documented fallback when an s3:// alias omits --region. OpenDAL
-        // requires AWS_REGION or AWS_DEFAULT_REGION at Builder::build.
-        None if s3_uri => DEFAULT_S3_ALIAS_REGION,
+    if let Some(endpoint) = pin.endpoint.as_deref() {
+        unsafe {
+            std::env::set_var("AWS_ENDPOINT", endpoint);
+            std::env::set_var("AWS_ENDPOINT_URL_S3", endpoint);
+            if endpoint.starts_with("http://") {
+                std::env::set_var("AWS_ALLOW_HTTP", "true");
+            }
+        }
+    }
+    let region = match pin.region.as_deref() {
+        Some(region) => region,
+        None if pin.uri.starts_with("s3://") => DEFAULT_S3_PIN_REGION,
         None => return,
     };
     unsafe {
@@ -610,10 +667,12 @@ fn apply_alias_region(settings: &LocalSettings, name: &str, s3_uri: bool) {
     }
 }
 
-/// Apply local `@alias` S3 backend keys before the multi-threaded Tokio runtime
+const DEFAULT_S3_PIN_REGION: &str = "us-west-2";
+
+/// Apply local `@name` pin S3 backend keys before the multi-threaded Tokio runtime
 /// starts. Same macOS `set_var` race as catalog serve: OpenDAL must see
 /// `AWS_REGION` before worker threads exist.
-pub(super) fn apply_local_alias_backend_env_before_runtime(
+pub(super) fn apply_local_pin_backend_env_before_runtime(
     reference: Option<&str>,
     settings_override: Option<&Path>,
 ) -> Result<()> {
@@ -624,25 +683,23 @@ pub(super) fn apply_local_alias_backend_env_before_runtime(
         return Ok(());
     };
     let (name, _) = rest.split_once('/').unwrap_or((rest, ""));
-    if name.is_empty() || RESERVED_ALIASES.contains(&name) {
+    if name.is_empty() || RESERVED_PIN_NAMES.contains(&name) || name == DEFAULT_PIN_NAME {
         return Ok(());
     }
-    validate_alias_name(name)?;
+    validate_pin_name(name)?;
     let path = settings_path(settings_override)?;
     let settings = load_local_settings_or_default(&path)?;
-    let Some(root) = settings.aliases.get(name) else {
+    let Some(pin) = settings.pins.get(name) else {
         return Ok(());
     };
-    if !root.starts_with("s3://") {
+    if !pin.uri.starts_with("s3://") {
         return Ok(());
     }
-    apply_alias_credentials(&settings, name);
-    apply_alias_endpoint(&settings, name);
-    apply_alias_region(&settings, name, true);
+    apply_pin_backend_env(pin);
     Ok(())
 }
 
-fn expand_catalog_alias(
+fn expand_catalog_pin(
     settings: &LocalSettings,
     name: &str,
     root: &str,
@@ -651,26 +708,27 @@ fn expand_catalog_alias(
 ) -> Result<String> {
     anyhow::ensure!(
         !suffix.is_empty(),
-        "catalog alias '@{name}' requires a dataset, for example '@{name}/prod'"
+        "catalog pin '@{name}' requires a dataset, for example '@{name}/prod'"
     );
     let (dataset, path) = suffix.split_once('/').unwrap_or((suffix, ""));
     if !path.is_empty() {
-        validate_alias_suffix(path)?;
+        validate_pin_suffix(path)?;
     }
-    let credentials = settings.alias_credentials.get(name).ok_or_else(|| {
+    let pin = settings.pins.get(name).ok_or_else(|| {
         cli_boundary_error(
-            BoundaryCode::InvalidRequest,
-            format!("catalog alias '@{name}' requires --ak and --sk"),
+            BoundaryCode::NotFound,
+            format!("unknown Dataset pin '@{name}'"),
         )
     })?;
-    let ticket = fetch_catalog_ticket(
-        root,
-        &credentials.access_key,
-        &credentials.secret_key,
-        dataset,
-    )?;
+    let (access_key, secret_key) = pin.credentials_pair()?.ok_or_else(|| {
+        cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            format!("catalog pin '@{name}' requires --ak and --sk"),
+        )
+    })?;
+    let ticket = fetch_catalog_ticket(root, access_key, secret_key, dataset)?;
     crate::server::catalog::apply_library_env(&ticket);
-    let expanded = join_alias_target(&ticket.uri, path)?;
+    let expanded = join_pin_target(&ticket.uri, path)?;
     let location = DatasetLocation::parse(&expanded)?;
     if require_existing {
         if location.local_path().is_some_and(|path| !path.exists()) {
@@ -687,9 +745,9 @@ fn expand_catalog_alias(
     Ok(location.as_str().to_owned())
 }
 
-/// When `input` is a bare catalog alias (`@team` / `@team/`), return the alias
+/// When `input` is a bare catalog pin (`@team` / `@team/`), return the pin
 /// name and Directory URL. Dataset-qualified refs (`@team/prod`) return `None`.
-pub(super) fn catalog_alias_directory_target(
+pub(super) fn catalog_pin_directory_target(
     input: &str,
     settings_override: Option<&Path>,
 ) -> Result<Option<(String, String)>> {
@@ -698,56 +756,62 @@ pub(super) fn catalog_alias_directory_target(
         return Ok(None);
     };
     let (name, suffix) = rest.split_once('/').unwrap_or((rest, ""));
-    if !suffix.is_empty() || RESERVED_ALIASES.contains(&name) {
+    if !suffix.is_empty() || RESERVED_PIN_NAMES.contains(&name) || name == DEFAULT_PIN_NAME {
         return Ok(None);
     }
-    validate_alias_name(name)?;
+    validate_pin_name(name)?;
     let path = settings_path(settings_override)?;
     let settings = load_local_settings_or_default(&path)?;
-    let root = settings.aliases.get(name).ok_or_else(|| {
-        cli_boundary_error(
-            BoundaryCode::NotFound,
-            format!("unknown Dataset alias '@{name}'"),
-        )
-    })?;
+    let root = settings
+        .pins
+        .get(name)
+        .map(|pin| pin.uri.as_str())
+        .ok_or_else(|| {
+            cli_boundary_error(
+                BoundaryCode::NotFound,
+                format!("unknown Dataset pin '@{name}'"),
+            )
+        })?;
     if !root.starts_with("catalog://") {
         return Ok(None);
     }
-    Ok(Some((name.to_owned(), root.clone())))
+    Ok(Some((name.to_owned(), root.to_owned())))
 }
 
-/// List libraries visible to a catalog alias's user credentials.
-pub(super) fn list_catalog_alias_datasets(
+/// List libraries visible to a catalog pin's user credentials.
+pub(super) fn list_catalog_pin_datasets(
     input: &str,
     settings_override: Option<&Path>,
-) -> Result<Option<CatalogAliasDatasetList>> {
-    let Some((alias, catalog_url)) = catalog_alias_directory_target(input, settings_override)?
+) -> Result<Option<CatalogPinDatasetList>> {
+    let Some((pin_name, catalog_url)) = catalog_pin_directory_target(input, settings_override)?
     else {
         return Ok(None);
     };
     let path = settings_path(settings_override)?;
     let settings = load_local_settings_or_default(&path)?;
-    let credentials = settings.alias_credentials.get(&alias).ok_or_else(|| {
+    let pin = settings.pins.get(&pin_name).ok_or_else(|| {
         cli_boundary_error(
-            BoundaryCode::InvalidRequest,
-            format!("catalog alias '@{alias}' requires --ak and --sk"),
+            BoundaryCode::NotFound,
+            format!("unknown Dataset pin '@{pin_name}'"),
         )
     })?;
-    let datasets = fetch_catalog_datasets(
-        &catalog_url,
-        &credentials.access_key,
-        &credentials.secret_key,
-    )?;
-    Ok(Some(CatalogAliasDatasetList {
-        alias: format!("@{alias}"),
+    let (access_key, secret_key) = pin.credentials_pair()?.ok_or_else(|| {
+        cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            format!("catalog pin '@{pin_name}' requires --ak and --sk"),
+        )
+    })?;
+    let datasets = fetch_catalog_datasets(&catalog_url, access_key, secret_key)?;
+    Ok(Some(CatalogPinDatasetList {
+        pin: format!("@{pin_name}"),
         catalog: catalog_url,
         datasets,
     }))
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(super) struct CatalogAliasDatasetList {
-    pub alias: String,
+pub(super) struct CatalogPinDatasetList {
+    pub pin: String,
     pub catalog: String,
     pub datasets: Vec<crate::server::catalog::CatalogLibraryPublic>,
 }
@@ -864,26 +928,27 @@ pub(super) fn expand_dataset_reference(
     } else {
         let rest = &input[1..];
         let (name, suffix) = rest.split_once('/').unwrap_or((rest, ""));
-        validate_alias_suffix(suffix)?;
-        if RESERVED_ALIASES.contains(&name) {
-            expand_dataset_alias(input)?
+        validate_pin_suffix(suffix)?;
+        if name == DEFAULT_PIN_NAME {
+            let root = resolve_default_pin(settings_override)?;
+            join_pin_target(&root, suffix)?
+        } else if RESERVED_PIN_NAMES.contains(&name) {
+            expand_builtin_pin(input)?
         } else {
-            validate_alias_name(name)?;
+            validate_pin_name(name)?;
             let path = settings_path(settings_override)?;
             let settings = load_local_settings_or_default(&path)?;
-            let root = settings.aliases.get(name).ok_or_else(|| {
+            let pin = settings.pins.get(name).ok_or_else(|| {
                 cli_boundary_error(
                     BoundaryCode::NotFound,
-                    format!("unknown Dataset alias '@{name}'"),
+                    format!("unknown Dataset pin '@{name}'"),
                 )
             })?;
-            if root.starts_with("catalog://") {
-                expand_catalog_alias(&settings, name, root, suffix, require_existing)?
+            if pin.uri.starts_with("catalog://") {
+                expand_catalog_pin(&settings, name, &pin.uri, suffix, require_existing)?
             } else {
-                let expanded = join_alias_target(root, suffix)?;
-                apply_alias_credentials(&settings, name);
-                apply_alias_endpoint(&settings, name);
-                apply_alias_region(&settings, name, root.starts_with("s3://"));
+                let expanded = join_pin_target(&pin.uri, suffix)?;
+                apply_pin_backend_env(pin);
                 expanded
             }
         }
@@ -902,24 +967,24 @@ pub(super) fn expand_dataset_reference(
     }
 }
 
-fn validate_alias_suffix(suffix: &str) -> Result<()> {
+fn validate_pin_suffix(suffix: &str) -> Result<()> {
     if suffix.is_empty() {
         return Ok(());
     }
     anyhow::ensure!(
         !suffix.contains(['\\', '\0']),
-        "alias suffix contains an invalid character"
+        "pin suffix contains an invalid character"
     );
     for component in suffix.split('/') {
         anyhow::ensure!(
             !component.is_empty() && component != "." && component != "..",
-            "alias suffix must not contain empty, '.', or '..' segments"
+            "pin suffix must not contain empty, '.', or '..' segments"
         );
     }
     Ok(())
 }
 
-fn join_alias_target(root: &str, suffix: &str) -> Result<String> {
+fn join_pin_target(root: &str, suffix: &str) -> Result<String> {
     if suffix.is_empty() {
         return Ok(root.to_owned());
     }
@@ -936,7 +1001,7 @@ pub(super) fn resolve_dataset_uri(
 ) -> Result<String> {
     match explicit {
         Some(uri) => expand_dataset_reference(uri, settings_override, true),
-        None => resolve_default_warehouse(settings_override),
+        None => resolve_default_pin(settings_override),
     }
 }
 
@@ -972,7 +1037,7 @@ pub(super) fn default_import_output(
         !dataset_name.is_empty(),
         "cannot derive Dataset name from import input"
     );
-    let warehouse = resolve_default_warehouse(settings_override)?;
+    let warehouse = resolve_default_pin(settings_override)?;
     Ok(Path::new(&warehouse)
         .join(dataset_name)
         .to_string_lossy()
@@ -1051,4 +1116,32 @@ pub(super) fn load_warehouse_config_with_user_config(
 #[cfg(test)]
 pub(super) fn load_warehouse_config(path: &Path) -> Result<server::ChronicleServerConfig> {
     load_warehouse_config_with_user_config(path, None)
+}
+
+#[cfg(test)]
+mod pin_config_parse_tests {
+    use super::*;
+
+    #[test]
+    fn parses_nested_pins_tables() {
+        let content = r#"
+[pins.rfs]
+uri = "s3://test/test"
+endpoint = "http://127.0.0.1:9000"
+access_key = "123"
+secret_key = "123"
+
+[pins.testcata]
+uri = "catalog://127.0.0.1:6001"
+access_key = "ak"
+secret_key = "sk"
+"#;
+        let settings: LocalSettings = toml::from_str(content).expect("parse");
+        assert_eq!(settings.pins["rfs"].uri, "s3://test/test");
+        assert_eq!(
+            settings.pins["rfs"].endpoint.as_deref(),
+            Some("http://127.0.0.1:9000")
+        );
+        assert_eq!(settings.pins["testcata"].uri, "catalog://127.0.0.1:6001");
+    }
 }

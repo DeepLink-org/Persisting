@@ -1,6 +1,6 @@
 # Discover and query a Dataset
 
-Use this workflow when you have a local path, object-store URI, or alias and
+Use this workflow when you have a local path, object-store URI, or dataset pin and
 want to understand its run data before writing a report.
 
 :::tip What you will have at the end
@@ -11,23 +11,23 @@ and how to answer one bounded, read-only question reproducibly.
 ## 1. Inspect the Dataset
 
 ```bash
-pchronicle ls ./dataset
-pchronicle status ./dataset
+pchronicle list ./dataset
+pchronicle stats ./dataset
 ```
 
-`ls` shows the independently queryable run data sources pChronicle found.
-`status` summarizes Dataset readiness and available data. Use JSON in
+`list` (`ls`) shows the independently queryable run data sources pChronicle found.
+`stats` summarizes Dataset readiness and available data. Use JSON in
 automation:
 
 ```bash
-pchronicle ls ./dataset --format json
+pchronicle list ./dataset --format json
 ```
 
 If the Dataset may contain malformed entries, choose the error policy:
 
 ```bash
-pchronicle ls ./dataset --errors report
-pchronicle ls ./dataset --errors strict
+pchronicle list ./dataset --errors report
+pchronicle list ./dataset --errors strict
 ```
 
 Use `report` while exploring unfamiliar data. Switch to `strict` in automation
@@ -37,10 +37,10 @@ answer.
 ## 2. Start with a built-in analysis
 
 ```bash
-pchronicle analysis overview ./dataset
-pchronicle analysis agents ./dataset
-pchronicle analysis models ./dataset
-pchronicle analysis tools ./dataset
+pchronicle stats overview ./dataset
+pchronicle stats agents ./dataset
+pchronicle stats models ./dataset
+pchronicle stats tools ./dataset
 ```
 
 Built-in analysis covers common summaries. Move to SQL when you need custom
@@ -70,7 +70,7 @@ limited by explicit row, byte, discovery, and timeout budgets.
 
 ## 5. Locate, then analyze
 
-`ls` / `sources` discover what exists. `find` locates candidates inside a pinned
+`list`/`ls` / `sources` discover what exists. `find` locates candidates inside a pinned
 Snapshot. `query` analyzes. CLI `--match` and Web `q` share the same expression,
 reported scope, and `snapshot_id`; the Web UI may highlight returned fields
 without changing the match set.

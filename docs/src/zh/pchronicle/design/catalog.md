@@ -137,7 +137,7 @@ pchronicle query \
 
 `--mount` 与位置 Dataset 互斥。位置参数挂载为固定 schema `dataset`；只用
 `--mount` 时必须写 mount 名，没有隐式 `dataset` schema。用户配置文件（`-c`）只保存
-alias 与默认 Dataset，不提供 query 挂载表。
+`[pins.<name>]`（含保留名 `default`），不提供 query 挂载表。
 
 ```bash
 pchronicle query --mount current=local:///srv/pchronicle/current \
@@ -380,7 +380,7 @@ CatalogTableProvider source pruning
 
 ## 8. 错误策略与资源边界
 
-`ls` 和 `status` 通过 `--errors` 提供两种策略：
+`list`/`ls` 和 `stats` 通过 `--errors` 提供两种策略：
 
 | 策略 | 单个候选无法固定描述或通过初始校验 | Dataset 根不存在、listing/遍历失败或超过全局限制 |
 |---|---|---|

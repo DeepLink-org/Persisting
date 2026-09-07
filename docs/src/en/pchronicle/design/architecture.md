@@ -20,9 +20,9 @@ open(path) → pin Snapshot → discover / locate / analyze (and append on write
 ```
 
 A **Dataset is a path**: a normalized local path or object-store URI
-(`s3://`, `az://`, `gs://`). Mount names, `@alias`, and Directory library names
-are locators. After resolution the engine only sees a path. Credentials must not
-be embedded in that path.
+(`s3://`, `az://`, `gs://`). Mount names, dataset pins (`@name`), and Directory
+library names are locators. After resolution the engine only sees a path.
+Credentials must not be embedded in that path.
 
 It has four deployment shapes:
 
@@ -44,10 +44,10 @@ See [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md).
 
 | Layer | Role | Not |
 | --- | --- | --- |
-| **Path** | Dataset identity. Local path or object-store URI. | A mount name, `@alias`, library name, or `catalog://` URI |
+| **Path** | Dataset identity. Local path or object-store URI. | A mount name, dataset pin (`@name`), library name, or `catalog://` URI |
 | **Directory** (optional) | Platform addressing: resolve a name to a path and decide who may open it. After a ticket, the client opens the path. | A third Dataset kind. Not a Snapshot. |
 | **Snapshot** | Sync protocol between writers and readers on a path: which Sources exist, which version each is pinned to. | A product named Catalog. Not the Directory listing. |
-| **Query surface** | Discover (`ls` / `sources`), locate (`find`), analyze (`query`). All relative to a pinned Snapshot. | A fourth semantics in the Web Explorer |
+| **Query surface** | Discover (`list`/`ls` / `sources`), locate (`find`), analyze (`query`). All relative to a pinned Snapshot. | A fourth semantics in the Web Explorer |
 
 Code may still use names such as `DatasetCatalogSnapshot` and `--catalog-config`.
 User-facing and RFC language uses Path, Directory, and Snapshot.
@@ -87,13 +87,13 @@ Source-local:
 ```
 
 Warehouse mount names are SQL aliases only. Moving data to another path creates
-a different Dataset identity. `catalog://` is an alias type for Directory
+a different Dataset identity. `catalog://` is a pin type for Directory
 resolution; it is not a `DatasetLocation` scheme.
 
 ## Read path
 
 ```text
-path (after any Directory ticket or alias resolution)
+path (after any Directory ticket or pin resolution)
   → resource-limited discovery
   → pin Snapshot
   → Source pruning and lazy open
@@ -151,7 +151,7 @@ Snapshot generation.
 
 With `--catalog-config`, Warehouse mounts every `[datasets.*]` library from the
 Directory ACL file (same data plane as positional mounts) and also serves
-Directory list/ticket routes for `catalog://` aliases. Backend S3 endpoint,
+Directory list/ticket routes for `catalog://` pins. Backend S3 endpoint,
 region, and keys from the file are applied before stores open. After a CLI
 ticket, the client opens the ticket `uri` (a path) with storage credentials.
 That is platform addressing over paths, not a new Dataset kind.

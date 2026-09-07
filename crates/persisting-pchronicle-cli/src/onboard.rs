@@ -6,10 +6,10 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 
 use super::{
-    AnalysisArgs, AnalysisCommand, AnalysisOptions, DefaultArgs, DefaultCommand, ErrorMode,
-    ExchangeFormat, ExportArgs, ExportFormat, FindArgs, ImportArgs, ImportMode, ImportOutputFormat,
-    ListArgs, OutputFormat, QueryArgs, QueryOutputFormat, StatusArgs, run_analysis, run_default,
-    run_export, run_find, run_import, run_list, run_query, run_status,
+    AnalysisOptions, DatasetArgs, DatasetCommand, ErrorMode, ExchangeFormat, ExportArgs,
+    ExportFormat, FindArgs, ImportArgs, ImportMode, ImportOutputFormat, ListArgs, OutputFormat,
+    QueryArgs, QueryOutputFormat, StatsReport, StatusArgs, run_dataset, run_export, run_find,
+    run_import, run_list, run_query, run_stats_report, run_status,
 };
 
 const DEMO_ATIF: &str = include_str!("../assets/onboard/support-ticket.json");
@@ -326,8 +326,8 @@ async fn render_inspect(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &st
     let list = capture_list(dataset_uri.to_owned()).await?;
     renderer.render(&command_section(
         "Inspect · 发现 Source",
-        "`ls` 展示 Dataset 中可供查询的逻辑 Source，而不是底层存储碎片。",
-        &format!("pchronicle ls {dataset} --format table"),
+        "`list`（`ls`）展示 Dataset 中可供查询的逻辑 Source，而不是底层存储碎片。",
+        &format!("pchronicle list {dataset} --format table"),
         &list,
     ))?;
     renderer.pause()?;
@@ -337,8 +337,8 @@ async fn render_inspect(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &st
     let status = capture_status(dataset_uri.to_owned()).await?;
     renderer.render(&command_section(
         "Inspect · 检查健康状态",
-        "`status` 汇总 Source 就绪情况以及轨迹、Step 和工具调用数量。",
-        &format!("pchronicle status {dataset} --format table"),
+        "`stats` 汇总 Source 就绪情况以及轨迹、Step 和工具调用数量。",
+        &format!("pchronicle stats {dataset} --format table"),
         &status,
     ))?;
     renderer.pause()
@@ -350,7 +350,7 @@ async fn render_analyze(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &st
     renderer.render(&command_section(
         "Analyze · 总览",
         "先用稳定的内置分析确认数据规模和覆盖度。",
-        &format!("pchronicle analysis overview {dataset} --format table"),
+        &format!("pchronicle stats overview {dataset} --format table"),
         &overview,
     ))?;
     renderer.pause()?;
@@ -361,7 +361,7 @@ async fn render_analyze(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &st
     renderer.render(&command_section(
         "Analyze · 工具使用",
         "工具分析按统一函数名聚合调用次数、轨迹覆盖和耗时覆盖。",
-        &format!("pchronicle analysis tools {dataset} --format table"),
+        &format!("pchronicle stats tools {dataset} --format table"),
         &tools,
     ))?;
     renderer.pause()
@@ -505,7 +505,7 @@ async fn render_exchange(
     renderer.render(&command_section(
         "Exchange · 设置默认 Warehouse",
         "设置后，本地读命令可以省略 Dataset URI。",
-        "pchronicle default set ./trajectory-data",
+        "pchronicle dataset pin default ./trajectory-data",
         &exchange.default_output,
     ))?;
     renderer.pause()?;
@@ -639,19 +639,12 @@ async fn capture_analysis(dataset_uri: String, kind: AnalysisKind) -> Result<Str
         max_entries: MAX_ENTRIES,
     };
     let command = match kind {
-        AnalysisKind::Overview => AnalysisCommand::Overview(options),
-        AnalysisKind::Tools => AnalysisCommand::Tools(options),
+        AnalysisKind::Overview => StatsReport::Overview(options),
+        AnalysisKind::Tools => StatsReport::Tools(options),
     };
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    run_analysis(
-        AnalysisArgs { command },
-        None,
-        true,
-        &mut stdout,
-        &mut stderr,
-    )
-    .await?;
+    run_stats_report(command, None, true, &mut stdout, &mut stderr).await?;
     decode_output(stdout)
 }
 
@@ -778,14 +771,19 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
     let warehouse = demo.root().join("warehouse");
     let mut default_stdout = Vec::new();
     let mut default_stderr = Vec::new();
-    run_default(
-        DefaultArgs {
-            command: Some(DefaultCommand::Set {
+    run_dataset(
+        DatasetArgs {
+            command: Some(DatasetCommand::Pin {
+                name: "default".into(),
                 dataset: warehouse.to_string_lossy().into_owned(),
+                endpoint: None,
+                region: None,
+                access_key: None,
+                secret_key: None,
             }),
-            legacy_directory: None,
         },
         Some(&settings),
+        false,
         &mut default_stdout,
         &mut default_stderr,
     )?;

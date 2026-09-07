@@ -51,7 +51,7 @@ Operational commands:
 
 ```bash
 pchronicle serve --control 127.0.0.1:0 ./trajectory-data
-pchronicle status ./trajectory-data --format json
+pchronicle stats ./trajectory-data --format json
 ```
 
 Before readiness, `serve` discovers every validated non-empty canonical

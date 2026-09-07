@@ -13,7 +13,7 @@ settings="$run_dir/settings.toml"
 warehouse="$run_dir/warehouse"
 
 pchronicle_capture 01-default "$pchronicle" --config "$settings" \
-  default set "$warehouse" >/dev/null
+  dataset pin default "$warehouse" >/dev/null
 imported="$(pchronicle_capture 02-import "$pchronicle" --config "$settings" \
   import --from "$input" --to "$warehouse/imported" --input-format atif)"
 dataset_uri="$(jq -er '.dataset_uri' <<<"$imported")"

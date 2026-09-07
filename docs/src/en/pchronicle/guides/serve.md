@@ -72,13 +72,13 @@ user may open. Restart serve after editing the file.
 
 `pchronicle serve --catalog-config` mounts **every** library in the file into
 Warehouse (same as positional mounts). It also enables Directory ticket routes
-for `catalog://` aliases. Do not combine `--catalog-config` with positional
+for `catalog://` pins. Do not combine `--catalog-config` with positional
 Dataset mounts. Backend S3 endpoint, region, and keys from the file are applied
 before stores open. The Web UI may send Directory user access/secret keys as
 headers when you use catalog-authenticated flows. From another terminal:
 
 ```bash
-pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
+pchronicle dataset pin team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 pchronicle query @team/prod --sql 'SELECT 1'
 ```
 

@@ -71,7 +71,7 @@ pchronicle serve --catalog-config catalog.toml --listen 127.0.0.1:8081
 使用 Directory 用户钥时，Web UI 可通过请求头发送 ak/sk。另一终端：
 
 ```bash
-pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
+pchronicle dataset pin team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 pchronicle query @team/prod --sql 'SELECT 1'
 ```
 

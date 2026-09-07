@@ -7,7 +7,7 @@
 
 它展示四个稳定的内置分析入口：
 
-- `analysis overview`：汇总 Sources、Trajectories、Steps、Agents、Models 和工具调用；
+- `stats overview`：汇总 Sources、Trajectories、Steps、Agents、Models 和工具调用；
 - `analysis agents`：按 Agent 身份聚合活动；
 - `analysis models`：汇总声明和实际观测到的模型使用；
 - `analysis tools`：按规范化函数名聚合工具调用。

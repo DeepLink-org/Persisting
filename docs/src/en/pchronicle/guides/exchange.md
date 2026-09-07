@@ -89,8 +89,8 @@ cat input.json | pchronicle import --from - \
 After import, inspect the new boundary:
 
 ```bash
-pchronicle status ./imported
-pchronicle analysis overview ./imported
+pchronicle stats ./imported
+pchronicle stats overview ./imported
 ```
 
 ## Export complete Runs
