@@ -2078,10 +2078,8 @@ fn run_serve_catalog(
                 )
             }
             CatalogDatasetCommand::Remove(remove) => {
-                let remaining = server::catalog::remove_datasets(
-                    &remove.file.catalog_config,
-                    &remove.names,
-                )?;
+                let remaining =
+                    server::catalog::remove_datasets(&remove.file.catalog_config, &remove.names)?;
                 write_catalog_updated(stderr, &remove.file.catalog_config)?;
                 write_catalog_dataset_names(
                     stdout,
@@ -2090,8 +2088,7 @@ fn run_serve_catalog(
                 )
             }
             CatalogDatasetCommand::List(list) => {
-                let libraries =
-                    server::catalog::list_datasets_config(&list.file.catalog_config)?;
+                let libraries = server::catalog::list_datasets_config(&list.file.catalog_config)?;
                 write_catalog_datasets(
                     stdout,
                     resolve_output_format(list.format, stdout_is_terminal),
@@ -2198,7 +2195,8 @@ fn write_catalog_datasets(
             Ok(())
         }
         OutputFormat::Json => {
-            serde_json::to_writer(&mut *stdout, libraries).context("write catalog datasets JSON")?;
+            serde_json::to_writer(&mut *stdout, libraries)
+                .context("write catalog datasets JSON")?;
             writeln!(stdout).context("finish catalog datasets JSON")
         }
         OutputFormat::Auto => unreachable!("auto output format was resolved"),
@@ -2739,7 +2737,8 @@ fn write_catalog_alias_dataset_list(
     };
     match output_format {
         OutputFormat::Table => {
-            writeln!(stdout, "DATASET\tURI\tENDPOINT\tREGION").context("write catalog ls header")?;
+            writeln!(stdout, "DATASET\tURI\tENDPOINT\tREGION")
+                .context("write catalog ls header")?;
             for dataset in &listing.datasets {
                 writeln!(
                     stdout,

@@ -4,13 +4,7 @@ Gateway capture 是 pVisor 的 Run 驱动，由 Run 启停；系统不再提供�
 守护进程。[Capability 与 Evidence 模型](../concepts/capabilities-and-evidence.md)解释
 Capture 能证明什么，以及它不负责 enforce 什么。
 
-```bash
-cargo build --release -p persisting-pvisor --bin pvisor
-cd examples/pvisor/04-gateway-llm-control
-./run.sh
-```
-
-真实 Agent 可直接通过 `pvisor run` 配置：
+先按[安装指南](../../installation.md)安装 `pvisor`；本页直接使用已安装的命令。真实 Agent 可直接通过 `pvisor run` 配置：
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...

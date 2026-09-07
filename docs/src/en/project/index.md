@@ -1,8 +1,8 @@
 # Project
 
-Persisting's public positioning spans model state and Agent history. This
+Persisting's public product path is pVisor and pChronicle. This
 section records delivery state, durable decisions, contributor workflows, and
-systems outside the current pVisor and pChronicle product path.
+systems outside that current path.
 
 ## Architecture
 

@@ -1,5 +1,10 @@
 # 什么是 AgentVisor？
 
+:::note 阅读说明
+本文定义 **AgentVisor 品类**，不是 pVisor 的功能清单或交付承诺。当前可完成的能力以
+[快速开始](../get-started.md) 与 [指南](../guides/index.md) 为准。
+:::
+
 **AgentVisor 是虚拟化 Agent 执行的 Hypervisor。**
 
 它把个人电脑、工作站或集群中的计算、文件系统、网络、模型、工具、凭据和持久状态

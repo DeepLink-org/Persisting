@@ -29,7 +29,10 @@ fn main() -> ExitCode {
         Ok(runtime) => runtime,
         Err(error) => {
             use std::io::Write as _;
-            let _ = writeln!(io::stderr(), "error[internal]: start tokio runtime: {error}");
+            let _ = writeln!(
+                io::stderr(),
+                "error[internal]: start tokio runtime: {error}"
+            );
             return ExitCode::from(1);
         }
     };

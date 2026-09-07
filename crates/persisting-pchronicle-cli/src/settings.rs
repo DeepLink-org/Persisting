@@ -774,7 +774,9 @@ fn fetch_catalog_datasets(
         .send()
         .with_context(|| format!("list catalog datasets at {catalog_url}"))?;
     let status = response.status();
-    let body = response.text().context("read catalog dataset list response")?;
+    let body = response
+        .text()
+        .context("read catalog dataset list response")?;
     if !status.is_success() {
         return Err(cli_boundary_error(
             if status.as_u16() == 401 {

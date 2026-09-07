@@ -103,9 +103,7 @@ pub(super) struct AgentArgs {
 
 impl AgentArgs {
     pub(super) fn dataset_reference(&self) -> Option<&str> {
-        self.dataset
-            .as_deref()
-            .or(self.legacy_dataset.as_deref())
+        self.dataset.as_deref().or(self.legacy_dataset.as_deref())
     }
 }
 

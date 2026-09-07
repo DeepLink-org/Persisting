@@ -634,13 +634,7 @@ async fn s3_alias_without_region_falls_back_to_documented_default() -> Result<()
         Ok("http://127.0.0.1:9000")
     );
 
-    let ls = Cli::try_parse_from([
-        "pchronicle",
-        "-c",
-        &config_arg,
-        "ls",
-        "@minio",
-    ])?;
+    let ls = Cli::try_parse_from(["pchronicle", "-c", &config_arg, "ls", "@minio"])?;
     unsafe {
         std::env::remove_var("AWS_REGION");
         std::env::remove_var("AWS_DEFAULT_REGION");

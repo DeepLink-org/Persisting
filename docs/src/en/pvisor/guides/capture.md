@@ -5,18 +5,7 @@ there is no standalone Gateway command or daemon. The
 [capability and evidence model](../concepts/capabilities-and-evidence.md)
 explains what capture proves and what it does not enforce.
 
-## Local walkthrough
-
-```bash
-cargo build --release -p persisting-pvisor --bin pvisor
-cd examples/pvisor/04-gateway-llm-control
-./run.sh
-```
-
-The example starts a loopback OpenAI-compatible model, executes its Agent with
-`pvisor run`, and prints Gateway counters and the captured conversation.
-
-## Run a real Agent
+Install `pvisor` using the [installation guide](../../installation.md), then run a real Agent:
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...

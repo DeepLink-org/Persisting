@@ -5,11 +5,11 @@
 **pVisor 在受控执行环境中运行现有的 Agent 命令。** 它为每个 Run 提供独立的工作区边界，
 记录实际生效的控制机制，并让你在文件变更进入项目之前先进行审查。
 
-在 Persisting“从模型状态到 Agent 历史”的主线中，pVisor 负责一个 Run 的执行边界与可审查记录。
+在 Persisting 里，pVisor 负责跑一次 Agent 并审查其改动；可与 pChronicle 分开使用。
 
 :::tip 你将完成什么
-完成第一次快速开始后，你会得到一个由 Run 拥有的 stage、一份解释实际控制机制的 Run Bundle，
-以及一次明确的选择：应用或丢弃产生的 filesystem Effect。
+完成第一次快速开始后：Agent 已停止；改动留在 Run 独占的暂存目录；你明确选择写入项目或丢弃。
+第一次 `pvisor review` 时，你会看到解释实际控制机制的记录。
 :::
 
 pVisor 不替代 Agent 自己的推理循环。你可以继续使用已有的 Agent CLI、脚本和 framework。

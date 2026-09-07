@@ -1,7 +1,7 @@
 ---
 template: home.html
 title: Persisting — Persistent Infrastructure for the Agent Era
-description: Persisting model state and Agent history—from model parameters and KV caches to Agent trajectories.
+description: Run Agents under a reviewable execution boundary and preserve queryable history.
 hide: toc
 ---
 

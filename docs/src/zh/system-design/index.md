@@ -1,6 +1,6 @@
 # System Design
 
-Persisting 是横跨模型状态——参数与 KV Cache——以及 Agent 历史的持久化基础设施。本节聚焦
+Persisting 提供 Agent 执行与轨迹历史的持久化基础设施。本节聚焦
 当前公开产品路径：
 
 - [pVisor](../pvisor/index.md) 虚拟化并治理单个 Agent Run；

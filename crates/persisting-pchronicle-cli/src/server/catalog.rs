@@ -797,7 +797,9 @@ pub(super) async fn catalog_data_plane_layer(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
 
-    if state.catalog_query_worker || state.catalog_acl.is_none() || !state.config.datasets.is_empty()
+    if state.catalog_query_worker
+        || state.catalog_acl.is_none()
+        || !state.config.datasets.is_empty()
     {
         return next.run(request).await;
     }
@@ -1518,7 +1520,10 @@ secret_key = "123"
         assert_eq!(std::env::var("AWS_REGION").unwrap(), "us-east-1");
         assert_eq!(std::env::var("AWS_DEFAULT_REGION").unwrap(), "us-east-1");
         assert_eq!(std::env::var("AWS_ACCESS_KEY_ID").unwrap(), "123");
-        assert_eq!(std::env::var("AWS_ENDPOINT_URL_S3").unwrap(), "http://127.0.0.1:9000");
+        assert_eq!(
+            std::env::var("AWS_ENDPOINT_URL_S3").unwrap(),
+            "http://127.0.0.1:9000"
+        );
         unsafe {
             match previous_region {
                 Some(value) => std::env::set_var("AWS_REGION", value),

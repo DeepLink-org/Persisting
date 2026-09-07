@@ -4,16 +4,15 @@ Persisting 有两个独立入口。先选择与你当前任务相符的入口，
 
 ## 我想运行 Agent，并审查它产生的修改
 
-从 **pVisor** 开始。它为单个 Agent 提供 Run 独占 workspace，记录执行边界，并把文件修改
-留在 stage 中，直到你决定哪些内容进入真实项目。
+从 **pVisor** 开始。它让单个 Agent 在独立 Run 中工作，记录执行边界，并把文件修改
+留在暂存区，直到你决定写入真实项目还是丢弃。
 
 1. [安装命令行工具](installation.md)。
 2. [运行第一个 Agent](pvisor/get-started.md)。
 3. [审查并选择性应用修改](pvisor/guides/review-apply.md)。
 4. [选择 host、OCI 或 VM 执行环境](pvisor/guides/execution.md)。
 
-完成后，你应该得到一个已结束的 Run、一份可读的 Run Bundle，以及一个已经 apply 或 drop 的
-stage。
+完成后，Agent 已停止，改动留在暂存区，你可以审查后写入或丢弃。
 
 ```bash
 pvisor run --stage ./runs/task-001 -- codex
@@ -31,7 +30,7 @@ pvisor apply last --path src
 3. [导入或导出支持的格式](pchronicle/guides/exchange.md)。
 4. [在本地提供 Dataset 服务](pchronicle/guides/serve.md)。
 
-完成后，你应该能执行只读查询，看到规范化视图，并明确所查看数据的 Source lineage。
+完成后，你应该能执行只读查询，看到规范化视图，并清楚查的是哪份数据、哪个来源。
 
 ```bash
 pchronicle onboard query
@@ -45,8 +44,10 @@ pchronicle query ./trajectory-data \
 lifecycle record 发布到 pChronicle。这个交接是显式且有限的：它不会搬运私有 Run Bundle，也
 不会补造原始 Source 没有提供的 Evidence。
 
+pVisor capture 与 `pchronicle serve --gateway` 是两条入口：前者随 Agent Run 启停并共享执行边界；后者独立接收或转发已有 Agent/SDK 的流量，不启动 pVisor Run。
+
 1. [捕获 Agent 轨迹](pvisor/guides/capture.md)。
-2. [理解 event 与 sidecar 契约](rfcs/0007-events-contract-pchronicle-sidecar.md)。
+2. [理解 event 与 sidecar 契约](rfcs/0007-events-contract-pchronicle-sidecar.md)（需要改协议或排障时再读）。
 3. [阅读从执行到历史的架构](system-design/architecture.md)。
 
 ```text

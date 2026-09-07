@@ -1,5 +1,11 @@
 # What is an AgentVisor?
 
+:::note How to read this page
+This page defines the **AgentVisor category**. It is not a pVisor feature list or
+delivery commitment. What you can complete today is described in
+[Get Started](../get-started.md) and the [guides](../guides/index.md).
+:::
+
 **An AgentVisor is the hypervisor for Agent execution.**
 
 It organizes compute, filesystems, networks, models, tools, credentials, and

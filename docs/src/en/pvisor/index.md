@@ -7,13 +7,14 @@ environment.** It gives each Run its own workspace boundary, records the
 controls that were actually installed, and lets you review filesystem changes
 before they reach the project.
 
-Within Persisting's model-state-to-Agent-history story, pVisor owns the
-execution boundary and the reviewable record of one Run.
+In Persisting, pVisor runs one Agent and reviews its changes. You can use it
+without pChronicle.
 
 :::tip What you will complete
-By the end of the first walkthrough you will have a Run-owned stage, a Run
-Bundle that explains the controls actually installed, and a deliberate choice
-to apply or drop the resulting filesystem effects.
+By the end of the first walkthrough: the Agent has stopped; its changes remain
+in a Run-owned staging directory; you deliberately write them into the project
+or discard them. Your first `pvisor review` shows the record of controls that
+were actually installed.
 :::
 
 pVisor does not replace the Agent's reasoning loop. You can keep using Agent
