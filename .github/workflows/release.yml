@@ -46,76 +46,18 @@ jobs:
   linux:
     name: Wheel (Linux x86_64)
     needs: validate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          python-version: "3.12"
-          install-dioxus: "true"
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build pChronicle Web assets
-        run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
-
-      - name: Build manylinux wheel
-        uses: pypa/cibuildwheel@v4.1.0
-        with:
-          output-dir: dist
-
-      - name: Verify wheel component set
-        run: |
-          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
-          test -n "$wheel"
-          python scripts/packaging/verify_wheel.py "$wheel" --install-smoke
-
-      - name: Upload wheel
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-wheel-linux-x86_64
-          path: dist/*.whl
-          if-no-files-found: error
-          retention-days: 30
+    uses: ./.github/workflows/wheel.yml
+    with:
+      runner: ubuntu-latest
+      artifact_name: release-wheel-linux-x86_64
 
   macos:
     name: Wheel (macOS aarch64)
     needs: validate
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          python-version: "3.12"
-          install-dioxus: "true"
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build pChronicle Web assets
-        run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
-
-      - name: Build wheel
-        uses: pypa/cibuildwheel@v4.1.0
-        with:
-          output-dir: dist
-
-      - name: Verify wheel component set
-        run: |
-          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
-          test -n "$wheel"
-          python scripts/packaging/verify_wheel.py "$wheel" --install-smoke
-
-      - name: Upload wheel
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-wheel-macos-aarch64
-          path: dist/*.whl
-          if-no-files-found: error
-          retention-days: 30
+    uses: ./.github/workflows/wheel.yml
+    with:
+      runner: macos-latest
+      artifact_name: release-wheel-macos-aarch64
 
   verify:
     name: Verify release artifact set

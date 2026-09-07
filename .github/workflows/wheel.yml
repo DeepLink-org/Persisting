@@ -1,0 +1,64 @@
+name: Build Wheel
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: true
+        type: string
+      artifact_name:
+        required: true
+        type: string
+      retention_days:
+        required: false
+        type: number
+        default: 30
+      local_version:
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          python-version: "3.12"
+          install-dioxus: "true"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build pChronicle Web assets
+        run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
+
+      - name: Apply nightly local version (PEP 440)
+        if: inputs.local_version != ''
+        run: |
+          python scripts/ci/set_nightly_local_version.py "${{ inputs.local_version }}"
+          cargo metadata --format-version 1 >/dev/null
+
+      - name: Build wheel
+        uses: pypa/cibuildwheel@v4.1.0
+        with:
+          output-dir: dist
+
+      - name: Verify wheel component set
+        run: |
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          python scripts/packaging/verify_wheel.py "$wheel" --install-smoke
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}

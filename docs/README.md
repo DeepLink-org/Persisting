@@ -13,7 +13,6 @@ just docs-sync    # install website dependencies
 just docs-serve   # build and start a stable static preview
 just docs-serve-dirty # start the hot-reload development server
 just docs-build   # build docs/build
-just docs-links   # build with broken-link checks enabled
 ```
 
 The published site includes a local search index, so search works on the static
@@ -48,4 +47,4 @@ are not part of the default product onboarding path.
 
 Edit the Markdown under `docs/src/en/` or `docs/src/zh/`, and the React/CSS files under
 `docs/src/pages/`, `docs/src/css/`, and `docs/src/theme/`. Check command examples against the corresponding binary's
-`--help`, then run `just docs-build` and `just docs-links` before opening a PR.
+`--help`, then run `just docs-build` before opening a PR.

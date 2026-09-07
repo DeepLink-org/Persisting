@@ -123,18 +123,12 @@ codegen-units = 64
 strip = "none"
 split-debuginfo = "off"
 
-[profile.dev.package."*"]
-debug = false
-
 [profile.test]
 debug = 0
 incremental = false
 codegen-units = 64
 strip = "none"
 split-debuginfo = "off"
-
-[profile.test.package."*"]
-debug = false
 
 [profile.dev-debug]
 inherits = "dev"

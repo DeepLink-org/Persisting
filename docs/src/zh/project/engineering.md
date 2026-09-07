@@ -15,7 +15,6 @@
 | `just docs-serve` | 本地 Docusaurus 预览，文件修改时自动刷新 |
 | `just docs-serve-dirty` | 自动重载卡住时重新启动 Docusaurus 预览 |
 | `just docs-build` | 构建静态文档站点 |
-| `just docs-links` | Docusaurus 生产构建，并检查断链 |
 | `just examples` | pVisor 与 pChronicle 产品示例套件 |
 | `just gate` | 格式化、lint 以及完整 Rust 测试工作区 |
 | `just dev` | 限定范围的 runtime crate 检查；不是完整工作区矩阵 |

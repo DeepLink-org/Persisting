@@ -16,7 +16,6 @@ Run these from the repository root. `just --list` shows the full recipe set.
 | `just docs-serve` | Local Docusaurus preview with automatic reload when files change |
 | `just docs-serve-dirty` | Local Docusaurus preview when automatic reload stalls |
 | `just docs-build` | Build the static documentation site |
-| `just docs-links` | Docusaurus production build with broken-link checks |
 | `just examples` | pVisor and pChronicle product example suites |
 | `just gate` | Format, lint, and the full Rust test workspace |
 | `just dev` | Scoped runtime-crate check; not the full workspace matrix |
