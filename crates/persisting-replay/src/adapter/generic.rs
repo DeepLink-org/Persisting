@@ -1011,6 +1011,7 @@ fn continue_native_cli(
             let export_path = context.output_dir.join("native/opencode-session.json");
             let opencode_config = context.state_dir.join("opencode-config");
             let opencode_data = context.state_dir.join("opencode-data");
+            write_opencode_provider_config(&opencode_config)?;
             atomic_write_json(
                 &export_path,
                 &opencode_export(plan, prefix, &session_id, &context.request.workspace),
@@ -1150,10 +1151,7 @@ fn continue_native_cli(
         log_path: log_path.clone(),
     })
     .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
-    let bridge_result = codex_bridge.take().map(|bridge| {
-        let result = bridge.finish();
-        result
-    });
+    let bridge_result = codex_bridge.take().map(|bridge| bridge.finish());
     let bridge_error = bridge_result.and_then(|result| result.err());
     if !output.status.success() {
         let process_error = ReplayError::classify_continuation(
@@ -1228,6 +1226,71 @@ fn configured_model_from_environment() -> Option<String> {
         .ok()
         .or_else(|| std::env::var("OPENAI_MODEL").ok())
         .filter(|model| !model.trim().is_empty())
+}
+
+fn env_f64(name: &str) -> Option<f64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+}
+
+/// Provider config for the isolated continuation `XDG_CONFIG_HOME`.
+///
+/// OpenCode reads the endpoint from `OPENAI_BASE_URL`, but sampling options
+/// have no environment channel, so a live continuation would silently fall
+/// back to provider defaults and diverge from the recorded sampling. The
+/// shape mirrors what a SweEval trial writes for the original run.
+fn opencode_provider_config(
+    model: &str,
+    base_url: Option<&str>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+) -> Option<Value> {
+    let (provider, model_id) = model.split_once('/')?;
+    let base_url = base_url.map(str::trim).filter(|value| !value.is_empty());
+    if base_url.is_none() && temperature.is_none() && top_p.is_none() {
+        return None;
+    }
+    let mut provider_config = serde_json::Map::new();
+    if let Some(base_url) = base_url {
+        provider_config.insert("options".into(), json!({ "baseURL": base_url }));
+    }
+    if temperature.is_some() || top_p.is_some() {
+        let mut model_options = serde_json::Map::new();
+        if let Some(temperature) = temperature {
+            model_options.insert("temperature".into(), json!(temperature));
+        }
+        if let Some(top_p) = top_p {
+            model_options.insert("topP".into(), json!(top_p));
+        }
+        provider_config.insert(
+            "models".into(),
+            json!({ model_id: { "options": Value::Object(model_options) } }),
+        );
+    }
+    Some(json!({ "provider": { provider: Value::Object(provider_config) } }))
+}
+
+fn write_opencode_provider_config(config_root: &Path) -> Result<(), ReplayError> {
+    let Some(model) = configured_model_from_environment() else {
+        return Ok(());
+    };
+    let base_url = std::env::var("OPENAI_BASE_URL")
+        .ok()
+        .or_else(|| std::env::var("OPENAI_API_BASE").ok());
+    let config = opencode_provider_config(
+        &model,
+        base_url.as_deref(),
+        env_f64("PVISOR_OPENCODE_TEMPERATURE"),
+        env_f64("PVISOR_OPENCODE_TOP_P"),
+    );
+    let Some(config) = config else {
+        return Ok(());
+    };
+    let directory = config_root.join("opencode");
+    fs::create_dir_all(&directory)
+        .replay_context(ReplayErrorKind::Executor, "create OpenCode config directory")?;
+    atomic_write_json(&directory.join("opencode.json"), &config)
 }
 
 fn continuation_session_id(
@@ -1843,11 +1906,49 @@ mod tests {
 
     use super::{
         CallRecord, NativeJsonlAgent, RunContext, TurnRecord, codex_native_session_id,
-        continuation_session_id, is_actionable_turn, parse_codex, parse_jsonl, parse_opencode,
-        redact_codex_transport_nonce, validate_codex_continuation,
+        continuation_session_id, is_actionable_turn, opencode_provider_config, parse_codex,
+        parse_jsonl, parse_opencode, redact_codex_transport_nonce, validate_codex_continuation,
     };
     use crate::model::{AgentKind, PlaybackRequest, ReplayMode, ReplayPlan, ToolBatch, ToolCall};
     use serde_json::{Value, json};
+
+    #[test]
+    fn opencode_provider_config_mirrors_recorded_sampling() {
+        let config = opencode_provider_config(
+            "openai/model-x",
+            Some("http://127.0.0.1:8000/v1"),
+            Some(0.0),
+            Some(1.0),
+        )
+        .unwrap();
+        assert_eq!(
+            config,
+            json!({
+                "provider": {
+                    "openai": {
+                        "options": {"baseURL": "http://127.0.0.1:8000/v1"},
+                        "models": {"model-x": {"options": {"temperature": 0.0, "topP": 1.0}}}
+                    }
+                }
+            })
+        );
+
+        // Without sampling overrides the endpoint still comes from the
+        // environment, so only the baseURL section is written.
+        let base_only = opencode_provider_config("openai/model-x", Some("http://m:1/v1"), None, None)
+            .unwrap();
+        assert_eq!(
+            base_only,
+            json!({"provider": {"openai": {"options": {"baseURL": "http://m:1/v1"}}}})
+        );
+
+        // Nothing to pin: leave OpenCode on its environment-only defaults.
+        assert!(opencode_provider_config("openai/model-x", None, None, None).is_none());
+        // A model without a provider namespace cannot be pinned either.
+        assert!(opencode_provider_config("model-x", Some("http://m:1/v1"), Some(0.0), None).is_none());
+        // Blank endpoints are ignored rather than written.
+        assert!(opencode_provider_config("openai/model-x", Some("  "), None, None).is_none());
+    }
 
     #[test]
     fn opencode_events_group_tool_parts_into_complete_turns() {
