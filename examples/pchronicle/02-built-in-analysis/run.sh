@@ -10,13 +10,13 @@ data="$repo_root/examples/data"
 pchronicle_example_init "$example_dir"
 
 overview="$(pchronicle_capture 01-overview "$pchronicle" \
-  analysis overview "$data" --format jsonl)"
+  stats overview "$data" --format jsonl)"
 agents="$(pchronicle_capture 02-agents "$pchronicle" \
-  analysis agents "$data" --format jsonl)"
+  stats agents "$data" --format jsonl)"
 models="$(pchronicle_capture 03-models "$pchronicle" \
-  analysis models "$data" --format jsonl)"
+  stats models "$data" --format jsonl)"
 tools="$(pchronicle_capture 04-tools "$pchronicle" \
-  analysis tools "$data" --format jsonl)"
+  stats tools "$data" --format jsonl)"
 found="$(pchronicle_capture 05-find "$pchronicle" \
   find "$data" --session-id support-001 \
   --step-id 1 --format json)"

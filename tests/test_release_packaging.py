@@ -63,11 +63,13 @@ def test_python_wheel_uses_setuptools_and_platform_builds() -> None:
     assert "cargo-zigbuild" not in contents
 
 
-@pytest.mark.parametrize("workflow", ["nightly.yml", "release.yml"])
-def test_platform_wheels_use_cibuildwheel(workflow: str) -> None:
-    contents = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+def test_platform_wheels_use_cibuildwheel() -> None:
+    wheel = (ROOT / ".github" / "workflows" / "wheel.yml").read_text(encoding="utf-8")
+    assert "pypa/cibuildwheel@v4.1.0" in wheel
 
-    assert "pypa/cibuildwheel@v4.1.0" in contents
+    for workflow in ("nightly.yml", "release.yml"):
+        contents = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+        assert "./.github/workflows/wheel.yml" in contents
 
 
 def _write_version_tree(root: Path, *, pyproject: str, cargo: str, package: str) -> None:

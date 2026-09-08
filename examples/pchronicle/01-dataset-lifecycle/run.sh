@@ -20,8 +20,8 @@ dataset_uri="$(jq -er '.dataset_uri' <<<"$imported")"
 
 sources="$(pchronicle_capture 03-ls "$pchronicle" --config "$settings" \
   ls "$dataset_uri" --physical --format json)"
-status="$(pchronicle_capture 04-status "$pchronicle" --config "$settings" \
-  status "$dataset_uri" --format json)"
+stats="$(pchronicle_capture 04-stats "$pchronicle" --config "$settings" \
+  stats "$dataset_uri" --format json)"
 query_result="$(pchronicle_capture 05-query "$pchronicle" --config "$settings" query "$dataset_uri" \
   --sql 'SELECT session_id, COUNT(*) AS steps FROM dataset.steps GROUP BY session_id' \
   --format jsonl)"
@@ -38,7 +38,7 @@ jq -e '.status == "ready"
   and .counts.runs == 1
   and .counts.trajectories == 1
   and .counts.steps == 3
-  and .counts.tool_calls == 1' <<<"$status" >/dev/null
+  and .counts.tool_calls == 1' <<<"$stats" >/dev/null
 jq -e '.session_id == "support-001" and .steps == 3' \
   <<<"$query_result" >/dev/null
 jq -e '.truncated == false
