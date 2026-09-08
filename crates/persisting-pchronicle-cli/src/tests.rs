@@ -3022,7 +3022,10 @@ async fn object_store_directory_import_recurses_json_files() -> Result<()> {
         .await?;
     // Lance interiors must be ignored even when they contain .json names.
     location
-        .write_relative_bytes("keep/events.lance/_manifest.json", b"{\"not\":\"importable\"}")
+        .write_relative_bytes(
+            "keep/events.lance/_manifest.json",
+            b"{\"not\":\"importable\"}",
+        )
         .await?;
 
     let output = tempfile::tempdir()?;

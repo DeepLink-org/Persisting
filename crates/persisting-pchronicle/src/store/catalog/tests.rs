@@ -967,10 +967,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         .await?,
     );
     assert_eq!(snapshot.datasets()[0].sources.len(), 1);
-    assert_eq!(
-        snapshot.datasets()[0].sources[0].file,
-        "run-1/events.lance"
-    );
+    assert_eq!(snapshot.datasets()[0].sources[0].file, "run-1/events.lance");
     assert_eq!(
         snapshot.datasets()[0].sources[0].projection_status,
         Some(CatalogProjectionStatus::Fresh)
@@ -1221,7 +1218,9 @@ async fn multiple_fresh_projections_choose_one_without_hiding_canonical_events()
     }
 
     let snapshot = DatasetCatalogSnapshot::discover(
-        vec![DatasetMount::default(storage.join("agent").to_string_lossy())?],
+        vec![DatasetMount::default(
+            storage.join("agent").to_string_lossy(),
+        )?],
         Some(DEFAULT_DATASET_NAME.into()),
         CatalogSnapshotOptions::default(),
     )

@@ -222,8 +222,8 @@ async fn scan_source(uri: &str) -> Result<BTreeMap<PathBuf, FileStamp>> {
         anyhow::ensure!(root.is_dir(), "sync source must be a directory");
         let mut files = BTreeMap::new();
         for path in crate::exchange::collect_visible_json_files(root)? {
-            let metadata =
-                fs::metadata(&path).with_context(|| format!("stat sync file {}", path.display()))?;
+            let metadata = fs::metadata(&path)
+                .with_context(|| format!("stat sync file {}", path.display()))?;
             files.insert(
                 path.strip_prefix(root)?.to_path_buf(),
                 FileStamp {

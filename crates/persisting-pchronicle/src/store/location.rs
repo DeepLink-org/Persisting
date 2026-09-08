@@ -170,7 +170,10 @@ impl DatasetLocation {
     /// Write `bytes` at a relative object key (or local path under this Dataset).
     pub async fn write_relative_bytes(&self, relative: &str, bytes: &[u8]) -> Result<()> {
         let relative = relative.trim_start_matches('/');
-        anyhow::ensure!(!relative.is_empty(), "relative object path must not be empty");
+        anyhow::ensure!(
+            !relative.is_empty(),
+            "relative object path must not be empty"
+        );
         anyhow::ensure!(
             !relative.split('/').any(|part| part == ".."),
             "relative object path must not contain '..'"
@@ -193,11 +196,13 @@ impl DatasetLocation {
     /// Read bytes at a relative object key (or local path under this Dataset).
     pub async fn read_relative_bytes(&self, relative: &str) -> Result<Vec<u8>> {
         let relative = relative.trim_start_matches('/');
-        anyhow::ensure!(!relative.is_empty(), "relative object path must not be empty");
+        anyhow::ensure!(
+            !relative.is_empty(),
+            "relative object path must not be empty"
+        );
         if let Some(root) = &self.local_path {
             let path = root.join(relative);
-            return std::fs::read(&path)
-                .with_context(|| format!("read {}", path.display()));
+            return std::fs::read(&path).with_context(|| format!("read {}", path.display()));
         }
         let store = OpendalStore::from_uri(&self.uri).await?;
         let Some((bytes, _)) = store.read(relative).await? else {
@@ -330,7 +335,10 @@ impl DatasetLocation {
 }
 
 fn is_importable_json_object_key(key: &str) -> bool {
-    if key.split('/').any(|part| part == "_meta" || part.ends_with(".lance")) {
+    if key
+        .split('/')
+        .any(|part| part == "_meta" || part.ends_with(".lance"))
+    {
         return false;
     }
     Path::new(key)

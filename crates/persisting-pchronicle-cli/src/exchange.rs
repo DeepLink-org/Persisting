@@ -356,15 +356,12 @@ pub(super) async fn run_import(
                     destination.as_str()
                 )
                 .context("write pChronicle import replace progress")?;
-                destination
-                    .remove_all()
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "remove existing object-store Dataset {}",
-                            destination.as_str()
-                        )
-                    })?;
+                destination.remove_all().await.with_context(|| {
+                    format!(
+                        "remove existing object-store Dataset {}",
+                        destination.as_str()
+                    )
+                })?;
             } else {
                 return Err(cli_boundary_error(
                     BoundaryCode::Conflict,
@@ -441,11 +438,8 @@ pub(super) async fn run_import(
                             "processing",
                             None,
                         )?;
-                        let input = read_import_candidate_bytes(
-                            candidate,
-                            max_input_bytes,
-                            &label,
-                        )?;
+                        let input =
+                            read_import_candidate_bytes(candidate, max_input_bytes, &label)?;
                         if let Some(source) = stage_preserved_import_source(
                             args.format,
                             Some(&candidate.path),
@@ -1653,11 +1647,8 @@ impl<'a> StorylineImportIterator<'a> {
                         "processing",
                         None,
                     )?;
-                    let input = read_import_candidate_bytes(
-                        candidate,
-                        self.max_input_bytes,
-                        &label,
-                    )?;
+                    let input =
+                        read_import_candidate_bytes(candidate, self.max_input_bytes, &label)?;
                     decode_import_source(
                         self.requested_format,
                         ImportOutputFormat::Storyline,
