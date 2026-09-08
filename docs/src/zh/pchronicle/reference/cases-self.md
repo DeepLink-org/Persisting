@@ -4,24 +4,28 @@
 
 ## 准备
 
+`just cases pchronicle` 会把 `PCHRONICLE_CASE_FIXTURES` 指到仓库内的 `examples/data`。手工执行时先导出该变量：
+
 ```bash
+export PCHRONICLE_CASE_FIXTURES=/path/to/Persisting/examples/data
 mkdir -p /tmp/pchronicle-cases
 cd /tmp/pchronicle-cases
-pchronicle onboard
 ```
 
 ## S01：浏览本地 Dataset
 
 ```bash
+pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data --mode create
 pchronicle list ./trajectory-data
 pchronicle stats ./trajectory-data
 ```
 
-预期：命令列出 Dataset 中的 runs、steps 和 tool calls；空 Dataset 返回明确的空结果。
+预期：命令列出 Dataset 中的 runs、steps 和 tool calls。
 
 ## S02：执行 SQL 查询
 
 ```bash
+pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data --mode create
 pchronicle query ./trajectory-data \
   --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
 ```
@@ -31,6 +35,7 @@ pchronicle query ./trajectory-data \
 ## S03：运行内建分析
 
 ```bash
+pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data --mode create
 pchronicle stats overview ./trajectory-data
 ```
 
@@ -39,11 +44,12 @@ pchronicle stats overview ./trajectory-data
 ## S04：导入和导出
 
 ```bash
-pchronicle import input.jsonl --output ./trajectory-data
-pchronicle export ./trajectory-data --output output.jsonl
+pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data --mode create
+pchronicle export --from ./trajectory-data --to ./output.atif.json --output-format atif
+test -s ./output.atif.json
 ```
 
-预期：导出内容可以再次导入，记录的 ID 和事件顺序保持一致。
+预期：导出文件非空，且可再次导入。
 
 ## S05：本地 Warehouse
 
@@ -59,7 +65,8 @@ pchronicle serve ./trajectory-data --listen 127.0.0.1:8081
 export AWS_ENDPOINT_URL_S3=http://127.0.0.1:9000
 export AWS_ACCESS_KEY_ID=rustfsadmin
 export AWS_SECRET_ACCESS_KEY=rustfsadmin
+export AWS_REGION=us-east-1
 pchronicle list s3://bucket/trajectory
 ```
 
-预期：pChronicle 通过 S3 兼容接口发现并查询 Dataset。endpoint 和凭据不会写入 Dataset URI。
+预期：pChronicle 通过 S3 兼容接口发现并查询 Dataset。endpoint 和凭据不会写入 Dataset URI。默认自动化运行会跳过本案例；设置 `PCHRONICLE_CASE_MODE=s3` 且提供可达 endpoint 后再执行。

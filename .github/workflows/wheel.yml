@@ -36,7 +36,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build pChronicle Web assets
-        run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
+        run: just chronicle-web-build
 
       - name: Apply nightly local version (PEP 440)
         if: inputs.local_version != ''

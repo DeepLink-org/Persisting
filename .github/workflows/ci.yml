@@ -32,9 +32,7 @@ jobs:
           components: "rustfmt"
 
       - name: Rust formatting
-        run: |
-          cargo fmt --all -- --check
-          cargo fmt --manifest-path pchronicle-web/Cargo.toml -- --check
+        run: just fmt-check-rust
 
   rust-clippy-workspace:
     name: Clippy / Workspace
@@ -79,22 +77,42 @@ jobs:
       - name: pChronicle storage feature contracts
         run: just clippy-pchronicle-features
 
+  rust-clippy-pchronicle-web:
+    name: Clippy / pChronicle Web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-nextest: "false"
+          install-zig: "false"
+          components: "clippy"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-clippy-pchronicle-web
+          workspaces: pchronicle-web -> target
+
+      - name: pChronicle Web Clippy
+        run: just clippy-pchronicle-web
+
   python-lint:
     name: Python Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
         with:
-          python-version: "3.12"
-
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
+          install-nextest: "false"
+          install-zig: "false"
+          components: ""
 
       - name: Ruff
-        run: uvx ruff check persisting/
+        run: just lint-py
 
   rust-test:
     name: Rust Test / ${{ matrix.platform }} / ${{ matrix.shard }}
@@ -107,12 +125,12 @@ jobs:
             os: ubuntu-latest
             shard: core
             packages: >-
-              -p persisting-agentctl
-              -p persisting-events
-              -p persisting-overlay-core
-              -p persisting-overlayfs
-              -p persisting-overlaynet
-              -p persisting-replay
+              persisting-agentctl
+              persisting-events
+              persisting-overlay-core
+              persisting-overlayfs
+              persisting-overlaynet
+              persisting-replay
             event_control: true
             prepare_pvisor: false
             prepare_runtime: false
@@ -123,7 +141,7 @@ jobs:
           - platform: Linux
             os: ubuntu-latest
             shard: gateway
-            packages: -p persisting-gateway
+            packages: persisting-gateway
             event_control: false
             prepare_pvisor: false
             prepare_runtime: false
@@ -134,7 +152,7 @@ jobs:
           - platform: Linux
             os: ubuntu-latest
             shard: pvisor
-            packages: -p persisting-pvisor
+            packages: persisting-pvisor
             event_control: false
             prepare_pvisor: true
             prepare_runtime: false
@@ -145,7 +163,7 @@ jobs:
           - platform: Linux
             os: ubuntu-latest
             shard: ppilot
-            packages: -p persisting-ppilot
+            packages: persisting-ppilot
             event_control: false
             prepare_pvisor: false
             prepare_runtime: true
@@ -157,8 +175,8 @@ jobs:
             os: ubuntu-latest
             shard: pchronicle
             packages: >-
-              -p persisting-pchronicle
-              -p persisting-pchronicle-cli
+              persisting-pchronicle
+              persisting-pchronicle-cli
             event_control: false
             prepare_pvisor: false
             prepare_runtime: false
@@ -170,15 +188,15 @@ jobs:
             os: macos-latest
             shard: agent-runtime
             packages: >-
-              -p persisting-agentctl
-              -p persisting-events
-              -p persisting-gateway
-              -p persisting-overlay-core
-              -p persisting-overlayfs
-              -p persisting-overlaynet
-              -p persisting-ppilot
-              -p persisting-pvisor
-              -p persisting-replay
+              persisting-agentctl
+              persisting-events
+              persisting-gateway
+              persisting-overlay-core
+              persisting-overlayfs
+              persisting-overlaynet
+              persisting-ppilot
+              persisting-pvisor
+              persisting-replay
             event_control: false
             prepare_pvisor: false
             prepare_runtime: true
@@ -189,7 +207,7 @@ jobs:
           - platform: macOS
             os: macos-latest
             shard: pvisor
-            packages: -p persisting-pvisor
+            packages: persisting-pvisor
             event_control: false
             prepare_pvisor: true
             prepare_runtime: false
@@ -201,8 +219,8 @@ jobs:
             os: macos-latest
             shard: pchronicle
             packages: >-
-              -p persisting-pchronicle
-              -p persisting-pchronicle-cli
+              persisting-pchronicle
+              persisting-pchronicle-cli
             event_control: false
             prepare_pvisor: false
             prepare_runtime: false
@@ -234,8 +252,7 @@ jobs:
       - name: Build Agent runtime component set
         if: matrix.prepare_runtime
         run: |
-          just pvisor debug
-          just build-components debug pchronicle-ppilot
+          just build-agent-runtime debug
           echo "${GITHUB_WORKSPACE}/target/debug" >> "${GITHUB_PATH}"
 
       - name: Run ${{ matrix.shard }} tests
@@ -243,15 +260,11 @@ jobs:
           # GitHub-hosted Linux runners may disable unprivileged user
           # namespaces. The dedicated isolation job remains strict.
           PERSISTING_TEST_ALLOW_NO_USERNS: "1"
-        run: cargo nextest run --locked ${{ matrix.packages }}
+        run: just ci-nextest ${{ matrix.packages }}
 
       - name: Test shared event control contract
         if: matrix.event_control
-        run: cargo nextest run -p persisting-events --features control --locked
-
-      - name: Build pChronicle CLI
-        if: matrix.smoke_pchronicle
-        run: cargo build -p persisting-pchronicle-cli --bin pchronicle --locked
+        run: just test-events-control
 
       - name: Smoke pVisor CLI
         if: matrix.smoke_pvisor
@@ -259,13 +272,11 @@ jobs:
 
       - name: Smoke pPilot CLI
         if: matrix.smoke_ppilot
-        run: |
-          ./target/debug/ppilot run --help
-          ./target/debug/ppilot produce --help
+        run: just smoke-ppilot-cli
 
       - name: Smoke pChronicle CLI
         if: matrix.smoke_pchronicle
-        run: ./target/debug/pchronicle query --help
+        run: just smoke-pchronicle-cli
 
   rust-proptest:
     name: Rust Proptest / pChronicle
@@ -307,11 +318,8 @@ jobs:
           shared-key: ci-pchronicle-web
           workspaces: pchronicle-web -> target
 
-      - name: Build Web assets
-        run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
-
-      - name: Test Web crate
-        run: cargo nextest run --manifest-path pchronicle-web/Cargo.toml --locked
+      - name: Build and test Web crate
+        run: just test-pchronicle-web
 
   pvisor-isolation-regression:
     name: pVisor Isolation Regression / Linux
@@ -404,7 +412,7 @@ jobs:
           AWS_ENDPOINT: http://127.0.0.1:9000
           AWS_ALLOW_HTTP: "true"
           AWS_VIRTUAL_HOSTED_STYLE_REQUEST: "false"
-        run: cargo nextest run -p persisting-pchronicle --test s3_storage --locked --run-ignored all
+        run: just test-pchronicle-s3
 
       - name: Show MinIO logs after failure
         if: failure()
@@ -420,19 +428,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
         with:
-          python-version: "3.12"
-
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
+          install-nextest: "false"
+          install-zig: "false"
+          components: ""
 
       - name: Sync Python deps
-        run: uv sync --extra all --extra dev
+        run: just py-dev
 
       - name: Pytest
-        run: uv run pytest tests/ -q
+        run: just test-py
 
   pvisor-cases:
     name: pVisor case checklist
@@ -451,13 +458,9 @@ jobs:
         with:
           shared-key: ci-pvisor-cases
 
-      - name: Build pVisor
-        run: cargo build --release -p persisting-pvisor --locked
-
       - name: Run documented cases
         run: |
-          python3 scripts/run-pvisor-cases.py \
-            --pvisor ./target/release/pvisor \
+          just cases pvisor \
             --case A01,A02,A03,A04,A05,A06 \
             --case B01,B02,B03,B04 \
             --case C02,C03,C04 \
@@ -466,8 +469,7 @@ jobs:
             --case G01,G02,G03,G06 \
             --case H01,H02 \
             --case I01,I02,I03 \
-            --case J03 \
-            --report target/pvisor-case-report.md
+            --case J03
 
       - name: Upload case report
         if: always()
@@ -528,6 +530,7 @@ jobs:
       - format
       - rust-clippy-workspace
       - rust-clippy-pchronicle
+      - rust-clippy-pchronicle-web
       - python-lint
       - rust-test
       - rust-proptest
