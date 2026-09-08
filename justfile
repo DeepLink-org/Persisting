@@ -501,18 +501,13 @@ build-agent-runtime profile="debug":
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
 # CI shard helper: `just ci-nextest persisting-gateway persisting-events …`
+# Variadic args are interpolated by just (not passed as shebang $@).
 [group('test')]
-ci-nextest *packages:
+ci-nextest +packages:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Variadic recipe args are interpolated by just; they are not passed as $@.
-    packages=({{ packages }})
-    if [[ "${#packages[@]}" -eq 0 ]]; then
-      echo "usage: just ci-nextest <cargo-package>..." >&2
-      exit 2
-    fi
     args=()
-    for pkg in "${packages[@]}"; do
+    for pkg in {{ packages }}; do
       args+=(-p "$pkg")
     done
     cargo nextest run --locked "${args[@]}"
