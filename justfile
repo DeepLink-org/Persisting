@@ -505,12 +505,14 @@ build-agent-runtime profile="debug":
 ci-nextest *packages:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ "$#" -eq 0 ]]; then
+    # Variadic recipe args are interpolated by just; they are not passed as $@.
+    packages=({{ packages }})
+    if [[ "${#packages[@]}" -eq 0 ]]; then
       echo "usage: just ci-nextest <cargo-package>..." >&2
       exit 2
     fi
     args=()
-    for pkg in "$@"; do
+    for pkg in "${packages[@]}"; do
       args+=(-p "$pkg")
     done
     cargo nextest run --locked "${args[@]}"
