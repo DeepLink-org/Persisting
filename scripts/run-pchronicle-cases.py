@@ -74,11 +74,23 @@ def resolve_pchronicle(value: str) -> str:
 
 
 def should_skip_manual(code: str) -> str | None:
-    mode = os.environ.get("PCHRONICLE_CASE_MODE", "")
-    if re.search(r"(^|\n)\s*pchronicle serve\s", code) and "serve" not in mode.split(","):
-        return "server command requires a running client"
-    if re.search(r"\bs3://", code) and "s3" not in mode.split(","):
-        return "object-store case requires PCHRONICLE_CASE_MODE=s3 and a reachable endpoint"
+    mode = {
+        item.strip()
+        for item in os.environ.get("PCHRONICLE_CASE_MODE", "").split(",")
+        if item.strip()
+    }
+    if re.search(r"(^|\n)\s*pchronicle serve\b", code) and not mode.intersection(
+        {"serve", "catalog"}
+    ):
+        return "serve/Directory admin commands require PCHRONICLE_CASE_MODE=serve|catalog"
+    if re.search(r"\bcatalog://", code) and "catalog" not in mode:
+        return "Directory pin requires a running Catalog serve; set PCHRONICLE_CASE_MODE=catalog"
+    if re.search(r"\b(USER_AK|USER_SK|BACKEND_AK|BACKEND_SK)\b", code) and "catalog" not in mode:
+        return "case uses placeholder Directory credentials"
+    if re.search(r"\bs3://", code) and not mode.intersection({"s3", "catalog"}):
+        return "object-store case requires PCHRONICLE_CASE_MODE=s3|catalog and a reachable endpoint"
+    if re.search(r"\bPCHRONICLE_RUSTFS_", code) and "rustfs" not in mode:
+        return "RustFS regression requires PCHRONICLE_CASE_MODE=rustfs and a live endpoint"
     return None
 
 

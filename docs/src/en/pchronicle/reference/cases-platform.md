@@ -63,6 +63,8 @@ pchronicle query @team/prod \
 ```
 
 Expected: an authorized user can query `prod`; unknown datasets fail closed.
+Automated runs skip this case by default; set `PCHRONICLE_CASE_MODE=catalog`
+after completing P01–P04 against a live Directory.
 
 ## P06: Revoke a library grant
 
@@ -87,6 +89,8 @@ export PCHRONICLE_RUSTFS_BUCKET=pchronicle-cases
 
 Then run the RustFS regression coverage for Dataset writes, Snapshot discovery
 (including `chronicle.manifest` when present), SQL, Explorer, and refresh.
+Automated runs skip this case by default; set `PCHRONICLE_CASE_MODE=rustfs`
+with a reachable endpoint to execute it.
 
 Platform checks:
 

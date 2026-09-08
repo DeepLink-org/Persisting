@@ -59,7 +59,8 @@ pchronicle query @team/prod \
   --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
 ```
 
-预期：授权用户可查询 `prod`；未知 Dataset 失败关闭。
+预期：授权用户可查询 `prod`；未知 Dataset 失败关闭。默认自动化跳过；设置
+`PCHRONICLE_CASE_MODE=catalog` 并先完成本文 P01–P04 后再执行。
 
 ## P06：撤销 library 授权
 
@@ -83,7 +84,8 @@ export PCHRONICLE_RUSTFS_BUCKET=pchronicle-cases
 ```
 
 然后跑 RustFS 回归，覆盖 Dataset 写入、Snapshot discovery（含
-`chronicle.manifest`）、SQL、Explorer 与 refresh。
+`chronicle.manifest`）、SQL、Explorer 与 refresh。默认自动化跳过；设置
+`PCHRONICLE_CASE_MODE=rustfs` 且 endpoint 可达后再执行。
 
 平台验收重点：
 
