@@ -460,7 +460,7 @@ jobs:
 
       - name: Run documented cases
         run: |
-          just cases pvisor -- \
+          just cases pvisor \
             --case A01,A02,A03,A04,A05,A06 \
             --case B01,B02,B03,B04 \
             --case C02,C03,C04 \

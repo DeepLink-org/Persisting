@@ -60,7 +60,7 @@ test-list:
         just gateway-fuzz-formats / gateway-fuzz-forwarding
         just gateway-fuzz-storage / gateway-fuzz-network
         just cases pvisor|pchronicle|pchronicle-cluster
-        just cases pvisor -- --run-unavailable --keep
+        just cases pvisor --run-unavailable --keep
 
       组件示例
         just examples-pvisor              全部 pVisor 场景
@@ -711,28 +711,34 @@ capture-test:
 #   just cases pvisor
 #   just cases pchronicle
 #   just cases pchronicle-cluster
-# Extra args are forwarded to the underlying runner after `--`, e.g.
-#   just cases pvisor -- --run-unavailable --keep
-#   just cases pvisor -- --case A01,A02 --case B01
+# Extra runner flags can be passed directly, e.g.
+#   just cases pvisor --run-unavailable --keep
+#   just cases pvisor --case A01,A02 --case B01
 [group('test')]
 cases target *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Variadic args are interpolated by just. Callers may also pass a leading
+    # `--` to stop just flag parsing; strip it before forwarding to the runner.
+    args=({{ args }})
+    if [[ "${#args[@]}" -gt 0 && "${args[0]}" == "--" ]]; then
+      args=("${args[@]:1}")
+    fi
     case "{{target}}" in
       pvisor)
         just pvisor release
-        python3 scripts/run-pvisor-cases.py --report target/pvisor-case-report.md {{args}}
+        python3 scripts/run-pvisor-cases.py --report target/pvisor-case-report.md "${args[@]}"
         ;;
       pchronicle)
         just build-components release pchronicle
-        python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle target/release/pchronicle --report target/pchronicle-self-case-report.md {{args}}
+        python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-self-case-report.md "${args[@]}"
         ;;
       pchronicle-cluster)
         just build-components release pchronicle
-        python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle target/release/pchronicle --report target/pchronicle-platform-case-report.md {{args}}
+        python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-platform-case-report.md "${args[@]}"
         ;;
       *)
-        echo "usage: just cases pvisor|pchronicle|pchronicle-cluster [-- runner-args...]" >&2
+        echo "usage: just cases pvisor|pchronicle|pchronicle-cluster [runner-args...]" >&2
         exit 2
         ;;
     esac
