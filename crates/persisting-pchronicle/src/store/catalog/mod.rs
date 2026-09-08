@@ -17,7 +17,7 @@ use provider::*;
 use source::*;
 
 use discovery::{
-    bind_canonical_storyline_projections, discover_candidates, freeze_candidate,
+    Candidate, bind_canonical_storyline_projections, discover_candidates, freeze_candidate,
     normalize_event_storylines,
 };
 
@@ -118,6 +118,8 @@ pub enum CatalogErrorPolicy {
 pub enum CatalogSourceKind {
     Store,
     File,
+    /// Navigational Directory child under a non-Dataset mount. Not queryable.
+    Directory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -228,12 +230,28 @@ impl CatalogDataset {
     pub fn ready_source_count(&self) -> usize {
         self.sources
             .iter()
-            .filter(|source| source.status == CatalogSourceStatus::Ready)
+            .filter(|source| {
+                source.status == CatalogSourceStatus::Ready
+                    && source.kind != CatalogSourceKind::Directory
+            })
+            .count()
+    }
+
+    pub fn directory_count(&self) -> usize {
+        self.sources
+            .iter()
+            .filter(|source| source.kind == CatalogSourceKind::Directory)
             .count()
     }
 
     pub fn error_source_count(&self) -> usize {
-        self.sources.len().saturating_sub(self.ready_source_count())
+        self.sources
+            .iter()
+            .filter(|source| {
+                source.status == CatalogSourceStatus::Error
+                    && source.kind != CatalogSourceKind::Directory
+            })
+            .count()
     }
 }
 
@@ -351,6 +369,10 @@ impl DatasetCatalogSnapshot {
             let mut source_rows = Vec::with_capacity(candidates.len());
             let mut prepared_sources = Vec::with_capacity(candidates.len());
             for candidate in candidates {
+                if matches!(candidate, Candidate::Directory { .. }) {
+                    source_rows.push(candidate.source_stub());
+                    continue;
+                }
                 let stub = candidate.source_stub();
                 match freeze_candidate(&mount, candidate, temporary_files.clone(), options).await {
                     Ok((source, lazy_source)) => {
@@ -368,7 +390,11 @@ impl DatasetCatalogSnapshot {
                 }
             }
             bind_canonical_storyline_projections(&mut source_rows, &mut prepared_sources)?;
-            source_rows.sort_by(|left, right| left.file.cmp(&right.file));
+            source_rows.sort_by(|left, right| {
+                directory_sort_key(left.kind)
+                    .cmp(&directory_sort_key(right.kind))
+                    .then_with(|| left.file.cmp(&right.file))
+            });
             prepared_sources.sort_by(|left, right| left.file().cmp(right.file()));
             datasets.push(CatalogDataset {
                 mount: mount.clone(),
@@ -804,6 +830,13 @@ impl DatasetCatalogSnapshot {
             }
         }
         Ok(())
+    }
+}
+
+fn directory_sort_key(kind: CatalogSourceKind) -> u8 {
+    match kind {
+        CatalogSourceKind::Directory => 0,
+        CatalogSourceKind::Store | CatalogSourceKind::File => 1,
     }
 }
 

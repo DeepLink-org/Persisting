@@ -90,11 +90,14 @@ Parents MUST NOT require an explicit children list. Discovery MUST:
    child that contains `chronicle.manifest`, treat that child as a nested
    Dataset node and continue according to that child's kind.
 4. If the current directory has no `chronicle.manifest`, treat it as a
-   **Directory**: inspect **immediate** child directories only; classify each
-   child via Dataset markers (`chronicle.manifest`, `CURRENT`,
-   `events.lance/_manifest.json`, compact-jsonl Lance). Loose files MUST NOT
-   be registered as Sources. Discovery MUST NOT recursively list an entire
-   object-store prefix tree to classify.
+   **Directory**: inspect **immediate** child directories only. Children with
+   Dataset markers (`chronicle.manifest`, `CURRENT`,
+   `events.lance/_manifest.json`, compact-jsonl Lance) become queryable
+   Sources; other children become navigational entries (`kind = directory`,
+   visible to `ls`, not queryable). Loose files MUST NOT be registered as
+   Sources. Discovery MUST NOT recursively list an entire object-store prefix
+   tree to classify. **`import` / `sync` use a separate recursive JSON scan**
+   and are not bound by this Directory shallow rule.
 
 Symlinks MUST be ignored. Existing `max_entries` / `max_files` limits still
 apply to traversal.

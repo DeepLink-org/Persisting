@@ -476,6 +476,33 @@ async fn empty_dataset_still_exposes_the_stable_catalog_tables() -> Result<()> {
 }
 
 #[tokio::test]
+async fn directory_lists_child_dirs_and_dataset_sources_separately() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let plain = temp.path().join("plain");
+    fs::create_dir_all(&plain)?;
+    fs::write(plain.join("notes.txt"), "skip")?;
+    let story = temp.path().join("story");
+    let store = StorylineLanceStore::open(&story).await?;
+    store
+        .replace_storyline(&storyline("session-story", "run-story"))
+        .await?;
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(temp.path().to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+    let dataset = &snapshot.datasets()[0];
+    assert_eq!(dataset.directory_count(), 1);
+    assert_eq!(dataset.ready_source_count(), 1);
+    assert_eq!(dataset.sources[0].kind, CatalogSourceKind::Directory);
+    assert_eq!(dataset.sources[0].file, "plain");
+    assert_eq!(dataset.sources[1].kind, CatalogSourceKind::Store);
+    assert_eq!(dataset.sources[1].file, "story");
+    Ok(())
+}
+
+#[tokio::test]
 async fn catalog_prunes_file_sources_before_lazy_resolution() -> Result<()> {
     let temp = tempfile::tempdir()?;
     write_openai_source(&temp.path().join("one.json"), "event-1")?;
@@ -930,9 +957,10 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         panic!("initial catalog projection build unexpectedly reported nonempty output")
     };
 
+    let mount_root = storage.join("agent");
     let snapshot = Arc::new(
         DatasetCatalogSnapshot::discover(
-            vec![DatasetMount::default(storage.to_string_lossy())?],
+            vec![DatasetMount::default(mount_root.to_string_lossy())?],
             Some(DEFAULT_DATASET_NAME.into()),
             CatalogSnapshotOptions::default(),
         )
@@ -941,7 +969,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
     assert_eq!(snapshot.datasets()[0].sources.len(), 1);
     assert_eq!(
         snapshot.datasets()[0].sources[0].file,
-        "agent/run-1/events.lance"
+        "run-1/events.lance"
     );
     assert_eq!(
         snapshot.datasets()[0].sources[0].projection_status,
@@ -977,7 +1005,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         .await?;
     let live_key = CatalogStorylineKey {
         dataset: DEFAULT_DATASET_NAME.into(),
-        file: "agent/run-1/events.lance".into(),
+        file: "run-1/events.lance".into(),
         document_id: "root".into(),
         session_id: "root".into(),
     };
@@ -999,7 +1027,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
     let event_count = engine
         .query_jsonl(
             "SELECT COUNT(*) AS rows FROM dataset.events \
-                 WHERE _file_ = 'agent/run-1/events.lance' AND seq = 0",
+                 WHERE _file_ = 'run-1/events.lance' AND seq = 0",
         )
         .await?;
     assert_eq!(event_count.trim(), r#"{"rows":2}"#);
@@ -1037,7 +1065,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
 
     let stale_snapshot = Arc::new(
         DatasetCatalogSnapshot::discover(
-            vec![DatasetMount::default(storage.to_string_lossy())?],
+            vec![DatasetMount::default(mount_root.to_string_lossy())?],
             Some(DEFAULT_DATASET_NAME.into()),
             CatalogSnapshotOptions::default(),
         )
@@ -1059,7 +1087,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
     stale_snapshot
         .load_events(&CatalogStorylineKey {
             dataset: DEFAULT_DATASET_NAME.into(),
-            file: "agent/run-1/events.lance".into(),
+            file: "run-1/events.lance".into(),
             document_id: "root".into(),
             session_id: "root".into(),
         })
@@ -1081,7 +1109,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
 
     let limited_snapshot = Arc::new(
         DatasetCatalogSnapshot::discover(
-            vec![DatasetMount::default(storage.to_string_lossy())?],
+            vec![DatasetMount::default(mount_root.to_string_lossy())?],
             Some(DEFAULT_DATASET_NAME.into()),
             CatalogSnapshotOptions {
                 max_event_fallback_rows: 1,
@@ -1193,14 +1221,14 @@ async fn multiple_fresh_projections_choose_one_without_hiding_canonical_events()
     }
 
     let snapshot = DatasetCatalogSnapshot::discover(
-        vec![DatasetMount::default(storage.to_string_lossy())?],
+        vec![DatasetMount::default(storage.join("agent").to_string_lossy())?],
         Some(DEFAULT_DATASET_NAME.into()),
         CatalogSnapshotOptions::default(),
     )
     .await?;
     assert_eq!(snapshot.datasets()[0].sources.len(), 1);
     let source = &snapshot.datasets()[0].sources[0];
-    assert_eq!(source.file, "agent/run-1/events.lance");
+    assert_eq!(source.file, "run-1/events.lance");
     assert_eq!(
         source.projection_status,
         Some(CatalogProjectionStatus::Fresh)

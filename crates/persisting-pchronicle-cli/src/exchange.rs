@@ -1362,33 +1362,18 @@ fn collect_import_candidates(input: &Path) -> Result<(bool, Vec<ImportFileCandid
         "import input must be a regular file or directory"
     );
 
-    let mut pending = vec![input.to_path_buf()];
-    let mut candidates = Vec::new();
-    while let Some(directory) = pending.pop() {
-        let mut entries = std::fs::read_dir(&directory)
-            .with_context(|| format!("read import directory {}", directory.display()))?
-            .collect::<std::io::Result<Vec<_>>>()?;
-        entries.sort_by_key(std::fs::DirEntry::path);
-        for entry in entries {
-            let file_type = entry.file_type()?;
-            if file_type.is_symlink() {
-                continue;
-            }
-            let path = entry.path();
-            if file_type.is_dir() {
-                pending.push(path);
-            } else if file_type.is_file() && is_import_json_candidate(&path) {
-                let relative_path = path
-                    .strip_prefix(input)
-                    .context("derive Dataset-relative import source path")?
-                    .to_path_buf();
-                candidates.push(ImportFileCandidate {
-                    path,
-                    output_relative_path: Some(relative_path.clone()),
-                    relative_path,
-                });
-            }
-        }
+    let paths = collect_visible_json_files(input)?;
+    let mut candidates = Vec::with_capacity(paths.len());
+    for path in paths {
+        let relative_path = path
+            .strip_prefix(input)
+            .context("derive Dataset-relative import source path")?
+            .to_path_buf();
+        candidates.push(ImportFileCandidate {
+            path,
+            output_relative_path: Some(relative_path.clone()),
+            relative_path,
+        });
     }
     candidates.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     if candidates.is_empty() {
@@ -1400,7 +1385,35 @@ fn collect_import_candidates(input: &Path) -> Result<(bool, Vec<ImportFileCandid
     Ok((true, candidates))
 }
 
-fn is_import_json_candidate(path: &Path) -> bool {
+/// Recursively collect absolute paths of visible `.json` / `.jsonl` / `.ndjson`
+/// files under `root`. Shared by `import` and `sync`; not Catalog Directory
+/// discovery (which is one-level and skips loose files).
+pub(crate) fn collect_visible_json_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let mut entries = std::fs::read_dir(&directory)
+            .with_context(|| format!("read directory {}", directory.display()))?
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(std::fs::DirEntry::path);
+        for entry in entries {
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if file_type.is_dir() {
+                pending.push(path);
+            } else if file_type.is_file() && is_visible_json_file(&path) {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn is_visible_json_file(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {

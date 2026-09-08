@@ -174,28 +174,17 @@ fn prepare_target(path: &Path, name: &str) -> Result<PathBuf> {
 }
 
 fn scan_files(root: &Path) -> Result<BTreeMap<PathBuf, FileStamp>> {
-    let mut pending = vec![root.to_path_buf()];
     let mut files = BTreeMap::new();
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory)
-            .with_context(|| format!("read sync directory {}", directory.display()))?
-        {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-            let path = entry.path();
-            if file_type.is_dir() {
-                pending.push(path);
-            } else if file_type.is_file() && is_sync_candidate(&path) {
-                let metadata = entry.metadata()?;
-                files.insert(
-                    path.strip_prefix(root)?.to_path_buf(),
-                    FileStamp {
-                        size: metadata.len(),
-                        modified: metadata.modified().ok(),
-                    },
-                );
-            }
-        }
+    for path in crate::exchange::collect_visible_json_files(root)? {
+        let metadata = fs::metadata(&path)
+            .with_context(|| format!("stat sync file {}", path.display()))?;
+        files.insert(
+            path.strip_prefix(root)?.to_path_buf(),
+            FileStamp {
+                size: metadata.len(),
+                modified: metadata.modified().ok(),
+            },
+        );
     }
     Ok(files)
 }
@@ -210,17 +199,6 @@ fn changed_paths(
         .filter(|path| previous.get(*path) != current.get(*path))
         .cloned()
         .collect()
-}
-
-fn is_sync_candidate(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "json" | "jsonl" | "ndjson"
-            )
-        })
 }
 
 #[cfg(test)]

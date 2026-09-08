@@ -75,9 +75,11 @@ pChronicle 已对其它布局使用应用控制文件（Storyline 的 `CURRENT`�
 2. 若 `kind = "leaf"`，将该目录视为对应 `format` 的一个 source 候选，且 MUST NOT 再递归其内部寻找其它 source；
 3. 若 `kind = "branch"`，只扫描**一层**子目录；对每个含有 `chronicle.manifest` 的子目录，按该子节点的 kind 继续处理；
 4. 若当前目录没有 `chronicle.manifest`，则视为 **Directory**：只检查**一层**
-   子目录；对每个子目录用 Dataset 标记（`chronicle.manifest`、`CURRENT`、
-   `events.lance/_manifest.json`、compact-jsonl Lance）分类。松散文件 MUST NOT
-   登记为 Source。MUST NOT 为发现而递归列举整棵对象前缀树。
+   子目录。子目录若含 Dataset 标记（`chronicle.manifest`、`CURRENT`、
+   `events.lance/_manifest.json`、compact-jsonl Lance）则登记为可查询 Source；
+   否则登记为导航项（`kind = directory`，`ls` 可见，不可 query）。松散文件
+   MUST NOT 登记为 Source。MUST NOT 为发现而递归列举整棵对象前缀树。
+   **`import` / `sync` 使用独立递归 JSON 扫描**，不受本条 Directory 浅层约束。
 
 MUST 忽略符号链接。现有 `max_entries` / `max_files` 遍历上限仍然适用。
 

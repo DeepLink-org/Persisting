@@ -2673,11 +2673,17 @@ async fn run_list(
     let dataset = snapshot
         .dataset(DEFAULT_DATASET_NAME)
         .context("default Dataset missing from Snapshot")?;
+    let mut sources: Vec<SourceResponse> = dataset.sources.iter().map(source_response).collect();
+    sources.sort_by(|left, right| {
+        directory_list_sort_key(left.kind)
+            .cmp(&directory_list_sort_key(right.kind))
+            .then_with(|| left.source_path.cmp(&right.source_path))
+    });
     let response = ListResponse {
         dataset_uri,
         snapshot_id: snapshot.snapshot_id().to_string(),
         created_at: snapshot.created_at().to_string(),
-        sources: dataset.sources.iter().map(source_response).collect(),
+        sources,
     };
 
     let output_format = match args.format {
@@ -2694,17 +2700,30 @@ async fn run_list(
         }
         OutputFormat::Auto => unreachable!("auto output format was resolved"),
     }
+    let queryable = response
+        .sources
+        .iter()
+        .filter(|source| source.kind != CatalogSourceKind::Directory)
+        .count();
     writeln!(
         stderr,
-        "snapshot_id={} dataset_uri={} sources={} ready={} errors={}",
+        "snapshot_id={} dataset_uri={} sources={} directories={} ready={} errors={}",
         response.snapshot_id,
         response.dataset_uri,
-        response.sources.len(),
+        queryable,
+        dataset.directory_count(),
         dataset.ready_source_count(),
         dataset.error_source_count(),
     )
     .context("write pChronicle ls metadata")?;
     Ok(())
+}
+
+fn directory_list_sort_key(kind: CatalogSourceKind) -> u8 {
+    match kind {
+        CatalogSourceKind::Directory => 0,
+        CatalogSourceKind::Store | CatalogSourceKind::File => 1,
+    }
 }
 
 fn write_catalog_pin_dataset_list(
@@ -2754,8 +2773,16 @@ fn write_catalog_pin_dataset_list(
 }
 
 fn source_response(source: &DiscoveredSource) -> SourceResponse {
+    let source_path = if source.kind == CatalogSourceKind::Directory
+        && !source.file.ends_with('/')
+        && source.file != "."
+    {
+        format!("{}/", source.file)
+    } else {
+        source.file.clone()
+    };
     SourceResponse {
-        source_path: source.file.clone(),
+        source_path,
         format: source.format.clone(),
         kind: source.kind,
         snapshot_ref: source.snapshot_ref(),
