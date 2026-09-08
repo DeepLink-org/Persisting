@@ -58,6 +58,13 @@ into an OverlayFS stage for the current workspace, creates an independent Run
 and writable stage at the supplied path (or in the generated Run record
 directory when no explicit stage is supplied),
 retains changes for manual review, and writes `run-bundle.json` with mode `0600`.
+
+`--strict` fails closed before Agent start unless every requested capability
+dimension has non-bypassable enforcement evidence. Today host, container, and
+VM executors all request Network and Subprocess enforcement, and none claim
+Subprocess — so `--strict` currently exits with `UnsupportedPolicy` on those
+paths. Use it to verify fail-closed behavior, not as a “stronger sandbox is
+ready” switch.
 On Linux, the default host executor self-executes through pVisor's rootless
 launcher before the async runtime reaches the Agent. User/mount/PID namespaces,
 an in-namespace PID 1 descendant reaper,

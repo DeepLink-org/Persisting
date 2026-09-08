@@ -751,14 +751,14 @@ capture-test:
 [group('test')]
 test-pchronicle-cases:
     cargo build --release -p persisting-pchronicle-cli --locked
-    python3 scripts/run-pchronicle-cases.py --document docs/src/pchronicle/reference/cases-self.md --pchronicle target/release/pchronicle --report target/pchronicle-self-case-report.md
+    python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle target/release/pchronicle --report target/pchronicle-self-case-report.md
 
 # List and execute pChronicle platform/Catalog cases. Server lifecycle cases are
 # reported as MANUAL unless explicitly selected with PCHRONICLE_CASE_MODE.
 [group('test')]
 test-pchronicle-cases-platform:
     cargo build --release -p persisting-pchronicle-cli --locked
-    python3 scripts/run-pchronicle-cases.py --document docs/src/pchronicle/reference/cases-platform.md --pchronicle target/release/pchronicle --report target/pchronicle-platform-case-report.md
+    python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle target/release/pchronicle --report target/pchronicle-platform-case-report.md
 
 # Run documented integration cases by component.
 # Examples: just cases pvisor | pchronicle | pchronicle-cluster
@@ -772,11 +772,11 @@ cases target:
         ;;
       pchronicle)
         cargo build --release -p persisting-pchronicle-cli --locked
-        python3 scripts/run-pchronicle-cases.py --document docs/src/pchronicle/reference/cases-self.md --pchronicle target/release/pchronicle --report target/pchronicle-self-case-report.md
+        python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle target/release/pchronicle --report target/pchronicle-self-case-report.md
         ;;
       pchronicle-cluster)
         cargo build --release -p persisting-pchronicle-cli --locked
-        python3 scripts/run-pchronicle-cases.py --document docs/src/pchronicle/reference/cases-platform.md --pchronicle target/release/pchronicle --report target/pchronicle-platform-case-report.md
+        python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle target/release/pchronicle --report target/pchronicle-platform-case-report.md
         ;;
       *)
         echo "usage: just cases pvisor|pchronicle|pchronicle-cluster" >&2

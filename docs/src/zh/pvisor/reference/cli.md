@@ -47,6 +47,11 @@ pvisor review last
 默认 host 执行使用 safe-best-effort 隔离；`--stage <PATH>` 才启用当前目录的
 OverlayFS stage 在显式 `--stage` 路径（未指定时为生成的 Run 记录目录）创建独立
 Run 和可写 stage，保留改动供人工审查，并以 `0600` 写入 `run-bundle.json`。
+
+`--strict` 要求每个被请求的 capability 维度都有不可绕过的 enforcement 证据，
+否则在 Agent 启动前失败关闭。当前 host / container / VM 都会请求 Network 与
+Subprocess，且无一 claim Subprocess，因此 `--strict` 在这些路径上会以
+`UnsupportedPolicy` 退出。该旗标用于验证 fail-closed，不表示「更强沙箱已就绪」。
 在 Linux 上，默认 host executor 会在异步 runtime 到达 Agent 之前，通过
 pVisor 的 rootless launcher 自执行。User/mount/PID namespace、namespace 内
 PID 1 后代回收器、最小 bind-projected root 加 `chroot`、按内核协商的 Landlock ABI v1-v3

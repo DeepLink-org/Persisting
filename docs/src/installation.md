@@ -15,9 +15,9 @@ durable trajectory history.
 - Python 3.10+
 - Pulsing, installed automatically as a dependency
 - macOS or Linux for the CLI
-- macOS: macFUSE 5 for host-process `pvisor run --safe` (not required by libkrun Runs)
+- macOS: macFUSE 5 for host-process `pvisor run --stage …` (not required by libkrun Runs)
 
-Install the macOS filesystem runtime once before the first safe Run:
+Install the macOS filesystem runtime once before the first staged Run:
 
 ```bash
 brew install --cask macfuse

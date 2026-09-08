@@ -94,12 +94,13 @@ exists at that index.
 Fix:
 
 1. After grouping rows by `session_id`, sort that session’s rows by `step_id`
-2. Capture unknowns and carrier bindings with **story-local** indices
-   `0..n-1` matching encode order
-3. Relocate: only rewrite when the source index is missing; do not treat
-   “some row at index i” as identity of the original record. Prefer identity via
-   local carrier list for that story; fail closed on ambiguous multi-match if
-   needed rather than silent cross-session attach
+2. Capture unknowns with **story-local** indices `0..n-1` matching encode order;
+   keep envelope **carrier** bindings on the original corpus ordinals so pointers
+   remain unique in the source document
+3. Relocate on encode: map local index `i` to `story_carriers[i]` (encode-order
+   global paths). Do not treat “some row exists at index i in the combined
+   document” as identity of the original record; fail closed if the local index
+   has no matching encode carrier
 
 Add a multi-session, out-of-order `step_id` round-trip test that vendor unknown
 fields stay on the correct session row.
