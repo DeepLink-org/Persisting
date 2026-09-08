@@ -22,7 +22,7 @@ ACTF 小型确定性 Dataset，用于手动体验和 CLI 集成测试。
 
 | 示例 | 指标 |
 |---|---|
-| [2.1 Dataset 生命周期](pchronicle/01-dataset-lifecycle/) | import、ls/status、query、find、严格 export 的完整路径 |
+| [2.1 Dataset 生命周期](pchronicle/01-dataset-lifecycle/) | import、ls/stats、query、find、严格 export 的完整路径 |
 | [2.2 内置分析与定位](pchronicle/02-built-in-analysis/) | overview、agents、models、tools 与 Step 定位 |
 | [2.3 跨 Dataset SQL](pchronicle/03-cross-dataset-sql/) | 三个命名 Dataset 的统一 SQL 查询 |
 | [2.4 存储与查询性能](pchronicle/04-storage-query-performance/) | JSON/Lance 体积、压缩比、查询比率与生命周期延迟 |

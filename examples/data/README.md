@@ -3,7 +3,7 @@
 **Small deterministic Datasets used by the pChronicle CLI examples and tests.**
 
 Each child directory is an independent Dataset that can be passed directly to
-`pchronicle ls`, `pchronicle status`, or `pchronicle query`. Its file can also
+`pchronicle ls`, `pchronicle stats`, or `pchronicle query`. Its file can also
 be used as the input to `pchronicle import`. This directory does not own CLI
 behavior or storage formats.
 

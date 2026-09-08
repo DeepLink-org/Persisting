@@ -15,6 +15,9 @@ pchronicle serve
   [--gateway-stream-markdown] [--gateway-debug]
   [--catalog-config FILE]
   [<[NAME=]DATASET> ...]
+pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI [OPTIONS]
+pchronicle serve catalog dataset remove --catalog-config FILE NAME...
+pchronicle serve catalog dataset list   --catalog-config FILE
 pchronicle serve catalog issue  --catalog-config FILE NAME
 pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
 pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
@@ -49,28 +52,42 @@ still set mount names explicitly.
 ## Serve a path Directory
 
 ```bash
+pchronicle serve catalog dataset add \
+  --catalog-config catalog.toml prod \
+  --uri s3://bucket/prod \
+  --endpoint http://127.0.0.1:9000 \
+  --region us-west-2 \
+  --access-key BACKEND_AK \
+  --secret-key BACKEND_SK
 pchronicle serve catalog issue --catalog-config catalog.toml alice
 pchronicle serve catalog grant --catalog-config catalog.toml alice prod evals
 pchronicle serve --catalog-config catalog.toml --listen 127.0.0.1:8081
 ```
 
-`catalog.toml` lists libraries (each a path) and users. `serve catalog issue`
-writes a user with empty grants and prints the secret once on stdout; `grant` /
-`revoke` change `datasets` without starting HTTP. Restart serve after editing
-the file. The parent process does not open those paths itself. The Web UI sends
-user access/secret keys as headers; queries run in a one-shot worker that
-receives only that user's paths. From another terminal:
+`catalog.toml` lists libraries (`[datasets.*]`, each a path or `s3://` URI) and
+users. `serve catalog dataset add|remove|list` rewrites libraries without
+starting HTTP. `serve catalog issue` writes a user with empty grants and prints
+the secret once on stdout; `grant` / `revoke` change which library names that
+user may open. Restart serve after editing the file.
+
+`pchronicle serve --catalog-config` mounts **every** library in the file into
+Warehouse (same as positional mounts). It also enables Directory ticket routes
+for `catalog://` pins. Do not combine `--catalog-config` with positional
+Dataset mounts. Backend S3 endpoint, region, and keys from the file are applied
+before stores open. The Web UI may send Directory user access/secret keys as
+headers when you use catalog-authenticated flows. From another terminal:
 
 ```bash
-pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
+pchronicle dataset pin team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 pchronicle query @team/prod --sql 'SELECT 1'
 ```
 
 `@team` is a Directory locator, not a Dataset. `@team/prod` fetches a ticket and
 opens the ticket `uri` (a path). All `s3://` libraries in one Directory file must
 share the same endpoint, region, and backend keys. The listener remains
-loopback-only. The design is specified in
-[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md).
+loopback-only. Nested Dataset discovery may use `chronicle.manifest` sidecars
+([RFC-0015](../../rfcs/0015-chronicle-manifest.md)). The Directory design is
+specified in [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md).
 
 ## Enable Control or Gateway integration
 

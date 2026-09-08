@@ -16,13 +16,13 @@ Persisting 产生的运行记录，也可以直接读取受支持的外部格式
 ## 你只需要面对 Dataset
 
 **Dataset 就是 path**：本地目录或文件，或对象存储 URI 前缀。pChronicle 发现并规范化该
-path 中受支持的数据。alias（`@name`）是 locator；解析完成后引擎只看见 path。
+path 中受支持的数据。dataset pin（`@name`）是 locator；解析完成后引擎只看见 path。
 
 一个 Dataset 可以写成：
 
 - 本地目录或文件（`./local/path`）；
 - 对象存储中的 URI 前缀（`s3://bucket/prefix`）；
-- 解析到上述位置的用户 alias（`@alias-name`）。
+- 解析到上述位置的 dataset pin（`@name`）。
 
 pChronicle 会发现并规范化该 path 中受支持的数据。开始使用命令行前，你不需要理解内部文件或
 存储布局。
@@ -38,8 +38,8 @@ pchronicle onboard
 或者浏览并查询已有 Dataset：
 
 ```bash
-pchronicle ls ./trajectory-data
-pchronicle analysis overview ./trajectory-data
+pchronicle list ./trajectory-data
+pchronicle stats overview ./trajectory-data
 pchronicle query ./trajectory-data \
   --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
 ```
@@ -51,10 +51,10 @@ pchronicle query ./trajectory-data \
 
 如果已经知道问题，可以直接进入对应路径：
 
-- **浏览 Dataset：** `pchronicle ls DATASET` 或 `pchronicle status DATASET`
-- **运行常用分析：** `pchronicle analysis overview DATASET`
+- **浏览 Dataset：** `pchronicle list DATASET` 或 `pchronicle stats DATASET`
+- **运行常用分析：** `pchronicle stats overview DATASET`
 - **用 SQL 提问：** `pchronicle query DATASET --sql SQL`
-- **给 Dataset 命名：** `pchronicle alias add NAME DATASET`
+- **给 Dataset 命名：** `pchronicle dataset pin NAME DATASET`
 - **导入或导出记录：** [交换数据](guides/exchange.md)
 - **使用 Agent 分析：** `pchronicle agent codex DATASET`
 - **打开本地 UI 与 API：** [提供 Dataset 服务](guides/ui.md)

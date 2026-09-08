@@ -7,7 +7,10 @@ export 拒绝这两种格式。
 
 Compact JSONL 每行保留一个 JSON object，不赋予轨迹语义。使用
 `--input-format compact-jsonl` 或 `--output-format compact-jsonl`；`--column` 映射与 snapshot sync
-限制见[命令参考](../reference/cli.md)。
+限制见[命令参考](../reference/cli.md)。缺少可用 `id` 的记录会生成稳定的
+`source_filename#line_number`；export 按原始输入字节保留记录。compact import 成功后还会在
+dataset 根写入 leaf `chronicle.manifest`，便于后续 discovery 不必仅为分类打开 Lance
+（[RFC-0015](../../rfcs/0015-chronicle-manifest.md)）。
 
 ## 导入到新 Dataset
 
@@ -74,8 +77,8 @@ cat input.json | pchronicle import --from - \
 导入后检查新边界：
 
 ```bash
-pchronicle status ./imported
-pchronicle analysis overview ./imported
+pchronicle stats ./imported
+pchronicle stats overview ./imported
 ```
 
 ## 导出完整 Run

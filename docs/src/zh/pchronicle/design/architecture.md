@@ -18,7 +18,7 @@ open(path) → pin Snapshot → 发现 / 定位 / 分析（写入路径上再 ap
 ```
 
 **Dataset 就是 path**：规范化的本地路径或对象存储 URI（`s3://`、`az://`、`gs://`）。
-mount 名、`@alias`、Directory 的 library 名都是 locator。解析完成后引擎只看见 path。
+mount 名、dataset pin（`@name`）、Directory 的 library 名都是 locator。解析完成后引擎只看见 path。
 凭据不得嵌入这条 path。
 
 | 形态 | 用途 | 持久状态 |
@@ -37,10 +37,10 @@ Warehouse 只接受 loopback bind。未使用 `--catalog-config` 时没有用户
 
 | 层 | 职责 | 不是 |
 | --- | --- | --- |
-| **Path** | Dataset 身份。本地路径或对象存储 URI。 | mount 名、`@alias`、library 名、`catalog://` URI |
+| **Path** | Dataset 身份。本地路径或对象存储 URI。 | mount 名、dataset pin（`@name`）、library 名、`catalog://` URI |
 | **Directory**（可选） | 平台寻址：把名字解析成 path，并决定谁能打开。换票后客户端打开 path。 | 第三种 Dataset。不是 Snapshot。 |
 | **Snapshot** | 一条 path 上写入与读取之间的同步协议：有哪些 Source、各钉在哪个版本。 | 名叫 Catalog 的产品。不是 Directory 列表。 |
-| **Query 面** | 发现（`ls` / `sources`）、定位（`find`）、分析（`query`）。全部相对于已 pin 的 Snapshot。 | Web Explorer 的第四套语义 |
+| **Query 面** | 发现（`list`/`ls` / `sources`）、定位（`find`）、分析（`query`）。全部相对于已 pin 的 Snapshot。 | Web Explorer 的第四套语义 |
 
 代码里仍可能使用 `DatasetCatalogSnapshot`、`--catalog-config` 等名称。用户文档和 RFC 使用
 Path、Directory、Snapshot。
@@ -78,12 +78,12 @@ replace 不是 canonical 高频 append 路径。
 ```
 
 Warehouse mount name 只是 SQL alias。移动到新 path 后就是不同 Dataset。`catalog://` 是
-Directory 解析用的 alias 类型，不是 `DatasetLocation` scheme。
+Directory 解析用的 pin 类型，不是 `DatasetLocation` scheme。
 
 ## 读取路径
 
 ```text
-path（经 Directory 换票或 alias 解析之后）
+path（经 Directory 换票或 pin 解析之后）
   → resource-limited discovery
   → pin Snapshot
   → Source pruning and lazy open
@@ -130,9 +130,11 @@ Server 静态挂载命名 path。Refresh 先完整构造新 Snapshot，再切换
 Dataset table 先按 Source 裁剪，再打开命中的固定 version；cache 和 routing index 与 Snapshot
 generation 绑定。
 
-使用 `--catalog-config` 时，父进程只提供 Directory 列表/换票，自己不打开这些 path。
-已授权的 Web 查询在只含该用户 path 的 worker 中执行。CLI 换票后打开票里的 `uri`（一条 path）
-并注入存储钥。这是 path 上的平台寻址，不是新的 Dataset 种类。
+使用 `--catalog-config` 时，Warehouse 会把 Directory ACL 文件中的全部
+`[datasets.*]` library 挂进数据面（与位置参数挂载等价），并同时提供
+`catalog://` 列表/换票路由。文件中的 S3 endpoint、region 与后端密钥在打开存储前
+写入进程环境。CLI 换票后打开票里的 `uri`（一条 path）并注入存储钥。这是 path 上的
+平台寻址，不是新的 Dataset 种类。
 
 Web 与 API 是同一读取模型的 consumer，不形成新事实源。未知 API route 保持 error，不进入
 SPA fallback；只接受 loopback listener。
@@ -154,7 +156,8 @@ SPA fallback；只接受 loopback listener。
 ## 相关设计
 
 - [Snapshot 设计](catalog.md)：discovery、Snapshot 构造、惰性 Source resolve 与裁剪。
-- [RFC-0013 path Directory](../../rfcs/0013-pchronicle-warehouse-catalog.md)：名字→path、ACL、换票与 query worker。
+- [RFC-0013 path Directory](../../rfcs/0013-pchronicle-warehouse-catalog.md)：名字→path、ACL、换票。
+- [RFC-0015 `chronicle.manifest`](../../rfcs/0015-chronicle-manifest.md)：嵌套 Dataset 发现与聚合统计 sidecar。
 - [运行存储](trajectory-storage.md)：canonical fact、存储布局与写入 ownership。
 - [Storyline Lance](storyline-lance.md)：三表 projection、内容层、发布与维护。
 - [记录数据、视图与版本](../concepts/facts-and-projections.md)：这些层次的用户心智模型。

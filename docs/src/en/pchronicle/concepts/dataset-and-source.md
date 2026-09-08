@@ -8,7 +8,7 @@ trajectory behind a global database identifier.
 
 A Dataset is one query space rooted at a normalized local path or object-store
 URI. The path is its identity. A Warehouse mount name is only a SQL alias.
-An `@alias` or Directory library name is a locator; after resolution the engine
+A dataset pin (`@name`) or Directory library name is a locator; after resolution the engine
 opens the path.
 
 A Dataset is a discovery, Snapshot, query, and exchange boundary. It does not

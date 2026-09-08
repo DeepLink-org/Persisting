@@ -351,9 +351,6 @@ build-components profile="debug" components="all":
         ;;
     esac
 
-build-release:
-    just build release
-
 # Collect detailed Cargo build metrics without enabling the overhead for every
 # normal build. Reports are persisted under CARGO_HOME/log and can be queried
 # with `just build-analysis-report`.
@@ -722,10 +719,6 @@ docs-serve-dirty: docs-sync
 
 docs-build: docs-sync
     cd "{{ docs_dir }}" && npm run build
-
-docs-links: docs-sync
-    cd "{{ docs_dir }}" && npm run build
-
 
 # ── 数据与 fixture ───────────────────────────────────────────────────────────
 

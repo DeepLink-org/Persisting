@@ -6,7 +6,7 @@ pChronicle 是 Agent 轨迹存储引擎。Dataset 就是 **path**：保留轨迹
 ## Dataset
 
 Dataset 是以规范化本地路径或对象存储 URI 为根的查询空间。path 就是它的身份；
-Warehouse mount name 只是 SQL 别名。`@alias` 或 Directory library 名是 locator；解析完成后
+Warehouse mount name 只是 SQL 别名。dataset pin（`@name`）或 Directory library 名是 locator；解析完成后
 引擎打开的是 path。
 
 Dataset 是 discovery、Snapshot、query 与 exchange 的边界。它不声称每个预期的外部任务

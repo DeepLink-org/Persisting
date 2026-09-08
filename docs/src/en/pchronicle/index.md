@@ -19,14 +19,14 @@ summary, and answers one SQL question. You do not need a production store first.
 
 A **Dataset** is a path: a local directory or file, or an object-store URI
 prefix. pChronicle discovers and normalizes the supported data inside that
-path. Aliases (`@name`) are locators; after resolution the engine only sees
+path. Dataset pins (`@name`) are locators; after resolution the engine only sees
 the path.
 
 A Dataset can be written as:
 
 - a local directory or file (`./local/path`);
 - an object-store URI prefix (`s3://bucket/prefix`);
-- a user alias that resolves to either location (`@alias-name`).
+- a dataset pin that resolves to either location (`@name`).
 
 pChronicle discovers and normalizes the supported data inside that path.
 You do not need to understand its internal files or storage layout before using
@@ -43,8 +43,8 @@ pchronicle onboard
 Or inspect and query an existing Dataset:
 
 ```bash
-pchronicle ls ./trajectory-data
-pchronicle analysis overview ./trajectory-data
+pchronicle list ./trajectory-data
+pchronicle stats overview ./trajectory-data
 pchronicle query ./trajectory-data \
   --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
 ```
@@ -57,10 +57,10 @@ query before you connect a real source.
 
 When you already have a question, follow the matching path:
 
-- **Inspect a Dataset:** `pchronicle ls DATASET` or `pchronicle status DATASET`
-- **Run a common report:** `pchronicle analysis overview DATASET`
+- **Inspect a Dataset:** `pchronicle list DATASET` or `pchronicle stats DATASET`
+- **Run a common report:** `pchronicle stats overview DATASET`
 - **Ask a custom SQL question:** `pchronicle query DATASET --sql SQL`
-- **Name a Dataset:** `pchronicle alias add NAME DATASET`
+- **Name a Dataset:** `pchronicle dataset pin NAME DATASET`
 - **Import or export runs:** [Exchange data](guides/exchange.md)
 - **Analyze with an Agent:** `pchronicle agent codex DATASET`
 - **Open the local UI and API:** [Serve a Dataset](guides/ui.md)

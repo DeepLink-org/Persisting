@@ -1,7 +1,7 @@
 # Explore a Run Dataset
 
 pChronicle gives you one interface for Agent runs stored locally, in
-object storage, or behind a configured alias. The inspect, find, analysis, and
+object storage, or behind a configured pin. The inspect, find, analysis, and
 query commands in this walkthrough are read-only.
 
 ## 1. Try pChronicle without preparing data
@@ -26,15 +26,15 @@ For a persistent query, point the commands below at a Dataset path you already
 own. If you do not have one yet, stop after the onboarding query and continue
 with [Discover and query your own data](guides/discover-and-query.md).
 
-A Dataset may be a local path, an object-store URI prefix, or an alias such as
+A Dataset may be a local path, an object-store URI prefix, or a pin such as
 `@prod`:
 
 ```bash
-pchronicle ls ./trajectory-data
-pchronicle analysis overview ./trajectory-data
+pchronicle list ./trajectory-data
+pchronicle stats overview ./trajectory-data
 ```
 
-`ls` shows the run data pChronicle can use. `analysis overview` gives a
+`list` (`ls`) shows the run data pChronicle can use. `stats overview` gives a
 stable summary without requiring SQL.
 
 To locate content, use the unified `find --match` syntax:
@@ -68,6 +68,6 @@ Continue by task:
 - [Discover and query your own Dataset](guides/discover-and-query.md)
 - [Import or export runs](guides/exchange.md)
 - [Review the product terminology](reference/terminology.md)
-- [Use aliases and the complete CLI](reference/cli.md)
+- [Use dataset pins and the complete CLI](reference/cli.md)
 - [Capture a new Run with pVisor](../pvisor/guides/capture.md)
 - [Learn the pChronicle concepts](concepts/index.md)

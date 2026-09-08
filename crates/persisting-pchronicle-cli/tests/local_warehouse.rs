@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use common::{EXAMPLE_FIXTURES, examples_root, run_cli};
 
-fn settings_arg(path: &std::path::Path) -> String {
+fn config_arg(path: &std::path::Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
@@ -17,10 +17,18 @@ async fn default_initializes_and_reports_a_local_warehouse() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let settings = temp.path().join("config/pchronicle.toml");
     let warehouse = temp.path().join("warehouse");
-    let settings = settings_arg(&settings);
+    let settings = config_arg(&settings);
     let warehouse_arg = warehouse.to_string_lossy().into_owned();
 
-    let configured = run_cli(["--settings", &settings, "default", &warehouse_arg]).await?;
+    let configured = run_cli([
+        "--config",
+        &settings,
+        "dataset",
+        "pin",
+        "default",
+        &warehouse_arg,
+    ])
+    .await?;
     assert!(warehouse.is_dir());
     assert_eq!(
         configured.stdout,
@@ -32,19 +40,29 @@ async fn default_initializes_and_reports_a_local_warehouse() -> Result<()> {
     assert!(!stored.contains("schema_version"));
     assert!(stored.contains(warehouse.canonicalize()?.to_string_lossy().as_ref()));
 
-    let reported = run_cli(["--settings", &settings, "default"]).await?;
+    let reported = run_cli(["--config", &settings, "dataset", "show", "default"]).await?;
     assert_eq!(reported.stdout, configured.stdout);
     assert!(reported.stderr.is_empty());
 
     let replacement = temp.path().join("replacement");
     let replacement_arg = replacement.to_string_lossy().into_owned();
-    let updated = run_cli(["--settings", &settings, "default", &replacement_arg]).await?;
+    let updated = run_cli([
+        "--config",
+        &settings,
+        "dataset",
+        "pin",
+        "default",
+        &replacement_arg,
+    ])
+    .await?;
     assert_eq!(
         updated.stdout,
         format!("{}\n", replacement.canonicalize()?.display()).as_bytes()
     );
     assert_eq!(
-        run_cli(["--settings", &settings, "default"]).await?.stdout,
+        run_cli(["--config", &settings, "dataset", "show", "default"])
+            .await?
+            .stdout,
         updated.stdout
     );
     assert!(!std::fs::read_to_string(&settings)?.contains(&warehouse_arg));
@@ -52,15 +70,22 @@ async fn default_initializes_and_reports_a_local_warehouse() -> Result<()> {
 }
 
 #[tokio::test]
-async fn default_warehouse_exercises_catalog_query_find_and_export_without_a_server() -> Result<()>
-{
+async fn default_pin_exercises_catalog_query_find_and_export_without_a_server() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let settings = settings_arg(&temp.path().join("settings.toml"));
+    let settings = config_arg(&temp.path().join("config.toml"));
     let warehouse = examples_root();
     let warehouse_arg = warehouse.to_string_lossy().into_owned();
-    run_cli(["--settings", &settings, "default", &warehouse_arg]).await?;
+    run_cli([
+        "--config",
+        &settings,
+        "dataset",
+        "pin",
+        "default",
+        &warehouse_arg,
+    ])
+    .await?;
 
-    let listed = run_cli(["--settings", &settings, "ls", "--format", "json"])
+    let listed = run_cli(["--config", &settings, "list", "--format", "json"])
         .await?
         .json()?;
     let sources = listed["sources"]
@@ -81,7 +106,7 @@ async fn default_warehouse_exercises_catalog_query_find_and_export_without_a_ser
         .collect()
     );
 
-    let status = run_cli(["--settings", &settings, "status", "--format", "json"])
+    let status = run_cli(["--config", &settings, "stats", "--format", "json"])
         .await?
         .json()?;
     assert_eq!(status["status"], "ready");
@@ -97,7 +122,7 @@ async fn default_warehouse_exercises_catalog_query_find_and_export_without_a_ser
     );
 
     let queried = run_cli([
-        "--settings",
+        "--config",
         &settings,
         "query",
         "SELECT COUNT(*) AS runs, COUNT(DISTINCT _file_) AS sources FROM dataset.runs",
@@ -109,7 +134,7 @@ async fn default_warehouse_exercises_catalog_query_find_and_export_without_a_ser
     assert_eq!(queried, json!({"runs": 4, "sources": 3}));
 
     let found = run_cli([
-        "--settings",
+        "--config",
         &settings,
         "find",
         "--session-id",
@@ -128,7 +153,7 @@ async fn default_warehouse_exercises_catalog_query_find_and_export_without_a_ser
     let export = temp.path().join("warehouse.storyline.json");
     let export_arg = export.to_string_lossy().into_owned();
     run_cli([
-        "--settings",
+        "--config",
         &settings,
         "export",
         "--from",
@@ -150,15 +175,18 @@ async fn default_warehouse_exercises_catalog_query_find_and_export_without_a_ser
 }
 
 #[tokio::test]
-async fn explicit_dataset_overrides_the_default_warehouse() -> Result<()> {
+async fn explicit_dataset_overrides_the_default_pin() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let settings = settings_arg(&temp.path().join("settings.toml"));
+    let settings = config_arg(&temp.path().join("config.toml"));
     let warehouse = examples_root().to_string_lossy().into_owned();
-    run_cli(["--settings", &settings, "default", &warehouse]).await?;
+    run_cli([
+        "--config", &settings, "dataset", "pin", "default", &warehouse,
+    ])
+    .await?;
 
     let atif = examples_root().join("atif").to_string_lossy().into_owned();
     let queried = run_cli([
-        "--settings",
+        "--config",
         &settings,
         "query",
         &atif,
@@ -173,17 +201,25 @@ async fn explicit_dataset_overrides_the_default_warehouse() -> Result<()> {
 }
 
 #[tokio::test]
-async fn empty_default_warehouse_can_be_populated_and_queried_without_output_paths() -> Result<()> {
+async fn empty_default_pin_can_be_populated_and_queried_without_output_paths() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let settings = settings_arg(&temp.path().join("settings.toml"));
+    let settings = config_arg(&temp.path().join("config.toml"));
     let warehouse = temp.path().join("warehouse");
     let warehouse_arg = warehouse.to_string_lossy().into_owned();
-    run_cli(["--settings", &settings, "default", &warehouse_arg]).await?;
+    run_cli([
+        "--config",
+        &settings,
+        "dataset",
+        "pin",
+        "default",
+        &warehouse_arg,
+    ])
+    .await?;
     let warehouse = warehouse.canonicalize()?;
 
     for fixture in EXAMPLE_FIXTURES {
         let source = fixture.source().to_string_lossy().into_owned();
-        let imported = run_cli(["--settings", &settings, "import", "--from", &source])
+        let imported = run_cli(["--config", &settings, "import", "--from", &source])
             .await?
             .json()?;
         let dataset = std::path::PathBuf::from(
@@ -198,14 +234,14 @@ async fn empty_default_warehouse_can_be_populated_and_queried_without_output_pat
         );
     }
 
-    let status = run_cli(["--settings", &settings, "status", "--format", "json"])
+    let status = run_cli(["--config", &settings, "stats", "--format", "json"])
         .await?
         .json()?;
     assert_eq!(status["counts"]["runs"], 4);
     assert_eq!(status["sources"]["ready"], 3);
 
     let query = run_cli([
-        "--settings",
+        "--config",
         &settings,
         "query",
         "SELECT COUNT(*) AS trajectories FROM dataset.trajectories",
@@ -217,7 +253,7 @@ async fn empty_default_warehouse_can_be_populated_and_queried_without_output_pat
     assert_eq!(query["trajectories"], 4);
 
     let source = EXAMPLE_FIXTURES[0].source().to_string_lossy().into_owned();
-    let error = run_cli(["--settings", &settings, "import", "--from", &source])
+    let error = run_cli(["--config", &settings, "import", "--from", &source])
         .await
         .unwrap_err();
     assert!(format!("{error:#}").contains("already exists"));
@@ -225,13 +261,13 @@ async fn empty_default_warehouse_can_be_populated_and_queried_without_output_pat
 }
 
 #[tokio::test]
-async fn omitted_dataset_fails_closed_without_default_settings() -> Result<()> {
+async fn omitted_dataset_fails_closed_without_default_pin() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let settings = settings_arg(&temp.path().join("missing.toml"));
+    let settings = config_arg(&temp.path().join("missing.toml"));
 
     for args in [
-        vec!["--config", &settings, "ls"],
-        vec!["--config", &settings, "status"],
+        vec!["--config", &settings, "list"],
+        vec!["--config", &settings, "stats"],
         vec!["--config", &settings, "query", "--sql", "SELECT 1"],
     ] {
         let error = run_cli(args).await.unwrap_err();
@@ -240,18 +276,25 @@ async fn omitted_dataset_fails_closed_without_default_settings() -> Result<()> {
             message.contains("default Dataset is not configured"),
             "{message}"
         );
-        assert!(message.contains("pchronicle default"), "{message}");
+        assert!(
+            message.contains("pchronicle dataset pin default"),
+            "{message}"
+        );
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn invalid_or_stale_settings_fail_closed() -> Result<()> {
+async fn invalid_or_stale_config_fail_closed() -> Result<()> {
     let temp = tempfile::tempdir()?;
     for (content, expected) in [
         ("not toml = [", "parse pChronicle settings"),
         (
             "default_warehouse = 's3://bucket/path'\n",
+            "parse pChronicle settings",
+        ),
+        (
+            "[pins.default]\nuri = 's3://bucket/path'\n",
             "configured default Dataset must be a local directory",
         ),
     ] {
@@ -260,8 +303,8 @@ async fn invalid_or_stale_settings_fail_closed() -> Result<()> {
             blake3::hash(content.as_bytes()).to_hex()
         ));
         std::fs::write(&settings_path, content)?;
-        let settings = settings_arg(&settings_path);
-        let error = run_cli(["--settings", &settings, "default"])
+        let settings = config_arg(&settings_path);
+        let error = run_cli(["--config", &settings, "dataset", "show", "default"])
             .await
             .unwrap_err();
         let message = format!("{error:#}");
@@ -270,13 +313,19 @@ async fn invalid_or_stale_settings_fail_closed() -> Result<()> {
 
     let settings_path = temp.path().join("stale.toml");
     let warehouse = temp.path().join("stale-warehouse");
-    let settings = settings_arg(&settings_path);
+    let settings = config_arg(&settings_path);
     let warehouse_arg = warehouse.to_string_lossy().into_owned();
-    run_cli(["--settings", &settings, "default", &warehouse_arg]).await?;
+    run_cli([
+        "--config",
+        &settings,
+        "dataset",
+        "pin",
+        "default",
+        &warehouse_arg,
+    ])
+    .await?;
     std::fs::remove_dir(&warehouse)?;
-    let error = run_cli(["--settings", &settings, "status"])
-        .await
-        .unwrap_err();
+    let error = run_cli(["--config", &settings, "stats"]).await.unwrap_err();
     assert!(format!("{error:#}").contains("configured default Dataset"));
     Ok(())
 }

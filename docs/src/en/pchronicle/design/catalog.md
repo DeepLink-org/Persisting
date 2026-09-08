@@ -181,8 +181,9 @@ pchronicle query \
 `--mount` and a positional Dataset are mutually exclusive. A positional
 argument is mounted as the fixed schema `dataset`. With only `--mount`,
 the caller must write the mount name; there is no implicit `dataset`
-schema. The user config file (`-c`) stores aliases and a default Dataset
-only. It does not provide a query mount table.
+schema. The user config file (`-c`) stores dataset pins as `[pins.<name>]`
+tables (including the reserved `default` pin). It does not provide a query mount
+table.
 
 ```bash
 pchronicle query --mount current=local:///srv/pchronicle/current \
@@ -241,6 +242,14 @@ Internal files of `live` and `events.lance` do not become sources again.
 Stopping descent after a composite root is recognized keeps manifests,
 generations, segments, and `objects.lance` from being treated as user
 input.
+
+When a directory contains `chronicle.manifest`
+([RFC-0015](../../rfcs/0015-chronicle-manifest.md)), discovery prefers that
+sidecar: a `leaf` with `format = compact-jsonl/v1` becomes a Compact source
+without opening Lance solely to classify it; a `branch` scans only immediate
+child directories that also have the sidecar. Explorer folder totals may use
+leaf `record_count` with read-side roll-up; writers update only the leaf
+manifest and do not rewrite ancestors.
 
 ### 5.2 Local discovery
 
@@ -471,7 +480,7 @@ lifetime.
 
 ## 8. Error policy and resource bounds
 
-`ls` and `status` expose two strategies through `--errors`:
+`list`/`ls` and `stats` expose two strategies through `--errors`:
 
 | Strategy | One candidate cannot pin a description or pass initial validation | Dataset root missing, listing/walk failed, or a global limit exceeded |
 |---|---|---|

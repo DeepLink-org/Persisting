@@ -16,7 +16,7 @@ const QUERY_MODEL: &str =
     include_str!("../assets/agent/pchronicle-dataset/references/query-model.md");
 const CODEX_SKILL_METADATA: &str = "policy:\n  allow_implicit_invocation: false\n";
 const SESSION_INSTRUCTIONS: &str = concat!(
-    "This is a pChronicle Dataset analysis session. Use the injected pChronicle Dataset skill and only pChronicle's read-only ls, status, analysis, find, and query surfaces for Dataset access. ",
+    "This is a pChronicle Dataset analysis session. Use the injected pChronicle Dataset skill and only pChronicle's read-only list/ls, stats, find, and query surfaces for Dataset access. ",
     "The installed find command has one search option: `--match`. Never generate `--json`, `--jsonb`, `--query`, or `--fts` for find. ",
     "Plain `--match term` is content FTS; repeated `--match` options are ANDed. A single expression may use scoped selectors such as `#system(term)`, boolean `AND`/`OR`/`NOT`, and JSONB predicates such as `$.path=value` or `#json.metrics(\"$.path\")=value`. ",
     "Quote shell expressions containing `#`, `$`, parentheses, spaces, or boolean operators. Inspect the returned `search.mode`, `search.scope`, `fts_available`, `truncated`, and bounded `preview` before drilling down. Do not treat unavailable FTS as an empty result. ",
@@ -55,7 +55,7 @@ pub(super) struct AgentArgs {
     #[arg(value_enum, value_name = "AGENT")]
     target: AgentTarget,
 
-    /// Dataset path, URI, or alias. Uses the default Dataset when omitted.
+    /// Dataset path, URI, or dataset pin. Uses the default Dataset when omitted.
     #[arg(value_name = "DATASET")]
     dataset: Option<String>,
 
@@ -651,7 +651,7 @@ fn initial_prompt(
     };
     let action = match startup_mode {
         StartupMode::Interactive => {
-            "Start the interactive session immediately. Do not run status, analysis overview, or any other Dataset query at startup. Reply with one concise readiness line and wait for my investigation request."
+            "Start the interactive session immediately. Do not run stats or any other Dataset query at startup. Reply with one concise readiness line and wait for my investigation request."
         }
         StartupMode::InteractiveWithQuestion => {
             "Start immediately and answer the initial analysis request. Run only the bounded commands needed for that request; do not perform generic startup status or overview queries, and do not ask me to repeat the request."
@@ -954,7 +954,7 @@ mod tests {
                 StartupMode::Interactive,
                 None,
                 r#"{"run_status":false,"run_overview":false}"#,
-                "Do not run status, analysis overview",
+                "Do not run stats",
             ),
             (
                 StartupMode::InteractiveWithQuestion,

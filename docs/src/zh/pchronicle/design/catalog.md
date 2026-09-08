@@ -137,7 +137,7 @@ pchronicle query \
 
 `--mount` 与位置 Dataset 互斥。位置参数挂载为固定 schema `dataset`；只用
 `--mount` 时必须写 mount 名，没有隐式 `dataset` schema。用户配置文件（`-c`）只保存
-alias 与默认 Dataset，不提供 query 挂载表。
+`[pins.<name>]`（含保留名 `default`），不提供 query 挂载表。
 
 ```bash
 pchronicle query --mount current=local:///srv/pchronicle/current \
@@ -193,6 +193,12 @@ Catalog 产生四个 source：
 
 `live` 和 `events.lance` 的内部文件不会再次成为 source。这一“识别复合根后停止下探”的规则
 避免把 manifest、generation、segment 或 `objects.lance` 错当成用户输入。
+
+当目录含有 `chronicle.manifest`
+（[RFC-0015](../../rfcs/0015-chronicle-manifest.md)）时，discovery 优先采用该 sidecar：
+`leaf` 且 `format = compact-jsonl/v1` 时可不打开 Lance 即归类为 Compact source；
+`branch` 只扫描同样含有 sidecar 的一层子目录。Explorer 目录合计可对 leaf
+`record_count` 做读侧汇总；写入方只更新 leaf manifest，不回写祖先。
 
 ### 5.2 本地发现
 
@@ -374,7 +380,7 @@ CatalogTableProvider source pruning
 
 ## 8. 错误策略与资源边界
 
-`ls` 和 `status` 通过 `--errors` 提供两种策略：
+`list`/`ls` 和 `stats` 通过 `--errors` 提供两种策略：
 
 | 策略 | 单个候选无法固定描述或通过初始校验 | Dataset 根不存在、listing/遍历失败或超过全局限制 |
 |---|---|---|

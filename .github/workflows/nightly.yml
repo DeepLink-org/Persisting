@@ -37,87 +37,22 @@ jobs:
   linux:
     if: github.repository == 'DeepLink-org/Persisting'
     needs: meta
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: [x86_64]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          python-version: "3.12"
-          install-dioxus: "true"
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build pChronicle Web assets
-        run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
-
-      - name: Apply nightly local version (PEP 440)
-        run: |
-          python scripts/ci/set_nightly_local_version.py "${{ needs.meta.outputs.local_version }}"
-          cargo metadata --format-version 1 >/dev/null
-
-      - name: Build wheels
-        uses: pypa/cibuildwheel@v4.1.0
-        with:
-          output-dir: dist
-
-      - name: Verify wheel component set
-        run: |
-          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
-          test -n "$wheel"
-          python scripts/packaging/verify_wheel.py "$wheel" --install-smoke
-
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: nightly-wheels-linux-${{ matrix.target }}
-          path: dist/*.whl
-          retention-days: 14
+    uses: ./.github/workflows/wheel.yml
+    with:
+      runner: ubuntu-latest
+      artifact_name: nightly-wheels-linux-x86_64
+      retention_days: 14
+      local_version: ${{ needs.meta.outputs.local_version }}
 
   macos:
     if: github.repository == 'DeepLink-org/Persisting'
     needs: meta
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          python-version: "3.12"
-          install-dioxus: "true"
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build pChronicle Web assets
-        run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
-
-      - name: Apply nightly local version (PEP 440)
-        run: |
-          python scripts/ci/set_nightly_local_version.py "${{ needs.meta.outputs.local_version }}"
-          cargo metadata --format-version 1 >/dev/null
-
-      - name: Build wheels
-        uses: pypa/cibuildwheel@v4.1.0
-        with:
-          output-dir: dist
-
-      - name: Verify wheel component set
-        run: |
-          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
-          test -n "$wheel"
-          python scripts/packaging/verify_wheel.py "$wheel" --install-smoke
-
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: nightly-wheels-macos-aarch64
-          path: dist/*.whl
-          retention-days: 14
+    uses: ./.github/workflows/wheel.yml
+    with:
+      runner: macos-latest
+      artifact_name: nightly-wheels-macos-aarch64
+      retention_days: 14
+      local_version: ${{ needs.meta.outputs.local_version }}
 
   benchmark:
     name: pChronicle nightly benchmark

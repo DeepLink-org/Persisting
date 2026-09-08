@@ -42,7 +42,7 @@ async fn catalog_command_matrix_reports_every_supported_format() -> Result<()> {
     for fixture in EXAMPLE_FIXTURES {
         let dataset = fixture.dataset().to_string_lossy().into_owned();
 
-        let listed = run_cli(["ls", &dataset, "--format", "json"])
+        let listed = run_cli(["list", &dataset, "--format", "json"])
             .await?
             .json()?;
         assert!(listed.get("schema_version").is_none(), "{fixture:?}");
@@ -57,7 +57,7 @@ async fn catalog_command_matrix_reports_every_supported_format() -> Result<()> {
         );
         assert_eq!(listed["sources"][0]["status"], "ready", "{fixture:?}");
 
-        let status = run_cli(["status", &dataset, "--format", "json"])
+        let status = run_cli(["stats", &dataset, "--format", "json"])
             .await?
             .json()?;
         assert!(status.get("schema_version").is_none(), "{fixture:?}");

@@ -38,7 +38,7 @@ completeness。`fact_version` / `fact_rows` 是新鲜度水位；单纯 compacti
 
 ```bash
 pchronicle serve --control 127.0.0.1:0 ./trajectory-data
-pchronicle status ./trajectory-data --format json
+pchronicle stats ./trajectory-data --format json
 ```
 
 `serve` 在输出 readiness 前发现所有已验证且非空的 canonical Store，并把投影收敛到确定的

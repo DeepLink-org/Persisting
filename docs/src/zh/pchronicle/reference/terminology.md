@@ -24,7 +24,7 @@ pChronicle 在命令行、Web 界面和任务型文档中统一使用以下词�
 - **Snapshot**（API 里有时仍叫 `DatasetCatalogSnapshot`）钉住 Source 成员与版本，不是 Directory 列表；
 - **projection、revision、fragment、column page** 描述存储和一致性机制，不是日常操作入口。
 
-alias（`@name`）、Warehouse mount 名和 Directory library 名都是 locator。解析完成后引擎只看见 path。
+dataset pin（`@name`）、Warehouse mount 名和 Directory library 名都是 locator。解析完成后引擎只看见 path。
 
 为保持兼容，旧 API 路径和 schema 字段可能继续使用技术名称；用户界面遵循上面的简化词表。
 

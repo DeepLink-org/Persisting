@@ -13,8 +13,8 @@ pchronicle onboard
 ## S01：浏览本地 Dataset
 
 ```bash
-pchronicle ls ./trajectory-data
-pchronicle status ./trajectory-data
+pchronicle list ./trajectory-data
+pchronicle stats ./trajectory-data
 ```
 
 预期：命令列出 Dataset 中的 runs、steps 和 tool calls；空 Dataset 返回明确的空结果。
@@ -31,7 +31,7 @@ pchronicle query ./trajectory-data \
 ## S03：运行内建分析
 
 ```bash
-pchronicle analysis overview ./trajectory-data
+pchronicle stats overview ./trajectory-data
 ```
 
 预期：输出运行数、步骤数、工具调用数和时间范围。
@@ -59,7 +59,7 @@ pchronicle serve ./trajectory-data --listen 127.0.0.1:8081
 export AWS_ENDPOINT_URL_S3=http://127.0.0.1:9000
 export AWS_ACCESS_KEY_ID=rustfsadmin
 export AWS_SECRET_ACCESS_KEY=rustfsadmin
-pchronicle ls s3://bucket/trajectory
+pchronicle list s3://bucket/trajectory
 ```
 
 预期：pChronicle 通过 S3 兼容接口发现并查询 Dataset。endpoint 和凭据不会写入 Dataset URI。

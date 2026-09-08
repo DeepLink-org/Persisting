@@ -9,7 +9,7 @@
 ## 按任务查找命令
 
 - **先体验产品：** `pchronicle onboard query` 使用临时示例数据，不需要 Dataset 路径。
-- **检查 Dataset：** 先用 `ls` 和 `analysis overview`，再编写 SQL。
+- **检查 Dataset：** 先用 `list`/`ls` 和 `stats overview`，再编写 SQL。
 - **定位 Run 或文本：** 使用 `find --run-id`、`--session-id` 或 `--match`。
 - **提出可复现问题：** 使用 `query --sql` 或 `query --file`，并显式设置输出与资源上限。
 - **提供历史服务：** 先完成只读查询，再阅读[服务指南](../guides/serve.md)使用 `serve`。
@@ -18,7 +18,7 @@
 
 ```bash
 pchronicle onboard query
-pchronicle ls ./trajectory-data
+pchronicle list ./trajectory-data
 pchronicle query ./trajectory-data --sql 'SELECT COUNT(*) FROM dataset.runs'
 ```
 
@@ -43,18 +43,18 @@ pchronicle onboard
 
 - 本地目录或文件（`./local/path`）；
 - 对象存储中的 URI 前缀（`s3://bucket/prefix`）；
-- 解析到上述位置的用户 alias（`@alias-name`）。
+- 解析到上述位置的 dataset pin（`@name`）。
 
 Dataset 内部可以保存一种或多种受支持的运行数据格式。pChronicle 负责发现和规范化这些数据；用户只需要
 向命令提供 Dataset，不需要先理解内部文件、分片、投影或版本布局。
 
 每条读取命令都会使用一个内部一致的数据视图。命令开始后底层数据发生变化，不会改变该命令已经产生的结果。
 
-`@NAME` 明确表示一个用户 alias。裸字符串始终按路径或 URI 解释：
+`@NAME` 明确表示一个 dataset pin。裸字符串始终按路径或 URI 解释：
 
 ```text
 prod       本地相对路径 ./prod
-@prod      名为 prod 的 Dataset alias
+@prod      名为 prod 的 Dataset pin
 ```
 
 这种区分可以避免同名目录出现或消失时，命令突然解析到不同位置。
@@ -64,13 +64,12 @@ prod       本地相对路径 ./prod
 ```text
 pchronicle
 ├── onboard [SECTION] [DATASET]
-├── default show|set|clear
-├── alias list|add|get-url|set-url|rename|remove
-├── ls [DATASET]
-├── status [DATASET]
+├── dataset|ds pin|unpin|list|show|set|rename
+├── list|ls [DATASET]
+├── stats [DATASET]
+├── stats overview|agents|models|tools [DATASET]
 ├── find [DATASET]
 ├── query [DATASET]
-├── analysis overview|agents|models|tools [DATASET]
 ├── import --from SOURCE --to DATASET
 ├── sync --from DIRECTORY --to DIRECTORY --convert DIRECTORY
 ├── export --from DATASET --to TARGET
@@ -114,94 +113,102 @@ pchronicle onboard query @prod
 完整引导还会演示统一的 FTS/JSONB `find` 表达式、Storyline Lance 导入导出以及只读 Web/API
 边界；使用 `pchronicle onboard find DATASET` 可以直接查看检索语法。
 
-### 2.2 `default`
+### 2.2 `dataset`（pin）
 
 ```text
-pchronicle default <show|set LOCAL_DATASET|clear>
+pchronicle dataset pin|unpin|list|show|set|rename …
 ```
 
 ```bash
-pchronicle default set ./trajectory-data
-pchronicle default show
+pchronicle dataset pin default ./trajectory-data
+pchronicle dataset show default
+pchronicle dataset pin local ./trajectory-data
+pchronicle dataset pin prod s3://bucket/evals
+pchronicle dataset pin secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
+pchronicle dataset pin minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --region us-west-2 --ak 123 --sk 123
+pchronicle dataset pin regional s3://bucket/evals --region us-west-2
+pchronicle dataset pin team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
+pchronicle dataset set prod s3://new-bucket/evals
+pchronicle dataset list
+pchronicle stats @prod
 ```
 
-管理只读命令在省略 Dataset 时使用的本地默认 Dataset。
-`set` 接受本地路径或解析为本地路径的 alias；目录不存在时会自动创建。`clear` 只删除默认配置，
-不会删除 Dataset 数据。对象存储不能设为默认 Dataset。
+`default` 是保留 pin：省略 Dataset 参数时使用，必须是本地目录。
+其他 pin 只改用户配置，不移动或删除 Dataset。名称使用小写字母、数字、点、下划线和连字符，并以小写字母开头；`codex`/`claude`/`claude-code` 保留。
+用户配置（`-c` / `PCHRONICLE_CONFIG`）使用 `[pins.<name>]`：
 
-### 2.3 `alias`
+```toml
+[pins.default]
+uri = "/abs/path/to/warehouse"
+
+[pins.prod]
+uri = "s3://bucket/evals"
+endpoint = "http://127.0.0.1:9000"
+region = "us-west-2"
+access_key = "..."
+secret_key = "..."
+```
+
+旧键（如 `default_warehouse`、`aliases`）会被拒绝。`dataset list` 还会显示内置 `@codex` / `@claude` / `@claude-code`。
+S3 凭证用 `--ak`/`--sk` 写在同一 pin 表中，不会被 `dataset list` / `dataset show` 打印。
+`catalog://127.0.0.1:PORT` pin 是 Directory locator：`@team/prod` 换票打开 path，
+`@team` 列出可访问 Datasets。详见 [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。
+
+### 2.3 `list`
 
 ```text
-pchronicle alias [list|add|remove|rename|get-url|set-url] [ARGUMENTS]
-```
-
-```bash
-pchronicle alias add local ./trajectory-data
-pchronicle alias add prod s3://bucket/evals
-pchronicle alias add secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
-pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --ak 123 --sk 123
-pchronicle alias add regional s3://bucket/evals --region us-west-2
-pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
-pchronicle alias
-```
-
-```bash
-pchronicle alias set-url prod s3://new-bucket/evals
-pchronicle status @prod
-```
-
-Alias 提供类似 `git remote` 的多 Dataset 管理方式，可以同时保存多个名称。`alias` 等价于
-`alias list`，结果按名称排序。其他操作可用 `pchronicle alias --help` 查看。Alias 操作只修改用户配置，
-不移动或删除 Dataset；名称使用小写字母、数字、点、下划线和连字符，并以小写字母开头。
-`codex`、`claude`、`claude-code` 是保留名称。
-`alias list` 还会始终显示系统内置的 `@codex`、`@claude`、`@claude-code`，它们分别指向对应的本地
-Agent 会话目录。
-对于 S3 Dataset，可以通过 `--ak` 和 `--sk` 配置访问密钥与秘密密钥；凭证与 URI 分开保存，
-并在使用 alias 时通过标准 AWS 环境变量提供，不会由 `alias list` 或 `alias get-url` 输出。
-对于 MinIO 等 S3 兼容服务，可以通过 `--endpoint` 保存服务地址；使用 alias 时会自动设置为
-`AWS_ENDPOINT_URL_S3`。Dataset URI 仍应保持为 `s3://bucket/prefix`，不要把主机和端口写入 URI。
-当 endpoint 使用 `http://` 时，pChronicle 会自动设置 `AWS_ALLOW_HTTP`，适用于本地 MinIO 等服务。
-`catalog://127.0.0.1:PORT` alias 是 Directory locator：`@team/prod` 换票后打开票里的 path，
-单独的 `@team` 不是 Dataset。Directory alias 必须提供 `--ak/--sk`，并拒绝 `--endpoint` 和 `--region`。
-后端对象存储密钥留在 Directory 服务端。locator、换票与进程模型见
-[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。
-`alias set-url` 也支持相同的 `--endpoint` 参数；在两个 S3 URI 之间切换且未指定新 endpoint 时，
-会保留原有 endpoint。
-可选的 `--region` 也会按 alias 保存；省略时由 S3 客户端自行处理，需要回退时默认使用 `us-west-2`。
-
-### 2.4 `ls`
-
-```text
-pchronicle ls [DATASET] [--physical] [--format auto|table|json] [--errors report|strict]
+pchronicle list [DATASET] [--physical] [--format auto|table|json] [--errors report|strict]
   [--max-files N] [--max-entries N]
 ```
 
 ```bash
-pchronicle ls
-pchronicle ls @prod --physical --format json --errors strict
+pchronicle list
+pchronicle list @prod --physical --format json --errors strict
 ```
 
-`ls` 显示 Dataset 中可独立查询的 Run 数据源，而不是底层 Lance fragment。`--physical` 增加大小、
+`list`（`ls`）显示 Dataset 中可独立查询的 Run 数据源，而不是底层 Lance fragment。`--physical` 增加大小、
 修改时间和存储版本信息。还可以用 `--max-files` 和 `--max-entries` 限制发现范围。
 `--errors report` 会报告坏数据项并继续；`strict` 遇到第一个坏数据项即失败。
 
-### 2.5 `status`
+### 2.4 `stats`
 
 ```text
-pchronicle status [DATASET] [--format auto|table|json] [--errors report|strict] [--timeout 30s]
+pchronicle stats [DATASET] [--format auto|table|json] [--errors report|strict] [--timeout 30s]
   [--max-files N] [--max-entries N]
 ```
 
 ```bash
-pchronicle status
-pchronicle status @prod --errors strict --timeout 2m
+pchronicle stats
+pchronicle stats @prod --errors strict --timeout 2m
 ```
 
 结果包含 Dataset 的 `ready`、`degraded` 或 `error` 状态，各类数据计数、`counts_complete`，以及
 canonical Event Store 的 Storyline projection 状态。还可以用 `--max-files` 和 `--max-entries`
-限制检查范围。`status` 不会创建、同步或修复 projection。
+限制检查范围。`stats` 不会创建、同步或修复 projection。
 
-### 2.6 `find`
+报告型子命令（原 `analysis`）挂在同一入口下：
+
+```text
+pchronicle stats <overview|agents|models|tools> [DATASET]
+  [--format auto|table|jsonl|csv|tsv]
+  [--limit 100] [--max-output-bytes 8MiB] [--timeout 30s]
+```
+
+```bash
+pchronicle stats overview
+pchronicle stats tools @prod --format csv --limit 20
+```
+
+| 报告 | 内容 |
+|---|---|
+| `overview` | 数据可用性，以及 Run、Step、Agent、Model、tool call 总览 |
+| `agents` | 按 Agent identity 和 version 聚合 |
+| `models` | 区分 Run 声明的 model 和实际观察到的 Step model |
+| `tools` | 按 normalized function name 聚合，并报告 duration coverage |
+
+内建报告用于常见、稳定的统计。需要任意筛选、join 或聚合时使用 `query`。
+
+### 2.5 `find`
 
 ```text
 pchronicle find [DATASET]
@@ -236,7 +243,7 @@ JSON 输出还会报告 `search.mode`（`fts`、`json`、`fts+json` 或 `identit
 [RFC-0012](../../rfcs/0012-pchronicle-find-query-syntax.md) 是已接受的决策记录；与已安装
 CLI 不一致时以 CLI 为准。
 
-### 2.7 `query`
+### 2.6 `query`
 
 ```text
 pchronicle query [DATASET|--mount NAME=DATASET ...] (--sql SQL|--file FILE_OR_STDIN)
@@ -259,28 +266,7 @@ pchronicle query \
 控制执行结果。一条命令只接受一条只读 statement，DDL、DML、COPY 和多语句会被拒绝。使用
 `--mount` 后没有隐式 `dataset` schema，SQL 必须使用 mount 名。
 
-### 2.8 `analysis`
-
-```text
-pchronicle analysis <overview|agents|models|tools> [DATASET]
-  [--format auto|table|jsonl|csv] [--limit N] [--timeout 30s]
-```
-
-```bash
-pchronicle analysis overview
-pchronicle analysis tools @prod --format csv --limit 20
-```
-
-| Analysis | 内容 |
-|---|---|
-| `overview` | 数据可用性，以及 Run、Step、Agent、Model、tool call 总览 |
-| `agents` | 按 Agent identity 和 version 聚合 |
-| `models` | 区分 Run 声明的 model 和实际观察到的 Step model |
-| `tools` | 按 normalized function name 聚合，并报告 duration coverage |
-
-内建分析用于常见、稳定的报告。需要任意筛选、join 或聚合时使用 `query`。
-
-### 2.9 `import`
+### 2.7 `import`
 
 ```text
 pchronicle import -f|--from SOURCE -t|--to NEW_DATASET
@@ -337,7 +323,7 @@ Compact JSONL 是记录存储，不会转换或推断轨迹语义。指定
 投影列。Compact import 支持本地 `create` 和经确认的 `replace`，不支持 stdin、对象存储目标或
 `append`。
 
-### 2.10 `sync`
+### 2.8 `sync`
 
 ```text
 pchronicle sync --from DIRECTORY --to DIRECTORY --convert DIRECTORY
@@ -356,7 +342,7 @@ import 相同。每个成功批次都会重新扫描整个目录，并原子替�
 快照，因此新增、修改和删除都会反映在下一快照中，但不提供行级增量更新。此模式仍要求传入
 `--to` 作为兼容参数，但不会写入该路径。
 
-### 2.11 `drop`
+### 2.9 `drop`
 
 ```text
 pchronicle drop DATASET [--yes]
@@ -365,7 +351,7 @@ pchronicle drop DATASET [--yes]
 `drop` 永久删除本地 Dataset 目录或对象存储前缀。默认要求交互确认，`--yes` 可跳过确认；命令会
 拒绝删除文件系统根目录或整个对象存储 bucket。
 
-### 2.12 `export`
+### 2.10 `export`
 
 ```text
 pchronicle export -f|--from DATASET -t|--to TARGET -o|--output-format FORMAT
@@ -389,7 +375,7 @@ pchronicle export \
 导出 Compact JSONL 时使用 `--output-format compact-jsonl`，目标必须是本地目录，且不支持
 `--source`、ID 过滤或 `--where`，以保持原始 JSONL 文件的目录边界与字节内容。
 
-### 2.13 `agent`
+### 2.11 `agent`
 
 ```text
 pchronicle agent <codex|claude> [DATASET]
@@ -401,11 +387,11 @@ pchronicle agent codex ./dataset
 pchronicle agent claude @prod --ask '比较模型延迟'
 ```
 
-默认先执行有界 `status` 和紧凑的 `analysis overview`，再进入提问；`--no-overview` 只跳过
+默认先执行有界 `status` 和紧凑的 `stats overview`，再进入提问；`--no-overview` 只跳过
 overview。问题也可以通过 `--ask-file` 从文件或 stdin 读取，`--dry-run` 用于预览启动内容。
 Agent 注入是行为引导，不是 filesystem、network 或 tool permission 沙箱。
 
-### 2.14 `serve`
+### 2.12 `serve`
 
 ```text
 pchronicle serve
@@ -416,6 +402,9 @@ pchronicle serve
   [--gateway-stream-markdown] [--gateway-debug]
   [--catalog-config FILE]
   [<[NAME=]DATASET> ...]
+pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI [OPTIONS]
+pchronicle serve catalog dataset remove --catalog-config FILE NAME...
+pchronicle serve catalog dataset list   --catalog-config FILE
 pchronicle serve catalog issue  --catalog-config FILE NAME
 pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
 pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
@@ -431,12 +420,13 @@ pchronicle serve \
 
 未指定服务 flag 时，只读 Web/API 默认监听 `127.0.0.1:0`。多个 Dataset 使用
 `NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。`--catalog-config FILE`
-以 Directory 方式服务，父进程不打开 Datasets；配合
-`alias add NAME catalog://127.0.0.1:PORT --ak --sk`。
-`pchronicle serve catalog issue|grant|revoke` 只改该文件、不启动 HTTP；`issue` 把用户
-sk 只打印一次。改用户或授权后必须重启 serve。`catalog` 是 `serve` 的保留子命令，挂载同名
-路径请用 `./catalog`。见
-[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md)。无需配置的 `--gateway`
+会把文件中全部 `[datasets.*]` 挂进 Warehouse，并启用 `catalog://` locator；不能与位置参数
+Dataset 同时使用。配合 `dataset pin NAME catalog://127.0.0.1:PORT --ak --sk`。
+`pchronicle serve catalog dataset add|remove|list` 与 `issue|grant|revoke` 只改该文件、
+不启动 HTTP；`issue` 把用户 sk 只打印一次。改 library、用户或授权后必须重启 serve。
+`catalog` 是 `serve` 的保留子命令，挂载同名路径请用 `./catalog`。见
+[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md) 与
+[RFC-0015](../../rfcs/0015-chronicle-manifest.md)。无需配置的 `--gateway`
 在 `POST /v1/events` 接收 canonical trajectory events；`--gateway-dataset` 是自动挂载的
 输出 URI，不再是 mount name。`--gateway-split` 支持 `{user}`、`{date}`、`{hour}`。
 已有 canonical source 默认在最后一条事件后空闲 30 分钟才自动刷新 Storyline projection；
@@ -449,29 +439,28 @@ loopback；服务准备完成后，stdout 输出一行版本化 readiness JSON�
 
 #### Catalog 管理
 
-Catalog 配置只包含用户、Dataset 和授权关系。配置文件不存在时，管理命令会自动创建。
+Directory ACL 文件包含用户、datasets（libraries）和 grants。配置文件不存在时，管理命令会自动创建。
 
 ```text
-pchronicle serve catalog user create   --catalog-config FILE NAME
-pchronicle serve catalog user list     --catalog-config FILE
-pchronicle serve catalog user remove   --catalog-config FILE NAME
-pchronicle serve catalog dataset create --catalog-config FILE NAME URI [OPTIONS]
+pchronicle serve catalog issue  --catalog-config FILE NAME
+pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
+pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
+pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI
+  [--endpoint URL] [--region REGION] [--access-key KEY] [--secret-key KEY]
+pchronicle serve catalog dataset remove --catalog-config FILE NAME...
 pchronicle serve catalog dataset list   --catalog-config FILE
-pchronicle serve catalog dataset show   --catalog-config FILE NAME
-pchronicle serve catalog dataset remove --catalog-config FILE NAME
-pchronicle serve catalog grant  --catalog-config FILE USER DATASET --permission PERMISSION...
-pchronicle serve catalog revoke --catalog-config FILE USER DATASET --permission PERMISSION...
-pchronicle serve catalog grants --catalog-config FILE
 ```
 
-`user create` 生成 AK/SK 并只显示一次 secret；`dataset create` 只登记 URI 和存储凭据，不删除或创建后端数据；`grant`/`revoke` 管理 `read`、`query`、`analyze`、`write`、`admin` 权限。
+`issue` 生成用户 AK/SK 并只显示一次 secret；`dataset add` 只登记 URI 与可选后端存储凭据，
+不创建或删除对象存储数据；`grant`/`revoke` 增减该用户可打开的 library 名称（v1 是库成员关系，
+不是细粒度 `--permission` 标志）。
 
 ### 公共输出与退出状态
 
 stdout 只包含命令结果、导出内容或 readiness JSON；stderr 包含 Dataset 版本 metadata、warning、
 进度和错误。`--log-level error` 可以关闭成功诊断，但不会改变 stdout 或退出码。
 
-`auto` 在 TTY 中为 `alias`、`ls`、`status`、`find` 选择 table，为 `query`、`analysis` 选择 table；
+`auto` 在 TTY 中为 `dataset list`、`list`/`ls`、`stats`、`find` 选择 table，为 `query`、`stats` reports 选择 table；
 相同命令在 pipe 中分别选择 JSON 和 JSONL。脚本中建议显式指定格式。
 
 | Exit code | 含义 |
@@ -492,24 +481,24 @@ stdout 只包含命令结果、导出内容或 readiness JSON；stderr 包含 Da
 ### 从本地文件开始
 
 ```bash
-pchronicle alias add local ./trajectory-data
-pchronicle default set @local
+pchronicle dataset pin local ./trajectory-data
+pchronicle dataset pin default @local
 
 pchronicle import \
   -f ./training.json \
   -t ./trajectory-data/training \
   -i openai-messages
 
-pchronicle ls
-pchronicle status
-pchronicle analysis overview
+pchronicle list
+pchronicle stats
+pchronicle stats overview
 ```
 
 ### 比较线上和归档 Dataset
 
 ```bash
-pchronicle alias add live s3://bucket/live
-pchronicle alias add archive s3://bucket/archive
+pchronicle dataset pin live s3://bucket/live
+pchronicle dataset pin archive s3://bucket/archive
 
 pchronicle query \
   --mount live=@live \

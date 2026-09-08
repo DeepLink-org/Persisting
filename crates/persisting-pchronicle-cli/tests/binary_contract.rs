@@ -46,8 +46,8 @@ fn help_exposes_the_supported_product_surface() -> Result<()> {
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout)?;
     for command in [
-        "onboard", "default", "alias", "ls", "status", "query", "analysis", "agent", "find",
-        "import", "drop", "export", "serve",
+        "onboard", "dataset", "list", "stats", "query", "agent", "find", "import", "drop",
+        "export", "serve",
     ] {
         assert!(stdout.contains(command), "help omits {command}: {stdout}");
     }
@@ -257,7 +257,7 @@ fn clap_errors_use_exit_code_two_and_do_not_write_stdout() -> Result<()> {
 
 #[test]
 fn missing_dataset_uses_not_found_exit_code_and_does_not_write_stdout() -> Result<()> {
-    let output = pchronicle(&["status", "/definitely/missing/pchronicle-dataset"])?;
+    let output = pchronicle(&["stats", "/definitely/missing/pchronicle-dataset"])?;
     assert_eq!(output.status.code(), Some(3));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8(output.stderr)?.starts_with("error[not_found]: "));
@@ -444,14 +444,16 @@ async fn canonical_event_import_is_queryable_in_release() -> Result<()> {
 }
 
 #[test]
-fn default_warehouse_is_persistent_across_cli_processes() -> Result<()> {
+fn default_pin_is_persistent_across_cli_processes() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let settings = temp.path().join("settings.toml");
+    let settings = temp.path().join("config.toml");
     let warehouse = temp.path().join("warehouse");
     let settings = settings.to_string_lossy();
     let warehouse = warehouse.to_string_lossy();
 
-    let configured = pchronicle(&["--settings", &settings, "default", &warehouse])?;
+    let configured = pchronicle(&[
+        "--config", &settings, "dataset", "pin", "default", &warehouse,
+    ])?;
     assert!(
         configured.status.success(),
         "{}",
@@ -464,7 +466,7 @@ fn default_warehouse_is_persistent_across_cli_processes() -> Result<()> {
     );
 
     let queried = pchronicle(&[
-        "--settings",
+        "--config",
         &settings,
         "query",
         "SELECT COUNT(*) AS runs FROM dataset.runs",
@@ -482,18 +484,25 @@ fn default_warehouse_is_persistent_across_cli_processes() -> Result<()> {
 }
 
 #[test]
-fn relative_settings_file_works_from_the_process_directory() -> Result<()> {
+fn relative_config_file_works_from_the_process_directory() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let output = Command::new(env!("CARGO_BIN_EXE_pchronicle"))
         .current_dir(temp.path())
-        .args(["--settings", "settings.toml", "default", "warehouse"])
+        .args([
+            "--config",
+            "config.toml",
+            "dataset",
+            "pin",
+            "default",
+            "warehouse",
+        ])
         .output()?;
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(temp.path().join("settings.toml").is_file());
+    assert!(temp.path().join("config.toml").is_file());
     assert!(temp.path().join("warehouse").is_dir());
     Ok(())
 }
@@ -764,20 +773,20 @@ fn agent_propagates_a_nonzero_child_exit_as_a_runtime_error() -> Result<()> {
 
 #[cfg(unix)]
 #[test]
-fn agent_uses_the_default_warehouse_when_dataset_is_omitted() -> Result<()> {
+fn agent_uses_the_default_pin_when_dataset_is_omitted() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let bin_dir = temp.path().join("bin");
     let codex_home = temp.path().join("codex-home");
     let record = temp.path().join("record");
-    let settings = temp.path().join("settings.toml");
+    let settings = temp.path().join("config.toml");
     let warehouse = temp.path().join("warehouse");
     install_fake_agents(&bin_dir)?;
     fs::create_dir(&record)?;
 
     let configured = Command::new(env!("CARGO_BIN_EXE_pchronicle"))
-        .args(["--settings"])
+        .args(["--config"])
         .arg(&settings)
-        .arg("default")
+        .args(["dataset", "pin", "default"])
         .arg(&warehouse)
         .output()?;
     assert!(
@@ -791,7 +800,7 @@ fn agent_uses_the_default_warehouse_when_dataset_is_omitted() -> Result<()> {
         .env("PATH", &bin_dir)
         .env("CODEX_HOME", &codex_home)
         .env("PCHRONICLE_TEST_RECORD", &record)
-        .args(["--settings"])
+        .args(["--config"])
         .arg(&settings)
         .args(["agent", "codex"]);
     let output = output_with_terminal(command)?;

@@ -9,7 +9,7 @@ Start with the shortest path to a useful answer:
 
 - **Try the product:** `pchronicle onboard query` uses temporary example data
   and needs no Dataset path.
-- **Check a Dataset:** use `ls` and `analysis overview` before writing SQL.
+- **Check a Dataset:** use `list`/`ls` and `stats overview` before writing SQL.
 - **Locate a run or phrase:** use `find --run-id`, `--session-id`, or
   `--match`; inspect the returned identity before querying more data.
 - **Ask a repeatable question:** use `query --sql` or `query --file` and set
@@ -21,7 +21,7 @@ For a first interaction, copy this sequence:
 
 ```bash
 pchronicle onboard query
-pchronicle ls ./trajectory-data
+pchronicle list ./trajectory-data
 pchronicle query ./trajectory-data --sql 'SELECT COUNT(*) FROM dataset.runs'
 ```
 
@@ -36,7 +36,7 @@ It may be:
 
 - a local directory or file, such as `./local/path`;
 - an object-store URI prefix, such as `s3://bucket/prefix`;
-- a user alias that resolves to either location, such as `@prod`.
+- a dataset pin that resolves to either location, such as `@prod`.
 
 ## Global syntax
 
@@ -67,72 +67,83 @@ analysis, normalized SQL, unified FTS/JSONB `find` expressions, cross-format
 queries, Storyline Lance import/export, and the read-only Web/API boundary.
 Use `pchronicle onboard find DATASET` to inspect the search grammar directly.
 
-### Default Dataset
+### Dataset pins
 
 ```text
-pchronicle default <show|set LOCAL_DATASET|clear>
+pchronicle dataset pin|unpin|list|show|set|rename …
 ```
 
 ```bash
-pchronicle default set ./trajectory-data
-pchronicle default show
+pchronicle dataset pin default ./trajectory-data
+pchronicle dataset show default
+pchronicle dataset pin prod s3://bucket/evals
+pchronicle dataset pin secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
+pchronicle dataset pin minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --region us-west-2 --ak 123 --sk 123
+pchronicle dataset pin regional s3://bucket/evals --region us-west-2
+pchronicle dataset pin team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
+pchronicle dataset set prod s3://new-bucket/evals
+pchronicle dataset list
+pchronicle stats @prod
 ```
 
-### Aliases
+`default` is a reserved pin used when a command omits `DATASET_URI`. It must be
+a local directory. Other pins only update user configuration; they do not move
+or delete Dataset data. Pins are stored under `[pins.<name>]` in the user
+config file (`-c` / `PCHRONICLE_CONFIG`). Example:
 
-```text
-pchronicle alias [list|add|remove|rename|get-url|set-url] [ARGUMENTS]
+```toml
+[pins.default]
+uri = "/abs/path/to/warehouse"
+
+[pins.prod]
+uri = "s3://bucket/evals"
+endpoint = "http://127.0.0.1:9000"
+region = "us-west-2"
+access_key = "..."
+secret_key = "..."
 ```
 
-```bash
-pchronicle alias add prod s3://bucket/evals
-pchronicle alias add secure s3://bucket/evals --ak "$AWS_ACCESS_KEY_ID" --sk "$AWS_SECRET_ACCESS_KEY"
-pchronicle alias add minio s3://bucket/evals --endpoint http://127.0.0.1:9000 --ak 123 --sk 123
-pchronicle alias add regional s3://bucket/evals --region us-west-2
-pchronicle alias add team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
-pchronicle alias set-url prod s3://new-bucket/evals
-pchronicle status @prod
-```
-
-Alias operations only update user configuration; they do not move or delete a
-Dataset. S3 credentials supplied with `--ak` and `--sk` are stored separately
-from the URI and applied through the standard AWS environment variables when
-the alias is used. They are not printed by `alias list` or `alias get-url`.
-`alias list` also includes the built-in `@codex`, `@claude`, and `@claude-code`
-aliases for the corresponding local Agent session roots.
+Legacy keys such as `default_warehouse` or `aliases` are rejected. S3
+credentials supplied with `--ak` and `--sk` are stored on the same pin table
+and applied through the standard AWS environment variables when the pin is
+used. They are not printed by `dataset list` or `dataset show`. `dataset list`
+also includes the built-in `@codex`, `@claude`, and `@claude-code` pins for
+the corresponding local Agent session roots.
 For S3-compatible services such as MinIO, pass the endpoint with `--endpoint`.
-It is stored separately and applied as `AWS_ENDPOINT_URL_S3` when the alias is
-used. Keep the Dataset URI in the form `s3://bucket/prefix`; do not put the
-service host and port in that URI.
-A `catalog://127.0.0.1:PORT` alias is a Directory locator. `@team/prod` fetches a
-ticket and opens the ticket `uri` (a path); `@team` by itself is not a Dataset.
-Directory aliases require `--ak` and `--sk` and reject `--endpoint` and
-`--region`. Backend object-store keys stay on the Directory server. The
-locator, ticket, and process model are specified in
+Keep the Dataset URI in the form `s3://bucket/prefix`.
+A `catalog://127.0.0.1:PORT` pin is a Directory locator. `@team/prod` fetches a
+ticket and opens the ticket `uri`; `@team` by itself lists authorized
+Datasets. Directory pins require `--ak` and `--sk` and reject `--endpoint` and
+`--region`. See
 [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md).
-For `http://` endpoints, pChronicle also enables `AWS_ALLOW_HTTP` automatically
-for local S3-compatible services such as MinIO.
-`alias set-url` accepts the same `--endpoint` option and preserves the existing
-endpoint when changing between two S3 URIs without specifying a new one.
-The optional `--region` is also stored per alias; when omitted, the S3 client
-uses its default region (`us-west-2` when a fallback is required).
+For `http://` endpoints, pChronicle also enables `AWS_ALLOW_HTTP` automatically.
+The optional `--region` is stored per pin. When an `s3://` pin omits it,
+pChronicle applies `us-west-2` as `AWS_REGION` / `AWS_DEFAULT_REGION` before
+opening the store. Endpoint, region, and credentials are applied before the
+Tokio runtime starts so OpenDAL sees them reliably.
 
 ### Inspect and find
 
 ```text
-pchronicle ls [DATASET] [OPTIONS]
-pchronicle status [DATASET] [OPTIONS]
+pchronicle list|ls [DATASET] [OPTIONS]
+pchronicle stats [DATASET] [OPTIONS]
+pchronicle stats <overview|agents|models|tools> [DATASET] [OPTIONS]
 pchronicle find [DATASET]
   (--run-id ID|--document-id ID|--session-id ID|--match EXPRESSION) [OPTIONS]
 ```
 
 ```bash
-pchronicle ls @prod --format json
+pchronicle list @prod --format json
+pchronicle stats @prod --format json
+pchronicle stats overview @prod
 pchronicle find @prod --session-id session-42
 pchronicle find ./dataset --match "timeout" --match "retry" --format json
 pchronicle find ./dataset --match '$.tags=important' --match '$.priority=2' --format json
 ```
 
+`list` (`ls`) discovers run sources. Bare `stats` reports Dataset health and
+counts. `stats overview|agents|models|tools` runs the built-in statistical
+reports.
 `--match` is the unified search expression. Plain terms search Storyline Step
 content with the indexed FTS/Jieba path; scoped forms such as `#system(prompt)`
 select a field, and `AND`/`OR`/`NOT` combine predicates. JSONB predicates use
@@ -167,17 +178,6 @@ pchronicle query \
 Each invocation accepts one read-only statement with explicit resource limits. `--file -` reads SQL
 from stdin. Use `--format`, `--output`, `--max-output-rows`,
 `--max-output-bytes`, and `--timeout` to make pipeline behavior explicit.
-
-### Built-in analysis
-
-```text
-pchronicle analysis <overview|agents|models|tools> [DATASET] [OPTIONS]
-```
-
-```bash
-pchronicle analysis overview
-pchronicle analysis tools @prod --format csv --limit 20
-```
 
 ### Import
 
@@ -293,6 +293,9 @@ pchronicle serve
   [--gateway-stream-markdown] [--gateway-debug]
   [--catalog-config FILE]
   [<[NAME=]DATASET> ...]
+pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI [OPTIONS]
+pchronicle serve catalog dataset remove --catalog-config FILE NAME...
+pchronicle serve catalog dataset list   --catalog-config FILE
 pchronicle serve catalog issue  --catalog-config FILE NAME
 pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
 pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
@@ -309,13 +312,17 @@ pchronicle serve \
 Every listener must use a loopback address. A bare single Dataset is mounted as
 `default`; with several Datasets, use `NAME=DATASET` when a stable mount name is
 needed. Control requires a mount named `default`.
-`--catalog-config FILE` serves a path Directory instead of opening Datasets
-in the parent process. Pair it with `alias add NAME catalog://127.0.0.1:PORT --ak --sk`.
-`pchronicle serve catalog issue|grant|revoke` rewrites that file and does not
-start HTTP; `issue` prints the user secret once. Restart serve after changing
-users or grants. `catalog` is a reserved `serve` subcommand; mount a path of
-that name as `./catalog`.
-See [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md).
+`--catalog-config FILE` mounts every `[datasets.*]` library in the Directory
+file into Warehouse and enables `catalog://` locators. It conflicts with
+positional Dataset mounts. Pair Directory clients with
+`dataset pin NAME catalog://127.0.0.1:PORT --ak --sk`.
+`pchronicle serve catalog dataset add|remove|list` and
+`issue|grant|revoke` rewrite that file and do not start HTTP; `issue` prints
+the user secret once. Restart serve after changing libraries, users, or grants.
+`catalog` is a reserved `serve` subcommand; mount a path of that name as
+`./catalog`.
+See [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md) and
+[RFC-0015](../../rfcs/0015-chronicle-manifest.md) for nested discovery sidecars.
 The config-free Gateway accepts canonical trajectory events at
 `POST /v1/events`. `--gateway-dataset` is an output URI and is auto-mounted;
 it is no longer a mounted Dataset name. Split templates accept the exact
@@ -340,19 +347,20 @@ construction is explained in [Snapshot design](../design/catalog.md).
 
 #### Catalog management
 
-Catalog configuration contains only users, Datasets, and grants. Management commands create the file when it does not exist.
+The Directory ACL file contains users, datasets (libraries), and grants.
+Management commands create the file when it does not exist.
 
 ```text
-pchronicle serve catalog user create   --catalog-config FILE NAME
-pchronicle serve catalog user list     --catalog-config FILE
-pchronicle serve catalog user remove   --catalog-config FILE NAME
-pchronicle serve catalog dataset create --catalog-config FILE NAME URI [OPTIONS]
+pchronicle serve catalog issue  --catalog-config FILE NAME
+pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
+pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
+pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI
+  [--endpoint URL] [--region REGION] [--access-key KEY] [--secret-key KEY]
+pchronicle serve catalog dataset remove --catalog-config FILE NAME...
 pchronicle serve catalog dataset list   --catalog-config FILE
-pchronicle serve catalog dataset show   --catalog-config FILE NAME
-pchronicle serve catalog dataset remove --catalog-config FILE NAME
-pchronicle serve catalog grant  --catalog-config FILE USER DATASET --permission PERMISSION...
-pchronicle serve catalog revoke --catalog-config FILE USER DATASET --permission PERMISSION...
-pchronicle serve catalog grants --catalog-config FILE
 ```
 
-`user create` generates AK/SK and prints the secret once. `dataset create` registers the URI and storage credentials without creating or deleting backend data. `grant` and `revoke` manage `read`, `query`, `analyze`, `write`, and `admin` permissions.
+`issue` generates a user AK/SK and prints the secret once. `dataset add`
+registers the URI and optional backend storage credentials without creating or
+deleting object-store data. `grant` / `revoke` add or remove library names on
+that user (v1 grants are library membership, not fine-grained permission flags).
