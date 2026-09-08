@@ -12,8 +12,6 @@ inputs:
   components:
     description: "Rust components (comma-separated)"
     required: false
-    # rust-src keeps the opt-in `just sanitize` (-Z build-std) path usable in
-    # CI without changing the normal build commands.
     default: "rustfmt, clippy, rust-src"
   install-dioxus:
     description: "Install the pinned Dioxus CLI and wasm target"
