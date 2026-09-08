@@ -7298,6 +7298,7 @@ dependencies = [
  "clap",
  "datafusion",
  "dirs",
+ "fs2",
  "futures",
  "http-body-util",
  "include_dir",
