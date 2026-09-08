@@ -508,8 +508,10 @@ fn artifacts(
     ];
     let native_format = match request.agent {
         AgentKind::ClaudeCode => "claude-code/native-jsonl-2.1.220",
+        AgentKind::Codex => "codex/native-jsonl-0.149.0",
         AgentKind::MiniSweAgent => "mini-swe-agent/native-json-2.4.6",
         AgentKind::Openhands => "openhands/native-json-0.53.0",
+        AgentKind::Opencode => "opencode/native-events-jsonl-1.17.7",
         AgentKind::PiAgent => "pi-agent/native-events-jsonl-0.83.0",
         AgentKind::SweAgent => "swe-agent/native-traj-1.1.0",
     };
@@ -520,6 +522,16 @@ fn artifacts(
             native_format,
             prepared_path.clone(),
         ));
+    }
+    if request.agent == AgentKind::Opencode {
+        let path = output_dir.join("native/opencode-session.json");
+        if path.is_file() {
+            artifacts.push(artifact(
+                "native_session_export",
+                "opencode/session-export-v1",
+                path,
+            ));
+        }
     }
     if let Some(path) = &outcome.reconstructed_path
         && path != &prepared_path
@@ -600,8 +612,10 @@ fn existing_artifacts(request: &PlaybackRequest, output_dir: &Path) -> Vec<Artif
 
     let native_format = match request.agent {
         AgentKind::ClaudeCode => "claude-code/native-jsonl-2.1.220",
+        AgentKind::Codex => "codex/native-jsonl-0.149.0",
         AgentKind::MiniSweAgent => "mini-swe-agent/native-json-2.4.6",
         AgentKind::Openhands => "openhands/native-json-0.53.0",
+        AgentKind::Opencode => "opencode/native-events-jsonl-1.17.7",
         AgentKind::PiAgent => "pi-agent/native-events-jsonl-0.83.0",
         AgentKind::SweAgent => "swe-agent/native-traj-1.1.0",
     };
@@ -615,6 +629,17 @@ fn existing_artifacts(request: &PlaybackRequest, output_dir: &Path) -> Vec<Artif
             (
                 "continued_native_trajectory",
                 "native/continued-session.jsonl",
+            ),
+        ],
+        AgentKind::Codex | AgentKind::Opencode => &[
+            ("prepared_native_prefix", "native/prepared-prefix.jsonl"),
+            (
+                "reconstructed_native_trajectory",
+                "native/reconstructed-trajectory.jsonl",
+            ),
+            (
+                "continued_native_trajectory",
+                "native/continued-trajectory.jsonl",
             ),
         ],
         AgentKind::MiniSweAgent => &[
@@ -671,6 +696,16 @@ fn existing_artifacts(request: &PlaybackRequest, output_dir: &Path) -> Vec<Artif
             artifacts.push(artifact(role, native_format, path));
         }
     }
+    if request.agent == AgentKind::Opencode {
+        let path = output_dir.join("native/opencode-session.json");
+        if path.is_file() {
+            artifacts.push(artifact(
+                "native_session_export",
+                "opencode/session-export-v1",
+                path,
+            ));
+        }
+    }
     if output_dir.join("logs").is_dir() {
         artifacts.push(artifact(
             "agent_logs",
@@ -684,6 +719,7 @@ fn existing_artifacts(request: &PlaybackRequest, output_dir: &Path) -> Vec<Artif
 fn prepared_native_path(agent: AgentKind, output_dir: &Path) -> std::path::PathBuf {
     output_dir.join(match agent {
         AgentKind::ClaudeCode => "native/prepared-prefix.jsonl",
+        AgentKind::Codex | AgentKind::Opencode => "native/prepared-prefix.jsonl",
         AgentKind::MiniSweAgent => "native/prepared-prefix.json",
         AgentKind::Openhands => "native/prepared-replay-events.json",
         AgentKind::PiAgent => "native/prepared-prefix.jsonl",

@@ -13,8 +13,10 @@ pub const RESULT_SCHEMA_VERSION: &str = "sandbox-playback.result/v3";
 #[serde(rename_all = "kebab-case")]
 pub enum AgentKind {
     ClaudeCode,
+    Codex,
     MiniSweAgent,
     Openhands,
+    Opencode,
     PiAgent,
     SweAgent,
 }
@@ -23,8 +25,10 @@ impl AgentKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude-code",
+            Self::Codex => "codex",
             Self::MiniSweAgent => "mini-swe-agent",
             Self::Openhands => "openhands",
+            Self::Opencode => "opencode",
             Self::PiAgent => "pi-agent",
             Self::SweAgent => "swe-agent",
         }
@@ -33,8 +37,10 @@ impl AgentKind {
     pub fn supported_version(self) -> &'static str {
         match self {
             Self::ClaudeCode => "2.1.220",
+            Self::Codex => "0.149.0",
             Self::MiniSweAgent => "2.4.6",
             Self::Openhands => "0.53.0",
+            Self::Opencode => "1.17.7",
             Self::PiAgent => "0.83.0",
             Self::SweAgent => "1.1.0",
         }
@@ -43,8 +49,10 @@ impl AgentKind {
     pub fn profile(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude-code/2.1.220/native-resume-v1",
+            Self::Codex => "codex/0.149.0/native-responses-jsonl-v1",
             Self::MiniSweAgent => "mini-swe-agent/2.4.6/native-messages-v1",
             Self::Openhands => "openhands/0.53.0/native-replay-v1",
+            Self::Opencode => "opencode/1.17.7/native-events-jsonl-v1",
             Self::PiAgent => "pi-agent/0.83.0/native-rpc-events-v1",
             Self::SweAgent => "swe-agent/1.1.0/replay-then-live-v1",
         }
@@ -57,12 +65,14 @@ impl FromStr for AgentKind {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "claude-code" => Ok(Self::ClaudeCode),
+            "codex" => Ok(Self::Codex),
             "mini-swe-agent" => Ok(Self::MiniSweAgent),
             "openhands" => Ok(Self::Openhands),
+            "opencode" => Ok(Self::Opencode),
             "pi-agent" => Ok(Self::PiAgent),
             "swe-agent" => Ok(Self::SweAgent),
             other => Err(format!(
-                "unsupported agent {other:?}; expected claude-code, mini-swe-agent, openhands, pi-agent, or swe-agent"
+                "unsupported agent {other:?}; expected claude-code, codex, mini-swe-agent, openhands, opencode, pi-agent, or swe-agent"
             )),
         }
     }
@@ -175,8 +185,10 @@ impl ReplayPlan {
 #[derive(Debug, Clone)]
 pub(crate) enum AdapterPlan {
     ClaudeCode(ReplayPlan),
+    Codex(ReplayPlan),
     MiniSweAgent(ReplayPlan),
     Openhands(ReplayPlan),
+    Opencode(ReplayPlan),
     PiAgent(ReplayPlan),
     SweAgent(ReplayPlan),
 }
@@ -213,8 +225,10 @@ impl AdapterPlan {
     fn plan(&self) -> &ReplayPlan {
         match self {
             Self::ClaudeCode(plan)
+            | Self::Codex(plan)
             | Self::MiniSweAgent(plan)
             | Self::Openhands(plan)
+            | Self::Opencode(plan)
             | Self::PiAgent(plan)
             | Self::SweAgent(plan) => plan,
         }
@@ -343,8 +357,10 @@ mod tests {
     fn adapter_plan_exposes_only_common_dispatch_fields() {
         let plans = [
             AdapterPlan::ClaudeCode(replay_plan(AgentKind::ClaudeCode, "claude")),
+            AdapterPlan::Codex(replay_plan(AgentKind::Codex, "codex")),
             AdapterPlan::MiniSweAgent(replay_plan(AgentKind::MiniSweAgent, "mini")),
             AdapterPlan::Openhands(replay_plan(AgentKind::Openhands, "openhands")),
+            AdapterPlan::Opencode(replay_plan(AgentKind::Opencode, "opencode")),
             AdapterPlan::PiAgent(replay_plan(AgentKind::PiAgent, "pi")),
             AdapterPlan::SweAgent(replay_plan(AgentKind::SweAgent, "swe")),
         ];

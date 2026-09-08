@@ -69,6 +69,8 @@ pub struct ReplayArgs {
     #[arg(long, value_name = "DIR")]
     output_dir: Option<PathBuf>,
 
+    /// Model-router/run session key. Codex native continuation identity is
+    /// derived from the trajectory and is never taken from this field.
     #[arg(long)]
     session_id: Option<String>,
 

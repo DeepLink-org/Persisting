@@ -76,6 +76,31 @@ SandboxReplay 使用 Pi 自身的工具实现重新执行 `read`、`bash`、`edi
 这四种工具之外的调用时会拒绝执行，避免静默改变工具语义。未配置边界提示词时调用
 Pi 的原生 `continue()`；配置后则在 `O′N` 后通过 `prompt()` 追加一次用户消息。
 
+### 3.5 OpenCode
+
+OpenCode 适配固定支持 `1.17.7`，输入为 `opencode run --format=json` 产生的原生
+事件 JSONL。`user`、`step_start`、`text`、`reasoning`、`tool_use` 和
+`step_finish` 事件会按 step 分组；一个 replay step 对应一个完整的工具调用批次。
+SandboxReplay 在新沙箱中重新执行命令型工具以及 `read`、`write`、`edit` 文件工具，
+用新的 `state.output` 重建前缀，并通过 `opencode run --format=json --session` 从边界
+继续。工具执行期间的中间 `tool_use` 状态会合并，避免同一调用被重复回放。
+
+### 3.6 Codex
+
+Codex 适配固定支持 CLI `0.149.0`，输入为 Codex 原生 rollout JSONL。一个 replay step
+对应一组完整的 `function_call`/`custom_tool_call` 及其 outputs。SandboxReplay 在新沙箱
+中重放前缀工具，将原生 `response_item` 前缀写入隔离的 `CODEX_HOME`，再执行
+`codex exec resume <session-id> --json`。native session ID 从 `session_meta` 自动提取；
+未知工具或缺少 native session ID 时显式失败，不会退化成全新会话。
+
+Codex 保留自身的 system prompt、工具定义和任务上下文，SandboxReplay 只替换边界前的
+observation。为兼容需要 resume prompt 的旧版 CLI，SandboxReplay 使用本地 Responses
+bridge 删除 transport nonce，再将请求转发到模型服务；续跑结束后也会从 native trajectory
+中清理 nonce。默认模式的输入条件为 `replayed_boundary_only`，不会向模型注入额外提示词。
+
+配置 `boundary_user_prompt` 时，提示词只在 `O′N` 后注入一次并保留；此时输入条件标记为
+`boundary_user_prompt_appended`。bridge 校验失败会拒绝续跑，不降级为直连。
+
 ## 4. 使用方式
 
 ### 4.1 安装 pVisor
@@ -151,6 +176,30 @@ max_steps = 200
 disable_thinking = true
 ~~~
 
+OpenCode 使用原生事件 JSONL：
+
+~~~bash
+pvisor replay \
+  --agent opencode \
+  --trajectory /input/opencode.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /usr/bin/opencode
+~~~
+
+Codex 使用原生 rollout JSONL；SandboxReplay 会自动读取轨迹中的 Codex native
+session ID，用户无需手工填写 `session_id`：
+
+~~~bash
+pvisor replay \
+  --agent codex \
+  --trajectory /input/rollout.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /usr/bin/codex
+~~~
+
+两者也可使用同一个 TOML 文件，只需将 `[replay].agent`、`trajectory` 和
+`agent_entrypoint` 分别改为 `opencode` 或 `codex`。
+
 Claude Code 等价的 pVisor TOML 配置为：
 
 ~~~toml
@@ -223,12 +272,19 @@ replay journal 不记录提示词明文；Agent 原生的 prepared 或 continued
 | Pi agent | NodeBB（291） | 54 | 111 | 92 | 1 | 1 | 是 | N/A |
 | Pi agent | Vuls（666） | 38 | 77 | 62 | 1 | 1 | 否 | 1.00 |
 | Pi agent | qutebrowser（667） | 37 | 71 | 91 | 1 | 1 | 否 | 0.39 |
+| Codex | NodeBB（291） | 37 | 74 | 88 | 1 | 1 | 否 | 0.42 |
+| Codex | Vuls（666） | 28 | 57 | 69 | 1 | 1 | 否 | 0.47 |
+| Codex | qutebrowser（667） | 27 | 54 | 43 | 1 | 1 | 是 | 0.97 |
 
 Claude Code / NodeBB 使用 `N=1`，以避开异步子 Agent 完成后的 Resume Transport canonical-prefix 歧义。边界后的原始可见文本非空，且 `A′(N+1)` 成功复现同一个 `TaskOutput` 调用。
 
 Pi agent 三题分别在新的任务沙箱中并发执行完成，均未发生模型请求重试，三次
 verifier Reward 均为 1。NodeBB 边界两侧的下一动作可见文本均为空，因此文本相似度
 按当前指标语义记为 N/A，而不是把两个空字符串报告为 1.00。
+
+Codex 三题使用 `Ornith-1.5-35B-A3B`，原始轨迹来自 r24，续跑轨迹来自最终成功的
+r30；续跑使用新的任务沙箱和默认 `replayed_boundary_only` 输入条件。Codex 轨迹中未
+发现 transport nonce 或 `Continue from the replay boundary.` 消息。
 
 ### 5.3 A(N+1) 与 A′(N+1)
 
@@ -567,6 +623,83 @@ read:
 ~~~
 
 区别：原轨迹直接编辑测试文件，续跑先读取测试文件；工具和参数均不同。文本相似度为 0.39。
+
+#### Codex
+
+##### NodeBB（291），N=37
+
+`A(N+1)`：
+
+~~~text
+Both files parse. Now let me write a reproduction script that exercises the real NodeBB Redis DB through `db.incrObjectFieldByBulk` to verify all the requirements.
+~~~
+
+工具：`exec_command`，在 `/app` 下创建并执行 `/tmp/repro.js`，验证 bulk increment、
+负数递增、空输入、非法输入、危险字段名、原子性、缓存失效和多次累加。
+
+`A′(N+1)`：
+
+~~~text
+Both files parse. Now let me update the plan and write a comprehensive test script to verify the Redis behavior against a real instance.
+~~~
+
+工具：`update_plan`，前三个实现步骤已完成，当前步骤为“Write reproduction script and
+verify behavior”，后续执行 lint 和 hash test suite。
+
+区别：工具和参数不一致，文本相似度为 0.42。
+
+##### Vuls（666），N=28
+
+`A(N+1)`：
+
+~~~text
+The build cache is now warm and builds succeed. Let me set up a plan and start implementing the changes.
+~~~
+
+工具：`update_plan`，计划从导出 Debian.Supported、修正 Unmarshall 拼写、补充文档注释、
+增加 Oracle Linux 分支开始。
+
+`A′(N+1)`：
+
+~~~text
+The build takes longer than the 10s poll window due to the large dependency tree. Let me run it in the background and poll the log.
+~~~
+
+工具：`exec_command`：
+
+~~~bash
+cd /app && export PATH=$PATH:/usr/local/go/bin && \
+nohup go build ./gost/ ./scan/ ./oval/ ./report/ > /tmp/build.log 2>&1 &
+echo "started $!"
+~~~
+
+区别：工具和参数不一致，文本相似度为 0.47。
+
+##### qutebrowser（667），N=27
+
+`A(N+1)`：
+
+~~~text
+Now let me run this gold-style verification test.
+~~~
+
+工具：`exec_command`：
+
+~~~bash
+cd /app && xvfb-run -a env QT_QPA_PLATFORM=offscreen \
+QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu --disable-dev-shm-usage" \
+python -m pytest tests/unit/browser/webengine/test_webview_goldcheck.py -q 2>&1 | tail -20
+~~~
+
+`A′(N+1)`：
+
+~~~text
+Now let me run the gold-style verification test.
+~~~
+
+工具：`exec_command`，命令和参数与原始轨迹完全一致。
+
+区别：工具完全一致，文本相似度为 0.97。
 
 精确参数见
 [`pvisor replay` 命令参考](../reference/cli.md#replay-an-agent-trajectory)；执行边界见

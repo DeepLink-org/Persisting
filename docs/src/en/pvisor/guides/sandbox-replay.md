@@ -44,6 +44,17 @@ session with new observations, then continues through Pi's SDK. Its initial
 tool surface is intentionally limited to Pi's `read`, `bash`, `edit`, and
 `write` tools; trajectories containing another tool fail validation.
 
+OpenCode `1.17.7` and Codex CLI `0.149.0` are also supported. OpenCode consumes
+the native `opencode run --format=json` event stream and groups
+`step_start`/`tool_use`/`step_finish` events into complete replay steps. Codex
+consumes rollout JSONL (`session_meta` plus `response_item` messages, reasoning,
+function calls/custom tool calls, and outputs). Both adapters re-execute the
+selected command/file tools in the fresh workspace, replace native observations,
+write a native JSONL prefix, and then invoke the native continuation command.
+OpenCode uses `run --format=json --session`; Codex stages the prefix below an
+isolated `CODEX_HOME` and uses `exec resume --json`. Unknown tool shapes fail
+explicitly instead of being silently skipped.
+
 ## Run replay
 
 ```bash
@@ -70,7 +81,7 @@ disable_thinking = true
 boundary_user_prompt = "Review the fresh observation before continuing."
 ```
 
-For a Pi runtime installed at the SweEval default location, the CLI form is:
+When the Pi runtime is installed at `/opt/pi-agent`, the CLI form is:
 
 ```bash
 pvisor replay \
@@ -79,6 +90,45 @@ pvisor replay \
   --after-step 30 \
   --agent-entrypoint /opt/pi-agent/bin/pi
 ```
+
+OpenCode consumes its native event stream:
+
+```bash
+pvisor replay \
+  --agent opencode \
+  --trajectory /input/opencode.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /usr/bin/opencode
+```
+
+Codex consumes its native rollout JSONL. SandboxReplay derives the Codex native
+session ID from the trajectory's `session_meta`; the request `session_id` remains
+a model-router/run key and cannot override the native Codex identity. If the
+trajectory has no native session ID, continuation fails closed instead of
+starting a fresh conversation:
+
+```bash
+pvisor replay \
+  --agent codex \
+  --trajectory /input/rollout.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /usr/bin/codex
+```
+
+For Codex CLI versions that require a prompt on `exec resume`, SandboxReplay
+generates a per-run transport nonce and starts a loopback-only Responses bridge.
+The CLI receives the nonce, but the bridge removes it before every upstream
+request (Codex may resend the full history on later requests) and fails closed
+on malformed or ambiguous requests. The continued native JSONL is also scrubbed
+of the nonce and the legacy `Continue from the replay boundary.` message. The
+default metadata records `prompt_mode = "transport_nonce"` and
+`input_condition = "replayed_boundary_only"`. With an explicit
+`boundary_user_prompt`, the user message is retained and metadata records
+`prompt_mode = "explicit_user_prompt"` and
+`input_condition = "boundary_user_prompt_appended"`.
+
+The same TOML surface is used for both; change `[replay].agent`,
+`trajectory`, and `agent_entrypoint` to the selected runtime.
 
 ### Execution modes and results
 

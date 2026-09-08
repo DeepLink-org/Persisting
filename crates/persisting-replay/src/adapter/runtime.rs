@@ -162,7 +162,11 @@ fn probe_version(agent: AgentKind, entrypoint: &Path) -> Result<String, ReplayEr
     let expected = agent.supported_version();
     let mut command = Command::new(entrypoint);
     match agent {
-        AgentKind::ClaudeCode | AgentKind::MiniSweAgent | AgentKind::PiAgent => {
+        AgentKind::ClaudeCode
+        | AgentKind::Codex
+        | AgentKind::MiniSweAgent
+        | AgentKind::Opencode
+        | AgentKind::PiAgent => {
             command.arg("--version");
         }
         AgentKind::Openhands => {
@@ -240,6 +244,25 @@ fn parse_version(agent: AgentKind, rendered: &str) -> Option<&'static str> {
         AgentKind::Openhands | AgentKind::PiAgent | AgentKind::SweAgent => {
             (rendered.trim() == expected).then_some(expected)
         }
+        AgentKind::Codex => rendered
+            .split_whitespace()
+            .filter_map(|token| token.strip_prefix('v').or(Some(token)))
+            .find(|version| *version == expected)
+            .map(|_| expected),
+        AgentKind::Opencode => rendered
+            .trim()
+            .strip_prefix('v')
+            .unwrap_or_else(|| rendered.trim())
+            .strip_suffix("-baseline")
+            .unwrap_or_else(|| {
+                rendered
+                    .trim()
+                    .strip_prefix('v')
+                    .unwrap_or_else(|| rendered.trim())
+            })
+            .trim()
+            .eq(expected)
+            .then_some(expected),
     }
 }
 
@@ -516,6 +539,17 @@ Loading global config from '/root/.config/mini-swe-agent/.env'";
         );
         assert_eq!(parse_version(AgentKind::SweAgent, "1.1.0"), Some("1.1.0"));
         assert_eq!(parse_version(AgentKind::SweAgent, "swe-agent 1.1.0"), None);
+        assert_eq!(
+            parse_version(AgentKind::Codex, "codex-cli 0.149.0"),
+            Some("0.149.0")
+        );
+        assert_eq!(parse_version(AgentKind::Codex, "codex-cli 0.148.0"), None);
+        assert_eq!(parse_version(AgentKind::Opencode, "1.17.7"), Some("1.17.7"));
+        assert_eq!(
+            parse_version(AgentKind::Opencode, "v1.17.7"),
+            Some("1.17.7")
+        );
+        assert_eq!(parse_version(AgentKind::Opencode, "1.17.6"), None);
     }
 
     #[cfg(unix)]
