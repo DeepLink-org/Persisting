@@ -1007,66 +1007,11 @@ fn continue_native_cli(
     match agent {
         NativeJsonlAgent::Opencode => {
             let session_id = opencode_session_id(&session_id);
-            command.env("PVISOR_REPLAY_SESSION_ID", &session_id);
-            let export_path = context.output_dir.join("native/opencode-session.json");
-            let opencode_config = context.state_dir.join("opencode-config");
-            let opencode_data = context.state_dir.join("opencode-data");
-            write_opencode_provider_config(&opencode_config)?;
-            atomic_write_json(
-                &export_path,
-                &opencode_export(plan, prefix, &session_id, &context.request.workspace),
-            )?;
-            let mut import = agent_command(&launch.entrypoint, context);
-            import.args([
-                "import",
-                export_path.to_str().ok_or_else(|| {
-                    ReplayError::configuration("OpenCode export path is not valid UTF-8")
-                })?,
-            ]);
-            import.env("XDG_CONFIG_HOME", &opencode_config);
-            import.env("XDG_DATA_HOME", &opencode_data);
-            import.env("OPENCODE_DISABLE_AUTOUPDATE", "1");
-            let import_log = logs.join("opencode-import.log");
-            let imported = run_process(ProcessSpec {
-                command: import,
-                stdin: None,
-                timeout: Duration::from_secs(5 * 60),
-                termination_grace: Duration::from_secs(2),
-                pipe_grace: Duration::from_millis(250),
-                retained_bytes: MAX_TOOL_OUTPUT_BYTES / 4,
-                log_path: import_log.clone(),
-            })
-            .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
-            if !imported.status.success() {
-                return Err(ReplayError::classify_continuation(
-                    format!(
-                        "OpenCode session import exited {}; see {}",
-                        imported.status,
-                        import_log.display()
-                    ),
-                    &String::from_utf8_lossy(&imported.stderr_tail),
-                ));
-            }
-            command.env("XDG_CONFIG_HOME", &opencode_config);
-            command.env("XDG_DATA_HOME", &opencode_data);
-            command.env("OPENCODE_DISABLE_AUTOUPDATE", "1");
-            if let Some(model) = configured_model_from_environment() {
-                command.args(["--model", &model]);
-            }
-            command.args([
-                "run",
-                "--format=json",
-                "--session",
-                &session_id,
-                "--dangerously-skip-permissions",
-            ]);
-            if !context.request.disable_thinking {
-                command.arg("--thinking");
-            }
-            if let Some(prompt) = context.request.boundary_user_prompt() {
-                command.arg("--");
-                command.arg(prompt);
-            }
+            // The CLI refuses `run --session` without a message, and any
+            // message would contaminate the boundary. Continue through the
+            // server API instead; see opencode_server_continuation.
+            let _ = &command;
+            return opencode_server_continuation(plan, context, journal, prefix, &session_id, &log_path);
         }
         NativeJsonlAgent::Codex => {
             let explicit_prompt = context.request.boundary_user_prompt().map(str::to_owned);
@@ -1240,6 +1185,8 @@ fn env_f64(name: &str) -> Option<f64> {
 /// have no environment channel, so a live continuation would silently fall
 /// back to provider defaults and diverge from the recorded sampling. The
 /// shape mirrors what a SweEval trial writes for the original run.
+/// `effective_base` overrides the environment endpoint (used for the local
+/// sampling-injection proxy).
 fn opencode_provider_config(
     model: &str,
     base_url: Option<&str>,
@@ -1271,18 +1218,26 @@ fn opencode_provider_config(
     Some(json!({ "provider": { provider: Value::Object(provider_config) } }))
 }
 
-fn write_opencode_provider_config(config_root: &Path) -> Result<(), ReplayError> {
+fn write_opencode_provider_config(
+    config_root: &Path,
+    effective_base: Option<&str>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+) -> Result<(), ReplayError> {
     let Some(model) = configured_model_from_environment() else {
         return Ok(());
     };
-    let base_url = std::env::var("OPENAI_BASE_URL")
-        .ok()
-        .or_else(|| std::env::var("OPENAI_API_BASE").ok());
+    let base_url = match effective_base {
+        Some(base) => Some(base.to_owned()),
+        None => std::env::var("OPENAI_BASE_URL")
+            .ok()
+            .or_else(|| std::env::var("OPENAI_API_BASE").ok()),
+    };
     let config = opencode_provider_config(
         &model,
         base_url.as_deref(),
-        env_f64("PVISOR_OPENCODE_TEMPERATURE"),
-        env_f64("PVISOR_OPENCODE_TOP_P"),
+        temperature,
+        top_p,
     );
     let Some(config) = config else {
         return Ok(());
@@ -1291,6 +1246,496 @@ fn write_opencode_provider_config(config_root: &Path) -> Result<(), ReplayError>
     fs::create_dir_all(&directory)
         .replay_context(ReplayErrorKind::Executor, "create OpenCode config directory")?;
     atomic_write_json(&directory.join("opencode.json"), &config)
+}
+
+/// Node script that forwards requests to the model endpoint and injects
+/// sampling parameters into JSON bodies. OpenCode 1.17.7 never forwards
+/// `temperature`/`top_p` to the Responses API regardless of configuration,
+/// so pinning sampling has to happen on the wire. Node comes from the same
+/// runtime tree as the OpenCode entrypoint.
+fn opencode_sampling_proxy_script() -> &'static str {
+    r#"const http = require("node:http")
+const https = require("node:https")
+const fs = require("node:fs")
+const upstream = new URL(process.env.PVISOR_PROXY_UPSTREAM)
+const temperature = Number(process.env.PVISOR_PROXY_TEMPERATURE)
+const topP = process.env.PVISOR_PROXY_TOP_P === "" ? null : Number(process.env.PVISOR_PROXY_TOP_P)
+const server = http.createServer((request, response) => {
+  const chunks = []
+  request.on("data", (chunk) => chunks.push(chunk))
+  request.on("end", () => {
+    let body = Buffer.concat(chunks)
+    const headers = {...request.headers}
+    delete headers["content-length"]
+    delete headers["transfer-encoding"]
+    if (String(headers["content-type"] || "").includes("application/json") && body.length > 0) {
+      try {
+        const document = JSON.parse(body.toString("utf8"))
+        if (document && typeof document === "object" && !Array.isArray(document)) {
+          document.temperature = temperature
+          if (topP !== null) document.top_p = topP
+          body = Buffer.from(JSON.stringify(document))
+        }
+      } catch (error) { /* forward the original body */ }
+    }
+    const target = new URL(upstream)
+    target.pathname = request.url
+    const transport = target.protocol === "https:" ? https : http
+    const forwarded = transport.request(target, {method: request.method, headers}, (up) => {
+      response.writeHead(up.statusCode, up.headers)
+      up.pipe(response)
+    })
+    forwarded.on("error", (error) => {
+      if (!response.headersSent) response.writeHead(502)
+      if (!response.writableEnded) response.end(String(error))
+    })
+    forwarded.end(body)
+  })
+})
+server.listen(Number(process.env.PVISOR_PROXY_PORT), "127.0.0.1", () => {
+  fs.writeFileSync(process.env.PVISOR_PROXY_READY, "ready")
+})
+"#
+}
+
+struct ChildGuard(std::process::Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn loopback_free_port() -> Result<u16, ReplayError> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .replay_context(ReplayErrorKind::Executor, "allocate loopback port")?;
+    let port = listener
+        .local_addr()
+        .replay_context(ReplayErrorKind::Executor, "read loopback port")?
+        .port();
+    Ok(port)
+}
+
+fn wait_for_file(path: &Path, timeout: Duration) -> Result<(), ReplayError> {
+    let started = Instant::now();
+    while !path.is_file() {
+        if started.elapsed() > timeout {
+            return Err(ReplayError::continuation(format!(
+                "OpenCode helper did not become ready: {}",
+                path.display()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+/// Start the sampling-injection proxy when sampling overrides are requested.
+/// Returns the OpenAI-style API base URL OpenCode should use instead of the
+/// real endpoint.
+fn start_opencode_sampling_proxy(
+    entrypoint: &Path,
+    state_dir: &Path,
+    logs: &Path,
+    upstream: &str,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    guard: &mut Vec<ChildGuard>,
+) -> Result<Option<String>, ReplayError> {
+    if temperature.is_none() && top_p.is_none() {
+        return Ok(None);
+    }
+    let node = {
+        let sibling = entrypoint
+            .parent()
+            .map(|parent| parent.join("node"))
+            .filter(|path| path.is_file())
+            .unwrap_or_else(|| PathBuf::from("node"));
+        sibling
+    };
+    let port = loopback_free_port()?;
+    let upstream = upstream.trim_end_matches('/').to_owned();
+    let ready = state_dir.join("opencode-sampling-proxy.ready");
+    let _ = fs::remove_file(&ready);
+    let script = state_dir.join("opencode-sampling-proxy.js");
+    atomic_write(&script, opencode_sampling_proxy_script().as_bytes())?;
+    let log = fs::File::create(logs.join("opencode-sampling-proxy.log"))
+        .replay_context(ReplayErrorKind::Executor, "create sampling proxy log")?;
+    let child = Command::new(&node)
+        .arg(&script)
+        .env("PVISOR_PROXY_UPSTREAM", &upstream)
+        .env(
+            "PVISOR_PROXY_TEMPERATURE",
+            temperature.map(|v| v.to_string()).unwrap_or_default(),
+        )
+        .env(
+            "PVISOR_PROXY_TOP_P",
+            top_p.map(|v| v.to_string()).unwrap_or_default(),
+        )
+        .env("PVISOR_PROXY_PORT", port.to_string())
+        .env("PVISOR_PROXY_READY", &ready)
+        .stdout(log.try_clone().replay_context(
+            ReplayErrorKind::Executor,
+            "clone sampling proxy log handle",
+        )?)
+        .stderr(log)
+        .spawn()
+        .replay_context(ReplayErrorKind::Executor, "start OpenCode sampling proxy")?;
+    guard.push(ChildGuard(child));
+    wait_for_file(&ready, Duration::from_secs(30))?;
+    Ok(Some(format!("http://127.0.0.1:{port}/v1")))
+}
+
+/// Project the assistant messages created by the live continuation into the
+/// native OpenCode JSONL event stream. One assistant message is one agent
+/// step; its parts are stored unordered, so restore the canonical order:
+/// step-start first, step-finish last, content parts by their start time.
+fn opencode_project_messages(messages: &[Value], session_id: &str) -> Vec<Value> {
+    let mut ordered: Vec<&Value> = messages
+        .iter()
+        .filter(|message| message.get("info").and_then(|i| i.get("role")) == Some(&json!("assistant")))
+        .collect();
+    ordered.sort_by_key(|message| {
+        message
+            .pointer("/info/time/created")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    });
+    let mut events = Vec::new();
+    for message in ordered {
+        let mut parts: Vec<&Value> = message
+            .get("parts")
+            .and_then(Value::as_array)
+            .map(|parts| parts.iter().collect())
+            .unwrap_or_default();
+        parts.sort_by(|a, b| opencode_part_order(a).cmp(&opencode_part_order(b)));
+        for part in parts {
+            let event_type = match part.get("type").and_then(Value::as_str) {
+                Some("step-start") => Some("step_start"),
+                Some("text") => Some("text"),
+                Some("reasoning") => Some("reasoning"),
+                Some("tool") => Some("tool_use"),
+                Some("step-finish") => Some("step_finish"),
+                _ => None,
+            };
+            let Some(event_type) = event_type else {
+                continue;
+            };
+            events.push(json!({
+                "type": event_type,
+                "sessionID": session_id,
+                "part": part,
+            }));
+        }
+    }
+    events
+}
+
+fn opencode_part_order(part: &Value) -> (u8, u64) {
+    let rank = match part.get("type").and_then(Value::as_str) {
+        Some("step-start") => 0,
+        Some("step-finish") => 2,
+        _ => 1,
+    };
+    let start = part.pointer("/time/start").and_then(Value::as_u64).unwrap_or(0);
+    (rank, start)
+}
+
+/// Continue an imported OpenCode session without adding any user message.
+///
+/// `opencode run --session <id>` refuses to start without a message
+/// ("You must provide a message or a command"), so the CLI cannot express a
+/// clean continuation. The server API accepts `parts: []` on
+/// `POST /session/{id}/message`; the resulting model request ends exactly at
+/// the replayed boundary observation `O'N` with no injected prompt.
+fn opencode_server_continuation(
+    plan: &ReplayPlan,
+    context: &RunContext<'_>,
+    journal: &mut Journal,
+    prefix: &[Value],
+    session_id: &str,
+    log_path: &Path,
+) -> Result<(PathBuf, usize), ReplayError> {
+    let launch = context
+        .launch
+        .ok_or_else(|| ReplayError::continuation("OpenCode continuation has no launch spec"))?;
+    let state_dir = context.state_dir;
+    let opencode_config = state_dir.join("opencode-config");
+    let opencode_data = state_dir.join("opencode-data");
+    fs::create_dir_all(&opencode_data)
+        .replay_context(ReplayErrorKind::Executor, "create OpenCode data directory")?;
+    let logs = log_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+
+    let temperature = env_f64("PVISOR_OPENCODE_TEMPERATURE");
+    let top_p = env_f64("PVISOR_OPENCODE_TOP_P");
+    let mut children: Vec<ChildGuard> = Vec::new();
+    let result = opencode_server_continuation_inner(
+        plan,
+        context,
+        journal,
+        prefix,
+        session_id,
+        log_path,
+        &launch.entrypoint,
+        &opencode_config,
+        &opencode_data,
+        &logs,
+        temperature,
+        top_p,
+        &mut children,
+    );
+    drop(children);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn opencode_server_continuation_inner(
+    plan: &ReplayPlan,
+    context: &RunContext<'_>,
+    journal: &mut Journal,
+    prefix: &[Value],
+    session_id: &str,
+    log_path: &Path,
+    entrypoint: &Path,
+    opencode_config: &Path,
+    opencode_data: &Path,
+    logs: &Path,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    children: &mut Vec<ChildGuard>,
+) -> Result<(PathBuf, usize), ReplayError> {
+    let workspace = &context.request.workspace;
+    let upstream = std::env::var("OPENAI_BASE_URL")
+        .ok()
+        .or_else(|| std::env::var("OPENAI_API_BASE").ok())
+        .filter(|value| !value.trim().is_empty());
+    let effective_base = start_opencode_sampling_proxy(
+        entrypoint,
+        context.state_dir,
+        logs,
+        upstream.as_deref().unwrap_or("http://127.0.0.1"),
+        temperature,
+        top_p,
+        children,
+    )?;
+    write_opencode_provider_config(opencode_config, effective_base.as_deref(), temperature, top_p)?;
+
+    let export_path = context.output_dir.join("native/opencode-session.json");
+    atomic_write_json(
+        &export_path,
+        &opencode_export(plan, prefix, session_id, workspace),
+    )?;
+    let mut import = Command::new(entrypoint);
+    import
+        .arg("import")
+        .arg(
+            export_path
+                .to_str()
+                .ok_or_else(|| ReplayError::configuration("OpenCode export path is not valid UTF-8"))?,
+        )
+        .env("XDG_CONFIG_HOME", opencode_config)
+        .env("XDG_DATA_HOME", opencode_data)
+        .env("OPENCODE_DISABLE_AUTOUPDATE", "1")
+        .current_dir(workspace);
+    let import_log = logs.join("opencode-import.log");
+    let imported = run_process(ProcessSpec {
+        command: import,
+        stdin: None,
+        timeout: Duration::from_secs(5 * 60),
+        termination_grace: Duration::from_secs(2),
+        pipe_grace: Duration::from_millis(250),
+        retained_bytes: MAX_TOOL_OUTPUT_BYTES / 4,
+        log_path: import_log.clone(),
+    })
+    .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
+    if !imported.status.success() {
+        return Err(ReplayError::classify_continuation(
+            format!(
+                "OpenCode session import exited {}; see {}",
+                imported.status,
+                import_log.display()
+            ),
+            &String::from_utf8_lossy(&imported.stderr_tail),
+        ));
+    }
+
+    journal.append(
+        "continuation_started",
+        [("agent".into(), json!("opencode"))],
+    )?;
+
+    let serve_port = loopback_free_port()?;
+    let serve_log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .replay_context(ReplayErrorKind::Executor, "open OpenCode serve log")?;
+    let mut serve = Command::new(entrypoint);
+    serve
+        .args(["serve", "--port", &serve_port.to_string(), "--hostname", "127.0.0.1"])
+        .env("XDG_CONFIG_HOME", opencode_config)
+        .env("XDG_DATA_HOME", opencode_data)
+        .env("OPENCODE_DISABLE_AUTOUPDATE", "1")
+        .current_dir(workspace)
+        .stdout(serve_log.try_clone().replay_context(
+            ReplayErrorKind::Executor,
+            "clone OpenCode serve log handle",
+        )?)
+        .stderr(serve_log);
+    let serve = serve
+        .spawn()
+        .replay_context(ReplayErrorKind::Executor, "start OpenCode server")?;
+    children.push(ChildGuard(serve));
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .replay_context(ReplayErrorKind::Executor, "build OpenCode continuation runtime")?;
+    let base = format!("http://127.0.0.1:{serve_port}");
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .replay_context(ReplayErrorKind::Executor, "build OpenCode continuation client")?;
+    let directory = workspace.to_string_lossy().to_string();
+
+    let ready = runtime.block_on(async {
+        for _ in 0..120 {
+            if let Ok(response) = client
+                .get(format!("{base}/config"))
+                .query(&[("directory", directory.as_str())])
+                .send()
+                .await
+            {
+                if response.status().is_success() {
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Err(ReplayError::continuation(
+            "OpenCode server did not become ready; see opencode.log",
+        ))
+    });
+    ready?;
+
+    let messages_url = format!("{base}/session/{session_id}/message");
+    let baseline: Vec<String> = runtime
+        .block_on(async {
+            let response = client
+                .get(&messages_url)
+                .query(&[("directory", directory.as_str())])
+                .send()
+                .await
+                .replay_context(ReplayErrorKind::Continuation, "read imported session messages")?
+                .error_for_status()
+                .replay_context(ReplayErrorKind::Continuation, "imported session request failed")?;
+            let messages: Value = response
+                .json()
+                .await
+                .replay_context(ReplayErrorKind::Continuation, "decode imported session messages")?;
+            Ok(message_ids(&messages))
+        })?;
+
+    let mut prompt_body = json!({"parts": []});
+    if let Some(model) = configured_model_from_environment() {
+        if let Some((provider, model_id)) = model.split_once('/') {
+            prompt_body["model"] = json!({"providerID": provider, "modelID": model_id});
+        }
+    }
+    let prompt_response: Value = runtime.block_on(async {
+        let response = client
+            .post(&messages_url)
+            .query(&[("directory", directory.as_str())])
+            .json(&prompt_body)
+            .send()
+            .await
+            .replay_context(ReplayErrorKind::Continuation, "send OpenCode continuation prompt")?;
+        let status = response.status();
+        let payload: Value = response
+            .json()
+            .await
+            .replay_context(ReplayErrorKind::Continuation, "decode OpenCode continuation response")?;
+        if !status.is_success() {
+            return Err(ReplayError::classify_continuation(
+                format!("OpenCode continuation returned {status}; see {}", log_path.display()),
+                &payload.to_string(),
+            ));
+        }
+        if let Some(error) = payload.get("error") {
+            return Err(ReplayError::classify_continuation(
+                format!("OpenCode continuation failed; see {}", log_path.display()),
+                &error.to_string(),
+            ));
+        }
+        Ok(payload)
+    })?;
+    let _ = prompt_response; // final assistant message; the projection re-reads the session
+
+    let messages: Value = runtime.block_on(async {
+        let response = client
+            .get(&messages_url)
+            .query(&[("directory", directory.as_str())])
+            .send()
+            .await
+            .replay_context(ReplayErrorKind::Continuation, "read continued session messages")?
+            .error_for_status()
+            .replay_context(ReplayErrorKind::Continuation, "continued session request failed")?;
+        response
+            .json()
+            .await
+            .replay_context(ReplayErrorKind::Continuation, "decode continued session messages")
+    })?;
+    let fresh: Vec<Value> = as_message_array(&messages)
+        .into_iter()
+        .filter(|message| {
+            message
+                .get("info")
+                .and_then(|info| info.get("id"))
+                .and_then(Value::as_str)
+                .is_some_and(|id| !baseline.contains(&id.to_owned()))
+        })
+        .collect();
+    let live_events = opencode_project_messages(&fresh, session_id);
+    let continued_steps = live_events
+        .iter()
+        .filter(|event| event.get("type") == Some(&json!("step_finish")))
+        .count();
+    if live_events.is_empty() {
+        return Err(ReplayError::continuation(
+            "OpenCode continuation produced no native events; see opencode.log",
+        ));
+    }
+    let mut combined = prefix.to_vec();
+    combined.extend(live_events);
+    let output_path = context.output_dir.join("native/continued-trajectory.jsonl");
+    write_jsonl(&output_path, &combined)?;
+    Ok((output_path, continued_steps))
+}
+
+fn message_ids(messages: &Value) -> Vec<String> {
+    as_message_array(messages)
+        .iter()
+        .filter_map(|message| {
+            message
+                .get("info")
+                .and_then(|info| info.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn as_message_array(messages: &Value) -> Vec<&Value> {
+    let items = match messages {
+        Value::Array(items) => Some(items.iter().collect()),
+        Value::Object(_) => messages
+            .get("data")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().collect()),
+        _ => None,
+    };
+    items.unwrap_or_default()
 }
 
 fn continuation_session_id(
@@ -1633,6 +2078,13 @@ fn opencode_export(
         .get("user_prompt")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    // OpenCode resolves a session's default model from the last user message
+    // metadata when a request does not pin one. The synthetic placeholder
+    // must therefore carry the configured model; "pvisor/replay" would poison
+    // that fallback with a provider that does not exist.
+    let (placeholder_provider, placeholder_model) = configured_model_from_environment()
+        .and_then(|model| model.split_once('/').map(|(p, m)| (p.to_owned(), m.to_owned())))
+        .unwrap_or_else(|| ("pvisor".to_owned(), "replay".to_owned()));
     let mut messages = vec![json!({
         "info": {
             "id": user_id,
@@ -1640,7 +2092,7 @@ fn opencode_export(
             "role": "user",
             "time": {"created": 0},
             "agent": "build",
-            "model": {"providerID": "pvisor", "modelID": "replay"},
+            "model": {"providerID": placeholder_provider, "modelID": placeholder_model},
         },
         "parts": [{
             "id": "prt_pvisor_user",
@@ -1768,8 +2220,8 @@ fn opencode_export(
                 "role": "assistant",
                 "time": {"created": batch.ordinal as u64, "completed": batch.ordinal as u64},
                 "parentID": user_id,
-                "modelID": "replay",
-                "providerID": "pvisor",
+                "modelID": placeholder_model,
+                "providerID": placeholder_provider,
                 "mode": "build",
                 "agent": "build",
                 "path": {"cwd": workspace.display().to_string(), "root": workspace.display().to_string()},
