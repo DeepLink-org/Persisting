@@ -28,7 +28,8 @@ for an existing Storyline Dataset; duplicate `document_id` values receive a
 `#N` suffix by default, or can be skipped with `--on-duplicate skip`. Use
 `--mode replace` to stage the complete import and atomically replace an existing
 local Dataset after confirmation; replacement requires interactive confirmation
-or `--yes`. Existing object-store Datasets cannot currently be replaced in place.
+or `--yes`. Object-store Dataset replace clears the destination prefix before writing
+(not atomic; an interrupted replace may leave the target empty).
 Regular files can be auto-detected. A
 directory recursively imports `.json`, `.jsonl`, and `.ndjson` files while
 preserving their relative paths in the default output. When `--input-format` is

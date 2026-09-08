@@ -22,7 +22,7 @@ pchronicle import --from input.json \
 默认 `--mode create` 会拒绝已有目标。`--mode append` 用于已有 Storyline Dataset；重复
 `document_id` 默认增加 `#N` 后缀，也可用 `--on-duplicate skip` 跳过。`--mode replace` 会先
 把完整导入写入临时路径，确认后以 rename 事务替换已有的本地 Dataset，最后才删除旧数据；要求
-交互确认或 `--yes`。已有对象存储 Dataset 当前不支持原地 replace。普通文件可以自动识别。目录输入会递归扫描
+交互确认或传入 `--yes`。对象存储 Dataset 的 replace 会先清空目标前缀再写入（非原子；中断可能导致目标暂时为空）。普通文件可以自动识别。目录输入会递归扫描
 `.json`、`.jsonl` 与 `.ndjson` 文件；默认输出会保留其相对
 路径。未指定 `--input-format` 时按文件分别探测类型；无法识别为运行数据格式的 JSON 会跳过并警告：
 

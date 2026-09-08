@@ -312,7 +312,7 @@ Codex 和 Claude Code session 是 decode-only 输入格式。Canonical Event Sto
 Storyline Dataset。默认 `create` 模式要求目标不存在。`append` 要求目标是已有 Storyline Dataset；
 重复 `document_id` 默认增加 `#N` 后缀，也可用 `--on-duplicate skip` 跳过。`replace` 会先将完整导入
 写入临时路径，再将旧本地 Dataset rename 到备份路径、将新 Dataset rename 到正式路径，确认新路径
-发布后才删除备份；因此必须交互确认或传入 `--yes`。已有对象存储 Dataset 当前不支持原地 replace。
+发布后才删除备份；因此必须交互确认或传入 `--yes`。对象存储 Dataset 的 replace 会先清空目标前缀再写入（非原子）。
 
 Compact JSONL 是记录存储，不会转换或推断轨迹语义。指定
 `--input-format compact-jsonl` 或 `--output-format compact-jsonl` 均会选择该格式。输入必须是本地

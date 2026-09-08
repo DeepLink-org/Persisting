@@ -104,10 +104,6 @@ async fn prepare_import_destination(
                     })
                 };
             }
-            anyhow::ensure!(
-                !parsed.is_object_store(),
-                "replace mode for an existing object-store Dataset is unsupported; use a new URI"
-            );
             let existing = parsed.into_existing()?;
             ensure_import_source_outside_destination(args, &existing)?;
             confirm_destructive_dataset(
@@ -290,9 +286,14 @@ pub(super) async fn run_import(
         )
         .await;
     }
-    let input_path = (!args.stream).then(|| Path::new(&args.from));
-    let (directory_input, candidates) = if let Some(input_path) = input_path {
-        collect_import_candidates(input_path)?
+    let (directory_input, candidates) = if args.stream {
+        (false, Vec::new())
+    } else if let Some(location) = &from_location {
+        if location.is_object_store() {
+            collect_object_store_import_candidates(location, stderr).await?
+        } else {
+            collect_import_candidates(Path::new(&args.from))?
+        }
     } else {
         (false, Vec::new())
     };
@@ -348,10 +349,28 @@ pub(super) async fn run_import(
         )
     } else if destination.is_object_store() {
         if destination.exists().await? {
-            return Err(cli_boundary_error(
-                BoundaryCode::Conflict,
-                "import output already exists",
-            ));
+            if replace_existing {
+                writeln!(
+                    stderr,
+                    "import to={} status=replacing",
+                    destination.as_str()
+                )
+                .context("write pChronicle import replace progress")?;
+                destination
+                    .remove_all()
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "remove existing object-store Dataset {}",
+                            destination.as_str()
+                        )
+                    })?;
+            } else {
+                return Err(cli_boundary_error(
+                    BoundaryCode::Conflict,
+                    "import output already exists",
+                ));
+            }
         }
         let store = StorylineLanceStore::open_uri(destination.as_str())
             .await
@@ -422,9 +441,11 @@ pub(super) async fn run_import(
                             "processing",
                             None,
                         )?;
-                        let file = std::fs::File::open(&candidate.path)
-                            .with_context(|| format!("open {label}"))?;
-                        let input = read_bounded(file, max_input_bytes, &label)?;
+                        let input = read_import_candidate_bytes(
+                            candidate,
+                            max_input_bytes,
+                            &label,
+                        )?;
                         if let Some(source) = stage_preserved_import_source(
                             args.format,
                             Some(&candidate.path),
@@ -633,9 +654,9 @@ async fn run_compact_jsonl_import(
 /// directory. Keeping the orchestration here avoids a second decoder or
 /// Dataset publication protocol in the sync command.
 pub(crate) async fn sync_snapshot(
-    source: &Path,
-    warehouse: &Path,
-    storyline: &Path,
+    source: &str,
+    warehouse: &str,
+    storyline: &str,
     input_format: ExchangeFormat,
     columns: &[String],
 ) -> Result<()> {
@@ -644,8 +665,8 @@ pub(crate) async fn sync_snapshot(
         let mut stderr = std::io::sink();
         return run_compact_jsonl_import(
             ImportArgs {
-                from: source.to_string_lossy().into_owned(),
-                output: Some(storyline.to_string_lossy().into_owned()),
+                from: source.to_owned(),
+                output: Some(storyline.to_owned()),
                 format: ExchangeFormat::CompactJsonl,
                 output_format: Some(ImportOutputFormat::CompactJsonl),
                 mode: ImportMode::Replace,
@@ -655,7 +676,7 @@ pub(crate) async fn sync_snapshot(
                 max_input_bytes: Some(256 * 1024 * 1024),
                 columns: columns.to_vec(),
             },
-            storyline.to_string_lossy().as_ref(),
+            storyline,
             &mut stdout,
             &mut stderr,
         )
@@ -668,8 +689,8 @@ pub(crate) async fn sync_snapshot(
     let mut stdin = std::io::empty();
     run_import(
         ImportArgs {
-            from: source.to_string_lossy().into_owned(),
-            output: Some(warehouse.to_string_lossy().into_owned()),
+            from: source.to_owned(),
+            output: Some(warehouse.to_owned()),
             format: input_format,
             output_format: Some(ImportOutputFormat::Preserve),
             mode: ImportMode::Replace,
@@ -689,8 +710,8 @@ pub(crate) async fn sync_snapshot(
     .context("sync source into Warehouse")?;
     run_import(
         ImportArgs {
-            from: source.to_string_lossy().into_owned(),
-            output: Some(storyline.to_string_lossy().into_owned()),
+            from: source.to_owned(),
+            output: Some(storyline.to_owned()),
             format: input_format,
             output_format: Some(ImportOutputFormat::Storyline),
             mode: ImportMode::Replace,
@@ -1301,6 +1322,9 @@ struct ImportFileCandidate {
     path: PathBuf,
     relative_path: PathBuf,
     output_relative_path: Option<PathBuf>,
+    /// Object-store imports preload file bytes so the sync decode loop can
+    /// stay synchronous. Local imports leave this empty and open `path`.
+    content: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -1354,6 +1378,7 @@ fn collect_import_candidates(input: &Path) -> Result<(bool, Vec<ImportFileCandid
                 path: input.to_path_buf(),
                 relative_path,
                 output_relative_path: None,
+                content: None,
             }],
         ));
     }
@@ -1373,6 +1398,7 @@ fn collect_import_candidates(input: &Path) -> Result<(bool, Vec<ImportFileCandid
             path,
             output_relative_path: Some(relative_path.clone()),
             relative_path,
+            content: None,
         });
     }
     candidates.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
@@ -1405,6 +1431,14 @@ pub(crate) fn collect_visible_json_files(root: &Path) -> Result<Vec<PathBuf>> {
             if file_type.is_dir() {
                 pending.push(path);
             } else if file_type.is_file() && is_visible_json_file(&path) {
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap_or(path.as_path())
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if relative.split('/').any(|part| part == "_meta") {
+                    continue;
+                }
                 files.push(path);
             }
         }
@@ -1422,6 +1456,68 @@ fn is_visible_json_file(path: &Path) -> bool {
                 "json" | "jsonl" | "ndjson"
             )
         })
+}
+
+async fn collect_object_store_import_candidates(
+    location: &DatasetLocation,
+    stderr: &mut dyn Write,
+) -> Result<(bool, Vec<ImportFileCandidate>)> {
+    writeln!(
+        stderr,
+        "import from={} status=discovering",
+        location.as_str()
+    )
+    .context("write pChronicle import discovery progress")?;
+    let keys = location
+        .list_importable_json_objects(persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)
+        .await
+        .with_context(|| format!("discover importable objects under {}", location.as_str()))?;
+    if keys.is_empty() {
+        return Err(cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            "import object prefix contains no .json, .jsonl, or .ndjson files",
+        ));
+    }
+    writeln!(
+        stderr,
+        "import from={} status=discovered files={}",
+        location.as_str(),
+        keys.len()
+    )
+    .context("write pChronicle import discovery progress")?;
+
+    let mut candidates = Vec::with_capacity(keys.len());
+    for key in keys {
+        let relative_path = PathBuf::from(&key);
+        write_import_progress(stderr, &key, "fetching", None)?;
+        let content = location
+            .read_relative_bytes(&key)
+            .await
+            .with_context(|| format!("read import object {key} under {}", location.as_str()))?;
+        candidates.push(ImportFileCandidate {
+            path: relative_path.clone(),
+            output_relative_path: Some(relative_path.clone()),
+            relative_path,
+            content: Some(content),
+        });
+    }
+    Ok((true, candidates))
+}
+
+fn read_import_candidate_bytes(
+    candidate: &ImportFileCandidate,
+    max_input_bytes: usize,
+    label: &str,
+) -> Result<Vec<u8>> {
+    if let Some(content) = &candidate.content {
+        anyhow::ensure!(
+            content.len() <= max_input_bytes,
+            "{label} exceeds max_input_bytes limit of {max_input_bytes}"
+        );
+        return Ok(content.clone());
+    }
+    let file = std::fs::File::open(&candidate.path).with_context(|| format!("open {label}"))?;
+    read_bounded(file, max_input_bytes, label)
 }
 
 fn scope_import_source_error(error: anyhow::Error, source_path: &Path) -> anyhow::Error {
@@ -1557,9 +1653,11 @@ impl<'a> StorylineImportIterator<'a> {
                         "processing",
                         None,
                     )?;
-                    let file = std::fs::File::open(&candidate.path)
-                        .with_context(|| format!("open {label}"))?;
-                    let input = read_bounded(file, self.max_input_bytes, &label)?;
+                    let input = read_import_candidate_bytes(
+                        candidate,
+                        self.max_input_bytes,
+                        &label,
+                    )?;
                     decode_import_source(
                         self.requested_format,
                         ImportOutputFormat::Storyline,
@@ -1748,7 +1846,17 @@ fn decode_import_source(
                 code,
                 import_input_issue_message(&issue, decode_relative_path),
             )
-        })?;
+        });
+    let storylines = match storylines {
+        Ok(storylines) => storylines,
+        Err(error) if allow_skip => {
+            return Ok(DecodeImportOutcome::Skipped {
+                path: diagnostic_path,
+                reason: error.to_string(),
+            });
+        }
+        Err(error) => return Err(error),
+    };
     unknown_field_warnings
         .observe_storylines(&storylines)
         .map_err(|issue| {

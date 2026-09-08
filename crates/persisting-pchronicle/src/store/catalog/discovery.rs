@@ -654,6 +654,16 @@ async fn discover_local_candidates(
                     size_bytes: Some(metadata.len()),
                     last_modified: modified_string(&metadata),
                 });
+                let storyline = path.join("storyline");
+                if storyline.join("CURRENT").is_file() {
+                    let metadata = fs::metadata(storyline.join("CURRENT"))?;
+                    candidates.push(Candidate::Storyline {
+                        file: relative_catalog_path(root, &storyline, true)?,
+                        uri: canonical_local_uri(&storyline)?,
+                        size_bytes: Some(metadata.len()),
+                        last_modified: modified_string(&metadata),
+                    });
+                }
             } else if is_lance_directory(&path) {
                 if is_compact_jsonl_directory(&path).await? {
                     let metadata = fs::metadata(&path)?;
@@ -809,7 +819,29 @@ async fn discover_object_candidates(
             options.max_files
         );
         match probe_object_prefix(&store, uri, &child, root_source_path(&child)).await? {
-            Some(ObjectProbe::Source(candidate)) => candidates.push(candidate),
+            Some(ObjectProbe::Source(candidate)) => {
+                let maybe_storyline = match &candidate {
+                    Candidate::Events { file, .. } if file.ends_with("/events.lance") => {
+                        let parent = file.trim_end_matches("/events.lance");
+                        let storyline_rel = format!("{parent}/storyline");
+                        probe_object_prefix(
+                            &store,
+                            uri,
+                            &storyline_rel,
+                            root_source_path(&storyline_rel),
+                        )
+                        .await?
+                    }
+                    Candidate::Events { file, .. } if file == "events.lance" => {
+                        probe_object_prefix(&store, uri, "storyline", "storyline").await?
+                    }
+                    _ => None,
+                };
+                candidates.push(candidate);
+                if let Some(ObjectProbe::Source(storyline)) = maybe_storyline {
+                    candidates.push(storyline);
+                }
+            }
             Some(ObjectProbe::Branch) => {
                 let nested = collect_object_branch_children(&store, uri, &child, options).await?;
                 candidates.extend(nested);

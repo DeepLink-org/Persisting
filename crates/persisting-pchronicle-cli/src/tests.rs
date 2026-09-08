@@ -2756,6 +2756,60 @@ async fn import_storyline_output_writes_one_root_lance_store() -> Result<()> {
 }
 
 #[tokio::test]
+async fn object_store_replace_clears_existing_prefix_before_import() -> Result<()> {
+    let source = format!(
+        "shared-memory://pchronicle-object-replace-src-{}/corpus",
+        uuid::Uuid::new_v4().simple()
+    );
+    let output = format!(
+        "shared-memory://pchronicle-object-replace-dst-{}/dataset",
+        uuid::Uuid::new_v4().simple()
+    );
+    let input = DatasetLocation::parse(&source)?;
+    input
+        .write_relative_bytes(
+            "run.json",
+            &serde_json::to_vec(&atif_identity_document("document-new", "session-new"))?,
+        )
+        .await?;
+
+    // Seed an existing destination so replace must clear it.
+    let existing = DatasetLocation::parse(&output)?;
+    existing
+        .write_relative_bytes(".dataset-marker", b"old")
+        .await?;
+    assert!(existing.exists().await?);
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        &source,
+        "--to",
+        &output,
+        "--output-format",
+        "storyline",
+        "--mode",
+        "replace",
+        "--yes",
+    ])?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    run(cli, false, &mut stdout, &mut stderr).await?;
+    let stderr = String::from_utf8(stderr)?;
+    assert!(stderr.contains("status=replacing"));
+
+    let store = StorylineLanceStore::open_uri(&output).await?;
+    let ids = store
+        .document_ids_snapshot()
+        .await?
+        .context("replaced storyline snapshot")?
+        .1;
+    assert!(ids.iter().any(|id| id == "document-new"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn import_object_store_output_requires_storyline_format() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let input = temp.path().join("one.json");
@@ -2944,6 +2998,59 @@ async fn canonical_event_import_auto_detects_and_is_create_only() -> Result<()> 
             .is_err()
     );
     assert_eq!(fs::read_to_string(existing.join("sentinel"))?, "keep");
+    Ok(())
+}
+
+#[tokio::test]
+async fn object_store_directory_import_recurses_json_files() -> Result<()> {
+    let source = format!(
+        "shared-memory://pchronicle-object-import-{}/corpus",
+        uuid::Uuid::new_v4().simple()
+    );
+    let location = DatasetLocation::parse(&source)?;
+    location
+        .write_relative_bytes(
+            "nested/run-a.json",
+            &serde_json::to_vec(&atif_identity_document("document-a", "session-a"))?,
+        )
+        .await?;
+    location
+        .write_relative_bytes(
+            "nested/deeper/run-b.jsonl",
+            &serde_json::to_vec(&atif_identity_document("document-b", "session-b"))?,
+        )
+        .await?;
+    // Lance interiors must be ignored even when they contain .json names.
+    location
+        .write_relative_bytes("keep/events.lance/_manifest.json", b"{\"not\":\"importable\"}")
+        .await?;
+
+    let output = tempfile::tempdir()?;
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        &source,
+        "--to",
+        output.path().to_str().unwrap(),
+        "--output-format",
+        "storyline",
+    ])?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    run(cli, false, &mut stdout, &mut stderr).await?;
+    let stderr = String::from_utf8(stderr)?;
+    assert!(stderr.contains("status=discovering"));
+    assert!(stderr.contains("status=discovered files=2"));
+
+    let store = StorylineLanceStore::open(output.path()).await?;
+    let ids = store
+        .document_ids_snapshot()
+        .await?
+        .context("imported storyline snapshot")?
+        .1;
+    assert!(ids.iter().any(|id| id == "document-a"));
+    assert!(ids.iter().any(|id| id == "document-b"));
     Ok(())
 }
 

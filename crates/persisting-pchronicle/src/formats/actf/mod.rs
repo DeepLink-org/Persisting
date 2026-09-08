@@ -149,8 +149,9 @@ fn decode_json(
     let mut value: Value =
         serde_json::from_str(&input).map_err(|error| InputIssue::invalid(error.to_string()))?;
     let envelope = take_unknown_fields_envelope(&mut value)?;
-    let document: ActfDocument =
+    let mut document: ActfDocument =
         serde_json::from_value(value).map_err(|error| InputIssue::invalid(error.to_string()))?;
+    normalize_solved_at(&mut document.solved_at);
     document.validate()?;
     let mut stories =
         actf_to_storylines(&document).map_err(|error| InputIssue::invalid(error.to_string()))?;
@@ -423,11 +424,24 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Corpus exporters sometimes emit unix timestamps or booleans for `solved_at`.
+/// Coerce scalars into the documented string-or-null shape before validate.
+fn normalize_solved_at(value: &mut Value) {
+    match value {
+        Value::Null | Value::String(_) => {}
+        Value::Number(number) => *value = Value::String(number.to_string()),
+        Value::Bool(false) => *value = Value::Null,
+        Value::Bool(true) => *value = Value::String("true".into()),
+        _ => {}
+    }
+}
+
 impl ActfDocument {
     #[cfg(any(test, feature = "lance-store"))]
     pub fn from_json_str(input: &str) -> InputResult<Self> {
-        let document: Self =
+        let mut document: Self =
             serde_json::from_str(input).map_err(|error| InputIssue::invalid(error.to_string()))?;
+        normalize_solved_at(&mut document.solved_at);
         document.validate()?;
         Ok(document)
     }
@@ -634,6 +648,14 @@ mod tests {
             }
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn accepts_numeric_solved_at_by_coercing_to_string() {
+        let mut value = serde_json::to_value(fixture()).unwrap();
+        value["solved_at"] = json!(1_714_000_000);
+        let document = ActfDocument::from_json_str(&value.to_string()).unwrap();
+        assert_eq!(document.solved_at, json!("1714000000"));
     }
 
     #[test]

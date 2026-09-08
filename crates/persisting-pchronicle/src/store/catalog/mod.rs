@@ -900,18 +900,6 @@ fn is_lance_directory(path: &Path) -> bool {
         || path.join("_versions").is_dir()
 }
 
-fn path_is_inside_lance_directory(path: &str) -> bool {
-    Path::new(path)
-        .components()
-        .any(|component| match component {
-            std::path::Component::Normal(name) => Path::new(name)
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("lance")),
-            _ => false,
-        })
-}
-
 fn relative_catalog_path(root: &Path, path: &Path, allow_root: bool) -> Result<String> {
     let relative = path
         .strip_prefix(root)
@@ -978,13 +966,6 @@ fn remote_source_revision(meta: &RemoteObjectMeta) -> CatalogSourceRevision {
     }
 }
 
-fn parent_relative_path(path: &str, leaf: &str) -> String {
-    path.strip_suffix(leaf)
-        .unwrap_or(path)
-        .trim_end_matches('/')
-        .to_string()
-}
-
 fn root_source_path(relative: &str) -> String {
     if relative.is_empty() {
         ".".into()
@@ -999,12 +980,6 @@ fn child_uri(root: &str, relative: &str) -> String {
     } else {
         format!("{}/{}", root.trim_end_matches('/'), relative)
     }
-}
-
-fn is_nested_in_any<'a>(path: &str, roots: impl Iterator<Item = &'a String>) -> bool {
-    roots
-        .into_iter()
-        .any(|root| root.is_empty() || path == root || path.starts_with(&format!("{root}/")))
 }
 
 fn catalog_snapshot_id(datasets: &[CatalogDataset]) -> String {

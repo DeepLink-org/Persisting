@@ -167,6 +167,127 @@ impl DatasetLocation {
         store.exists().await
     }
 
+    /// Write `bytes` at a relative object key (or local path under this Dataset).
+    pub async fn write_relative_bytes(&self, relative: &str, bytes: &[u8]) -> Result<()> {
+        let relative = relative.trim_start_matches('/');
+        anyhow::ensure!(!relative.is_empty(), "relative object path must not be empty");
+        anyhow::ensure!(
+            !relative.split('/').any(|part| part == ".."),
+            "relative object path must not contain '..'"
+        );
+        if let Some(root) = &self.local_path {
+            let path = root.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("create {}", parent.display()))?;
+            }
+            return put_local_bytes(&path, bytes, true);
+        }
+        let store = OpendalStore::from_uri(&self.uri).await?;
+        store
+            .write_overwrite(relative, bytes.to_vec())
+            .await
+            .with_context(|| format!("write object {} under {}", relative, self.uri))
+    }
+
+    /// Read bytes at a relative object key (or local path under this Dataset).
+    pub async fn read_relative_bytes(&self, relative: &str) -> Result<Vec<u8>> {
+        let relative = relative.trim_start_matches('/');
+        anyhow::ensure!(!relative.is_empty(), "relative object path must not be empty");
+        if let Some(root) = &self.local_path {
+            let path = root.join(relative);
+            return std::fs::read(&path)
+                .with_context(|| format!("read {}", path.display()));
+        }
+        let store = OpendalStore::from_uri(&self.uri).await?;
+        let Some((bytes, _)) = store.read(relative).await? else {
+            return Err(anyhow!("object not found: {relative} under {}", self.uri));
+        };
+        Ok(bytes)
+    }
+
+    /// Recursively list importable `.json` / `.jsonl` / `.ndjson` object keys.
+    /// Skips Lance table interiors (any path segment ending in `.lance`).
+    pub async fn list_importable_json_objects(&self, max_files: usize) -> Result<Vec<String>> {
+        Ok(self
+            .list_importable_json_object_stamps(max_files)
+            .await?
+            .into_iter()
+            .map(|(key, _, _)| key)
+            .collect())
+    }
+
+    /// Like [`Self::list_importable_json_objects`], but also returns size and
+    /// last-modified metadata for change detection (`sync`).
+    pub async fn list_importable_json_object_stamps(
+        &self,
+        max_files: usize,
+    ) -> Result<Vec<(String, u64, Option<String>)>> {
+        anyhow::ensure!(max_files > 0, "import max_files must be positive");
+        if let Some(root) = &self.local_path {
+            let paths = list_local_importable_json_files(root)?;
+            anyhow::ensure!(
+                paths.len() <= max_files,
+                "import input exceeds max_files limit of {max_files}"
+            );
+            let mut stamps = Vec::with_capacity(paths.len());
+            for path in paths {
+                let relative = path
+                    .strip_prefix(root)
+                    .context("derive Dataset-relative import source path")?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let metadata = std::fs::metadata(&path)
+                    .with_context(|| format!("stat importable file {}", path.display()))?;
+                stamps.push((
+                    relative,
+                    metadata.len(),
+                    metadata.modified().ok().and_then(|modified| {
+                        modified
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|duration| {
+                                chrono::DateTime::<chrono::Utc>::from_timestamp(
+                                    duration.as_secs() as i64,
+                                    duration.subsec_nanos(),
+                                )
+                                .map(|value| value.to_rfc3339())
+                            })
+                            .flatten()
+                    }),
+                ));
+            }
+            return Ok(stamps);
+        }
+
+        let store = OpendalStore::from_uri(&self.uri).await?;
+        let entries = store
+            .list("")
+            .await
+            .with_context(|| format!("list importable objects under {}", self.uri))?;
+        let mut stamps = Vec::new();
+        for entry in entries {
+            let key = entry.path.trim_matches('/').to_string();
+            if key.is_empty() || !is_importable_json_object_key(&key) {
+                continue;
+            }
+            anyhow::ensure!(
+                stamps.len() < max_files,
+                "import input exceeds max_files limit of {max_files}"
+            );
+            stamps.push((
+                key,
+                entry.metadata.content_length(),
+                entry
+                    .metadata
+                    .last_modified()
+                    .map(|value| value.to_string()),
+            ));
+        }
+        stamps.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(stamps)
+    }
+
     pub async fn put_bytes(&self, bytes: &[u8], overwrite: bool) -> Result<()> {
         if let Some(path) = &self.local_path {
             return put_local_bytes(path, bytes, overwrite);
@@ -206,6 +327,60 @@ impl DatasetLocation {
         store.remove_all().await?;
         Ok(())
     }
+}
+
+fn is_importable_json_object_key(key: &str) -> bool {
+    if key.split('/').any(|part| part == "_meta" || part.ends_with(".lance")) {
+        return false;
+    }
+    Path::new(key)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "json" | "jsonl" | "ndjson"
+            )
+        })
+}
+
+fn list_local_importable_json_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let mut entries = std::fs::read_dir(&directory)
+            .with_context(|| format!("read directory {}", directory.display()))?
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(std::fs::DirEntry::path);
+        for entry in entries {
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if file_type.is_dir() {
+                if path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".lance"))
+                {
+                    continue;
+                }
+                pending.push(path);
+            } else if file_type.is_file() {
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap_or(path.as_path())
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if is_importable_json_object_key(&relative) {
+                    files.push(path);
+                }
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 fn validate_object_store_bucket(scheme: &str, bucket: &str) -> Result<()> {
