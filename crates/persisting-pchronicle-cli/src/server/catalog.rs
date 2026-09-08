@@ -690,13 +690,9 @@ pub(crate) fn parse_catalog_pin_target(input: &str) -> Result<String> {
     let host = url
         .host_str()
         .ok_or_else(|| anyhow!("catalog pin URL must include a host"))?;
-    let address: std::net::IpAddr = host
+    let _: std::net::IpAddr = host
         .parse()
-        .with_context(|| format!("catalog pin host '{host}' must be a loopback IP"))?;
-    anyhow::ensure!(
-        address.is_loopback(),
-        "catalog pin host must be a loopback address"
-    );
+        .with_context(|| format!("catalog pin host '{host}' must be an IP address"))?;
     let port = url
         .port()
         .ok_or_else(|| anyhow!("catalog pin URL must include a port"))?;
@@ -1228,9 +1224,10 @@ dataset = "prod"
     }
 
     #[test]
-    fn catalog_pin_target_must_be_loopback_with_port() {
+    fn catalog_pin_target_accepts_any_ip_with_port() {
         assert!(parse_catalog_pin_target("catalog://127.0.0.1:8081").is_ok());
-        assert!(parse_catalog_pin_target("catalog://8.8.8.8:8081").is_err());
+        assert!(parse_catalog_pin_target("catalog://8.8.8.8:8081").is_ok());
+        assert!(parse_catalog_pin_target("catalog://10.12.111.136:8000").is_ok());
         assert!(parse_catalog_pin_target("catalog://127.0.0.1").is_err());
         assert!(parse_catalog_pin_target("s3://bucket/prod").is_err());
     }

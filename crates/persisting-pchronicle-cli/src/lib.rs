@@ -1124,13 +1124,9 @@ fn parse_gateway_bind(value: &str) -> std::result::Result<SocketAddr, String> {
     if value.eq_ignore_ascii_case("auto") {
         return Ok(SocketAddr::from(([127, 0, 0, 1], 0)));
     }
-    let address = value
+    value
         .parse::<SocketAddr>()
-        .map_err(|error| format!("invalid Gateway address '{value}': {error}"))?;
-    if !address.ip().is_loopback() {
-        return Err("the embedded Gateway is loopback-only; use 127.0.0.1:PORT or 'auto'".into());
-    }
-    Ok(address)
+        .map_err(|error| format!("invalid Gateway address '{value}': {error}"))
 }
 
 #[derive(Debug, Args)]
@@ -1677,14 +1673,9 @@ fn local_dataset_path(uri: &str) -> Result<Option<PathBuf>> {
 }
 
 fn parse_gateway_listener(value: &str, label: &str) -> Result<SocketAddr> {
-    let addr = value
+    value
         .parse::<SocketAddr>()
-        .with_context(|| format!("parse {label} address '{value}'"))?;
-    anyhow::ensure!(
-        addr.ip().is_loopback(),
-        "pChronicle embedded {label} may only bind to a loopback address"
-    );
-    Ok(addr)
+        .with_context(|| format!("parse {label} address '{value}'"))
 }
 
 async fn prepare_gateway(
@@ -2278,10 +2269,6 @@ async fn run_serve(
     projections.converge_before_readiness().await?;
     let warehouse = match warehouse_listen(&args) {
         Some(listen) => {
-            anyhow::ensure!(
-                listen.ip().is_loopback(),
-                "pChronicle Warehouse may only bind to a loopback address"
-            );
             let listener = tokio::net::TcpListener::bind(listen)
                 .await
                 .with_context(|| format!("bind pChronicle Warehouse to {listen}"))?;
@@ -2611,10 +2598,6 @@ fn control_storage_uri(config: &server::ChronicleServerConfig) -> Result<&str> {
 }
 
 async fn run_echo(args: EchoArgs, stderr: &mut dyn Write) -> Result<()> {
-    anyhow::ensure!(
-        args.listen.ip().is_loopback(),
-        "pChronicle Echo may only bind to a loopback address"
-    );
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("bind pChronicle Echo to {}", args.listen))?;

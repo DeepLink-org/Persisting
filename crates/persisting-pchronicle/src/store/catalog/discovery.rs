@@ -586,79 +586,62 @@ async fn discover_local_candidates(
         }]);
     }
 
+    // Plain directory: only inspect immediate children for Dataset markers.
+    // Loose files are not registered as sources (lazy Directory navigation).
     let mut candidates = Vec::new();
-    let mut pending = vec![root.to_path_buf()];
-    let mut visited = 0usize;
-    while let Some(directory) = pending.pop() {
-        let mut entries = fs::read_dir(&directory)
-            .with_context(|| format!("read Dataset directory {}", directory.display()))?
-            .collect::<std::io::Result<Vec<_>>>()?;
-        entries.sort_by_key(|entry| entry.path());
-        for entry in entries {
-            visited = visited.saturating_add(1);
-            anyhow::ensure!(
-                visited <= options.max_entries,
-                "Dataset traversal exceeds max_entries limit of {}",
-                options.max_entries
-            );
-            let file_type = entry.file_type()?;
-            if file_type.is_symlink() {
-                continue;
-            }
-            let path = entry.path();
-            if file_type.is_dir() {
-                if let Some(manifest) = try_load_manifest(&path) {
-                    let nested = collect_manifest_subtree(root, &path, &manifest, options).await?;
-                    candidates.extend(nested);
-                } else if path.join("CURRENT").is_file() {
-                    let metadata = fs::metadata(path.join("CURRENT"))?;
-                    candidates.push(Candidate::Storyline {
-                        file: relative_catalog_path(root, &path, true)?,
-                        uri: canonical_local_uri(&path)?,
-                        size_bytes: Some(metadata.len()),
-                        last_modified: modified_string(&metadata),
-                    });
-                } else if path.join("_manifest.json").is_file()
-                    && path.file_name().is_some_and(|name| name == "events.lance")
-                {
-                    let metadata = fs::metadata(path.join("_manifest.json"))?;
-                    candidates.push(Candidate::Events {
-                        file: relative_catalog_path(root, &path, true)?,
-                        uri: canonical_local_uri(&path)?,
-                        size_bytes: Some(metadata.len()),
-                        last_modified: modified_string(&metadata),
-                    });
-                } else if is_lance_directory(&path) {
-                    if is_compact_jsonl_directory(&path).await? {
-                        let metadata = fs::metadata(&path)?;
-                        candidates.push(Candidate::Compact {
-                            file: relative_catalog_path(root, &path, true)?,
-                            uri: canonical_local_uri(&path)?,
-                            size_bytes: Some(metadata.len()),
-                            last_modified: modified_string(&metadata),
-                        });
-                    }
-                    // Derived Lance datasets are sidecars of a canonical Run,
-                    // not trajectory sources. Never descend into their internal
-                    // metadata and register it as an outer file source.
-                } else {
-                    pending.push(path);
-                }
-            } else if file_type.is_file() && is_json_candidate(&path) {
-                let metadata = entry.metadata()?;
-                candidates.push(Candidate::LocalFile {
-                    file: relative_catalog_path(root, &path, false)?,
-                    root: root.to_path_buf(),
-                    path,
-                    size_bytes: metadata.len(),
-                    last_modified: modified_string(&metadata),
-                });
-            }
-            anyhow::ensure!(
-                candidates.len() <= options.max_files,
-                "Dataset manifest exceeds max_files limit of {}",
-                options.max_files
-            );
+    let mut entries = fs::read_dir(root)
+        .with_context(|| format!("read Dataset directory {}", root.display()))?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() || !file_type.is_dir() {
+            continue;
+        }
+        anyhow::ensure!(
+            candidates.len() < options.max_files,
+            "Dataset manifest exceeds max_files limit of {}",
+            options.max_files
+        );
+        let path = entry.path();
+        if let Some(manifest) = try_load_manifest(&path) {
+            let nested = collect_manifest_subtree(root, &path, &manifest, options).await?;
+            candidates.extend(nested);
+        } else if path.join("CURRENT").is_file() {
+            let metadata = fs::metadata(path.join("CURRENT"))?;
+            candidates.push(Candidate::Storyline {
+                file: relative_catalog_path(root, &path, true)?,
+                uri: canonical_local_uri(&path)?,
+                size_bytes: Some(metadata.len()),
+                last_modified: modified_string(&metadata),
+            });
+        } else if path.join("_manifest.json").is_file()
+            && path.file_name().is_some_and(|name| name == "events.lance")
+        {
+            let metadata = fs::metadata(path.join("_manifest.json"))?;
+            candidates.push(Candidate::Events {
+                file: relative_catalog_path(root, &path, true)?,
+                uri: canonical_local_uri(&path)?,
+                size_bytes: Some(metadata.len()),
+                last_modified: modified_string(&metadata),
+            });
+        } else if path.join("events.lance/_manifest.json").is_file() {
+            let events = path.join("events.lance");
+            let metadata = fs::metadata(events.join("_manifest.json"))?;
+            candidates.push(Candidate::Events {
+                file: relative_catalog_path(root, &events, true)?,
+                uri: canonical_local_uri(&events)?,
+                size_bytes: Some(metadata.len()),
+                last_modified: modified_string(&metadata),
+            });
+        } else if is_lance_directory(&path) && is_compact_jsonl_directory(&path).await? {
+            let metadata = fs::metadata(&path)?;
+            candidates.push(Candidate::Compact {
+                file: relative_catalog_path(root, &path, true)?,
+                uri: canonical_local_uri(&path)?,
+                size_bytes: Some(metadata.len()),
+                last_modified: modified_string(&metadata),
+            });
         }
     }
     candidates.sort_by(|left, right| left.source_stub().file.cmp(&right.source_stub().file));
@@ -754,97 +737,206 @@ async fn discover_object_candidates(
     uri: &str,
     options: LocalQueryManifestOptions,
 ) -> Result<Vec<Candidate>> {
+    anyhow::ensure!(options.max_files > 0, "catalog max_files must be positive");
     let store = OpendalStore::from_uri(uri).await?;
-    let mut metas = Vec::new();
-    for entry in store
-        .list("")
-        .await
-        .with_context(|| format!("list Dataset object prefix {uri}"))?
-    {
-        anyhow::ensure!(
-            metas.len() < options.max_entries,
-            "Dataset traversal exceeds max_entries limit of {}",
-            options.max_entries
-        );
-        metas.push(RemoteObjectMeta::from(entry));
-    }
-    metas.sort_by(|left, right| left.location.cmp(&right.location));
 
-    let root_is_events = uri.trim_end_matches('/').ends_with("events.lance");
-    let mut storyline_roots = BTreeMap::<String, RemoteObjectMeta>::new();
-    let mut event_roots = BTreeMap::<String, RemoteObjectMeta>::new();
-    let mut relative_metas = Vec::with_capacity(metas.len());
-    for meta in metas {
-        let relative = meta.location.clone();
-        if relative == "CURRENT" || relative.ends_with("/CURRENT") {
-            storyline_roots.insert(parent_relative_path(&relative, "CURRENT"), meta.clone());
+    // Prefer a Dataset root (chronicle.manifest / CURRENT / events) over a flat
+    // recursive object walk. Plain prefixes navigate one directory level only.
+    match probe_object_prefix(&store, uri, "", ".").await? {
+        Some(ObjectProbe::Source(candidate)) => return Ok(vec![candidate]),
+        Some(ObjectProbe::Branch) => {
+            return collect_object_branch_children(&store, uri, "", options).await;
         }
-        if (relative == "_manifest.json" && root_is_events)
-            || relative.ends_with("/events.lance/_manifest.json")
-        {
-            event_roots.insert(
-                parent_relative_path(&relative, "_manifest.json"),
-                meta.clone(),
-            );
-        }
-        relative_metas.push((relative, meta));
+        None => {}
     }
 
     let mut candidates = Vec::new();
-    for (relative, meta) in &storyline_roots {
-        candidates.push(Candidate::Storyline {
-            file: root_source_path(relative),
-            uri: child_uri(uri, relative),
-            size_bytes: Some(meta.size),
-            last_modified: Some(meta.last_modified.clone()),
-        });
-    }
-    for (relative, meta) in &event_roots {
-        if is_nested_in_any(relative, storyline_roots.keys()) {
-            continue;
+    for child in object_child_names(&store, "").await? {
+        anyhow::ensure!(
+            candidates.len() < options.max_files,
+            "Dataset manifest exceeds max_files limit of {}",
+            options.max_files
+        );
+        match probe_object_prefix(&store, uri, &child, root_source_path(&child)).await? {
+            Some(ObjectProbe::Source(candidate)) => candidates.push(candidate),
+            Some(ObjectProbe::Branch) => {
+                let nested =
+                    collect_object_branch_children(&store, uri, &child, options).await?;
+                candidates.extend(nested);
+            }
+            None => {}
         }
-        candidates.push(Candidate::Events {
-            file: root_source_path(relative),
-            uri: child_uri(uri, relative),
-            size_bytes: Some(meta.size),
-            last_modified: Some(meta.last_modified.clone()),
-        });
     }
 
-    let composite_roots = storyline_roots
-        .keys()
-        .chain(event_roots.keys())
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    for (relative, meta) in relative_metas {
-        if is_nested_in_any(&relative, composite_roots.iter())
-            || path_is_inside_lance_directory(&relative)
-        {
-            continue;
-        }
-        let candidate_path = if relative.is_empty() {
-            Path::new(uri)
-        } else {
-            Path::new(&relative)
-        };
-        if is_json_candidate(candidate_path) {
-            let file = if relative.is_empty() {
-                uri.rsplit('/').next().unwrap_or("dataset.json").to_string()
-            } else {
-                relative
-            };
-            candidates.push(Candidate::RemoteFile {
-                file,
-                store: store.clone(),
-                meta,
-            });
-        }
-    }
-    anyhow::ensure!(
-        candidates.len() <= options.max_files,
-        "Dataset manifest exceeds max_files limit of {}",
-        options.max_files
-    );
     candidates.sort_by(|left, right| left.source_stub().file.cmp(&right.source_stub().file));
     Ok(candidates)
+}
+
+enum ObjectProbe {
+    Source(Candidate),
+    Branch,
+}
+
+async fn object_child_names(store: &OpendalStore, relative: &str) -> Result<BTreeSet<String>> {
+    let prefix = if relative.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", relative.trim_end_matches('/'))
+    };
+    let entries = store
+        .list_shallow(&prefix)
+        .await
+        .with_context(|| format!("list object prefix '{prefix}'"))?;
+    let mut child_names = BTreeSet::new();
+    for entry in entries {
+        let path = entry.path.trim_start_matches(&prefix).trim_matches('/');
+        if path.is_empty() {
+            continue;
+        }
+        let child = path.split('/').next().unwrap_or(path);
+        if child.is_empty() {
+            continue;
+        }
+        // Loose files at this level are ignored (Directory navigation only).
+        if entry.mode == opendal::EntryMode::FILE && !path.contains('/') {
+            continue;
+        }
+        child_names.insert(child.to_string());
+    }
+    Ok(child_names)
+}
+
+async fn collect_object_branch_children(
+    store: &OpendalStore,
+    root_uri: &str,
+    relative: &str,
+    options: LocalQueryManifestOptions,
+) -> Result<Vec<Candidate>> {
+    let mut candidates = Vec::new();
+    let mut stack = vec![relative.to_string()];
+    while let Some(current) = stack.pop() {
+        for child in object_child_names(store, &current).await? {
+            anyhow::ensure!(
+                candidates.len() < options.max_files,
+                "Dataset manifest exceeds max_files limit of {}",
+                options.max_files
+            );
+            let child_relative = if current.is_empty() {
+                child.clone()
+            } else {
+                format!("{}/{}", current.trim_end_matches('/'), child)
+            };
+            match probe_object_prefix(
+                store,
+                root_uri,
+                &child_relative,
+                root_source_path(&child_relative),
+            )
+            .await?
+            {
+                Some(ObjectProbe::Source(candidate)) => candidates.push(candidate),
+                Some(ObjectProbe::Branch) => stack.push(child_relative),
+                None => {}
+            }
+        }
+    }
+    candidates.sort_by(|left, right| left.source_stub().file.cmp(&right.source_stub().file));
+    Ok(candidates)
+}
+
+async fn probe_object_prefix(
+    store: &OpendalStore,
+    root_uri: &str,
+    relative: &str,
+    source_file: impl Into<String>,
+) -> Result<Option<ObjectProbe>> {
+    let source_file = source_file.into();
+    let prefix = if relative.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", relative.trim_end_matches('/'))
+    };
+    let join = |name: &str| {
+        if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}{name}")
+        }
+    };
+
+    if let Some(entry) = store
+        .stat_file(&join(crate::store::CHRONICLE_MANIFEST_FILE))
+        .await?
+    {
+        let bytes = store
+            .read(&entry.path)
+            .await?
+            .map(|(bytes, _)| bytes)
+            .unwrap_or_default();
+        let text = std::str::from_utf8(&bytes).context("chronicle.manifest must be UTF-8")?;
+        let manifest: crate::store::ChronicleManifest =
+            toml::from_str(text).context("parse chronicle.manifest")?;
+        manifest.validate()?;
+        match manifest.kind {
+            ManifestKind::Leaf => {
+                anyhow::ensure!(
+                    manifest.is_compact_jsonl_leaf(),
+                    "chronicle.manifest leaf format {:?} is not supported for discovery yet",
+                    manifest.format
+                );
+                let meta = RemoteObjectMeta::from(entry);
+                return Ok(Some(ObjectProbe::Source(Candidate::Compact {
+                    file: source_file,
+                    uri: child_uri(root_uri, relative),
+                    size_bytes: Some(meta.size),
+                    last_modified: Some(meta.last_modified),
+                })));
+            }
+            ManifestKind::Branch => return Ok(Some(ObjectProbe::Branch)),
+        }
+    }
+
+    if let Some(entry) = store.stat_file(&join("CURRENT")).await? {
+        let meta = RemoteObjectMeta::from(entry);
+        return Ok(Some(ObjectProbe::Source(Candidate::Storyline {
+            file: source_file,
+            uri: child_uri(root_uri, relative),
+            size_bytes: Some(meta.size),
+            last_modified: Some(meta.last_modified),
+        })));
+    }
+
+    let events_manifest = if relative.is_empty() {
+        "_manifest.json".to_string()
+    } else if relative.trim_end_matches('/').ends_with("events.lance") {
+        join("_manifest.json")
+    } else {
+        join("events.lance/_manifest.json")
+    };
+    if let Some(entry) = store.stat_file(&events_manifest).await? {
+        let meta = RemoteObjectMeta::from(entry);
+        let events_relative = if relative.is_empty() {
+            if root_uri.trim_end_matches('/').ends_with("events.lance") {
+                String::new()
+            } else {
+                "events.lance".to_string()
+            }
+        } else if relative.trim_end_matches('/').ends_with("events.lance") {
+            relative.to_string()
+        } else {
+            format!("{}/events.lance", relative.trim_end_matches('/'))
+        };
+        return Ok(Some(ObjectProbe::Source(Candidate::Events {
+            file: if events_relative.is_empty() {
+                ".".into()
+            } else {
+                events_relative.clone()
+            },
+            uri: child_uri(root_uri, &events_relative),
+            size_bytes: Some(meta.size),
+            last_modified: Some(meta.last_modified),
+        })));
+    }
+
+    Ok(None)
 }

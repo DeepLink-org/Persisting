@@ -3,7 +3,7 @@
 **Standalone `pchronicle` CLI for onboarding, browsing, querying, importing,
 exporting, and serving trajectory Datasets.**
 
-Owns the `pchronicle` binary, loopback-only Warehouse HTTP, the write-capable
+Owns the `pchronicle` binary, Warehouse HTTP, the write-capable
 `--control` plane used by pPilot and pVisor, optional Gateway ingest/forwarding
 flags, and the embed of staged `pchronicle-web` assets at build time.
 
@@ -17,7 +17,7 @@ Current commands include `onboard`, `dataset` (pin/unpin/list/show/set/rename),
 `list`/`ls`, `stats`, bounded read-only `query`, built-in `stats` reports, assisted
 `agent` sessions, Source-local `find`, create/append/replace `import`,
 destructive `drop`, complete-trajectory `export`, directory `sync`, `echo`, and
-loopback-only `serve`. Import and export support ATIF, OpenAI Messages, ACTF,
+`serve`. Import and export support ATIF, OpenAI Messages, ACTF,
 Storyline JSON, and record-level Compact JSONL. `sync --from SOURCE --to
 WAREHOUSE --convert OUTPUT` polls a local source directory, atomically mirrors
 supported JSON files into a local Warehouse Dataset byte-for-byte, and rebuilds

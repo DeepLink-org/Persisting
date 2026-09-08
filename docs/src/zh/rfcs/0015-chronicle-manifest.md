@@ -40,7 +40,10 @@ pChronicle 已对其它布局使用应用控制文件（Storyline 的 `CURRENT`�
 - 让 discovery 通过读小 TOML 文件即可分类 Dataset 节点；
 - 持久化 explorer tree / dataset 摘要所需的聚合统计；
 - 通过**自动扫描**子目录中的 `chronicle.manifest` 支持嵌套 Dataset 树；
-- 在 sidecar 缺失或过期时，仍兼容现有启发式发现。
+- 无 manifest 的普通目录按 **Directory** 处理：只检查**一层**子目录是否为
+  Dataset（manifest / `CURRENT` / events），不把松散文件登记为 Source；
+- 在 sidecar 缺失时，仍可用 `CURRENT` / events / compact-jsonl 标记做 Dataset
+  分类，但 MUST NOT 为分类而全量递归列举对象存储前缀。
 
 非目标（v1）：
 
@@ -71,7 +74,10 @@ pChronicle 已对其它布局使用应用控制文件（Storyline 的 `CURRENT`�
 1. 若当前目录存在 `chronicle.manifest`，则解析它；
 2. 若 `kind = "leaf"`，将该目录视为对应 `format` 的一个 source 候选，且 MUST NOT 再递归其内部寻找其它 source；
 3. 若 `kind = "branch"`，只扫描**一层**子目录；对每个含有 `chronicle.manifest` 的子目录，按该子节点的 kind 继续处理；
-4. 若当前目录没有 `chronicle.manifest`，保留现有启发式发现，但当子目录含有 `chronicle.manifest` 时，优先采用该节点，且 MUST NOT 仅为分类而打开 Lance。
+4. 若当前目录没有 `chronicle.manifest`，则视为 **Directory**：只检查**一层**
+   子目录；对每个子目录用 Dataset 标记（`chronicle.manifest`、`CURRENT`、
+   `events.lance/_manifest.json`、compact-jsonl Lance）分类。松散文件 MUST NOT
+   登记为 Source。MUST NOT 为发现而递归列举整棵对象前缀树。
 
 MUST 忽略符号链接。现有 `max_entries` / `max_files` 遍历上限仍然适用。
 

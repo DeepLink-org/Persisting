@@ -1,4 +1,4 @@
-//! Local, loopback-only pChronicle browser.
+//! Local pChronicle browser Warehouse.
 
 mod acceleration;
 mod asset;
@@ -202,6 +202,9 @@ impl PreparedWarehouse {
     /// Mount every library from `catalog.toml` into the Warehouse process.
     /// Directory ticket routes remain available when users exist; the data
     /// plane serves in-process mounts instead of spawning query workers.
+    ///
+    /// Discovery runs in the background so `serve --listen` can accept
+    /// connections before large object prefixes finish classifying.
     pub(crate) async fn prepare_catalog(acl: catalog::CatalogAcl) -> anyhow::Result<Self> {
         acl.apply_backend_env();
         let mounts = acl.mounts()?;
@@ -213,7 +216,28 @@ impl PreparedWarehouse {
         let mut state = app_state(config);
         state.catalog_acl = Some(Arc::new(acl));
         let warehouse = Self { state };
-        warehouse.install_initial_runtime().await?;
+        let background = warehouse.state.clone();
+        tokio::spawn(async move {
+            match build_catalog_runtime(&background.config).await {
+                Ok(runtime) => {
+                    let snapshot_id = runtime.snapshot.snapshot_id().to_string();
+                    *background.catalog.write().await = Some(runtime);
+                    *background.trajectory_cache.write().await = None;
+                    tracing::info!(
+                        target: "pchronicle.serve",
+                        snapshot_id = %snapshot_id,
+                        "catalog discovery ready"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(
+                        target: "pchronicle.serve",
+                        error = %error,
+                        "catalog discovery failed"
+                    );
+                }
+            }
+        });
         Ok(warehouse)
     }
 
@@ -328,10 +352,6 @@ pub async fn serve_warehouse(
     config: ChronicleServerConfig,
     addr: SocketAddr,
 ) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        addr.ip().is_loopback(),
-        "pChronicle Warehouse may only bind to a loopback address"
-    );
     let listener = tokio::net::TcpListener::bind(addr).await?;
     serve_warehouse_with_listener(config, listener).await
 }
@@ -354,10 +374,7 @@ pub async fn serve_warehouse_with_listener_and_shutdown(
     let addr = listener
         .local_addr()
         .context("read Warehouse listen address")?;
-    anyhow::ensure!(
-        addr.ip().is_loopback(),
-        "pChronicle Warehouse may only bind to a loopback address"
-    );
+    let _ = addr;
     axum::serve(listener, warehouse_router(config))
         .with_graceful_shutdown(shutdown)
         .await
@@ -372,10 +389,7 @@ pub(crate) async fn serve_prepared_warehouse_with_listener_and_shutdown(
     let addr = listener
         .local_addr()
         .context("read Warehouse listen address")?;
-    anyhow::ensure!(
-        addr.ip().is_loopback(),
-        "pChronicle Warehouse may only bind to a loopback address"
-    );
+    let _ = addr;
     axum::serve(listener, warehouse.router())
         .with_graceful_shutdown(shutdown)
         .await

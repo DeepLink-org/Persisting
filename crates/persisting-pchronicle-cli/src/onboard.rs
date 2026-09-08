@@ -551,7 +551,8 @@ fn render_serve(renderer: &mut WalkthroughRenderer<'_>) -> Result<()> {
 pchronicle serve --listen 127.0.0.1:8080 --open evals=../data/atif
 ```
 
-服务只允许 loopback 地址，因为这个本地表面不提供认证；Dataset API 和 Web UI 都是只读的。
+默认示例仍使用 loopback；`--listen` 也可绑定非 loopback 地址。无认证时不要把
+只读 Warehouse 暴露到不可信网络。Dataset API 和 Web UI 都是只读的。
 Runs 页面检索使用与 `find --match` 相同的 FTS/JSONB 语义，命中的轨迹会展示上下文预览；
 可以先用 CLI `find` 定位，再在 Web 中继续钻取。
 

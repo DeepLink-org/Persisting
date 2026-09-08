@@ -36,6 +36,13 @@ pub(crate) struct Entry {
     pub(crate) metadata: Metadata,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ShallowEntry {
+    pub(crate) path: String,
+    pub(crate) mode: EntryMode,
+    pub(crate) metadata: Metadata,
+}
+
 static SHARED_MEMORY: OnceLock<Mutex<HashMap<String, Operator>>> = OnceLock::new();
 static SHARED_LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
     OnceLock::new();
@@ -146,6 +153,33 @@ impl Store {
             }
         }
         Ok(entries)
+    }
+
+    /// Non-recursive listing of the immediate children under `prefix`.
+    /// Returns both files and directories so callers can navigate lazily.
+    pub(crate) async fn list_shallow(&self, prefix: &str) -> Result<Vec<ShallowEntry>> {
+        let mut lister = self.operator.lister_with(prefix).recursive(false).await?;
+        let mut entries = Vec::new();
+        while let Some(entry) = lister.try_next().await? {
+            entries.push(ShallowEntry {
+                path: entry.path().to_string(),
+                mode: entry.metadata().mode(),
+                metadata: entry.metadata().clone(),
+            });
+        }
+        Ok(entries)
+    }
+
+    pub(crate) async fn stat_file(&self, path: &str) -> Result<Option<Entry>> {
+        match self.operator.stat(path).await {
+            Ok(metadata) if metadata.mode() == EntryMode::FILE => Ok(Some(Entry {
+                path: path.to_string(),
+                metadata,
+            })),
+            Ok(_) => Ok(None),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub(crate) async fn exists(&self) -> Result<bool> {

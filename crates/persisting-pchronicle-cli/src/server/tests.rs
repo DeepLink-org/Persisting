@@ -635,18 +635,25 @@ fn write_gateway_fixture_with_status(
 }
 
 #[tokio::test]
-async fn warehouse_rejects_non_loopback_bind() {
+async fn warehouse_binds_non_loopback() {
     let config = ChronicleServerConfig::mounted(vec![
         DatasetMount::default("/tmp/none").expect("test Dataset mount must be valid"),
     ])
     .expect("test server config must be valid");
-    let error = serve_warehouse(
-        config,
-        SocketAddr::new(std::net::IpAddr::from([0, 0, 0, 0]), 0),
-    )
-    .await
-    .unwrap_err();
-    assert!(error.to_string().contains("loopback"));
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0")
+        .await
+        .expect("bind non-loopback warehouse");
+    let addr = listener.local_addr().expect("local addr");
+    assert!(!addr.ip().is_loopback());
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let serve = tokio::spawn(async move {
+        serve_warehouse_with_listener_and_shutdown(config, listener, async move {
+            let _ = stop_rx.await;
+        })
+        .await
+    });
+    stop_tx.send(()).expect("stop warehouse");
+    serve.await.expect("join").expect("serve warehouse");
 }
 
 #[test]

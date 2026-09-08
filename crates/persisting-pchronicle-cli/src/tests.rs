@@ -5029,11 +5029,10 @@ fn gateway_dataset_uri_is_auto_mounted_and_deduplicated() -> Result<()> {
 }
 
 #[test]
-fn embedded_gateway_rejects_public_listeners() {
-    let error = parse_gateway_listener("0.0.0.0:8787", "Gateway").unwrap_err();
-    assert!(error.to_string().contains("loopback"));
+fn embedded_gateway_accepts_public_listeners() {
+    assert!(parse_gateway_listener("0.0.0.0:8787", "Gateway").is_ok());
     assert!(parse_gateway_listener("127.0.0.1:0", "Gateway").is_ok());
-    assert!(parse_gateway_bind("0.0.0.0:0").is_err());
+    assert!(parse_gateway_bind("0.0.0.0:0").is_ok());
     assert_eq!(
         parse_gateway_bind("auto").unwrap(),
         "127.0.0.1:0".parse::<SocketAddr>().unwrap()
