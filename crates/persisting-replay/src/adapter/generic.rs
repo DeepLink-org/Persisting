@@ -1150,10 +1150,7 @@ fn continue_native_cli(
         log_path: log_path.clone(),
     })
     .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
-    let bridge_result = codex_bridge.take().map(|bridge| {
-        let result = bridge.finish();
-        result
-    });
+    let bridge_result = codex_bridge.take().map(|bridge| bridge.finish());
     let bridge_error = bridge_result.and_then(|result| result.err());
     if !output.status.success() {
         let process_error = ReplayError::classify_continuation(

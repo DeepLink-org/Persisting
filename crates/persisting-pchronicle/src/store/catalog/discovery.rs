@@ -760,8 +760,7 @@ async fn discover_object_candidates(
         match probe_object_prefix(&store, uri, &child, root_source_path(&child)).await? {
             Some(ObjectProbe::Source(candidate)) => candidates.push(candidate),
             Some(ObjectProbe::Branch) => {
-                let nested =
-                    collect_object_branch_children(&store, uri, &child, options).await?;
+                let nested = collect_object_branch_children(&store, uri, &child, options).await?;
                 candidates.extend(nested);
             }
             None => {}
