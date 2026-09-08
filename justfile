@@ -718,24 +718,24 @@ capture-test:
 cases target *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Variadic args are interpolated by just. Callers may also pass a leading
-    # `--` to stop just flag parsing; strip it before forwarding to the runner.
-    args=({{ args }})
-    if [[ "${#args[@]}" -gt 0 && "${args[0]}" == "--" ]]; then
-      args=("${args[@]:1}")
+    # Variadic args are interpolated by just (not shebang $@). A leading `--`
+    # may be present when callers stop just flag parsing; strip it.
+    set -- {{ args }}
+    if [[ "${1:-}" == "--" ]]; then
+      shift
     fi
     case "{{target}}" in
       pvisor)
         just pvisor release
-        python3 scripts/run-pvisor-cases.py --report target/pvisor-case-report.md "${args[@]}"
+        python3 scripts/run-pvisor-cases.py --report target/pvisor-case-report.md "$@"
         ;;
       pchronicle)
         just build-components release pchronicle
-        python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-self-case-report.md "${args[@]}"
+        python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-self-case-report.md "$@"
         ;;
       pchronicle-cluster)
         just build-components release pchronicle
-        python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-platform-case-report.md "${args[@]}"
+        python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-platform-case-report.md "$@"
         ;;
       *)
         echo "usage: just cases pvisor|pchronicle|pchronicle-cluster [runner-args...]" >&2
