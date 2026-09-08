@@ -990,8 +990,12 @@ fn continue_native_cli(
     // pass a verifier while A(N+1) is no longer comparable with A'(N+1).
     let session_id = continuation_session_id(agent, plan, context)?;
     let mut command = agent_command(&launch.entrypoint, context);
+    // The OpenCode arm returns early; these seeds only feed the Codex path.
+    #[allow(unused_assignments)]
     let mut codex_bridge = None;
+    #[allow(unused_assignments)]
     let mut codex_transport_prompt = None;
+    #[allow(unused_assignments)]
     let mut codex_prompt_mode = None;
     command.env("PVISOR_REPLAY_TRAJECTORY", reconstructed);
     command.env("PVISOR_REPLAY_AFTER_STEP", plan.after_step.to_string());
@@ -1695,6 +1699,7 @@ fn opencode_server_continuation_inner(
                 .and_then(Value::as_str)
                 .is_some_and(|id| !baseline.contains(&id.to_owned()))
         })
+        .cloned()
         .collect();
     let live_events = opencode_project_messages(&fresh, session_id);
     let continued_steps = live_events
@@ -2358,11 +2363,54 @@ mod tests {
 
     use super::{
         CallRecord, NativeJsonlAgent, RunContext, TurnRecord, codex_native_session_id,
-        continuation_session_id, is_actionable_turn, opencode_provider_config, parse_codex,
-        parse_jsonl, parse_opencode, redact_codex_transport_nonce, validate_codex_continuation,
+        continuation_session_id, is_actionable_turn, opencode_project_messages,
+        opencode_provider_config, parse_codex, parse_jsonl, parse_opencode,
+        redact_codex_transport_nonce, validate_codex_continuation,
     };
     use crate::model::{AgentKind, PlaybackRequest, ReplayMode, ReplayPlan, ToolBatch, ToolCall};
     use serde_json::{Value, json};
+
+    #[test]
+    fn opencode_projection_restores_step_order_from_unordered_parts() {
+        let messages = vec![json!({
+            "info": {"id": "msg_live_2", "role": "assistant", "time": {"created": 2}},
+            "parts": [
+                {"type": "step-finish", "time": {"start": 40, "end": 41}},
+                {"type": "text", "text": "done", "time": {"start": 39, "end": 40}},
+                {"type": "step-start"}
+            ]
+        }), json!({
+            "info": {"id": "msg_live_1", "role": "assistant", "time": {"created": 1}},
+            "parts": [
+                {"type": "tool", "callID": "c1", "tool": "bash",
+                 "state": {"status": "completed", "input": {"command": "ls"}, "output": "x"},
+                 "time": {"start": 21, "end": 30}},
+                {"type": "text", "text": "running", "time": {"start": 20, "end": 21}},
+                {"type": "step-start"}
+            ]
+        }), json!({
+            "info": {"id": "msg_synthetic_user", "role": "user", "time": {"created": 0}},
+            "parts": [{"type": "text", "text": ""}]
+        })];
+        let events = opencode_project_messages(&messages, "ses-live");
+        let kinds: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            vec!["step_start", "text", "tool_use", "step_finish", "step_start", "text", "step_finish"]
+        );
+        // Every event carries the session id and the native part payload.
+        for event in &events {
+            assert_eq!(event["sessionID"], "ses-live");
+            assert!(event["part"].is_object());
+        }
+        let tool = &events[2];
+        assert_eq!(tool["part"]["state"]["status"], "completed");
+        // The grouping parser sees two complete live turns.
+        let (turns, _prompt, _session) = parse_opencode(&events).unwrap();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].calls.len(), 1);
+        assert_eq!(turns[0].text, "running");
+    }
 
     #[test]
     fn opencode_provider_config_mirrors_recorded_sampling() {
