@@ -370,6 +370,12 @@ def _filter_with_lance(
     return ds.to_table(**kwargs).to_pandas()
 
 
+def _run_debug_step(api: str, fn):
+    from dldb.instrumentation import run_debug_step
+
+    return run_debug_step(api, fn)
+
+
 def _optimize_indices_on_lance_table(
     lance_table,
     *,
@@ -384,8 +390,12 @@ def _optimize_indices_on_lance_table(
         kwargs["num_indices_to_merge"] = num_indices_to_merge
     if index_names is not None:
         kwargs["index_names"] = index_names
-    lance_table.to_lance().optimize.optimize_indices(**kwargs)
-    lance_table.checkout_latest()
+
+    def _run():
+        lance_table.to_lance().optimize.optimize_indices(**kwargs)
+        lance_table.checkout_latest()
+
+    _run_debug_step("optimize_indices", _run)
 
 
 def _compact_files_kwargs(
@@ -429,9 +439,13 @@ def _compact_files_on_lance_table(
                 f"supported={sorted(supported)}"
             )
         opts = {key: value for key, value in opts.items() if key in supported}
-    stats = compact(**opts)
-    lance_table.checkout_latest()
-    return stats
+
+    def _run():
+        stats = compact(**opts)
+        lance_table.checkout_latest()
+        return stats
+
+    return _run_debug_step("compact_files", _run)
 
 
 def _cleanup_on_lance_table(
@@ -441,11 +455,15 @@ def _cleanup_on_lance_table(
     delete_unverified: bool = False,
 ):
     older_than = cleanup_older_than if cleanup_older_than is not None else OPTIMIZE_CLEANUP_OLDER_THAN
-    lance_table.to_lance().cleanup_old_versions(
-        older_than,
-        delete_unverified=delete_unverified,
-    )
-    lance_table.checkout_latest()
+
+    def _run():
+        lance_table.to_lance().cleanup_old_versions(
+            older_than,
+            delete_unverified=delete_unverified,
+        )
+        lance_table.checkout_latest()
+
+    _run_debug_step("cleanup_old_versions", _run)
 
 
 def _full_optimize_on_lance_table(
@@ -705,9 +723,13 @@ class SimpleTable(BaseTable):
             self.table,
             batch_size=DEFAULT_COMPACT_BATCH_SIZE,
         )
-        self.table.create_scalar_index(column, index_type=index_type)
-        index_name = f"{column}_idx"
-        _complete_scalar_index_create(self.table, index_name, wait_timeout=wait_timeout)
+
+        def _create():
+            self.table.create_scalar_index(column, index_type=index_type)
+            index_name = f"{column}_idx"
+            _complete_scalar_index_create(self.table, index_name, wait_timeout=wait_timeout)
+
+        _run_debug_step("create_index", _create)
 
     def create_fts_index(self, column: str, *, partition=None, wait: bool = True, **kwargs):
         _reject_fts_partition(partition)
@@ -1004,10 +1026,14 @@ class ValuePartitionTable(BaseTable):
                 self.tables[partition],
                 batch_size=DEFAULT_COMPACT_BATCH_SIZE,
             )
-            self.tables[partition].create_scalar_index(column, index_type=index_type)
-            _complete_scalar_index_create(
-                self.tables[partition], index_name, wait_timeout=wait_timeout
-            )
+
+            def _create(p=partition, name=index_name):
+                self.tables[p].create_scalar_index(column, index_type=index_type)
+                _complete_scalar_index_create(
+                    self.tables[p], name, wait_timeout=wait_timeout
+                )
+
+            _run_debug_step("create_index", _create)
 
     def list_indices(self, partition) -> list[IndexConfig]:
         assert partition is not None, (
@@ -1416,10 +1442,14 @@ class HashPartitionTable(BaseTable):
                 self.tables[partition],
                 batch_size=DEFAULT_COMPACT_BATCH_SIZE,
             )
-            self.tables[partition].create_scalar_index(column, index_type=index_type)
-            _complete_scalar_index_create(
-                self.tables[partition], index_name, wait_timeout=wait_timeout
-            )
+
+            def _create(p=partition, name=index_name):
+                self.tables[p].create_scalar_index(column, index_type=index_type)
+                _complete_scalar_index_create(
+                    self.tables[p], name, wait_timeout=wait_timeout
+                )
+
+            _run_debug_step("create_index", _create)
 
     def list_indices(self, partition) -> list[IndexConfig]:
         assert partition is not None, (

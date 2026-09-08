@@ -13,6 +13,7 @@ from dldb.table import (
     IndexCoverage,
     InformationSchemaTable,
     PartitionStatus,
+    _coerce_table_statistics,
     create_table,
     open_table_by_partition_type,
 )
@@ -21,6 +22,30 @@ from loguru import logger
 
 logger.remove()
 logger.add(sys.stdout, level="INFO")
+
+
+def _debug_state_from_stats(stats, coverage) -> dict:
+    fragments = rows = num_indices = None
+    if stats is not None:
+        rows = getattr(stats, "num_rows", None)
+        num_indices = getattr(stats, "num_indices", None)
+        fragment_stats = getattr(stats, "fragment_stats", None)
+        if fragment_stats is not None:
+            fragments = getattr(fragment_stats, "num_fragments", None)
+    return {
+        "rows": rows,
+        "fragments": fragments,
+        "num_indices": num_indices,
+        "coverage": [
+            {
+                "index_name": row.index_name,
+                "num_indexed_rows": row.num_indexed_rows,
+                "num_unindexed_rows": row.num_unindexed_rows,
+                "fully_indexed": row.fully_indexed,
+            }
+            for row in coverage or []
+        ],
+    }
 
 
 @dataclass
@@ -389,6 +414,54 @@ class LanceSession(SessionBase):
         )
         self.tables[table_name] = table
         return table
+
+    def _debug_open_lance(self, table_name: str, partition):
+        record = self.schema_table.get(table_name)
+        table = self._get_table(table_name, partition)
+        kind = (getattr(record, "partition_type", None) or "").upper()
+        if kind not in {"HASH", "VALUE"}:
+            lance = getattr(table, "table", None)
+            if lance is None:
+                table.open_table()
+                lance = table.table
+            try:
+                lance.checkout_latest()
+            except Exception:
+                pass
+            return table, kind, lance
+        if partition is None:
+            return table, kind, None
+        table.open_table([partition], create_when_missing=False)
+        return table, kind, table.tables.get(partition)
+
+    def _debug_version(self, table_name: str, partition):
+        table, kind, lance = self._debug_open_lance(table_name, partition)
+        if lance is not None:
+            return lance.version
+        if kind == "HASH" and partition is not None:
+            return table.partition_status(partition).version
+        return None
+
+    def _debug_snapshot(self, table_name: str, partition):
+        table, kind, lance = self._debug_open_lance(table_name, partition)
+        if kind == "HASH":
+            if partition is None:
+                return None, None
+            status = table.partition_status(partition)
+            return status.version, _debug_state_from_stats(status.stats, status.coverage)
+        if lance is None:
+            return None, None
+        try:
+            lance.checkout_latest()
+        except Exception:
+            pass
+        stats = _coerce_table_statistics(lance.stats())
+        coverage = (
+            table.list_index_coverage(partition)
+            if kind == "VALUE"
+            else table.list_index_coverage()
+        )
+        return lance.version, _debug_state_from_stats(stats, coverage)
 
     def _add_to_disk(self, table_name: str, datas: pd.DataFrame, partition=None):
         table = self._get_table(table_name, partition)

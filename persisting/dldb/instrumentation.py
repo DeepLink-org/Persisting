@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
 from time import perf_counter
@@ -7,6 +8,11 @@ from types import MethodType
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import pandas as pd
+from loguru import logger
+
+_maintain_debug: ContextVar[Optional[dict]] = ContextVar(
+    "dldb_maintain_debug", default=None
+)
 
 
 @dataclass(frozen=True)
@@ -16,6 +22,7 @@ class _ApiSpec:
     df_attr: bool = False
     meta_fn: Optional[Callable[..., Optional[dict]]] = None
     datas_arg: Optional[str] = None  # only used by "add" to compute rows/bytes from input
+    maintain_debug: bool = False
 
 
 def _safe_df_attr_set(df: pd.DataFrame, timing: dict) -> None:
@@ -54,6 +61,112 @@ def _build_timing(
     if model == "debug" and meta:
         timing.update(meta)
     return timing
+
+
+def run_debug_step(api: str, fn):
+    ctx = _maintain_debug.get()
+    if ctx is None:
+        return fn()
+    start = perf_counter()
+    ok, error = True, None
+    try:
+        return fn()
+    except Exception as exc:
+        ok, error = False, str(exc)
+        raise
+    finally:
+        step = {"api": api, "elapsed_ms": (perf_counter() - start) * 1000.0, "ok": ok}
+        if error:
+            step["error"] = error
+        ctx["steps"].append(step)
+        logger.info(_debug_log("step", api, step["elapsed_ms"], ok, ctx, parent=ctx["api"], error=error))
+
+
+def _safe_meta(spec: _ApiSpec, session: Any, args: tuple, kwargs: dict) -> Optional[dict]:
+    if spec.meta_fn is None:
+        return None
+    try:
+        return spec.meta_fn(session, *args, **kwargs)
+    except Exception:
+        return None
+
+
+def _debug_log(
+    kind: str,
+    name: str,
+    elapsed_ms: float,
+    ok: bool,
+    ctx: dict,
+    *,
+    parent: Optional[str] = None,
+    version_before=None,
+    version_after=None,
+    state: Optional[dict] = None,
+    error: Optional[str] = None,
+) -> str:
+    parts = ["dldb_debug"]
+    if kind == "step":
+        parts.append(f"step={name}")
+        if parent:
+            parts.append(f"parent={parent}")
+    else:
+        parts.append(f"api={name}")
+    parts.append(f"ok={'true' if ok else 'false'}")
+    parts.append(f"elapsed_ms={int(round(elapsed_ms))}")
+    if ctx.get("table_name"):
+        parts.append(f"table={ctx['table_name']}")
+    if ctx.get("partition") is not None:
+        parts.append(f"partition={ctx['partition']}")
+    for key in ("column", "index_type"):
+        if ctx.get(key) is not None:
+            parts.append(f"{key}={ctx[key]}")
+    if version_before is not None or version_after is not None:
+        parts.append(f"version={version_before}->{version_after}")
+    if state:
+        if state.get("rows") is not None:
+            parts.append(f"rows={state['rows']}")
+        if state.get("fragments") is not None:
+            parts.append(f"fragments={state['fragments']}")
+        coverage = state.get("coverage") or []
+        nidx = state.get("num_indices")
+        if nidx is None and coverage:
+            nidx = len(coverage)
+        if nidx is not None:
+            parts.append(f"indices={nidx}")
+        if coverage:
+            parts.append(f"fully_indexed={sum(1 for row in coverage if row.get('fully_indexed'))}")
+    if error:
+        parts.append(f"error={error}")
+    return " ".join(parts)
+
+
+def _attach_maintain_debug(session, timing, ctx, elapsed_ms, ok, error) -> None:
+    try:
+        version_after, state = session._debug_snapshot(ctx["table_name"], ctx["partition"])
+    except Exception as snap_exc:
+        logger.warning("dldb_debug snapshot failed api={} err={}", ctx["api"], snap_exc)
+        version_after, state = None, None
+    timing["version_before"] = ctx.get("version_before")
+    timing["version_after"] = version_after
+    if state is not None:
+        timing["state"] = state
+    if ctx["steps"]:
+        timing["steps"] = ctx["steps"]
+    if error:
+        timing["error"] = error
+    logger.info(
+        _debug_log(
+            "api",
+            ctx["api"],
+            elapsed_ms,
+            ok,
+            ctx,
+            version_before=ctx.get("version_before"),
+            version_after=version_after,
+            state=state,
+            error=error if not ok else None,
+        )
+    )
 
 
 def _default_specs() -> Tuple[_ApiSpec, ...]:
@@ -101,6 +214,7 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
         _ApiSpec(
             method="create_scalar_index",
             api="create_scalar_index",
+            maintain_debug=True,
             meta_fn=lambda self, table_name, column, *, partition=None, index_type="BTREE", wait_timeout=None: {
                 "table_name": table_name,
                 "column": column,
@@ -134,6 +248,7 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
         _ApiSpec(
             method="list_indices",
             api="list_indices",
+            maintain_debug=True,
             meta_fn=lambda self, table_name, partition=None: {
                 "table_name": table_name,
                 "partition": partition,
@@ -142,6 +257,7 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
         _ApiSpec(
             method="compact_files",
             api="compact_files",
+            maintain_debug=True,
             meta_fn=lambda self, table_name, *, partition=None, batch_size=None, max_source_fragments=None, **kwargs: {
                 "table_name": table_name,
                 "partition": partition,
@@ -152,6 +268,7 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
         _ApiSpec(
             method="optimize",
             api="optimize",
+            maintain_debug=True,
             meta_fn=lambda self, table_name, *, partition=None, cleanup_older_than=None, delete_unverified=False, retrain=False, batch_size=None, max_source_fragments=None, max_unindexed_rows=None, max_unindexed_ratio=None: {
                 "table_name": table_name,
                 "partition": partition,
@@ -249,37 +366,48 @@ def instrument_session(session: Any, *, specs: Tuple[_ApiSpec, ...] | None = Non
 
         @wraps(orig)
         def _wrapped(self, *args, __orig=orig, __spec=spec, **kwargs):
+            meta = _safe_meta(__spec, self, args, kwargs)
+            token = None
+            ctx = None
+            if model == "debug" and __spec.maintain_debug:
+                ctx = {
+                    "api": __spec.api,
+                    "table_name": (meta or {}).get("table_name"),
+                    "partition": (meta or {}).get("partition"),
+                    "column": (meta or {}).get("column"),
+                    "index_type": (meta or {}).get("index_type"),
+                    "steps": [],
+                    "version_before": None,
+                }
+                try:
+                    ctx["version_before"] = self._debug_version(
+                        ctx["table_name"], ctx["partition"]
+                    )
+                except Exception:
+                    pass
+                token = _maintain_debug.set(ctx)
+
             start = perf_counter()
             ok = True
             result = None
+            error = None
             try:
                 result = __orig(*args, **kwargs)
                 return result
-            except Exception:
+            except Exception as exc:
                 ok = False
+                error = str(exc)
                 raise
             finally:
                 elapsed_ms = (perf_counter() - start) * 1000.0
-
-                meta = None
-                if __spec.meta_fn is not None:
-                    try:
-                        meta = __spec.meta_fn(self, *args, **kwargs)
-                    except Exception:
-                        meta = None
-
                 datas = None
                 if __spec.datas_arg is not None:
                     datas = kwargs.get(__spec.datas_arg)
                     if datas is None and len(args) > 0:
-                        # Best-effort: handle positional "datas" for known signatures.
-                        # add(table_name, datas, ...)
-                        # upsert(table_name, columns, datas, ...)
                         if __spec.api == "add" and len(args) >= 2:
                             datas = args[1]
                         elif __spec.api == "upsert" and len(args) >= 3:
                             datas = args[2]
-
                 rows, bytes_ = self._rows_bytes_from_result(__spec.api, result, datas=datas)
                 timing = _build_timing(
                     api=__spec.api,
@@ -290,11 +418,13 @@ def instrument_session(session: Any, *, specs: Tuple[_ApiSpec, ...] | None = Non
                     model=model,
                     meta=meta,
                 )
-
+                if ctx is not None:
+                    _attach_maintain_debug(self, timing, ctx, elapsed_ms, ok, error)
                 if model == "debug" and __spec.df_attr and isinstance(result, pd.DataFrame):
                     _safe_df_attr_set(result, timing)
-
                 self._record_call(timing)
+                if token is not None:
+                    _maintain_debug.reset(token)
 
         setattr(session, spec.method, MethodType(_wrapped, session))
 
