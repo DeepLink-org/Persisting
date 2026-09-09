@@ -118,12 +118,38 @@ impl Store {
         let condition = expected.condition().ok_or_else(|| {
             anyhow!("OpenDAL backend did not return an ETag/version for conditional write")
         })?;
-        self.operator
-            .write_with(path, bytes)
+        let result = self
+            .operator
+            .write_with(path, bytes.clone())
             .if_match(condition)
-            .await
-            .map(|_| ())
-            .map_err(Into::into)
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            // Some S3-compatible gateways compare the If-Match header against
+            // their unquoted ETag, so a correctly quoted condition always
+            // fails with 412. One retry with the unquoted form still proves
+            // the stored ETag matched; real contention fails both attempts.
+            Err(error)
+                if error.kind() == ErrorKind::ConditionNotMatch
+                    && let Some(unquoted) = unquoted_etag(condition) =>
+            {
+                let retry = self
+                    .operator
+                    .write_with(path, bytes)
+                    .if_match(unquoted)
+                    .await;
+                match retry {
+                    Ok(_) => Ok(()),
+                    // Preserve the original conditional conflict when the
+                    // gateway rejects the compatibility form itself.
+                    Err(retry_error) if retry_error.kind() != ErrorKind::ConditionNotMatch => {
+                        Err(error.into())
+                    }
+                    Err(retry_error) => Err(retry_error.into()),
+                }
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub(crate) async fn write_overwrite(&self, path: &str, bytes: Vec<u8>) -> Result<()> {
@@ -187,6 +213,13 @@ pub(crate) fn is_conflict(error: &opendal::Error) -> bool {
     )
 }
 
+/// Strip one pair of surrounding double quotes from a conditional-write ETag.
+/// Returns `None` for unquoted or empty conditions.
+fn unquoted_etag(condition: &str) -> Option<&str> {
+    let inner = condition.strip_prefix('"')?.strip_suffix('"')?;
+    (!inner.is_empty()).then_some(inner)
+}
+
 pub(crate) fn version(metadata: &Metadata) -> Version {
     Version {
         etag: metadata.etag().map(ToOwned::to_owned),
@@ -218,4 +251,17 @@ fn normalize_uri(uri: &str) -> Result<String> {
             .map_err(|_| anyhow!("invalid URI scheme"))?;
     }
     Ok(parsed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unquoted_etag_strips_one_quote_pair() {
+        assert_eq!(unquoted_etag("\"abc\""), Some("abc"));
+        assert_eq!(unquoted_etag("\"\""), None);
+        assert_eq!(unquoted_etag("abc"), None);
+        assert_eq!(unquoted_etag("\"abc"), None);
+    }
 }
