@@ -35,6 +35,8 @@ mod events;
 mod files;
 #[cfg(feature = "lance-store")]
 pub(crate) mod index_build_gate;
+pub(crate) mod index_build_progress;
+pub(crate) mod object_store_io_gate;
 #[cfg(feature = "lance-store")]
 mod inspect;
 #[cfg(feature = "lance-store")]
@@ -75,8 +77,10 @@ pub use catalog::{
 #[cfg(feature = "lance-store")]
 #[allow(unused_imports)]
 pub use chronicle_manifest::{
-    CHRONICLE_MANIFEST_FILE, ChronicleManifest, ManifestKind, ManifestStats, atomic_write_manifest,
-    compact_jsonl_manifest_matches, load_manifest, try_load_manifest, write_compact_jsonl_manifest,
+    CHRONICLE_MANIFEST_FILE, ChronicleManifest, ManifestKind, ManifestStats, STORYLINE_FORMAT,
+    atomic_write_manifest, compact_jsonl_manifest_matches, load_manifest, load_manifest_at_uri,
+    try_load_manifest, write_compact_jsonl_manifest, write_storyline_manifest,
+    write_storyline_manifest_at_uri,
 };
 #[cfg(feature = "lance-store")]
 pub use compact_jsonl::{
@@ -119,7 +123,9 @@ pub(crate) use local_query_manifest::{
     LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
 };
 #[cfg(feature = "lance-store")]
-pub use location::{DatasetLocation, DatasetLocationKind};
+pub use location::{
+    DatasetLocation, DatasetLocationKind, ImportableObjectEvent, ShallowNavEntry,
+};
 #[cfg(feature = "lance-store")]
 pub use query_engine::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, DEFAULT_QUERY_MEMORY_LIMIT_BYTES,
@@ -137,9 +143,10 @@ pub use storyline::{
     StorylineContentOptions, StorylineContentReadMode, StorylineDataFusionTableNames,
     StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
     StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
-    StorylineTableKind, StorylineTablePaths, story_runs_arrow_schema, story_runs_from_batch,
-    story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch, story_steps_to_batch,
-    story_tool_calls_arrow_schema, story_tool_calls_from_batch, story_tool_calls_to_batch,
+    StorylineStreamOptions, StorylineTableKind, StorylineTablePaths, story_runs_arrow_schema,
+    story_runs_from_batch, story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch,
+    story_steps_to_batch, story_tool_calls_arrow_schema, story_tool_calls_from_batch,
+    story_tool_calls_to_batch,
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_model::{

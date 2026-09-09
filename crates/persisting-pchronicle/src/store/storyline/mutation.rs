@@ -251,8 +251,15 @@ pub(super) async fn write_batches(
     batches: Vec<RecordBatch>,
     schema: SchemaRef,
     indexes: &[(&str, IndexType)],
+    build_indexes: bool,
 ) -> Result<u64> {
-    write_record_batch_reader(path, Box::new(batch_reader(batches, schema)), indexes).await
+    write_record_batch_reader(
+        path,
+        Box::new(batch_reader(batches, schema)),
+        indexes,
+        build_indexes,
+    )
+    .await
 }
 
 pub(super) async fn replace_table_batches(
@@ -308,8 +315,10 @@ async fn write_record_batch_reader(
     path: &Path,
     reader: Box<dyn RecordBatchReader + Send>,
     indexes: &[(&str, IndexType)],
+    build_indexes: bool,
 ) -> Result<u64> {
     let uri = path.to_string_lossy().into_owned();
+    crate::store::object_store_io_gate::mark_kind(crate::store::object_store_io_gate::IoKind::Write);
     let mut dataset = InsertBuilder::new(&uri)
         .with_params(&WriteParams {
             mode: WriteMode::Create,
@@ -318,9 +327,12 @@ async fn write_record_batch_reader(
         .execute_stream(reader)
         .await
         .with_context(|| format!("stream ATIF into Storyline table {}", path.display()))?;
-    super::ensure_table_indexes(&mut dataset, indexes)
-        .await
-        .with_context(|| format!("ensure Storyline indexes for {}", path.display()))?;
+    if build_indexes {
+        super::ensure_table_indexes(&mut dataset, indexes)
+            .await
+            .with_context(|| format!("ensure Storyline indexes for {}", path.display()))?;
+    }
+    crate::store::object_store_io_gate::note_success(&uri);
     Ok(dataset.version_id())
 }
 

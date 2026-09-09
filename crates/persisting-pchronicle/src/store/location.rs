@@ -1,5 +1,6 @@
 //! Dataset URI facade: one parse/exists/put path for local and object stores.
 
+use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -8,6 +9,29 @@ use anyhow::{Context, Result, anyhow};
 use url::Url;
 
 use super::opendal_store::Store as OpendalStore;
+
+/// One discovery event while walking importable JSON objects.
+#[derive(Debug, Clone)]
+pub enum ImportableObjectEvent {
+    /// Prefix currently being shallow-listed (`""` for the Dataset root).
+    Scanning { prefix: String },
+    /// Importable `.json` / `.jsonl` / `.ndjson` object.
+    File {
+        key: String,
+        size: u64,
+        modified: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShallowNavEntry {
+    pub name: String,
+    /// Navigational folder. Dataset leaves are never directories for explorer.
+    pub is_dir: bool,
+    /// Explorer data_type when this child is a Dataset leaf (`storyline`,
+    /// `compact-jsonl`, `other`, …). `None` for plain directories/files.
+    pub dataset_kind: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DatasetLocationKind {
@@ -211,6 +235,232 @@ impl DatasetLocation {
         Ok(bytes)
     }
 
+    /// Classify a Dataset-relative path as a navigable Dataset leaf, if markers
+    /// are present (`CURRENT`, leaf `chronicle.manifest`, events manifest).
+    pub async fn probe_nav_dataset_kind(&self, relative: &str) -> Result<Option<&'static str>> {
+        let relative = relative.trim().trim_matches('/');
+        anyhow::ensure!(
+            !relative.split('/').any(|part| part == ".."),
+            "relative object path must not contain '..'"
+        );
+        if let Some(root) = &self.local_path {
+            let dir = if relative.is_empty() {
+                root.clone()
+            } else {
+                root.join(relative)
+            };
+            if !dir.is_dir() {
+                return Ok(None);
+            }
+            if let Some(manifest) = crate::store::chronicle_manifest::try_load_manifest(&dir) {
+                if manifest.is_storyline_leaf() {
+                    return Ok(Some("storyline"));
+                }
+                if manifest.is_compact_jsonl_leaf() {
+                    return Ok(Some("compact-jsonl"));
+                }
+                if matches!(manifest.kind, crate::store::ManifestKind::Leaf) {
+                    return Ok(Some("other"));
+                }
+            }
+            if dir.join("CURRENT").is_file() {
+                return Ok(Some("storyline"));
+            }
+            if dir.join("events.lance/_manifest.json").is_file()
+                || (dir.file_name().is_some_and(|name| name == "events.lance")
+                    && dir.join("_manifest.json").is_file())
+            {
+                return Ok(Some("other"));
+            }
+            return Ok(None);
+        }
+
+        let store = OpendalStore::from_uri(&self.uri).await?;
+        let join = |name: &str| {
+            if relative.is_empty() {
+                name.to_string()
+            } else {
+                format!("{relative}/{name}")
+            }
+        };
+        if let Some(entry) = store
+            .stat_file(&join(crate::store::CHRONICLE_MANIFEST_FILE))
+            .await?
+        {
+            if let Some((bytes, _)) = store.read(&entry.path).await? {
+                if let Ok(text) = std::str::from_utf8(&bytes)
+                    && let Ok(manifest) =
+                        toml::from_str::<crate::store::ChronicleManifest>(text)
+                    && manifest.validate().is_ok()
+                {
+                    if manifest.is_storyline_leaf() {
+                        return Ok(Some("storyline"));
+                    }
+                    if manifest.is_compact_jsonl_leaf() {
+                        return Ok(Some("compact-jsonl"));
+                    }
+                    if matches!(manifest.kind, crate::store::ManifestKind::Leaf) {
+                        return Ok(Some("other"));
+                    }
+                }
+            }
+        }
+        if store.stat_file(&join("CURRENT")).await?.is_some() {
+            return Ok(Some("storyline"));
+        }
+        if store
+            .stat_file(&join("events.lance/_manifest.json"))
+            .await?
+            .is_some()
+            || (relative.ends_with("events.lance")
+                && store.stat_file(&join("_manifest.json")).await?.is_some())
+        {
+            return Ok(Some("other"));
+        }
+        Ok(None)
+    }
+
+    /// Immediate children under a Dataset-relative prefix for explorer navigation.
+    ///
+    /// Returns directories and importable JSON files only. Hidden names, Lance
+    /// table interiors, and other leaf objects are skipped so the tree stays
+    /// useful while imports are still writing nested paths.
+    ///
+    /// If `relative` itself is already a Dataset leaf (Storyline / compact /
+    /// events), returns an empty list so callers treat it as a source file
+    /// instead of drilling into Lance internals like `generations/`.
+    pub async fn list_shallow_nav(&self, relative: &str) -> Result<Vec<ShallowNavEntry>> {
+        let relative = relative.trim().trim_matches('/');
+        anyhow::ensure!(
+            !relative.split('/').any(|part| part == ".."),
+            "relative object path must not contain '..'"
+        );
+        if self.probe_nav_dataset_kind(relative).await?.is_some() {
+            return Ok(Vec::new());
+        }
+        if let Some(root) = &self.local_path {
+            let dir = if relative.is_empty() {
+                root.clone()
+            } else {
+                root.join(relative)
+            };
+            if !dir.is_dir() {
+                return Ok(Vec::new());
+            }
+            let mut entries = std::fs::read_dir(&dir)
+                .with_context(|| format!("list {}", dir.display()))?
+                .collect::<std::io::Result<Vec<_>>>()
+                .with_context(|| format!("list {}", dir.display()))?;
+            entries.sort_by_key(|entry| entry.file_name());
+            let mut out = Vec::new();
+            for entry in entries {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !is_nav_child_name(&name) || is_storyline_interior_name(&name) {
+                    continue;
+                }
+                let file_type = entry
+                    .file_type()
+                    .with_context(|| format!("stat {}", entry.path().display()))?;
+                if file_type.is_symlink() {
+                    continue;
+                }
+                if file_type.is_dir() {
+                    if name.ends_with(".lance") {
+                        continue;
+                    }
+                    let child_rel = if relative.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{relative}/{name}")
+                    };
+                    if let Some(kind) = self.probe_nav_dataset_kind(&child_rel).await? {
+                        out.push(ShallowNavEntry {
+                            name,
+                            is_dir: false,
+                            dataset_kind: Some(kind.into()),
+                        });
+                    } else {
+                        out.push(ShallowNavEntry {
+                            name,
+                            is_dir: true,
+                            dataset_kind: None,
+                        });
+                    }
+                } else if file_type.is_file() && is_importable_json_name(&name) {
+                    out.push(ShallowNavEntry {
+                        name,
+                        is_dir: false,
+                        dataset_kind: None,
+                    });
+                }
+            }
+            return Ok(out);
+        }
+
+        let store = OpendalStore::from_uri(&self.uri).await?;
+        let prefix = if relative.is_empty() {
+            String::new()
+        } else {
+            format!("{relative}/")
+        };
+        let entries = store
+            .list_shallow(&prefix)
+            .await
+            .with_context(|| format!("list shallow children under {prefix}{}", self.uri))?;
+        let mut dirs = BTreeSet::new();
+        let mut files = BTreeSet::new();
+        for entry in entries {
+            let path = entry.path.trim_start_matches(&prefix).trim_matches('/');
+            if path.is_empty() {
+                continue;
+            }
+            let child = path.split('/').next().unwrap_or(path);
+            if !is_nav_child_name(child) || is_storyline_interior_name(child) {
+                continue;
+            }
+            if entry.mode == opendal::EntryMode::FILE && !path.contains('/') {
+                if is_importable_json_name(child) {
+                    files.insert(child.to_string());
+                }
+                continue;
+            }
+            if child.ends_with(".lance") {
+                continue;
+            }
+            dirs.insert(child.to_string());
+        }
+        let mut out = Vec::with_capacity(dirs.len() + files.len());
+        for name in dirs {
+            let child_rel = if relative.is_empty() {
+                name.clone()
+            } else {
+                format!("{relative}/{name}")
+            };
+            if let Some(kind) = self.probe_nav_dataset_kind(&child_rel).await? {
+                out.push(ShallowNavEntry {
+                    name,
+                    is_dir: false,
+                    dataset_kind: Some(kind.into()),
+                });
+            } else {
+                out.push(ShallowNavEntry {
+                    name,
+                    is_dir: true,
+                    dataset_kind: None,
+                });
+            }
+        }
+        for name in files {
+            out.push(ShallowNavEntry {
+                name,
+                is_dir: false,
+                dataset_kind: None,
+            });
+        }
+        out.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(out)
+    }
+
     /// Recursively list importable `.json` / `.jsonl` / `.ndjson` object keys.
     /// Skips Lance table interiors (any path segment ending in `.lance`).
     pub async fn list_importable_json_objects(&self, max_files: usize) -> Result<Vec<String>> {
@@ -224,18 +474,45 @@ impl DatasetLocation {
 
     /// Like [`Self::list_importable_json_objects`], but also returns size and
     /// last-modified metadata for change detection (`sync`).
+    ///
+    /// Object-store discovery walks prefixes with shallow listings and skips
+    /// `.lance` / `_meta` directories so large Storyline/events trees are not
+    /// fully enumerated. Progress callbacks fire as prefixes are scanned and
+    /// as each importable object is found.
     pub async fn list_importable_json_object_stamps(
         &self,
         max_files: usize,
     ) -> Result<Vec<(String, u64, Option<String>)>> {
+        self.list_importable_json_object_stamps_with_progress(max_files, &mut |_, _| Ok(()))
+            .await
+    }
+
+    /// Stream importable object-store (or local) JSON files without buffering the
+    /// full listing. Callers can overlap discovery with downstream work.
+    ///
+    /// `Scanning` events report the prefix currently being listed; `File` events
+    /// report each importable object as soon as it is found. Object-store order
+    /// follows BFS discovery (not lexicographic sort).
+    pub async fn for_each_importable_json_object_event<F, Fut>(
+        &self,
+        max_files: usize,
+        mut on_event: F,
+    ) -> Result<()>
+    where
+        F: FnMut(ImportableObjectEvent) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
         anyhow::ensure!(max_files > 0, "import max_files must be positive");
         if let Some(root) = &self.local_path {
+            on_event(ImportableObjectEvent::Scanning {
+                prefix: String::new(),
+            })
+            .await?;
             let paths = list_local_importable_json_files(root)?;
             anyhow::ensure!(
                 paths.len() <= max_files,
                 "import input exceeds max_files limit of {max_files}"
             );
-            let mut stamps = Vec::with_capacity(paths.len());
             for path in paths {
                 let relative = path
                     .strip_prefix(root)
@@ -244,51 +521,130 @@ impl DatasetLocation {
                     .replace('\\', "/");
                 let metadata = std::fs::metadata(&path)
                     .with_context(|| format!("stat importable file {}", path.display()))?;
-                stamps.push((
-                    relative,
-                    metadata.len(),
-                    metadata.modified().ok().and_then(|modified| {
-                        modified
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .ok()
-                            .map(|duration| {
-                                chrono::DateTime::<chrono::Utc>::from_timestamp(
-                                    duration.as_secs() as i64,
-                                    duration.subsec_nanos(),
-                                )
-                                .map(|value| value.to_rfc3339())
-                            })
-                            .flatten()
-                    }),
-                ));
+                let size = metadata.len();
+                let modified = metadata.modified().ok().and_then(|modified| {
+                    modified
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .and_then(|duration| {
+                            chrono::DateTime::<chrono::Utc>::from_timestamp(
+                                duration.as_secs() as i64,
+                                duration.subsec_nanos(),
+                            )
+                            .map(|value| value.to_rfc3339())
+                        })
+                });
+                on_event(ImportableObjectEvent::File {
+                    key: relative,
+                    size,
+                    modified,
+                })
+                .await?;
             }
-            return Ok(stamps);
+            return Ok(());
         }
 
         let store = OpendalStore::from_uri(&self.uri).await?;
-        let entries = store
-            .list("")
-            .await
-            .with_context(|| format!("list importable objects under {}", self.uri))?;
-        let mut stamps = Vec::new();
-        for entry in entries {
-            let key = entry.path.trim_matches('/').to_string();
-            if key.is_empty() || !is_importable_json_object_key(&key) {
-                continue;
+        let mut pending = vec![String::new()];
+        let mut found = 0usize;
+        while let Some(prefix) = pending.pop() {
+            on_event(ImportableObjectEvent::Scanning {
+                prefix: prefix.clone(),
+            })
+            .await?;
+            let list_prefix = if prefix.is_empty() {
+                String::new()
+            } else {
+                format!("{prefix}/")
+            };
+            let entries = store.list_shallow(&list_prefix).await.with_context(|| {
+                format!(
+                    "list importable objects under {}{}",
+                    self.uri,
+                    if list_prefix.is_empty() {
+                        String::new()
+                    } else {
+                        format!("/{prefix}")
+                    }
+                )
+            })?;
+            let mut child_dirs = BTreeSet::new();
+            for entry in entries {
+                let path = entry.path.trim_start_matches(&list_prefix).trim_matches('/');
+                if path.is_empty() {
+                    continue;
+                }
+                let child = path.split('/').next().unwrap_or(path);
+                if !is_nav_child_name(child) {
+                    continue;
+                }
+                let child_rel = if prefix.is_empty() {
+                    child.to_string()
+                } else {
+                    format!("{prefix}/{child}")
+                };
+                if entry.mode == opendal::EntryMode::FILE && !path.contains('/') {
+                    if !is_importable_json_name(child) {
+                        continue;
+                    }
+                    anyhow::ensure!(
+                        found < max_files,
+                        "import input exceeds max_files limit of {max_files}"
+                    );
+                    found = found.saturating_add(1);
+                    on_event(ImportableObjectEvent::File {
+                        key: child_rel,
+                        size: entry.metadata.content_length(),
+                        modified: entry.metadata.last_modified().map(|value| value.to_string()),
+                    })
+                    .await?;
+                    continue;
+                }
+                if child.ends_with(".lance")
+                    || child == "_meta"
+                    || is_storyline_interior_name(child)
+                {
+                    continue;
+                }
+                child_dirs.insert(child_rel);
             }
-            anyhow::ensure!(
-                stamps.len() < max_files,
-                "import input exceeds max_files limit of {max_files}"
-            );
-            stamps.push((
-                key,
-                entry.metadata.content_length(),
-                entry
-                    .metadata
-                    .last_modified()
-                    .map(|value| value.to_string()),
-            ));
+            pending.extend(child_dirs.into_iter().rev());
         }
+        Ok(())
+    }
+
+    /// `on_progress(path, Some(size))` reports an importable file; `on_progress(prefix, None)`
+    /// reports the prefix currently being scanned.
+    pub async fn list_importable_json_object_stamps_with_progress<F>(
+        &self,
+        max_files: usize,
+        on_progress: &mut F,
+    ) -> Result<Vec<(String, u64, Option<String>)>>
+    where
+        F: FnMut(&str, Option<u64>) -> Result<()> + Send,
+    {
+        let mut stamps = Vec::new();
+        self.for_each_importable_json_object_event(max_files, |event| {
+            // Progress + collection run synchronously before the future is
+            // polled; for_each awaits each event immediately so this stays
+            // sequential and keeps `on_progress` / `stamps` as plain FnMut state.
+            let result = match event {
+                ImportableObjectEvent::Scanning { prefix } => on_progress(&prefix, None),
+                ImportableObjectEvent::File {
+                    key,
+                    size,
+                    modified,
+                } => match on_progress(&key, Some(size)) {
+                    Ok(()) => {
+                        stamps.push((key, size, modified));
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                },
+            };
+            async move { result }
+        })
+        .await?;
         stamps.sort_by(|left, right| left.0.cmp(&right.0));
         Ok(stamps)
     }
@@ -311,6 +667,18 @@ impl DatasetLocation {
     /// Remove the complete Dataset represented by this local directory or
     /// object-store prefix.
     pub async fn remove_all(&self) -> Result<()> {
+        self.remove_all_with_progress(|_, _, _| Ok(())).await
+    }
+
+    /// Like [`Self::remove_all`], but reports progress for each deleted file.
+    ///
+    /// `on_progress` receives `(deleted, total, relative_path)` after each
+    /// successful file delete. `deleted` counts completed deletes; the final
+    /// call uses `deleted == total` with an empty path once the tree is gone.
+    pub async fn remove_all_with_progress<F>(&self, mut on_progress: F) -> Result<()>
+    where
+        F: FnMut(u64, u64, &str) -> Result<()>,
+    {
         if let Some(path) = &self.local_path {
             anyhow::ensure!(path.exists(), "Dataset does not exist: {}", self.uri);
             anyhow::ensure!(
@@ -318,8 +686,7 @@ impl DatasetLocation {
                 "refusing to drop a filesystem root as a Dataset"
             );
             anyhow::ensure!(path.is_dir(), "Dataset is not a directory: {}", self.uri);
-            std::fs::remove_dir_all(path)
-                .with_context(|| format!("drop local Dataset {}", path.display()))?;
+            remove_local_dir_with_progress(path, &mut on_progress)?;
             return Ok(());
         }
 
@@ -329,9 +696,97 @@ impl DatasetLocation {
             "refusing to drop an entire object-store bucket; name a Dataset prefix"
         );
         let store = OpendalStore::from_uri(&self.uri).await?;
+        let entries = store
+            .list("")
+            .await
+            .with_context(|| format!("list objects under {}", self.uri))?;
+        let total = entries.len() as u64;
+        let mut deleted = 0_u64;
+        on_progress(deleted, total, "")?;
+        for entry in entries {
+            store
+                .remove(&entry.path)
+                .await
+                .with_context(|| format!("delete object {} under {}", entry.path, self.uri))?;
+            deleted = deleted.saturating_add(1);
+            on_progress(deleted, total, &entry.path)?;
+        }
+        // Clear any leftover prefix markers after individual object deletes.
         store.remove_all().await?;
+        on_progress(total, total, "")?;
         Ok(())
     }
+}
+
+fn remove_local_dir_with_progress<F>(path: &Path, on_progress: &mut F) -> Result<()>
+where
+    F: FnMut(u64, u64, &str) -> Result<()>,
+{
+    let files = list_local_files_recursive(path)?;
+    let total = files.len() as u64;
+    let mut deleted = 0_u64;
+    on_progress(deleted, total, "")?;
+    for file in files {
+        let relative = file
+            .strip_prefix(path)
+            .unwrap_or(file.as_path())
+            .to_string_lossy()
+            .replace('\\', "/");
+        std::fs::remove_file(&file)
+            .with_context(|| format!("delete file {}", file.display()))?;
+        deleted = deleted.saturating_add(1);
+        on_progress(deleted, total, &relative)?;
+    }
+    std::fs::remove_dir_all(path)
+        .with_context(|| format!("drop local Dataset {}", path.display()))?;
+    on_progress(total, total, "")?;
+    Ok(())
+}
+
+fn list_local_files_recursive(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let mut entries = std::fs::read_dir(&directory)
+            .with_context(|| format!("read directory {}", directory.display()))?
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(std::fs::DirEntry::path);
+        for entry in entries {
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+            if file_type.is_dir() && !file_type.is_symlink() {
+                pending.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn is_nav_child_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.starts_with('.')
+        && name != "_meta"
+}
+
+fn is_storyline_interior_name(name: &str) -> bool {
+    matches!(name, "generations" | "objects.lance" | "writer" | "leases")
+}
+
+fn is_importable_json_name(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "json" | "jsonl" | "ndjson"
+            )
+        })
 }
 
 fn is_importable_json_object_key(key: &str) -> bool {

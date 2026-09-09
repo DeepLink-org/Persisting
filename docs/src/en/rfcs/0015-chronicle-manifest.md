@@ -155,7 +155,7 @@ source of truth that travels with the dataset.
 
 | Field | Type | Rules |
 |---|---|---|
-| `format` | string | MUST be present for `kind = "leaf"`; v1 writers MUST use `compact-jsonl/v1` |
+| `format` | string | MUST be present for `kind = "leaf"`; v1 writers MUST use `compact-jsonl/v1` or `storyline/v1` |
 
 Unknown `format` values MUST be preserved by generic readers; format-specific
 openers MAY reject unsupported values.

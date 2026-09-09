@@ -20,13 +20,13 @@ Lance only to classify the tree ([RFC-0015](../../rfcs/0015-chronicle-manifest.m
 
 ```bash
 pchronicle import --from input.json \
-  --to ./imported --input-format atif
+ --to ./imported --input-format atif
 ```
 
-The default `--mode create` refuses an existing target. Use `--mode append`
+The default create behavior refuses an existing target. Use `--append`
 for an existing Storyline Dataset; duplicate `document_id` values receive a
 `#N` suffix by default, or can be skipped with `--on-duplicate skip`. Use
-`--mode replace` to stage the complete import and atomically replace an existing
+`--replace` to stage the complete import and atomically replace an existing
 local Dataset after confirmation; replacement requires interactive confirmation
 or `--yes`. Object-store Dataset replace clears the destination prefix before writing
 (not atomic; an interrupted replace may leave the target empty).
@@ -48,7 +48,7 @@ output:
 
 ```bash
 pchronicle import --from ./corpus --to ./normalized \
-  --output-format storyline
+ --output-format storyline
 ```
 
 A validated, non-empty canonical Event Store is detected before JSON scanning
@@ -68,7 +68,7 @@ In the squashed Dataset, `_file_` is `.` for all normalized rows:
 
 ```bash
 pchronicle query ./normalized \
-  --sql 'SELECT _file_, COUNT(*) AS runs FROM dataset.runs GROUP BY _file_'
+ --sql 'SELECT _file_, COUNT(*) AS runs FROM dataset.runs GROUP BY _file_'
 ```
 
 `document_id` is globally unique in Storyline output. Collisions receive a
@@ -84,7 +84,7 @@ Stdin must be finite and explicit:
 
 ```bash
 cat input.json | pchronicle import --from - \
-  --to ./imported --input-format openai-messages
+ --to ./imported --input-format openai-messages
 ```
 
 After import, inspect the new boundary:
@@ -98,14 +98,14 @@ pchronicle stats overview ./imported
 
 ```bash
 pchronicle export --from ./imported \
-  --to restored.json --output-format atif
+ --to restored.json --output-format atif
 ```
 
 Narrow the export with file path and external identity when needed:
 
 ```bash
 pchronicle export --from ./imported --to one.json --output-format actf \
-  --source source.json --session-id session-42 --strict
+ --source source.json --session-id session-42 --strict
 ```
 
 `--strict` fails when the target format cannot preserve the original exchange

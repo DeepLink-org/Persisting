@@ -194,13 +194,19 @@ fn inject_request_id_json(bytes: Vec<u8>, request_id: &str) -> (Vec<u8>, Option<
 }
 
 pub(crate) fn tracing_filter(level: crate::LogLevel) -> String {
-    let level = match level {
-        crate::LogLevel::Error => "error",
-        crate::LogLevel::Warn => "warn",
-        crate::LogLevel::Info => "info",
-        crate::LogLevel::Debug => "debug",
-    };
-    format!("pchronicle.serve={level}")
+    match level {
+        crate::LogLevel::Error => "error".to_owned(),
+        crate::LogLevel::Warn => {
+            "warn,persisting_pchronicle=warn,persisting_pchronicle_cli=warn".to_owned()
+        }
+        crate::LogLevel::Info => {
+            // Keep CLI/import diagnostics readable: silence Lance/OpenDAL INFO
+            // spam (dataset load, FTS workers, If-Match noise) while still
+            // showing pChronicle warn for lease/CAS issues.
+            "info,persisting_pchronicle=warn,pchronicle.serve=info,lance=warn,lance_index=warn,opendal=warn,pchronicle.opendal=warn,object_store=warn,pchronicle.object_store_gate=warn".to_owned()
+        }
+        crate::LogLevel::Debug => "debug".to_owned(),
+    }
 }
 
 pub(crate) fn init_warehouse_tracing(level: crate::LogLevel) {
@@ -212,6 +218,11 @@ pub(crate) fn init_warehouse_tracing(level: crate::LogLevel) {
         .with_writer(std::io::stderr)
         .with_target(true)
         .try_init();
+}
+
+/// Initialize stderr tracing for non-serve commands (import lease diagnostics, etc.).
+pub(crate) fn init_cli_tracing(level: crate::LogLevel) {
+    init_warehouse_tracing(level);
 }
 
 pub(crate) fn log_warehouse_startup(listen: &str, datasets: &[String], snapshot_id: Option<&str>) {

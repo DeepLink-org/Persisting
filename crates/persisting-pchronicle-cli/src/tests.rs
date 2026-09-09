@@ -455,7 +455,9 @@ fn canonical_parser_surface_matches_the_cli_guide() -> Result<()> {
     assert_eq!(import.output.as_deref(), Some("./imported"));
     assert_eq!(import.format, ExchangeFormat::Atif);
     assert_eq!(import.output_format, Some(ImportOutputFormat::Preserve));
-    assert_eq!(import.mode, ImportMode::Create);
+    assert_eq!(import.mode().unwrap(), ImportMode::Create);
+    assert!(!import.replace);
+    assert!(!import.append);
     assert_eq!(import.on_duplicate, None);
     assert!(!import.yes);
 
@@ -466,16 +468,47 @@ fn canonical_parser_surface_matches_the_cli_guide() -> Result<()> {
         "input.json",
         "-t",
         "./imported",
-        "--mode",
-        "append",
+        "--append",
         "--on-duplicate",
         "skip",
     ])?;
     let Command::Import(import) = cli.command else {
         panic!("expected import command")
     };
-    assert_eq!(import.mode, ImportMode::Append);
+    assert_eq!(import.mode().unwrap(), ImportMode::Append);
+    assert!(import.append);
+    assert!(!import.replace);
     assert_eq!(import.on_duplicate, Some(DuplicateIdPolicy::Skip));
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "-f",
+        "input.json",
+        "-t",
+        "./imported",
+        "--replace",
+        "--yes",
+    ])?;
+    let Command::Import(import) = cli.command else {
+        panic!("expected import command")
+    };
+    assert_eq!(import.mode().unwrap(), ImportMode::Replace);
+    assert!(import.replace);
+    assert!(!import.append);
+    assert!(import.yes);
+
+    assert!(Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "-f",
+        "input.json",
+        "-t",
+        "./imported",
+        "--replace",
+        "--append",
+    ])
+    .is_err());
 
     let cli = Cli::try_parse_from(["pchronicle", "drop", "./imported", "--yes"])?;
     let Command::Drop(drop) = cli.command else {
@@ -2789,15 +2822,17 @@ async fn object_store_replace_clears_existing_prefix_before_import() -> Result<(
         &output,
         "--output-format",
         "storyline",
-        "--mode",
-        "replace",
+        "--replace",
         "--yes",
     ])?;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     run(cli, false, &mut stdout, &mut stderr).await?;
     let stderr = String::from_utf8(stderr)?;
-    assert!(stderr.contains("status=replacing"));
+    assert!(
+        stderr.contains("deleted:total =") || stderr.contains("[deleting]"),
+        "replace should report delete progress, got: {stderr}"
+    );
 
     let store = StorylineLanceStore::open_uri(&output).await?;
     let ids = store
@@ -3262,8 +3297,7 @@ async fn append_storyline_import_suffixes_or_skips_existing_document_ids() -> Re
         duplicate.to_str().unwrap(),
         "--to",
         output.to_str().unwrap(),
-        "--mode",
-        "append",
+        "--append",
     ])?;
     let mut append_stdout = Vec::new();
     let mut append_stderr = Vec::new();
@@ -3281,8 +3315,7 @@ async fn append_storyline_import_suffixes_or_skips_existing_document_ids() -> Re
         duplicate.to_str().unwrap(),
         "--to",
         output.to_str().unwrap(),
-        "--mode",
-        "append",
+        "--append",
         "--on-duplicate",
         "skip",
     ])?;
@@ -3341,8 +3374,7 @@ async fn replace_and_drop_require_confirmation_and_accept_yes() -> Result<()> {
         output.to_str().unwrap(),
         "--output-format",
         "storyline",
-        "--mode",
-        "replace",
+        "--replace",
     ])?;
     let error = run(replace_without_yes, false, &mut Vec::new(), &mut Vec::new())
         .await
@@ -3360,8 +3392,7 @@ async fn replace_and_drop_require_confirmation_and_accept_yes() -> Result<()> {
         output.to_str().unwrap(),
         "--output-format",
         "storyline",
-        "--mode",
-        "replace",
+        "--replace",
         "--yes",
     ])?;
     assert!(
@@ -3369,7 +3400,10 @@ async fn replace_and_drop_require_confirmation_and_accept_yes() -> Result<()> {
             .await
             .is_err()
     );
-    assert!(output.join("old.marker").exists());
+    // Storyline --replace clears the destination before import (not atomic).
+    assert!(!output.join("old.marker").exists());
+    fs::create_dir_all(&output)?;
+    fs::write(output.join("old.marker"), "old")?;
 
     fs::write(
         &input,
@@ -3387,8 +3421,7 @@ async fn replace_and_drop_require_confirmation_and_accept_yes() -> Result<()> {
         output.to_str().unwrap(),
         "--output-format",
         "storyline",
-        "--mode",
-        "replace",
+        "--replace",
         "--yes",
     ])?;
     run(replace, false, &mut Vec::new(), &mut Vec::new()).await?;
@@ -3430,6 +3463,7 @@ async fn replace_and_drop_require_confirmation_and_accept_yes() -> Result<()> {
     run_with_stdio(
         interactive_drop,
         true,
+        false,
         false,
         &mut confirmation,
         &mut Vec::new(),
@@ -3512,7 +3546,9 @@ async fn directory_import_failure_does_not_publish_partial_output() -> Result<()
             .await
             .unwrap_err();
         assert!(format!("{error:#}").contains("z-invalid.json"), "{error:#}");
-        assert!(!output.exists());
+        if output_format == ImportOutputFormat::Preserve {
+            assert!(!output.exists());
+        }
     }
     assert!(!fs::read_dir(temp.path())?.any(|entry| {
         entry

@@ -26,6 +26,11 @@ pub use crate::discovery::{
 };
 
 #[cfg(feature = "lance-store")]
+pub use crate::store::index_build_progress::{
+    Guard as IndexBuildProgressGuard, install as install_index_build_progress,
+};
+
+#[cfg(feature = "lance-store")]
 pub use crate::store::{
     AppendOutcome, AttemptRecord, AttemptRecordState, AttemptRegistry, CatalogDataset,
     CatalogErrorPolicy, CatalogEventProvenance, CatalogEventView, CatalogNamespace, CatalogPage,
@@ -36,6 +41,7 @@ pub use crate::store::{
     DEFAULT_CONTENT_PREVIEW_BYTES, DEFAULT_DATASET_NAME, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
     DEFAULT_MAX_EVENT_FALLBACK_ROWS, DEFAULT_PHYSICAL_PAGE_LIMIT, DatasetCatalogSnapshot,
     DatasetLocation, DatasetLocationKind, DatasetMount, DiscoveredSource, EventFactSnapshot,
+    ImportableObjectEvent, ShallowNavEntry,
     EventLogLayoutStats, EventWriterFence, ExportOutcome, LanceMaintenanceOptions,
     LanceMaintenanceReport, LeaseAcquireOutcome, ManifestKind, ManifestStats, NamespacePath,
     ObjectStoreManifestWriteMode, PhysicalColumn, PhysicalDataFile, PhysicalFileLayout,
@@ -44,10 +50,11 @@ pub use crate::store::{
     RawEventLanceStore, ReplayOutcome, RunControlStore, StorylineContentOptions,
     StorylineContentReadMode, StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
     StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
-    StorylineTablePaths, TrajectoryStats, attempt_registry_now_ms, distinct_session_ids_in_run,
+    StorylineStreamOptions, StorylineTablePaths, TrajectoryStats, attempt_registry_now_ms, distinct_session_ids_in_run,
     export_source_dirs, export_story_bundle, inspect_physical_file, inspect_physical_layout,
-    inspect_physical_page, list_physical_sources, load_manifest, raw_event_lance_path,
-    write_compact_jsonl_manifest,
+    inspect_physical_page, list_physical_sources, load_manifest, load_manifest_at_uri,
+    raw_event_lance_path, write_compact_jsonl_manifest, write_storyline_manifest,
+    write_storyline_manifest_at_uri,
 };
 
 // Compatibility exports; new callers should use `crate::search`.

@@ -277,6 +277,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn prepare_destination_preserves_object_store_uri() {
+        assert_eq!(
+            prepare_destination("s3://bucket/prod/infra/agent/agentcompass", "Warehouse").unwrap(),
+            "s3://bucket/prod/infra/agent/agentcompass"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_pin_source_is_resolved_not_canonicalized() {
+        let mut stderr = Vec::new();
+        let error = run(
+            SyncArgs {
+                from: "@origin/agentcompass".into(),
+                to: "/tmp/pchronicle-sync-warehouse".into(),
+                convert: "/tmp/pchronicle-sync-convert".into(),
+                input_format: ExchangeFormat::Auto,
+                columns: Vec::new(),
+                interval_seconds: 1,
+                once: true,
+            },
+            None,
+            &mut stderr,
+        )
+        .await
+        .expect_err("pin must expand through settings, not local canonicalize");
+        let message = format!("{error:#}");
+        assert!(
+            !message.contains("canonicalize sync source"),
+            "{message}"
+        );
+        assert!(
+            message.contains("unknown Dataset pin") || message.contains("resolve sync source"),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn changed_paths_include_create_modify_and_delete() {
         let old = BTreeMap::from([(
             PathBuf::from("old.json"),

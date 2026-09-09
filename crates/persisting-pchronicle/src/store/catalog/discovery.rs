@@ -150,6 +150,14 @@ pub(super) async fn freeze_candidate(
             source_row.revision = Some(CatalogSourceRevision::Storyline {
                 generation: paths.generation.clone(),
             });
+            if let Ok(Some(manifest)) =
+                crate::store::chronicle_manifest::load_manifest_at_uri(&uri).await
+                && manifest.is_storyline_leaf()
+                && let Some(stats) = manifest.stats
+            {
+                source_row.record_count = Some(stats.record_count);
+                source_row.failed_count = Some(stats.failed_count);
+            }
             Ok((
                 source_row,
                 Arc::new(LazySource::new(
@@ -719,23 +727,38 @@ async fn collect_manifest_subtree(
     while let Some((current, current_manifest)) = stack.pop() {
         match current_manifest.kind {
             ManifestKind::Leaf => {
-                anyhow::ensure!(
-                    current_manifest.is_compact_jsonl_leaf(),
-                    "chronicle.manifest leaf format {:?} is not supported for discovery yet",
-                    current_manifest.format
-                );
                 let metadata = fs::metadata(&current)?;
                 let file = if current == mount_root {
                     ".".into()
                 } else {
                     relative_catalog_path(mount_root, &current, true)?
                 };
-                candidates.push(Candidate::Compact {
-                    file,
-                    uri: canonical_local_uri(&current)?,
-                    size_bytes: Some(metadata.len()),
-                    last_modified: modified_string(&metadata),
-                });
+                if current_manifest.is_compact_jsonl_leaf() {
+                    candidates.push(Candidate::Compact {
+                        file,
+                        uri: canonical_local_uri(&current)?,
+                        size_bytes: Some(metadata.len()),
+                        last_modified: modified_string(&metadata),
+                    });
+                } else if current_manifest.is_storyline_leaf() {
+                    anyhow::ensure!(
+                        current.join("CURRENT").is_file(),
+                        "storyline chronicle.manifest requires CURRENT at {}",
+                        current.display()
+                    );
+                    let current_meta = fs::metadata(current.join("CURRENT"))?;
+                    candidates.push(Candidate::Storyline {
+                        file,
+                        uri: canonical_local_uri(&current)?,
+                        size_bytes: Some(current_meta.len()),
+                        last_modified: modified_string(&current_meta),
+                    });
+                } else {
+                    anyhow::bail!(
+                        "chronicle.manifest leaf format {:?} is not supported for discovery yet",
+                        current_manifest.format
+                    );
+                }
             }
             ManifestKind::Branch => {
                 let mut entries = fs::read_dir(&current)
@@ -1014,18 +1037,36 @@ async fn probe_object_prefix(
         manifest.validate()?;
         match manifest.kind {
             ManifestKind::Leaf => {
-                anyhow::ensure!(
-                    manifest.is_compact_jsonl_leaf(),
+                let meta = RemoteObjectMeta::from(entry);
+                if manifest.is_compact_jsonl_leaf() {
+                    return Ok(Some(ObjectProbe::Source(Candidate::Compact {
+                        file: source_file,
+                        uri: child_uri(root_uri, relative),
+                        size_bytes: Some(meta.size),
+                        last_modified: Some(meta.last_modified),
+                    })));
+                }
+                if manifest.is_storyline_leaf() {
+                    let current = store
+                        .stat_file(&join("CURRENT"))
+                        .await?
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "storyline chronicle.manifest requires CURRENT under {relative}"
+                            )
+                        })?;
+                    let current_meta = RemoteObjectMeta::from(current);
+                    return Ok(Some(ObjectProbe::Source(Candidate::Storyline {
+                        file: source_file,
+                        uri: child_uri(root_uri, relative),
+                        size_bytes: Some(current_meta.size),
+                        last_modified: Some(current_meta.last_modified),
+                    })));
+                }
+                anyhow::bail!(
                     "chronicle.manifest leaf format {:?} is not supported for discovery yet",
                     manifest.format
                 );
-                let meta = RemoteObjectMeta::from(entry);
-                return Ok(Some(ObjectProbe::Source(Candidate::Compact {
-                    file: source_file,
-                    uri: child_uri(root_uri, relative),
-                    size_bytes: Some(meta.size),
-                    last_modified: Some(meta.last_modified),
-                })));
             }
             ManifestKind::Branch => return Ok(Some(ObjectProbe::Branch)),
         }

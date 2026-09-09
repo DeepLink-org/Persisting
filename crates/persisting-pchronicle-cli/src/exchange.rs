@@ -58,7 +58,7 @@ async fn prepare_import_destination(
 ) -> Result<PreparedImportDestination> {
     let parsed = DatasetLocation::parse(output_arg)?;
     let exists = parsed.exists().await?;
-    match args.mode {
+    match args.mode()? {
         ImportMode::Create => {
             if parsed.is_object_store() {
                 anyhow::ensure!(!exists, "import output already exists");
@@ -194,6 +194,7 @@ pub(super) async fn run_import(
     mut args: ImportArgs,
     settings_override: Option<&Path>,
     stdin_is_terminal: bool,
+    stderr_is_terminal: bool,
     stdin: &mut dyn Read,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
@@ -216,23 +217,22 @@ pub(super) async fn run_import(
             "stdin import requires an explicit --input-format"
         );
     }
+    let mode = args.mode()?;
     anyhow::ensure!(
-        args.mode == ImportMode::Append || args.on_duplicate.is_none(),
-        "--on-duplicate is only valid with --mode append"
+        mode == ImportMode::Append || args.on_duplicate.is_none(),
+        "--on-duplicate is only valid with --append"
     );
     anyhow::ensure!(
-        args.mode == ImportMode::Replace || !args.yes,
-        "--yes is only valid with --mode replace"
+        mode == ImportMode::Replace || !args.yes,
+        "--yes is only valid with --replace"
     );
     anyhow::ensure!(
-        !(args.stream && args.mode == ImportMode::Replace && !args.yes),
+        !(args.stream && mode == ImportMode::Replace && !args.yes),
         "stdin replace import requires --yes because stdin carries the import data"
     );
     if args.from != "-" {
         args.from = expand_dataset_reference(&args.from, settings_override, true)?;
     }
-    writeln!(stderr, "import from={} status=started", args.from)
-        .context("write pChronicle import progress")?;
     let from_location = (!args.stream)
         .then(|| DatasetLocation::parse(&args.from))
         .transpose()?;
@@ -263,7 +263,7 @@ pub(super) async fn run_import(
         && args.output_format != Some(ImportOutputFormat::Storyline)
     {
         anyhow::ensure!(
-            args.mode == ImportMode::Append && args.output_format.is_none(),
+            mode == ImportMode::Append && args.output_format.is_none(),
             "object-store import requires --output-format storyline"
         );
     }
@@ -273,8 +273,8 @@ pub(super) async fn run_import(
     let replace_existing = prepared.replace_existing;
     if let Some(snapshot) = canonical {
         anyhow::ensure!(
-            args.mode != ImportMode::Append,
-            "canonical event import does not support --mode append"
+            mode != ImportMode::Append,
+            "canonical event import does not support --append"
         );
         return run_canonical_event_import(
             args,
@@ -286,30 +286,43 @@ pub(super) async fn run_import(
         )
         .await;
     }
+    let mut progress = ImportProgress::new(stderr_is_terminal);
+    let object_store_from = from_location
+        .as_ref()
+        .filter(|location| location.is_object_store() && !args.stream)
+        .cloned();
     let (directory_input, candidates) = if args.stream {
+        progress.set_discovered(1, 0)?;
         (false, Vec::new())
-    } else if let Some(location) = &from_location {
-        if location.is_object_store() {
-            collect_object_store_import_candidates(location, stderr).await?
-        } else {
-            collect_import_candidates(Path::new(&args.from))?
-        }
+    } else if object_store_from.is_some() {
+        // Object-store Sources are discovered inside the Storyline pipeline so
+        // listing overlaps read/parse/write instead of buffering the full tree.
+        (true, Vec::new())
+    } else if from_location.is_some() {
+        let (directory_input, candidates) = collect_import_candidates(Path::new(&args.from))?;
+        let discovered_bytes = candidates.iter().try_fold(0u64, |total, candidate| {
+            total
+                .checked_add(candidate.size_hint)
+                .context("import discovered byte count overflow")
+        })?;
+        progress.set_discovered(candidates.len() as u64, discovered_bytes)?;
+        (directory_input, candidates)
     } else {
         (false, Vec::new())
     };
     anyhow::ensure!(
-        args.mode != ImportMode::Append || args.output_format != Some(ImportOutputFormat::Preserve),
+        mode != ImportMode::Append || args.output_format != Some(ImportOutputFormat::Preserve),
         "append import requires --output-format storyline (or omit it)"
     );
     let output_format = args
         .output_format
-        .unwrap_or(if args.mode == ImportMode::Append {
+        .unwrap_or(if mode == ImportMode::Append {
             ImportOutputFormat::Storyline
         } else {
             ImportOutputFormat::Preserve
         });
     let duplicate_policy = args.on_duplicate.unwrap_or(DuplicateIdPolicy::Suffix);
-    let (dataset_uri, imported_sources, unknown_field_warnings, skipped_warnings) = if args.mode
+    let (dataset_uri, imported_sources, unknown_field_warnings, skipped_warnings) = if mode
         == ImportMode::Append
     {
         let store = StorylineLanceStore::open_uri(destination.as_str())
@@ -329,8 +342,9 @@ pub(super) async fn run_import(
                 &store,
                 &args,
                 stdin,
-                stderr,
+                &mut progress,
                 &candidates,
+                object_store_from.clone(),
                 StorylineImportOptions {
                     max_input_bytes,
                     directory_input,
@@ -347,21 +361,33 @@ pub(super) async fn run_import(
             unknown_field_warnings,
             skipped_warnings,
         )
-    } else if destination.is_object_store() {
+    } else if destination.is_object_store() || output_format == ImportOutputFormat::Storyline {
+        // Storyline imports commit in place so progressive CURRENT +
+        // chronicle.manifest updates are visible to a live catalog mount.
+        // Remote object-store targets stage locally first: Lance index builds
+        // on S3 are extremely slow, so we write+index on disk then upload.
         if destination.exists().await? {
             if replace_existing {
-                writeln!(
-                    stderr,
-                    "import to={} status=replacing",
-                    destination.as_str()
-                )
-                .context("write pChronicle import replace progress")?;
-                destination.remove_all().await.with_context(|| {
-                    format!(
-                        "remove existing object-store Dataset {}",
-                        destination.as_str()
-                    )
-                })?;
+                destination
+                    .remove_all_with_progress(|deleted, total, path| {
+                        progress.note_deleted(deleted, total, path)
+                    })
+                    .await
+                    .with_context(|| {
+                        format!("remove existing Dataset {}", destination.as_str())
+                    })?;
+                progress.finish()?;
+                // Delete progress reuses the paint lines but must not wipe discovery
+                // totals collected before replace (local candidates only).
+                progress.reset_import_counters();
+                if object_store_from.is_none() {
+                    let discovered_bytes = candidates.iter().try_fold(0u64, |total, candidate| {
+                        total
+                            .checked_add(candidate.size_hint)
+                            .context("import discovered byte count overflow")
+                    })?;
+                    progress.set_discovered(candidates.len() as u64, discovered_bytes)?;
+                }
             } else {
                 return Err(cli_boundary_error(
                     BoundaryCode::Conflict,
@@ -369,19 +395,50 @@ pub(super) async fn run_import(
                 ));
             }
         }
-        let store = StorylineLanceStore::open_uri(destination.as_str())
-            .await
-            .context("create squashed Storyline Lance Dataset")?;
         let (imported_sources, unknown_field_warnings, skipped_warnings) =
-            squash_storyline_into_store(
-                &store,
-                &args,
-                stdin,
-                stderr,
-                &candidates,
-                StorylineImportOptions::create(max_input_bytes, directory_input),
-            )
-            .await?;
+            if destination.is_object_store() {
+                progress.set_phase(ImportPhase::Writing, "local staging (indexes on disk)")?;
+                let staging = tempfile::Builder::new()
+                    .prefix("pchronicle-storyline-stage-")
+                    .tempdir()
+                    .context("create local Storyline staging directory")?;
+                let store = StorylineLanceStore::open(staging.path())
+                    .await
+                    .context("open local Storyline staging Dataset")?;
+                let result = squash_storyline_into_store(
+                    &store,
+                    &args,
+                    stdin,
+                    &mut progress,
+                    &candidates,
+                    object_store_from.clone(),
+                    StorylineImportOptions::create(max_input_bytes, directory_input),
+                )
+                .await?;
+                upload_local_storyline_dataset(staging.path(), &destination, &mut progress)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "upload staged Storyline Dataset to {}",
+                            destination.as_str()
+                        )
+                    })?;
+                result
+            } else {
+                let store = StorylineLanceStore::open_uri(destination.as_str())
+                    .await
+                    .context("create squashed Storyline Lance Dataset")?;
+                squash_storyline_into_store(
+                    &store,
+                    &args,
+                    stdin,
+                    &mut progress,
+                    &candidates,
+                    object_store_from.clone(),
+                    StorylineImportOptions::create(max_input_bytes, directory_input),
+                )
+                .await?
+            };
         (
             destination.as_str().to_string(),
             imported_sources,
@@ -407,8 +464,9 @@ pub(super) async fn run_import(
                 let mut imported_sources = Vec::new();
                 let mut skipped_warnings = Vec::new();
                 if args.stream {
-                    write_import_progress(stderr, "stdin", "processing", None)?;
+                    progress.set_phase(ImportPhase::Reading, "stdin")?;
                     let input = read_bounded(stdin, max_input_bytes, "stdin")?;
+                    progress.set_phase(ImportPhase::Parsing, "stdin")?;
                     if let Some(source) = stage_preserved_import_source(
                         args.format,
                         None,
@@ -419,27 +477,20 @@ pub(super) async fn run_import(
                         &mut unknown_field_warnings,
                         &mut skipped_warnings,
                     )? {
-                        write_import_progress(
-                            stderr,
-                            &source.source_path,
-                            "completed",
-                            Some((&source.format, source.trajectories, source.input_bytes)),
-                        )?;
+                        progress.set_phase(ImportPhase::Writing, &source.source_path)?;
+                        progress.note_imported(source.input_bytes as u64)?;
                         imported_sources.push(source);
                     } else {
-                        write_import_progress(stderr, "stdin", "skipped", None)?;
+                        progress.note_imported(input.len() as u64)?;
                     }
                 } else {
                     for candidate in &candidates {
-                        let label = format!("import source {}", candidate.relative_path.display());
-                        write_import_progress(
-                            stderr,
-                            &candidate.relative_path.to_string_lossy(),
-                            "processing",
-                            None,
-                        )?;
+                        let name = candidate.relative_path.to_string_lossy();
+                        let label = format!("import source {name}");
+                        progress.set_phase(ImportPhase::Reading, &name)?;
                         let input =
-                            read_import_candidate_bytes(candidate, max_input_bytes, &label)?;
+                            load_import_candidate_bytes(candidate, max_input_bytes, &label).await?;
+                        progress.set_phase(ImportPhase::Parsing, &name)?;
                         if let Some(source) = stage_preserved_import_source(
                             args.format,
                             Some(&candidate.path),
@@ -450,38 +501,18 @@ pub(super) async fn run_import(
                             &mut unknown_field_warnings,
                             &mut skipped_warnings,
                         )? {
-                            write_import_progress(
-                                stderr,
-                                &source.source_path,
-                                "completed",
-                                Some((&source.format, source.trajectories, source.input_bytes)),
-                            )?;
+                            progress.set_phase(ImportPhase::Writing, &source.source_path)?;
+                            progress.note_imported(source.input_bytes as u64)?;
                             imported_sources.push(source);
                         } else {
-                            write_import_progress(
-                                stderr,
-                                &candidate.relative_path.to_string_lossy(),
-                                "skipped",
-                                None,
-                            )?;
+                            progress.note_imported(input.len() as u64)?;
                         }
                     }
                 }
                 (imported_sources, unknown_field_warnings, skipped_warnings)
             }
             ImportOutputFormat::Storyline => {
-                let store = StorylineLanceStore::open(staging.path())
-                    .await
-                    .context("create squashed Storyline Lance Dataset")?;
-                squash_storyline_into_store(
-                    &store,
-                    &args,
-                    stdin,
-                    stderr,
-                    &candidates,
-                    StorylineImportOptions::create(max_input_bytes, directory_input),
-                )
-                .await?
+                unreachable!("storyline import commits in place above")
             }
             ImportOutputFormat::CompactJsonl => unreachable!("compact import handled above"),
         };
@@ -495,7 +526,7 @@ pub(super) async fn run_import(
 
         let staging_path = staging.keep();
         let mut cleanup = StagingPathGuard::new(staging_path.clone());
-        publish_staged_dataset(&staging_path, &output, replace_existing)?;
+        publish_staged_dataset(&staging_path, &output, replace_existing, Some(&mut progress)).await?;
         cleanup.disarm();
         (
             output.to_string_lossy().into_owned(),
@@ -536,9 +567,9 @@ pub(super) async fn run_import(
     serde_json::to_writer_pretty(&mut *stdout, &response)
         .context("encode pChronicle import JSON")?;
     writeln!(stdout).context("write pChronicle import JSON")?;
+    progress.finish()?;
     if let (Some(source_path), Some(format)) = (&response.source_path, &response.format) {
-        writeln!(
-            stderr,
+        progress.notice(&format!(
             "dataset_uri={} source={} format={} output_format={} trajectories={} input_bytes={}",
             response.dataset_uri,
             source_path,
@@ -548,11 +579,9 @@ pub(super) async fn run_import(
             response
                 .input_bytes
                 .expect("JSON imports always report input bytes"),
-        )
-        .context("write pChronicle import metadata")?;
+        ))?;
     } else {
-        writeln!(
-            stderr,
+        progress.notice(&format!(
             "dataset_uri={} sources={} output_format={} trajectories={} input_bytes={}",
             response.dataset_uri,
             response.sources,
@@ -561,15 +590,15 @@ pub(super) async fn run_import(
             response
                 .input_bytes
                 .expect("JSON imports always report input bytes"),
-        )
-        .context("write pChronicle import metadata")?;
+        ))?;
     }
     for line in skipped_warnings {
-        writeln!(stderr, "{line}").context("write pChronicle skipped-source warning")?;
+        progress.notice(&line)?;
     }
     for line in unknown_field_warnings.warning_lines() {
-        writeln!(stderr, "{line}").context("write pChronicle unknown-field warning")?;
+        progress.notice(&line)?;
     }
+    progress.flush_log(stderr)?;
     Ok(())
 }
 
@@ -580,7 +609,7 @@ async fn run_compact_jsonl_import(
     stderr: &mut dyn Write,
 ) -> Result<()> {
     anyhow::ensure!(
-        args.mode != ImportMode::Append,
+        args.mode()? != ImportMode::Append,
         "compact JSONL append is not supported; use sync or replace"
     );
     anyhow::ensure!(
@@ -593,7 +622,7 @@ async fn run_compact_jsonl_import(
         !output_arg.starts_with("s3://") && !output_arg.starts_with("oss://"),
         "compact JSONL currently requires local paths"
     );
-    if args.mode == ImportMode::Create {
+    if args.mode()? == ImportMode::Create {
         anyhow::ensure!(!output.exists(), "import output already exists");
     }
     let columns = args
@@ -626,7 +655,7 @@ async fn run_compact_jsonl_import(
     std::fs::File::open(staging.path())?.sync_all()?;
     let staging_path = staging.keep();
     let mut cleanup = StagingPathGuard::new(staging_path.clone());
-    publish_staged_dataset(&staging_path, output, output.exists())?;
+    publish_staged_dataset(&staging_path, output, output.exists(), None).await?;
     cleanup.disarm();
     serde_json::to_writer_pretty(
         &mut *stdout,
@@ -663,11 +692,14 @@ pub(crate) async fn sync_snapshot(
                 output: Some(storyline.to_owned()),
                 format: ExchangeFormat::CompactJsonl,
                 output_format: Some(ImportOutputFormat::CompactJsonl),
-                mode: ImportMode::Replace,
+                replace: true,
+                append: false,
+                mode: None,
                 on_duplicate: None,
                 yes: true,
                 stream: false,
                 max_input_bytes: Some(256 * 1024 * 1024),
+                commit_every: None,
                 columns: columns.to_vec(),
             },
             storyline,
@@ -687,14 +719,18 @@ pub(crate) async fn sync_snapshot(
             output: Some(warehouse.to_owned()),
             format: input_format,
             output_format: Some(ImportOutputFormat::Preserve),
-            mode: ImportMode::Replace,
+            replace: true,
+            append: false,
+            mode: None,
             on_duplicate: None,
             yes: true,
             stream: false,
             max_input_bytes: Some(256 * 1024 * 1024),
+            commit_every: None,
             columns: Vec::new(),
         },
         None,
+        false,
         false,
         &mut stdin,
         &mut stdout,
@@ -708,14 +744,18 @@ pub(crate) async fn sync_snapshot(
             output: Some(storyline.to_owned()),
             format: input_format,
             output_format: Some(ImportOutputFormat::Storyline),
-            mode: ImportMode::Replace,
+            replace: true,
+            append: false,
+            mode: None,
             on_duplicate: None,
             yes: true,
             stream: false,
             max_input_bytes: Some(256 * 1024 * 1024),
+            commit_every: None,
             columns: Vec::new(),
         },
         None,
+        false,
         false,
         &mut stdin,
         &mut stdout,
@@ -748,12 +788,168 @@ impl StorylineImportOptions {
     }
 }
 
+/// How many Sources the reader may prefetch ahead of parse/write.
+/// Bounded so large object-store imports do not buffer unbounded memory.
+const IMPORT_READ_AHEAD: usize = 3;
+/// Pipeline channel capacity for object-store discover/read events. Listing
+/// emits Discovered first; this buffer only absorbs Loaded messages while a
+/// commit is in flight.
+const IMPORT_PIPELINE_CHANNEL: usize = 16;
+
+struct PipelineLoadedSource {
+    candidate: ImportFileCandidate,
+    bytes: Vec<u8>,
+}
+
+enum PipelineMsg {
+    Scanning(String),
+    Discovered { path: String, bytes: u64 },
+    Loaded(PipelineLoadedSource),
+}
+
+fn spawn_candidates_load_producer(
+    candidates: Vec<ImportFileCandidate>,
+    max_input_bytes: usize,
+    reading_ahead: Arc<std::sync::Mutex<String>>,
+) -> (
+    tokio::sync::mpsc::Receiver<Result<PipelineMsg>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<PipelineMsg>>(IMPORT_READ_AHEAD);
+    let producer = tokio::spawn(async move {
+        for candidate in candidates {
+            let name = candidate.relative_path.to_string_lossy().into_owned();
+            if let Ok(mut guard) = reading_ahead.lock() {
+                *guard = name.clone();
+            }
+            let label = format!("import source {name}");
+            let loaded = match load_import_candidate_bytes(&candidate, max_input_bytes, &label).await
+            {
+                Ok(bytes) => Ok(PipelineMsg::Loaded(PipelineLoadedSource { candidate, bytes })),
+                Err(error) => Err(error),
+            };
+            if tx.send(loaded).await.is_err() {
+                return;
+            }
+        }
+        if let Ok(mut guard) = reading_ahead.lock() {
+            guard.clear();
+        }
+    });
+    (rx, producer)
+}
+
+fn spawn_object_store_discover_load_producer(
+    location: DatasetLocation,
+    max_input_bytes: usize,
+    reading_ahead: Arc<std::sync::Mutex<String>>,
+) -> (
+    tokio::sync::mpsc::Receiver<Result<PipelineMsg>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<PipelineMsg>>(IMPORT_PIPELINE_CHANNEL);
+    let producer = tokio::spawn(async move {
+        let remote_root = location.as_str().to_owned();
+        // List completely before any Load so discovery totals keep moving even
+        // when a later commit/index stalls the consumer.
+        let pending_files = Arc::new(std::sync::Mutex::new(Vec::<(String, u64)>::new()));
+        let list_result = location
+            .for_each_importable_json_object_event(
+                persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES,
+                |event| {
+                    let tx = tx.clone();
+                    let pending_files = Arc::clone(&pending_files);
+                    async move {
+                        match event {
+                            persisting_pchronicle::storage::ImportableObjectEvent::Scanning {
+                                prefix,
+                            } => {
+                                let _ = tx.send(Ok(PipelineMsg::Scanning(prefix))).await;
+                                Ok(())
+                            }
+                            persisting_pchronicle::storage::ImportableObjectEvent::File {
+                                key,
+                                size,
+                                ..
+                            } => {
+                                if tx
+                                    .send(Ok(PipelineMsg::Discovered {
+                                        path: key.clone(),
+                                        bytes: size,
+                                    }))
+                                    .await
+                                    .is_err()
+                                {
+                                    return Ok(());
+                                }
+                                if let Ok(mut guard) = pending_files.lock() {
+                                    guard.push((key, size));
+                                }
+                                Ok(())
+                            }
+                        }
+                    }
+                },
+            )
+            .await;
+        if let Err(error) = list_result {
+            let _ = tx.send(Err(error)).await;
+            if let Ok(mut guard) = reading_ahead.lock() {
+                guard.clear();
+            }
+            return;
+        }
+        let files = match pending_files.lock() {
+            Ok(mut guard) => std::mem::take(&mut *guard),
+            Err(_) => Vec::new(),
+        };
+        for (key, size) in files {
+            if let Ok(mut guard) = reading_ahead.lock() {
+                *guard = key.clone();
+            }
+            let relative_path = PathBuf::from(&key);
+            let candidate = ImportFileCandidate {
+                path: relative_path.clone(),
+                output_relative_path: Some(relative_path.clone()),
+                relative_path,
+                content: None,
+                remote_root: Some(remote_root.clone()),
+                size_hint: size,
+            };
+            let label = format!("import source {key}");
+            match load_import_candidate_bytes(&candidate, max_input_bytes, &label).await {
+                Ok(bytes) => {
+                    if tx
+                        .send(Ok(PipelineMsg::Loaded(PipelineLoadedSource {
+                            candidate,
+                            bytes,
+                        })))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = tx.send(Err(error)).await;
+                    break;
+                }
+            }
+        }
+        if let Ok(mut guard) = reading_ahead.lock() {
+            guard.clear();
+        }
+    });
+    (rx, producer)
+}
+
 async fn squash_storyline_into_store(
     store: &StorylineLanceStore,
     args: &ImportArgs,
     stdin: &mut dyn Read,
-    stderr: &mut dyn Write,
+    progress: &mut ImportProgress,
     candidates: &[ImportFileCandidate],
+    object_store_from: Option<DatasetLocation>,
     options: StorylineImportOptions,
 ) -> Result<(
     Vec<ImportedSource>,
@@ -768,45 +964,474 @@ async fn squash_storyline_into_store(
         allow_empty,
         append_generation,
     } = options;
-    let mut import = if args.stream {
-        StorylineImportIterator::stdin(
+    if args.stream {
+        return squash_storyline_stdin_into_store(
+            store,
             args.format,
             max_input_bytes,
             stdin,
-            stderr,
+            progress,
             seen_document_ids,
             duplicate_policy,
+            allow_empty,
+            directory_input,
+            append_generation,
+            commit_batch_schedule(args),
         )
-    } else {
-        StorylineImportIterator::files(
-            args.format,
-            max_input_bytes,
-            candidates,
-            stderr,
-            seen_document_ids,
-            duplicate_policy,
-        )
+        .await;
+    }
+    let source = match object_store_from {
+        Some(location) => ObjectStoreImportSource::Location(location),
+        None => ObjectStoreImportSource::Candidates(candidates.to_vec()),
     };
-    let report_storylines = match import.next() {
-        Some(first) => match append_generation.as_deref() {
-            Some(generation) => {
-                store
-                    .append_storyline_stream(std::iter::once(first).chain(&mut import), generation)
-                    .await?
-                    .storylines
+    squash_storyline_files_pipeline(
+        store,
+        args.format,
+        max_input_bytes,
+        progress,
+        source,
+        seen_document_ids,
+        duplicate_policy,
+        allow_empty,
+        directory_input,
+        append_generation,
+        commit_batch_schedule(args),
+    )
+    .await
+}
+
+const DEFAULT_COMMIT_BATCH_START: usize = 64;
+const DEFAULT_COMMIT_BATCH_MAX: usize = 4096;
+
+#[derive(Debug, Clone)]
+struct CommitBatchSchedule {
+    next: usize,
+    max: usize,
+    fixed: bool,
+}
+
+impl CommitBatchSchedule {
+    fn adaptive() -> Self {
+        Self {
+            next: DEFAULT_COMMIT_BATCH_START,
+            max: DEFAULT_COMMIT_BATCH_MAX,
+            fixed: false,
+        }
+    }
+
+    fn fixed(n: usize) -> Self {
+        let n = n.max(1);
+        Self {
+            next: n,
+            max: n,
+            fixed: true,
+        }
+    }
+
+    fn current(&self) -> usize {
+        self.next
+    }
+
+    fn after_commit(&mut self) {
+        if self.fixed {
+            return;
+        }
+        self.next = self.next.saturating_mul(2).min(self.max);
+    }
+}
+
+fn commit_batch_schedule(args: &ImportArgs) -> CommitBatchSchedule {
+    match args.commit_every {
+        Some(n) => CommitBatchSchedule::fixed(n),
+        None => CommitBatchSchedule::adaptive(),
+    }
+}
+
+enum ObjectStoreImportSource {
+    Candidates(Vec<ImportFileCandidate>),
+    Location(DatasetLocation),
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn squash_storyline_files_pipeline(
+    store: &StorylineLanceStore,
+    requested_format: ExchangeFormat,
+    max_input_bytes: usize,
+    progress: &mut ImportProgress,
+    source: ObjectStoreImportSource,
+    mut seen_document_ids: HashSet<String>,
+    duplicate_policy: DuplicateIdPolicy,
+    allow_empty: bool,
+    directory_input: bool,
+    mut append_generation: Option<String>,
+    mut commit_schedule: CommitBatchSchedule,
+) -> Result<(
+    Vec<ImportedSource>,
+    persisting_pchronicle::model::UnknownFieldImportWarnings,
+    Vec<String>,
+)> {
+    let reading_ahead = Arc::new(std::sync::Mutex::new(String::new()));
+    let (mut rx, producer) = match source {
+        ObjectStoreImportSource::Candidates(candidates) => {
+            spawn_candidates_load_producer(candidates, max_input_bytes, Arc::clone(&reading_ahead))
+        }
+        ObjectStoreImportSource::Location(location) => {
+            progress.set_phase(ImportPhase::Discovering, location.as_str())?;
+            spawn_object_store_discover_load_producer(
+                location,
+                max_input_bytes,
+                Arc::clone(&reading_ahead),
+            )
+        }
+    };
+
+    let mut unknown_field_warnings =
+        persisting_pchronicle::model::UnknownFieldImportWarnings::default();
+    let mut skipped_warnings = Vec::new();
+    let mut imported_sources: Vec<ImportedSource> = Vec::new();
+    let mut batch = Vec::with_capacity(commit_schedule.current());
+    let mut committed_storylines = 0u64;
+    let mut skipped_commit_storylines = 0usize;
+    let mut saw_any = false;
+    let mut current_storylines = Vec::new().into_iter();
+    let mut producer_done = false;
+    let mut discovered_any = false;
+
+    loop {
+        if let Some(mut storyline) = current_storylines.next() {
+            saw_any = true;
+            if let Some(warning) =
+                apply_duplicate_document_policy(&mut storyline, &mut seen_document_ids, duplicate_policy)
+            {
+                if warning.contains("skipped") {
+                    skipped_warnings.push(warning);
+                    continue;
+                }
+                skipped_warnings.push(warning);
+            }
+            let metadata = imported_sources
+                .last_mut()
+                .expect("decoded Storyline has source metadata");
+            metadata.trajectories = metadata
+                .trajectories
+                .checked_add(1)
+                .context("import trajectory count overflow")?;
+            batch.push(storyline);
+            if batch.len() >= commit_schedule.current() {
+                match commit_or_skip_storyline_import_batch(
+                    store,
+                    progress,
+                    std::mem::take(&mut batch),
+                    &mut append_generation,
+                    committed_storylines,
+                    &mut commit_schedule,
+                )
+                .await?
+                {
+                    StorylineBatchCommit::Committed(total) => {
+                        committed_storylines = total;
+                    }
+                    StorylineBatchCommit::Skipped { batch_len, warning } => {
+                        skipped_commit_storylines = skipped_commit_storylines
+                            .saturating_add(batch_len as usize);
+                        skipped_warnings.push(warning);
+                        retract_imported_trajectories(
+                            &mut imported_sources,
+                            batch_len as usize,
+                        );
+                    }
+                }
+                batch.reserve(commit_schedule.current());
+            }
+            continue;
+        }
+
+        if producer_done {
+            break;
+        }
+
+        // Surface producer read activity while waiting for the next Source.
+        let msg = loop {
+            if let Ok(guard) = reading_ahead.lock() {
+                progress.set_reading_ahead(guard.as_str())?;
+            }
+            tokio::select! {
+                item = rx.recv() => break item,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+            }
+        };
+        match msg {
+            Some(Ok(PipelineMsg::Scanning(prefix))) => {
+                progress.note_scanning(&prefix)?;
+            }
+            Some(Ok(PipelineMsg::Discovered { path, bytes })) => {
+                discovered_any = true;
+                progress.note_discovered(&path, bytes)?;
+            }
+            Some(Ok(PipelineMsg::Loaded(loaded))) => {
+                let name = loaded.candidate.relative_path.to_string_lossy().into_owned();
+                if let Ok(guard) = reading_ahead.lock() {
+                    progress.set_reading_ahead(guard.as_str())?;
+                }
+                progress.set_phase(ImportPhase::Parsing, &name)?;
+                match decode_import_source(
+                    requested_format,
+                    ImportOutputFormat::Storyline,
+                    Some(&loaded.candidate.path),
+                    Some(&loaded.candidate.relative_path),
+                    loaded.candidate.output_relative_path.as_deref(),
+                    &loaded.bytes,
+                    &mut unknown_field_warnings,
+                )? {
+                    DecodeImportOutcome::Imported(decoded) => {
+                        progress.set_phase(
+                            ImportPhase::Writing,
+                            &decoded.diagnostic_path.to_string_lossy(),
+                        )?;
+                        progress.note_imported(decoded.metadata.input_bytes as u64)?;
+                        let mut metadata = decoded.metadata;
+                        metadata.trajectories = 0;
+                        imported_sources.push(metadata);
+                        current_storylines = decoded.storylines.into_iter();
+                    }
+                    DecodeImportOutcome::Skipped { path, reason } => {
+                        progress.note_imported(0)?;
+                        skipped_warnings.push(skipped_import_warning(&path, &reason));
+                    }
+                }
+            }
+            Some(Err(error)) => {
+                producer.abort();
+                return Err(error);
             }
             None => {
-                store
-                    .replace_storyline_stream(std::iter::once(first).chain(&mut import))
-                    .await?
-                    .storylines
+                producer_done = true;
+                progress.clear_reading_ahead()?;
             }
-        },
-        None if allow_empty => 0,
-        None => return Err(empty_auto_directory_import_error(directory_input)),
-    };
-    let (imported_sources, unknown_field_warnings, skipped_warnings) = import.into_result_parts();
+        }
+    }
+
+    if !batch.is_empty() {
+        match commit_or_skip_storyline_import_batch(
+            store,
+            progress,
+            std::mem::take(&mut batch),
+            &mut append_generation,
+            committed_storylines,
+            &mut commit_schedule,
+        )
+        .await?
+        {
+            StorylineBatchCommit::Committed(total) => {
+                committed_storylines = total;
+            }
+            StorylineBatchCommit::Skipped { batch_len, warning } => {
+                skipped_commit_storylines =
+                    skipped_commit_storylines.saturating_add(batch_len as usize);
+                skipped_warnings.push(warning);
+                retract_imported_trajectories(&mut imported_sources, batch_len as usize);
+            }
+        }
+    }
+    progress.clear_reading_ahead()?;
+
+    match producer.await {
+        Ok(()) => {}
+        Err(error) if error.is_cancelled() => {}
+        Err(error) => return Err(anyhow!("import reader task failed: {error}")),
+    }
+
     if imported_sources.is_empty() {
+        if allow_empty && !saw_any {
+            return Ok((imported_sources, unknown_field_warnings, skipped_warnings));
+        }
+        if !discovered_any {
+            return Err(cli_boundary_error(
+                BoundaryCode::InvalidRequest,
+                "import object prefix contains no .json, .jsonl, or .ndjson files",
+            ));
+        }
+        return Err(empty_auto_directory_import_error(directory_input));
+    }
+    // Drop Sources that lost every trajectory to skipped commits so empty
+    // placeholders do not inflate the import summary.
+    if skipped_commit_storylines > 0 {
+        imported_sources.retain(|source| source.trajectories > 0);
+    }
+    if imported_sources.is_empty() {
+        return Err(anyhow!(
+            "storyline import committed no trajectories after skipping failed batches"
+        ));
+    }
+    anyhow::ensure!(
+        store.current_table_paths().await?.is_some(),
+        "squashed Storyline Lance Dataset has no committed snapshot"
+    );
+    let imported_trajectories = imported_sources.iter().try_fold(0usize, |total, source| {
+        total
+            .checked_add(source.trajectories)
+            .context("import trajectory count overflow")
+    })?;
+    anyhow::ensure!(
+        committed_storylines as usize == imported_trajectories,
+        "squashed Storyline import report does not match decoded trajectory count"
+    );
+    finalize_storyline_import_indexes(store, progress).await?;
+    Ok((imported_sources, unknown_field_warnings, skipped_warnings))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn squash_storyline_stdin_into_store(
+    store: &StorylineLanceStore,
+    requested_format: ExchangeFormat,
+    max_input_bytes: usize,
+    stdin: &mut dyn Read,
+    progress: &mut ImportProgress,
+    seen_document_ids: HashSet<String>,
+    duplicate_policy: DuplicateIdPolicy,
+    allow_empty: bool,
+    directory_input: bool,
+    append_generation: Option<String>,
+    commit_schedule: CommitBatchSchedule,
+) -> Result<(
+    Vec<ImportedSource>,
+    persisting_pchronicle::model::UnknownFieldImportWarnings,
+    Vec<String>,
+)> {
+    let import = StorylineImportIterator::stdin(
+        requested_format,
+        max_input_bytes,
+        stdin,
+        progress,
+        seen_document_ids,
+        duplicate_policy,
+    );
+    drain_storyline_import_batches(
+        store,
+        import,
+        append_generation,
+        commit_schedule,
+        allow_empty,
+        directory_input,
+    )
+    .await
+}
+
+fn apply_duplicate_document_policy(
+    storyline: &mut StorylineDocument,
+    seen_document_ids: &mut HashSet<String>,
+    duplicate_policy: DuplicateIdPolicy,
+) -> Option<String> {
+    let original = storyline.document_id().to_string();
+    match duplicate_policy {
+        DuplicateIdPolicy::Suffix => {
+            uniquify_storyline_document_id(storyline, seen_document_ids).map(
+                |(original, renamed)| {
+                    format!("warning: duplicate document_id '{original}' renamed to '{renamed}'")
+                },
+            )
+        }
+        DuplicateIdPolicy::Skip => {
+            if !seen_document_ids.insert(original.clone()) {
+                Some(format!(
+                    "warning: duplicate document_id '{original}' skipped"
+                ))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+async fn drain_storyline_import_batches(
+    store: &StorylineLanceStore,
+    mut import: StorylineImportIterator<'_>,
+    mut append_generation: Option<String>,
+    mut commit_schedule: CommitBatchSchedule,
+    allow_empty: bool,
+    directory_input: bool,
+) -> Result<(
+    Vec<ImportedSource>,
+    persisting_pchronicle::model::UnknownFieldImportWarnings,
+    Vec<String>,
+)> {
+    let mut batch = Vec::with_capacity(commit_schedule.current());
+    let mut committed_storylines = 0u64;
+    let mut skipped_commit_storylines = 0usize;
+    let mut commit_skip_warnings = Vec::new();
+    let mut saw_any = false;
+
+    loop {
+        match import.next_document().await {
+            Some(item) => {
+                saw_any = true;
+                batch.push(item?);
+                if batch.len() < commit_schedule.current() {
+                    continue;
+                }
+                match commit_or_skip_storyline_import_batch(
+                    store,
+                    import.progress,
+                    std::mem::take(&mut batch),
+                    &mut append_generation,
+                    committed_storylines,
+                    &mut commit_schedule,
+                )
+                .await?
+                {
+                    StorylineBatchCommit::Committed(total) => {
+                        committed_storylines = total;
+                    }
+                    StorylineBatchCommit::Skipped { batch_len, warning } => {
+                        skipped_commit_storylines = skipped_commit_storylines
+                            .saturating_add(batch_len as usize);
+                        commit_skip_warnings.push(warning);
+                    }
+                }
+                batch.reserve(commit_schedule.current());
+            }
+            None if batch.is_empty() => break,
+            None => {
+                match commit_or_skip_storyline_import_batch(
+                    store,
+                    import.progress,
+                    std::mem::take(&mut batch),
+                    &mut append_generation,
+                    committed_storylines,
+                    &mut commit_schedule,
+                )
+                .await?
+                {
+                    StorylineBatchCommit::Committed(total) => {
+                        committed_storylines = total;
+                    }
+                    StorylineBatchCommit::Skipped { batch_len, warning } => {
+                        skipped_commit_storylines = skipped_commit_storylines
+                            .saturating_add(batch_len as usize);
+                        commit_skip_warnings.push(warning);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    let (mut imported_sources, unknown_field_warnings, mut skipped_warnings) =
+        import.into_result_parts();
+    skipped_warnings.extend(commit_skip_warnings);
+    retract_imported_trajectories(&mut imported_sources, skipped_commit_storylines);
+    if skipped_commit_storylines > 0 {
+        imported_sources.retain(|source| source.trajectories > 0);
+    }
+    if imported_sources.is_empty() {
+        if allow_empty && !saw_any {
+            return Ok((imported_sources, unknown_field_warnings, skipped_warnings));
+        }
+        if skipped_commit_storylines > 0 {
+            return Err(anyhow!(
+                "storyline import committed no trajectories after skipping failed batches"
+            ));
+        }
         return Err(empty_auto_directory_import_error(directory_input));
     }
     anyhow::ensure!(
@@ -819,10 +1444,289 @@ async fn squash_storyline_into_store(
             .context("import trajectory count overflow")
     })?;
     anyhow::ensure!(
-        report_storylines == imported_trajectories,
+        committed_storylines as usize == imported_trajectories,
         "squashed Storyline import report does not match decoded trajectory count"
     );
+    finalize_storyline_import_indexes(store, import.progress).await?;
     Ok((imported_sources, unknown_field_warnings, skipped_warnings))
+}
+
+enum StorylineBatchCommit {
+    Committed(u64),
+    Skipped { batch_len: u64, warning: String },
+}
+
+fn is_skippable_storyline_commit_error(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}").to_ascii_lowercase();
+    text.contains("timeout")
+        || text.contains("timed out")
+        || text.contains("error sending request")
+        || text.contains("conditionnotmatch")
+        || text.contains("preconditionfailed")
+        || text.contains("precondition failed")
+        || text.contains("throttle")
+        || text.contains("slow down")
+        || text.contains("503")
+        || text.contains("429")
+        || text.contains("connection reset")
+        || text.contains("broken pipe")
+        || text.contains("lanceerror(io)")
+        || text.contains("generic s3 error")
+        || text.contains("client error (connect)")
+}
+
+fn retract_imported_trajectories(sources: &mut [ImportedSource], mut count: usize) {
+    for source in sources.iter_mut().rev() {
+        if count == 0 {
+            break;
+        }
+        let take = source.trajectories.min(count);
+        source.trajectories -= take;
+        count -= take;
+    }
+}
+
+async fn refresh_append_generation_after_skip(
+    store: &StorylineLanceStore,
+    append_generation: &mut Option<String>,
+) {
+    match store.current_table_paths().await {
+        Ok(Some(paths)) => {
+            *append_generation = Some(paths.generation);
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(
+                root = %store.root_uri(),
+                error = %error,
+                "failed to refresh Storyline generation after skipped commit batch"
+            );
+        }
+    }
+}
+
+async fn commit_or_skip_storyline_import_batch(
+    store: &StorylineLanceStore,
+    progress: &mut ImportProgress,
+    batch: Vec<StorylineDocument>,
+    append_generation: &mut Option<String>,
+    committed_storylines: u64,
+    commit_schedule: &mut CommitBatchSchedule,
+) -> Result<StorylineBatchCommit> {
+    let batch_len = batch.len() as u64;
+    let sample_ids = batch
+        .iter()
+        .take(8)
+        .map(|storyline| storyline.document_id().to_string())
+        .collect::<Vec<_>>();
+    match commit_storyline_import_batch(
+        store,
+        progress,
+        batch,
+        append_generation,
+        committed_storylines,
+    )
+    .await
+    {
+        Ok(total) => {
+            commit_schedule.after_commit();
+            Ok(StorylineBatchCommit::Committed(total))
+        }
+        Err(error) if is_skippable_storyline_commit_error(&error) => {
+            tracing::warn!(
+                committed_before = committed_storylines,
+                batch_len,
+                root = %store.root_uri(),
+                sample_document_ids = ?sample_ids,
+                error = %format!("{error:#}"),
+                "skipping storyline commit batch after transient storage failure; continuing import"
+            );
+            refresh_append_generation_after_skip(store, append_generation).await;
+            if !commit_schedule.fixed {
+                commit_schedule.next = DEFAULT_COMMIT_BATCH_START;
+            }
+            let warning = format!(
+                "warning: skipped storyline commit batch of {batch_len} trajectories (committed_before={committed_storylines}, sample_document_ids={sample_ids:?}): {error:#}"
+            );
+            let _ = progress.notice(&warning);
+            Ok(StorylineBatchCommit::Skipped { batch_len, warning })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn finalize_storyline_import_indexes(
+    store: &StorylineLanceStore,
+    progress: &mut ImportProgress,
+) -> Result<()> {
+    progress.set_phase(ImportPhase::Writing, "optimize indices (final)")?;
+    let _index_progress = progress.attach_index_progress();
+    store
+        .maintain(&persisting_pchronicle::storage::LanceMaintenanceOptions {
+            compact: false,
+            optimize_indices: true,
+            vacuum_older_than: None,
+            ..Default::default()
+        })
+        .await
+        .context("finalize Storyline indexes after progressive import")?;
+    progress.set_phase(ImportPhase::Writing, "optimize indices done")?;
+    Ok(())
+}
+
+fn collect_local_relative_files(root: &Path) -> Result<Vec<String>> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
+        for entry in std::fs::read_dir(dir)
+            .with_context(|| format!("read staging directory {}", dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                walk(root, &path, out)?;
+                continue;
+            }
+            let relative = path
+                .strip_prefix(root)
+                .with_context(|| format!("strip staging root from {}", path.display()))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !relative.is_empty() {
+                out.push(relative);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(root, root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn is_deferred_storyline_publish_key(relative: &str) -> bool {
+    matches!(
+        relative,
+        "CURRENT" | "chronicle.manifest" | ".storyline-write.lock"
+    ) || relative.ends_with("/CURRENT")
+        || relative.ends_with("/chronicle.manifest")
+}
+
+async fn upload_local_storyline_dataset(
+    local_root: &Path,
+    destination: &DatasetLocation,
+    progress: &mut ImportProgress,
+) -> Result<()> {
+    let files = collect_local_relative_files(local_root)?;
+    anyhow::ensure!(
+        files.iter().any(|path| path == "CURRENT"),
+        "staged Storyline Dataset is missing CURRENT"
+    );
+    let (deferred, eager): (Vec<_>, Vec<_>) = files
+        .into_iter()
+        .partition(|path| is_deferred_storyline_publish_key(path));
+    let total = eager.len().saturating_add(deferred.len()) as u64;
+    let mut uploaded = 0u64;
+    for relative in eager.into_iter().chain(deferred) {
+        if relative == ".storyline-write.lock" {
+            continue;
+        }
+        uploaded = uploaded.saturating_add(1);
+        progress.set_phase(
+            ImportPhase::Writing,
+            &format!(
+                "upload {uploaded}/{total} {}",
+                truncate_middle(&relative, 56)
+            ),
+        )?;
+        let bytes = tokio::fs::read(local_root.join(&relative))
+            .await
+            .with_context(|| format!("read staged file {relative}"))?;
+        destination
+            .write_relative_bytes(&relative, &bytes)
+            .await
+            .with_context(|| format!("upload staged file {relative}"))?;
+    }
+    progress.set_phase(ImportPhase::Writing, "upload complete")?;
+    Ok(())
+}
+
+async fn commit_storyline_import_batch(
+    store: &StorylineLanceStore,
+    progress: &mut ImportProgress,
+    batch: Vec<StorylineDocument>,
+    append_generation: &mut Option<String>,
+    committed_storylines: u64,
+) -> Result<u64> {
+    anyhow::ensure!(!batch.is_empty(), "storyline import commit batch is empty");
+    let batch_len = batch.len() as u64;
+    progress.set_phase(
+        ImportPhase::Writing,
+        &format!("commit {batch_len} trajectories"),
+    )?;
+    let report = match append_generation.as_deref() {
+        Some(generation) => {
+            tracing::info!(
+                committed_before = committed_storylines,
+                batch_len,
+                expected_generation = generation,
+                root = %store.root_uri(),
+                "storyline progressive append commit starting"
+            );
+            store
+                .append_storyline_stream_with_options(
+                    batch.into_iter().map(Ok),
+                    generation,
+                    persisting_pchronicle::storage::StorylineStreamOptions::defer_index_optimize(),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "storyline progressive append commit failed (committed_before={committed_storylines}, batch={batch_len}, expected_generation={generation}, root={})",
+                        store.root_uri()
+                    )
+                })?
+        }
+        None => {
+            tracing::info!(
+                batch_len,
+                root = %store.root_uri(),
+                "storyline progressive replace commit starting"
+            );
+            store
+                .replace_storyline_stream_with_options(
+                    batch.into_iter().map(Ok),
+                    persisting_pchronicle::storage::StorylineStreamOptions::defer_index_optimize(),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "storyline progressive replace commit failed (batch={batch_len}, root={})",
+                        store.root_uri()
+                    )
+                })?
+        }
+    };
+    anyhow::ensure!(
+        report.storylines as u64 == batch_len,
+        "storyline import batch report does not match batch size"
+    );
+    let paths = store
+        .current_table_paths()
+        .await?
+        .context("storyline import batch produced no committed snapshot")?;
+    let total = committed_storylines
+        .checked_add(batch_len)
+        .context("import trajectory count overflow")?;
+    persisting_pchronicle::storage::write_storyline_manifest_at_uri(
+        store.root_uri(),
+        &paths.generation,
+        total,
+        0,
+    )
+    .await
+    .context("write progressive chronicle.manifest after storyline commit")?;
+    *append_generation = Some(paths.generation.clone());
+    progress.note_committed(total)?;
+    Ok(total)
 }
 
 async fn run_canonical_event_import(
@@ -890,7 +1794,7 @@ async fn run_canonical_event_import(
     };
     if let Some((staging_path, output)) = staged_path {
         let mut cleanup = StagingPathGuard::new(staging_path.clone());
-        publish_staged_dataset(&staging_path, &output, true)?;
+        publish_staged_dataset(&staging_path, &output, true, None).await?;
         cleanup.disarm();
     }
     let response = ImportResponse {
@@ -1311,14 +2215,18 @@ fn local_file_snapshot_ref(path: &Path) -> String {
     format!("local:{}", hash.finalize().to_hex())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ImportFileCandidate {
     path: PathBuf,
     relative_path: PathBuf,
     output_relative_path: Option<PathBuf>,
-    /// Object-store imports preload file bytes so the sync decode loop can
-    /// stay synchronous. Local imports leave this empty and open `path`.
+    /// Prefetched bytes (tests / rare callers). Normal imports leave this empty
+    /// and read local paths or object-store keys on demand.
     content: Option<Vec<u8>>,
+    /// Object-store Dataset root URI; when set, bytes are fetched lazily.
+    remote_root: Option<String>,
+    /// Size from discovery (`stat` / object metadata) for progress totals.
+    size_hint: u64,
 }
 
 #[derive(Debug)]
@@ -1329,26 +2237,532 @@ struct ImportedSource {
     input_bytes: usize,
 }
 
-fn write_import_progress(
-    stderr: &mut dyn Write,
-    source: &str,
-    status: &str,
-    details: Option<(&DocumentFormat, usize, usize)>,
-) -> Result<()> {
-    if let Some((format, trajectories, input_bytes)) = details {
-        writeln!(
-            stderr,
-            "import source={} status={} format={} trajectories={} input_bytes={}",
-            source,
-            status,
-            format.as_str(),
-            trajectories,
-            input_bytes,
-        )?;
-    } else {
-        writeln!(stderr, "import source={} status={}", source, status)?;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportPhase {
+    Discovering,
+    Deleting,
+    Reading,
+    Parsing,
+    Writing,
+}
+
+impl ImportPhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Discovering => "discovering",
+            Self::Deleting => "deleting",
+            Self::Reading => "reading",
+            Self::Parsing => "parsing",
+            Self::Writing => "writing",
+        }
     }
-    Ok(())
+}
+
+/// Dense import progress: TTY paints three in-place lines; redirected stderr gets
+/// one summary line per completed source (buffered, flushed at the end).
+struct ImportProgress {
+    tty: bool,
+    discovered_files: u64,
+    discovered_bytes: u64,
+    imported_files: u64,
+    imported_bytes: u64,
+    /// Storyline trajectories successfully committed so far.
+    committed: u64,
+    /// Replace/drop delete progress (separate from discovery totals).
+    deleted_files: u64,
+    delete_total: u64,
+    phase: ImportPhase,
+    file: String,
+    /// Producer side of the read→parse pipeline (empty when idle).
+    reading_ahead: String,
+    painted: bool,
+    log_lines: Vec<String>,
+    last_paint: Option<std::time::Instant>,
+    /// Shared with index-build callbacks so Lance work updates line 3 in place.
+    surface: Arc<std::sync::Mutex<ImportProgressSurface>>,
+}
+
+#[derive(Debug, Clone)]
+struct ImportProgressSurface {
+    tty: bool,
+    painted: bool,
+    deleting: bool,
+    line1: String,
+    line2: String,
+    reading_ahead: String,
+    phase: String,
+    file: String,
+}
+
+impl ImportProgressSurface {
+    fn paint_activity(&mut self, activity: &str) -> Result<()> {
+        if !self.tty {
+            return Ok(());
+        }
+        let file = if activity.is_empty() {
+            if self.file.is_empty() {
+                "-".to_owned()
+            } else {
+                truncate_middle(&self.file, 72)
+            }
+        } else {
+            truncate_middle(activity, 96)
+        };
+        let line3 = if !self.reading_ahead.is_empty() && !activity.is_empty() {
+            format!(
+                "[reading] {} | [writing] {file}",
+                truncate_middle(&self.reading_ahead, 40),
+            )
+        } else if !self.reading_ahead.is_empty() && self.phase == "reading" {
+            format!(
+                "[reading] {}",
+                truncate_middle(&self.reading_ahead, 96)
+            )
+        } else if !self.reading_ahead.is_empty() {
+            format!(
+                "[reading] {} | [{}] {file}",
+                truncate_middle(&self.reading_ahead, 40),
+                self.phase,
+            )
+        } else {
+            format!("[{}] {file}", if activity.is_empty() { self.phase.as_str() } else { "writing" })
+        };
+
+        let mut err = std::io::stderr();
+        if self.painted {
+            write!(err, "\x1b[2A").context("move import progress cursor")?;
+        }
+        if self.deleting {
+            write!(err, "\r\x1b[2K{}\n\r\x1b[2K\n\r\x1b[2K{line3}", self.line1)
+                .context("paint delete progress")?;
+        } else {
+            write!(
+                err,
+                "\r\x1b[2K{}\n\r\x1b[2K{}\n\r\x1b[2K{line3}",
+                self.line1, self.line2
+            )
+            .context("paint import progress")?;
+        }
+        err.flush().context("flush import progress")?;
+        self.painted = true;
+        Ok(())
+    }
+}
+
+impl ImportProgress {
+    fn new(tty: bool) -> Self {
+        Self {
+            tty,
+            discovered_files: 0,
+            discovered_bytes: 0,
+            imported_files: 0,
+            imported_bytes: 0,
+            committed: 0,
+            deleted_files: 0,
+            delete_total: 0,
+            phase: ImportPhase::Discovering,
+            file: String::new(),
+            reading_ahead: String::new(),
+            painted: false,
+            log_lines: Vec::new(),
+            last_paint: None,
+            surface: Arc::new(std::sync::Mutex::new(ImportProgressSurface {
+                tty,
+                painted: false,
+                deleting: false,
+                line1: String::new(),
+                line2: String::new(),
+                reading_ahead: String::new(),
+                phase: ImportPhase::Discovering.as_str().to_owned(),
+                file: String::new(),
+            })),
+        }
+    }
+
+    fn attach_index_progress(&self) -> persisting_pchronicle::storage::IndexBuildProgressGuard {
+        let surface = Arc::clone(&self.surface);
+        persisting_pchronicle::storage::install_index_build_progress(Arc::new(move |message| {
+            if let Ok(mut surface) = surface.lock() {
+                let _ = surface.paint_activity(message);
+            }
+        }))
+    }
+
+    fn reset_import_counters(&mut self) {
+        self.imported_files = 0;
+        self.imported_bytes = 0;
+        self.committed = 0;
+        self.deleted_files = 0;
+        self.delete_total = 0;
+        self.reading_ahead.clear();
+        self.file.clear();
+    }
+
+    fn set_discovered(&mut self, files: u64, bytes: u64) -> Result<()> {
+        self.discovered_files = files;
+        self.discovered_bytes = bytes;
+        self.phase = ImportPhase::Discovering;
+        self.file.clear();
+        self.paint(false)
+    }
+
+    fn note_discovered(&mut self, file: &str, bytes: u64) -> Result<()> {
+        self.discovered_files = self.discovered_files.saturating_add(1);
+        self.discovered_bytes = self.discovered_bytes.saturating_add(bytes);
+        self.phase = ImportPhase::Discovering;
+        self.file = file.to_owned();
+        // Throttle TTY paints during large listings so discovery stays responsive.
+        let should_paint = !self.tty
+            || self
+                .last_paint
+                .map(|at| at.elapsed() >= std::time::Duration::from_millis(100))
+                .unwrap_or(true)
+            || self.discovered_files == 1
+            || self.discovered_files % 64 == 0;
+        if should_paint {
+            self.paint(true)?;
+        }
+        Ok(())
+    }
+
+    fn note_scanning(&mut self, prefix: &str) -> Result<()> {
+        self.phase = ImportPhase::Discovering;
+        self.file = if prefix.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("{prefix}/")
+        };
+        let should_paint = !self.tty
+            || self
+                .last_paint
+                .map(|at| at.elapsed() >= std::time::Duration::from_millis(100))
+                .unwrap_or(true);
+        if should_paint {
+            self.paint(true)?;
+        }
+        Ok(())
+    }
+
+    fn note_deleted(&mut self, deleted: u64, total: u64, path: &str) -> Result<()> {
+        self.deleted_files = deleted;
+        self.delete_total = total;
+        self.phase = ImportPhase::Deleting;
+        self.file = path.to_owned();
+        if deleted == total {
+            // Always emit a final summary line for non-TTY logs.
+            return self.paint(false);
+        }
+        let should_paint = !self.tty
+            || path.is_empty()
+            || self
+                .last_paint
+                .map(|at| at.elapsed() >= std::time::Duration::from_millis(100))
+                .unwrap_or(true)
+            || deleted == 1
+            || deleted % 64 == 0;
+        if should_paint {
+            self.paint(true)?;
+        }
+        Ok(())
+    }
+
+    fn set_phase(&mut self, phase: ImportPhase, file: &str) -> Result<()> {
+        self.phase = phase;
+        self.file = file.to_owned();
+        self.paint(true)
+    }
+
+    fn set_reading_ahead(&mut self, file: &str) -> Result<()> {
+        self.reading_ahead = file.to_owned();
+        let should_paint = !self.tty
+            || self
+                .last_paint
+                .map(|at| at.elapsed() >= std::time::Duration::from_millis(100))
+                .unwrap_or(true);
+        if should_paint {
+            self.paint(true)?;
+        }
+        Ok(())
+    }
+
+    fn clear_reading_ahead(&mut self) -> Result<()> {
+        if self.reading_ahead.is_empty() {
+            return Ok(());
+        }
+        self.reading_ahead.clear();
+        self.paint(true)
+    }
+
+    fn note_imported(&mut self, bytes: u64) -> Result<()> {
+        self.imported_files = self.imported_files.saturating_add(1);
+        self.imported_bytes = self.imported_bytes.saturating_add(bytes);
+        self.paint(false)
+    }
+
+    fn note_committed(&mut self, committed: u64) -> Result<()> {
+        self.committed = committed;
+        self.phase = ImportPhase::Writing;
+        self.file = format!("commit trajectories={committed}");
+        self.paint(false)
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        if let Ok(surface) = self.surface.lock() {
+            self.painted = surface.painted;
+        }
+        if self.tty && self.painted {
+            let mut err = std::io::stderr();
+            writeln!(err).context("finish import progress")?;
+            err.flush().context("flush import progress")?;
+            self.painted = false;
+            if let Ok(mut surface) = self.surface.lock() {
+                surface.painted = false;
+            }
+        }
+        Ok(())
+    }
+
+    fn notice(&mut self, message: &str) -> Result<()> {
+        self.finish()?;
+        if self.tty {
+            let mut err = std::io::stderr();
+            writeln!(err, "{message}").context("write import notice")?;
+            err.flush().context("flush import notice")?;
+        } else {
+            self.log_lines.push(message.to_owned());
+        }
+        Ok(())
+    }
+
+    fn flush_log(self, out: &mut dyn Write) -> Result<()> {
+        for line in self.log_lines {
+            writeln!(out, "{line}").context("flush import progress log")?;
+        }
+        Ok(())
+    }
+
+    fn paint(&mut self, phase_only: bool) -> Result<()> {
+        if let Ok(surface) = self.surface.lock() {
+            self.painted = surface.painted;
+        }
+        let deleting = self.phase == ImportPhase::Deleting;
+        let line1 = if deleting {
+            format!(
+                "deleted:total = {}/{}",
+                self.deleted_files, self.delete_total
+            )
+        } else {
+            format!(
+                "imported:discovered = {}/{}",
+                self.imported_files, self.discovered_files
+            )
+        };
+        let line2 = if deleting {
+            String::new()
+        } else {
+            format!(
+                "committed = {} ; size = {}:{}",
+                self.committed,
+                format_byte_count(self.imported_bytes),
+                format_byte_count(self.discovered_bytes)
+            )
+        };
+        let file = if self.file.is_empty() {
+            "-".to_owned()
+        } else {
+            truncate_middle(&self.file, 72)
+        };
+        let line3 = if !self.reading_ahead.is_empty()
+            && matches!(
+                self.phase,
+                ImportPhase::Parsing | ImportPhase::Writing
+            )
+        {
+            format!(
+                "[reading] {} | [{}] {file}",
+                truncate_middle(&self.reading_ahead, 48),
+                self.phase.as_str(),
+            )
+        } else if !self.reading_ahead.is_empty() && self.phase == ImportPhase::Reading {
+            format!(
+                "[reading] {}",
+                truncate_middle(&self.reading_ahead, 96)
+            )
+        } else {
+            format!("[{}] {file}", self.phase.as_str())
+        };
+
+        if let Ok(mut surface) = self.surface.lock() {
+            surface.tty = self.tty;
+            surface.deleting = deleting;
+            surface.line1 = line1.clone();
+            surface.line2 = line2.clone();
+            surface.reading_ahead = self.reading_ahead.clone();
+            surface.phase = self.phase.as_str().to_owned();
+            surface.file = self.file.clone();
+            surface.painted = self.painted;
+        }
+
+        if self.tty {
+            let mut err = std::io::stderr();
+            if self.painted {
+                write!(err, "\x1b[2A").context("move import progress cursor")?;
+            }
+            if deleting {
+                write!(err, "\r\x1b[2K{line1}\n\r\x1b[2K\n\r\x1b[2K{line3}")
+                    .context("paint delete progress")?;
+            } else {
+                write!(err, "\r\x1b[2K{line1}\n\r\x1b[2K{line2}\n\r\x1b[2K{line3}")
+                    .context("paint import progress")?;
+            }
+            err.flush().context("flush import progress")?;
+            self.painted = true;
+            if let Ok(mut surface) = self.surface.lock() {
+                surface.painted = true;
+            }
+            self.last_paint = Some(std::time::Instant::now());
+            return Ok(());
+        }
+
+        if phase_only {
+            return Ok(());
+        }
+        if deleting {
+            self.log_lines
+                .push(format!("{line1}; {line3}"));
+        } else {
+            self.log_lines
+                .push(format!("{line1}; {line2}; {line3}"));
+        }
+        Ok(())
+    }
+}
+
+fn format_byte_count(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let value = bytes as f64;
+    if value >= GIB {
+        format!("{:.1}GiB", value / GIB)
+    } else if value >= MIB {
+        format!("{:.1}MiB", value / MIB)
+    } else if value >= KIB {
+        format!("{:.1}KiB", value / KIB)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
+fn truncate_middle(value: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= max_chars {
+        return value.to_owned();
+    }
+    if max_chars <= 3 {
+        return chars.into_iter().take(max_chars).collect();
+    }
+    let head = (max_chars - 1) / 2;
+    let tail = max_chars - 1 - head;
+    let mut out: String = chars.iter().take(head).collect();
+    out.push('…');
+    out.extend(chars.iter().skip(chars.len() - tail));
+    out
+}
+
+#[cfg(test)]
+mod import_progress_tests {
+    use super::*;
+
+    #[test]
+    fn commit_batch_schedule_grows_to_cap() {
+        let mut schedule = CommitBatchSchedule::adaptive();
+        assert_eq!(schedule.current(), 64);
+        schedule.after_commit();
+        assert_eq!(schedule.current(), 128);
+        schedule.after_commit();
+        assert_eq!(schedule.current(), 256);
+        schedule.after_commit();
+        assert_eq!(schedule.current(), 512);
+        schedule.after_commit();
+        assert_eq!(schedule.current(), 1024);
+        schedule.after_commit();
+        assert_eq!(schedule.current(), 2048);
+        schedule.after_commit();
+        assert_eq!(schedule.current(), 4096);
+        schedule.after_commit();
+        assert_eq!(schedule.current(), 4096);
+    }
+
+    #[test]
+    fn skippable_commit_errors_cover_s3_timeouts_and_preconditions() {
+        assert!(is_skippable_storyline_commit_error(&anyhow!(
+            "LanceError(IO): Generic S3 error: operation timed out"
+        )));
+        assert!(is_skippable_storyline_commit_error(&anyhow!(
+            "ConditionNotMatch (persistent) PreconditionFailed"
+        )));
+        assert!(!is_skippable_storyline_commit_error(&anyhow!(
+            "duplicate document_id policy rejected payload"
+        )));
+    }
+
+    #[test]
+    fn retract_imported_trajectories_from_tail_sources() {
+        let mut sources = vec![
+            ImportedSource {
+                source_path: "a.json".into(),
+                format: DocumentFormat::Atif,
+                trajectories: 3,
+                input_bytes: 10,
+            },
+            ImportedSource {
+                source_path: "b.json".into(),
+                format: DocumentFormat::Atif,
+                trajectories: 2,
+                input_bytes: 10,
+            },
+        ];
+        retract_imported_trajectories(&mut sources, 3);
+        assert_eq!(sources[0].trajectories, 2);
+        assert_eq!(sources[1].trajectories, 0);
+    }
+
+    #[test]
+    fn commit_batch_schedule_fixed_stays_put() {
+        let mut schedule = CommitBatchSchedule::fixed(50);
+        assert_eq!(schedule.current(), 50);
+        schedule.after_commit();
+        assert_eq!(schedule.current(), 50);
+    }
+
+    #[test]
+    fn format_byte_count_uses_binary_units() {
+        assert_eq!(format_byte_count(512), "512B");
+        assert_eq!(format_byte_count(1536), "1.5KiB");
+        assert_eq!(format_byte_count(2 * 1024 * 1024), "2.0MiB");
+    }
+
+    #[test]
+    fn non_tty_progress_emits_dense_completed_lines() {
+        let mut progress = ImportProgress::new(false);
+        progress.set_discovered(2, 300).unwrap();
+        progress.set_phase(ImportPhase::Reading, "a/long.json").unwrap();
+        progress.set_phase(ImportPhase::Parsing, "a/long.json").unwrap();
+        progress.note_imported(100).unwrap();
+        progress.set_phase(ImportPhase::Writing, "b.json").unwrap();
+        progress.note_imported(200).unwrap();
+        progress.note_committed(3).unwrap();
+        let mut out = Vec::new();
+        progress.flush_log(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("imported:discovered = 1/2"), "{text}");
+        assert!(text.contains("imported:discovered = 2/2"), "{text}");
+        assert!(text.contains("committed = 3"), "{text}");
+        assert!(text.contains("size ="), "{text}");
+        assert!(text.contains("[writing] commit trajectories=3") || text.contains("[writing] b.json") || text.contains("[parsing] a/long.json"), "{text}");
+        assert!(!text.contains("status=fetching"), "{text}");
+    }
 }
 
 fn collect_import_candidates(input: &Path) -> Result<(bool, Vec<ImportFileCandidate>)> {
@@ -1366,6 +2780,7 @@ fn collect_import_candidates(input: &Path) -> Result<(bool, Vec<ImportFileCandid
             .file_name()
             .map(PathBuf::from)
             .context("import input file has no filename")?;
+        let size_hint = metadata.len();
         return Ok((
             false,
             vec![ImportFileCandidate {
@@ -1373,6 +2788,8 @@ fn collect_import_candidates(input: &Path) -> Result<(bool, Vec<ImportFileCandid
                 relative_path,
                 output_relative_path: None,
                 content: None,
+                remote_root: None,
+                size_hint,
             }],
         ));
     }
@@ -1388,11 +2805,16 @@ fn collect_import_candidates(input: &Path) -> Result<(bool, Vec<ImportFileCandid
             .strip_prefix(input)
             .context("derive Dataset-relative import source path")?
             .to_path_buf();
+        let size_hint = std::fs::metadata(&path)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
         candidates.push(ImportFileCandidate {
             path,
             output_relative_path: Some(relative_path.clone()),
             relative_path,
             content: None,
+            remote_root: None,
+            size_hint,
         });
     }
     candidates.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
@@ -1452,53 +2874,7 @@ fn is_visible_json_file(path: &Path) -> bool {
         })
 }
 
-async fn collect_object_store_import_candidates(
-    location: &DatasetLocation,
-    stderr: &mut dyn Write,
-) -> Result<(bool, Vec<ImportFileCandidate>)> {
-    writeln!(
-        stderr,
-        "import from={} status=discovering",
-        location.as_str()
-    )
-    .context("write pChronicle import discovery progress")?;
-    let keys = location
-        .list_importable_json_objects(persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)
-        .await
-        .with_context(|| format!("discover importable objects under {}", location.as_str()))?;
-    if keys.is_empty() {
-        return Err(cli_boundary_error(
-            BoundaryCode::InvalidRequest,
-            "import object prefix contains no .json, .jsonl, or .ndjson files",
-        ));
-    }
-    writeln!(
-        stderr,
-        "import from={} status=discovered files={}",
-        location.as_str(),
-        keys.len()
-    )
-    .context("write pChronicle import discovery progress")?;
-
-    let mut candidates = Vec::with_capacity(keys.len());
-    for key in keys {
-        let relative_path = PathBuf::from(&key);
-        write_import_progress(stderr, &key, "fetching", None)?;
-        let content = location
-            .read_relative_bytes(&key)
-            .await
-            .with_context(|| format!("read import object {key} under {}", location.as_str()))?;
-        candidates.push(ImportFileCandidate {
-            path: relative_path.clone(),
-            output_relative_path: Some(relative_path.clone()),
-            relative_path,
-            content: Some(content),
-        });
-    }
-    Ok((true, candidates))
-}
-
-fn read_import_candidate_bytes(
+async fn load_import_candidate_bytes(
     candidate: &ImportFileCandidate,
     max_input_bytes: usize,
     label: &str,
@@ -1509,6 +2885,19 @@ fn read_import_candidate_bytes(
             "{label} exceeds max_input_bytes limit of {max_input_bytes}"
         );
         return Ok(content.clone());
+    }
+    if let Some(remote_root) = &candidate.remote_root {
+        let key = candidate.relative_path.to_string_lossy().replace('\\', "/");
+        let location = DatasetLocation::parse(remote_root)?;
+        let bytes = location
+            .read_relative_bytes(&key)
+            .await
+            .with_context(|| format!("read import object {key} under {remote_root}"))?;
+        anyhow::ensure!(
+            bytes.len() <= max_input_bytes,
+            "{label} exceeds max_input_bytes limit of {max_input_bytes}"
+        );
+        return Ok(bytes);
     }
     let file = std::fs::File::open(&candidate.path).with_context(|| format!("open {label}"))?;
     read_bounded(file, max_input_bytes, label)
@@ -1542,16 +2931,12 @@ enum ImportFormatResolution {
 
 enum StorylineImportInputs<'a> {
     Stdin(Option<&'a mut dyn Read>),
-    Files {
-        candidates: &'a [ImportFileCandidate],
-        next: usize,
-    },
 }
 
 struct StorylineImportIterator<'a> {
     requested_format: ExchangeFormat,
     max_input_bytes: usize,
-    progress: &'a mut dyn Write,
+    progress: &'a mut ImportProgress,
     inputs: StorylineImportInputs<'a>,
     current: std::vec::IntoIter<StorylineDocument>,
     imported_sources: Vec<ImportedSource>,
@@ -1567,7 +2952,7 @@ impl<'a> StorylineImportIterator<'a> {
         requested_format: ExchangeFormat,
         max_input_bytes: usize,
         stdin: &'a mut dyn Read,
-        progress: &'a mut dyn Write,
+        progress: &'a mut ImportProgress,
         seen_document_ids: HashSet<String>,
         duplicate_policy: DuplicateIdPolicy,
     ) -> Self {
@@ -1587,74 +2972,22 @@ impl<'a> StorylineImportIterator<'a> {
         }
     }
 
-    fn files(
-        requested_format: ExchangeFormat,
-        max_input_bytes: usize,
-        candidates: &'a [ImportFileCandidate],
-        progress: &'a mut dyn Write,
-        seen_document_ids: HashSet<String>,
-        duplicate_policy: DuplicateIdPolicy,
-    ) -> Self {
-        Self {
-            requested_format,
-            max_input_bytes,
-            progress,
-            inputs: StorylineImportInputs::Files {
-                candidates,
-                next: 0,
-            },
-            current: Vec::new().into_iter(),
-            imported_sources: Vec::new(),
-            unknown_field_warnings:
-                persisting_pchronicle::model::UnknownFieldImportWarnings::default(),
-            skipped_warnings: Vec::new(),
-            seen_document_ids,
-            duplicate_policy,
-            failed: false,
-        }
-    }
-
-    fn decode_next_source(&mut self) -> Result<Option<DecodedImportSource>> {
+    async fn decode_next_source(&mut self) -> Result<Option<DecodedImportSource>> {
         loop {
             let outcome = match &mut self.inputs {
                 StorylineImportInputs::Stdin(stdin) => {
                     let Some(stdin) = stdin.take() else {
                         return Ok(None);
                     };
-                    write_import_progress(self.progress, "stdin", "processing", None)?;
+                    self.progress.set_phase(ImportPhase::Reading, "stdin")?;
                     let input = read_bounded(stdin, self.max_input_bytes, "stdin")?;
+                    self.progress.set_phase(ImportPhase::Parsing, "stdin")?;
                     decode_import_source(
                         self.requested_format,
                         ImportOutputFormat::Storyline,
                         None,
                         None,
                         None,
-                        &input,
-                        &mut self.unknown_field_warnings,
-                    )?
-                }
-                StorylineImportInputs::Files { candidates, next } => {
-                    let Some(candidate) = candidates.get(*next) else {
-                        return Ok(None);
-                    };
-                    *next = next
-                        .checked_add(1)
-                        .context("import Source index overflow")?;
-                    let label = format!("import source {}", candidate.relative_path.display());
-                    write_import_progress(
-                        self.progress,
-                        &candidate.relative_path.to_string_lossy(),
-                        "processing",
-                        None,
-                    )?;
-                    let input =
-                        read_import_candidate_bytes(candidate, self.max_input_bytes, &label)?;
-                    decode_import_source(
-                        self.requested_format,
-                        ImportOutputFormat::Storyline,
-                        Some(&candidate.path),
-                        Some(&candidate.relative_path),
-                        candidate.output_relative_path.as_deref(),
                         &input,
                         &mut self.unknown_field_warnings,
                     )?
@@ -1662,20 +2995,16 @@ impl<'a> StorylineImportIterator<'a> {
             };
             match outcome {
                 DecodeImportOutcome::Imported(decoded) => {
-                    write_import_progress(
-                        self.progress,
+                    self.progress.set_phase(
+                        ImportPhase::Writing,
                         &decoded.diagnostic_path.to_string_lossy(),
-                        "completed",
-                        Some((
-                            &decoded.metadata.format,
-                            decoded.metadata.trajectories,
-                            decoded.metadata.input_bytes,
-                        )),
                     )?;
+                    self.progress
+                        .note_imported(decoded.metadata.input_bytes as u64)?;
                     return Ok(Some(decoded));
                 }
                 DecodeImportOutcome::Skipped { path, reason } => {
-                    write_import_progress(self.progress, &path.to_string_lossy(), "skipped", None)?;
+                    self.progress.note_imported(0)?;
                     self.skipped_warnings
                         .push(skipped_import_warning(&path, &reason));
                 }
@@ -1696,12 +3025,8 @@ impl<'a> StorylineImportIterator<'a> {
             self.skipped_warnings,
         )
     }
-}
 
-impl Iterator for StorylineImportIterator<'_> {
-    type Item = Result<StorylineDocument>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    async fn next_document(&mut self) -> Option<Result<StorylineDocument>> {
         loop {
             if let Some(mut storyline) = self.current.next() {
                 let original = storyline.document_id().to_string();
@@ -1738,7 +3063,7 @@ impl Iterator for StorylineImportIterator<'_> {
             if self.failed {
                 return None;
             }
-            match self.decode_next_source() {
+            match self.decode_next_source().await {
                 Ok(Some(decoded)) => {
                     let mut metadata = decoded.metadata;
                     metadata.trajectories = 0;
@@ -2147,7 +3472,12 @@ impl Drop for StagingPathGuard {
     }
 }
 
-fn publish_staged_dataset(staging: &Path, output: &Path, replace_existing: bool) -> Result<()> {
+async fn publish_staged_dataset(
+    staging: &Path,
+    output: &Path,
+    replace_existing: bool,
+    progress: Option<&mut ImportProgress>,
+) -> Result<()> {
     let parent = output
         .parent()
         .context("Dataset output must have a parent directory")?;
@@ -2183,8 +3513,25 @@ fn publish_staged_dataset(staging: &Path, output: &Path, replace_existing: bool)
             backup.display()
         )
     })?;
-    std::fs::remove_dir_all(&backup)
-        .with_context(|| format!("delete replaced Dataset backup {}", backup.display()))?;
+    let backup_location = DatasetLocation::parse(
+        backup
+            .to_str()
+            .context("replaced Dataset backup path is not valid UTF-8")?,
+    )?;
+    if let Some(progress) = progress {
+        backup_location
+            .remove_all_with_progress(|deleted, total, path| {
+                progress.note_deleted(deleted, total, path)
+            })
+            .await
+            .with_context(|| format!("delete replaced Dataset backup {}", backup.display()))?;
+        progress.finish()?;
+    } else {
+        backup_location
+            .remove_all()
+            .await
+            .with_context(|| format!("delete replaced Dataset backup {}", backup.display()))?;
+    }
     sync_dataset_parent(parent)?;
     Ok(())
 }

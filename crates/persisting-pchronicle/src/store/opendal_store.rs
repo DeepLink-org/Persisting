@@ -6,11 +6,37 @@
 
 use anyhow::{Context, Result, anyhow};
 use futures::TryStreamExt;
+use opendal::layers::RetryLayer;
 use opendal::{EntryMode, ErrorKind, Metadata, Operator};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use url::Url;
+
+/// Retries for transient object-store failures (DNS blips, connect resets,
+/// 5xx, rate limits). Tuned for long imports over flaky endpoints: up to 8
+/// retries with exponential backoff + jitter, capped at 30s.
+fn with_object_store_retries(operator: Operator) -> Operator {
+    operator.layer(
+        RetryLayer::new()
+            .with_notify(|event: opendal::layers::RetryEvent<'_>| {
+                tracing::warn!(
+                    target: "pchronicle.opendal",
+                    attempt = event.attempt,
+                    retry_after_ms = event.retry_after.as_millis() as u64,
+                    op = ?event.op,
+                    error = %event.err,
+                    "retrying temporary object-store error"
+                );
+            })
+            .with_jitter()
+            .with_factor(2.0)
+            .with_min_delay(Duration::from_millis(500))
+            .with_max_delay(Duration::from_secs(30))
+            .with_max_times(8),
+    )
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Version {
@@ -63,14 +89,18 @@ impl Store {
             if let Some(operator) = map.get(uri) {
                 operator.clone()
             } else {
-                let operator = Operator::from_uri(normalized.as_str())
-                    .with_context(|| format!("open OpenDAL store {uri}"))?;
+                let operator = with_object_store_retries(
+                    Operator::from_uri(normalized.as_str())
+                        .with_context(|| format!("open OpenDAL store {uri}"))?,
+                );
                 map.insert(uri.to_string(), operator.clone());
                 operator
             }
         } else {
-            Operator::from_uri(normalized.as_str())
-                .with_context(|| format!("open OpenDAL store {uri}"))?
+            with_object_store_retries(
+                Operator::from_uri(normalized.as_str())
+                    .with_context(|| format!("open OpenDAL store {uri}"))?,
+            )
         };
         let fallback_lock = if shared_memory {
             let locks = SHARED_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -130,7 +160,19 @@ impl Store {
             .if_match(condition)
             .await
             .map(|_| ())
-            .map_err(Into::into)
+            .map_err(|error| {
+                if is_conflict(&error) {
+                    tracing::debug!(
+                        target: "pchronicle.opendal",
+                        path,
+                        if_match = condition,
+                        error = %error,
+                        kind = ?error.kind(),
+                        "conditional object write conflict (If-Match)"
+                    );
+                }
+                error.into()
+            })
     }
 
     pub(crate) async fn write_overwrite(&self, path: &str, bytes: Vec<u8>) -> Result<()> {
@@ -252,4 +294,20 @@ fn normalize_uri(uri: &str) -> Result<String> {
             .map_err(|_| anyhow!("invalid URI scheme"))?;
     }
     Ok(parsed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn object_store_operator_accepts_retry_layer() -> Result<()> {
+        let store = Store::from_uri("shared-memory://pchronicle-retry-layer/root").await?;
+        store
+            .write_overwrite("probe.json", b"{\"ok\":true}".to_vec())
+            .await?;
+        let loaded = store.read("probe.json").await?.context("probe missing")?;
+        assert_eq!(loaded.0, b"{\"ok\":true}");
+        Ok(())
+    }
 }

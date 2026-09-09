@@ -751,15 +751,23 @@ struct ImportArgs {
     #[arg(short = 'o', long = "output-format", value_enum)]
     output_format: Option<ImportOutputFormat>,
 
-    /// Destination behavior: create a new Dataset, append, or replace.
-    #[arg(long, value_enum, default_value_t = ImportMode::Create)]
-    mode: ImportMode,
+    /// Replace an existing destination Dataset (after confirmation unless --yes).
+    #[arg(long, conflicts_with = "append")]
+    replace: bool,
+
+    /// Append trajectories into an existing Storyline Dataset.
+    #[arg(long, conflicts_with = "replace")]
+    append: bool,
+
+    /// Deprecated alias for --replace/--append/--create. Prefer --replace or --append.
+    #[arg(long, value_enum, hide = true)]
+    mode: Option<ImportMode>,
 
     /// How append handles an existing document ID.
     #[arg(long, value_enum, value_name = "suffix|skip")]
     on_duplicate: Option<DuplicateIdPolicy>,
 
-    /// Skip the destructive confirmation required by --mode replace.
+    /// Skip the destructive confirmation required by --replace.
     #[arg(short = 'y', long)]
     yes: bool,
 
@@ -771,11 +779,35 @@ struct ImportArgs {
     #[arg(long, value_parser = parse_byte_size, default_value = "256MiB")]
     max_input_bytes: Option<usize>,
 
+    /// Fixed Storyline commit batch size. When omitted, batch size grows
+    /// 64 → 128 → … → 4096 (then stays at 4096) so early progress stays fine
+    /// while later commits amortize CURRENT / Lance overhead.
+    #[arg(long, value_name = "N")]
+    commit_every: Option<usize>,
+
     /// Compact JSONL mapping. id/timestamp override $.id/$.timestamp; missing or invalid id values
     /// use source_filename#line_number; other names add JSONB columns.
     /// Example: --column id=$.event.id --column model=$.payload.model.
     #[arg(long = "column", value_name = "NAME=JSON_PATH", action = clap::ArgAction::Append)]
     columns: Vec<String>,
+}
+
+impl ImportArgs {
+    fn mode(&self) -> Result<ImportMode> {
+        match (self.replace, self.append, self.mode) {
+            (true, true, _) => Err(anyhow!("--replace and --append cannot be combined")),
+            (true, false, Some(ImportMode::Append)) => Err(anyhow!(
+                "--replace conflicts with --mode append; omit --mode"
+            )),
+            (false, true, Some(ImportMode::Replace)) => Err(anyhow!(
+                "--append conflicts with --mode replace; omit --mode"
+            )),
+            (true, false, _) => Ok(ImportMode::Replace),
+            (false, true, _) => Ok(ImportMode::Append),
+            (false, false, Some(mode)) => Ok(mode),
+            (false, false, None) => Ok(ImportMode::Create),
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -1508,17 +1540,19 @@ pub async fn run_with_stdin(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
-    run_with_stdio(cli, false, stdout_is_terminal, stdin, stdout, stderr).await
+    run_with_stdio(cli, false, stdout_is_terminal, false, stdin, stdout, stderr).await
 }
 
 pub async fn run_with_stdio(
     cli: Cli,
     stdin_is_terminal: bool,
     stdout_is_terminal: bool,
+    stderr_is_terminal: bool,
     stdin: &mut dyn Read,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
+    server::request_log::init_cli_tracing(cli.log_level);
     let config = cli.config.as_deref();
     let mut diagnostics = DiagnosticWriter::new(cli.log_level, stderr);
     match cli.command {
@@ -1582,6 +1616,7 @@ pub async fn run_with_stdio(
                 args,
                 config,
                 stdin_is_terminal,
+                stderr_is_terminal,
                 stdin,
                 stdout,
                 &mut diagnostics,

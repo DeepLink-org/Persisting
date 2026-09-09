@@ -609,6 +609,7 @@ pub(crate) async fn commit_pending_content(
     snapshot_version: Option<u64>,
     pending: PendingContent,
     reopen_concurrent_create: bool,
+    build_indexes: bool,
 ) -> Result<u64> {
     let mut objects = pending.objects.into_values().collect::<Vec<_>>();
     objects.sort_by(|left, right| left.reference.content_id.cmp(&right.reference.content_id));
@@ -616,7 +617,7 @@ pub(crate) async fn commit_pending_content(
 
     let mut dataset = if let Some(snapshot_version) = snapshot_version {
         let mut dataset = open_objects(path, snapshot_version).await?;
-        let latest = Dataset::open(&uri).await?.version_id();
+        let latest = super::open_dataset_uri(&uri).await?.version_id();
         if latest != snapshot_version {
             dataset.restore().await.with_context(|| {
                 format!(
@@ -639,11 +640,15 @@ pub(crate) async fn commit_pending_content(
             .await
         {
             Ok(mut dataset) => {
-                ensure_content_index(&mut dataset).await?;
+                // Progressive imports defer indexes until a final maintain();
+                // creating btree here would stall every first-batch commit.
+                if build_indexes {
+                    ensure_content_index(&mut dataset).await?;
+                }
                 return Ok(dataset.version_id());
             }
             Err(lance::Error::DatasetAlreadyExists { .. }) if reopen_concurrent_create => {
-                Dataset::open(&uri).await.with_context(|| {
+                super::open_dataset_uri(&uri).await.with_context(|| {
                     format!(
                         "reopen concurrently created Storyline content store {}",
                         path.display()
@@ -679,6 +684,32 @@ pub(crate) async fn commit_pending_content(
         .execute_stream(reader)
         .await
         .with_context(|| format!("append Storyline content store {}", path.display()))?;
+    if build_indexes {
+        ensure_content_index(&mut dataset).await?;
+        dataset
+            .optimize_indices(&lance_index::optimize::OptimizeOptions::append())
+            .await
+            .with_context(|| format!("extend Storyline content index {}", path.display()))?;
+    }
+    Ok(dataset.version_id())
+}
+
+/// Ensure + extend the objects.lance content_id btree (used by final maintain).
+pub(crate) async fn ensure_optimize_objects_content_index(
+    path: &Path,
+    snapshot_version: u64,
+) -> Result<u64> {
+    let uri = path.to_string_lossy().into_owned();
+    let mut dataset = open_objects(path, snapshot_version).await?;
+    let latest = super::open_dataset_uri(&uri).await?.version_id();
+    if latest != snapshot_version {
+        dataset.restore().await.with_context(|| {
+            format!(
+                "restore Storyline content store {} to version {snapshot_version}",
+                path.display()
+            )
+        })?;
+    }
     ensure_content_index(&mut dataset).await?;
     dataset
         .optimize_indices(&lance_index::optimize::OptimizeOptions::append())
@@ -696,6 +727,11 @@ async fn ensure_content_index(dataset: &mut Dataset) -> Result<()> {
     {
         return Ok(());
     }
+    crate::store::index_build_progress::note(format!(
+        "index {}.{} btree 1/1",
+        crate::store::index_build_progress::table_label(dataset.uri()),
+        CONTENT_ID_COLUMN
+    ));
     let _admission = super::super::index_build_gate::acquire().await;
     dataset
         .create_index(
@@ -746,7 +782,7 @@ fn content_id_predicate<'a>(values: impl IntoIterator<Item = &'a str>) -> String
 }
 
 pub(crate) async fn open_objects(path: &Path, version: u64) -> Result<Dataset> {
-    let dataset = Dataset::open(path.to_string_lossy().as_ref())
+    let dataset = super::open_dataset_uri(path.to_string_lossy().as_ref())
         .await
         .with_context(|| format!("open Storyline content store {}", path.display()))?;
     dataset.checkout_version(version).await.with_context(|| {

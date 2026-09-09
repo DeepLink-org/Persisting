@@ -129,7 +129,7 @@ Warehouse / Catalog MAY 在进程内缓存已发现的 leaf stats 与前缀聚�
 
 | 字段 | 类型 | 规则 |
 |---|---|---|
-| `format` | string | `kind = "leaf"` 时 MUST 存在；v1 写入方 MUST 使用 `compact-jsonl/v1` |
+| `format` | string | `kind = "leaf"` 时 MUST 存在；v1 写入方 MUST 使用 `compact-jsonl/v1` 或 `storyline/v1` |
 
 未知 `format` 值 MUST 被通用读者保留；特定格式 opener MAY 拒绝不支持的值。
 
@@ -185,6 +185,9 @@ kind = "branch"
   MUST 只通过该 store API，不得在上层另写并行 sidecar。
 - Compact JSONL `import` / 成功 republish / `sync` snapshot MUST 在输出 dataset 根写入
   `chronicle.manifest`。
+- Storyline `import`（`--output-format storyline`）MUST 在每次分批 commit 后更新输出根上的
+  leaf `chronicle.manifest`（`format = "storyline/v1"`，`record_count` 为已提交累计条数），
+  以便 Warehouse catalog / explorer 在导入过程中观察到进展。
 - 本机文件系统上的写入 MUST 原子（写临时文件再 rename）。
 - 物理写入成功后，`fingerprint` MUST 匹配已发布修订，且 `[stats].record_count` MUST 等于已发布行数。
 - 若 dataset 写成功但 manifest 写失败，`import_path` MUST 失败（不发布半成品契约）；对

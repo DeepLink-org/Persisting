@@ -43,11 +43,12 @@ pub use rows::{
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
+use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use fs2::FileExt;
@@ -78,8 +79,8 @@ use crate::formats::unknown_fields::{compute_unknown_key_counts, validate_unknow
 
 use self::content::{
     PendingContent, STORYLINE_OBJECTS_DATASET, collect_content_ids, commit_pending_content,
-    content_columns, externalize_batches, externalize_unknown_field_values, hydrate_batches,
-    open_objects, prune_unreferenced_objects,
+    content_columns, ensure_optimize_objects_content_index, externalize_batches,
+    externalize_unknown_field_values, hydrate_batches, open_objects, prune_unreferenced_objects,
 };
 use super::AtifReader;
 use super::{LanceMaintenanceOptions, LanceMaintenanceReport, root_write_lock};
@@ -211,6 +212,9 @@ pub struct StorylineLanceStore {
     control_store: OpendalStore,
     write_lock: Arc<tokio::sync::Mutex<()>>,
     control_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Some S3-compatible gateways always 412 on If-Match PUT. After the first
+    /// verified content-stable fallback, skip conditional writes for CURRENT.
+    current_if_match_unreliable: Arc<std::sync::atomic::AtomicBool>,
     content_options: StorylineContentOptions,
 }
 
@@ -443,6 +447,31 @@ fn release_waiting_content_create(root_uri: &str, first: bool) {
     }
 }
 
+/// Options for streaming Storyline writes.
+#[derive(Debug, Clone, Copy)]
+pub struct StorylineStreamOptions {
+    /// When true, run Lance index ensure/optimize at the end of this stream.
+    /// Progressive imports set this false and call [`StorylineLanceStore::maintain`]
+    /// once after all batches land.
+    pub optimize_indices: bool,
+}
+
+impl Default for StorylineStreamOptions {
+    fn default() -> Self {
+        Self {
+            optimize_indices: true,
+        }
+    }
+}
+
+impl StorylineStreamOptions {
+    pub fn defer_index_optimize() -> Self {
+        Self {
+            optimize_indices: false,
+        }
+    }
+}
+
 impl StorylineLanceStore {
     pub async fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
@@ -523,6 +552,7 @@ impl StorylineLanceStore {
             control_lock: Arc::new(tokio::sync::Mutex::new(())),
             root_uri,
             control_store,
+            current_if_match_unreliable: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             content_options: StorylineContentOptions::default(),
         })
     }
@@ -585,17 +615,36 @@ impl StorylineLanceStore {
         let Some(paths) = self.resolve_current_table_paths().await? else {
             return Ok(None);
         };
-        tokio::try_join!(
-            validate_table(&paths.generation, &paths.runs, paths.runs_version),
-            validate_table(&paths.generation, &paths.steps, paths.steps_version),
+        // Object-store gateways choke when Lance opens four datasets at once
+        // (each list/_versions + retries). Validate sequentially there; keep
+        // local try_join for speed.
+        if self.is_remote_object_store() {
+            validate_table(&paths.generation, &paths.runs, paths.runs_version).await?;
+            validate_table(&paths.generation, &paths.steps, paths.steps_version).await?;
             validate_table(
                 &paths.generation,
                 &paths.tool_calls,
-                paths.tool_calls_version
-            ),
-            validate_table(&paths.generation, &paths.objects, paths.objects_version),
-        )?;
+                paths.tool_calls_version,
+            )
+            .await?;
+            validate_table(&paths.generation, &paths.objects, paths.objects_version).await?;
+        } else {
+            tokio::try_join!(
+                validate_table(&paths.generation, &paths.runs, paths.runs_version),
+                validate_table(&paths.generation, &paths.steps, paths.steps_version),
+                validate_table(
+                    &paths.generation,
+                    &paths.tool_calls,
+                    paths.tool_calls_version
+                ),
+                validate_table(&paths.generation, &paths.objects, paths.objects_version),
+            )?;
+        }
         Ok(Some(paths))
+    }
+
+    fn is_remote_object_store(&self) -> bool {
+        self.root_uri.contains("://") && !matches!(self.storage_scheme(), "file" | "file+uring")
     }
 
     /// Return the generation and every stable per-document identity from one
@@ -657,6 +706,7 @@ impl StorylineLanceStore {
                 Some(projection),
                 StorylineStreamWriteMode::Replace,
                 None,
+                StorylineStreamOptions::default(),
             )
             .await?;
         published_storyline_report(outcome)?;
@@ -698,6 +748,28 @@ impl StorylineLanceStore {
                 None,
                 StorylineStreamWriteMode::Replace,
                 None,
+                StorylineStreamOptions::default(),
+            )
+            .await?;
+        published_storyline_report(outcome)
+    }
+
+    /// Like [`Self::replace_storyline_stream`], with explicit stream options.
+    pub async fn replace_storyline_stream_with_options<I>(
+        &self,
+        stories: I,
+        options: StorylineStreamOptions,
+    ) -> Result<StorylineStreamImportReport>
+    where
+        I: IntoIterator<Item = Result<StorylineDocument>>,
+    {
+        let outcome = self
+            .replace_storyline_stream_with_projection(
+                stories,
+                None,
+                StorylineStreamWriteMode::Replace,
+                None,
+                options,
             )
             .await?;
         published_storyline_report(outcome)
@@ -713,12 +785,31 @@ impl StorylineLanceStore {
     where
         I: IntoIterator<Item = Result<StorylineDocument>>,
     {
+        self.append_storyline_stream_with_options(
+            stories,
+            expected_generation,
+            StorylineStreamOptions::default(),
+        )
+        .await
+    }
+
+    /// Like [`Self::append_storyline_stream`], with explicit stream options.
+    pub async fn append_storyline_stream_with_options<I>(
+        &self,
+        stories: I,
+        expected_generation: &str,
+        options: StorylineStreamOptions,
+    ) -> Result<StorylineStreamImportReport>
+    where
+        I: IntoIterator<Item = Result<StorylineDocument>>,
+    {
         let outcome = self
             .replace_storyline_stream_with_projection(
                 stories,
                 None,
                 StorylineStreamWriteMode::Replace,
                 Some(expected_generation),
+                options,
             )
             .await?;
         published_storyline_report(outcome)
@@ -739,6 +830,7 @@ impl StorylineLanceStore {
                 Some(projection),
                 StorylineStreamWriteMode::Replace,
                 None,
+                StorylineStreamOptions::default(),
             )
             .await?;
         published_storyline_report(outcome)
@@ -758,6 +850,7 @@ impl StorylineLanceStore {
             Some(projection),
             StorylineStreamWriteMode::CreateProjection,
             None,
+            StorylineStreamOptions::default(),
         )
         .await
     }
@@ -780,6 +873,7 @@ impl StorylineLanceStore {
                 Some(projection),
                 StorylineStreamWriteMode::Rebuild,
                 None,
+                StorylineStreamOptions::default(),
             )
             .await?;
         published_storyline_report(outcome)
@@ -791,6 +885,7 @@ impl StorylineLanceStore {
         projection: Option<StorylineProjectionLineage>,
         mode: StorylineStreamWriteMode,
         required_generation: Option<&str>,
+        stream_options: StorylineStreamOptions,
     ) -> Result<StorylineProjectionPublicationOutcome>
     where
         I: IntoIterator<Item = Result<StorylineDocument>>,
@@ -912,31 +1007,38 @@ impl StorylineLanceStore {
                             original.as_ref().map(|paths| paths.objects_version),
                             pending,
                             mode == StorylineStreamWriteMode::CreateProjection,
+                            stream_options.optimize_indices,
                         )
                         .await;
                         #[cfg(test)]
                         release_waiting_content_create(&self.root_uri, first_content_create);
                         let objects_version = objects_result?;
-                        let (runs_version, steps_version, tool_calls_version) = tokio::try_join!(
-                            write_batches(
-                                &created.runs,
-                                run_batches,
-                                story_runs_arrow_schema(),
-                                &RUN_INDEXES,
-                            ),
-                            write_batches(
-                                &created.steps,
-                                step_batches,
-                                story_steps_arrow_schema(),
-                                &STEP_INDEXES,
-                            ),
-                            write_batches(
-                                &created.tool_calls,
-                                tool_call_batches,
-                                story_tool_calls_arrow_schema(),
-                                &TOOL_CALL_INDEXES,
-                            ),
-                        )?;
+                        let (runs_version, steps_version, tool_calls_version) =
+                            join3_remote_aware(
+                                self.is_remote_object_store(),
+                                write_batches(
+                                    &created.runs,
+                                    run_batches,
+                                    story_runs_arrow_schema(),
+                                    &RUN_INDEXES,
+                                    stream_options.optimize_indices,
+                                ),
+                                write_batches(
+                                    &created.steps,
+                                    step_batches,
+                                    story_steps_arrow_schema(),
+                                    &STEP_INDEXES,
+                                    stream_options.optimize_indices,
+                                ),
+                                write_batches(
+                                    &created.tool_calls,
+                                    tool_call_batches,
+                                    story_tool_calls_arrow_schema(),
+                                    &TOOL_CALL_INDEXES,
+                                    stream_options.optimize_indices,
+                                ),
+                            )
+                            .await?;
                         created.runs_version = runs_version;
                         created.steps_version = steps_version;
                         created.tool_calls_version = tool_calls_version;
@@ -951,34 +1053,38 @@ impl StorylineLanceStore {
                             Some(current.objects_version),
                             pending,
                             false,
+                            stream_options.optimize_indices,
                         )
                         .await?;
-                        let (runs_version, steps_version, tool_calls_version) = tokio::try_join!(
-                            replace_table_batches(
-                                &current.runs,
-                                current.runs_version,
-                                &predicate,
-                                &["document_id"],
-                                run_batches,
-                                story_runs_arrow_schema(),
-                            ),
-                            replace_table_batches(
-                                &current.steps,
-                                current.steps_version,
-                                &predicate,
-                                &["document_id", "step_id"],
-                                step_batches,
-                                story_steps_arrow_schema(),
-                            ),
-                            replace_table_batches(
-                                &current.tool_calls,
-                                current.tool_calls_version,
-                                &predicate,
-                                &["document_id", "step_id", "call_index"],
-                                tool_call_batches,
-                                story_tool_calls_arrow_schema(),
-                            ),
-                        )?;
+                        let (runs_version, steps_version, tool_calls_version) =
+                            join3_remote_aware(
+                                self.is_remote_object_store(),
+                                replace_table_batches(
+                                    &current.runs,
+                                    current.runs_version,
+                                    &predicate,
+                                    &["document_id"],
+                                    run_batches,
+                                    story_runs_arrow_schema(),
+                                ),
+                                replace_table_batches(
+                                    &current.steps,
+                                    current.steps_version,
+                                    &predicate,
+                                    &["document_id", "step_id"],
+                                    step_batches,
+                                    story_steps_arrow_schema(),
+                                ),
+                                replace_table_batches(
+                                    &current.tool_calls,
+                                    current.tool_calls_version,
+                                    &predicate,
+                                    &["document_id", "step_id", "call_index"],
+                                    tool_call_batches,
+                                    story_tool_calls_arrow_schema(),
+                                ),
+                            )
+                            .await?;
                         current.runs_version = runs_version;
                         current.steps_version = steps_version;
                         current.tool_calls_version = tool_calls_version;
@@ -993,12 +1099,12 @@ impl StorylineLanceStore {
                 .as_ref()
                 .context("missing streamed Storyline tables")?;
             let (runs_version, steps_version, tool_calls_version) =
-                // Build indexes for a new store (including a small import),
-                // and periodically after a large streamed import. Replacing
-                // one small region in an existing store must not rebuild and
-                // optimize every FTS/JSON index on every write; callers that
-                // need to catch up appended fragments can invoke `maintain`.
-                if original.is_none() || report.storylines > STREAM_IMPORT_STORIES {
+                // Build/optimize indexes for a brand-new store, or after a large
+                // one-shot streamed write. Progressive imports pass
+                // optimize_indices=false and call maintain() once at the end.
+                if stream_options.optimize_indices
+                    && (original.is_none() || report.storylines > STREAM_IMPORT_STORIES)
+                {
                     let maintenance = LanceMaintenanceOptions {
                         // Extend scalar, FTS, and JSON indices once after
                         // import, without putting compaction in the ingest
@@ -1008,7 +1114,8 @@ impl StorylineLanceStore {
                         vacuum_older_than: None,
                         ..Default::default()
                     };
-                    let (runs, steps, tool_calls) = tokio::try_join!(
+                    let (runs, steps, tool_calls) = join3_remote_aware(
+                        self.is_remote_object_store(),
                         maintain_table_layout(
                             &current.runs,
                             current.runs_version,
@@ -1027,7 +1134,8 @@ impl StorylineLanceStore {
                             &TOOL_CALL_INDEXES,
                             &maintenance,
                         ),
-                    )?;
+                    )
+                    .await?;
                     (
                         runs.final_version
                             .context("missing imported runs version")?,
@@ -1166,16 +1274,18 @@ impl StorylineLanceStore {
             } else {
                 original.clone()
             };
-            let (runs, steps, tool_calls) = tokio::try_join!(
-                maintain_table_layout(&paths.runs, paths.runs_version, &RUN_INDEXES, options,),
-                maintain_table_layout(&paths.steps, paths.steps_version, &STEP_INDEXES, options,),
+            let (runs, steps, tool_calls) = join3_remote_aware(
+                self.is_remote_object_store(),
+                maintain_table_layout(&paths.runs, paths.runs_version, &RUN_INDEXES, options),
+                maintain_table_layout(&paths.steps, paths.steps_version, &STEP_INDEXES, options),
                 maintain_table_layout(
                     &paths.tool_calls,
                     paths.tool_calls_version,
                     &TOOL_CALL_INDEXES,
                     options,
                 ),
-            )?;
+            )
+            .await?;
             let runs_version = runs
                 .final_version
                 .context("missing maintained runs version")?;
@@ -1208,9 +1318,15 @@ impl StorylineLanceStore {
                 &tool_call_batches,
                 StorylineTableKind::ToolCalls,
             )?);
-            let (objects_version, objects_removed) =
+            let (mut objects_version, objects_removed) =
                 prune_unreferenced_objects(&paths.objects, paths.objects_version, &live_objects)
                     .await?;
+            // Progressive imports defer objects.lance btree until here so
+            // mid-batch commits only write data.
+            if options.optimize_indices {
+                objects_version =
+                    ensure_optimize_objects_content_index(&paths.objects, objects_version).await?;
+            }
             let generation = next_generation();
             let snapshot = StorylineSnapshotPointer {
                 schema_version: STORYLINE_LANCE_SCHEMA_VERSION,
@@ -1322,6 +1438,7 @@ impl StorylineLanceStore {
                 None,
                 StorylineStreamWriteMode::Replace,
                 None,
+                StorylineStreamOptions::default(),
             )
             .await?;
         published_storyline_report(outcome)?;
@@ -1476,18 +1593,21 @@ impl StorylineLanceStore {
                 run_batches,
                 story_runs_arrow_schema(),
                 &RUN_INDEXES,
+                true,
             ),
             write_batches(
                 &cloned.steps,
                 step_batches,
                 story_steps_arrow_schema(),
                 &STEP_INDEXES,
+                true,
             ),
             write_batches(
                 &cloned.tool_calls,
                 tool_call_batches,
                 story_tool_calls_arrow_schema(),
                 &TOOL_CALL_INDEXES,
+                true,
             ),
         )?;
         cloned.generation.clone_from(&source.generation);
@@ -1668,15 +1788,25 @@ async fn write_local_current(path: PathBuf, contents: Vec<u8>) -> Result<()> {
 }
 
 async fn validate_table(generation: &str, path: &Path, version: u64) -> Result<()> {
-    let dataset = Dataset::open(path.to_string_lossy().as_ref())
-        .await
-        .with_context(|| {
-            format!(
-                "Storyline generation '{}' is incomplete: cannot open {}",
-                generation,
+    let uri = path.to_string_lossy();
+    let dataset = open_dataset_uri(uri.as_ref()).await.map_err(|error| {
+        if is_not_found_storage_error(&error) {
+            error.context(format!(
+                "Storyline generation '{generation}' is incomplete: cannot open {}",
                 path.display()
-            )
-        })?;
+            ))
+        } else if is_transient_storage_error(&error) {
+            error.context(format!(
+                "Storyline generation '{generation}' could not be verified: object-store timeout opening {} (likely gateway overload, not a missing generation)",
+                path.display()
+            ))
+        } else {
+            error.context(format!(
+                "Storyline generation '{generation}' could not be verified: failed to open {}",
+                path.display()
+            ))
+        }
+    })?;
     dataset.checkout_version(version).await.with_context(|| {
         format!(
             "Storyline generation '{generation}' references missing version {version} of {}",
@@ -1684,6 +1814,119 @@ async fn validate_table(generation: &str, path: &Path, version: u64) -> Result<(
         )
     })?;
     Ok(())
+}
+
+const DATASET_OPEN_MAX_ATTEMPTS: u32 = 8;
+
+fn error_chain_text(error: &anyhow::Error) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(err) = source {
+        parts.push(err.to_string());
+        source = err.source();
+    }
+    parts.join(" | ").to_ascii_lowercase()
+}
+
+fn is_transient_storage_error(error: &anyhow::Error) -> bool {
+    let text = error_chain_text(error);
+    [
+        "timeout",
+        "timed out",
+        "error sending request",
+        "connection reset",
+        "connection refused",
+        "broken pipe",
+        "temporarily unavailable",
+        "slowdown",
+        "throttl",
+        "503",
+        "429",
+        "connect",
+        "tcp connect",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
+fn is_not_found_storage_error(error: &anyhow::Error) -> bool {
+    let text = error_chain_text(error);
+    [
+        "not found",
+        "nosuchkey",
+        "no such key",
+        "404",
+        "does not exist",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+        && !is_transient_storage_error(error)
+}
+
+/// Open a Lance dataset with retries for flaky object-store gateways.
+pub(super) async fn open_dataset_uri(uri: &str) -> Result<Dataset> {
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let _permit = crate::store::object_store_io_gate::acquire(
+            uri,
+            crate::store::object_store_io_gate::IoKind::Read,
+        )
+        .await;
+        match Dataset::open(uri).await {
+            Ok(dataset) => {
+                crate::store::object_store_io_gate::note_success(uri);
+                return Ok(dataset);
+            }
+            Err(error) => {
+                let error = anyhow::Error::from(error);
+                if !is_transient_storage_error(&error) {
+                    return Err(error).with_context(|| format!("open Lance dataset {uri}"));
+                }
+                crate::store::object_store_io_gate::note_failure(
+                    uri,
+                    crate::store::object_store_io_gate::IoKind::Read,
+                );
+                if attempt >= DATASET_OPEN_MAX_ATTEMPTS {
+                    return Err(error).with_context(|| format!("open Lance dataset {uri}"));
+                }
+                crate::store::index_build_progress::note(format!(
+                    "retry open {} ({attempt}/{DATASET_OPEN_MAX_ATTEMPTS})",
+                    crate::store::index_build_progress::table_label(uri)
+                ));
+                tracing::warn!(
+                    uri = %uri,
+                    attempt,
+                    max_attempts = DATASET_OPEN_MAX_ATTEMPTS,
+                    error = %error,
+                    "transient object-store error opening Lance dataset; retrying under I/O gate"
+                );
+                // Shared AIMD delay is applied on the next acquire(); keep a
+                // small per-attempt floor so we never spin.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
+/// Run three table futures in parallel locally, or sequentially on remote
+/// object stores so we do not open/write three Lance datasets at once.
+async fn join3_remote_aware<A, B, C, FA, FB, FC>(
+    remote: bool,
+    a: FA,
+    b: FB,
+    c: FC,
+) -> Result<(A, B, C)>
+where
+    FA: Future<Output = Result<A>>,
+    FB: Future<Output = Result<B>>,
+    FC: Future<Output = Result<C>>,
+{
+    if remote {
+        Ok((a.await?, b.await?, c.await?))
+    } else {
+        tokio::try_join!(a, b, c)
+    }
 }
 
 fn normalize_root_uri(value: &str) -> Result<String> {
@@ -1770,7 +2013,17 @@ async fn ensure_table_indexes(dataset: &mut Dataset, indexes: &[(&str, IndexType
     if dataset.count_rows(None).await? == 0 {
         return Ok(());
     }
-    for (column, index_type) in indexes {
+    let table = crate::store::index_build_progress::table_label(dataset.uri()).to_string();
+    let scalar_total = indexes.len();
+    for (offset, (column, index_type)) in indexes.iter().enumerate() {
+        let kind = match index_type {
+            IndexType::Bitmap => "bitmap",
+            _ => "btree",
+        };
+        crate::store::index_build_progress::note(format!(
+            "index {table}.{column} {kind} {}/{scalar_total}",
+            offset + 1
+        ));
         let builtin = match index_type {
             IndexType::Bitmap => BuiltinIndexType::Bitmap,
             _ => BuiltinIndexType::BTree,
@@ -1833,6 +2086,13 @@ async fn maintain_table_layout(
         })?;
     }
     if options.optimize_indices {
+        crate::store::object_store_io_gate::mark_kind(
+            crate::store::object_store_io_gate::IoKind::Write,
+        );
+        crate::store::index_build_progress::note(format!(
+            "optimize indices {}",
+            crate::store::index_build_progress::table_label(path.to_string_lossy().as_ref())
+        ));
         ensure_table_indexes(&mut dataset, indexes)
             .await
             .with_context(|| format!("ensure Storyline indices for {}", path.display()))?;
@@ -1869,7 +2129,7 @@ async fn vacuum_table(
     let Some(retention) = retention else {
         return Ok(LanceMaintenanceReport::default());
     };
-    let dataset = Dataset::open(path.to_string_lossy().as_ref())
+    let dataset = open_dataset_uri(path.to_string_lossy().as_ref())
         .await
         .with_context(|| format!("open Storyline table {} for vacuum", path.display()))?;
     let retention = chrono::Duration::from_std(retention)
@@ -1895,14 +2155,14 @@ fn merge_maintenance_reports(
 }
 
 async fn latest_table_version(path: &Path) -> Result<u64> {
-    Ok(Dataset::open(path.to_string_lossy().as_ref())
+    Ok(open_dataset_uri(path.to_string_lossy().as_ref())
         .await
         .with_context(|| format!("open Storyline Lance table {}", path.display()))?
         .version_id())
 }
 
 async fn open_table_version(path: &Path, version: u64) -> Result<Dataset> {
-    let dataset = Dataset::open(path.to_string_lossy().as_ref())
+    let dataset = open_dataset_uri(path.to_string_lossy().as_ref())
         .await
         .with_context(|| format!("open Storyline Lance table {}", path.display()))?;
     dataset.checkout_version(version).await.with_context(|| {

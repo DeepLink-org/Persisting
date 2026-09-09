@@ -16,11 +16,11 @@ dataset 根写入 leaf `chronicle.manifest`，便于后续 discovery 不必仅�
 
 ```bash
 pchronicle import --from input.json \
-  --to ./imported --input-format atif
+ --to ./imported --input-format atif
 ```
 
-默认 `--mode create` 会拒绝已有目标。`--mode append` 用于已有 Storyline Dataset；重复
-`document_id` 默认增加 `#N` 后缀，也可用 `--on-duplicate skip` 跳过。`--mode replace` 会先
+默认会拒绝已有目标。`--append` 用于已有 Storyline Dataset；重复
+`document_id` 默认增加 `#N` 后缀，也可用 `--on-duplicate skip` 跳过。`--replace` 会先
 把完整导入写入临时路径，确认后以 rename 事务替换已有的本地 Dataset，最后才删除旧数据；要求
 交互确认或传入 `--yes`。对象存储 Dataset 的 replace 会先清空目标前缀再写入（非原子；中断可能导致目标暂时为空）。普通文件可以自动识别。目录输入会递归扫描
 `.json`、`.jsonl` 与 `.ndjson` 文件；默认输出会保留其相对
@@ -37,7 +37,7 @@ pchronicle import --from ./claude-sessions --to ./claude-ds --input-format claud
 
 ```bash
 pchronicle import --from ./corpus --to ./normalized \
-  --output-format storyline
+ --output-format storyline
 ```
 
 经过验证且非空的 canonical Event Store 会在 JSON 扫描前被识别，并始终创建
@@ -56,7 +56,7 @@ squash 后，Dataset 所有规范化表中的 `_file_` 都是 `.`：
 
 ```bash
 pchronicle query ./normalized \
-  --sql 'SELECT _file_, COUNT(*) AS runs FROM dataset.runs GROUP BY _file_'
+ --sql 'SELECT _file_, COUNT(*) AS runs FROM dataset.runs GROUP BY _file_'
 ```
 
 Storyline 输出中的 `document_id` 全局唯一；冲突时会确定性地增加 `#N` 后缀，append 也可用
@@ -71,7 +71,7 @@ ATIF `.jsonl` 与 `.ndjson` 输入会逐条解码其中的非空记录。递归�
 
 ```bash
 cat input.json | pchronicle import --from - \
-  --to ./imported --input-format openai-messages
+ --to ./imported --input-format openai-messages
 ```
 
 导入后检查新边界：
@@ -85,14 +85,14 @@ pchronicle stats overview ./imported
 
 ```bash
 pchronicle export --from ./imported \
-  --to restored.json --output-format atif
+ --to restored.json --output-format atif
 ```
 
 需要时使用文件路径与外部 ID 缩小导出范围：
 
 ```bash
 pchronicle export --from ./imported --to one.json --output-format actf \
-  --source source.json --session-id session-42 --strict
+ --source source.json --session-id session-42 --strict
 ```
 
 目标格式无法保留原交换文档时，`--strict` 会失败。输出文件默认 create-only，覆盖必须显式
