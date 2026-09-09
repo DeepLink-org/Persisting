@@ -487,7 +487,8 @@ fn rewrite_request(shared: &BridgeShared, body: &[u8]) -> anyhow::Result<Bytes> 
         // Greedy reasoning models can loop until the output cap and emit an
         // empty turn; the endpoint only disables thinking through the chat
         // template, which OpenCode cannot express.
-        payload["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": false });
+        payload["chat_template_kwargs"] =
+            serde_json::json!({ "enable_thinking": false });
         changed = true;
     }
     if changed || shared.strip_prompt.is_some() {
@@ -589,10 +590,8 @@ fn is_hop_by_hop_header(name: &str) -> bool {
 }
 
 fn url_path_prefix(base: &str) -> Result<String, ReplayError> {
-    let parsed = reqwest::Url::parse(base).replay_context(
-        ReplayErrorKind::Configuration,
-        "parse OpenCode upstream URL",
-    )?;
+    let parsed = reqwest::Url::parse(base)
+        .replay_context(ReplayErrorKind::Configuration, "parse OpenCode upstream URL")?;
     let path = parsed.path().trim_end_matches('/');
     Ok(path.to_owned())
 }
