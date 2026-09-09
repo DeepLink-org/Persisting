@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -25,6 +25,7 @@ use crate::model::{
     AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch,
     ToolCall,
 };
+use crate::opencode_bridge;
 use crate::process::{ProcessSpec, run_process};
 
 #[derive(Debug, Clone, Copy)]
@@ -990,13 +991,11 @@ fn continue_native_cli(
     // pass a verifier while A(N+1) is no longer comparable with A'(N+1).
     let session_id = continuation_session_id(agent, plan, context)?;
     let mut command = agent_command(&launch.entrypoint, context);
-    // The OpenCode arm returns early; these seeds only feed the Codex path.
-    #[allow(unused_assignments)]
     let mut codex_bridge = None;
-    #[allow(unused_assignments)]
     let mut codex_transport_prompt = None;
-    #[allow(unused_assignments)]
     let mut codex_prompt_mode = None;
+    let mut opencode_bridge = None;
+    let mut opencode_transport_prompt = None;
     command.env("PVISOR_REPLAY_TRAJECTORY", reconstructed);
     command.env("PVISOR_REPLAY_AFTER_STEP", plan.after_step.to_string());
     command.env(
@@ -1011,18 +1010,95 @@ fn continue_native_cli(
     match agent {
         NativeJsonlAgent::Opencode => {
             let session_id = opencode_session_id(&session_id);
-            // The CLI refuses `run --session` without a message, and any
-            // message would contaminate the boundary. Continue through the
-            // server API instead; see opencode_server_continuation.
-            let _ = &command;
-            return opencode_server_continuation(
-                plan,
-                context,
-                journal,
-                prefix,
+            // `opencode run --session` refuses to start without a message.
+            // Pass a unique transport nonce as that message and strip it on
+            // the wire through the local bridge, so the first live request
+            // still ends exactly at the replayed boundary observation.
+            let explicit_prompt = context.request.boundary_user_prompt().map(str::to_owned);
+            let transport_prompt = explicit_prompt
+                .clone()
+                .unwrap_or_else(|| format!("pvisor-opencode-resume-{}", context.nonce));
+            let temperature = env_f64("PVISOR_OPENCODE_TEMPERATURE");
+            let top_p = env_f64("PVISOR_OPENCODE_TOP_P");
+            let bridge = opencode_bridge::OpencodeBridgeHandle::start(
+                context.session_id,
+                explicit_prompt.is_none().then(|| transport_prompt.clone()),
+                temperature,
+                top_p,
+                context.request.disable_thinking,
+            )?;
+            let opencode_config = context.state_dir.join("opencode-config");
+            let opencode_data = context.state_dir.join("opencode-data");
+            write_opencode_provider_config(
+                &opencode_config,
+                Some(&bridge.base_url),
+                temperature,
+                top_p,
+            )?;
+            let export_path = context.output_dir.join("native/opencode-session.json");
+            atomic_write_json(
+                &export_path,
+                &opencode_export(plan, prefix, &session_id, &context.request.workspace),
+            )?;
+            let mut import = agent_command(&launch.entrypoint, context);
+            import.args([
+                "import",
+                export_path.to_str().ok_or_else(|| {
+                    ReplayError::configuration("OpenCode export path is not valid UTF-8")
+                })?,
+            ]);
+            import.env("XDG_CONFIG_HOME", &opencode_config);
+            import.env("XDG_DATA_HOME", &opencode_data);
+            import.env("OPENCODE_DISABLE_AUTOUPDATE", "1");
+            let import_log = logs.join("opencode-import.log");
+            let imported = run_process(ProcessSpec {
+                command: import,
+                stdin: None,
+                timeout: Duration::from_secs(5 * 60),
+                termination_grace: Duration::from_secs(2),
+                pipe_grace: Duration::from_millis(250),
+                retained_bytes: MAX_TOOL_OUTPUT_BYTES / 4,
+                log_path: import_log.clone(),
+            })
+            .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
+            if !imported.status.success() {
+                return Err(ReplayError::classify_continuation(
+                    format!(
+                        "OpenCode session import exited {}; see {}",
+                        imported.status,
+                        import_log.display()
+                    ),
+                    &String::from_utf8_lossy(&imported.stderr_tail),
+                ));
+            }
+            command.env("XDG_CONFIG_HOME", &opencode_config);
+            command.env("XDG_DATA_HOME", &opencode_data);
+            command.env("OPENCODE_DISABLE_AUTOUPDATE", "1");
+            for (name, value) in bridge.child_environment() {
+                command.env(name, value);
+            }
+            if let Some(model) = configured_model_from_environment() {
+                command.args(["--model", &model]);
+            }
+            command.args([
+                "run",
+                "--format=json",
+                "--session",
                 &session_id,
-                &log_path,
-            );
+                "--dangerously-skip-permissions",
+            ]);
+            if !context.request.disable_thinking {
+                command.arg("--thinking");
+            }
+            command.arg("--");
+            command.arg(&transport_prompt);
+            // OpenCode awaits stdin EOF whenever it is not a TTY; inheriting
+            // the controller's stdin would hang the continuation forever.
+            command.stdin(Stdio::null());
+            if explicit_prompt.is_none() {
+                opencode_transport_prompt = Some(transport_prompt);
+            }
+            opencode_bridge = Some(bridge);
         }
         NativeJsonlAgent::Codex => {
             let explicit_prompt = context.request.boundary_user_prompt().map(str::to_owned);
@@ -1107,7 +1183,10 @@ fn continue_native_cli(
         log_path: log_path.clone(),
     })
     .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
-    let bridge_result = codex_bridge.take().map(|bridge| bridge.finish());
+    let bridge_result = codex_bridge
+        .take()
+        .map(|bridge| bridge.finish())
+        .or_else(|| opencode_bridge.take().map(|bridge| bridge.finish()));
     let bridge_error = bridge_result.and_then(|result| result.err());
     if !output.status.success() {
         let process_error = ReplayError::classify_continuation(
@@ -1162,6 +1241,13 @@ fn continue_native_cli(
         NativeJsonlAgent::Opencode => {
             let raw = read_regular_file(&log_path)?;
             let events = parse_json_lines_from_log(&raw);
+            // The transport nonce was only a CLI wake-up signal; drop it if
+            // the native stream echoed it back as a user or text event.
+            let nonce = opencode_transport_prompt.as_deref().unwrap_or_default();
+            let events: Vec<Value> = events
+                .into_iter()
+                .filter(|event| !opencode_event_is_nonce(event, nonce))
+                .collect();
             let steps = count_opencode_turns(&events);
             let mut combined = prefix.to_vec();
             combined.extend(events);
@@ -1256,534 +1342,25 @@ fn write_opencode_provider_config(
     atomic_write_json(&directory.join("opencode.json"), &config)
 }
 
-/// Node script that forwards requests to the model endpoint and injects
-/// sampling parameters into JSON bodies. OpenCode 1.17.7 never forwards
-/// `temperature`/`top_p` to the Responses API regardless of configuration,
-/// so pinning sampling has to happen on the wire. Node comes from the same
-/// runtime tree as the OpenCode entrypoint.
-fn opencode_sampling_proxy_script() -> &'static str {
-    r#"const http = require("node:http")
-const https = require("node:https")
-const fs = require("node:fs")
-const upstream = new URL(process.env.PVISOR_PROXY_UPSTREAM)
-const temperature = Number(process.env.PVISOR_PROXY_TEMPERATURE)
-const topP = process.env.PVISOR_PROXY_TOP_P === "" ? null : Number(process.env.PVISOR_PROXY_TOP_P)
-const server = http.createServer((request, response) => {
-  const chunks = []
-  request.on("data", (chunk) => chunks.push(chunk))
-  request.on("end", () => {
-    let body = Buffer.concat(chunks)
-    const headers = {...request.headers}
-    delete headers["content-length"]
-    delete headers["transfer-encoding"]
-    if (String(headers["content-type"] || "").includes("application/json") && body.length > 0) {
-      try {
-        const document = JSON.parse(body.toString("utf8"))
-        if (document && typeof document === "object" && !Array.isArray(document)) {
-          document.temperature = temperature
-          if (topP !== null) document.top_p = topP
-          body = Buffer.from(JSON.stringify(document))
-        }
-      } catch (error) { /* forward the original body */ }
+/// True when the native event echoes the transport nonce back as a user or
+/// text part; such events are transport noise, not model input.
+fn opencode_event_is_nonce(event: &Value, nonce: &str) -> bool {
+    if nonce.is_empty() {
+        return false;
     }
-    const target = new URL(upstream)
-    target.pathname = request.url
-    const transport = target.protocol === "https:" ? https : http
-    const forwarded = transport.request(target, {method: request.method, headers}, (up) => {
-      response.writeHead(up.statusCode, up.headers)
-      up.pipe(response)
-    })
-    forwarded.on("error", (error) => {
-      if (!response.headersSent) response.writeHead(502)
-      if (!response.writableEnded) response.end(String(error))
-    })
-    forwarded.end(body)
-  })
-})
-server.listen(Number(process.env.PVISOR_PROXY_PORT), "127.0.0.1", () => {
-  fs.writeFileSync(process.env.PVISOR_PROXY_READY, "ready")
-})
-"#
-}
-
-struct ChildGuard(std::process::Child);
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn loopback_free_port() -> Result<u16, ReplayError> {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
-        .replay_context(ReplayErrorKind::Executor, "allocate loopback port")?;
-    let port = listener
-        .local_addr()
-        .replay_context(ReplayErrorKind::Executor, "read loopback port")?
-        .port();
-    Ok(port)
-}
-
-fn wait_for_file(path: &Path, timeout: Duration) -> Result<(), ReplayError> {
-    let started = Instant::now();
-    while !path.is_file() {
-        if started.elapsed() > timeout {
-            return Err(ReplayError::continuation(format!(
-                "OpenCode helper did not become ready: {}",
-                path.display()
-            )));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    Ok(())
-}
-
-/// Start the sampling-injection proxy when sampling overrides are requested.
-/// Returns the OpenAI-style API base URL OpenCode should use instead of the
-/// real endpoint.
-fn start_opencode_sampling_proxy(
-    entrypoint: &Path,
-    state_dir: &Path,
-    logs: &Path,
-    upstream: &str,
-    temperature: Option<f64>,
-    top_p: Option<f64>,
-    guard: &mut Vec<ChildGuard>,
-) -> Result<Option<String>, ReplayError> {
-    if temperature.is_none() && top_p.is_none() {
-        return Ok(None);
-    }
-    let node = entrypoint
-        .parent()
-        .map(|parent| parent.join("node"))
-        .filter(|path| path.is_file())
-        .unwrap_or_else(|| PathBuf::from("node"));
-    let port = loopback_free_port()?;
-    let upstream = upstream.trim_end_matches('/').to_owned();
-    let ready = state_dir.join("opencode-sampling-proxy.ready");
-    let _ = fs::remove_file(&ready);
-    let script = state_dir.join("opencode-sampling-proxy.js");
-    atomic_write(&script, opencode_sampling_proxy_script().as_bytes())?;
-    let log = fs::File::create(logs.join("opencode-sampling-proxy.log"))
-        .replay_context(ReplayErrorKind::Executor, "create sampling proxy log")?;
-    let child = Command::new(&node)
-        .arg(&script)
-        .env("PVISOR_PROXY_UPSTREAM", &upstream)
-        .env(
-            "PVISOR_PROXY_TEMPERATURE",
-            temperature.map(|v| v.to_string()).unwrap_or_default(),
-        )
-        .env(
-            "PVISOR_PROXY_TOP_P",
-            top_p.map(|v| v.to_string()).unwrap_or_default(),
-        )
-        .env("PVISOR_PROXY_PORT", port.to_string())
-        .env("PVISOR_PROXY_READY", &ready)
-        .stdout(
-            log.try_clone()
-                .replay_context(ReplayErrorKind::Executor, "clone sampling proxy log handle")?,
-        )
-        .stderr(log)
-        .spawn()
-        .replay_context(ReplayErrorKind::Executor, "start OpenCode sampling proxy")?;
-    guard.push(ChildGuard(child));
-    wait_for_file(&ready, Duration::from_secs(30))?;
-    Ok(Some(format!("http://127.0.0.1:{port}/v1")))
-}
-
-/// Project the assistant messages created by the live continuation into the
-/// native OpenCode JSONL event stream. One assistant message is one agent
-/// step; its parts are stored unordered, so restore the canonical order:
-/// step-start first, step-finish last, content parts by their start time.
-fn opencode_project_messages(messages: &[Value], session_id: &str) -> Vec<Value> {
-    let mut ordered: Vec<&Value> = messages
-        .iter()
-        .filter(|message| {
-            message.get("info").and_then(|i| i.get("role")) == Some(&json!("assistant"))
-        })
-        .collect();
-    ordered.sort_by_key(|message| {
-        message
-            .pointer("/info/time/created")
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-    });
-    let mut events = Vec::new();
-    for message in ordered {
-        let mut parts: Vec<&Value> = message
+    match event.get("type").and_then(Value::as_str) {
+        Some("user") => event
             .get("parts")
             .and_then(Value::as_array)
-            .map(|parts| parts.iter().collect())
-            .unwrap_or_default();
-        parts.sort_by_key(|part| opencode_part_order(part));
-        for part in parts {
-            let event_type = match part.get("type").and_then(Value::as_str) {
-                Some("step-start") => Some("step_start"),
-                Some("text") => Some("text"),
-                Some("reasoning") => Some("reasoning"),
-                Some("tool") => Some("tool_use"),
-                Some("step-finish") => Some("step_finish"),
-                _ => None,
-            };
-            let Some(event_type) = event_type else {
-                continue;
-            };
-            events.push(json!({
-                "type": event_type,
-                "sessionID": session_id,
-                "part": part,
-            }));
-        }
+            .map(|parts| {
+                parts
+                    .iter()
+                    .any(|part| part.get("text") == Some(&json!(nonce)))
+            })
+            .unwrap_or(false),
+        Some("text") => event.pointer("/part/text") == Some(&json!(nonce)),
+        _ => false,
     }
-    events
-}
-
-fn opencode_part_order(part: &Value) -> (u8, u64) {
-    let rank = match part.get("type").and_then(Value::as_str) {
-        Some("step-start") => 0,
-        Some("step-finish") => 2,
-        _ => 1,
-    };
-    let start = part
-        .pointer("/time/start")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    (rank, start)
-}
-
-/// Continue an imported OpenCode session without adding any user message.
-///
-/// `opencode run --session <id>` refuses to start without a message
-/// ("You must provide a message or a command"), so the CLI cannot express a
-/// clean continuation. The server API accepts `parts: []` on
-/// `POST /session/{id}/message`; the resulting model request ends exactly at
-/// the replayed boundary observation `O'N` with no injected prompt.
-fn opencode_server_continuation(
-    plan: &ReplayPlan,
-    context: &RunContext<'_>,
-    journal: &mut Journal,
-    prefix: &[Value],
-    session_id: &str,
-    log_path: &Path,
-) -> Result<(PathBuf, usize), ReplayError> {
-    let launch = context
-        .launch
-        .ok_or_else(|| ReplayError::continuation("OpenCode continuation has no launch spec"))?;
-    let state_dir = context.state_dir;
-    let opencode_config = state_dir.join("opencode-config");
-    let opencode_data = state_dir.join("opencode-data");
-    fs::create_dir_all(&opencode_data)
-        .replay_context(ReplayErrorKind::Executor, "create OpenCode data directory")?;
-    let logs = log_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
-
-    let temperature = env_f64("PVISOR_OPENCODE_TEMPERATURE");
-    let top_p = env_f64("PVISOR_OPENCODE_TOP_P");
-    let mut children: Vec<ChildGuard> = Vec::new();
-    let result = opencode_server_continuation_inner(
-        plan,
-        context,
-        journal,
-        prefix,
-        session_id,
-        log_path,
-        &launch.entrypoint,
-        &opencode_config,
-        &opencode_data,
-        &logs,
-        temperature,
-        top_p,
-        &mut children,
-    );
-    drop(children);
-    result
-}
-
-#[allow(clippy::too_many_arguments)]
-fn opencode_server_continuation_inner(
-    plan: &ReplayPlan,
-    context: &RunContext<'_>,
-    journal: &mut Journal,
-    prefix: &[Value],
-    session_id: &str,
-    log_path: &Path,
-    entrypoint: &Path,
-    opencode_config: &Path,
-    opencode_data: &Path,
-    logs: &Path,
-    temperature: Option<f64>,
-    top_p: Option<f64>,
-    children: &mut Vec<ChildGuard>,
-) -> Result<(PathBuf, usize), ReplayError> {
-    let workspace = &context.request.workspace;
-    let upstream = std::env::var("OPENAI_BASE_URL")
-        .ok()
-        .or_else(|| std::env::var("OPENAI_API_BASE").ok())
-        .filter(|value| !value.trim().is_empty());
-    let effective_base = start_opencode_sampling_proxy(
-        entrypoint,
-        context.state_dir,
-        logs,
-        upstream.as_deref().unwrap_or("http://127.0.0.1"),
-        temperature,
-        top_p,
-        children,
-    )?;
-    write_opencode_provider_config(
-        opencode_config,
-        effective_base.as_deref(),
-        temperature,
-        top_p,
-    )?;
-
-    let export_path = context.output_dir.join("native/opencode-session.json");
-    atomic_write_json(
-        &export_path,
-        &opencode_export(plan, prefix, session_id, workspace),
-    )?;
-    let mut import = Command::new(entrypoint);
-    import
-        .arg("import")
-        .arg(
-            export_path.to_str().ok_or_else(|| {
-                ReplayError::configuration("OpenCode export path is not valid UTF-8")
-            })?,
-        )
-        .env("XDG_CONFIG_HOME", opencode_config)
-        .env("XDG_DATA_HOME", opencode_data)
-        .env("OPENCODE_DISABLE_AUTOUPDATE", "1")
-        .current_dir(workspace);
-    let import_log = logs.join("opencode-import.log");
-    let imported = run_process(ProcessSpec {
-        command: import,
-        stdin: None,
-        timeout: Duration::from_secs(5 * 60),
-        termination_grace: Duration::from_secs(2),
-        pipe_grace: Duration::from_millis(250),
-        retained_bytes: MAX_TOOL_OUTPUT_BYTES / 4,
-        log_path: import_log.clone(),
-    })
-    .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
-    if !imported.status.success() {
-        return Err(ReplayError::classify_continuation(
-            format!(
-                "OpenCode session import exited {}; see {}",
-                imported.status,
-                import_log.display()
-            ),
-            &String::from_utf8_lossy(&imported.stderr_tail),
-        ));
-    }
-
-    journal.append(
-        "continuation_started",
-        [("agent".into(), json!("opencode"))],
-    )?;
-
-    let serve_port = loopback_free_port()?;
-    let serve_log = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .replay_context(ReplayErrorKind::Executor, "open OpenCode serve log")?;
-    let mut serve = Command::new(entrypoint);
-    serve
-        .args([
-            "serve",
-            "--port",
-            &serve_port.to_string(),
-            "--hostname",
-            "127.0.0.1",
-        ])
-        .env("XDG_CONFIG_HOME", opencode_config)
-        .env("XDG_DATA_HOME", opencode_data)
-        .env("OPENCODE_DISABLE_AUTOUPDATE", "1")
-        .current_dir(workspace)
-        .stdout(
-            serve_log
-                .try_clone()
-                .replay_context(ReplayErrorKind::Executor, "clone OpenCode serve log handle")?,
-        )
-        .stderr(serve_log);
-    let serve = serve
-        .spawn()
-        .replay_context(ReplayErrorKind::Executor, "start OpenCode server")?;
-    children.push(ChildGuard(serve));
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .replay_context(
-            ReplayErrorKind::Executor,
-            "build OpenCode continuation runtime",
-        )?;
-    let base = format!("http://127.0.0.1:{serve_port}");
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .replay_context(
-            ReplayErrorKind::Executor,
-            "build OpenCode continuation client",
-        )?;
-    let directory = workspace.to_string_lossy().to_string();
-
-    let ready = runtime.block_on(async {
-        for _ in 0..120 {
-            if let Ok(response) = client
-                .get(format!("{base}/config"))
-                .query(&[("directory", directory.as_str())])
-                .send()
-                .await
-                && response.status().is_success()
-            {
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        Err(ReplayError::continuation(
-            "OpenCode server did not become ready; see opencode.log",
-        ))
-    });
-    ready?;
-
-    let messages_url = format!("{base}/session/{session_id}/message");
-    let baseline: Vec<String> = runtime.block_on(async {
-        let response = client
-            .get(&messages_url)
-            .query(&[("directory", directory.as_str())])
-            .send()
-            .await
-            .replay_context(
-                ReplayErrorKind::Continuation,
-                "read imported session messages",
-            )?
-            .error_for_status()
-            .replay_context(
-                ReplayErrorKind::Continuation,
-                "imported session request failed",
-            )?;
-        let messages: Value = response.json().await.replay_context(
-            ReplayErrorKind::Continuation,
-            "decode imported session messages",
-        )?;
-        Ok(message_ids(&messages))
-    })?;
-
-    let mut prompt_body = json!({"parts": []});
-    if let Some(model) = configured_model_from_environment()
-        && let Some((provider, model_id)) = model.split_once('/')
-    {
-        prompt_body["model"] = json!({"providerID": provider, "modelID": model_id});
-    }
-    let prompt_response: Value = runtime.block_on(async {
-        let response = client
-            .post(&messages_url)
-            .query(&[("directory", directory.as_str())])
-            .json(&prompt_body)
-            .send()
-            .await
-            .replay_context(
-                ReplayErrorKind::Continuation,
-                "send OpenCode continuation prompt",
-            )?;
-        let status = response.status();
-        let payload: Value = response.json().await.replay_context(
-            ReplayErrorKind::Continuation,
-            "decode OpenCode continuation response",
-        )?;
-        if !status.is_success() {
-            return Err(ReplayError::classify_continuation(
-                format!(
-                    "OpenCode continuation returned {status}; see {}",
-                    log_path.display()
-                ),
-                &payload.to_string(),
-            ));
-        }
-        if let Some(error) = payload.get("error") {
-            return Err(ReplayError::classify_continuation(
-                format!("OpenCode continuation failed; see {}", log_path.display()),
-                &error.to_string(),
-            ));
-        }
-        Ok(payload)
-    })?;
-    let _ = prompt_response; // final assistant message; the projection re-reads the session
-
-    let messages: Value = runtime.block_on(async {
-        let response = client
-            .get(&messages_url)
-            .query(&[("directory", directory.as_str())])
-            .send()
-            .await
-            .replay_context(
-                ReplayErrorKind::Continuation,
-                "read continued session messages",
-            )?
-            .error_for_status()
-            .replay_context(
-                ReplayErrorKind::Continuation,
-                "continued session request failed",
-            )?;
-        response.json().await.replay_context(
-            ReplayErrorKind::Continuation,
-            "decode continued session messages",
-        )
-    })?;
-    let fresh: Vec<Value> = as_message_array(&messages)
-        .into_iter()
-        .filter(|message| {
-            message
-                .get("info")
-                .and_then(|info| info.get("id"))
-                .and_then(Value::as_str)
-                .is_some_and(|id| !baseline.contains(&id.to_owned()))
-        })
-        .cloned()
-        .collect();
-    let live_events = opencode_project_messages(&fresh, session_id);
-    let continued_steps = live_events
-        .iter()
-        .filter(|event| event.get("type") == Some(&json!("step_finish")))
-        .count();
-    if live_events.is_empty() {
-        return Err(ReplayError::continuation(
-            "OpenCode continuation produced no native events; see opencode.log",
-        ));
-    }
-    let mut combined = prefix.to_vec();
-    combined.extend(live_events);
-    let output_path = context.output_dir.join("native/continued-trajectory.jsonl");
-    write_jsonl(&output_path, &combined)?;
-    Ok((output_path, continued_steps))
-}
-
-fn message_ids(messages: &Value) -> Vec<String> {
-    as_message_array(messages)
-        .iter()
-        .filter_map(|message| {
-            message
-                .get("info")
-                .and_then(|info| info.get("id"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .collect()
-}
-
-fn as_message_array(messages: &Value) -> Vec<&Value> {
-    let items = match messages {
-        Value::Array(items) => Some(items.iter().collect()),
-        Value::Object(_) => messages
-            .get("data")
-            .and_then(Value::as_array)
-            .map(|items| items.iter().collect()),
-        _ => None,
-    };
-    items.unwrap_or_default()
 }
 
 fn continuation_session_id(
@@ -2410,7 +1987,7 @@ mod tests {
 
     use super::{
         CallRecord, NativeJsonlAgent, RunContext, TurnRecord, codex_native_session_id,
-        continuation_session_id, is_actionable_turn, opencode_project_messages,
+        continuation_session_id, is_actionable_turn, opencode_event_is_nonce,
         opencode_provider_config, parse_codex, parse_jsonl, parse_opencode,
         redact_codex_transport_nonce, validate_codex_continuation,
     };
@@ -2418,54 +1995,27 @@ mod tests {
     use serde_json::{Value, json};
 
     #[test]
-    fn opencode_projection_restores_step_order_from_unordered_parts() {
-        let messages = vec![
-            json!({
-                "info": {"id": "msg_live_2", "role": "assistant", "time": {"created": 2}},
-                "parts": [
-                    {"type": "step-finish", "time": {"start": 40, "end": 41}},
-                    {"type": "text", "text": "done", "time": {"start": 39, "end": 40}},
-                    {"type": "step-start"}
-                ]
-            }),
-            json!({
-                "info": {"id": "msg_live_1", "role": "assistant", "time": {"created": 1}},
-                "parts": [
-                    {"type": "tool", "callID": "c1", "tool": "bash",
-                     "state": {"status": "completed", "input": {"command": "ls"}, "output": "x"},
-                     "time": {"start": 21, "end": 30}},
-                    {"type": "text", "text": "running", "time": {"start": 20, "end": 21}},
-                    {"type": "step-start"}
-                ]
-            }),
-            json!({
-                "info": {"id": "msg_synthetic_user", "role": "user", "time": {"created": 0}},
-                "parts": [{"type": "text", "text": "task"}]
-            }),
+    fn opencode_nonce_events_are_filtered_from_the_continued_stream() {
+        let nonce = "pvisor-opencode-resume-nonce";
+        let events = vec![
+            json!({"type": "step_start", "sessionID": "ses"}),
+            json!({"type": "user", "sessionID": "ses", "parts": [{"type": "text", "text": nonce}]}),
+            json!({"type": "text", "sessionID": "ses", "part": {"type": "text", "text": nonce}}),
+            json!({"type": "text", "sessionID": "ses", "part": {"type": "text", "text": "real text"}}),
+            json!({"type": "step_finish", "sessionID": "ses"}),
         ];
-        let events = opencode_project_messages(&messages, "ses-live");
-        let kinds: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
-        assert_eq!(
-            kinds,
-            vec![
-                "step_start",
-                "text",
-                "tool_use",
-                "step_start",
-                "text",
-                "step_finish"
-            ]
-        );
-        // Every event carries the session id and the native part payload.
+        let kept: Vec<Value> = events
+            .iter()
+            .filter(|event| !opencode_event_is_nonce(event, nonce))
+            .cloned()
+            .collect();
+        let kinds: Vec<&str> = kept.iter().map(|e| e["type"].as_str().unwrap()).collect();
+        assert_eq!(kinds, vec!["step_start", "text", "step_finish"]);
+        assert_eq!(kept[1]["part"]["text"], "real text");
+        // An empty nonce (explicit boundary prompt mode) filters nothing.
         for event in &events {
-            assert_eq!(event["sessionID"], "ses-live");
-            assert!(event["part"].is_object());
+            assert!(!opencode_event_is_nonce(event, ""));
         }
-        let tool = &events[2];
-        assert_eq!(tool["part"]["state"]["status"], "completed");
-        // The projection contains two complete live assistant turns. Parsing
-        // the full trajectory requires the original user event, which is
-        // intentionally not part of this assistant-only projection.
     }
 
     #[test]
