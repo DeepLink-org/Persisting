@@ -4427,7 +4427,6 @@ fn serve_args_with_storage(storage: Vec<String>) -> ServeArgs {
         gateway_split: None,
         gateway_split_idle_seconds: 1800,
         gateway_state: None,
-        gateway_object_store_manifest_mode: GatewayObjectStoreManifestMode::default(),
         gateway_stream_markdown: false,
         debug: false,
         catalog_config: None,
@@ -4953,8 +4952,6 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
         "s3://capture-bucket/events",
         "--gateway-state",
         ".gateway-state",
-        "--gateway-object-store-manifest-mode",
-        "single-writer",
         "--gateway-stream-markdown",
         "--gateway-debug",
     ])?;
@@ -4968,10 +4965,6 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
         Some("s3://capture-bucket/events")
     );
     assert_eq!(args.gateway_state, Some(PathBuf::from(".gateway-state")));
-    assert_eq!(
-        args.gateway_object_store_manifest_mode,
-        GatewayObjectStoreManifestMode::SingleWriter
-    );
     assert!(args.gateway_stream_markdown);
     assert!(args.debug);
 

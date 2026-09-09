@@ -92,9 +92,9 @@ pub use event_row::{EventRow, event_record_to_event_row, event_row_to_event_reco
 #[cfg(feature = "lance-store")]
 pub use events::{
     DATAFUSION_EVENTS_TABLE, EventFactSnapshot, EventLogLayoutStats, EventWriterFence,
-    LanceMaintenanceOptions, LanceMaintenanceReport, ObjectStoreManifestWriteMode,
-    RawEventDataSource, RawEventLanceAppender, distinct_session_ids_in_run, event_rows_from_batch,
-    maintain as maintain_raw_events, raw_event_arrow_schema,
+    LanceMaintenanceOptions, LanceMaintenanceReport, RawEventDataSource, RawEventLanceAppender,
+    distinct_session_ids_in_run, event_rows_from_batch, maintain as maintain_raw_events,
+    raw_event_arrow_schema,
 };
 #[cfg(feature = "lance-store")]
 pub(crate) use events::{SealedEventSegment, compact_sealed_event_segment};

@@ -1,4 +1,4 @@
-//! Dataset-scoped write serialization for the single-writer storage engine.
+//! Dataset-scoped write serialization.
 
 use std::fs::{File, OpenOptions};
 use std::path::Path;
@@ -22,9 +22,9 @@ impl Drop for DatasetWriteGuard {
 }
 
 /// Serialize writers within the process and, for local datasets, across
-/// processes. Object-store deployments retain the documented single-writer
-/// contract; Lance transactions provide atomic publication but not a global
-/// distributed mutex.
+/// processes. Object-store deployments rely on conditional publication of
+/// the visibility manifest for cross-process safety; Lance transactions
+/// provide atomic publication but not a global distributed mutex.
 pub(crate) async fn acquire(uri: &str) -> Result<DatasetWriteGuard> {
     let process = root_write_lock::for_root(uri).lock_owned().await;
     let local_file = if super::events::is_object_store_uri(uri) {
