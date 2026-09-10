@@ -352,6 +352,7 @@ pub(crate) fn prepare_attempt(
             interception_metrics: network_metrics.clone(),
             bandwidth_registry: bandwidth_registry.clone(),
             attempt_id: Some(opts.attempt_id.to_owned()),
+            gateway_enabled: opts.gateway_enabled,
         },
     )?;
 
