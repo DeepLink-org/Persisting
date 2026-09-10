@@ -1248,9 +1248,7 @@ async fn tree_run_summaries(
     }
     if !runtime.snapshot.datasets().iter().any(|dataset| {
         dataset.sources.iter().any(|source| {
-            if source.kind
-                == persisting_pchronicle::storage::CatalogSourceKind::Directory
-            {
+            if source.kind == persisting_pchronicle::storage::CatalogSourceKind::Directory {
                 return false;
             }
             match source.format.as_deref() {
@@ -1436,9 +1434,7 @@ async fn resolve_run_summary(
         matches.retain(|run| run.root_session_id.as_ref() == Some(root));
     }
     if matches.is_empty() {
-        if let Some(run) =
-            try_resolve_on_demand_storyline_run(state, query, request_id).await?
-        {
+        if let Some(run) = try_resolve_on_demand_storyline_run(state, query, request_id).await? {
             return Ok(run);
         }
         return Err(ApiError::not_found("run was not found"));
@@ -1525,14 +1521,7 @@ async fn try_resolve_on_demand_storyline_run(
     if !ids.iter().any(|id| id == session_id) {
         return Ok(None);
     }
-    let path = explorer::explorer_run_path(
-        dataset_name,
-        file,
-        session_id,
-        session_id,
-        None,
-        None,
-    );
+    let path = explorer::explorer_run_path(dataset_name, file, session_id, session_id, None, None);
     Ok(Some(RunSummary {
         dataset: dataset_name.to_string(),
         file: file.to_string(),
@@ -1593,7 +1582,7 @@ async fn load_on_demand_storyline_bundle(
         run.document_id.clone()
     };
     let stories = store
-        .get_storylines_by_document_ids(&[document_id.clone()])
+        .get_storylines_by_document_ids(std::slice::from_ref(&document_id))
         .await
         .map_err(|error| fail(request_id, op, error))?;
     let Some(Some(storyline)) = stories.into_iter().next() else {
@@ -2140,70 +2129,70 @@ async fn explorer_turns(
             search_mode = "memory";
             (loaded.turns.clone(), Some(needle))
         } else {
-        let expression = crate::combine_match_expressions(&[needle.to_owned()])
-            .map_err(|error| ApiError::invalid_request(error.to_string()))?
-            .ok_or_else(|| ApiError::invalid_request("search query must not be empty"))?;
-        let runtime = current_catalog(&state, &request_id).await?;
-        let (predicate, available, fts_errors) = crate::find_expression_predicate_for_dataset(
-            &runtime.snapshot,
-            &expression,
-            Some(&loaded.run.file),
-            Some(&loaded.run.dataset),
-        )
-        .await
-        .map_err(|error| fail(&request_id, "explorer_turns", error))?;
-        fts.extend(fts_errors);
-        fts_available = fts_available || available;
-        let turns = if expression.has_text() || expression.has_step_json() {
-            let predicate = predicate.ok_or_else(|| {
-                fail(
-                    &request_id,
-                    "explorer_turns",
-                    anyhow::anyhow!("turn search expression did not produce a predicate"),
-                )
-            })?;
-            let sql = format!(
-                "SELECT DISTINCT step_id FROM {}.steps WHERE _file_ = {} AND document_id = {} AND session_id = {} AND ({predicate})",
-                loaded.run.dataset,
-                crate::sql_string(&loaded.run.file),
-                crate::sql_string(&loaded.run.document_id),
-                crate::sql_string(&loaded.run.session_id),
-            );
-            let jsonl = runtime
-                .engine
-                .query_jsonl(&sql)
-                .await
-                .map_err(|error| fail(&request_id, "explorer_turns", error))?;
-            let step_ids = jsonl
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .filter_map(|line| {
-                    serde_json::from_str::<Value>(line)
-                        .ok()
-                        .and_then(|row| row.get("step_id").and_then(Value::as_i64))
-                })
-                .collect::<BTreeSet<_>>();
-            search_mode = if expression.has_text() && expression.has_json() {
-                "fts+json"
-            } else if expression.has_text() {
-                "fts"
+            let expression = crate::combine_match_expressions(&[needle.to_owned()])
+                .map_err(|error| ApiError::invalid_request(error.to_string()))?
+                .ok_or_else(|| ApiError::invalid_request("search query must not be empty"))?;
+            let runtime = current_catalog(&state, &request_id).await?;
+            let (predicate, available, fts_errors) = crate::find_expression_predicate_for_dataset(
+                &runtime.snapshot,
+                &expression,
+                Some(&loaded.run.file),
+                Some(&loaded.run.dataset),
+            )
+            .await
+            .map_err(|error| fail(&request_id, "explorer_turns", error))?;
+            fts.extend(fts_errors);
+            fts_available = fts_available || available;
+            let turns = if expression.has_text() || expression.has_step_json() {
+                let predicate = predicate.ok_or_else(|| {
+                    fail(
+                        &request_id,
+                        "explorer_turns",
+                        anyhow::anyhow!("turn search expression did not produce a predicate"),
+                    )
+                })?;
+                let sql = format!(
+                    "SELECT DISTINCT step_id FROM {}.steps WHERE _file_ = {} AND document_id = {} AND session_id = {} AND ({predicate})",
+                    loaded.run.dataset,
+                    crate::sql_string(&loaded.run.file),
+                    crate::sql_string(&loaded.run.document_id),
+                    crate::sql_string(&loaded.run.session_id),
+                );
+                let jsonl = runtime
+                    .engine
+                    .query_jsonl(&sql)
+                    .await
+                    .map_err(|error| fail(&request_id, "explorer_turns", error))?;
+                let step_ids = jsonl
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .filter_map(|line| {
+                        serde_json::from_str::<Value>(line)
+                            .ok()
+                            .and_then(|row| row.get("step_id").and_then(Value::as_i64))
+                    })
+                    .collect::<BTreeSet<_>>();
+                search_mode = if expression.has_text() && expression.has_json() {
+                    "fts+json"
+                } else if expression.has_text() {
+                    "fts"
+                } else {
+                    "json"
+                };
+                loaded
+                    .turns
+                    .iter()
+                    .filter(|item| step_ids.contains(&item.turn.id))
+                    .cloned()
+                    .collect::<Vec<_>>()
             } else {
-                "json"
+                // Run-level JSON predicates have no step identity to display in
+                // this view. Keep the detail search scoped to Step expressions,
+                // matching the CLI find scope instead of applying an ad-hoc
+                // in-memory text filter.
+                Vec::new()
             };
-            loaded
-                .turns
-                .iter()
-                .filter(|item| step_ids.contains(&item.turn.id))
-                .cloned()
-                .collect::<Vec<_>>()
-        } else {
-            // Run-level JSON predicates have no step identity to display in
-            // this view. Keep the detail search scoped to Step expressions,
-            // matching the CLI find scope instead of applying an ad-hoc
-            // in-memory text filter.
-            Vec::new()
-        };
-        (turns, None)
+            (turns, None)
         }
     } else {
         (loaded.turns.clone(), query.q.as_deref())

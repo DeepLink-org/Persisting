@@ -711,6 +711,7 @@ fn expand_catalog_pin(
         "catalog pin '@{name}' requires a dataset, for example '@{name}/prod'"
     );
     let (dataset, path) = suffix.split_once('/').unwrap_or((suffix, ""));
+    let path = normalize_pin_suffix(path);
     if !path.is_empty() {
         validate_pin_suffix(path)?;
     }
@@ -928,6 +929,9 @@ pub(super) fn expand_dataset_reference(
     } else {
         let rest = &input[1..];
         let (name, suffix) = rest.split_once('/').unwrap_or((rest, ""));
+        // Directory-style refs often end with `/` (e.g. `@origin/foo/`); treat
+        // that as equivalent to the same path without trailing separators.
+        let suffix = normalize_pin_suffix(suffix);
         validate_pin_suffix(suffix)?;
         if name == DEFAULT_PIN_NAME {
             let root = resolve_default_pin(settings_override)?;
@@ -967,7 +971,12 @@ pub(super) fn expand_dataset_reference(
     }
 }
 
+fn normalize_pin_suffix(suffix: &str) -> &str {
+    suffix.trim_matches('/')
+}
+
 fn validate_pin_suffix(suffix: &str) -> Result<()> {
+    let suffix = normalize_pin_suffix(suffix);
     if suffix.is_empty() {
         return Ok(());
     }
@@ -1143,5 +1152,38 @@ secret_key = "sk"
             Some("http://127.0.0.1:9000")
         );
         assert_eq!(settings.pins["testcata"].uri, "catalog://127.0.0.1:6001");
+    }
+
+    #[test]
+    fn pin_suffix_allows_trailing_and_leading_slashes() {
+        assert!(validate_pin_suffix("SweEval/guoxu1/").is_ok());
+        assert!(validate_pin_suffix("/SweEval/guoxu1///").is_ok());
+        assert!(validate_pin_suffix("/").is_ok());
+        assert!(validate_pin_suffix("").is_ok());
+    }
+
+    #[test]
+    fn pin_suffix_still_rejects_dot_and_empty_middle_segments() {
+        assert!(validate_pin_suffix("a/../b").is_err());
+        assert!(validate_pin_suffix("a/./b").is_err());
+        assert!(validate_pin_suffix("a//b").is_err());
+    }
+
+    #[test]
+    fn expand_dataset_reference_trims_trailing_slash() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let config = temporary.path().join("config.toml");
+        std::fs::write(
+            &config,
+            r#"
+[pins.origin]
+uri = "s3://example-bucket/root"
+"#,
+        )
+        .expect("write config");
+        let expanded =
+            expand_dataset_reference("@origin/SweEval/guoxu1/", Some(&config), false)
+                .expect("expand");
+        assert_eq!(expanded, "s3://example-bucket/root/SweEval/guoxu1");
     }
 }

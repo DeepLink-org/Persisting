@@ -1474,9 +1474,7 @@ fn rows_to_storyline(
             .get("created_at")
             .filter(|value| !value.is_null())
             .cloned()
-            .map(StorylineTimestamp::from_json)
-            .transpose()
-            .map_err(|issue| issue.at(format!("rows[{ordinal}].created_at")))?;
+            .and_then(StorylineTimestamp::from_json_lenient);
         let latency_ms = env_state
             .as_ref()
             .and_then(|state| state.get("total_latency_ms"))

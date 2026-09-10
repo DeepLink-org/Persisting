@@ -286,23 +286,19 @@ impl DatasetLocation {
         if let Some(entry) = store
             .stat_file(&join(crate::store::CHRONICLE_MANIFEST_FILE))
             .await?
+            && let Some((bytes, _)) = store.read(&entry.path).await?
+            && let Ok(text) = std::str::from_utf8(&bytes)
+            && let Ok(manifest) = toml::from_str::<crate::store::ChronicleManifest>(text)
+            && manifest.validate().is_ok()
         {
-            if let Some((bytes, _)) = store.read(&entry.path).await? {
-                if let Ok(text) = std::str::from_utf8(&bytes)
-                    && let Ok(manifest) =
-                        toml::from_str::<crate::store::ChronicleManifest>(text)
-                    && manifest.validate().is_ok()
-                {
-                    if manifest.is_storyline_leaf() {
-                        return Ok(Some("storyline"));
-                    }
-                    if manifest.is_compact_jsonl_leaf() {
-                        return Ok(Some("compact-jsonl"));
-                    }
-                    if matches!(manifest.kind, crate::store::ManifestKind::Leaf) {
-                        return Ok(Some("other"));
-                    }
-                }
+            if manifest.is_storyline_leaf() {
+                return Ok(Some("storyline"));
+            }
+            if manifest.is_compact_jsonl_leaf() {
+                return Ok(Some("compact-jsonl"));
+            }
+            if matches!(manifest.kind, crate::store::ManifestKind::Leaf) {
+                return Ok(Some("other"));
             }
         }
         if store.stat_file(&join("CURRENT")).await?.is_some() {
@@ -410,7 +406,11 @@ impl DatasetLocation {
         let mut dirs = BTreeSet::new();
         let mut files = BTreeSet::new();
         for entry in entries {
-            let path = entry.path.trim_start_matches(&prefix).trim_matches('/');
+            let path = entry
+                .path
+                .strip_prefix(&prefix)
+                .unwrap_or(&entry.path)
+                .trim_matches('/');
             if path.is_empty() {
                 continue;
             }
@@ -570,7 +570,11 @@ impl DatasetLocation {
             })?;
             let mut child_dirs = BTreeSet::new();
             for entry in entries {
-                let path = entry.path.trim_start_matches(&list_prefix).trim_matches('/');
+                let path = entry
+                    .path
+                    .strip_prefix(&list_prefix)
+                    .unwrap_or(&entry.path)
+                    .trim_matches('/');
                 if path.is_empty() {
                     continue;
                 }
@@ -595,7 +599,10 @@ impl DatasetLocation {
                     on_event(ImportableObjectEvent::File {
                         key: child_rel,
                         size: entry.metadata.content_length(),
-                        modified: entry.metadata.last_modified().map(|value| value.to_string()),
+                        modified: entry
+                            .metadata
+                            .last_modified()
+                            .map(|value| value.to_string()),
                     })
                     .await?;
                     continue;
@@ -732,8 +739,7 @@ where
             .unwrap_or(file.as_path())
             .to_string_lossy()
             .replace('\\', "/");
-        std::fs::remove_file(&file)
-            .with_context(|| format!("delete file {}", file.display()))?;
+        std::fs::remove_file(&file).with_context(|| format!("delete file {}", file.display()))?;
         deleted = deleted.saturating_add(1);
         on_progress(deleted, total, &relative)?;
     }
@@ -766,11 +772,7 @@ fn list_local_files_recursive(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn is_nav_child_name(name: &str) -> bool {
-    !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.starts_with('.')
-        && name != "_meta"
+    !name.is_empty() && name != "." && name != ".." && !name.starts_with('.') && name != "_meta"
 }
 
 fn is_storyline_interior_name(name: &str) -> bool {

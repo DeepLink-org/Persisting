@@ -390,9 +390,12 @@ impl StorylineLanceStore {
             .current_if_match_unreliable
             .load(std::sync::atomic::Ordering::Relaxed);
         if !skip_if_match {
+            let expected = expected
+                .as_ref()
+                .context("missing expected version for conditional Storyline CURRENT write")?;
             match self
                 .control_store
-                .write_match(CURRENT_FILE, contents.clone(), expected.as_ref().unwrap())
+                .write_match(CURRENT_FILE, contents.clone(), expected)
                 .await
             {
                 Ok(()) => return Ok(true),
@@ -415,10 +418,9 @@ impl StorylineLanceStore {
                         return Ok(false);
                     }
                     // Remember for this store handle: avoid 412 spam on every commit.
-                    let first = !self.current_if_match_unreliable.swap(
-                        true,
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
+                    let first = !self
+                        .current_if_match_unreliable
+                        .swap(true, std::sync::atomic::Ordering::Relaxed);
                     if first {
                         tracing::warn!(
                             root_uri = %self.root_uri,
@@ -470,11 +472,7 @@ impl StorylineLanceStore {
                 };
                 let expected_version = current.version.clone();
                 let wrote = self
-                    .try_write_current_control(
-                        &next,
-                        expected_version,
-                        Some(&current.control),
-                    )
+                    .try_write_current_control(&next, expected_version, Some(&current.control))
                     .await?;
                 if wrote {
                     return Ok(outcome);
@@ -573,8 +571,9 @@ impl StorylineLanceStore {
                         .await
                     {
                         Ok(true) => Err(conflict),
-                        Ok(false) => Err(conflict
-                            .context("mismatched writer lease was lost before release")),
+                        Ok(false) => {
+                            Err(conflict.context("mismatched writer lease was lost before release"))
+                        }
                         Err(error) => Err(conflict.context(format!(
                             "failed to release mismatched writer lease: {error:#}"
                         ))),

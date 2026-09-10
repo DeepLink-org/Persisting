@@ -20,7 +20,6 @@ use output::*;
 use settings::*;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ffi::CString;
 use std::fmt::Write as _;
 use std::io::{Error as IoError, Read, Write};
 use std::net::SocketAddr;
@@ -33,23 +32,20 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use futures::{StreamExt, stream, stream::FuturesUnordered};
 use persisting_events::{CHRONICLE_SERVE_READY_VERSION, ChronicleServeReady};
-use persisting_pchronicle::document::{
-    DocumentFormat, InputIssue, InputIssueKind, decode_json_storylines, detect_format,
-    encode_json_storylines, open_document,
-};
-use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::query::ChronicleQueryEngine;
 use persisting_pchronicle::search::{
     FindExpr, FindJsonOperator, FindJsonPredicate, FindTextPredicate, combine_match_expressions,
     search_storyline_step_matches_fts_in_columns,
 };
+#[cfg(test)]
+use persisting_pchronicle::storage::StorylineLanceStore;
 use persisting_pchronicle::storage::{
     AutomaticProjectionInspection, AutomaticProjectionState, CatalogErrorPolicy,
-    CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
-    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetLocation, DatasetMount, DiscoveredSource,
-    EventFactSnapshot, ObjectStoreManifestWriteMode, StorylineLanceStore,
-    StorylineProjectionBuildOutcome, automatic_projection_inventory, build_storyline_projection,
-    inspect_automatic_storyline_projection, probe_canonical_event_store,
+    CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, DEFAULT_DATASET_NAME,
+    DatasetCatalogSnapshot, DatasetLocation, DatasetMount, DiscoveredSource, EventFactSnapshot,
+    ObjectStoreManifestWriteMode, StorylineProjectionBuildOutcome, automatic_projection_inventory,
+    build_storyline_projection, inspect_automatic_storyline_projection,
+    probe_canonical_event_store,
 };
 use serde::{Deserialize, Serialize};
 
@@ -262,10 +258,10 @@ enum Command {
     Drop(DropArgs),
     /// Export complete Trajectories to an exchange format.
     Export(ExportArgs),
-    /// Mirror a changing directory into snapshot Datasets.
+    /// Mirror a changing directory into optional Compact and/or Storyline snapshots.
     ///
-    /// With --input-format compact-jsonl, each batch atomically replaces the
-    /// compact Lance Dataset at --convert; --to remains required but is not written.
+    /// `--mirror` replaces a Compact JSONL Lance Dataset; `--to` replaces a
+    /// Storyline Lance Dataset. Provide either or both.
     Sync(sync::SyncArgs),
     /// Run a deterministic local LLM upstream for Gateway testing.
     #[command(hide = true)]
@@ -704,7 +700,7 @@ enum ImportOutputFormat {
     CompactJsonl,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ImportMode {
     /// Require a new destination and publish it atomically.
     Create,
@@ -747,6 +743,11 @@ struct ImportArgs {
     #[arg(short = 'i', long = "input-format", alias = "format", value_enum, default_value_t = ExchangeFormat::Auto)]
     format: ExchangeFormat,
 
+    /// When --format auto cannot decide, try this format if the file is weakly compatible.
+    /// Does not force decode; use --format to hard-pin. Only valid with --format auto.
+    #[arg(long = "suggested-format", value_enum, value_name = "FORMAT")]
+    suggested_format: Option<ExchangeFormat>,
+
     /// Dataset layout: preserve, normalized Storyline (combine all inputs into one Storyline Lance Store at the Dataset root), or record-level compact JSONL.
     #[arg(short = 'o', long = "output-format", value_enum)]
     output_format: Option<ImportOutputFormat>,
@@ -758,10 +759,6 @@ struct ImportArgs {
     /// Append trajectories into an existing Storyline Dataset.
     #[arg(long, conflicts_with = "replace")]
     append: bool,
-
-    /// Deprecated alias for --replace/--append/--create. Prefer --replace or --append.
-    #[arg(long, value_enum, hide = true)]
-    mode: Option<ImportMode>,
 
     /// How append handles an existing document ID.
     #[arg(long, value_enum, value_name = "suffix|skip")]
@@ -785,6 +782,19 @@ struct ImportArgs {
     #[arg(long, value_name = "N")]
     commit_every: Option<usize>,
 
+    /// Resume a previous import using the local checkpoint WAL for the same
+    /// --from/--to fingerprint. Skips sources already recorded as done or failed.
+    #[arg(long)]
+    resume: bool,
+
+    /// Root directory for import checkpoint WALs (default: ./.pchronicle-import-wal).
+    #[arg(long = "wal-dir", value_name = "DIR")]
+    wal_dir: Option<PathBuf>,
+
+    /// Delete the WAL for this --from/--to job before starting (implies a fresh checkpoint).
+    #[arg(long)]
+    reset: bool,
+
     /// Compact JSONL mapping. id/timestamp override $.id/$.timestamp; missing or invalid id values
     /// use source_filename#line_number; other names add JSONB columns.
     /// Example: --column id=$.event.id --column model=$.payload.model.
@@ -794,18 +804,11 @@ struct ImportArgs {
 
 impl ImportArgs {
     fn mode(&self) -> Result<ImportMode> {
-        match (self.replace, self.append, self.mode) {
-            (true, true, _) => Err(anyhow!("--replace and --append cannot be combined")),
-            (true, false, Some(ImportMode::Append)) => Err(anyhow!(
-                "--replace conflicts with --mode append; omit --mode"
-            )),
-            (false, true, Some(ImportMode::Replace)) => Err(anyhow!(
-                "--append conflicts with --mode replace; omit --mode"
-            )),
-            (true, false, _) => Ok(ImportMode::Replace),
-            (false, true, _) => Ok(ImportMode::Append),
-            (false, false, Some(mode)) => Ok(mode),
-            (false, false, None) => Ok(ImportMode::Create),
+        match (self.replace, self.append) {
+            (true, true) => Err(anyhow!("--replace and --append cannot be combined")),
+            (true, false) => Ok(ImportMode::Replace),
+            (false, true) => Ok(ImportMode::Append),
+            (false, false) => Ok(ImportMode::Create),
         }
     }
 }
@@ -1507,6 +1510,9 @@ struct ImportResponse {
     fact_rows: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     input_bytes: Option<usize>,
+    /// Physical Dataset size after import (Lance/object-store bytes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    on_disk_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1635,7 +1641,9 @@ pub async fn run_with_stdio(
             .await
         }
         Command::Export(args) => run_export(args, config, stdout, &mut diagnostics).await,
-        Command::Sync(args) => sync::run(args, config, &mut diagnostics).await,
+        Command::Sync(args) => {
+            sync::run(args, config, &mut diagnostics, stderr_is_terminal).await
+        }
         Command::Echo(args) => run_echo(args, &mut diagnostics).await,
         Command::Dev(DevArgs {
             command: DevCommand::Echo(args),

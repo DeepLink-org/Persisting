@@ -63,6 +63,9 @@ pub struct UnknownFieldImportWarnings {
 }
 
 impl UnknownFieldImportWarnings {
+    pub fn merge(&mut self, other: &Self) {
+        self.observe(&other.counts);
+    }
     /// Observe all Storylines decoded from one physical input Source.
     ///
     /// Converters may attach a document-level unknown pointer to multiple

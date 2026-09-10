@@ -34,6 +34,9 @@ use crate::formats::unknown_fields::{
 pub const STORYLINE_OBJECTS_DATASET: &str = "objects.lance";
 pub const DEFAULT_CONTENT_OFFLOAD_THRESHOLD: usize = 64 * 1024;
 pub const DEFAULT_CONTENT_PREVIEW_BYTES: usize = 256;
+/// Soft ceiling for one stream write chunk. Keeps Arrow UTF8/Binary builders
+/// under the ~2GiB i32 offset limit when many medium-sized cells accumulate.
+pub const DEFAULT_MAX_CHUNK_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const CONTENT_REF_MAGIC: &str = "\u{001e}PCHRONICLE-CONTENT:";
 const CONTENT_INDEX_NAME: &str = "pchronicle_content_id_idx";
 const CONTENT_ID_COLUMN: &str = "content_id";
@@ -93,7 +96,7 @@ impl Default for StorylineContentOptions {
             max_document_rows: None,
             max_document_bytes: None,
             max_chunk_rows: None,
-            max_chunk_bytes: None,
+            max_chunk_bytes: Some(DEFAULT_MAX_CHUNK_BYTES),
             max_import_documents: None,
             max_unknown_fields: DEFAULT_MAX_UNKNOWN_FIELDS,
             max_unknown_bytes: DEFAULT_MAX_UNKNOWN_BYTES,
@@ -422,6 +425,13 @@ fn externalize_batch(
                 continue;
             }
             let value = values.value(row);
+            // Already-published content refs must not be wrapped again. User
+            // payloads that only look like the magic prefix still offload.
+            let already_ref = matches!(ContentRef::parse(value), Ok(Some(_)));
+            if already_ref {
+                encoded.push(Some(value.to_string()));
+                continue;
+            }
             let should_offload =
                 value.len() >= options.offload_threshold || value.starts_with(CONTENT_REF_MAGIC);
             if !should_offload {
@@ -524,6 +534,51 @@ fn build_object(
         stored,
         created_at_ms: chrono::Utc::now().timestamp_millis(),
     })
+}
+
+/// Encode a JSON content cell, offloading to `objects.lance` before Arrow Utf8
+/// materialization so large import batches cannot hit the 2GiB StringArray limit.
+pub(crate) fn encode_json_content_cell<T: serde::Serialize>(
+    value: &T,
+    options: StorylineContentOptions,
+    pending: &mut PendingContent,
+) -> Result<String> {
+    let encoded = serde_json::to_vec(value).context("serialize Storyline content JSON cell")?;
+    let collides = match serde_json::from_slice::<serde_json::Value>(&encoded) {
+        Ok(serde_json::Value::String(text)) => text.starts_with(CONTENT_REF_MAGIC),
+        _ => false,
+    };
+    if encoded.len() < options.offload_threshold && !collides {
+        return String::from_utf8(encoded).context("Storyline JSON cell is not UTF-8");
+    }
+    if let Ok(serde_json::Value::String(text)) =
+        serde_json::from_slice::<serde_json::Value>(&encoded)
+        && matches!(ContentRef::parse(&text), Ok(Some(_)))
+    {
+        return Ok(text);
+    }
+    let object = build_object(&encoded, LogicalType::Json, options)?;
+    let descriptor = object.reference.encode();
+    pending.insert(object)?;
+    Ok(descriptor)
+}
+
+/// Encode a UTF-8 content cell with the same pre-Arrow offload policy.
+pub(crate) fn encode_utf8_content_cell(
+    value: &str,
+    options: StorylineContentOptions,
+    pending: &mut PendingContent,
+) -> Result<String> {
+    if matches!(ContentRef::parse(value), Ok(Some(_))) {
+        return Ok(value.to_owned());
+    }
+    if value.len() < options.offload_threshold && !value.starts_with(CONTENT_REF_MAGIC) {
+        return Ok(value.to_owned());
+    }
+    let object = build_object(value.as_bytes(), LogicalType::Utf8, options)?;
+    let descriptor = object.reference.encode();
+    pending.insert(object)?;
+    Ok(descriptor)
 }
 
 fn utf8_preview(bytes: &[u8], maximum: usize) -> Result<String> {

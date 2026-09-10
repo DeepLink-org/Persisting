@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 use super::codec::{
     DecodeContext, DecodeReport, FormatCapabilities, ProbeConfidence, TrajectoryFormat,
 };
-use super::timestamp::StorylineTimestamp;
+use super::timestamp::{StorylineTimestamp, deserialize_optional_timestamp};
 use super::unknown_fields::{StorylineUnknownFields, UnknownKeyCounts, compute_unknown_key_counts};
 use crate::format::DocumentFormat;
 use crate::{InputIssue, InputResult, Result};
@@ -51,9 +51,17 @@ pub struct StorylineDocument {
     pub task: Option<StorylineTask>,
     #[serde(default, skip_serializing_if = "skip_optional_empty_prompt")]
     pub prompt: Option<StorylinePrompt>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_timestamp",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub started_at: Option<StorylineTimestamp>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_timestamp",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub finished_at: Option<StorylineTimestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_metrics: Option<Value>,
@@ -128,7 +136,12 @@ pub struct StorylineTurn {
     pub id: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    #[serde(rename = "ts", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "ts",
+        default,
+        deserialize_with = "deserialize_optional_timestamp",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub timestamp: Option<StorylineTimestamp>,
     #[serde(rename = "src")]
     pub source: String,
@@ -162,7 +175,11 @@ pub struct StorylineTurn {
     pub env: Option<StorylineEnv>,
     #[serde(default, skip_serializing_if = "skip_turn_prompt")]
     pub prompt: Option<StorylinePrompt>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_timestamp",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub finished_at: Option<StorylineTimestamp>,
 }
 
@@ -1160,14 +1177,46 @@ mod tests {
         for value in [
             serde_json::Value::Null,
             serde_json::json!(true),
-            serde_json::json!("2026/08/20 00:00:00"),
+            serde_json::json!("not-a-timestamp"),
         ] {
             assert!(crate::model::StorylineTimestamp::from_json(value).is_err());
         }
     }
 
     #[test]
-    fn storyline_decode_rejects_non_rfc3339_timestamps() {
+    fn typed_timestamp_accepts_common_alternate_string_forms() {
+        for value in [
+            serde_json::json!("2026/08/20 00:00:00"),
+            serde_json::json!("2026-08-20 12:00:00"),
+            serde_json::json!("2026-08-20T12:00:00"),
+        ] {
+            assert!(
+                crate::model::StorylineTimestamp::from_json(value.clone()).is_ok(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn storyline_decode_keeps_unparseable_timestamps_empty() {
+        let input = serde_json::json!({
+            "schema_version": STORYLINE_SCHEMA_VERSION,
+            "session": "session",
+            "agent": {"id": "agent"},
+            "turns": [{
+                "id": 1,
+                "ts": "definitely-not-a-time",
+                "src": "user",
+                "msg": "hello"
+            }]
+        });
+
+        let story = StorylineDocument::from_json_str(&input.to_string()).unwrap();
+        assert!(story.turns[0].timestamp.is_none());
+    }
+
+    #[test]
+    fn storyline_decode_accepts_slash_separated_timestamps() {
         let input = serde_json::json!({
             "schema_version": STORYLINE_SCHEMA_VERSION,
             "session": "session",
@@ -1180,8 +1229,9 @@ mod tests {
             }]
         });
 
-        let error = StorylineDocument::from_json_str(&input.to_string()).unwrap_err();
-        assert!(error.to_string().contains("RFC3339"), "{error}");
+        let story = StorylineDocument::from_json_str(&input.to_string()).unwrap();
+        let ts = story.turns[0].timestamp.as_ref().expect("parsed timestamp");
+        assert_eq!(ts.source_string(), Some("2026/08/20 12:00:00"));
     }
 
     #[test]

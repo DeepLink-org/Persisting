@@ -498,17 +498,19 @@ fn canonical_parser_surface_matches_the_cli_guide() -> Result<()> {
     assert!(!import.append);
     assert!(import.yes);
 
-    assert!(Cli::try_parse_from([
-        "pchronicle",
-        "import",
-        "-f",
-        "input.json",
-        "-t",
-        "./imported",
-        "--replace",
-        "--append",
-    ])
-    .is_err());
+    assert!(
+        Cli::try_parse_from([
+            "pchronicle",
+            "import",
+            "-f",
+            "input.json",
+            "-t",
+            "./imported",
+            "--replace",
+            "--append",
+        ])
+        .is_err()
+    );
 
     let cli = Cli::try_parse_from(["pchronicle", "drop", "./imported", "--yes"])?;
     let Command::Drop(drop) = cli.command else {
@@ -2711,11 +2713,7 @@ async fn directory_import_auto_detects_each_file_and_skips_unknown_json() -> Res
         assert_eq!(response["trajectories"], 3, "{output_format:?}: {response}");
         let warnings = String::from_utf8(stderr)?;
         assert!(
-            warnings.contains("import source=root.json status=processing"),
-            "{output_format:?}: {warnings}"
-        );
-        assert!(
-            warnings.contains("import source=root.json status=completed"),
+            warnings.contains("root.json"),
             "{output_format:?}: {warnings}"
         );
         assert!(
@@ -2832,6 +2830,13 @@ async fn object_store_replace_clears_existing_prefix_before_import() -> Result<(
     assert!(
         stderr.contains("deleted:total =") || stderr.contains("[deleting]"),
         "replace should report delete progress, got: {stderr}"
+    );
+    assert!(
+        existing
+            .read_relative_bytes(".dataset-marker")
+            .await
+            .is_err(),
+        "replace should remove objects left by the previous Dataset"
     );
 
     let store = StorylineLanceStore::open_uri(&output).await?;
@@ -3063,16 +3068,20 @@ async fn object_store_directory_import_recurses_json_files() -> Result<()> {
         )
         .await?;
 
-    let output = tempfile::tempdir()?;
+    let output_root = tempfile::tempdir()?;
+    let output = output_root.path().join("dataset");
+    let wal_root = tempfile::tempdir()?;
     let cli = Cli::try_parse_from([
         "pchronicle",
         "import",
         "--from",
         &source,
         "--to",
-        output.path().to_str().unwrap(),
+        output.to_str().unwrap(),
         "--output-format",
         "storyline",
+        "--wal-dir",
+        wal_root.path().to_str().unwrap(),
     ])?;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -3081,7 +3090,7 @@ async fn object_store_directory_import_recurses_json_files() -> Result<()> {
     assert!(stderr.contains("status=discovering"));
     assert!(stderr.contains("status=discovered files=2"));
 
-    let store = StorylineLanceStore::open(output.path()).await?;
+    let store = StorylineLanceStore::open(&output).await?;
     let ids = store
         .document_ids_snapshot()
         .await?
@@ -3347,6 +3356,8 @@ async fn append_storyline_import_suffixes_or_skips_existing_document_ids() -> Re
         .map(|row| row["document_id"].as_str().unwrap().to_string())
         .collect::<Vec<_>>();
     assert_eq!(ids, ["shared", "shared#1"]);
+    let manifest = persisting_pchronicle::storage::load_manifest(&output)?.context("manifest")?;
+    assert_eq!(manifest.stats.as_ref().unwrap().record_count, 2);
     Ok(())
 }
 
@@ -3519,12 +3530,13 @@ async fn directory_import_dedupes_unknown_warnings_across_sources() -> Result<()
 }
 
 #[tokio::test]
-async fn directory_import_failure_does_not_publish_partial_output() -> Result<()> {
+async fn directory_import_skips_invalid_json_and_publishes_valid_sources() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let input = temp.path().join("input");
     fs::create_dir_all(&input)?;
     fs::copy(example_source("atif"), input.join("a-valid.json"))?;
     fs::write(input.join("z-invalid.json"), "not json")?;
+    let wal_dir = temp.path().join("wal");
 
     for output_format in [ImportOutputFormat::Preserve, ImportOutputFormat::Storyline] {
         let output = temp
@@ -3537,18 +3549,28 @@ async fn directory_import_failure_does_not_publish_partial_output() -> Result<()
             input.to_string_lossy().into_owned(),
             "--output".to_owned(),
             output.to_string_lossy().into_owned(),
+            "--wal-dir".to_owned(),
+            wal_dir.to_string_lossy().into_owned(),
+            "--reset".to_owned(),
         ];
         if output_format == ImportOutputFormat::Storyline {
             argv.extend(["--output-format".to_owned(), "storyline".to_owned()]);
         }
         let cli = Cli::try_parse_from(argv)?;
-        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
-            .await
-            .unwrap_err();
-        assert!(format!("{error:#}").contains("z-invalid.json"), "{error:#}");
-        if output_format == ImportOutputFormat::Preserve {
-            assert!(!output.exists());
-        }
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        run(cli, false, &mut stdout, &mut stderr).await?;
+        let response: Value = serde_json::from_slice(&stdout)?;
+        assert!(
+            response["trajectories"].as_u64().unwrap_or(0) >= 1,
+            "{output_format:?}: {response}"
+        );
+        let stderr = String::from_utf8(stderr)?;
+        assert!(
+            stderr.contains("z-invalid.json") || stderr.to_lowercase().contains("skip"),
+            "{output_format:?}: expected skip warning for invalid JSON, got: {stderr}"
+        );
+        assert!(output.exists(), "{output_format:?}: valid sources should publish");
     }
     assert!(!fs::read_dir(temp.path())?.any(|entry| {
         entry

@@ -145,15 +145,18 @@ fn serialized_document_bytes(story: &StorylineDocument) -> Result<usize> {
     Ok(writer.0)
 }
 
-struct EncodedBatchIterator<T> {
+struct EncodedBatchIterator<T, F> {
     rows: std::sync::Arc<[T]>,
     offset: usize,
     emitted_empty: bool,
-    encode: fn(&[T]) -> Result<RecordBatch>,
+    encode: F,
 }
 
-impl<T> EncodedBatchIterator<T> {
-    fn new(rows: Vec<T>, encode: fn(&[T]) -> Result<RecordBatch>) -> Self {
+impl<T, F> EncodedBatchIterator<T, F>
+where
+    F: FnMut(&[T]) -> Result<RecordBatch>,
+{
+    fn new(rows: Vec<T>, encode: F) -> Self {
         Self {
             rows: rows.into(),
             offset: 0,
@@ -163,7 +166,10 @@ impl<T> EncodedBatchIterator<T> {
     }
 }
 
-impl<T> Iterator for EncodedBatchIterator<T> {
+impl<T, F> Iterator for EncodedBatchIterator<T, F>
+where
+    F: FnMut(&[T]) -> Result<RecordBatch>,
+{
     type Item = std::result::Result<RecordBatch, ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -172,25 +178,48 @@ impl<T> Iterator for EncodedBatchIterator<T> {
                 return None;
             }
             self.emitted_empty = true;
-            return Some(
-                (self.encode)(&[]).map_err(|error| ArrowError::ComputeError(error.to_string())),
-            );
+            return Some(catch_encode_panic(|| (self.encode)(&[])));
         }
         if self.offset >= self.rows.len() {
             return None;
         }
         let end = (self.offset + WRITE_BATCH_ROWS).min(self.rows.len());
-        let result = (self.encode)(&self.rows[self.offset..end])
-            .map_err(|error| ArrowError::ComputeError(error.to_string()));
+        let slice = &self.rows[self.offset..end];
+        let result = catch_encode_panic(|| (self.encode)(slice));
         self.offset = end;
         Some(result)
     }
 }
 
-fn encode_rows<T>(
-    rows: Vec<T>,
-    encode: fn(&[T]) -> Result<RecordBatch>,
-) -> Result<Vec<RecordBatch>> {
+fn catch_encode_panic(
+    encode: impl FnOnce() -> Result<RecordBatch>,
+) -> std::result::Result<RecordBatch, ArrowError> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(encode)) {
+        Ok(Ok(batch)) => Ok(batch),
+        Ok(Err(error)) => Err(ArrowError::ComputeError(error.to_string())),
+        Err(panic) => {
+            let message = panic_message(&panic);
+            Err(ArrowError::ComputeError(format!(
+                "Storyline Arrow encode panicked ({message}); reduce commit batch size or skip oversized sources"
+            )))
+        }
+    }
+}
+
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".into()
+    }
+}
+
+fn encode_rows<T, F>(rows: Vec<T>, encode: F) -> Result<Vec<RecordBatch>>
+where
+    F: FnMut(&[T]) -> Result<RecordBatch>,
+{
     EncodedBatchIterator::new(rows, encode)
         .map(|batch| batch.map_err(anyhow::Error::from))
         .collect()
@@ -213,20 +242,31 @@ pub(super) fn externalize_rows(
     for run in &mut runs {
         externalize_unknown_field_values(&mut run.unknown_fields, options, &mut pending)?;
     }
+    // Offload large Utf8 content cells while encoding so Arrow StringArray
+    // construction never sees multi-GiB payloads (i32 offset overflow).
     let runs = externalize_batches(
-        encode_rows(runs, story_runs_to_batch)?,
+        encode_rows(runs, |chunk| {
+            super::rows::story_runs_to_batch_with_content(chunk, Some((options, &mut pending)))
+        })?,
         StorylineTableKind::Runs,
         options,
         &mut pending,
     )?;
     let steps = externalize_batches(
-        encode_rows(steps, story_steps_to_batch)?,
+        encode_rows(steps, |chunk| {
+            super::rows::story_steps_to_batch_with_content(chunk, Some((options, &mut pending)))
+        })?,
         StorylineTableKind::Steps,
         options,
         &mut pending,
     )?;
     let tool_calls = externalize_batches(
-        encode_rows(tool_calls, story_tool_calls_to_batch)?,
+        encode_rows(tool_calls, |chunk| {
+            super::rows::story_tool_calls_to_batch_with_content(
+                chunk,
+                Some((options, &mut pending)),
+            )
+        })?,
         StorylineTableKind::ToolCalls,
         options,
         &mut pending,
@@ -318,7 +358,9 @@ async fn write_record_batch_reader(
     build_indexes: bool,
 ) -> Result<u64> {
     let uri = path.to_string_lossy().into_owned();
-    crate::store::object_store_io_gate::mark_kind(crate::store::object_store_io_gate::IoKind::Write);
+    crate::store::object_store_io_gate::mark_kind(
+        crate::store::object_store_io_gate::IoKind::Write,
+    );
     let mut dataset = InsertBuilder::new(&uri)
         .with_params(&WriteParams {
             mode: WriteMode::Create,

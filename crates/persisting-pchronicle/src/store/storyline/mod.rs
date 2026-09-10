@@ -28,7 +28,8 @@ use mutation::{
 };
 
 pub use content::{
-    DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES, StorylineContentOptions,
+    DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES, DEFAULT_MAX_CHUNK_BYTES,
+    StorylineContentOptions,
 };
 pub use datafusion::{
     DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE,
@@ -561,9 +562,26 @@ impl StorylineLanceStore {
         &self.root
     }
 
-    /// The exact local path or object-store URI used for Lance datasets.
+    /// Exact local path or object-store URI used for Lance datasets.
     pub fn root_uri(&self) -> &str {
         &self.root_uri
+    }
+
+    /// Sum of object/file sizes currently under this Dataset root.
+    ///
+    /// This is physical on-disk (or object-store) size, not attributed input
+    /// bytes. Listing large prefixes can be slow; call at import completion.
+    pub async fn on_disk_bytes(&self) -> Result<u64> {
+        let objects = self
+            .control_store
+            .list("")
+            .await
+            .with_context(|| format!("list Storyline Dataset objects at {}", self.root_uri))?;
+        let mut total = 0u64;
+        for object in objects {
+            total = total.saturating_add(object.metadata.content_length());
+        }
+        Ok(total)
     }
 
     pub fn storage_scheme(&self) -> &str {
@@ -1013,32 +1031,31 @@ impl StorylineLanceStore {
                         #[cfg(test)]
                         release_waiting_content_create(&self.root_uri, first_content_create);
                         let objects_version = objects_result?;
-                        let (runs_version, steps_version, tool_calls_version) =
-                            join3_remote_aware(
-                                self.is_remote_object_store(),
-                                write_batches(
-                                    &created.runs,
-                                    run_batches,
-                                    story_runs_arrow_schema(),
-                                    &RUN_INDEXES,
-                                    stream_options.optimize_indices,
-                                ),
-                                write_batches(
-                                    &created.steps,
-                                    step_batches,
-                                    story_steps_arrow_schema(),
-                                    &STEP_INDEXES,
-                                    stream_options.optimize_indices,
-                                ),
-                                write_batches(
-                                    &created.tool_calls,
-                                    tool_call_batches,
-                                    story_tool_calls_arrow_schema(),
-                                    &TOOL_CALL_INDEXES,
-                                    stream_options.optimize_indices,
-                                ),
-                            )
-                            .await?;
+                        let (runs_version, steps_version, tool_calls_version) = join3_remote_aware(
+                            self.is_remote_object_store(),
+                            write_batches(
+                                &created.runs,
+                                run_batches,
+                                story_runs_arrow_schema(),
+                                &RUN_INDEXES,
+                                stream_options.optimize_indices,
+                            ),
+                            write_batches(
+                                &created.steps,
+                                step_batches,
+                                story_steps_arrow_schema(),
+                                &STEP_INDEXES,
+                                stream_options.optimize_indices,
+                            ),
+                            write_batches(
+                                &created.tool_calls,
+                                tool_call_batches,
+                                story_tool_calls_arrow_schema(),
+                                &TOOL_CALL_INDEXES,
+                                stream_options.optimize_indices,
+                            ),
+                        )
+                        .await?;
                         created.runs_version = runs_version;
                         created.steps_version = steps_version;
                         created.tool_calls_version = tool_calls_version;
@@ -1056,35 +1073,34 @@ impl StorylineLanceStore {
                             stream_options.optimize_indices,
                         )
                         .await?;
-                        let (runs_version, steps_version, tool_calls_version) =
-                            join3_remote_aware(
-                                self.is_remote_object_store(),
-                                replace_table_batches(
-                                    &current.runs,
-                                    current.runs_version,
-                                    &predicate,
-                                    &["document_id"],
-                                    run_batches,
-                                    story_runs_arrow_schema(),
-                                ),
-                                replace_table_batches(
-                                    &current.steps,
-                                    current.steps_version,
-                                    &predicate,
-                                    &["document_id", "step_id"],
-                                    step_batches,
-                                    story_steps_arrow_schema(),
-                                ),
-                                replace_table_batches(
-                                    &current.tool_calls,
-                                    current.tool_calls_version,
-                                    &predicate,
-                                    &["document_id", "step_id", "call_index"],
-                                    tool_call_batches,
-                                    story_tool_calls_arrow_schema(),
-                                ),
-                            )
-                            .await?;
+                        let (runs_version, steps_version, tool_calls_version) = join3_remote_aware(
+                            self.is_remote_object_store(),
+                            replace_table_batches(
+                                &current.runs,
+                                current.runs_version,
+                                &predicate,
+                                &["document_id"],
+                                run_batches,
+                                story_runs_arrow_schema(),
+                            ),
+                            replace_table_batches(
+                                &current.steps,
+                                current.steps_version,
+                                &predicate,
+                                &["document_id", "step_id"],
+                                step_batches,
+                                story_steps_arrow_schema(),
+                            ),
+                            replace_table_batches(
+                                &current.tool_calls,
+                                current.tool_calls_version,
+                                &predicate,
+                                &["document_id", "step_id", "call_index"],
+                                tool_call_batches,
+                                story_tool_calls_arrow_schema(),
+                            ),
+                        )
+                        .await?;
                         current.runs_version = runs_version;
                         current.steps_version = steps_version;
                         current.tool_calls_version = tool_calls_version;

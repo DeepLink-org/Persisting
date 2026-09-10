@@ -929,7 +929,11 @@ async fn object_shallow_children(
     let mut child_dirs = BTreeSet::new();
     let mut files = Vec::new();
     for entry in entries {
-        let path = entry.path.trim_start_matches(&prefix).trim_matches('/');
+        let path = entry
+            .path
+            .strip_prefix(&prefix)
+            .unwrap_or(&entry.path)
+            .trim_matches('/');
         if path.is_empty() {
             continue;
         }
@@ -1047,14 +1051,11 @@ async fn probe_object_prefix(
                     })));
                 }
                 if manifest.is_storyline_leaf() {
-                    let current = store
-                        .stat_file(&join("CURRENT"))
-                        .await?
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "storyline chronicle.manifest requires CURRENT under {relative}"
-                            )
-                        })?;
+                    let current = store.stat_file(&join("CURRENT")).await?.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "storyline chronicle.manifest requires CURRENT under {relative}"
+                        )
+                    })?;
                     let current_meta = RemoteObjectMeta::from(current);
                     return Ok(Some(ObjectProbe::Source(Candidate::Storyline {
                         file: source_file,

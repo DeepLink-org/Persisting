@@ -25,6 +25,8 @@ const RAW_COLUMN: &str = "_raw_";
 const OFFLOAD_COLUMN: &str = "_offload_";
 const FORMAT_KEY: &str = "pchronicle.format";
 const FORMAT_NAME: &str = "compact-jsonl/v1";
+/// How often Building phases emit processed/total ticks.
+const BUILD_PROGRESS_EVERY: u64 = 8192;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactJsonlColumn {
@@ -110,6 +112,53 @@ pub struct CompactJsonlRecord {
     pub id: String,
     pub timestamp: String,
     pub filename: String,
+}
+
+/// Progress events emitted while building a Compact JSONL Lance snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompactJsonlImportEvent {
+    Listed {
+        files: u64,
+        bytes: u64,
+    },
+    /// Periodic updates while reading one input file (`done` is true on completion).
+    Reading {
+        relative: String,
+        file_bytes: u64,
+        file_rows: u64,
+        total_rows: u64,
+        done: bool,
+    },
+    Building {
+        phase: CompactJsonlBuildPhase,
+        rows: u64,
+        /// When set, UI shows `phase processed/rows` for long in-phase work.
+        processed: Option<u64>,
+    },
+    Written {
+        rows: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactJsonlBuildPhase {
+    Keys,
+    Offload,
+    Columns,
+    Lance,
+    Manifest,
+}
+
+impl CompactJsonlBuildPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Keys => "keys",
+            Self::Offload => "offload",
+            Self::Columns => "columns",
+            Self::Lance => "lance",
+            Self::Manifest => "manifest",
+        }
+    }
 }
 
 pub struct CompactJsonlStore;
@@ -317,6 +366,15 @@ impl CompactJsonlStore {
         output: impl AsRef<Path>,
         options: &CompactJsonlOptions,
     ) -> Result<usize> {
+        Self::import_path_with_progress(input, output, options, |_| Ok(())).await
+    }
+
+    pub async fn import_path_with_progress(
+        input: impl AsRef<Path>,
+        output: impl AsRef<Path>,
+        options: &CompactJsonlOptions,
+        mut on_progress: impl FnMut(CompactJsonlImportEvent) -> Result<()>,
+    ) -> Result<usize> {
         let input = input.as_ref();
         let output = output.as_ref();
         options.validate()?;
@@ -325,6 +383,16 @@ impl CompactJsonlStore {
             !files.is_empty(),
             "compact JSONL input contains no .json, .jsonl, or .ndjson files"
         );
+        let listed_bytes = files.iter().try_fold(0u64, |total, path| {
+            let len = fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+            total
+                .checked_add(len)
+                .context("compact JSONL listed byte count overflow")
+        })?;
+        on_progress(CompactJsonlImportEvent::Listed {
+            files: files.len() as u64,
+            bytes: listed_bytes,
+        })?;
         if output.exists() {
             fs::remove_dir_all(output)
                 .with_context(|| format!("replace compact JSONL output {}", output.display()))?;
@@ -342,6 +410,7 @@ impl CompactJsonlStore {
                 .context("compact JSONL filename is not UTF-8")?
                 .replace('\\', "/");
             let first_row = rows.len();
+            let file_bytes = fs::metadata(&file).map(|meta| meta.len()).unwrap_or(0);
             if is_json_document(&file) {
                 let raw = fs::read(&file)?;
                 let value: Value = serde_json::from_slice(&raw)
@@ -374,10 +443,32 @@ impl CompactJsonlStore {
                         "compact JSONL {relative}:{line_no} must be a JSON object"
                     );
                     rows.push((value, raw, relative.clone(), line_no));
+                    let file_rows = rows.len() - first_row;
+                    if file_rows % 8192 == 0 {
+                        on_progress(CompactJsonlImportEvent::Reading {
+                            relative: relative.clone(),
+                            file_bytes,
+                            file_rows: file_rows as u64,
+                            total_rows: rows.len() as u64,
+                            done: false,
+                        })?;
+                    }
                 }
             }
             ensure!(rows.len() > first_row, "compact JSONL {relative} is empty");
+            on_progress(CompactJsonlImportEvent::Reading {
+                relative,
+                file_bytes,
+                file_rows: (rows.len() - first_row) as u64,
+                total_rows: rows.len() as u64,
+                done: true,
+            })?;
         }
+        on_progress(CompactJsonlImportEvent::Building {
+            phase: CompactJsonlBuildPhase::Keys,
+            rows: rows.len() as u64,
+            processed: None,
+        })?;
         let schema = schema(options)?;
         let mut arrays: Vec<Arc<dyn Array>> = Vec::new();
         let (ids, timestamps): (Vec<_>, Vec<_>) = rows
@@ -403,9 +494,15 @@ impl CompactJsonlStore {
             ensure!(unique_ids.insert(id), "duplicate compact JSONL id '{id}'");
         }
         let filenames: Vec<String> = rows.iter().map(|(_, _, file, _)| file.clone()).collect();
+        let total_rows = rows.len() as u64;
+        on_progress(CompactJsonlImportEvent::Building {
+            phase: CompactJsonlBuildPhase::Offload,
+            rows: total_rows,
+            processed: Some(0),
+        })?;
         let mut offloads = Vec::with_capacity(rows.len());
         let offload_dir = output.join("_offload");
-        for (_, raw, _, _) in &rows {
+        for (idx, (_, raw, _, _)) in rows.iter().enumerate() {
             if options.offload_threshold > 0 && raw.len() >= options.offload_threshold {
                 fs::create_dir_all(&offload_dir)?;
                 let key = blake3::hash(raw).to_hex().to_string();
@@ -427,22 +524,40 @@ impl CompactJsonlStore {
             } else {
                 offloads.push(None);
             }
+            let processed = (idx + 1) as u64;
+            if processed == total_rows || processed.is_multiple_of(BUILD_PROGRESS_EVERY) {
+                on_progress(CompactJsonlImportEvent::Building {
+                    phase: CompactJsonlBuildPhase::Offload,
+                    rows: total_rows,
+                    processed: Some(processed),
+                })?;
+            }
         }
         arrays.push(Arc::new(StringArray::from(ids)));
         arrays.push(Arc::new(StringArray::from(timestamps)));
         arrays.push(Arc::new(StringArray::from(filenames)));
-        let data = rows
-            .iter()
-            .zip(&offloads)
-            .map(|((value, _, _, _), offload)| {
-                let value = if offload.is_none() {
-                    serde_json::to_string(value)?
-                } else {
-                    "null".into()
-                };
-                encode_json_bytes(&value)
-            })
-            .collect::<Result<Vec<_>>>()?;
+        on_progress(CompactJsonlImportEvent::Building {
+            phase: CompactJsonlBuildPhase::Columns,
+            rows: total_rows,
+            processed: Some(0),
+        })?;
+        let mut data = Vec::with_capacity(rows.len());
+        for (idx, ((value, _, _, _), offload)) in rows.iter().zip(&offloads).enumerate() {
+            let value = if offload.is_none() {
+                serde_json::to_string(value)?
+            } else {
+                "null".into()
+            };
+            data.push(encode_json_bytes(&value)?);
+            let processed = (idx + 1) as u64;
+            if processed == total_rows || processed.is_multiple_of(BUILD_PROGRESS_EVERY) {
+                on_progress(CompactJsonlImportEvent::Building {
+                    phase: CompactJsonlBuildPhase::Columns,
+                    rows: total_rows,
+                    processed: Some(processed),
+                })?;
+            }
+        }
         arrays.push(Arc::new(LargeBinaryArray::from(
             data.iter().map(Vec::as_slice).collect::<Vec<_>>(),
         )));
@@ -450,17 +565,25 @@ impl CompactJsonlStore {
             if matches!(column.name.as_str(), "id" | "timestamp") {
                 continue;
             }
-            let values = rows
-                .iter()
-                .map(|(v, _, _, _)| -> Result<Option<Vec<u8>>> {
+            let mut values = Vec::with_capacity(rows.len());
+            for (idx, (v, _, _, _)) in rows.iter().enumerate() {
+                values.push(
                     path_value(v, &column.path)
                         .map(|x| {
                             let json = serde_json::to_string(x)?;
                             encode_json_bytes(&json)
                         })
-                        .transpose()
-                })
-                .collect::<Result<Vec<_>>>()?;
+                        .transpose()?,
+                );
+                let processed = (idx + 1) as u64;
+                if processed == total_rows || processed.is_multiple_of(BUILD_PROGRESS_EVERY) {
+                    on_progress(CompactJsonlImportEvent::Building {
+                        phase: CompactJsonlBuildPhase::Columns,
+                        rows: total_rows,
+                        processed: Some(processed),
+                    })?;
+                }
+            }
             arrays.push(Arc::new(LargeBinaryArray::from(
                 values.iter().map(|x| x.as_deref()).collect::<Vec<_>>(),
             )));
@@ -490,17 +613,49 @@ impl CompactJsonlStore {
                 .collect::<Vec<_>>(),
         )));
         let batch = RecordBatch::try_new(schema.clone(), arrays)?;
-        InsertBuilder::new(output.to_string_lossy().as_ref())
-            .with_params(&WriteParams {
+        on_progress(CompactJsonlImportEvent::Building {
+            phase: CompactJsonlBuildPhase::Lance,
+            rows: total_rows,
+            processed: None,
+        })?;
+        let uri = output.to_string_lossy().into_owned();
+        let mut write = Box::pin(async move {
+            let write_params = WriteParams {
                 mode: WriteMode::Create,
                 ..Default::default()
-            })
-            .execute_stream(RecordBatchIterator::new(vec![Ok(batch)], schema))
-            .await
-            .context("write compact JSONL Lance dataset")?;
+            };
+            InsertBuilder::new(uri.as_str())
+                .with_params(&write_params)
+                .execute_stream(RecordBatchIterator::new(vec![Ok(batch)], schema))
+                .await
+                .context("write compact JSONL Lance dataset")
+        });
+        loop {
+            tokio::select! {
+                result = &mut write => {
+                    result?;
+                    break;
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                    on_progress(CompactJsonlImportEvent::Building {
+                        phase: CompactJsonlBuildPhase::Lance,
+                        rows: total_rows,
+                        processed: None,
+                    })?;
+                }
+            }
+        }
         // Store-layer contract: every published compact dataset carries
         // chronicle.manifest. import and sync both end here.
+        on_progress(CompactJsonlImportEvent::Building {
+            phase: CompactJsonlBuildPhase::Manifest,
+            rows: total_rows,
+            processed: None,
+        })?;
         Self::publish_manifest(output).await?;
+        on_progress(CompactJsonlImportEvent::Written {
+            rows: rows.len() as u64,
+        })?;
         Ok(rows.len())
     }
 

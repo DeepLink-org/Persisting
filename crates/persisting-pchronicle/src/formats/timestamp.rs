@@ -1,4 +1,4 @@
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
@@ -19,9 +19,11 @@ pub struct StorylineTimestamp {
 impl StorylineTimestamp {
     pub fn from_json(source: Value) -> InputResult<Self> {
         let instant = match &source {
-            Value::String(value) => DateTime::parse_from_rfc3339(value)
-                .map_err(|_| InputIssue::invalid("timestamp string must be RFC3339"))?
-                .with_timezone(&Utc),
+            Value::String(value) => parse_timestamp_string(value).ok_or_else(|| {
+                InputIssue::invalid(
+                    "timestamp string must be RFC3339 or a recognized date/time / Unix form",
+                )
+            })?,
             Value::Number(value) => {
                 let nanos = decimal_seconds_to_nanos(&value.to_string())?;
                 DateTime::<Utc>::from_timestamp_nanos(nanos)
@@ -42,8 +44,18 @@ impl StorylineTimestamp {
         })
     }
 
+    /// Best-effort parse for optional timestamps: try alternate forms, else `None`.
+    pub fn from_json_lenient(source: Value) -> Option<Self> {
+        Self::from_json(source).ok()
+    }
+
     pub fn from_rfc3339(value: &str) -> InputResult<Self> {
         Self::from_json(Value::String(value.to_string()))
+    }
+
+    /// Soft string parse used by converters: unrecognized values become `None`.
+    pub fn from_rfc3339_lenient(value: &str) -> Option<Self> {
+        Self::from_json_lenient(Value::String(value.to_string()))
     }
 
     pub fn from_utc(instant: DateTime<Utc>) -> InputResult<Self> {
@@ -101,6 +113,131 @@ impl<'de> Deserialize<'de> for StorylineTimestamp {
     {
         let source = Value::deserialize(deserializer)?;
         Self::from_json(source).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Deserialize `Option<StorylineTimestamp>`: null/missing → None; unparseable → None.
+pub fn deserialize_optional_timestamp<'de, D>(
+    deserializer: D,
+) -> Result<Option<StorylineTimestamp>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(match value {
+        None | Some(Value::Null) => None,
+        Some(value) => StorylineTimestamp::from_json_lenient(value),
+    })
+}
+
+/// Parse common timestamp string forms into UTC.
+///
+/// Order: RFC3339 → RFC3339-ish with assumed UTC → Naive local forms as UTC →
+/// offset forms → Unix seconds/millis/micros encoded as decimal strings.
+fn parse_timestamp_string(value: &str) -> Option<DateTime<Utc>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
+        return Some(dt.with_timezone(&Utc));
+    }
+
+    // Space separator / missing `Z`: normalize then retry RFC3339.
+    if let Some(normalized) = normalize_toward_rfc3339(value)
+        && let Ok(dt) = DateTime::parse_from_rfc3339(&normalized)
+    {
+        return Some(dt.with_timezone(&Utc));
+    }
+
+    const WITH_OFFSET: &[&str] = &[
+        "%Y-%m-%d %H:%M:%S%.f%:z",
+        "%Y-%m-%d %H:%M:%S%:z",
+        "%Y-%m-%dT%H:%M:%S%.f%:z",
+        "%Y-%m-%dT%H:%M:%S%:z",
+        "%Y/%m/%d %H:%M:%S%.f%:z",
+        "%Y/%m/%d %H:%M:%S%:z",
+        "%Y-%m-%d %H:%M:%S%.f%z",
+        "%Y-%m-%d %H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S%.f%z",
+        "%Y-%m-%dT%H:%M:%S%z",
+    ];
+    for fmt in WITH_OFFSET {
+        if let Ok(dt) = DateTime::parse_from_str(value, fmt) {
+            return Some(dt.with_timezone(&Utc));
+        }
+    }
+
+    const NAIVE_UTC: &[&str] = &[
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S%.f",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%dT%H:%M:%S%.f",
+        "%Y/%m/%dT%H:%M:%S",
+    ];
+    for fmt in NAIVE_UTC {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(value, fmt) {
+            return Some(naive.and_utc());
+        }
+    }
+
+    parse_unix_string(value)
+}
+
+fn normalize_toward_rfc3339(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.len() < 11 {
+        return None;
+    }
+    // `2026-08-20 12:00:00` / `2026/08/20 12:00:00` → `T` + optional `Z`
+    let mut candidate = trimmed.replace('/', "-");
+    if candidate.as_bytes().get(10) == Some(&b' ') {
+        candidate.replace_range(10..11, "T");
+    }
+    let tail = &candidate[10..];
+    let has_zone = candidate.ends_with('Z')
+        || candidate.ends_with('z')
+        || tail.contains('+')
+        || tail.rfind('-').is_some_and(|idx| idx > 0);
+    if !has_zone {
+        candidate.push('Z');
+    }
+    if candidate == trimmed {
+        None
+    } else {
+        Some(candidate)
+    }
+}
+
+fn parse_unix_string(value: &str) -> Option<DateTime<Utc>> {
+    if let Ok(n) = value.parse::<i64>() {
+        return unix_i64_to_utc(n);
+    }
+    // `"1710000000.25"` → seconds with fraction
+    if value.contains('.')
+        && let Ok(nanos) = decimal_seconds_to_nanos(value)
+    {
+        return Some(DateTime::<Utc>::from_timestamp_nanos(nanos));
+    }
+    None
+}
+
+fn unix_i64_to_utc(n: i64) -> Option<DateTime<Utc>> {
+    let abs = n.unsigned_abs();
+    // Heuristic by magnitude (absolute value):
+    //   < 1e11  → seconds  (year ~5138)
+    //   < 1e14  → millis
+    //   else    → micros
+    if abs < 100_000_000_000 {
+        DateTime::from_timestamp(n, 0)
+    } else if abs < 100_000_000_000_000 {
+        DateTime::from_timestamp_millis(n)
+    } else {
+        DateTime::from_timestamp_micros(n)
     }
 }
 
@@ -179,8 +316,36 @@ fn parse_digits(digits: &str) -> InputResult<i128> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "proptest")]
     use super::*;
+
+    #[test]
+    fn parses_common_non_rfc3339_strings() {
+        let cases = [
+            "2026-08-20 12:00:00",
+            "2026/08/20 12:00:00",
+            "2026-08-20T12:00:00",
+            "2026-08-20 12:00:00.123456",
+            "2026/08/20T12:00:00.5",
+        ];
+        for raw in cases {
+            let ts = StorylineTimestamp::from_rfc3339(raw)
+                .unwrap_or_else(|error| panic!("expected parse for {raw}: {error}"));
+            assert_eq!(ts.source_string(), Some(raw));
+            assert!(ts.instant().timestamp() > 0, "{raw}");
+        }
+    }
+
+    #[test]
+    fn parses_unix_seconds_as_string() {
+        let ts = StorylineTimestamp::from_rfc3339("1710000000").unwrap();
+        assert_eq!(ts.instant().timestamp(), 1710000000);
+    }
+
+    #[test]
+    fn lenient_returns_none_for_garbage() {
+        assert!(StorylineTimestamp::from_rfc3339_lenient("not-a-time").is_none());
+        assert!(StorylineTimestamp::from_rfc3339_lenient("").is_none());
+    }
 
     #[cfg(feature = "proptest")]
     mod proptests {

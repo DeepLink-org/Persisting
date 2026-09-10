@@ -344,6 +344,8 @@ async fn repeated_unknown_value_is_stored_once() {
         .await
         .unwrap();
     assert_eq!(objects.count_rows(None).await.unwrap(), 1);
+    let on_disk = store.on_disk_bytes().await.unwrap();
+    assert!(on_disk > 0, "committed Storyline Dataset should occupy disk");
     let hydrated = store
         .get_storyline_full("unknown-first")
         .await

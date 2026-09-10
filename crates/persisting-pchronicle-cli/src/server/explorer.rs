@@ -64,6 +64,7 @@ pub(crate) struct CatalogTreeChild {
     pub(crate) entries: Vec<CatalogTreeChild>,
 }
 
+#[allow(dead_code)]
 pub(crate) fn catalog_tree(
     summaries: &[RunSummary],
     dataset: Option<&str>,
@@ -101,24 +102,24 @@ pub(crate) fn catalog_tree_with_mounts(
             }
         })
         .sum();
-    let children = if dataset.is_none() {
-        fold_tree_children(
+    let children = match dataset {
+        None => fold_tree_children(
             merge_dataset_children(dataset_children(&scoped), datasets),
             max_children,
             prefix,
-        )
-    } else {
-        let dataset_name = dataset.expect("dataset scope is some");
-        let sources = datasets
-            .iter()
-            .find(|row| row.mount.name == dataset_name)
-            .map(|row| row.sources.as_slice())
-            .unwrap_or(&[]);
-        fold_tree_children(
-            merge_file_children(file_children(&scoped, prefix), sources, prefix),
-            max_children,
-            prefix,
-        )
+        ),
+        Some(dataset_name) => {
+            let sources = datasets
+                .iter()
+                .find(|row| row.mount.name == dataset_name)
+                .map(|row| row.sources.as_slice())
+                .unwrap_or(&[]);
+            fold_tree_children(
+                merge_file_children(file_children(&scoped, prefix), sources, prefix),
+                max_children,
+                prefix,
+            )
+        }
     };
     CatalogTree {
         dataset: dataset.map(str::to_string),
@@ -160,16 +161,13 @@ pub(crate) fn append_shallow_nav_children(
             } else {
                 "file".into()
             },
-            data_type: entry
-                .dataset_kind
-                .clone()
-                .unwrap_or_else(|| {
-                    if entry.is_dir {
-                        "directory".into()
-                    } else {
-                        "other".into()
-                    }
-                }),
+            data_type: entry.dataset_kind.clone().unwrap_or_else(|| {
+                if entry.is_dir {
+                    "directory".into()
+                } else {
+                    "other".into()
+                }
+            }),
             path,
             run_count: 0,
             failed_count: 0,
@@ -246,8 +244,7 @@ fn merge_file_children(
             Some((name, _)) => (name, true),
             None => (
                 rest,
-                source.kind == CatalogSourceKind::Directory
-                    || source.file.contains('/'),
+                source.kind == CatalogSourceKind::Directory || source.file.contains('/'),
             ),
         };
         // A Directory leaf under this prefix is always a folder to open.
@@ -1755,7 +1752,11 @@ mod tests {
         assert_eq!(
             prod.children
                 .iter()
-                .map(|child| (child.name.as_str(), child.kind.as_str(), child.data_type.as_str()))
+                .map(|child| (
+                    child.name.as_str(),
+                    child.kind.as_str(),
+                    child.data_type.as_str()
+                ))
                 .collect::<Vec<_>>(),
             vec![("infra", "dir", "directory")]
         );

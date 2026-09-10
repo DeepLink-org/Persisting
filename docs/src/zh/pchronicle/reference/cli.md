@@ -71,7 +71,7 @@ pchronicle
 ├── find [DATASET]
 ├── query [DATASET]
 ├── import --from SOURCE --to DATASET
-├── sync --from DIRECTORY --to DIRECTORY --convert DIRECTORY
+├── sync --from DIRECTORY [--mirror DIRECTORY] [--to DIRECTORY]
 ├── export --from DATASET --to TARGET
 ├── agent codex|claude [DATASET]
 └── serve DATASET...
@@ -272,6 +272,7 @@ pchronicle query \
 pchronicle import -f|--from SOURCE -t|--to NEW_DATASET
  [-i|--input-format FORMAT] [-o|--output-format preserve|storyline|compact-jsonl]
  [--replace] [--append] [--on-duplicate suffix|skip] [--yes]
+ [--resume] [--wal-dir DIR] [--reset]
  [--column NAME=JSON_PATH]... [--max-input-bytes BYTES]
 ```
 
@@ -287,6 +288,8 @@ pchronicle import \
 pchronicle import \
  -f rebuilt.json -t ./normalized --replace --yes
 pchronicle import \
+ -f s3://bucket/corpus -t s3://bucket/out -o storyline --resume
+pchronicle import \
  -f ./jsonl-root -t ./records.lance \
  -o compact-jsonl \
  --column id=$.event.id --column timestamp=$.event.time \
@@ -297,6 +300,11 @@ pchronicle import \
 因此格式参数使用 `-i` 和 `-o`，而不是 `-if` 和 `-of`。文件和目录默认自动识别输入格式；stdin
 必须显式指定 `-i`。`preserve` 保留文件边界和相对路径，`storyline` 合并为 normalized Store；
 对象存储目标必须使用 `storyline`。
+
+长时间 Storyline import 会在 `./.pchronicle-import-wal/<job_id>/` 写入本地 checkpoint WAL
+（`job.json`、`done.jsonl`、`failed.jsonl`）。同一 `--from`/`--to` 指纹下使用 `--resume` 可跳过
+已标记 done/failed 的源；`--wal-dir` 覆盖 WAL 根目录；`--reset` 会先删除该 job 的 WAL。
+decode 与可跳过的 commit 失败会写入 WAL 与 `import.log`，进程继续处理其余源。
 
 | Format | Import | Export |
 |---|---:|---:|
@@ -326,21 +334,26 @@ Compact JSONL 是记录存储，不会转换或推断轨迹语义。指定
 ### 2.8 `sync`
 
 ```text
-pchronicle sync --from DIRECTORY --to DIRECTORY --convert DIRECTORY
- [--input-format FORMAT] [--column NAME=JSON_PATH]...
+pchronicle sync --from DIRECTORY
+ [--mirror DIRECTORY] [--to DIRECTORY]
+ [--input-format FORMAT] [--suggested-format FORMAT]
+ [--column NAME=JSON_PATH]...
  [--interval DURATION] [--once]
 ```
 
-`sync` 是常驻轮询器：监听源目录下的 `.json`、`.jsonl` 和 `.ndjson`。对于运行数据格式，它会将
-变更合并到 pending 池，并按 `--interval` 将源文件逐字节批量镜像到本地 Warehouse 目录，同时将
-数据转换为 Storyline Lance 写入 `--convert` 目标。一个批次成功后才清理 pending；失败会保留
-变更并指数退避重试。`--once` 只执行一次初始批次后退出。当前目标必须是本地目录，两个目标
-必须位于源目录之外。
+`sync` 是常驻轮询器：监听源目录下的 `.json`、`.jsonl` 和 `.ndjson`，将变更合并到 pending
+池，并按 `--interval` 做整树 snapshot 重建。`--mirror` 与 `--to` 至少提供一个，也可同时提供：
 
-指定 `--input-format compact-jsonl` 时，源目录必须是本地 `.json`、`.jsonl` 或 `.ndjson` 目录树，列映射规则与 Compact
-import 相同。每个成功批次都会重新扫描整个目录，并原子替换 `--convert` 指向的 Compact Lance
-快照，因此新增、修改和删除都会反映在下一快照中，但不提供行级增量更新。此模式仍要求传入
-`--to` 作为兼容参数，但不会写入该路径。
+- `--mirror`：把源树按 Compact JSONL 规则写入 Compact Lance Dataset（record-level；可用
+  `--column`）。每个成功批次原子替换该目标。
+- `--to`：把源轨迹转换为 Storyline Lance Dataset（可用 `--input-format` /
+  `--suggested-format`）。
+
+一个批次内启用的目标全部成功后才清理 pending；失败会保留变更并指数退避重试。`--once`
+只执行一次初始批次后退出。本地目标必须位于源目录之外。
+
+若 `--input-format compact-jsonl`，只能配合 `--mirror`（不能与 `--to` 同用）：每个成功批次
+重新扫描整个目录，并原子替换 `--mirror` 指向的 Compact Lance 快照。
 
 ### 2.9 `drop`
 

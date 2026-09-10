@@ -266,14 +266,62 @@ fn json_array_owned(values: Vec<Option<String>>) -> Result<LargeBinaryArray> {
         .context("encode Lance JSON column")
 }
 
+/// Optional pre-Arrow content offload into `objects.lance`.
+pub(crate) type ContentEncode<'a> = Option<(
+    super::content::StorylineContentOptions,
+    &'a mut super::content::PendingContent,
+)>;
+
+fn json_content<T: Serialize>(value: &T, content: &mut ContentEncode<'_>) -> Result<String> {
+    match content {
+        Some((options, pending)) => {
+            super::content::encode_json_content_cell(value, *options, pending)
+        }
+        None => json(value),
+    }
+}
+
+fn opt_json_content<T: Serialize>(
+    value: &Option<T>,
+    content: &mut ContentEncode<'_>,
+) -> Result<Option<String>> {
+    value
+        .as_ref()
+        .map(|value| json_content(value, content))
+        .transpose()
+}
+
+fn utf8_content(value: &str, content: &mut ContentEncode<'_>) -> Result<String> {
+    match content {
+        Some((options, pending)) => {
+            super::content::encode_utf8_content_cell(value, *options, pending)
+        }
+        None => Ok(value.to_owned()),
+    }
+}
+
+fn opt_utf8_content(
+    value: Option<&str>,
+    content: &mut ContentEncode<'_>,
+) -> Result<Option<String>> {
+    value.map(|value| utf8_content(value, content)).transpose()
+}
+
 pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
+    story_runs_to_batch_with_content(rows, None)
+}
+
+pub(crate) fn story_runs_to_batch_with_content(
+    rows: &[StoryRunRow],
+    mut content: ContentEncode<'_>,
+) -> Result<RecordBatch> {
     RecordBatch::try_new(
         story_runs_arrow_schema(),
         vec![
             Arc::new(req_utf8(rows.iter().map(|r| r.schema_version.as_str()))),
             Arc::new(opt_utf8_owned(
                 rows.iter()
-                    .map(|r| opt_json(&r.origin))
+                    .map(|r| opt_json_content(&r.origin, &mut content))
                     .collect::<Result<Vec<_>>>()?,
             )),
             Arc::new(req_utf8(rows.iter().map(|r| r.document_id.as_str()))),
@@ -294,7 +342,7 @@ pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
             Arc::new(opt_utf8(rows.iter().map(|r| r.agent_model_name.as_deref()))),
             Arc::new(opt_utf8_owned(
                 rows.iter()
-                    .map(|r| opt_json(&r.agent_tool_definitions))
+                    .map(|r| opt_json_content(&r.agent_tool_definitions, &mut content))
                     .collect::<Result<Vec<_>>>()?,
             )),
             Arc::new(json_array_owned(
@@ -304,22 +352,28 @@ pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
             )?),
             Arc::new(opt_utf8_owned(
                 rows.iter()
-                    .map(|r| opt_json(&r.parent))
+                    .map(|r| opt_json_content(&r.parent, &mut content))
                     .collect::<Result<Vec<_>>>()?,
             )),
             Arc::new(opt_utf8_owned(
                 rows.iter()
-                    .map(|r| opt_json(&r.child_session_ids))
+                    .map(|r| opt_json_content(&r.child_session_ids, &mut content))
                     .collect::<Result<Vec<_>>>()?,
             )),
-            Arc::new(opt_utf8(rows.iter().map(|r| r.notes.as_deref()))),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| opt_utf8_content(r.notes.as_deref(), &mut content))
+                    .collect::<Result<Vec<_>>>()?,
+            )),
             Arc::new(json_array_owned(
                 rows.iter()
                     .map(|r| opt_json(&r.final_metrics))
                     .collect::<Result<Vec<_>>>()?,
             )?),
-            Arc::new(opt_utf8(
-                rows.iter().map(|r| r.continued_trajectory_ref.as_deref()),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| opt_utf8_content(r.continued_trajectory_ref.as_deref(), &mut content))
+                    .collect::<Result<Vec<_>>>()?,
             )),
             Arc::new(json_array_owned(
                 rows.iter()
@@ -343,22 +397,24 @@ pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
             Arc::new(opt_utf8_owned(
                 rows.iter()
                     .map(|r| {
-                        (!r.unknown_key_counts.is_empty())
-                            .then(|| json(&r.unknown_key_counts))
-                            .transpose()
+                        if r.unknown_key_counts.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some(json_content(&r.unknown_key_counts, &mut content)?))
+                        }
                     })
                     .collect::<Result<Vec<_>>>()?,
             )),
             Arc::new(opt_utf8_owned(
                 rows.iter()
-                    .map(|r| opt_json(&r.task))
+                    .map(|r| opt_json_content(&r.task, &mut content))
                     .collect::<Result<Vec<_>>>()?,
             )),
             Arc::new(timestamp_array(rows.iter().map(|r| r.started_at.as_ref()))),
             Arc::new(timestamp_array(rows.iter().map(|r| r.finished_at.as_ref()))),
             Arc::new(opt_utf8_owned(
                 rows.iter()
-                    .map(|r| opt_json(&r.prompt))
+                    .map(|r| opt_json_content(&r.prompt, &mut content))
                     .collect::<Result<Vec<_>>>()?,
             )),
         ],
@@ -367,6 +423,13 @@ pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
 }
 
 pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
+    story_steps_to_batch_with_content(rows, None)
+}
+
+pub(crate) fn story_steps_to_batch_with_content(
+    rows: &[StoryStepRow],
+    mut content: ContentEncode<'_>,
+) -> Result<RecordBatch> {
     RecordBatch::try_new(
         story_steps_arrow_schema(),
         vec![
@@ -389,11 +452,13 @@ pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
             )),
             Arc::new(req_utf8_owned(
                 rows.iter()
-                    .map(|r| json(&r.message))
+                    .map(|r| json_content(&r.message, &mut content))
                     .collect::<Result<_>>()?,
             )),
-            Arc::new(opt_utf8(
-                rows.iter().map(|r| r.reasoning_content.as_deref()),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| opt_utf8_content(r.reasoning_content.as_deref(), &mut content))
+                    .collect::<Result<_>>()?,
             )),
             Arc::new(opt_utf8(rows.iter().map(|r| {
                 r.reasoning_effort
@@ -402,7 +467,7 @@ pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
             }))),
             Arc::new(opt_utf8_owned(
                 rows.iter()
-                    .map(|r| opt_json(&r.reasoning_effort))
+                    .map(|r| opt_json_content(&r.reasoning_effort, &mut content))
                     .collect::<Result<_>>()?,
             )),
             Arc::new(json_array_owned(
@@ -431,7 +496,7 @@ pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
             )),
             Arc::new(opt_utf8_owned(
                 rows.iter()
-                    .map(|r| opt_json(&r.observation))
+                    .map(|r| opt_json_content(&r.observation, &mut content))
                     .collect::<Result<_>>()?,
             )),
             Arc::new(json_array_owned(
@@ -441,13 +506,13 @@ pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
             )?),
             Arc::new(opt_utf8_owned(
                 rows.iter()
-                    .map(|r| opt_json(&r.env))
+                    .map(|r| opt_json_content(&r.env, &mut content))
                     .collect::<Result<_>>()?,
             )),
             Arc::new(timestamp_array(rows.iter().map(|r| r.finished_at.as_ref()))),
             Arc::new(opt_utf8_owned(
                 rows.iter()
-                    .map(|r| opt_json(&r.prompt))
+                    .map(|r| opt_json_content(&r.prompt, &mut content))
                     .collect::<Result<_>>()?,
             )),
         ],
@@ -456,6 +521,13 @@ pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
 }
 
 pub fn story_tool_calls_to_batch(rows: &[StoryToolCallRow]) -> Result<RecordBatch> {
+    story_tool_calls_to_batch_with_content(rows, None)
+}
+
+pub(crate) fn story_tool_calls_to_batch_with_content(
+    rows: &[StoryToolCallRow],
+    mut content: ContentEncode<'_>,
+) -> Result<RecordBatch> {
     RecordBatch::try_new(
         story_tool_calls_arrow_schema(),
         vec![
@@ -472,17 +544,17 @@ pub fn story_tool_calls_to_batch(rows: &[StoryToolCallRow]) -> Result<RecordBatc
             Arc::new(req_utf8(rows.iter().map(|r| r.function_name.as_str()))),
             Arc::new(req_utf8_owned(
                 rows.iter()
-                    .map(|r| json(&r.arguments))
+                    .map(|r| json_content(&r.arguments, &mut content))
                     .collect::<Result<_>>()?,
             )),
             Arc::new(opt_utf8_owned(
                 rows.iter()
-                    .map(|r| r.result.as_ref().map(json).transpose())
+                    .map(|r| opt_json_content(&r.result, &mut content))
                     .collect::<Result<Vec<_>>>()?,
             )),
             Arc::new(req_utf8_owned(
                 rows.iter()
-                    .map(|r| json(&r.results))
+                    .map(|r| json_content(&r.results, &mut content))
                     .collect::<Result<_>>()?,
             )),
             Arc::new(Int64Array::from(

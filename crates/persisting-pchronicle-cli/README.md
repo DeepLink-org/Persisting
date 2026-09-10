@@ -18,13 +18,12 @@ Current commands include `onboard`, `dataset` (pin/unpin/list/show/set/rename),
 `agent` sessions, Source-local `find`, create/append/replace `import`,
 destructive `drop`, complete-trajectory `export`, directory `sync`, `echo`, and
 `serve`. Import and export support ATIF, OpenAI Messages, ACTF,
-Storyline JSON, and record-level Compact JSONL. `sync --from SOURCE --to
-WAREHOUSE --convert OUTPUT` polls a local source directory, atomically mirrors
-supported JSON files into a local Warehouse Dataset byte-for-byte, and rebuilds
-a Storyline Lance Dataset at the conversion output on each coalesced batch.
-With `--input-format compact-jsonl`, each batch instead replaces a compact Lance
-snapshot at `OUTPUT`; `--to` remains required but is not written. Use `--once`
-for a finite run.
+Storyline JSON, and record-level Compact JSONL. `sync --from SOURCE [--mirror
+MIRROR] [--to OUTPUT]` polls a source directory and, on each coalesced batch,
+optionally rebuilds a Compact JSONL Lance Dataset at `--mirror` and/or a
+Storyline Lance Dataset at `--to`. Provide at least one destination. With
+`--input-format compact-jsonl`, only `--mirror` is valid. Use `--once` for a
+finite run.
 
 `pchronicle serve --control 127.0.0.1:0 URI` is normally launched by pPilot or
 pVisor. `serve --listen` is the read-only Warehouse. Public bind addresses are
