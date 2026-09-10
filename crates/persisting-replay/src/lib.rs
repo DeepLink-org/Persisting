@@ -16,6 +16,7 @@ mod error;
 mod io;
 mod journal;
 mod model;
+pub(crate) mod opencode_bridge;
 mod process;
 
 pub use config::{
