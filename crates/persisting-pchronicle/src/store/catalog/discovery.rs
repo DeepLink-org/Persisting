@@ -626,7 +626,6 @@ async fn discover_local_candidates(
         }
         let path = entry.path();
         if file_type.is_dir() {
-            has_child_dirs = true;
             anyhow::ensure!(
                 candidates.len() < options.max_files,
                 "Dataset manifest exceeds max_files limit of {}",
@@ -682,8 +681,11 @@ async fn discover_local_candidates(
                         last_modified: modified_string(&metadata),
                     });
                 }
-                // Unknown Lance sidecars are not navigational Directory entries.
+                // Unknown Lance sidecars are ignored: not Directory stubs and
+                // they must not suppress flat loose-JSON discovery.
             } else {
+                // Only unlabeled child dirs suppress root-level loose JSON.
+                has_child_dirs = true;
                 candidates.push(Candidate::Directory {
                     file: relative_catalog_path(root, &path, true)?,
                 });

@@ -156,13 +156,14 @@ async fn namespace_listing_is_hierarchical_paginated_and_snapshot_bound() -> Res
 #[tokio::test]
 async fn discovers_mixed_local_files_and_exposes_sources() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    fs::create_dir(temp.path().join("nested"))?;
+    // Flat Dataset only: child directories become Directory stubs and suppress
+    // root-level loose JSON (shallow Directory discovery).
     fs::write(
         temp.path().join("openai.json"),
         r#"[{"session_id":"s1","step_id":0,"messages":[]}]"#,
     )?;
     fs::write(
-        temp.path().join("nested/atif.jsonl"),
+        temp.path().join("atif.jsonl"),
         r#"{"schema_version":"ATIF-v1.4","session_id":"s2","steps":[],"agent":{"id":"a"}}"#,
     )?;
     let snapshot = DatasetCatalogSnapshot::discover(
@@ -172,7 +173,7 @@ async fn discovers_mixed_local_files_and_exposes_sources() -> Result<()> {
     )
     .await?;
     assert_eq!(snapshot.datasets()[0].ready_source_count(), 2);
-    assert_eq!(snapshot.datasets()[0].sources[0].file, "nested/atif.jsonl");
+    assert_eq!(snapshot.datasets()[0].sources[0].file, "atif.jsonl");
 
     let context = SessionContext::new();
     snapshot.register(&context).await?;
@@ -200,10 +201,12 @@ async fn discovers_mixed_local_files_and_exposes_sources() -> Result<()> {
 #[tokio::test]
 async fn ignores_derived_lance_sidecars_during_discovery() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    fs::create_dir_all(temp.path().join("run/derived-metrics.lance/_versions"))?;
+    // Unknown Lance trees at the mount root are ignored (not Directory stubs)
+    // and must not block flat loose-JSON discovery.
+    fs::create_dir_all(temp.path().join("derived-metrics.lance/_versions"))?;
     fs::write(
         temp.path()
-            .join("run/derived-metrics.lance/_versions/latest_version_hint.json"),
+            .join("derived-metrics.lance/_versions/latest_version_hint.json"),
         "{}",
     )?;
     write_openai_source(&temp.path().join("trajectory.json"), "event-1")?;
