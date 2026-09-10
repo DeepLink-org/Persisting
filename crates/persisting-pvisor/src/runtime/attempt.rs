@@ -1127,6 +1127,17 @@ fn enrich_with_session(
     {
         plan.env.insert(key, value);
     }
+    if !gateway_enabled {
+        for key in [
+            "OPENAI_BASE_URL",
+            "OPENAI_API_BASE",
+            "AZURE_OPENAI_ENDPOINT",
+            "ANTHROPIC_BASE_URL",
+            "GEMINI_API_BASE",
+        ] {
+            plan.env.remove(key);
+        }
+    }
     plan.notes
         .push(format!("network service: proxy env → http://{listen}"));
     if uses_krun_executor(spec) {
