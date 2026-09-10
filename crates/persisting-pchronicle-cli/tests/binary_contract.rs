@@ -124,12 +124,7 @@ fn serve_help_exposes_only_the_canonical_dataset_surface() -> Result<()> {
             "serve help omits {option}: {stdout}"
         );
     }
-    for legacy in [
-        "--warehouse-config",
-        "--storage",
-        "--gateway-object-store-manifest-mode",
-        "--catalog-query-worker",
-    ] {
+    for legacy in ["--warehouse-config", "--storage", "--catalog-query-worker"] {
         assert!(
             !stdout.contains(legacy),
             "serve help exposes compatibility option {legacy}: {stdout}"

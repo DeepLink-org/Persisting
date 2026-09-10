@@ -12,8 +12,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use persisting_events::{EventRecord, TrajectoryAppendResponse};
 use persisting_pchronicle::storage::{
-    ObjectStoreManifestWriteMode, RawEventAppendOutcome, RawEventAppendSender,
-    RawEventAppendWorker, StoryCoords, raw_event_append_queue_with_manifest_write_mode,
+    RawEventAppendOutcome, RawEventAppendSender, RawEventAppendWorker, StoryCoords,
+    raw_event_append_queue,
 };
 use serde::{Deserialize, Serialize};
 
@@ -65,7 +65,6 @@ impl PreparedIngestGateway {
         listen: std::net::SocketAddr,
         dataset_uri: String,
         split: Option<GatewaySplitTemplate>,
-        manifest_write_mode: ObjectStoreManifestWriteMode,
     ) -> Result<Self> {
         anyhow::ensure!(
             listen.ip().is_loopback(),
@@ -78,8 +77,7 @@ impl PreparedIngestGateway {
             .local_addr()
             .context("read pChronicle ingest Gateway listen address")?
             .to_string();
-        let (sender, worker) =
-            raw_event_append_queue_with_manifest_write_mode(manifest_write_mode)?;
+        let (sender, worker) = raw_event_append_queue()?;
         Ok(Self {
             listener,
             endpoint,
@@ -636,10 +634,7 @@ mod tests {
     #[test]
     fn append_routes_to_user_partition_and_is_durable() {
         let temporary = tempfile::tempdir().unwrap();
-        let (sender, worker) = raw_event_append_queue_with_manifest_write_mode(
-            ObjectStoreManifestWriteMode::Conditional,
-        )
-        .unwrap();
+        let (sender, worker) = raw_event_append_queue().unwrap();
         let state = IngestState {
             partitions: GatewayPartitionRouter::new(
                 temporary.path().to_string_lossy(),

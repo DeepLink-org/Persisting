@@ -130,21 +130,33 @@ impl ProjectionSupervisor {
                 )
             })
             .collect();
-        let mut failures = inventory.errors.len();
+        let mut failures = inventory
+            .errors
+            .iter()
+            .map(|error| format!("{}: source discovery failed", error.source_path))
+            .collect::<Vec<_>>();
         let outcomes = stream::iter(inventory.targets)
             .map(|target| async move {
+                let source_path = target.source_path.clone();
                 maintain_automatic_storyline_projection(&target)
                     .await
                     .map(|_| ())
+                    .map_err(|error| (source_path, error))
             })
             .buffer_unordered(self.options.max_concurrent.max(1))
             .collect::<Vec<_>>()
             .await;
-        failures =
-            failures.saturating_add(outcomes.iter().filter(|result| result.is_err()).count());
+        failures.extend(outcomes.into_iter().filter_map(|outcome| match outcome {
+            Ok(()) => None,
+            Err((source_path, error)) => {
+                Some(format!("{}: {error:#}", sanitize_log_field(&source_path)))
+            }
+        }));
         anyhow::ensure!(
-            failures == 0,
-            "automatic Storyline projection startup failed for {failures} source(s)"
+            failures.is_empty(),
+            "automatic Storyline projection startup failed for {} source(s): {}",
+            failures.len(),
+            failures.join("; ")
         );
 
         let converged = self.discover().await?;
@@ -446,6 +458,7 @@ mod tests {
 
         let error = supervisor.converge_before_readiness().await.unwrap_err();
         assert!(error.to_string().contains("startup failed for 1 source"));
+        assert!(error.to_string().contains("b/events.lance"));
         assert_eq!(std::fs::read(projection_b.join("CURRENT"))?, before);
         Ok(())
     }

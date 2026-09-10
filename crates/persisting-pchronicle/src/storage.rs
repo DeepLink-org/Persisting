@@ -9,7 +9,6 @@ pub use crate::append_queue::{
     DEFAULT_RAW_EVENT_MAINTENANCE_CAPACITY, DEFAULT_RAW_EVENT_QUEUE_CAPACITY,
     DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT, RawEventAppendOutcome, RawEventAppendSender,
     RawEventAppendWorker, raw_event_append_queue, raw_event_append_queue_with_capacity,
-    raw_event_append_queue_with_manifest_write_mode,
 };
 pub use crate::layout::{
     StoryCoords, StoryLocationPartial, is_subagent_session_storage_key,
@@ -38,16 +37,15 @@ pub use crate::store::{
     DatasetLocation, DatasetLocationKind, DatasetMount, DiscoveredSource, EventFactSnapshot,
     EventLogLayoutStats, EventWriterFence, ExportOutcome, LanceMaintenanceOptions,
     LanceMaintenanceReport, LeaseAcquireOutcome, ManifestKind, ManifestStats, NamespacePath,
-    ObjectStoreManifestWriteMode, PhysicalColumn, PhysicalDataFile, PhysicalFileLayout,
-    PhysicalFragment, PhysicalLayout, PhysicalPage, PhysicalPagePreview, PhysicalPageQuery,
-    PhysicalSource, PhysicalTable, ProjectionSourceSnapshot, RawEventLanceAppender,
-    RawEventLanceStore, ReplayOutcome, RunControlStore, StorylineContentOptions,
-    StorylineContentReadMode, StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
-    StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
-    StorylineTablePaths, TrajectoryStats, attempt_registry_now_ms, distinct_session_ids_in_run,
-    export_source_dirs, export_story_bundle, inspect_physical_file, inspect_physical_layout,
-    inspect_physical_page, list_physical_sources, load_manifest, raw_event_lance_path,
-    write_compact_jsonl_manifest,
+    PhysicalColumn, PhysicalDataFile, PhysicalFileLayout, PhysicalFragment, PhysicalLayout,
+    PhysicalPage, PhysicalPagePreview, PhysicalPageQuery, PhysicalSource, PhysicalTable,
+    ProjectionSourceSnapshot, RawEventLanceAppender, RawEventLanceStore, ReplayOutcome,
+    RunControlStore, StorylineContentOptions, StorylineContentReadMode, StorylineDataSource,
+    StorylineDataSourceOptions, StorylineLanceStore, StorylineMaintenanceReport,
+    StorylineProjectionLineage, StorylineStreamImportReport, StorylineTablePaths, TrajectoryStats,
+    attempt_registry_now_ms, distinct_session_ids_in_run, export_source_dirs, export_story_bundle,
+    inspect_physical_file, inspect_physical_layout, inspect_physical_page, list_physical_sources,
+    load_manifest, raw_event_lance_path, write_compact_jsonl_manifest,
 };
 
 // Compatibility exports; new callers should use `crate::search`.
