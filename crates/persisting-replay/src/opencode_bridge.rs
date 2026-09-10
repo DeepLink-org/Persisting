@@ -347,7 +347,11 @@ async fn forward_handler(
     let Some(path) = path else {
         return error_response(StatusCode::BAD_REQUEST, "request has no path");
     };
-    if std::env::var("PVISOR_OPENCODE_BRIDGE_DEBUG").is_ok() {
+    let debug_level = std::env::var("PVISOR_OPENCODE_BRIDGE_DEBUG")
+        .ok()
+        .and_then(|value| value.trim().parse::<u8>().ok())
+        .unwrap_or(0);
+    if debug_level > 0 {
         use std::io::Write;
         if let Ok(mut log) = std::fs::OpenOptions::new()
             .create(true)
@@ -367,6 +371,17 @@ async fn forward_handler(
                 String::from_utf8_lossy(&body[..body.len().min(300)]).replace('\n', " ")
             );
         }
+        if debug_level >= 2 {
+            if let Ok(mut bodies) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/pvisor-opencode-bridge-bodies.log")
+            {
+                use std::io::Write as _;
+                let _ = bodies.write_all(&body);
+                let _ = bodies.write_all(b"\n===REQUEST-END===\n");
+            }
+        }
     }
     let content_type = headers
         .get(axum::http::header::CONTENT_TYPE)
@@ -385,6 +400,17 @@ async fn forward_handler(
     } else {
         body
     };
+    if debug_level >= 2 {
+        use std::io::Write;
+        if let Ok(mut bodies) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/pvisor-opencode-bridge-upstream.log")
+        {
+            let _ = bodies.write_all(&body);
+            let _ = bodies.write_all(b"\n===UPSTREAM-END===\n");
+        }
+    }
     let upstream_url = format!("{}{}", shared.upstream_origin, path);
     let mut upstream = shared.client.request(method, &upstream_url);
     for (name, value) in headers.iter() {
@@ -439,14 +465,23 @@ async fn forward_handler(
             response_headers.insert(name.clone(), header_value);
         }
     }
-    let _ = response_headers.remove("content-length");
-    let stream = response.bytes_stream();
+    // Buffer the whole upstream body before replying, mirroring the Codex
+    // bridge. A pass-through stream can die mid-flight; OpenCode's Bun-based
+    // fetch then hangs on the half-open response without retrying, which
+    // stalls the continuation forever.
+    let body = match response.bytes().await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            fail(&shared, format!("read upstream OpenCode response: {error}"));
+            return error_response(StatusCode::BAD_GATEWAY, &error.to_string());
+        }
+    };
     let mut builder = Response::builder()
         .status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY));
     for (name, value) in response_headers.iter() {
         builder = builder.header(name.clone(), value.clone());
     }
-    match builder.body(Body::from_stream(stream)) {
+    match builder.body(Body::from(body)) {
         Ok(response) => {
             if let Ok(mut state) = shared.state.lock() {
                 state.forwarded_requests += 1;
