@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -25,6 +25,7 @@ use crate::model::{
     AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch,
     ToolCall,
 };
+use crate::opencode_bridge;
 use crate::process::{ProcessSpec, run_process};
 
 #[derive(Debug, Clone, Copy)]
@@ -993,6 +994,8 @@ fn continue_native_cli(
     let mut codex_bridge = None;
     let mut codex_transport_prompt = None;
     let mut codex_prompt_mode = None;
+    let mut opencode_bridge = None;
+    let mut opencode_transport_prompt = None;
     command.env("PVISOR_REPLAY_TRAJECTORY", reconstructed);
     command.env("PVISOR_REPLAY_AFTER_STEP", plan.after_step.to_string());
     command.env(
@@ -1007,10 +1010,32 @@ fn continue_native_cli(
     match agent {
         NativeJsonlAgent::Opencode => {
             let session_id = opencode_session_id(&session_id);
-            command.env("PVISOR_REPLAY_SESSION_ID", &session_id);
-            let export_path = context.output_dir.join("native/opencode-session.json");
+            // `opencode run --session` refuses to start without a message.
+            // Pass a unique transport nonce as that message and strip it on
+            // the wire through the local bridge, so the first live request
+            // still ends exactly at the replayed boundary observation.
+            let explicit_prompt = context.request.boundary_user_prompt().map(str::to_owned);
+            let transport_prompt = explicit_prompt
+                .clone()
+                .unwrap_or_else(|| format!("pvisor-opencode-resume-{}", context.nonce));
+            let temperature = env_f64("PVISOR_OPENCODE_TEMPERATURE");
+            let top_p = env_f64("PVISOR_OPENCODE_TOP_P");
+            let bridge = opencode_bridge::OpencodeBridgeHandle::start(
+                context.session_id,
+                explicit_prompt.is_none().then(|| transport_prompt.clone()),
+                temperature,
+                top_p,
+                context.request.disable_thinking,
+            )?;
             let opencode_config = context.state_dir.join("opencode-config");
             let opencode_data = context.state_dir.join("opencode-data");
+            write_opencode_provider_config(
+                &opencode_config,
+                Some(&bridge.base_url),
+                temperature,
+                top_p,
+            )?;
+            let export_path = context.output_dir.join("native/opencode-session.json");
             atomic_write_json(
                 &export_path,
                 &opencode_export(plan, prefix, &session_id, &context.request.workspace),
@@ -1049,6 +1074,9 @@ fn continue_native_cli(
             command.env("XDG_CONFIG_HOME", &opencode_config);
             command.env("XDG_DATA_HOME", &opencode_data);
             command.env("OPENCODE_DISABLE_AUTOUPDATE", "1");
+            for (name, value) in bridge.child_environment() {
+                command.env(name, value);
+            }
             if let Some(model) = configured_model_from_environment() {
                 command.args(["--model", &model]);
             }
@@ -1062,10 +1090,15 @@ fn continue_native_cli(
             if !context.request.disable_thinking {
                 command.arg("--thinking");
             }
-            if let Some(prompt) = context.request.boundary_user_prompt() {
-                command.arg("--");
-                command.arg(prompt);
+            command.arg("--");
+            command.arg(&transport_prompt);
+            // OpenCode awaits stdin EOF whenever it is not a TTY; inheriting
+            // the controller's stdin would hang the continuation forever.
+            command.stdin(Stdio::null());
+            if explicit_prompt.is_none() {
+                opencode_transport_prompt = Some(transport_prompt);
             }
+            opencode_bridge = Some(bridge);
         }
         NativeJsonlAgent::Codex => {
             let explicit_prompt = context.request.boundary_user_prompt().map(str::to_owned);
@@ -1150,7 +1183,10 @@ fn continue_native_cli(
         log_path: log_path.clone(),
     })
     .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
-    let bridge_result = codex_bridge.take().map(|bridge| bridge.finish());
+    let bridge_result = codex_bridge
+        .take()
+        .map(|bridge| bridge.finish())
+        .or_else(|| opencode_bridge.take().map(|bridge| bridge.finish()));
     let bridge_error = bridge_result.and_then(|result| result.err());
     if !output.status.success() {
         let process_error = ReplayError::classify_continuation(
@@ -1205,6 +1241,13 @@ fn continue_native_cli(
         NativeJsonlAgent::Opencode => {
             let raw = read_regular_file(&log_path)?;
             let events = parse_json_lines_from_log(&raw);
+            // The transport nonce was only a CLI wake-up signal; drop it if
+            // the native stream echoed it back as a user or text event.
+            let nonce = opencode_transport_prompt.as_deref().unwrap_or_default();
+            let events: Vec<Value> = events
+                .into_iter()
+                .filter(|event| !opencode_event_is_nonce(event, nonce))
+                .collect();
             let steps = count_opencode_turns(&events);
             let mut combined = prefix.to_vec();
             combined.extend(events);
@@ -1225,6 +1268,99 @@ fn configured_model_from_environment() -> Option<String> {
         .ok()
         .or_else(|| std::env::var("OPENAI_MODEL").ok())
         .filter(|model| !model.trim().is_empty())
+}
+
+fn env_f64(name: &str) -> Option<f64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+}
+
+/// Provider config for the isolated continuation `XDG_CONFIG_HOME`.
+///
+/// OpenCode reads the endpoint from `OPENAI_BASE_URL`, but sampling options
+/// have no environment channel, so a live continuation would silently fall
+/// back to provider defaults and diverge from the recorded sampling. The
+/// shape mirrors what a SweEval trial writes for the original run.
+/// `effective_base` overrides the environment endpoint (used for the local
+/// sampling-injection proxy).
+fn opencode_provider_config(
+    model: &str,
+    base_url: Option<&str>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+) -> Option<Value> {
+    let (provider, model_id) = model.split_once('/')?;
+    let base_url = base_url.map(str::trim).filter(|value| !value.is_empty());
+    if base_url.is_none() && temperature.is_none() && top_p.is_none() {
+        return None;
+    }
+    let mut provider_config = serde_json::Map::new();
+    if let Some(base_url) = base_url {
+        provider_config.insert("options".into(), json!({ "baseURL": base_url }));
+    }
+    if temperature.is_some() || top_p.is_some() {
+        let mut model_options = serde_json::Map::new();
+        if let Some(temperature) = temperature {
+            model_options.insert("temperature".into(), json!(temperature));
+        }
+        if let Some(top_p) = top_p {
+            model_options.insert("topP".into(), json!(top_p));
+        }
+        provider_config.insert(
+            "models".into(),
+            json!({ model_id: { "options": Value::Object(model_options) } }),
+        );
+    }
+    Some(json!({ "provider": { provider: Value::Object(provider_config) } }))
+}
+
+fn write_opencode_provider_config(
+    config_root: &Path,
+    effective_base: Option<&str>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+) -> Result<(), ReplayError> {
+    let Some(model) = configured_model_from_environment() else {
+        return Ok(());
+    };
+    let base_url = match effective_base {
+        Some(base) => Some(base.to_owned()),
+        None => std::env::var("OPENAI_BASE_URL")
+            .ok()
+            .or_else(|| std::env::var("OPENAI_API_BASE").ok()),
+    };
+    let config = opencode_provider_config(&model, base_url.as_deref(), temperature, top_p);
+    let Some(config) = config else {
+        return Ok(());
+    };
+    let directory = config_root.join("opencode");
+    fs::create_dir_all(&directory).replay_context(
+        ReplayErrorKind::Executor,
+        "create OpenCode config directory",
+    )?;
+    atomic_write_json(&directory.join("opencode.json"), &config)
+}
+
+/// True when the native event echoes the transport nonce back as a user or
+/// text part; such events are transport noise, not model input.
+fn opencode_event_is_nonce(event: &Value, nonce: &str) -> bool {
+    if nonce.is_empty() {
+        return false;
+    }
+    match event.get("type").and_then(Value::as_str) {
+        Some("user") => event
+            .get("parts")
+            .and_then(Value::as_array)
+            .map(|parts| {
+                parts
+                    .iter()
+                    .any(|part| part.get("text") == Some(&json!(nonce)))
+            })
+            .unwrap_or(false),
+        Some("text") => event.pointer("/part/text") == Some(&json!(nonce)),
+        _ => false,
+    }
 }
 
 fn continuation_session_id(
@@ -1567,6 +1703,17 @@ fn opencode_export(
         .get("user_prompt")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    // OpenCode resolves a session's default model from the last user message
+    // metadata when a request does not pin one. The synthetic placeholder
+    // must therefore carry the configured model; "pvisor/replay" would poison
+    // that fallback with a provider that does not exist.
+    let (placeholder_provider, placeholder_model) = configured_model_from_environment()
+        .and_then(|model| {
+            model
+                .split_once('/')
+                .map(|(p, m)| (p.to_owned(), m.to_owned()))
+        })
+        .unwrap_or_else(|| ("pvisor".to_owned(), "replay".to_owned()));
     let mut messages = vec![json!({
         "info": {
             "id": user_id,
@@ -1574,7 +1721,7 @@ fn opencode_export(
             "role": "user",
             "time": {"created": 0},
             "agent": "build",
-            "model": {"providerID": "pvisor", "modelID": "replay"},
+            "model": {"providerID": placeholder_provider, "modelID": placeholder_model},
         },
         "parts": [{
             "id": "prt_pvisor_user",
@@ -1702,8 +1849,8 @@ fn opencode_export(
                 "role": "assistant",
                 "time": {"created": batch.ordinal as u64, "completed": batch.ordinal as u64},
                 "parentID": user_id,
-                "modelID": "replay",
-                "providerID": "pvisor",
+                "modelID": placeholder_model,
+                "providerID": placeholder_provider,
                 "mode": "build",
                 "agent": "build",
                 "path": {"cwd": workspace.display().to_string(), "root": workspace.display().to_string()},
@@ -1840,11 +1987,76 @@ mod tests {
 
     use super::{
         CallRecord, NativeJsonlAgent, RunContext, TurnRecord, codex_native_session_id,
-        continuation_session_id, is_actionable_turn, parse_codex, parse_jsonl, parse_opencode,
+        continuation_session_id, is_actionable_turn, opencode_event_is_nonce,
+        opencode_provider_config, parse_codex, parse_jsonl, parse_opencode,
         redact_codex_transport_nonce, validate_codex_continuation,
     };
     use crate::model::{AgentKind, PlaybackRequest, ReplayMode, ReplayPlan, ToolBatch, ToolCall};
     use serde_json::{Value, json};
+
+    #[test]
+    fn opencode_nonce_events_are_filtered_from_the_continued_stream() {
+        let nonce = "pvisor-opencode-resume-nonce";
+        let events = vec![
+            json!({"type": "step_start", "sessionID": "ses"}),
+            json!({"type": "user", "sessionID": "ses", "parts": [{"type": "text", "text": nonce}]}),
+            json!({"type": "text", "sessionID": "ses", "part": {"type": "text", "text": nonce}}),
+            json!({"type": "text", "sessionID": "ses", "part": {"type": "text", "text": "real text"}}),
+            json!({"type": "step_finish", "sessionID": "ses"}),
+        ];
+        let kept: Vec<Value> = events
+            .iter()
+            .filter(|event| !opencode_event_is_nonce(event, nonce))
+            .cloned()
+            .collect();
+        let kinds: Vec<&str> = kept.iter().map(|e| e["type"].as_str().unwrap()).collect();
+        assert_eq!(kinds, vec!["step_start", "text", "step_finish"]);
+        assert_eq!(kept[1]["part"]["text"], "real text");
+        // An empty nonce (explicit boundary prompt mode) filters nothing.
+        for event in &events {
+            assert!(!opencode_event_is_nonce(event, ""));
+        }
+    }
+
+    #[test]
+    fn opencode_provider_config_mirrors_recorded_sampling() {
+        let config = opencode_provider_config(
+            "openai/model-x",
+            Some("http://127.0.0.1:8000/v1"),
+            Some(0.0),
+            Some(1.0),
+        )
+        .unwrap();
+        assert_eq!(
+            config,
+            json!({
+                "provider": {
+                    "openai": {
+                        "options": {"baseURL": "http://127.0.0.1:8000/v1"},
+                        "models": {"model-x": {"options": {"temperature": 0.0, "topP": 1.0}}}
+                    }
+                }
+            })
+        );
+
+        // Without sampling overrides the endpoint still comes from the
+        // environment, so only the baseURL section is written.
+        let base_only =
+            opencode_provider_config("openai/model-x", Some("http://m:1/v1"), None, None).unwrap();
+        assert_eq!(
+            base_only,
+            json!({"provider": {"openai": {"options": {"baseURL": "http://m:1/v1"}}}})
+        );
+
+        // Nothing to pin: leave OpenCode on its environment-only defaults.
+        assert!(opencode_provider_config("openai/model-x", None, None, None).is_none());
+        // A model without a provider namespace cannot be pinned either.
+        assert!(
+            opencode_provider_config("model-x", Some("http://m:1/v1"), Some(0.0), None).is_none()
+        );
+        // Blank endpoints are ignored rather than written.
+        assert!(opencode_provider_config("openai/model-x", Some("  "), None, None).is_none());
+    }
 
     #[test]
     fn opencode_events_group_tool_parts_into_complete_turns() {
