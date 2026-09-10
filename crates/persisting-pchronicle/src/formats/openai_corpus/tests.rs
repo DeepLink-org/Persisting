@@ -247,7 +247,7 @@ fn openai_string_meta_maps_without_using_extra() {
 }
 
 #[test]
-fn openai_rejects_invalid_non_null_created_at() {
+fn openai_soft_accepts_invalid_non_null_created_at() {
     let input = json!({"session_steps": [{
         "session_id": "session-1",
         "step_id": 1,
@@ -256,9 +256,13 @@ fn openai_rejects_invalid_non_null_created_at() {
         "response": {"role": "assistant", "content": "done"}
     }]});
 
-    let error = parse_openai_msg_corpus_value(&input, "invalid-created-at.json").unwrap_err();
-    assert_eq!(error.location(), Some("rows[0].created_at"));
-    assert!(error.to_string().contains("timestamp"), "{error}");
+    let stories = parse_openai_msg_corpus_value(&input, "invalid-created-at.json").unwrap();
+    assert_eq!(stories.len(), 1);
+    assert!(stories[0].started_at.is_none());
+    assert!(
+        stories[0].turns.iter().all(|turn| turn.timestamp.is_none()),
+        "unparseable created_at should soft-drop turn timestamps"
+    );
 }
 
 #[test]

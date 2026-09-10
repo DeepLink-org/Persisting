@@ -161,7 +161,11 @@ impl ImportWal {
     }
 
     pub(crate) fn skip_paths(&self) -> HashSet<String> {
-        self.done.iter().chain(self.failed.iter()).cloned().collect()
+        self.done
+            .iter()
+            .chain(self.failed.iter())
+            .cloned()
+            .collect()
     }
 
     pub(crate) fn mark_done(&mut self, path: &str, trajectories: u64) -> Result<()> {
@@ -246,13 +250,13 @@ fn load_done_paths(path: &Path) -> Result<HashSet<String>> {
     let file = File::open(path).with_context(|| format!("read import WAL {}", path.display()))?;
     let mut out = HashSet::new();
     for (index, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.with_context(|| format!("read import WAL {} line {}", path.display(), index + 1))?;
+        let line =
+            line.with_context(|| format!("read import WAL {} line {}", path.display(), index + 1))?;
         if line.trim().is_empty() {
             continue;
         }
-        let record: DoneRecord = serde_json::from_str(&line).with_context(|| {
-            format!("parse import WAL {} line {}", path.display(), index + 1)
-        })?;
+        let record: DoneRecord = serde_json::from_str(&line)
+            .with_context(|| format!("parse import WAL {} line {}", path.display(), index + 1))?;
         out.insert(record.path);
     }
     Ok(out)
@@ -265,13 +269,13 @@ fn load_failed_paths(path: &Path) -> Result<HashSet<String>> {
     let file = File::open(path).with_context(|| format!("read import WAL {}", path.display()))?;
     let mut out = HashSet::new();
     for (index, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.with_context(|| format!("read import WAL {} line {}", path.display(), index + 1))?;
+        let line =
+            line.with_context(|| format!("read import WAL {} line {}", path.display(), index + 1))?;
         if line.trim().is_empty() {
             continue;
         }
-        let record: FailedRecord = serde_json::from_str(&line).with_context(|| {
-            format!("parse import WAL {} line {}", path.display(), index + 1)
-        })?;
+        let record: FailedRecord = serde_json::from_str(&line)
+            .with_context(|| format!("parse import WAL {} line {}", path.display(), index + 1))?;
         out.insert(record.path);
     }
     Ok(out)
@@ -286,10 +290,7 @@ mod tests {
         let left = ImportWal::job_id("@a", "@b", "storyline-lance", Some("actf"));
         let right = ImportWal::job_id("@a", "@b", "storyline-lance", Some("actf"));
         assert_eq!(left, right);
-        assert_ne!(
-            left,
-            ImportWal::job_id("@a", "@b", "storyline-lance", None)
-        );
+        assert_ne!(left, ImportWal::job_id("@a", "@b", "storyline-lance", None));
     }
 
     #[test]

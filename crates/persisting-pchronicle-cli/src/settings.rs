@@ -1181,9 +1181,8 @@ uri = "s3://example-bucket/root"
 "#,
         )
         .expect("write config");
-        let expanded =
-            expand_dataset_reference("@origin/SweEval/guoxu1/", Some(&config), false)
-                .expect("expand");
+        let expanded = expand_dataset_reference("@origin/SweEval/guoxu1/", Some(&config), false)
+            .expect("expand");
         assert_eq!(expanded, "s3://example-bucket/root/SweEval/guoxu1");
     }
 }

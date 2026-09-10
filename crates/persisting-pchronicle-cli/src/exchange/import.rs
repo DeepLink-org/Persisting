@@ -258,12 +258,8 @@ pub(crate) async fn run_import(
         ImportOutputFormat::Preserve
     });
     let duplicate_policy = args.on_duplicate.unwrap_or(DuplicateIdPolicy::Suffix);
-    let (wal, skip_paths) = open_import_wal(
-        &args,
-        &args.from,
-        destination.as_str(),
-        output_format,
-    )?;
+    let (wal, skip_paths) =
+        open_import_wal(&args, &args.from, destination.as_str(), output_format)?;
     if let Some(wal) = &wal
         && let Ok(guard) = wal.lock()
     {
@@ -470,10 +466,8 @@ pub(crate) async fn run_import(
                                 progress.note_parsed(&name, input.len() as u64)?;
                             }
                             Err(error) => {
-                                let warning = skipped_import_warning(
-                                    Path::new(&name),
-                                    &format!("{error:#}"),
-                                );
+                                let warning =
+                                    skipped_import_warning(Path::new(&name), &format!("{error:#}"));
                                 let _ = append_import_log(&name, &error);
                                 skipped_warnings.push(warning);
                                 progress.note_parsed(&name, input.len() as u64)?;
@@ -907,10 +901,7 @@ pub(crate) fn open_import_wal(
     } else {
         std::sync::Arc::new(HashSet::new())
     };
-    Ok((
-        Some(std::sync::Arc::new(std::sync::Mutex::new(wal))),
-        skip,
-    ))
+    Ok((Some(std::sync::Arc::new(std::sync::Mutex::new(wal))), skip))
 }
 
 pub(crate) const DEFAULT_COMMIT_BATCH_START: usize = 64;
@@ -1124,10 +1115,7 @@ pub(crate) fn spawn_commit_stage(
                             &mut source_storylines_left,
                         );
                         commit.record_skipped(1, share);
-                        sources.note_committed(
-                            std::slice::from_ref(&current_source_path),
-                            &wal,
-                        );
+                        sources.note_committed(std::slice::from_ref(&current_source_path), &wal);
                         continue;
                     }
                     skipped_warnings.push(warning);

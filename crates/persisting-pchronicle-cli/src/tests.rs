@@ -3570,7 +3570,10 @@ async fn directory_import_skips_invalid_json_and_publishes_valid_sources() -> Re
             stderr.contains("z-invalid.json") || stderr.to_lowercase().contains("skip"),
             "{output_format:?}: expected skip warning for invalid JSON, got: {stderr}"
         );
-        assert!(output.exists(), "{output_format:?}: valid sources should publish");
+        assert!(
+            output.exists(),
+            "{output_format:?}: valid sources should publish"
+        );
     }
     assert!(!fs::read_dir(temp.path())?.any(|entry| {
         entry

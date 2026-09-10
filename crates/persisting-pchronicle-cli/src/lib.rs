@@ -1641,9 +1641,7 @@ pub async fn run_with_stdio(
             .await
         }
         Command::Export(args) => run_export(args, config, stdout, &mut diagnostics).await,
-        Command::Sync(args) => {
-            sync::run(args, config, &mut diagnostics, stderr_is_terminal).await
-        }
+        Command::Sync(args) => sync::run(args, config, &mut diagnostics, stderr_is_terminal).await,
         Command::Echo(args) => run_echo(args, &mut diagnostics).await,
         Command::Dev(DevArgs {
             command: DevCommand::Echo(args),
