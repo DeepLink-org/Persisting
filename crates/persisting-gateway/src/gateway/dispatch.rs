@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use axum::Router;
 use axum::extract::Request;
-use axum::response::Response;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use persisting_overlaynet::policy::{DenyReason, NetworkPolicy};
 use persisting_overlaynet::server::{OverlayRequestContext, OverlayServerState, OverlaySink};
@@ -64,6 +65,13 @@ impl OverlaySink for GatewayState {
         peer: std::net::SocketAddr,
         context: &OverlayRequestContext<Self::RequestContext>,
     ) -> anyhow::Result<Response> {
+        if !self.gateway_enabled {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                "relative request requires Gateway mode",
+            )
+                .into_response());
+        }
         llm_capture(
             self.clone(),
             request,
@@ -75,8 +83,9 @@ impl OverlaySink for GatewayState {
     }
 
     fn accepts(&self, request: &Request) -> bool {
-        crate::protocol::ProtocolKind::from_path(request.uri().path())
-            != crate::protocol::ProtocolKind::Unknown
+        self.gateway_enabled
+            && crate::protocol::ProtocolKind::from_path(request.uri().path())
+                != crate::protocol::ProtocolKind::Unknown
     }
 
     fn on_denied(
