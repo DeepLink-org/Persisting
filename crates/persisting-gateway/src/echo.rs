@@ -605,6 +605,15 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    fn test_client() -> reqwest::Client {
+        // Local echo binds 127.0.0.1; ignore ambient HTTP(S)_PROXY / ALL_PROXY
+        // (e.g. socks5h) which reqwest may not support without extra features.
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("reqwest client")
+    }
+
     async fn spawn_echo() -> (String, tokio::sync::oneshot::Sender<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -622,7 +631,7 @@ mod tests {
     #[tokio::test]
     async fn raw_echo_supports_plain_and_base64() {
         let (base, stop) = spawn_echo().await;
-        let client = reqwest::Client::new();
+        let client = test_client();
         let plain = client
             .post(format!("{base}/echo"))
             .body("hello")
@@ -645,7 +654,7 @@ mod tests {
     #[tokio::test]
     async fn chat_echo_uses_last_user_message_and_streams() {
         let (base, stop) = spawn_echo().await;
-        let client = reqwest::Client::new();
+        let client = test_client();
         let response: Value = client
             .post(format!("{base}/v1/chat/completions"))
             .header(ECHO_ENCODING_HEADER, "base64")
@@ -687,7 +696,7 @@ mod tests {
     #[tokio::test]
     async fn native_protocol_endpoints_return_their_wire_shapes() {
         let (base, stop) = spawn_echo().await;
-        let client = reqwest::Client::new();
+        let client = test_client();
 
         let messages: Value = client
             .post(format!("{base}/v1/messages"))
@@ -774,7 +783,7 @@ forward = "echo-upstream"
             },
         ));
 
-        let response = reqwest::Client::new()
+        let response = test_client()
             .post(format!("http://{gateway_address}/v1/messages"))
             .header(ECHO_ENCODING_HEADER, "base64")
             .json(&json!({
