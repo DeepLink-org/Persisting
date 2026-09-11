@@ -125,7 +125,10 @@ pub(crate) use local_query_manifest::{
     LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
 };
 #[cfg(feature = "lance-store")]
-pub use location::{DatasetLocation, DatasetLocationKind, ImportableObjectEvent, ShallowNavEntry};
+pub use location::{
+    DatasetLocation, DatasetLocationKind, ImportableObjectEvent, PathListEntry, PathListKind,
+    ShallowNavEntry,
+};
 #[cfg(feature = "lance-store")]
 pub use query_engine::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, DEFAULT_QUERY_MEMORY_LIMIT_BYTES,

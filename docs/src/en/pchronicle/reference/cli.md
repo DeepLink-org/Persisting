@@ -125,7 +125,7 @@ Tokio runtime starts so OpenDAL sees them reliably.
 ### Inspect and find
 
 ```text
-pchronicle list|ls [DATASET] [OPTIONS]
+pchronicle list|ls [DATASET] [--sources] [OPTIONS]
 pchronicle stats [DATASET] [OPTIONS]
 pchronicle stats <overview|agents|models|tools> [DATASET] [OPTIONS]
 pchronicle find [DATASET]
@@ -141,8 +141,11 @@ pchronicle find ./dataset --match "timeout" --match "retry" --format json
 pchronicle find ./dataset --match '$.tags=important' --match '$.priority=2' --format json
 ```
 
-`list` (`ls`) discovers run sources. Bare `stats` reports Dataset health and
-counts. `stats overview|agents|models|tools` runs the built-in statistical
+`list` (`ls`) lists one directory level, like a shell `ls`. Dataset children
+show type and trajectory count from `chronicle.manifest` when present. `--sources`
+opens the path and prints Snapshot members (the virtual dataset `query` will
+union). Bare `stats` reports Dataset health and counts after the path is **opened** as a
+Snapshot. `stats overview|agents|models|tools` runs the built-in statistical
 reports.
 `--match` is the unified search expression. Plain terms search Storyline Step
 content with the indexed FTS/Jieba path; scoped forms such as `#system(prompt)`

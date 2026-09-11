@@ -229,7 +229,8 @@ capture-root/
         └── session.json
 ```
 
-The Catalog produces four sources:
+The Catalog produces four sources **when `capture-root` is opened as a query
+root** (a virtual dataset). `_file_` is relative to that root:
 
 | `_file_` | `kind` | Possible `format` |
 |---|---|---|
@@ -243,33 +244,46 @@ Stopping descent after a composite root is recognized keeps manifests,
 generations, segments, and `objects.lance` from being treated as user
 input.
 
+`pchronicle ls capture-root` is not that table. It lists one shell-like
+level: `live/` (dataset), `agents/` (directory), `imports/` (directory).
+`ls capture-root/imports` then shows `batch-a.atif.jsonl` and `nested/`.
+Browse membership is [RFC-0015](../../rfcs/0015-chronicle-manifest.md)
+`list`; query membership is `open`.
+
 When a directory contains `chronicle.manifest`
 ([RFC-0015](../../rfcs/0015-chronicle-manifest.md)), discovery prefers that
 sidecar: a `leaf` with `format = compact-jsonl/v1` becomes a Compact source
-without opening Lance solely to classify it; a `branch` scans only immediate
-child directories that also have the sidecar. Explorer folder totals may use
-leaf `record_count` with read-side roll-up; writers update only the leaf
+without opening Lance solely to classify it. `list` of a branch or plain
+directory inspects only immediate children. `open` of either walks nested
+leaves and JSON outside those leaves. Writers update only the leaf
 manifest and do not rewrite ancestors.
 
 ### 5.2 Local discovery
 
-Local URIs accept ordinary paths, `local://`, and `file://`:
+Local URIs accept ordinary paths, `local://`, and `file://`. **`open`**:
 
 1. If the root is a `.json`, `.jsonl`, or `.ndjson` file, create a single
    source.
-2. If the root directory contains `CURRENT`, the whole root is one
-   Storyline source.
-3. If the root is named `events.lance` and contains `_manifest.json`, the
-   whole root is one events source.
-4. Otherwise recurse in stable path order: recognize composite roots, or
-   collect supported peripheral files.
-5. Symbolic links are not followed, which avoids cycles, out-of-tree
+2. If the root is a leaf Dataset (`chronicle.manifest` leaf, `CURRENT`,
+   `events.lance/_manifest.json`, or compact-jsonl Lance), the whole root is
+   one source `_file_ = "."`.
+3. Otherwise the root is a Directory: recurse in stable path order, stop at
+   leaf Datasets, and collect remaining supported peripheral JSON as file
+   sources (virtual dataset).
+4. Symbolic links are not followed, which avoids cycles, out-of-tree
    reads, and duplicate identities for the same physical file.
+
+**`list`** of the same URI returns only immediate children, as specified in
+RFC-0015. It does not dump the virtual-dataset source table.
 
 ### 5.3 Object-store discovery
 
-Object URIs are resolved through the Lance/object-store adapter. The
-Catalog consumes a prefix listing as a stream and fails before it reads
+Object URIs are resolved through the Lance/object-store adapter. **`open`**
+of an object prefix is the virtual-dataset walk below. **`list`** of the
+same URI is still one prefix level (RFC-0015) and MUST NOT require listing
+the entire tree.
+
+The Catalog consumes a prefix listing as a stream and fails before it reads
 `max_entries + 1` objects. It does not collect an unbounded listing into
 memory and check afterwards. Then:
 

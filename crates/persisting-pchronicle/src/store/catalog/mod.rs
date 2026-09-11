@@ -17,7 +17,7 @@ use provider::*;
 use source::*;
 
 use discovery::{
-    Candidate, bind_canonical_storyline_projections, discover_candidates, freeze_candidate,
+    bind_canonical_storyline_projections, discover_candidates, freeze_candidate,
     normalize_event_storylines,
 };
 
@@ -369,10 +369,6 @@ impl DatasetCatalogSnapshot {
             let mut source_rows = Vec::with_capacity(candidates.len());
             let mut prepared_sources = Vec::with_capacity(candidates.len());
             for candidate in candidates {
-                if matches!(candidate, Candidate::Directory { .. }) {
-                    source_rows.push(candidate.source_stub());
-                    continue;
-                }
                 let stub = candidate.source_stub();
                 match freeze_candidate(&mount, candidate, temporary_files.clone(), options).await {
                     Ok((source, lazy_source)) => {

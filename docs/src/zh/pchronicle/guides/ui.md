@@ -28,7 +28,7 @@ Lance 存储。下面的截图和示例由这个命令直接生成：
 
 | 入口 | 用途 |
 | --- | --- |
-| **Datasets** | 查看已挂载的 Dataset 和 Run 数量，从全局概览进入 Runs。 |
+| **Datasets** | 像 `pchronicle ls` 一样按当前路径一层浏览；Dataset 文件夹显示类型和轨迹数。 |
 | **Runs** | 按路径、Dataset、状态或关键字筛选 Run，并打开单次运行。 |
 | **Analysis** | 查看可用字段，使用自然语言或只读 SQL 分析 Dataset。 |
 | **Storage** | 检查 Lance 表、数据组、列分布和存储大小；主要用于存储诊断。 |
@@ -38,14 +38,18 @@ Lance 存储。下面的截图和示例由这个命令直接生成：
 
 ![Datasets 页面显示 test 和 data 两个 Dataset，以及各自的 Run 数量](/img/screenshots/pchronicle/data-overview.jpg)
 
-**Datasets** 是离开首页后的仓库入口。卡片显示 Dataset 名称和 Run 数量；单击卡片会进入该 Dataset 的
-数据概览，再用 **Open in Runs** 打开当前范围。入口页右上角的同名按钮会打开全部 Run。
+**Datasets** 是离开首页后的仓库入口。仓库根列出 serve 挂载。进入某个挂载后，每张卡片是
+当前路径的一个 child，与 `pchronicle ls` 同一份列举。Dataset 子项在有 `chronicle.manifest`
+时显示类型和轨迹数。单击目录进入下一层；单击 Dataset 停在该 Dataset（不把 Lance 内部当
+浏览文件夹）。**Open in Runs** 把当前 query 根打开为 Snapshot；纯目录会变成由嵌套 Dataset
+与 JSON 组成的虚拟 dataset。
 
 ## 浏览和筛选 Run
 
 ![Runs 页面左侧是路径树，右侧是可筛选的 Run 表格](/img/screenshots/pchronicle/runs-browser.jpg)
 
-Runs 页面由路径树和结果表组成：
+Runs 页面由路径树和结果表组成。**Run paths** 由 run 摘要按 import path 反推，不是
+Datasets 的 `ls` 列举。
 
 1. 在左侧 **Run paths** 中选择 Dataset、目录层级或具体 Session。节点右侧的数字是该层级包含
    的 Run 数量。

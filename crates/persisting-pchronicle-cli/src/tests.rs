@@ -1226,18 +1226,23 @@ async fn log_level_changes_diagnostics_without_changing_results() -> Result<()> 
     Ok(())
 }
 
-#[tokio::test]
-async fn list_discovers_nested_sources_as_json() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    fs::create_dir(temp.path().join("nested"))?;
+fn write_list_fixture(root: &Path) -> Result<()> {
+    fs::create_dir(root.join("nested"))?;
     fs::write(
-        temp.path().join("nested/trajectory.json"),
+        root.join("nested/trajectory.json"),
         r#"[{"session_id":"s1","step_id":0,"messages":[]}]"#,
     )?;
     fs::write(
-        temp.path().join("trajectory.jsonl"),
+        root.join("trajectory.jsonl"),
         r#"{"schema_version":"ATIF-v1.4","session_id":"s2","steps":[],"agent":{"id":"a"}}"#,
     )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_lists_immediate_path_entries_as_json() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    write_list_fixture(temp.path())?;
     let cli = Cli::try_parse_from([
         "pchronicle",
         "list",
@@ -1250,11 +1255,37 @@ async fn list_discovers_nested_sources_as_json() -> Result<()> {
     run(cli, false, &mut stdout, &mut stderr).await?;
 
     let value: Value = serde_json::from_slice(&stdout)?;
-    assert!(value.get("schema_version").is_none());
-    assert_eq!(value["sources"].as_array().unwrap().len(), 2);
-    assert_eq!(value["sources"][0]["source_path"], "nested/trajectory.json");
-    assert_eq!(value["sources"][1]["source_path"], "trajectory.jsonl");
-    assert!(String::from_utf8(stderr)?.contains("snapshot_id="));
+    let entries = value["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["name"], "nested");
+    assert_eq!(entries[0]["kind"], "directory");
+    assert_eq!(entries[1]["name"], "trajectory.jsonl");
+    assert_eq!(entries[1]["kind"], "file");
+    assert!(String::from_utf8(stderr)?.contains("dataset_uri="));
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_sources_prints_snapshot_members() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    write_list_fixture(temp.path())?;
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "list",
+        temp.path().to_str().unwrap(),
+        "--sources",
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let value: Value = serde_json::from_slice(&stdout)?;
+    let sources = value["sources"].as_array().unwrap();
+    let files: Vec<_> = sources
+        .iter()
+        .map(|source| source["source_path"].as_str().unwrap())
+        .collect();
+    assert_eq!(files, vec!["nested/trajectory.json", "trajectory.jsonl"]);
     Ok(())
 }
 
@@ -1273,8 +1304,7 @@ async fn list_pins_and_table_output_work() -> Result<()> {
     let mut stdout = Vec::new();
     run(cli, true, &mut stdout, &mut Vec::new()).await?;
     let output = String::from_utf8(stdout)?;
-    assert!(output.contains("SOURCE"));
-    assert!(output.contains("LAST MODIFIED"));
+    assert!(output.contains("NAME"));
     assert!(output.contains("trajectory.json"));
     Ok(())
 }

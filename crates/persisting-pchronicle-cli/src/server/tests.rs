@@ -472,7 +472,7 @@ async fn middleware_rejects_illegal_incoming_id() {
 }
 
 #[tokio::test]
-async fn middleware_does_not_info_log_static_assets() {
+async fn middleware_info_logs_static_assets() {
     use tower::ServiceExt;
 
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CapturedLogEvent>::new()));
@@ -496,8 +496,21 @@ async fn middleware_does_not_info_log_static_assets() {
         .unwrap();
     let logged = events.lock().unwrap().clone();
     assert!(
-        !logged.iter().any(|event| {
+        logged.iter().any(|event| {
             event.level == tracing::Level::INFO
+                && event.message.contains("warehouse request start")
+                && event
+                    .fields
+                    .get("path")
+                    .is_some_and(|path| path.contains("/assets/app.css"))
+        }),
+        "{logged:?}"
+    );
+    assert!(
+        logged.iter().any(|event| {
+            event.level == tracing::Level::INFO
+                && event.message.contains("warehouse request")
+                && !event.message.contains("start")
                 && event
                     .fields
                     .get("path")
@@ -864,7 +877,6 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
         duplicate_event_ids: 0,
         status: "completed".into(),
         format: None,
-        explorer_weight: None,
     };
 
     let analysis = explorer::analyze(run, &turns, &events, CatalogEventProvenance::Canonical);
@@ -911,7 +923,6 @@ fn canonical_event_uri_resolves_write_coordinates_independent_of_mount_root() {
         duplicate_event_ids: 0,
         status: "active".into(),
         format: None,
-        explorer_weight: None,
     };
     let local = event_uri_coords("/tmp/capture/agent/run-1/events.lance", &run).unwrap();
     assert_eq!(local.storage, "/tmp/capture");
@@ -1046,7 +1057,14 @@ async fn explorer_automatically_refreshes_new_dataset_sources() {
         .unwrap();
     let tree: Value =
         serde_json::from_slice(&tree.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(tree["run_count"], 2);
+    let names: Vec<_> = tree["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|child| child["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"gateway.json".into()));
+    assert!(names.contains(&"second.json".into()));
 
     let refreshed = app
         .oneshot(
@@ -1969,12 +1987,15 @@ async fn explorer_tree_lists_mounted_datasets_by_run_count() -> anyhow::Result<(
     assert_eq!(warehouse.status(), StatusCode::OK);
     let warehouse: Value =
         serde_json::from_slice(&warehouse.into_body().collect().await?.to_bytes())?;
-    assert_eq!(warehouse["run_count"], 3);
-    assert_eq!(warehouse["children"][0]["name"], "live");
+    let names: Vec<_> = warehouse["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|child| child["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, vec!["archive".to_string(), "live".to_string()]);
     assert_eq!(warehouse["children"][0]["kind"], "dataset");
-    assert_eq!(warehouse["children"][0]["run_count"], 2);
-    assert_eq!(warehouse["children"][1]["name"], "archive");
-    assert_eq!(warehouse["children"][1]["run_count"], 1);
+    assert_eq!(warehouse["children"][1]["kind"], "dataset");
 
     let dataset = app
         .clone()
@@ -1987,7 +2008,6 @@ async fn explorer_tree_lists_mounted_datasets_by_run_count() -> anyhow::Result<(
     assert_eq!(dataset.status(), StatusCode::OK);
     let dataset: Value = serde_json::from_slice(&dataset.into_body().collect().await?.to_bytes())?;
     assert_eq!(dataset["dataset"], "live");
-    assert_eq!(dataset["run_count"], 2);
     assert!(dataset["ready_sources"].as_u64().unwrap() >= 1);
     let names: Vec<_> = dataset["children"]
         .as_array()
@@ -1997,6 +2017,13 @@ async fn explorer_tree_lists_mounted_datasets_by_run_count() -> anyhow::Result<(
         .collect();
     assert!(names.contains(&"gateway.json".into()));
     assert!(names.contains(&"nested".into()));
+    let nested = dataset["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|child| child["name"] == "nested")
+        .unwrap();
+    assert_eq!(nested["kind"], "dir");
 
     let prefixed = app
         .oneshot(

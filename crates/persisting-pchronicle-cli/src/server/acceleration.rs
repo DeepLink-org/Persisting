@@ -945,7 +945,6 @@ async fn build_run_summaries(
                         duplicate_event_ids: 0,
                         status: "record".into(),
                         format: Some("compact-jsonl/v1".into()),
-                        explorer_weight: None,
                     });
                 }
             }
@@ -1023,7 +1022,6 @@ async fn build_run_summaries(
                 duplicate_event_ids: event_stats.map_or(0, |stats| stats.duplicate_event_ids),
                 status,
                 format: None,
-                explorer_weight: None,
             });
         }
     }

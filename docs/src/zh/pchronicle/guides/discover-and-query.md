@@ -14,8 +14,10 @@ pchronicle list ./dataset
 pchronicle stats ./dataset
 ```
 
-`list`（`ls`）显示 pChronicle 发现的、可以独立查询的 Run 数据源；`stats` 汇总 Dataset 是否可用以及
-包含哪些数据。自动化中使用 JSON 输出：
+`list`（`ls`）列出当前路径的一层 children，体验对齐 shell `ls`。含 `chronicle.manifest`
+（或其它 Dataset 标记）的子目录显示为 Dataset，并带类型和轨迹数。`ls --sources` 会
+**打开**该路径并打印 `query` 会合成的 Snapshot 成员。`stats` 汇总把该路径
+打开为 Snapshot 之后的可用性。自动化中使用 JSON 输出：
 
 ```bash
 pchronicle list ./dataset --format json
@@ -65,7 +67,8 @@ timeout 上限约束。
 
 ## 5. 先定位，再分析
 
-`list`/`ls` / `sources` 负责发现；`find` 在已 pin 的 Snapshot 内定位；`query` 负责分析。
+`list`/`ls` 列出当前路径。`ls --sources` 与 `query` **打开**该路径：叶子 Dataset 是一个 source；纯目录会变成
+由嵌套 Dataset 与 JSON 组成的虚拟 dataset。`find` 在已 pin 的 Snapshot 内定位。
 CLI `--match` 与 Web `q` 共用同一表达式、报告的 scope 和 `snapshot_id`；Web UI 可以对
 返回字段做高亮，不改变命中集合。
 

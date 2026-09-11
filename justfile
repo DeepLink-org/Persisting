@@ -706,7 +706,6 @@ check-quick:
 capture-test:
     just test-crate capture
 
-<<<<<<< HEAD
 # Execute pChronicle single-machine/self-service cases.
 [group('test')]
 test-pchronicle-cases:
@@ -720,8 +719,6 @@ test-pchronicle-cases-platform:
     cargo build --release -p persisting-pchronicle-cli --locked
     python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle target/release/pchronicle --report target/pchronicle-platform-case-report.md
 
-=======
->>>>>>> 870951dea9c8f83a62ea62d306df29bb3a1b610c
 # Run documented integration cases by component.
 # Examples:
 #   just cases pvisor

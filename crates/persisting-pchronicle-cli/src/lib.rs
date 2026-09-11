@@ -43,9 +43,9 @@ use persisting_pchronicle::storage::{
     AutomaticProjectionInspection, AutomaticProjectionState, CatalogErrorPolicy,
     CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, DEFAULT_DATASET_NAME,
     DatasetCatalogSnapshot, DatasetLocation, DatasetMount, DiscoveredSource, EventFactSnapshot,
-    ObjectStoreManifestWriteMode, StorylineProjectionBuildOutcome, automatic_projection_inventory,
-    build_storyline_projection, inspect_automatic_storyline_projection,
-    probe_canonical_event_store,
+    ObjectStoreManifestWriteMode, PathListKind, StorylineProjectionBuildOutcome,
+    automatic_projection_inventory, build_storyline_projection,
+    inspect_automatic_storyline_projection, probe_canonical_event_store,
 };
 use serde::{Deserialize, Serialize};
 
@@ -282,6 +282,10 @@ struct ListArgs {
     /// Include storage size, modification time, and version columns.
     #[arg(long)]
     physical: bool,
+
+    /// Print Snapshot query sources (`open`) instead of one directory level.
+    #[arg(long)]
+    sources: bool,
 
     /// Output format. Auto uses a table on a terminal and JSON when piped.
     #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
@@ -1338,6 +1342,10 @@ struct SourceResponse {
     last_modified: Option<String>,
     status: CatalogSourceStatus,
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    record_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failed_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
@@ -2710,6 +2718,16 @@ async fn run_list(
         }
     }
     let dataset_uri = resolve_dataset_uri(args.dataset_uri.as_deref(), settings_override)?;
+    if !args.sources {
+        return run_list_path(
+            &dataset_uri,
+            args.format,
+            stdout_is_terminal,
+            stdout,
+            stderr,
+        )
+        .await;
+    }
     let (dataset_uri, snapshot) =
         discover_snapshot(&dataset_uri, args.errors, args.max_files, args.max_entries).await?;
     let dataset = snapshot
@@ -2759,6 +2777,64 @@ async fn run_list(
     )
     .context("write pChronicle ls metadata")?;
     Ok(())
+}
+
+async fn run_list_path(
+    dataset_uri: &str,
+    format: OutputFormat,
+    stdout_is_terminal: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    let location = DatasetLocation::parse(dataset_uri)?;
+    let mut entries = location.list("").await?;
+    entries.sort_by(|left, right| {
+        path_list_sort_key(left.kind)
+            .cmp(&path_list_sort_key(right.kind))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let output_format = match format {
+        OutputFormat::Auto if stdout_is_terminal => OutputFormat::Table,
+        OutputFormat::Auto => OutputFormat::Json,
+        explicit => explicit,
+    };
+    match output_format {
+        OutputFormat::Table => write_path_list_table(stdout, &entries)?,
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(
+                &mut *stdout,
+                &serde_json::json!({
+                    "dataset_uri": dataset_uri,
+                    "entries": entries,
+                }),
+            )
+            .context("encode pChronicle ls JSON")?;
+            writeln!(stdout).context("write pChronicle ls JSON")?;
+        }
+        OutputFormat::Auto => unreachable!("auto output format was resolved"),
+    }
+    let datasets = entries
+        .iter()
+        .filter(|entry| entry.kind == PathListKind::Dataset)
+        .count();
+    let directories = entries
+        .iter()
+        .filter(|entry| entry.kind == PathListKind::Directory)
+        .count();
+    writeln!(
+        stderr,
+        "dataset_uri={dataset_uri} entries={} datasets={datasets} directories={directories}",
+        entries.len(),
+    )
+    .context("write pChronicle ls metadata")?;
+    Ok(())
+}
+
+fn path_list_sort_key(kind: PathListKind) -> u8 {
+    match kind {
+        PathListKind::Directory => 0,
+        PathListKind::Dataset | PathListKind::File => 1,
+    }
 }
 
 fn directory_list_sort_key(kind: CatalogSourceKind) -> u8 {
@@ -2833,6 +2909,8 @@ fn source_response(source: &DiscoveredSource) -> SourceResponse {
         status: source.status,
         error: (source.status == CatalogSourceStatus::Error)
             .then(|| "Source discovery failed".into()),
+        record_count: source.record_count,
+        failed_count: source.failed_count,
     }
 }
 
