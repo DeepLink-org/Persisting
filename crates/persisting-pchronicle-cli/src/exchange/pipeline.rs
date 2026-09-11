@@ -60,7 +60,6 @@ pub(crate) enum ParsedItem {
     Skipped {
         path: PathBuf,
         reason: String,
-        bytes: u64,
     },
 }
 
@@ -618,6 +617,7 @@ pub(crate) fn spawn_location_fetch_pipeline(
                     relative_path: relative_path.clone(),
                     content: None,
                     remote_root: Some(remote_root),
+                    size_hint: item.bytes,
                 };
                 let label = format!("import source {}", item.path);
                 let bytes =
