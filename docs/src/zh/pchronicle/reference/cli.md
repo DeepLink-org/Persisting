@@ -163,7 +163,7 @@ pchronicle list [DATASET] [--sources] [--physical] [--format auto|table|json] [-
 
 ```bash
 pchronicle list
-pchronicle list @prod --physical --format json --errors strict
+pchronicle list @prod --sources --physical --format json --errors strict
 pchronicle list @prod --sources --format json
 ```
 
