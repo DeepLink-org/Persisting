@@ -32,10 +32,6 @@ pub(super) struct PreparedControl {
 
 impl PreparedControl {
     pub(super) async fn bind(storage: &str, listen: SocketAddr) -> Result<Self> {
-        anyhow::ensure!(
-            listen.ip().is_loopback(),
-            "pChronicle control may only bind to a loopback address"
-        );
         let control = Arc::new(
             RunControlStore::open(storage)
                 .await

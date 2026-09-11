@@ -9,6 +9,7 @@ service.
 ```text
 pchronicle serve
   [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
+  [--home-link TEXT=PATH]...
   [--gateway ADDRESS --gateway-dataset DATASET [--gateway-split TEMPLATE]
    [--gateway-split-idle DURATION]]
   [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]

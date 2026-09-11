@@ -7,9 +7,9 @@ use clap::{Args, Subcommand};
 
 use super::{
     AnalysisOptions, DatasetArgs, DatasetCommand, ErrorMode, ExchangeFormat, ExportArgs,
-    ExportFormat, FindArgs, ImportArgs, ImportMode, ImportOutputFormat, ListArgs, OutputFormat,
-    QueryArgs, QueryOutputFormat, StatsReport, StatusArgs, run_dataset, run_export, run_find,
-    run_import, run_list, run_query, run_stats_report, run_status,
+    ExportFormat, FindArgs, ImportArgs, ImportOutputFormat, ListArgs, OutputFormat, QueryArgs,
+    QueryOutputFormat, StatsReport, StatusArgs, run_dataset, run_export, run_find, run_import,
+    run_list, run_query, run_stats_report, run_status,
 };
 
 const DEMO_ATIF: &str = include_str!("../assets/onboard/support-ticket.json");
@@ -551,7 +551,8 @@ fn render_serve(renderer: &mut WalkthroughRenderer<'_>) -> Result<()> {
 pchronicle serve --listen 127.0.0.1:8080 --open evals=../data/atif
 ```
 
-服务只允许 loopback 地址，因为这个本地表面不提供认证；Dataset API 和 Web UI 都是只读的。
+默认示例仍使用 loopback；`--listen` 也可绑定非 loopback 地址。无认证时不要把
+只读 Warehouse 暴露到不可信网络。Dataset API 和 Web UI 都是只读的。
 Runs 页面检索使用与 `find --match` 相同的 FTS/JSONB 语义，命中的轨迹会展示上下文预览；
 可以先用 CLI `find` 定位，再在 Web 中继续钻取。
 
@@ -801,15 +802,22 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
                     .into_owned(),
             ),
             format: ExchangeFormat::Atif,
+            suggested_format: None,
             output_format: Some(ImportOutputFormat::Preserve),
-            mode: ImportMode::Create,
+            replace: false,
+            append: false,
             on_duplicate: None,
             yes: false,
             stream: false,
             max_input_bytes: None,
+            commit_every: None,
+            resume: false,
+            wal_dir: None,
+            reset: false,
             columns: Vec::new(),
         },
         Some(&settings),
+        false,
         false,
         &mut empty_stdin,
         &mut import_stdout,
@@ -829,15 +837,22 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
             from: demo.atif_source().to_string_lossy().into_owned(),
             output: Some(storyline_output.to_string_lossy().into_owned()),
             format: ExchangeFormat::Atif,
+            suggested_format: None,
             output_format: Some(ImportOutputFormat::Storyline),
-            mode: ImportMode::Create,
+            replace: false,
+            append: false,
             on_duplicate: None,
             yes: false,
             stream: false,
             max_input_bytes: None,
+            commit_every: None,
+            resume: false,
+            wal_dir: None,
+            reset: false,
             columns: Vec::new(),
         },
         Some(&settings),
+        false,
         false,
         &mut std::io::empty(),
         &mut storyline_stdout,

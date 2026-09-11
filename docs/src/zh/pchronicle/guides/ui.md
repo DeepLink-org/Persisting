@@ -7,7 +7,9 @@ Lance 存储。下面的截图和示例由这个命令直接生成：
 ./target/release/pchronicle serve tmp/test/ data/ --listen 127.0.0.1:9980
 ```
 
-启动成功后访问 [http://127.0.0.1:9980/](http://127.0.0.1:9980/)。这条命令挂载两个 Dataset；因为没有显式指定名称，
+启动成功后访问 [http://127.0.0.1:9980/](http://127.0.0.1:9980/)。打开后先进入首页；**Warehouse** 和 **Open Warehouse** 进入 Datasets。`/?page=catalog` 这类深链仍会直接打开工作台。可重复的 `--home-link TEXT=PATH` 会出现在 Warehouse 旁边；`PATH` 必须是同源相对路径。
+
+这条命令挂载两个 Dataset；因为没有显式指定名称，
 界面使用路径末段，将它们显示为 `test` 和 `data`。需要让 SQL schema 和界面名称长期稳定时，
 建议明确命名：
 
@@ -22,7 +24,7 @@ Lance 存储。下面的截图和示例由这个命令直接生成：
 
 ## 界面总览
 
-左侧导航把常用工作分成五个入口：
+左侧导航把常用工作分成五个入口。单击 **pC** 标记可回到首页。
 
 | 入口 | 用途 |
 | --- | --- |
@@ -36,7 +38,7 @@ Lance 存储。下面的截图和示例由这个命令直接生成：
 
 ![Datasets 页面显示 test 和 data 两个 Dataset，以及各自的 Run 数量](/img/screenshots/pchronicle/data-overview.jpg)
 
-**Datasets** 是启动后的入口页。卡片显示 Dataset 名称和 Run 数量；单击卡片会进入该 Dataset 的
+**Datasets** 是离开首页后的仓库入口。卡片显示 Dataset 名称和 Run 数量；单击卡片会进入该 Dataset 的
 数据概览，再用 **Open in Runs** 打开当前范围。入口页右上角的同名按钮会打开全部 Run。
 
 ## 浏览和筛选 Run

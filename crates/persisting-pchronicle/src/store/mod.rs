@@ -36,11 +36,15 @@ mod files;
 #[cfg(feature = "lance-store")]
 pub(crate) mod index_build_gate;
 #[cfg(feature = "lance-store")]
+pub(crate) mod index_build_progress;
+#[cfg(feature = "lance-store")]
 mod inspect;
 #[cfg(feature = "lance-store")]
 mod local_query_manifest;
 #[cfg(feature = "lance-store")]
 mod location;
+#[cfg(feature = "lance-store")]
+pub(crate) mod object_store_io_gate;
 #[cfg(feature = "lance-store")]
 pub(crate) mod opendal_store;
 #[cfg(feature = "lance-store")]
@@ -75,13 +79,15 @@ pub use catalog::{
 #[cfg(feature = "lance-store")]
 #[allow(unused_imports)]
 pub use chronicle_manifest::{
-    CHRONICLE_MANIFEST_FILE, ChronicleManifest, ManifestKind, ManifestStats, atomic_write_manifest,
-    compact_jsonl_manifest_matches, load_manifest, try_load_manifest, write_compact_jsonl_manifest,
+    CHRONICLE_MANIFEST_FILE, ChronicleManifest, ManifestKind, ManifestStats, STORYLINE_FORMAT,
+    atomic_write_manifest, compact_jsonl_manifest_matches, load_manifest, load_manifest_at_uri,
+    try_load_manifest, write_compact_jsonl_manifest, write_storyline_manifest,
+    write_storyline_manifest_at_uri,
 };
 #[cfg(feature = "lance-store")]
 pub use compact_jsonl::{
-    CompactJsonlColumn, CompactJsonlOffload, CompactJsonlOptions, CompactJsonlRecord,
-    CompactJsonlStore,
+    CompactJsonlBuildPhase, CompactJsonlColumn, CompactJsonlImportEvent, CompactJsonlOffload,
+    CompactJsonlOptions, CompactJsonlRecord, CompactJsonlStore,
 };
 #[cfg(feature = "lance-store")]
 pub(crate) use document_source::{DocumentSourceImpl, open_document_source};
@@ -119,7 +125,7 @@ pub(crate) use local_query_manifest::{
     LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
 };
 #[cfg(feature = "lance-store")]
-pub use location::{DatasetLocation, DatasetLocationKind};
+pub use location::{DatasetLocation, DatasetLocationKind, ImportableObjectEvent, ShallowNavEntry};
 #[cfg(feature = "lance-store")]
 pub use query_engine::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, DEFAULT_QUERY_MEMORY_LIMIT_BYTES,
@@ -133,13 +139,14 @@ pub(crate) use storyline::StorylineProjectionPublicationOutcome;
 #[cfg(feature = "lance-store")]
 pub use storyline::{
     DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE,
-    DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES, ProjectionSourceSnapshot,
-    StorylineContentOptions, StorylineContentReadMode, StorylineDataFusionTableNames,
-    StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
-    StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
-    StorylineTableKind, StorylineTablePaths, story_runs_arrow_schema, story_runs_from_batch,
-    story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch, story_steps_to_batch,
-    story_tool_calls_arrow_schema, story_tool_calls_from_batch, story_tool_calls_to_batch,
+    DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES, DEFAULT_MAX_CHUNK_BYTES,
+    ProjectionSourceSnapshot, StorylineContentOptions, StorylineContentReadMode,
+    StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
+    StorylineLanceStore, StorylineMaintenanceReport, StorylineProjectionLineage,
+    StorylineStreamImportReport, StorylineStreamOptions, StorylineTableKind, StorylineTablePaths,
+    story_runs_arrow_schema, story_runs_from_batch, story_runs_to_batch, story_steps_arrow_schema,
+    story_steps_from_batch, story_steps_to_batch, story_tool_calls_arrow_schema,
+    story_tool_calls_from_batch, story_tool_calls_to_batch,
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_model::{

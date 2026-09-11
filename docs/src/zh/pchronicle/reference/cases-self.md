@@ -15,7 +15,7 @@ cd /tmp/pchronicle-cases
 ## S01：浏览本地 Dataset
 
 ```bash
-pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data --mode create
+pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data
 pchronicle list ./trajectory-data
 pchronicle stats ./trajectory-data
 ```
@@ -25,9 +25,9 @@ pchronicle stats ./trajectory-data
 ## S02：执行 SQL 查询
 
 ```bash
-pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data --mode create
+pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data
 pchronicle query ./trajectory-data \
-  --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
+ --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
 ```
 
 预期：查询成功并返回确定的 runs 数量。
@@ -35,7 +35,7 @@ pchronicle query ./trajectory-data \
 ## S03：运行内建分析
 
 ```bash
-pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data --mode create
+pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data
 pchronicle stats overview ./trajectory-data
 ```
 
@@ -44,7 +44,7 @@ pchronicle stats overview ./trajectory-data
 ## S04：导入和导出
 
 ```bash
-pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data --mode create
+pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data
 pchronicle export --from ./trajectory-data --to ./output.atif.json --output-format atif
 test -s ./output.atif.json
 ```

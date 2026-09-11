@@ -20,7 +20,6 @@ use output::*;
 use settings::*;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ffi::CString;
 use std::fmt::Write as _;
 use std::io::{Error as IoError, Read, Write};
 use std::net::SocketAddr;
@@ -33,23 +32,20 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use futures::{StreamExt, stream, stream::FuturesUnordered};
 use persisting_events::{CHRONICLE_SERVE_READY_VERSION, ChronicleServeReady};
-use persisting_pchronicle::document::{
-    DocumentFormat, InputIssue, InputIssueKind, decode_json_storylines, detect_format,
-    encode_json_storylines, open_document,
-};
-use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::query::ChronicleQueryEngine;
 use persisting_pchronicle::search::{
     FindExpr, FindJsonOperator, FindJsonPredicate, FindTextPredicate, combine_match_expressions,
     search_storyline_step_matches_fts_in_columns,
 };
+#[cfg(test)]
+use persisting_pchronicle::storage::StorylineLanceStore;
 use persisting_pchronicle::storage::{
     AutomaticProjectionInspection, AutomaticProjectionState, CatalogErrorPolicy,
-    CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
-    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetLocation, DatasetMount, DiscoveredSource,
-    EventFactSnapshot, ObjectStoreManifestWriteMode, StorylineLanceStore,
-    StorylineProjectionBuildOutcome, automatic_projection_inventory, build_storyline_projection,
-    inspect_automatic_storyline_projection, probe_canonical_event_store,
+    CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, DEFAULT_DATASET_NAME,
+    DatasetCatalogSnapshot, DatasetLocation, DatasetMount, DiscoveredSource, EventFactSnapshot,
+    ObjectStoreManifestWriteMode, StorylineProjectionBuildOutcome, automatic_projection_inventory,
+    build_storyline_projection, inspect_automatic_storyline_projection,
+    probe_canonical_event_store,
 };
 use serde::{Deserialize, Serialize};
 
@@ -262,10 +258,10 @@ enum Command {
     Drop(DropArgs),
     /// Export complete Trajectories to an exchange format.
     Export(ExportArgs),
-    /// Mirror a changing directory into snapshot Datasets.
+    /// Mirror a changing directory into optional Compact and/or Storyline snapshots.
     ///
-    /// With --input-format compact-jsonl, each batch atomically replaces the
-    /// compact Lance Dataset at --convert; --to remains required but is not written.
+    /// `--mirror` replaces a Compact JSONL Lance Dataset; `--to` replaces a
+    /// Storyline Lance Dataset. Provide either or both.
     Sync(sync::SyncArgs),
     /// Run a deterministic local LLM upstream for Gateway testing.
     #[command(hide = true)]
@@ -704,7 +700,7 @@ enum ImportOutputFormat {
     CompactJsonl,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ImportMode {
     /// Require a new destination and publish it atomically.
     Create,
@@ -747,19 +743,28 @@ struct ImportArgs {
     #[arg(short = 'i', long = "input-format", alias = "format", value_enum, default_value_t = ExchangeFormat::Auto)]
     format: ExchangeFormat,
 
+    /// When --format auto cannot decide, try this format if the file is weakly compatible.
+    /// Does not force decode; use --format to hard-pin. Only valid with --format auto.
+    #[arg(long = "suggested-format", value_enum, value_name = "FORMAT")]
+    suggested_format: Option<ExchangeFormat>,
+
     /// Dataset layout: preserve, normalized Storyline (combine all inputs into one Storyline Lance Store at the Dataset root), or record-level compact JSONL.
     #[arg(short = 'o', long = "output-format", value_enum)]
     output_format: Option<ImportOutputFormat>,
 
-    /// Destination behavior: create a new Dataset, append, or replace.
-    #[arg(long, value_enum, default_value_t = ImportMode::Create)]
-    mode: ImportMode,
+    /// Replace an existing destination Dataset (after confirmation unless --yes).
+    #[arg(long, conflicts_with = "append")]
+    replace: bool,
+
+    /// Append trajectories into an existing Storyline Dataset.
+    #[arg(long, conflicts_with = "replace")]
+    append: bool,
 
     /// How append handles an existing document ID.
     #[arg(long, value_enum, value_name = "suffix|skip")]
     on_duplicate: Option<DuplicateIdPolicy>,
 
-    /// Skip the destructive confirmation required by --mode replace.
+    /// Skip the destructive confirmation required by --replace.
     #[arg(short = 'y', long)]
     yes: bool,
 
@@ -771,11 +776,41 @@ struct ImportArgs {
     #[arg(long, value_parser = parse_byte_size, default_value = "256MiB")]
     max_input_bytes: Option<usize>,
 
+    /// Fixed Storyline commit batch size. When omitted, batch size grows
+    /// 64 → 128 → … → 4096 (then stays at 4096) so early progress stays fine
+    /// while later commits amortize CURRENT / Lance overhead.
+    #[arg(long, value_name = "N")]
+    commit_every: Option<usize>,
+
+    /// Resume a previous import using the local checkpoint WAL for the same
+    /// --from/--to fingerprint. Skips sources already recorded as done or failed.
+    #[arg(long)]
+    resume: bool,
+
+    /// Root directory for import checkpoint WALs (default: ./.pchronicle-import-wal).
+    #[arg(long = "wal-dir", value_name = "DIR")]
+    wal_dir: Option<PathBuf>,
+
+    /// Delete the WAL for this --from/--to job before starting (implies a fresh checkpoint).
+    #[arg(long)]
+    reset: bool,
+
     /// Compact JSONL mapping. id/timestamp override $.id/$.timestamp; missing or invalid id values
     /// use source_filename#line_number; other names add JSONB columns.
     /// Example: --column id=$.event.id --column model=$.payload.model.
     #[arg(long = "column", value_name = "NAME=JSON_PATH", action = clap::ArgAction::Append)]
     columns: Vec<String>,
+}
+
+impl ImportArgs {
+    fn mode(&self) -> Result<ImportMode> {
+        match (self.replace, self.append) {
+            (true, true) => Err(anyhow!("--replace and --append cannot be combined")),
+            (true, false) => Ok(ImportMode::Replace),
+            (false, true) => Ok(ImportMode::Append),
+            (false, false) => Ok(ImportMode::Create),
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -922,6 +957,14 @@ struct ServeArgs {
     /// Open the Web UI in the system browser after the listener is ready.
     #[arg(long, requires = "listen")]
     open: bool,
+
+    /// Extra homepage nav capsule as TEXT=PATH. PATH is a same-origin relative path.
+    #[arg(
+        long = "home-link",
+        value_name = "TEXT=PATH",
+        value_parser = server::parse_home_link
+    )]
+    home_links: Vec<server::HomeLink>,
 
     /// Start the config-free canonical event ingest Gateway.
     /// `auto` selects loopback and an ephemeral port.
@@ -1124,13 +1167,9 @@ fn parse_gateway_bind(value: &str) -> std::result::Result<SocketAddr, String> {
     if value.eq_ignore_ascii_case("auto") {
         return Ok(SocketAddr::from(([127, 0, 0, 1], 0)));
     }
-    let address = value
+    value
         .parse::<SocketAddr>()
-        .map_err(|error| format!("invalid Gateway address '{value}': {error}"))?;
-    if !address.ip().is_loopback() {
-        return Err("the embedded Gateway is loopback-only; use 127.0.0.1:PORT or 'auto'".into());
-    }
-    Ok(address)
+        .map_err(|error| format!("invalid Gateway address '{value}': {error}"))
 }
 
 #[derive(Debug, Args)]
@@ -1479,6 +1518,9 @@ struct ImportResponse {
     fact_rows: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     input_bytes: Option<usize>,
+    /// Physical Dataset size after import (Lance/object-store bytes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    on_disk_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1512,17 +1554,19 @@ pub async fn run_with_stdin(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
-    run_with_stdio(cli, false, stdout_is_terminal, stdin, stdout, stderr).await
+    run_with_stdio(cli, false, stdout_is_terminal, false, stdin, stdout, stderr).await
 }
 
 pub async fn run_with_stdio(
     cli: Cli,
     stdin_is_terminal: bool,
     stdout_is_terminal: bool,
+    stderr_is_terminal: bool,
     stdin: &mut dyn Read,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
+    server::request_log::init_cli_tracing(cli.log_level);
     let config = cli.config.as_deref();
     let mut diagnostics = DiagnosticWriter::new(cli.log_level, stderr);
     match cli.command {
@@ -1586,6 +1630,7 @@ pub async fn run_with_stdio(
                 args,
                 config,
                 stdin_is_terminal,
+                stderr_is_terminal,
                 stdin,
                 stdout,
                 &mut diagnostics,
@@ -1604,7 +1649,7 @@ pub async fn run_with_stdio(
             .await
         }
         Command::Export(args) => run_export(args, config, stdout, &mut diagnostics).await,
-        Command::Sync(args) => sync::run(args, &mut diagnostics).await,
+        Command::Sync(args) => sync::run(args, config, &mut diagnostics, stderr_is_terminal).await,
         Command::Echo(args) => run_echo(args, &mut diagnostics).await,
         Command::Dev(DevArgs {
             command: DevCommand::Echo(args),
@@ -1677,14 +1722,9 @@ fn local_dataset_path(uri: &str) -> Result<Option<PathBuf>> {
 }
 
 fn parse_gateway_listener(value: &str, label: &str) -> Result<SocketAddr> {
-    let addr = value
+    value
         .parse::<SocketAddr>()
-        .with_context(|| format!("parse {label} address '{value}'"))?;
-    anyhow::ensure!(
-        addr.ip().is_loopback(),
-        "pChronicle embedded {label} may only bind to a loopback address"
-    );
-    Ok(addr)
+        .with_context(|| format!("parse {label} address '{value}'"))
 }
 
 async fn prepare_gateway(
@@ -2238,23 +2278,7 @@ async fn run_serve(
     if let Some(uri) = gateway_dataset_uri.as_deref() {
         prepare_local_gateway_dataset(uri).await?;
     }
-    let catalog_only = args.catalog_config.is_some();
-    let config = if catalog_only {
-        // Projection supervisor still needs the mount list; Warehouse prepare
-        // reloads the same catalog. Avoid front_only here so Gateway/Control
-        // siblings see the configured datasets.
-        let acl = server::catalog::CatalogAcl::load(
-            args.catalog_config
-                .as_ref()
-                .expect("catalog_only implies catalog_config"),
-        )?;
-        // OpenDAL/Lance read AWS_* from the process environment. Apply catalog
-        // backend keys before any discover/projection work touches s3:// mounts.
-        acl.apply_backend_env();
-        server::ChronicleServerConfig::mounted(acl.mounts()?)?
-    } else {
-        resolve_serve_config_with_settings(&args, settings_override)?
-    };
+    let config = resolve_serve_config_with_settings(&args, settings_override)?;
     let control_uri = args
         .control
         .is_some()
@@ -2278,16 +2302,12 @@ async fn run_serve(
     projections.converge_before_readiness().await?;
     let warehouse = match warehouse_listen(&args) {
         Some(listen) => {
-            anyhow::ensure!(
-                listen.ip().is_loopback(),
-                "pChronicle Warehouse may only bind to a loopback address"
-            );
             let listener = tokio::net::TcpListener::bind(listen)
                 .await
                 .with_context(|| format!("bind pChronicle Warehouse to {listen}"))?;
             let warehouse = if let Some(path) = args.catalog_config.as_ref() {
                 let acl = server::catalog::CatalogAcl::load(path)?;
-                server::PreparedWarehouse::prepare_catalog(acl).await?
+                server::PreparedWarehouse::prepare_catalog(acl, config.clone()).await?
             } else if args.gateway.is_some() {
                 server::PreparedWarehouse::prepare_live(config.clone()).await?
             } else {
@@ -2445,37 +2465,46 @@ fn resolve_serve_config_with_settings(
 ) -> Result<server::ChronicleServerConfig> {
     let storage = serve_storage_uris(args);
     let gateway_dataset = resolve_gateway_dataset_uri(args, settings_override)?;
-    let mut config = match (args.config.as_deref(), storage.as_slice()) {
-        (Some(config), []) => load_warehouse_config_with_user_config(config, settings_override)?,
-        (None, storage) if !storage.is_empty() => {
-            let mut config = server::ChronicleServerConfig::mounted(resolve_storage_mounts(
-                storage,
-                settings_override,
-            )?)?;
-            if config
-                .datasets
-                .iter()
-                .any(|dataset| dataset.name == SERVE_STORAGE_DATASET_NAME)
-            {
-                config.default_dataset = Some(SERVE_STORAGE_DATASET_NAME.into());
+    let mut config = if let Some(path) = args.catalog_config.as_deref() {
+        let acl = server::catalog::CatalogAcl::load(path)?;
+        acl.apply_backend_env();
+        server::ChronicleServerConfig::mounted(acl.mounts()?)?
+    } else {
+        match (args.config.as_deref(), storage.as_slice()) {
+            (Some(config), []) => {
+                load_warehouse_config_with_user_config(config, settings_override)?
             }
-            // A single unreadable source (for example a trajectory file that
-            // exceeds max_file_bytes) must degrade to an error source instead
-            // of preventing the Warehouse from serving the remaining data.
-            config.catalog_options.error_policy = CatalogErrorPolicy::Report;
-            config
+            (None, storage) if !storage.is_empty() => {
+                let mut config = server::ChronicleServerConfig::mounted(resolve_storage_mounts(
+                    storage,
+                    settings_override,
+                )?)?;
+                if config
+                    .datasets
+                    .iter()
+                    .any(|dataset| dataset.name == SERVE_STORAGE_DATASET_NAME)
+                {
+                    config.default_dataset = Some(SERVE_STORAGE_DATASET_NAME.into());
+                }
+                // A single unreadable source (for example a trajectory file that
+                // exceeds max_file_bytes) must degrade to an error source instead
+                // of preventing the Warehouse from serving the remaining data.
+                config.catalog_options.error_policy = CatalogErrorPolicy::Report;
+                config
+            }
+            (None, []) if gateway_dataset.is_some() => {
+                server::ChronicleServerConfig::mounted(vec![DatasetMount::new(
+                    SERVE_STORAGE_DATASET_NAME,
+                    gateway_dataset.as_deref().context("Gateway Dataset")?,
+                )?])?
+            }
+            _ => bail!("serve requires at least one Dataset"),
         }
-        (None, []) if gateway_dataset.is_some() => {
-            server::ChronicleServerConfig::mounted(vec![DatasetMount::new(
-                SERVE_STORAGE_DATASET_NAME,
-                gateway_dataset.as_deref().context("Gateway Dataset")?,
-            )?])?
-        }
-        _ => bail!("serve requires at least one Dataset"),
     };
     if let Some(uri) = gateway_dataset {
         ensure_gateway_mount(&mut config, uri)?;
     }
+    config.home_links = args.home_links.clone();
     Ok(config)
 }
 
@@ -2611,10 +2640,6 @@ fn control_storage_uri(config: &server::ChronicleServerConfig) -> Result<&str> {
 }
 
 async fn run_echo(args: EchoArgs, stderr: &mut dyn Write) -> Result<()> {
-    anyhow::ensure!(
-        args.listen.ip().is_loopback(),
-        "pChronicle Echo may only bind to a loopback address"
-    );
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("bind pChronicle Echo to {}", args.listen))?;
@@ -2690,11 +2715,17 @@ async fn run_list(
     let dataset = snapshot
         .dataset(DEFAULT_DATASET_NAME)
         .context("default Dataset missing from Snapshot")?;
+    let mut sources: Vec<SourceResponse> = dataset.sources.iter().map(source_response).collect();
+    sources.sort_by(|left, right| {
+        directory_list_sort_key(left.kind)
+            .cmp(&directory_list_sort_key(right.kind))
+            .then_with(|| left.source_path.cmp(&right.source_path))
+    });
     let response = ListResponse {
         dataset_uri,
         snapshot_id: snapshot.snapshot_id().to_string(),
         created_at: snapshot.created_at().to_string(),
-        sources: dataset.sources.iter().map(source_response).collect(),
+        sources,
     };
 
     let output_format = match args.format {
@@ -2711,17 +2742,30 @@ async fn run_list(
         }
         OutputFormat::Auto => unreachable!("auto output format was resolved"),
     }
+    let queryable = response
+        .sources
+        .iter()
+        .filter(|source| source.kind != CatalogSourceKind::Directory)
+        .count();
     writeln!(
         stderr,
-        "snapshot_id={} dataset_uri={} sources={} ready={} errors={}",
+        "snapshot_id={} dataset_uri={} sources={} directories={} ready={} errors={}",
         response.snapshot_id,
         response.dataset_uri,
-        response.sources.len(),
+        queryable,
+        dataset.directory_count(),
         dataset.ready_source_count(),
         dataset.error_source_count(),
     )
     .context("write pChronicle ls metadata")?;
     Ok(())
+}
+
+fn directory_list_sort_key(kind: CatalogSourceKind) -> u8 {
+    match kind {
+        CatalogSourceKind::Directory => 0,
+        CatalogSourceKind::Store | CatalogSourceKind::File => 1,
+    }
 }
 
 fn write_catalog_pin_dataset_list(
@@ -2771,8 +2815,16 @@ fn write_catalog_pin_dataset_list(
 }
 
 fn source_response(source: &DiscoveredSource) -> SourceResponse {
+    let source_path = if source.kind == CatalogSourceKind::Directory
+        && !source.file.ends_with('/')
+        && source.file != "."
+    {
+        format!("{}/", source.file)
+    } else {
+        source.file.clone()
+    };
     SourceResponse {
-        source_path: source.file.clone(),
+        source_path,
         format: source.format.clone(),
         kind: source.kind,
         snapshot_ref: source.snapshot_ref(),

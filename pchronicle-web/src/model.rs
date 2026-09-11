@@ -24,6 +24,18 @@ where
     })
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct UiConfig {
+    #[serde(default)]
+    pub links: Vec<HomeNavLink>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct HomeNavLink {
+    pub label: String,
+    pub href: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RunSummary {
     #[serde(default = "default_dataset_name")]

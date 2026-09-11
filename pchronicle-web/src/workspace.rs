@@ -75,6 +75,24 @@ struct RunFilters {
     offset: usize,
 }
 
+fn page_from_query(page: Option<&str>, has_run: bool) -> &'static str {
+    if has_run {
+        return "detail";
+    }
+    match page {
+        Some("tools") => "tools",
+        Some("runs") => "runs",
+        Some("physical") => "physical",
+        Some("catalog") => "catalog",
+        Some("detail") => "detail",
+        _ => "home",
+    }
+}
+
+fn home_sync_url() -> &'static str {
+    "/"
+}
+
 pub fn App() -> Element {
     let initial_agent = url_param("agent_id");
     let initial_session = url_param("session_id");
@@ -109,16 +127,7 @@ pub fn App() -> Element {
     } else {
         None
     };
-    let initial_page = if initial_run.is_some() {
-        "detail"
-    } else {
-        match url_param("page").as_deref() {
-            Some("tools") => "tools",
-            Some("runs") => "runs",
-            Some("physical") => "physical",
-            _ => "catalog",
-        }
-    };
+    let initial_page = page_from_query(url_param("page").as_deref(), initial_run.is_some());
     let mut page = use_signal(move || initial_page.to_string());
     let runs = use_signal(|| None::<RunPage>);
     let runs_loading = use_signal(|| true);
@@ -181,6 +190,9 @@ pub fn App() -> Element {
     let mut llm_config = use_signal(llm::load_config);
 
     use_effect(move || {
+        if page() == "home" {
+            return;
+        }
         load_runs(
             RunFilters {
                 query: applied_query(),
@@ -288,6 +300,9 @@ pub fn App() -> Element {
     });
 
     use_effect(move || {
+        if page() == "home" {
+            return;
+        }
         if catalog().is_none() {
             spawn(async move {
                 match api::query_catalog().await {
@@ -318,10 +333,15 @@ pub fn App() -> Element {
     };
 
     rsx! {
+        if page() == "home" {
+            crate::home::HomeLanding {
+                on_open: move |next: String| page.set(next),
+            }
+        } else {
         div { class: "pc2-shell", tabindex: "-1", onkeydown: root_keydown,
             a { class: "skip-link", href: "#pc2-main", "Skip to main content" }
             nav { class: "rail", aria_label: "pChronicle navigation",
-                div { class: "brand-mark", title: "pChronicle", "pC" }
+                button { class: "brand-mark", title: "Persisting Chronicle", onclick: move |_| page.set("home".into()), "pC" }
                 RailButton { active: page() == "catalog", icon: "▣", label: DATASETS, onclick: move |_| { catalog_dataset.set(String::new()); catalog_prefix.set(String::new()); page.set("catalog".into()); } }
                 RailButton { active: page() == "runs" || page() == "detail", icon: "◫", label: RUNS, onclick: move |_| page.set("runs".into()) }
                 RailButton { active: page() == "tools", icon: "⌁", label: ANALYSIS, onclick: move |_| page.set("tools".into()) }
@@ -679,6 +699,7 @@ pub fn App() -> Element {
                 }
             }
 
+        }
         }
     }
 }
@@ -2635,6 +2656,12 @@ fn sync_workspace_url(
     let Some(window) = web_sys::window() else {
         return;
     };
+    if page == "home" {
+        let _ = window.history().and_then(|history| {
+            history.replace_state_with_url(&JsValue::NULL, "", Some(home_sync_url()))
+        });
+        return;
+    }
     if page == "tools" {
         let Some(url) = analysis_url_sync_target(analysis_session_id, analysis_seed_scope_pending)
         else {
@@ -2701,6 +2728,23 @@ fn sync_workspace_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_route_opens_the_homepage() {
+        assert_eq!(page_from_query(None, false), "home");
+        assert_eq!(page_from_query(Some("home"), false), "home");
+        assert_eq!(home_sync_url(), "/");
+    }
+
+    #[test]
+    fn warehouse_deep_links_skip_the_homepage() {
+        assert_eq!(page_from_query(Some("catalog"), false), "catalog");
+        assert_eq!(page_from_query(Some("runs"), false), "runs");
+        assert_eq!(page_from_query(Some("tools"), false), "tools");
+        assert_eq!(page_from_query(Some("physical"), false), "physical");
+        assert_eq!(page_from_query(None, true), "detail");
+        assert_eq!(page_from_query(Some("home"), true), "detail");
+    }
 
     #[test]
     fn drawer_toggle_distinguishes_run_from_first_conversation() {

@@ -68,9 +68,11 @@ pub(crate) async fn ensure_storyline_search_indexes(dataset: &mut Dataset) -> Re
     }
     ensure_default_jieba_model()?;
 
+    let table = crate::store::index_build_progress::table_label(dataset.uri()).to_owned();
+    let mut jobs: Vec<(&str, &str)> = Vec::new();
     for field in schema.fields() {
         if lance_arrow::json::is_json_field(field) {
-            ensure_storyline_search_index(dataset, field.name(), Some("json")).await?;
+            jobs.push((field.name(), "json"));
         }
     }
     for column in STORYLINE_FTS_COLUMNS {
@@ -78,8 +80,17 @@ pub(crate) async fn ensure_storyline_search_indexes(dataset: &mut Dataset) -> Re
             .field_with_name(column)
             .is_ok_and(|field| !lance_arrow::json::is_json_field(field))
         {
-            ensure_storyline_search_index(dataset, column, None).await?;
+            jobs.push((*column, "fts"));
         }
+    }
+    let total = jobs.len();
+    for (offset, (column, kind)) in jobs.into_iter().enumerate() {
+        crate::store::index_build_progress::note(format!(
+            "index {table}.{column} {kind} {}/{total}",
+            offset + 1
+        ));
+        let tokenizer = if kind == "json" { Some("json") } else { None };
+        ensure_storyline_search_index(dataset, column, tokenizer).await?;
     }
     Ok(())
 }

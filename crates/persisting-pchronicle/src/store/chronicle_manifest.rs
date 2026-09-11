@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub const CHRONICLE_MANIFEST_FILE: &str = "chronicle.manifest";
 pub const CHRONICLE_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const COMPACT_JSONL_FORMAT: &str = "compact-jsonl/v1";
+/// Leaf format for a committed Storyline Lance store (RFC-0015 extension).
+pub const STORYLINE_FORMAT: &str = "storyline/v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -59,6 +61,28 @@ impl ChronicleManifest {
             stats: Some(ManifestStats {
                 record_count,
                 failed_count: 0,
+                min_timestamp: None,
+                max_timestamp: None,
+                total_tokens: None,
+            }),
+        }
+    }
+
+    pub fn leaf_storyline(
+        fingerprint: impl Into<String>,
+        record_count: u64,
+        failed_count: u64,
+    ) -> Self {
+        Self {
+            schema_version: CHRONICLE_MANIFEST_SCHEMA_VERSION,
+            kind: ManifestKind::Leaf,
+            format: Some(STORYLINE_FORMAT.into()),
+            identity: Some(ManifestIdentity {
+                fingerprint: fingerprint.into(),
+            }),
+            stats: Some(ManifestStats {
+                record_count,
+                failed_count,
                 min_timestamp: None,
                 max_timestamp: None,
                 total_tokens: None,
@@ -121,6 +145,12 @@ impl ChronicleManifest {
             && self.format.as_deref() == Some(COMPACT_JSONL_FORMAT)
             && self.validate().is_ok()
     }
+
+    pub fn is_storyline_leaf(&self) -> bool {
+        self.kind == ManifestKind::Leaf
+            && self.format.as_deref() == Some(STORYLINE_FORMAT)
+            && self.validate().is_ok()
+    }
 }
 
 pub fn manifest_path(root: impl AsRef<Path>) -> PathBuf {
@@ -129,6 +159,10 @@ pub fn manifest_path(root: impl AsRef<Path>) -> PathBuf {
 
 pub fn lance_version_fingerprint(version: u64) -> String {
     format!("lance:version:{version}")
+}
+
+pub fn storyline_generation_fingerprint(generation: impl AsRef<str>) -> String {
+    format!("storyline:generation:{}", generation.as_ref())
 }
 
 pub fn load_manifest(root: impl AsRef<Path>) -> Result<Option<ChronicleManifest>> {
@@ -201,6 +235,71 @@ pub fn write_compact_jsonl_manifest(
     atomic_write_manifest(root, &manifest)
 }
 
+pub fn write_storyline_manifest(
+    root: impl AsRef<Path>,
+    generation: impl AsRef<str>,
+    record_count: u64,
+    failed_count: u64,
+) -> Result<()> {
+    let manifest = ChronicleManifest::leaf_storyline(
+        storyline_generation_fingerprint(generation),
+        record_count,
+        failed_count,
+    );
+    atomic_write_manifest(root, &manifest)
+}
+
+/// Publish a Storyline leaf manifesto at a local path or object-store Dataset URI.
+pub async fn write_storyline_manifest_at_uri(
+    root_uri: &str,
+    generation: impl AsRef<str>,
+    record_count: u64,
+    failed_count: u64,
+) -> Result<()> {
+    let manifest = ChronicleManifest::leaf_storyline(
+        storyline_generation_fingerprint(generation),
+        record_count,
+        failed_count,
+    );
+    manifest.validate()?;
+    let location = crate::store::location::DatasetLocation::parse(root_uri)
+        .with_context(|| format!("parse Dataset URI for chronicle.manifest ({root_uri})"))?;
+    if let Some(path) = location.local_path() {
+        return atomic_write_manifest(path, &manifest);
+    }
+    let encoded = toml::to_string_pretty(&manifest).context("encode chronicle.manifest")?;
+    location
+        .write_relative_bytes(CHRONICLE_MANIFEST_FILE, encoded.as_bytes())
+        .await
+        .with_context(|| format!("write chronicle.manifest under {root_uri}"))
+}
+
+/// Load a manifesto from a local path or object-store Dataset URI.
+pub async fn load_manifest_at_uri(root_uri: &str) -> Result<Option<ChronicleManifest>> {
+    let location = crate::store::location::DatasetLocation::parse(root_uri)
+        .with_context(|| format!("parse Dataset URI for chronicle.manifest ({root_uri})"))?;
+    if let Some(path) = location.local_path() {
+        return load_manifest(path);
+    }
+    match location.read_relative_bytes(CHRONICLE_MANIFEST_FILE).await {
+        Ok(bytes) => {
+            let text = std::str::from_utf8(&bytes).context("chronicle.manifest must be UTF-8")?;
+            let manifest: ChronicleManifest =
+                toml::from_str(text).context("parse chronicle.manifest")?;
+            manifest.validate()?;
+            Ok(Some(manifest))
+        }
+        Err(error) => {
+            let message = error.to_string();
+            if message.contains("not found") || message.contains("NotFound") {
+                Ok(None)
+            } else {
+                Err(error).with_context(|| format!("read chronicle.manifest under {root_uri}"))
+            }
+        }
+    }
+}
+
 /// True when a compact-jsonl leaf manifesto matches one Lance version.
 pub fn compact_jsonl_manifest_matches(manifest: &ChronicleManifest, lance_version: u64) -> bool {
     manifest.is_compact_jsonl_leaf()
@@ -213,6 +312,17 @@ pub fn compact_jsonl_manifest_matches(manifest: &ChronicleManifest, lance_versio
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn storyline_leaf_round_trip() {
+        let manifest = ChronicleManifest::leaf_storyline("storyline:generation:abc", 7, 1);
+        manifest.validate().unwrap();
+        assert!(manifest.is_storyline_leaf());
+        assert!(!manifest.is_compact_jsonl_leaf());
+        let encoded = toml::to_string_pretty(&manifest).unwrap();
+        let decoded: ChronicleManifest = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded, manifest);
+    }
 
     #[test]
     fn leaf_round_trip_and_validation() {

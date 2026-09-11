@@ -17,7 +17,8 @@ Dataset 身份始终是 path（本机路径或 `s3://` / `az://` / `gs://` URI�
 
 CLI 标志、配置文件和 HTTP 路径为兼容性仍使用 `catalog` 一词（`--catalog-config`、`catalog.toml`、`catalog://`、`/api/v1/catalog/datasets`）。产品与 RFC 口径称 Directory。
 
-规范实现挂在现有 `pchronicle serve --catalog-config` 上，不引入独立 `catalog serve` 进程，也不把 listener 从 loopback 打开。
+规范实现挂在现有 `pchronicle serve --catalog-config` 上，不引入独立 `catalog serve` 进程。
+Listener 默认可为 loopback；也允许绑定非环回地址，但部署方 MUST 自行保证网络边界。
 
 - **Serve 挂载**：`pchronicle serve --catalog-config FILE` MUST 把 `catalog.toml` 中的 **全部**
   `[datasets.*]` 挂进 Warehouse（与位置参数挂载等价）。本机 Web / 无用户钥的数据面请求在
@@ -56,14 +57,14 @@ pchronicle query @team/prod 'SELECT 1'
 - 让 `@name/library` 解析为一条 path（换票后的 `uri`）；引擎随后只打开该 path。
 - 换票后 CLI 自己访问存储；后端密钥只出现在票和 worker stdin 中，不写入用户 `config.toml`。
 - Web 用用户钥换授权范围，查询只看到该用户的 mounts。
-- 保持 Warehouse 为 loopback-only 本地检查面，而不是公网多租户服务。
+- 允许 Warehouse 绑定任意 listen 地址；默认示例仍用 loopback。Catalog 头不是公网认证边界，不可信网络上的暴露由部署方负责。
 
 ### 非目标
 
 - STS、临时凭证轮换、或把用户钥映射成短时 AWS session。
 - 热加载 `catalog.toml`；改配置 MUST 重启 serve。
 - 在运行中的 Warehouse 上提供 HTTP 签发接口。
-- 把 listener bind 到非环回地址，或提供独立 `catalog serve` 二进制。
+- 提供独立 `catalog serve` 二进制。
 - 在已运行的 Tokio runtime 上 `fork(2)`（未定义行为）。
 - 把后端对象存储密钥写入本机 dataset pin 配置。
 - 改变 Snapshot 协议、SQL schema 或 Gateway/Control 协议。
@@ -89,11 +90,11 @@ Directory 挂在现有 Warehouse listener 上。未传 `--catalog-config` 时，
 
 ```text
 浏览器 / CLI
-  → loopback Warehouse
+  → Warehouse listener
        ├─ GET /health
        ├─ GET /api/v1/catalog/datasets[/{name}]   父进程：鉴权 + 目录/票
        ├─ 静态 UI
-       └─ 其余 /api/*                             父进程鉴权后 spawn worker
+       └─ 其余 /api/*                             父进程内挂载 / 或 spawn worker
               → pchronicle serve --catalog-query-worker
                     stdin:  mounts + HTTP 请求
                     stdout: status / content-type / body
@@ -102,7 +103,7 @@ Directory 挂在现有 Warehouse listener 上。未传 `--catalog-config` 时，
 
 约束：
 
-1. Listener MUST 为 loopback。本 RFC 不把 catalog 头当作公网认证边界。
+1. Listener MAY 绑定非 loopback 地址。本 RFC 不把 catalog 头当作公网认证边界；部署方 MUST 在不可信网络上自行加边界。
 2. 父进程 MUST NOT 打开 `catalog.toml` 中的 libraries。父进程使用空 mount 的 front-only Warehouse。
 3. Worker MUST 由 `Command` 启动新进程，MUST NOT `fork(2)` 已运行的 Tokio runtime。
 4. Worker MUST NOT 监听端口、MUST NOT 读取 `catalog.toml`、MUST NOT 读取用户钥。它只消费 stdin 中过滤后的 mounts 和原始请求。

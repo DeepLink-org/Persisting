@@ -110,6 +110,7 @@ fn serve_help_exposes_only_the_canonical_dataset_surface() -> Result<()> {
         "--listen",
         "--control",
         "--open",
+        "--home-link",
         "--gateway",
         "--gateway-config",
         "--gateway-dataset",
