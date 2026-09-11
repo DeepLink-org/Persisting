@@ -1813,6 +1813,16 @@ mod tests {
             .await?;
         appender.finish();
 
+        // Shallow Directory discovery only inspects mount children. Lift each
+        // events.lance beside the agent dir so both Sources stay in one Dataset
+        // while agent_id remains project-a / project-b.
+        for (agent, run) in [("project-a", "run-a"), ("project-b", "run-b")] {
+            let from = root.join(agent).join(run).join("events.lance");
+            let to = root.join(agent).join("events.lance");
+            std::fs::rename(&from, &to)?;
+            let _ = std::fs::remove_dir_all(root.join(agent).join(run));
+        }
+
         let snapshot = Arc::new(
             DatasetCatalogSnapshot::discover(
                 vec![DatasetMount::default(root.to_string_lossy())?],
@@ -1827,7 +1837,11 @@ mod tests {
         let routed = acceleration.route_sql(&snapshot, &engine, sql).await;
         assert_eq!(routed.outcome, RoutingOutcome::Applied);
         assert_eq!(routed.candidate_sources, Some(1));
-        assert!(routed.sql.contains("project-a/run-a/events.lance"));
+        assert!(
+            routed.sql.contains("project-a/events.lance"),
+            "routed sql should prune to project-a events: {}",
+            routed.sql
+        );
 
         let original = engine.query_jsonl(sql).await?;
         let accelerated = engine.query_jsonl(&routed.sql).await?;
