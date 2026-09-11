@@ -501,7 +501,7 @@ struct QueryArgs {
     max_output_rows: u64,
 
     /// Reject intermediate or final encoded results larger than this many bytes.
-    #[arg(long, value_parser = parse_byte_size, default_value = "64MiB")]
+    #[arg(long, value_parser = persisting_pchronicle::storage::parse_byte_size, default_value = "64MiB")]
     max_output_bytes: usize,
 
     /// Maximum time for SQL execution and result encoding.
@@ -560,7 +560,7 @@ struct AnalysisOptions {
     limit: u64,
 
     /// Reject encoded results larger than this many bytes.
-    #[arg(long, value_parser = parse_byte_size, default_value = "8MiB")]
+    #[arg(long, value_parser = persisting_pchronicle::storage::parse_byte_size, default_value = "8MiB")]
     max_output_bytes: usize,
 
     /// Maximum time for analysis execution and result encoding.
@@ -622,7 +622,7 @@ struct FindArgs {
     max_results: usize,
 
     /// Reject intermediate or final encoded results larger than this many bytes.
-    #[arg(long, value_parser = parse_byte_size, default_value = "8MiB")]
+    #[arg(long, value_parser = persisting_pchronicle::storage::parse_byte_size, default_value = "8MiB")]
     max_output_bytes: usize,
 
     /// Maximum time for the lookup query.
@@ -781,7 +781,7 @@ struct ImportArgs {
     stream: bool,
 
     /// Maximum bytes accepted from each Source, or from stdin in total.
-    #[arg(long, value_parser = parse_byte_size, default_value = "256MiB")]
+    #[arg(long, value_parser = persisting_pchronicle::storage::parse_byte_size, default_value = "256MiB")]
     max_input_bytes: Option<usize>,
 
     /// Fixed Storyline commit batch size. When omitted, batch size grows
@@ -888,7 +888,7 @@ struct ExportArgs {
     max_trajectories: u64,
 
     /// Reject encoded output larger than this many bytes.
-    #[arg(long, value_parser = parse_byte_size, default_value = "64MiB")]
+    #[arg(long, value_parser = persisting_pchronicle::storage::parse_byte_size, default_value = "64MiB")]
     max_output_bytes: usize,
 
     /// Maximum time for address selection and run loading.
@@ -1293,30 +1293,6 @@ fn parse_duration_seconds(value: &str) -> std::result::Result<u64, String> {
         .checked_mul(multiplier)
         .filter(|seconds| *seconds > 0)
         .ok_or_else(|| "duration must be greater than zero and fit in u64 seconds".to_owned())
-}
-
-fn parse_byte_size(value: &str) -> std::result::Result<usize, String> {
-    let value = value.trim();
-    let suffixes = [
-        ("KiB", 1024usize),
-        ("MiB", 1024usize * 1024),
-        ("GiB", 1024usize * 1024 * 1024),
-    ];
-    let (number, multiplier) = suffixes
-        .iter()
-        .find_map(|(suffix, multiplier)| {
-            value
-                .strip_suffix(suffix)
-                .map(|number| (number, *multiplier))
-        })
-        .unwrap_or((value, 1));
-    let amount = number
-        .parse::<usize>()
-        .map_err(|_| format!("invalid byte size '{value}'; use an integer or KiB, MiB, GiB"))?;
-    amount
-        .checked_mul(multiplier)
-        .filter(|bytes| *bytes > 0)
-        .ok_or_else(|| "byte size must be greater than zero and fit in usize".to_owned())
 }
 
 impl From<ErrorMode> for CatalogErrorPolicy {

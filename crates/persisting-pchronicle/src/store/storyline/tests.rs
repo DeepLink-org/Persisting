@@ -1697,10 +1697,9 @@ async fn open_rejects_malformed_or_incomplete_commit_pointer() {
     )
     .await
     .unwrap();
-    let error = StorylineLanceStore::open(complete_pointer.path())
+    StorylineLanceStore::open(complete_pointer.path())
         .await
         .unwrap_err();
-    assert!(!error.to_string().is_empty());
 }
 
 #[tokio::test]

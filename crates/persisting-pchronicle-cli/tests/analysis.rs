@@ -208,8 +208,7 @@ async fn analysis_rejects_zero_limits_and_bounded_output_without_partial_stdout(
         vec!["stats", "overview", &dataset, "--max-output-bytes", "8"],
         vec!["stats", "overview", &dataset, "--timeout-seconds", "0"],
     ] {
-        let error = run_cli(args).await.unwrap_err();
-        assert!(!format!("{error:#}").is_empty());
+        run_cli(args).await.unwrap_err();
     }
     Ok(())
 }

@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 
+use crate::components::WorkspaceIcon;
 use crate::model::{CatalogTree, CatalogTreeChild};
 
 #[component]
@@ -31,8 +32,9 @@ pub fn CatalogExplorer(
                     p { "{catalog_subtitle(tree.as_ref())}" }
                 }
                 button {
-                    class: "button",
+                    class: "button pc-catalog-open",
                     onclick: move |_| on_runs.call((dataset.clone(), prefix.clone())),
+                    WorkspaceIcon { name: "runs" }
                     "Open in Runs"
                 }
             }
@@ -77,7 +79,7 @@ fn CatalogBreadcrumb(
         h1 {
             button { class: "pc-catalog-crumb", onclick: move |_| on_open.call((String::new(), String::new())), "Datasets" }
             if !dataset.is_empty() {
-                span { " / " }
+                span { class: "pc-catalog-separator", "/" }
                 button {
                     class: "pc-catalog-crumb",
                     onclick: move |_| on_open.call((root_dataset.clone(), String::new())),
@@ -85,7 +87,7 @@ fn CatalogBreadcrumb(
                 }
             }
             for (index, segment) in segments.iter().enumerate() {
-                span { " / " }
+                span { class: "pc-catalog-separator", "/" }
                 {
                     let dataset = dataset.clone();
                     let path = segments[..=index].join("/");
@@ -111,9 +113,9 @@ fn CatalogStats(tree: Option<CatalogTree>) -> Element {
     let errors = tree.error_sources.unwrap_or(0);
     rsx! {
         div { class: "pc-catalog-stats",
-            div { span { "Items" } strong { "{tree.children.len()}" } }
-            div { span { "Trajectories" } strong { "{tree.run_count}" } }
-            div { span { "Failed" } strong { "{tree.failed_count}" } }
+            div { WorkspaceIcon { name: "folder" } div { span { "Items" } strong { "{tree.children.len()}" } } }
+            div { WorkspaceIcon { name: "analysis" } div { span { "Trajectories" } strong { "{tree.run_count}" } } }
+            div { WorkspaceIcon { name: "warning" } div { span { "Failed" } strong { "{tree.failed_count}" } } }
         }
         if errors > 0 {
             p { class: "pc-catalog-errors", "{errors} source files could not be loaded" }
@@ -155,6 +157,7 @@ fn CatalogFolder(
     let name = child.name.clone();
     let data_type = child.data_type.clone();
     let is_dir = kind == "dir";
+    let icon = if kind == "file" { "file" } else { "folder" };
     rsx! {
         button {
             class: "pc-catalog-folder type-{data_type} kind-{kind}",
@@ -173,9 +176,10 @@ fn CatalogFolder(
                 }
             },
             div { class: "pc-catalog-folder-title",
-                span { class: "pc-catalog-folder-icon", if child.kind == "file" { "▤" } else { "▰" } }
+                span { class: "pc-catalog-folder-icon", WorkspaceIcon { name: icon } }
                 strong { "{child.name}" }
             }
+            span { class: "pc-catalog-folder-path", title: "{child.path}", "{child.path}" }
             span { class: "pc-catalog-folder-type", "{data_type}" }
             div { class: "pc-catalog-folder-meta",
                 if is_dir {
@@ -185,6 +189,7 @@ fn CatalogFolder(
                 } else {
                     span { "Source" }
                 }
+                WorkspaceIcon { name: "chevron" }
             }
         }
     }

@@ -37,9 +37,6 @@ pub(crate) const PARSE_STAGE_CONCURRENCY: usize = 4;
 pub(crate) struct DiscoveredItem {
     pub(crate) path: String,
     pub(crate) bytes: u64,
-    /// Object-store Dataset root when the path is a remote key (kept for diagnostics).
-    #[allow(dead_code)]
-    pub(crate) remote_root: Option<String>,
 }
 
 /// Bytes loaded for one discovered source.
@@ -49,16 +46,12 @@ pub(crate) struct FetchedItem {
     pub(crate) relative_path: PathBuf,
     pub(crate) output_relative_path: Option<PathBuf>,
     pub(crate) bytes: Vec<u8>,
-    #[allow(dead_code)]
-    pub(crate) size_hint: u64,
 }
 
 /// Decode result ready for the single-worker commit stage.
 #[derive(Debug)]
 pub(crate) enum ParsedItem {
     Imported {
-        #[allow(dead_code)]
-        diagnostic_path: PathBuf,
         metadata: ImportedSource,
         storylines: Vec<StorylineDocument>,
         warnings: persisting_pchronicle::model::UnknownFieldImportWarnings,
@@ -66,8 +59,6 @@ pub(crate) enum ParsedItem {
     Skipped {
         path: PathBuf,
         reason: String,
-        #[allow(dead_code)]
-        bytes: u64,
     },
 }
 
@@ -348,7 +339,7 @@ fn spawn_parse_stage(
                 );
                 match parse_result {
                     Ok(DecodeImportOutcome::Imported(DecodedImportSource {
-                        diagnostic_path,
+                        diagnostic_path: _,
                         metadata,
                         storylines,
                     })) => {
@@ -359,7 +350,6 @@ fn spawn_parse_stage(
                             parse.record(1, bytes);
                         }
                         Ok(ParsedItem::Imported {
-                            diagnostic_path,
                             metadata,
                             storylines,
                             warnings,
@@ -367,11 +357,7 @@ fn spawn_parse_stage(
                     }
                     Ok(DecodeImportOutcome::Skipped { path, reason }) => {
                         parse.record_skipped(1, fetched.bytes.len() as u64);
-                        Ok(ParsedItem::Skipped {
-                            path,
-                            reason,
-                            bytes: fetched.bytes.len() as u64,
-                        })
+                        Ok(ParsedItem::Skipped { path, reason })
                     }
                     Err(error) if soft_skip_parse_errors => {
                         // Directory imports skip unreadable files so the rest of
@@ -380,7 +366,6 @@ fn spawn_parse_stage(
                         Ok(ParsedItem::Skipped {
                             path: PathBuf::from(&name),
                             reason: format!("{error:#}"),
-                            bytes: fetched.bytes.len() as u64,
                         })
                     }
                     Err(error) => Err(error),
@@ -451,11 +436,7 @@ pub(crate) fn spawn_candidates_fetch_pipeline(
                 // Discover totals were already set via set_discovered; only
                 // refresh the activity label while feeding the fetch stage.
                 discover.set_current(path.clone());
-                let item = DiscoveredItem {
-                    path,
-                    bytes,
-                    remote_root: candidate.remote_root.clone(),
-                };
+                let item = DiscoveredItem { path, bytes };
                 if !send_with_flow_control(
                     &tx,
                     Ok((item, candidate)),
@@ -494,7 +475,6 @@ pub(crate) fn spawn_candidates_fetch_pipeline(
                 path: item.path,
                 relative_path: candidate.relative_path,
                 output_relative_path: candidate.output_relative_path,
-                size_hint: item.bytes,
                 bytes,
             };
             fetch.record(1, fetched.bytes.len() as u64);
@@ -584,7 +564,6 @@ pub(crate) fn spawn_location_fetch_pipeline(
                                         Ok(DiscoveredItem {
                                             path: key,
                                             bytes: size,
-                                            remote_root: None,
                                         }),
                                         &discover,
                                         &fetch,
@@ -647,7 +626,6 @@ pub(crate) fn spawn_location_fetch_pipeline(
                     path: item.path,
                     relative_path,
                     output_relative_path: candidate.output_relative_path,
-                    size_hint: item.bytes,
                     bytes,
                 })
             }

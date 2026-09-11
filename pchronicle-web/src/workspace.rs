@@ -12,7 +12,8 @@ use crate::api;
 use crate::catalog::CatalogExplorer;
 use crate::chat_view::normalize_trace_view;
 use crate::components::{
-    DataTable, HighlightedText, RichBlock, StepDrawer, TrajectoryView, parse_rich_blocks,
+    DataTable, HighlightedText, RichBlock, StepDrawer, TrajectoryView, WorkspaceIcon,
+    parse_rich_blocks,
 };
 use crate::copilot_sessions::{
     AssistantSessionIndex, AssistantSessionMeta, BrowserStore, KvStore, can_start_new_chat,
@@ -527,15 +528,22 @@ pub fn App() -> Element {
         div { class: "pc2-shell", tabindex: "-1", onkeydown: root_keydown,
             a { class: "skip-link", href: "#pc2-main", "Skip to main content" }
             nav { class: "rail", aria_label: "pChronicle navigation",
-                button { class: "brand-mark", title: "Persisting Chronicle", onclick: move |_| page.set("home".into()), "pC" }
-                RailButton { active: page() == "catalog", icon: "▣", label: DATASETS, onclick: move |_| page.set("catalog".into()) }
-                RailButton { active: page() == "runs" || page() == "detail", icon: "◫", label: RUNS, onclick: move |_| page.set("runs".into()) }
-                RailButton { active: page() == "tools", icon: "⌁", label: ANALYSIS, onclick: move |_| page.set("tools".into()) }
-                RailButton { active: page() == "physical", icon: "▤", label: STORAGE, onclick: move |_| page.set("physical".into()) }
+                button { class: "brand-mark", title: "Persisting Chronicle", aria_label: "Persisting Chronicle home", onclick: move |_| page.set("home".into()),
+                    span { class: "rail-logo", aria_hidden: "true", "P" }
+                    span { class: "rail-wordmark", "Persisting" br {} "Chronicle" }
+                }
+                div { class: "rail-primary", aria_label: "Primary navigation",
+                    RailButton { active: page() == "catalog", icon: "folder", label: DATASETS, onclick: move |_| page.set("catalog".into()) }
+                    RailButton { active: page() == "runs" || page() == "detail", icon: "runs", label: RUNS, onclick: move |_| page.set("runs".into()) }
+                    RailButton { active: page() == "tools", icon: "analysis", label: ANALYSIS, onclick: move |_| page.set("tools".into()) }
+                    RailButton { active: page() == "physical", icon: "storage", label: STORAGE, onclick: move |_| page.set("physical".into()) }
+                }
                 div { class: "rail-spacer" }
-                button { class: if copilot_open() { "rail-button active" } else { "rail-button" }, aria_label: "Toggle Assistant", onclick: move |_| copilot_open.set(!copilot_open()), span { class: "rail-icon", "◇" } span { {ASSISTANT} } }
-                button { class: if settings_open() { "rail-button active" } else { "rail-button" }, aria_label: "Settings", onclick: move |_| settings_open.set(true), span { class: "rail-icon", "⚙" } span { "Keys" } }
-                div { class: "rail-status", span { class: "live-dot" } "Local" }
+                div { class: "rail-secondary", aria_label: "Assistant and settings",
+                    button { class: if copilot_open() { "rail-button active" } else { "rail-button" }, aria_label: "Toggle Assistant", aria_expanded: copilot_open(), onclick: move |_| copilot_open.set(!copilot_open()), WorkspaceIcon { name: "assistant" } span { {ASSISTANT} } }
+                    button { class: if settings_open() { "rail-button active" } else { "rail-button" }, aria_label: "Settings", onclick: move |_| settings_open.set(true), WorkspaceIcon { name: "keys" } span { "Keys" } }
+                }
+                div { class: "rail-status", span { class: "live-dot" } span { "Local" } }
             }
 
             main { id: "pc2-main", class: "pc2-main", tabindex: "-1",
@@ -1243,7 +1251,7 @@ fn RailButton(
     label: &'static str,
     onclick: EventHandler<MouseEvent>,
 ) -> Element {
-    rsx! { button { class: if active { "rail-button active" } else { "rail-button" }, aria_current: if active { "page" } else { "false" }, onclick, span { class: "rail-icon", "{icon}" } span { "{label}" } } }
+    rsx! { button { class: if active { "rail-button active" } else { "rail-button" }, aria_current: if active { "page" } else { "false" }, onclick, WorkspaceIcon { name: icon } span { "{label}" } } }
 }
 
 #[component]
@@ -1379,9 +1387,9 @@ fn PathExplorer(
     rsx! { aside { class: "pc2-path-explorer",
         header {
             div { strong { "Run paths" } span { if view_mode == PathListMode::Flat { "All runs in this dataset" } else { "Tree by import path" } } }
-            div { class: "pc2-path-view-toggle", role: "group", aria_label: "Run list view",
-                button { class: if view_mode == PathListMode::Flat { "active" } else { "" }, aria_pressed: view_mode == PathListMode::Flat, onclick: move |_| on_view_mode.call(PathListMode::Flat), "Flat" }
-                button { class: if view_mode == PathListMode::Tree { "active" } else { "" }, aria_pressed: view_mode == PathListMode::Tree, onclick: move |_| on_view_mode.call(PathListMode::Tree), "Tree" }
+            div { class: "pc2-path-view-toggle", role: "radiogroup", aria_label: "Run list view",
+                button { class: if view_mode == PathListMode::Flat { "active" } else { "" }, role: "radio", aria_checked: view_mode == PathListMode::Flat, onclick: move |_| on_view_mode.call(PathListMode::Flat), "Flat" }
+                button { class: if view_mode == PathListMode::Tree { "active" } else { "" }, role: "radio", aria_checked: view_mode == PathListMode::Tree, onclick: move |_| on_view_mode.call(PathListMode::Tree), "Tree" }
             }
             span { "{runs.len()}" }
         }
