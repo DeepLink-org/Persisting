@@ -93,7 +93,7 @@ impl ChronicleQueryExecutionOptions {
             Ok(value) if value.trim().is_empty() => {}
             Ok(value) => {
                 options.memory_limit_bytes =
-                    Some(parse_query_memory_limit(&value).map_err(|error| {
+                    Some(crate::storage::parse_byte_size(&value).map_err(|error| {
                         anyhow::anyhow!("{QUERY_MEMORY_LIMIT_ENV}={value:?} is invalid: {error}")
                     })?);
             }
@@ -102,30 +102,6 @@ impl ChronicleQueryExecutionOptions {
         }
         Ok(options)
     }
-}
-
-pub(crate) fn parse_query_memory_limit(value: &str) -> std::result::Result<usize, String> {
-    let value = value.trim();
-    let suffixes = [
-        ("KiB", 1024usize),
-        ("MiB", 1024usize * 1024),
-        ("GiB", 1024usize * 1024 * 1024),
-    ];
-    let (number, multiplier) = suffixes
-        .iter()
-        .find_map(|(suffix, multiplier)| {
-            value
-                .strip_suffix(suffix)
-                .map(|number| (number, *multiplier))
-        })
-        .unwrap_or((value, 1));
-    let amount = number
-        .parse::<usize>()
-        .map_err(|_| format!("invalid byte size '{value}'; use an integer or KiB, MiB, GiB"))?;
-    amount
-        .checked_mul(multiplier)
-        .filter(|bytes| *bytes > 0)
-        .ok_or_else(|| "byte size must be greater than zero and fit in usize".to_owned())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -747,25 +723,23 @@ fn sql_type(data_type: &DataType, nullable: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn parse_query_memory_limit_accepts_binary_units() {
         assert_eq!(
-            parse_query_memory_limit("8GiB").unwrap(),
+            crate::storage::parse_byte_size("8GiB").unwrap(),
             8 * 1024 * 1024 * 1024
         );
         assert_eq!(
-            parse_query_memory_limit(" 64MiB ").unwrap(),
+            crate::storage::parse_byte_size(" 64MiB ").unwrap(),
             64 * 1024 * 1024
         );
-        assert_eq!(parse_query_memory_limit("1024").unwrap(), 1024);
+        assert_eq!(crate::storage::parse_byte_size("1024").unwrap(), 1024);
     }
 
     #[test]
     fn parse_query_memory_limit_rejects_zero_and_unknown_units() {
-        assert!(parse_query_memory_limit("0").is_err());
-        assert!(parse_query_memory_limit("8GB").is_err());
-        assert!(parse_query_memory_limit("").is_err());
+        assert!(crate::storage::parse_byte_size("0").is_err());
+        assert!(crate::storage::parse_byte_size("8GB").is_err());
+        assert!(crate::storage::parse_byte_size("").is_err());
     }
 }

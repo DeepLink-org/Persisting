@@ -14,6 +14,28 @@ use crate::model::{
     extract_message_text,
 };
 
+#[component]
+pub fn WorkspaceIcon(name: &'static str) -> Element {
+    let path = match name {
+        "runs" => "M7 4l14 8-14 8z",
+        "analysis" => "M4 20V12h3v8zm7 0V4h3v16zm7 0V8h3v12z",
+        "storage" => "M3 6c0-4 18-4 18 0s-18 4-18 0m0 0v12c0 4 18 4 18 0V6M3 12c0 4 18 4 18 0",
+        "assistant" => "M12 2l3 7 7 3-7 3-3 7-3-7-7-3 7-3z",
+        "keys" => "M14 3a7 7 0 0 0-6 10L2 19v3h4v-3h3l3-3A7 7 0 1 0 14 3M16 7h.01",
+        "file" => "M14 2H5v20h14V7zm0 0v5h5M8 12h8M8 16h8",
+        "chevron" => "M9 5l7 7-7 7",
+        "warning" => "M12 3L2 21h20zM12 9v5m0 3v.01",
+        _ => "M3 5h6l2 3h10v12H3z",
+    };
+    rsx! {
+        svg { class: "workspace-icon", width: "20", height: "20", view_box: "0 0 24 24",
+            fill: "none", stroke: "currentColor", stroke_width: "1.7",
+            stroke_linecap: "round", stroke_linejoin: "round", "aria-hidden": "true",
+            path { d: path }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrajectoryEmbed {
     pub title: Option<String>,
@@ -1290,15 +1312,6 @@ fn drawer_detail_index(index: usize, synthetic_user_added: bool) -> Option<usize
 #[component]
 fn Fact(label: &'static str, value: String) -> Element {
     rsx! { span { class: "pc2-fact-chip", span { "{label}" } code { "{value}" } } }
-}
-
-#[component]
-fn EvidenceBlock(
-    title: &'static str,
-    #[props(default = false)] open: bool,
-    children: Element,
-) -> Element {
-    rsx! { details { class: "pc2-evidence-block", open, summary { "{title}" } {children} } }
 }
 
 /// A second-level content panel: the step itself remains the only expandable

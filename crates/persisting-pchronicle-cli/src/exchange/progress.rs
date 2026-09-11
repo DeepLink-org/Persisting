@@ -114,11 +114,6 @@ pub(crate) struct StageHandle {
 }
 
 impl StageHandle {
-    #[allow(dead_code)]
-    pub(crate) fn id(&self) -> StageId {
-        self.id
-    }
-
     pub(crate) fn set_current(&self, item: impl Into<String>) {
         if let Ok(mut state) = self.state.lock() {
             state.current = item.into();
@@ -254,14 +249,6 @@ impl StageHandle {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn set_items(&self, items: u64) {
-        if let Ok(mut state) = self.state.lock() {
-            state.ok = items;
-        }
-        let _ = self.repaint();
-    }
-
-    #[allow(dead_code)]
     pub(crate) fn record_bytes(&self, bytes: u64) {
         if let Ok(mut state) = self.state.lock() {
             state.bytes = state.bytes.saturating_add(bytes);
@@ -289,14 +276,6 @@ impl StageHandle {
     pub(crate) fn set_activity_override(&self, activity: &str) {
         if let Ok(mut painter) = self.painter.lock() {
             painter.activity_override = Some((self.id, activity.to_owned()));
-            let _ = painter.paint();
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn clear_activity_override(&self) {
-        if let Ok(mut painter) = self.painter.lock() {
-            painter.activity_override = None;
             let _ = painter.paint();
         }
     }
@@ -584,30 +563,6 @@ impl CliProgress {
                 }
             }
         }))
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn reset_import_counters(&mut self) {
-        for id in [
-            StageId::Discover,
-            StageId::Fetch,
-            StageId::Parse,
-            StageId::Commit,
-            StageId::Delete,
-        ] {
-            let handle = self.stage(id);
-            if let Ok(mut state) = handle.state.lock() {
-                *state = StageState::default();
-            }
-            let _ = handle.repaint();
-        }
-        if let Ok(mut painter) = self.painter.lock() {
-            painter.delete_mode = false;
-            painter.activity_override = None;
-            for id in &painter.order.clone() {
-                painter.stages.insert(*id, StageState::default());
-            }
-        }
     }
 
     pub(crate) fn set_discovered(&mut self, files: u64, bytes: u64) -> Result<()> {

@@ -3,3 +3,11 @@
 .pc2-path-explorer>header>.pc2-path-view-toggle{flex:0 0 auto;display:flex;flex-direction:row;gap:2px;padding:2px;border:1px solid #d0d5dd;border-radius:6px;background:#fff}.pc2-path-view-toggle button{height:22px;padding:0 5px;border:0;border-radius:4px;background:transparent;color:#667085;font-size:8px;cursor:pointer}.pc2-path-view-toggle button.active{background:#eaf2ff;color:#1d4ed8;font-weight:700}.pc2-path-view-toggle button:focus-visible{outline:2px solid #60a5fa;outline-offset:1px}
 .pc2-path-explorer>header>div:first-child{flex:1}
 .pc2-path-row{grid-template-columns:20px minmax(0,1fr) 8px 28px}.pc2-chat-dot{display:block;width:7px;height:7px;justify-self:center;border-radius:50%;background:#2563eb;cursor:pointer}.pc2-chat-dot:hover,.pc2-chat-dot:focus-visible{background:#1d4ed8;outline:2px solid #93c5fd;outline-offset:2px}.pc2-path-icon.run.good{color:#16a34a}.pc2-path-icon.run.live{color:#3b82f6}.pc2-path-icon.run.bad{color:#dc2626}.pc2-path-row.active .pc2-path-icon.run.good{color:#16a34a}.pc2-path-row.active .pc2-path-icon.run.live{color:#3b82f6}.pc2-path-row.active .pc2-path-icon.run.bad{color:#dc2626}
+/* Secondary navigation is visually subordinate to the global rail. */
+.pc2-path-explorer{border-color:#d7e1ed;border-radius:12px;box-shadow:0 2px 8px #10233f08}
+.pc2-path-explorer>header{background:#f5f8fc}
+.pc2-path-explorer>header strong{color:#243b5a}
+.pc2-path-all.active,.pc2-path-row.active{box-shadow:inset 3px 0 #2563eb}
+.pc2-path-view-toggle[role="radiogroup"] button[role="radio"]{position:relative}
+.pc2-path-view-toggle[role="radiogroup"] button[aria-checked="true"]{background:#eaf2ff;color:#1d4ed8;font-weight:700}
+@media(max-width:1150px){.pc2-main > .pc2-runs-layout{grid-template-columns:230px minmax(0,1fr)}.pc2-runs-layout > .pc2-page{min-width:0}.pc2-filterbar{flex-wrap:wrap}.pc2-filter-search{min-width:180px;flex:1 1 260px}.pc2-result-count{margin-left:0}}
