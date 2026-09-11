@@ -83,6 +83,11 @@ pub fn examples_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/data")
 }
 
+/// Flat multi-format corpus for shallow Directory discovery (no nested dirs).
+pub fn examples_corpus() -> PathBuf {
+    examples_root().join("corpus")
+}
+
 #[derive(Debug)]
 pub struct RunOutput {
     pub stdout: Vec<u8>,

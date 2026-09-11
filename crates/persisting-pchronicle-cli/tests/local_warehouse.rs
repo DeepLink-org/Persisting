@@ -6,7 +6,7 @@ mod common;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
-use common::{EXAMPLE_FIXTURES, examples_root, run_cli};
+use common::{EXAMPLE_FIXTURES, examples_corpus, examples_root, run_cli};
 
 fn config_arg(path: &std::path::Path) -> String {
     path.to_string_lossy().into_owned()
@@ -73,7 +73,7 @@ async fn default_initializes_and_reports_a_local_warehouse() -> Result<()> {
 async fn default_pin_exercises_catalog_query_find_and_export_without_a_server() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let settings = config_arg(&temp.path().join("config.toml"));
-    let warehouse = examples_root();
+    let warehouse = examples_corpus();
     let warehouse_arg = warehouse.to_string_lossy().into_owned();
     run_cli([
         "--config",
@@ -98,9 +98,9 @@ async fn default_pin_exercises_catalog_query_find_and_export_without_a_server() 
             .map(|source| source["source_path"].as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>(),
         [
-            "actf/code-repair.actf.json",
-            "atif/support-ticket.json",
-            "openai-messages/training.json",
+            "code-repair.actf.json",
+            "support-ticket.json",
+            "training.json",
         ]
         .into_iter()
         .collect()
@@ -145,10 +145,7 @@ async fn default_pin_exercises_catalog_query_find_and_export_without_a_server() 
     .await?
     .json()?;
     assert_eq!(found["matches"].as_array().map(Vec::len), Some(1));
-    assert_eq!(
-        found["matches"][0]["source_path"],
-        "atif/support-ticket.json"
-    );
+    assert_eq!(found["matches"][0]["source_path"], "support-ticket.json");
 
     let export = temp.path().join("warehouse.storyline.json");
     let export_arg = export.to_string_lossy().into_owned();
