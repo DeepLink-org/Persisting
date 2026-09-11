@@ -52,7 +52,6 @@ pub(crate) struct FetchedItem {
 #[derive(Debug)]
 pub(crate) enum ParsedItem {
     Imported {
-        diagnostic_path: PathBuf,
         metadata: ImportedSource,
         storylines: Vec<StorylineDocument>,
         warnings: persisting_pchronicle::model::UnknownFieldImportWarnings,
@@ -340,7 +339,7 @@ fn spawn_parse_stage(
                 );
                 match parse_result {
                     Ok(DecodeImportOutcome::Imported(DecodedImportSource {
-                        diagnostic_path,
+                        diagnostic_path: _,
                         metadata,
                         storylines,
                     })) => {
@@ -351,7 +350,6 @@ fn spawn_parse_stage(
                             parse.record(1, bytes);
                         }
                         Ok(ParsedItem::Imported {
-                            diagnostic_path,
                             metadata,
                             storylines,
                             warnings,

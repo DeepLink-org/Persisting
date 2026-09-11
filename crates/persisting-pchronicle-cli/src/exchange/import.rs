@@ -1185,7 +1185,6 @@ pub(crate) fn spawn_commit_stage(
             };
             match received {
                 Some(Ok(ParsedItem::Imported {
-                    diagnostic_path: _,
                     mut metadata,
                     storylines,
                     warnings,
