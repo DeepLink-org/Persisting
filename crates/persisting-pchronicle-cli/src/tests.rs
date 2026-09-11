@@ -3113,8 +3113,14 @@ async fn object_store_directory_import_recurses_json_files() -> Result<()> {
     let mut stderr = Vec::new();
     run(cli, false, &mut stdout, &mut stderr).await?;
     let stderr = String::from_utf8(stderr)?;
-    assert!(stderr.contains("status=discovering"));
-    assert!(stderr.contains("status=discovered files=2"));
+    assert!(
+        stderr.contains("sources=2"),
+        "object-store import must publish both nested JSON files: {stderr}"
+    );
+    assert!(
+        stderr.contains("trajectories=2"),
+        "object-store import must decode one trajectory per nested file: {stderr}"
+    );
 
     let store = StorylineLanceStore::open(&output).await?;
     let ids = store
@@ -3439,8 +3445,9 @@ async fn replace_and_drop_require_confirmation_and_accept_yes() -> Result<()> {
             .await
             .is_err()
     );
-    // Storyline --replace clears the destination before import (not atomic).
-    assert!(!output.join("old.marker").exists());
+    // Local Storyline --replace stages into a sibling directory and only
+    // swaps on success, so a failed import must leave the destination intact.
+    assert!(output.join("old.marker").exists());
     fs::create_dir_all(&output)?;
     fs::write(output.join("old.marker"), "old")?;
 
