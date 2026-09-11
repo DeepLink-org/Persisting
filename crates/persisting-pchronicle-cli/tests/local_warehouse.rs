@@ -85,9 +85,16 @@ async fn default_pin_exercises_catalog_query_find_and_export_without_a_server() 
     ])
     .await?;
 
-    let listed = run_cli(["--config", &settings, "list", "--format", "json"])
-        .await?
-        .json()?;
+    let listed = run_cli([
+        "--config",
+        &settings,
+        "list",
+        "--sources",
+        "--format",
+        "json",
+    ])
+    .await?
+    .json()?;
     let sources = listed["sources"]
         .as_array()
         .context("Warehouse list must contain Sources")?;
