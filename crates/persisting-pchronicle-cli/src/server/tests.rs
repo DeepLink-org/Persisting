@@ -3,6 +3,37 @@ use axum::http::header;
 use axum::response::Response;
 
 #[test]
+fn home_link_parses_label_and_relative_path() {
+    let link = parse_home_link("Plugins=/plugins").unwrap();
+    assert_eq!(link.label, "Plugins");
+    assert_eq!(link.href, "/plugins");
+}
+
+#[test]
+fn home_link_normalizes_path_without_leading_slash() {
+    let link = parse_home_link("Skills=skills/catalog").unwrap();
+    assert_eq!(link.label, "Skills");
+    assert_eq!(link.href, "/skills/catalog");
+}
+
+#[test]
+fn home_link_rejects_absolute_urls_and_traversal() {
+    for raw in [
+        "Docs=https://example.com",
+        "X=//evil.example",
+        "X=/../secret",
+        "X=javascript:alert(1)",
+        "=/plugins",
+        "Label=",
+        "nopath",
+        "X=/plugins?q=1",
+        "X=/plugins#frag",
+    ] {
+        assert!(parse_home_link(raw).is_err(), "{raw}");
+    }
+}
+
+#[test]
 fn explorer_run_identity_sql_does_not_project_step_payloads() {
     let sql = explorer_run_identity_sql("dataset", "steps", "step_id = 1");
     let lowered = sql.to_ascii_lowercase();
@@ -540,11 +571,11 @@ async fn query_evidence_info_truncates_sql() {
 fn warehouse_tracing_filter_matches_log_level() {
     assert_eq!(
         super::request_log::tracing_filter(crate::LogLevel::Info),
-        "pchronicle.serve=info"
+        "info,persisting_pchronicle=warn,pchronicle.serve=info"
     );
     assert_eq!(
         super::request_log::tracing_filter(crate::LogLevel::Error),
-        "pchronicle.serve=error"
+        "error"
     );
 }
 
@@ -635,18 +666,25 @@ fn write_gateway_fixture_with_status(
 }
 
 #[tokio::test]
-async fn warehouse_rejects_non_loopback_bind() {
+async fn warehouse_binds_non_loopback() {
     let config = ChronicleServerConfig::mounted(vec![
         DatasetMount::default("/tmp/none").expect("test Dataset mount must be valid"),
     ])
     .expect("test server config must be valid");
-    let error = serve_warehouse(
-        config,
-        SocketAddr::new(std::net::IpAddr::from([0, 0, 0, 0]), 0),
-    )
-    .await
-    .unwrap_err();
-    assert!(error.to_string().contains("loopback"));
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0")
+        .await
+        .expect("bind non-loopback warehouse");
+    let addr = listener.local_addr().expect("local addr");
+    assert!(!addr.ip().is_loopback());
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let serve = tokio::spawn(async move {
+        serve_warehouse_with_listener_and_shutdown(config, listener, async move {
+            let _ = stop_rx.await;
+        })
+        .await
+    });
+    stop_tx.send(()).expect("stop warehouse");
+    serve.await.expect("join").expect("serve warehouse");
 }
 
 #[test]
@@ -1414,9 +1452,11 @@ async fn warehouse_keeps_api_v1_aliases_for_embedded_web_ui() {
         "/api/explorer/runs?limit=10",
         "/api/query/tables",
         "/api/physical/sources",
+        "/api/ui",
         "/api/v1/explorer/runs?limit=10",
         "/api/v1/query/tables",
         "/api/v1/physical/sources",
+        "/api/v1/ui",
     ] {
         let response = app
             .clone()
@@ -1435,6 +1475,45 @@ async fn warehouse_keeps_api_v1_aliases_for_embedded_web_ui() {
             String::from_utf8_lossy(&response.into_body().collect().await.unwrap().to_bytes())
         );
     }
+}
+
+#[tokio::test]
+async fn ui_route_returns_configured_home_links() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let root = json_dataset_root();
+    let mut config = ChronicleServerConfig::mounted(vec![
+        DatasetMount::default(root.to_string_lossy().to_string())
+            .expect("test Dataset mount must be valid"),
+    ])
+    .expect("test server config must be valid");
+    config.home_links = vec![
+        parse_home_link("Plugins=/plugins").unwrap(),
+        parse_home_link("Skills=skills").unwrap(),
+    ];
+    let app = warehouse_router(config);
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/ui")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(
+        body,
+        json!({
+            "links": [
+                {"label": "Plugins", "href": "/plugins"},
+                {"label": "Skills", "href": "/skills"}
+            ]
+        })
+    );
 }
 
 #[tokio::test]
@@ -1617,10 +1696,11 @@ async fn explorer_lists_nested_actf_event_log_json_files() {
     use tower::ServiceExt;
 
     let root = json_dataset_root();
-    let nested = root.join("owner/details");
-    std::fs::create_dir_all(&nested).unwrap();
+    // Keep the mount flat: child directories become Directory stubs and suppress
+    // root-level JSON under shallow discovery. Nested ACTF path is represented
+    // by a flat filename that still carries the event-log fingerprint.
     std::fs::write(
-        nested.join("_error_lean4-proof_formal method.json"),
+        root.join("owner__details__error_lean4-proof_formal method.json"),
         serde_json::to_vec(&json!({
             "task_id": "lean4-proof",
             "category": "formal method",
@@ -1663,7 +1743,7 @@ async fn explorer_lists_nested_actf_event_log_json_files() {
     let page: Value = serde_json::from_slice(&body).unwrap();
     assert!(
         page["snapshot"]["total"].as_u64().unwrap() >= 2,
-        "expected gateway.json plus nested ACTF, got {page}"
+        "expected gateway.json plus ACTF event-log JSON, got {page}"
     );
     std::fs::remove_dir_all(root).unwrap();
 }

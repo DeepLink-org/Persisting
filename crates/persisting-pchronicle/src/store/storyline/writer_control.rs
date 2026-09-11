@@ -11,6 +11,16 @@ use super::{
 };
 
 const CONTROL_CAS_RETRIES: usize = 32;
+/// Brief retries when CURRENT still shows a held lease after a prior release.
+/// Object stores can lag on read-after-write for the control object.
+#[cfg(not(test))]
+const HELD_VISIBILITY_RETRIES: u32 = 30;
+#[cfg(not(test))]
+const HELD_RETRY_DELAY_MS: u64 = 200;
+#[cfg(test)]
+const HELD_VISIBILITY_RETRIES: u32 = 3;
+#[cfg(test)]
+const HELD_RETRY_DELAY_MS: u64 = 20;
 pub(super) const WRITER_LEASE_TTL_MS: u64 = 60_000;
 pub(super) const CURRENT_CONTROL_VERSION: u32 = 1;
 
@@ -280,6 +290,34 @@ pub(super) fn unleased_publish_transition(
     Ok(Some(next))
 }
 
+fn format_lease_for_log(lease: &StorylineWriterLease, now_unix_ms: u64) -> String {
+    format!(
+        "owner={} epoch={} base_generation={} expires_in_ms={} issued_at_unix_ms={}",
+        lease.owner_id,
+        lease.epoch,
+        lease.base_generation.as_deref().unwrap_or("<none>"),
+        lease.expires_at_unix_ms.saturating_sub(now_unix_ms),
+        lease.issued_at_unix_ms,
+    )
+}
+
+fn format_control_for_log(control: &StorylineCurrentControl, now_unix_ms: u64) -> String {
+    format!(
+        "revision={} committed={} lease={}",
+        control.revision,
+        control
+            .committed
+            .as_ref()
+            .map(|pointer| pointer.generation.as_str())
+            .unwrap_or("<none>"),
+        control
+            .lease
+            .as_ref()
+            .map(|lease| format_lease_for_log(lease, now_unix_ms))
+            .unwrap_or_else(|| "<none>".to_owned()),
+    )
+}
+
 impl StorylineLanceStore {
     pub(super) async fn read_current_control(&self) -> Result<CurrentControlState> {
         let result = if !self.root_uri.contains("://") {
@@ -318,6 +356,7 @@ impl StorylineLanceStore {
         &self,
         control: &StorylineCurrentControl,
         expected: Option<Version>,
+        precondition: Option<&StorylineCurrentControl>,
     ) -> Result<bool> {
         validate_current_control(control)?;
         let contents = serde_json::to_vec(control).context("encode Storyline CURRENT control")?;
@@ -325,30 +364,93 @@ impl StorylineLanceStore {
             write_local_current(self.root.join(CURRENT_FILE), contents).await?;
             return Ok(true);
         }
-        let result = match expected.as_ref() {
-            None => {
-                self.control_store
-                    .write_create(CURRENT_FILE, contents)
-                    .await
-            }
-            Some(version) => {
-                self.control_store
-                    .write_match(CURRENT_FILE, contents, version)
-                    .await
-            }
-        };
-        match result {
-            Ok(_) => Ok(true),
-            Err(error)
-                if error
-                    .downcast_ref::<opendal::Error>()
-                    .is_some_and(opendal_store::is_conflict) =>
+
+        // Create still uses if_not_exists; updates may skip broken If-Match.
+        if expected.is_none() {
+            return match self
+                .control_store
+                .write_create(CURRENT_FILE, contents)
+                .await
             {
-                Ok(false)
-            }
-            Err(error) => Err(error)
-                .with_context(|| format!("update Storyline CURRENT control for {}", self.root_uri)),
+                Ok(()) => Ok(true),
+                Err(error)
+                    if error
+                        .downcast_ref::<opendal::Error>()
+                        .is_some_and(opendal_store::is_conflict) =>
+                {
+                    Ok(false)
+                }
+                Err(error) => Err(error).with_context(|| {
+                    format!("update Storyline CURRENT control for {}", self.root_uri)
+                }),
+            };
         }
+
+        let skip_if_match = self
+            .current_if_match_unreliable
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if !skip_if_match {
+            let expected = expected
+                .as_ref()
+                .context("missing expected version for conditional Storyline CURRENT write")?;
+            match self
+                .control_store
+                .write_match(CURRENT_FILE, contents.clone(), expected)
+                .await
+            {
+                Ok(()) => return Ok(true),
+                Err(error)
+                    if error
+                        .downcast_ref::<opendal::Error>()
+                        .is_some_and(opendal_store::is_conflict) =>
+                {
+                    let Some(precondition) = precondition else {
+                        return Ok(false);
+                    };
+                    let latest = self.read_current_control().await?;
+                    if &latest.control != precondition {
+                        tracing::debug!(
+                            root_uri = %self.root_uri,
+                            precondition = %format_control_for_log(precondition, unix_now_ms()),
+                            latest = %format_control_for_log(&latest.control, unix_now_ms()),
+                            "Storyline CURRENT conditional write conflict; control changed under us"
+                        );
+                        return Ok(false);
+                    }
+                    // Remember for this store handle: avoid 412 spam on every commit.
+                    let first = !self
+                        .current_if_match_unreliable
+                        .swap(true, std::sync::atomic::Ordering::Relaxed);
+                    if first {
+                        tracing::warn!(
+                            root_uri = %self.root_uri,
+                            "Storyline CURRENT If-Match is unreliable on this object store; using content-checked overwrite for the rest of this writer (single-writer fallback)"
+                        );
+                    }
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("update Storyline CURRENT control for {}", self.root_uri)
+                    });
+                }
+            }
+        } else if let Some(precondition) = precondition {
+            let latest = self.read_current_control().await?;
+            if &latest.control != precondition {
+                return Ok(false);
+            }
+        }
+
+        self.control_store
+            .write_overwrite(CURRENT_FILE, contents)
+            .await
+            .with_context(|| {
+                format!(
+                    "overwrite Storyline CURRENT after If-Match fallback for {}",
+                    self.root_uri
+                )
+            })?;
+        Ok(true)
     }
 
     pub(super) async fn try_acquire_writer_lease(
@@ -357,22 +459,53 @@ impl StorylineLanceStore {
         now_unix_ms: u64,
         ttl_ms: u64,
     ) -> Result<LeaseAcquireOutcome> {
-        let _control_guard = self.control_lock.lock().await;
-        for _ in 0..CONTROL_CAS_RETRIES {
-            let current = self.read_current_control().await?;
-            let (outcome, next) =
-                acquire_transition(&current.control, owner_id, now_unix_ms, ttl_ms)?;
-            let Some(next) = next else {
-                return Ok(outcome);
+        let mut last_control = None;
+        for attempt in 1..=CONTROL_CAS_RETRIES {
+            let cas_result = {
+                let _control_guard = self.control_lock.lock().await;
+                let current = self.read_current_control().await?;
+                last_control = Some(current.control.clone());
+                let (outcome, next) =
+                    acquire_transition(&current.control, owner_id, now_unix_ms, ttl_ms)?;
+                let Some(next) = next else {
+                    return Ok(outcome);
+                };
+                let expected_version = current.version.clone();
+                let wrote = self
+                    .try_write_current_control(&next, expected_version, Some(&current.control))
+                    .await?;
+                if wrote {
+                    return Ok(outcome);
+                }
+                current
             };
-            if self
-                .try_write_current_control(&next, current.version)
-                .await?
-            {
-                return Ok(outcome);
-            }
+            tracing::warn!(
+                root_uri = %self.root_uri,
+                owner_id,
+                attempt,
+                max_attempts = CONTROL_CAS_RETRIES,
+                expected_version = ?cas_result.version,
+                control = %format_control_for_log(&cas_result.control, now_unix_ms),
+                "Storyline CURRENT CAS conflict while acquiring writer lease; retrying"
+            );
+            // Object-store backends may briefly reject conditional writes even
+            // when no other writer is active; back off before the next CAS.
+            // Sleep outside the control lock so renewals/other writers can proceed.
+            tokio::time::sleep(std::time::Duration::from_millis(
+                20 + (attempt as u64).saturating_mul(15),
+            ))
+            .await;
         }
-        anyhow::bail!("Storyline commit conflict while acquiring writer lease")
+        anyhow::bail!(
+            "Storyline commit conflict while acquiring writer lease: CURRENT CAS exhausted after {} retries (root={}, owner={}, {})",
+            CONTROL_CAS_RETRIES,
+            self.root_uri,
+            owner_id,
+            last_control
+                .as_ref()
+                .map(|control| format_control_for_log(control, now_unix_ms))
+                .unwrap_or_else(|| "control=<unreadable>".to_owned()),
+        )
     }
 
     pub(super) async fn acquire_writer_lease_for_generation(
@@ -380,29 +513,86 @@ impl StorylineLanceStore {
         owner_id: &str,
         expected_generation: Option<&str>,
     ) -> Result<AcquiredLease> {
-        let acquired = match self
-            .try_acquire_writer_lease(owner_id, unix_now_ms(), WRITER_LEASE_TTL_MS)
-            .await?
-        {
-            LeaseAcquireOutcome::Held(_) => {
-                anyhow::bail!("Storyline commit conflict while acquiring writer lease")
+        let mut last_held: Option<StorylineWriterLease> = None;
+        for attempt in 1..=HELD_VISIBILITY_RETRIES {
+            let now = unix_now_ms();
+            match self
+                .try_acquire_writer_lease(owner_id, now, WRITER_LEASE_TTL_MS)
+                .await?
+            {
+                LeaseAcquireOutcome::Held(held) => {
+                    tracing::warn!(
+                        root_uri = %self.root_uri,
+                        owner_id,
+                        attempt,
+                        max_attempts = HELD_VISIBILITY_RETRIES,
+                        expected_generation = expected_generation.unwrap_or("<none>"),
+                        held = %format_lease_for_log(&held, now),
+                        retry_delay_ms = HELD_RETRY_DELAY_MS,
+                        "Storyline writer lease still held; retrying in case object-store CURRENT is stale"
+                    );
+                    last_held = Some(held);
+                    if attempt == HELD_VISIBILITY_RETRIES {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(HELD_RETRY_DELAY_MS)).await;
+                }
+                LeaseAcquireOutcome::Acquired(acquired) => {
+                    if acquired.lease.base_generation.as_deref() == expected_generation {
+                        if attempt > 1 {
+                            tracing::warn!(
+                                root_uri = %self.root_uri,
+                                owner_id,
+                                attempt,
+                                expected_generation = expected_generation.unwrap_or("<none>"),
+                                acquired = %format_lease_for_log(&acquired.lease, now),
+                                "Storyline writer lease acquired after visibility/CAS retries"
+                            );
+                        }
+                        return Ok(acquired);
+                    }
+                    tracing::warn!(
+                        root_uri = %self.root_uri,
+                        owner_id,
+                        attempt,
+                        expected_generation = expected_generation.unwrap_or("<none>"),
+                        acquired = %format_lease_for_log(&acquired.lease, now),
+                        "Storyline writer lease base_generation mismatch; releasing and failing"
+                    );
+                    let conflict = anyhow::anyhow!(
+                        "Storyline commit conflict while acquiring writer lease: base_generation mismatch (root={}, owner={}, expected={}, acquired={})",
+                        self.root_uri,
+                        owner_id,
+                        expected_generation.unwrap_or("<none>"),
+                        format_lease_for_log(&acquired.lease, now),
+                    );
+                    return match self
+                        .release_writer_lease(owner_id, acquired.lease.epoch)
+                        .await
+                    {
+                        Ok(true) => Err(conflict),
+                        Ok(false) => {
+                            Err(conflict.context("mismatched writer lease was lost before release"))
+                        }
+                        Err(error) => Err(conflict.context(format!(
+                            "failed to release mismatched writer lease: {error:#}"
+                        ))),
+                    };
+                }
             }
-            LeaseAcquireOutcome::Acquired(acquired) => acquired,
-        };
-        if acquired.lease.base_generation.as_deref() == expected_generation {
-            return Ok(acquired);
         }
-        let conflict = anyhow::anyhow!("Storyline commit conflict while acquiring writer lease");
-        match self
-            .release_writer_lease(owner_id, acquired.lease.epoch)
-            .await
-        {
-            Ok(true) => Err(conflict),
-            Ok(false) => Err(conflict.context("mismatched writer lease was lost before release")),
-            Err(error) => Err(conflict.context(format!(
-                "failed to release mismatched writer lease: {error:#}"
-            ))),
-        }
+        let now = unix_now_ms();
+        anyhow::bail!(
+            "Storyline commit conflict while acquiring writer lease: still held after {} visibility retries (root={}, owner={}, expected={}, {})",
+            HELD_VISIBILITY_RETRIES,
+            self.root_uri,
+            owner_id,
+            expected_generation.unwrap_or("<none>"),
+            last_held
+                .as_ref()
+                .map(|lease| format_lease_for_log(lease, now))
+                .unwrap_or_else(|| "held=<unknown>".to_owned()),
+        )
     }
 
     async fn transition_current_control(
@@ -416,7 +606,7 @@ impl StorylineLanceStore {
                 return Ok(false);
             };
             if self
-                .try_write_current_control(&next, current.version)
+                .try_write_current_control(&next, current.version.clone(), Some(&current.control))
                 .await?
             {
                 return Ok(true);

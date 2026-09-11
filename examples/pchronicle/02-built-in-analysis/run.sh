@@ -5,7 +5,7 @@ example_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$example_dir/../../.." && pwd)"
 source "$example_dir/../common.sh"
 pchronicle="${PCHRONICLE_BIN:-$repo_root/target/release/pchronicle}"
-data="$repo_root/examples/data"
+data="$repo_root/examples/data/corpus"
 
 pchronicle_example_init "$example_dir"
 
@@ -42,7 +42,7 @@ jq -s -e '. == [
 ]' <<<"$tools" >/dev/null
 jq -e '.truncated == false
   and (.matches | length) == 1
-  and .matches[0].source_path == "atif/support-ticket.json"
+  and .matches[0].source_path == "support-ticket.json"
   and .matches[0].step_id == 1' <<<"$found" >/dev/null
 
 agent_summary="$(jq -sr \
@@ -55,6 +55,6 @@ pchronicle_report_item "Corpus" "3 sources, 4 trajectories, 9 steps"
 pchronicle_report_item "Agents" "3 agents; trajectories: $agent_summary"
 pchronicle_report_item "Models" "example-model: 3 declared trajectories, 4 observed steps"
 pchronicle_report_item "Tools" "2 calls: $tool_summary"
-pchronicle_report_item "Lookup" "atif/support-ticket.json / support-001 / step 1"
+pchronicle_report_item "Lookup" "support-ticket.json / support-001 / step 1"
 pchronicle_report_finish \
   "built-in analyses and source-local lookup returned the expected facts"

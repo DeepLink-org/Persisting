@@ -8,8 +8,11 @@ storage. The screenshots and examples on this page were produced directly by:
 ./target/release/pchronicle serve tmp/test/ data/ --listen 127.0.0.1:9980
 ```
 
-After the listener is ready, open [http://127.0.0.1:9980/](http://127.0.0.1:9980/). This command mounts
-two Datasets. Because neither has an explicit name, the UI derives `test` and
+After the listener is ready, open [http://127.0.0.1:9980/](http://127.0.0.1:9980/). The homepage is
+the landing page. **Warehouse** and **Open Warehouse** enter Datasets. Deep links such as
+`/?page=catalog` still open the warehouse directly. Repeatable `--home-link TEXT=PATH`
+capsules appear next to Warehouse; `PATH` must be a same-origin relative path.
+This command mounts two Datasets. Because neither has an explicit name, the UI derives `test` and
 `data` from the last path component. Give mounts stable UI and SQL schema names
 when they will be reused:
 
@@ -25,7 +28,7 @@ UI or API do not modify a mounted Dataset.
 
 ## Workspace map
 
-The left rail separates the common tasks into five surfaces:
+The left rail separates the common tasks into five surfaces. Click the **pC** mark to return to the homepage.
 
 | Surface | Use it to |
 | --- | --- |
@@ -40,7 +43,7 @@ local pChronicle server.
 
 ![The Datasets page shows the test and data Datasets and their Run counts](/img/screenshots/pchronicle/data-overview.jpg)
 
-**Datasets** is the landing page. Each card shows a Dataset name and Run count.
+**Datasets** is the warehouse landing page after you leave Home. Each card shows a Dataset name and Run count.
 Select a card to open that Dataset's data overview, then use **Open in Runs**
 to open the current scope. The button with the same name on the landing page
 opens all Runs.

@@ -8,14 +8,14 @@ line. New commands and scripts should use the syntax documented here.
 Start with the shortest path to a useful answer:
 
 - **Try the product:** `pchronicle onboard query` uses temporary example data
-  and needs no Dataset path.
+ and needs no Dataset path.
 - **Check a Dataset:** use `list`/`ls` and `stats overview` before writing SQL.
 - **Locate a run or phrase:** use `find --run-id`, `--session-id`, or
-  `--match`; inspect the returned identity before querying more data.
+ `--match`; inspect the returned identity before querying more data.
 - **Ask a repeatable question:** use `query --sql` or `query --file` and set
-  output and resource limits for automation.
+ output and resource limits for automation.
 - **Expose history:** use `serve` only after the read-only query works; the
-  [serve guide](../guides/serve.md) explains the lifecycle and shutdown path.
+ [serve guide](../guides/serve.md) explains the lifecycle and shutdown path.
 
 For a first interaction, copy this sequence:
 
@@ -129,7 +129,7 @@ pchronicle list|ls [DATASET] [OPTIONS]
 pchronicle stats [DATASET] [OPTIONS]
 pchronicle stats <overview|agents|models|tools> [DATASET] [OPTIONS]
 pchronicle find [DATASET]
-  (--run-id ID|--document-id ID|--session-id ID|--match EXPRESSION) [OPTIONS]
+ (--run-id ID|--document-id ID|--session-id ID|--match EXPRESSION) [OPTIONS]
 ```
 
 ```bash
@@ -171,8 +171,8 @@ pchronicle query [DATASET|--mount NAME=DATASET ...] (--sql SQL|--file FILE_OR_ST
 ```bash
 pchronicle query ./dataset --sql 'SELECT COUNT(*) FROM dataset.runs'
 pchronicle query \
-  --mount live=./live --mount archive=@archive \
-  --file report.sql
+ --mount live=./live --mount archive=@archive \
+ --file report.sql
 ```
 
 Each invocation accepts one read-only statement with explicit resource limits. `--file -` reads SQL
@@ -183,30 +183,39 @@ from stdin. Use `--format`, `--output`, `--max-output-rows`,
 
 ```text
 pchronicle import -f|--from SOURCE -t|--to NEW_DATASET
-  [-i|--input-format auto|atif|actf|openai-messages|storyline|codex|claude-code|compact-jsonl]
-  [-o|--output-format preserve|storyline|compact-jsonl]
-  [--mode create|append|replace] [--on-duplicate suffix|skip] [--yes]
-  [--column NAME=JSON_PATH]... [OPTIONS]
+ [-i|--input-format auto|atif|actf|openai-messages|storyline|codex|claude-code|compact-jsonl]
+ [-o|--output-format preserve|storyline|compact-jsonl]
+ [|--replace] [--append] [--on-duplicate suffix|skip] [--yes]
+ [--resume] [--wal-dir DIR] [--reset]
+ [--column NAME=JSON_PATH]... [OPTIONS]
 ```
 
 ```bash
 pchronicle import -f input.json -t ./imported -i atif
 cat input.json | pchronicle import -f - -t ./imported -i openai-messages
-pchronicle import -f more.json -t ./normalized --mode append --on-duplicate skip
-pchronicle import -f rebuilt.json -t ./normalized --mode replace --yes
+pchronicle import -f more.json -t ./normalized --append --on-duplicate skip
+pchronicle import -f rebuilt.json -t ./normalized --replace --yes
+pchronicle import -f s3://bucket/corpus -t s3://bucket/out -o storyline --resume
 pchronicle import -f ./jsonl-root -t ./records.lance \
-  -o compact-jsonl \
-  --column id=$.event.id --column timestamp=$.event.time \
-  --column model=$.payload.model
+ -o compact-jsonl \
+ --column id=$.event.id --column timestamp=$.event.time \
+ --column model=$.payload.model
 ```
 
-`-` means stdin. `create` is the default and requires a new destination.
-`append` requires an existing Storyline Dataset and either suffixes colliding
-`document_id` values with `#N` (the default) or skips them. `replace` moves the
+`-` means stdin. Create is the default and requires a new destination.
+`--append` requires an existing Storyline Dataset and either suffixes colliding
+`document_id` values with `#N` (the default) or skips them. `--replace` moves the
 old local Dataset aside, publishes the fully imported Dataset with a rename
 transaction, and only then removes the old data. It requires interactive
 confirmation or `--yes`; an existing object-store Dataset cannot currently be
 replaced in place.
+
+Long Storyline imports write a local checkpoint WAL under
+`./.pchronicle-import-wal/<job_id>/` (`job.json`, `done.jsonl`, `failed.jsonl`).
+Use `--resume` with the same `--from`/`--to` fingerprint to skip sources already
+recorded as done or failed; `--wal-dir` overrides the WAL root; `--reset`
+deletes that job's WAL before starting. Decode and skippable commit failures are
+recorded in the WAL and `import.log` so the job can continue.
 
 Compact JSONL is a record store, not a trajectory conversion. Either
 `--input-format compact-jsonl` or `--output-format compact-jsonl` selects it.
@@ -223,27 +232,29 @@ local `create` and confirmed `replace`, but not stdin, object-store targets, or
 ### Sync
 
 ```text
-pchronicle sync --from DIRECTORY --to DIRECTORY --convert DIRECTORY
-  [--input-format FORMAT] [--column NAME=JSON_PATH]...
-  [--interval DURATION] [--once]
+pchronicle sync --from DIRECTORY
+ [--mirror DIRECTORY] [--to DIRECTORY]
+ [--input-format FORMAT] [--suggested-format FORMAT]
+ [--column NAME=JSON_PATH]...
+ [--interval DURATION] [--once]
 ```
 
 `sync` is a resident polling worker for `.json`, `.jsonl`, and `.ndjson` files.
-For run-data formats it coalesces changes into a pending set and, on each
-interval, atomically mirrors the source files byte-for-byte into a local
-Warehouse Dataset and writes a Storyline Lance Dataset to `--convert`.
-Pending changes are cleared only after both outputs succeed; failures retain
-the set and retry with bounded exponential backoff. Use `--once` for one
-initial batch and exit. The two destinations must be local directories outside
-the source directory.
+It coalesces changes into a pending set and, on each interval, rebuilds full
+snapshots for the destinations you enable. Provide `--mirror`, `--to`, or both:
 
-With `--input-format compact-jsonl`, the source must be a local `.json`, `.jsonl`,
-or `.ndjson` tree
-and the same `--column` rules as compact import apply. Every successful batch
-rescans the whole tree and atomically replaces the compact Lance snapshot at
-`--convert`, so additions, changes, and deletions are reflected without
-row-level incremental updates. In this mode `--to` is retained as a required
-compatibility argument but is not written.
+- `--mirror` writes a Compact JSONL Lance Dataset (record-level ingest; optional
+  `--column` mapping). Each successful batch atomically replaces that target.
+- `--to` converts trajectories into a Storyline Lance Dataset (`--input-format` /
+  `--suggested-format`).
+
+Pending changes clear only after every enabled destination succeeds; failures
+retain the set and retry with bounded exponential backoff. Use `--once` for one
+initial batch and exit. Local destinations must sit outside the source tree.
+
+With `--input-format compact-jsonl`, only `--mirror` is allowed (not `--to`).
+Each successful batch rescans the tree and atomically replaces the compact Lance
+snapshot at `--mirror`.
 
 ### Drop
 
@@ -259,7 +270,7 @@ filesystem roots or whole object-store buckets.
 
 ```text
 pchronicle export -f|--from DATASET -t|--to TARGET
-  -o|--output-format atif|actf|openai-messages|storyline|compact-jsonl [OPTIONS]
+ -o|--output-format atif|actf|openai-messages|storyline|compact-jsonl [OPTIONS]
 ```
 
 ```bash
@@ -274,7 +285,7 @@ unless `--overwrite` is explicit.
 
 ```text
 pchronicle agent <codex|claude> [DATASET]
-  [--ask QUESTION|--ask-file FILE_OR_STDIN] [--no-overview] [--dry-run]
+ [--ask QUESTION|--ask-file FILE_OR_STDIN] [--no-overview] [--dry-run]
 ```
 
 ```bash
@@ -286,32 +297,35 @@ pchronicle agent claude @prod --ask 'Compare model latency'
 
 ```text
 pchronicle serve
-  [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
-  [--gateway ADDRESS --gateway-dataset DATASET [--gateway-split TEMPLATE]
-   [--gateway-split-idle DURATION]]
-  [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
-  [--gateway-stream-markdown] [--gateway-debug]
-  [--catalog-config FILE]
-  [<[NAME=]DATASET> ...]
-pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI [OPTIONS]
+ [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
+ [--home-link TEXT=PATH]...
+ [--gateway ADDRESS --gateway-dataset DATASET [--gateway-split TEMPLATE]
+ [--gateway-split-idle DURATION]]
+ [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
+ [--gateway-stream-markdown] [--gateway-debug]
+ [--catalog-config FILE]
+ [<[NAME=]DATASET> ...]
+pchronicle serve catalog dataset add --catalog-config FILE NAME --uri URI [OPTIONS]
 pchronicle serve catalog dataset remove --catalog-config FILE NAME...
-pchronicle serve catalog dataset list   --catalog-config FILE
-pchronicle serve catalog issue  --catalog-config FILE NAME
-pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
+pchronicle serve catalog dataset list --catalog-config FILE
+pchronicle serve catalog issue --catalog-config FILE NAME
+pchronicle serve catalog grant --catalog-config FILE NAME DATASET...
 pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
 ```
 
 ```bash
 pchronicle serve ./trajectory-data
 pchronicle serve \
-  --gateway auto \
-  --gateway-dataset ./trajectory-data \
-  --gateway-split '{user}/{date}/{hour}'
+ --gateway auto \
+ --gateway-dataset ./trajectory-data \
+ --gateway-split '{user}/{date}/{hour}'
 ```
 
 Every listener must use a loopback address. A bare single Dataset is mounted as
 `default`; with several Datasets, use `NAME=DATASET` when a stable mount name is
 needed. Control requires a mount named `default`.
+Repeatable `--home-link TEXT=PATH` adds homepage nav capsules beside Warehouse.
+`PATH` must be a same-origin relative path such as `/plugins`.
 `--catalog-config FILE` mounts every `[datasets.*]` library in the Directory
 file into Warehouse and enables `catalog://` locators. It conflicts with
 positional Dataset mounts. Pair Directory clients with
@@ -351,13 +365,13 @@ The Directory ACL file contains users, datasets (libraries), and grants.
 Management commands create the file when it does not exist.
 
 ```text
-pchronicle serve catalog issue  --catalog-config FILE NAME
-pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
+pchronicle serve catalog issue --catalog-config FILE NAME
+pchronicle serve catalog grant --catalog-config FILE NAME DATASET...
 pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
-pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI
-  [--endpoint URL] [--region REGION] [--access-key KEY] [--secret-key KEY]
+pchronicle serve catalog dataset add --catalog-config FILE NAME --uri URI
+ [--endpoint URL] [--region REGION] [--access-key KEY] [--secret-key KEY]
 pchronicle serve catalog dataset remove --catalog-config FILE NAME...
-pchronicle serve catalog dataset list   --catalog-config FILE
+pchronicle serve catalog dataset list --catalog-config FILE
 ```
 
 `issue` generates a user AK/SK and prints the secret once. `dataset add`

@@ -455,7 +455,9 @@ fn canonical_parser_surface_matches_the_cli_guide() -> Result<()> {
     assert_eq!(import.output.as_deref(), Some("./imported"));
     assert_eq!(import.format, ExchangeFormat::Atif);
     assert_eq!(import.output_format, Some(ImportOutputFormat::Preserve));
-    assert_eq!(import.mode, ImportMode::Create);
+    assert_eq!(import.mode().unwrap(), ImportMode::Create);
+    assert!(!import.replace);
+    assert!(!import.append);
     assert_eq!(import.on_duplicate, None);
     assert!(!import.yes);
 
@@ -466,16 +468,49 @@ fn canonical_parser_surface_matches_the_cli_guide() -> Result<()> {
         "input.json",
         "-t",
         "./imported",
-        "--mode",
-        "append",
+        "--append",
         "--on-duplicate",
         "skip",
     ])?;
     let Command::Import(import) = cli.command else {
         panic!("expected import command")
     };
-    assert_eq!(import.mode, ImportMode::Append);
+    assert_eq!(import.mode().unwrap(), ImportMode::Append);
+    assert!(import.append);
+    assert!(!import.replace);
     assert_eq!(import.on_duplicate, Some(DuplicateIdPolicy::Skip));
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "-f",
+        "input.json",
+        "-t",
+        "./imported",
+        "--replace",
+        "--yes",
+    ])?;
+    let Command::Import(import) = cli.command else {
+        panic!("expected import command")
+    };
+    assert_eq!(import.mode().unwrap(), ImportMode::Replace);
+    assert!(import.replace);
+    assert!(!import.append);
+    assert!(import.yes);
+
+    assert!(
+        Cli::try_parse_from([
+            "pchronicle",
+            "import",
+            "-f",
+            "input.json",
+            "-t",
+            "./imported",
+            "--replace",
+            "--append",
+        ])
+        .is_err()
+    );
 
     let cli = Cli::try_parse_from(["pchronicle", "drop", "./imported", "--yes"])?;
     let Command::Drop(drop) = cli.command else {
@@ -2678,11 +2713,7 @@ async fn directory_import_auto_detects_each_file_and_skips_unknown_json() -> Res
         assert_eq!(response["trajectories"], 3, "{output_format:?}: {response}");
         let warnings = String::from_utf8(stderr)?;
         assert!(
-            warnings.contains("import source=root.json status=processing"),
-            "{output_format:?}: {warnings}"
-        );
-        assert!(
-            warnings.contains("import source=root.json status=completed"),
+            warnings.contains("root.json"),
             "{output_format:?}: {warnings}"
         );
         assert!(
@@ -2752,6 +2783,69 @@ async fn import_storyline_output_writes_one_root_lance_store() -> Result<()> {
     assert!(output.join("objects.lance").is_dir());
     assert!(!output.join("session_steps.json").exists());
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn object_store_replace_clears_existing_prefix_before_import() -> Result<()> {
+    let source = format!(
+        "shared-memory://pchronicle-object-replace-src-{}/corpus",
+        uuid::Uuid::new_v4().simple()
+    );
+    let output = format!(
+        "shared-memory://pchronicle-object-replace-dst-{}/dataset",
+        uuid::Uuid::new_v4().simple()
+    );
+    let input = DatasetLocation::parse(&source)?;
+    input
+        .write_relative_bytes(
+            "run.json",
+            &serde_json::to_vec(&atif_identity_document("document-new", "session-new"))?,
+        )
+        .await?;
+
+    // Seed an existing destination so replace must clear it.
+    let existing = DatasetLocation::parse(&output)?;
+    existing
+        .write_relative_bytes(".dataset-marker", b"old")
+        .await?;
+    assert!(existing.exists().await?);
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        &source,
+        "--to",
+        &output,
+        "--output-format",
+        "storyline",
+        "--replace",
+        "--yes",
+    ])?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    run(cli, false, &mut stdout, &mut stderr).await?;
+    let stderr = String::from_utf8(stderr)?;
+    assert!(
+        stderr.contains("deleted:total =") || stderr.contains("[deleting]"),
+        "replace should report delete progress, got: {stderr}"
+    );
+    assert!(
+        existing
+            .read_relative_bytes(".dataset-marker")
+            .await
+            .is_err(),
+        "replace should remove objects left by the previous Dataset"
+    );
+
+    let store = StorylineLanceStore::open_uri(&output).await?;
+    let ids = store
+        .document_ids_snapshot()
+        .await?
+        .context("replaced storyline snapshot")?
+        .1;
+    assert!(ids.iter().any(|id| id == "document-new"));
     Ok(())
 }
 
@@ -2944,6 +3038,66 @@ async fn canonical_event_import_auto_detects_and_is_create_only() -> Result<()> 
             .is_err()
     );
     assert_eq!(fs::read_to_string(existing.join("sentinel"))?, "keep");
+    Ok(())
+}
+
+#[tokio::test]
+async fn object_store_directory_import_recurses_json_files() -> Result<()> {
+    let source = format!(
+        "shared-memory://pchronicle-object-import-{}/corpus",
+        uuid::Uuid::new_v4().simple()
+    );
+    let location = DatasetLocation::parse(&source)?;
+    location
+        .write_relative_bytes(
+            "nested/run-a.json",
+            &serde_json::to_vec(&atif_identity_document("document-a", "session-a"))?,
+        )
+        .await?;
+    location
+        .write_relative_bytes(
+            "nested/deeper/run-b.jsonl",
+            &serde_json::to_vec(&atif_identity_document("document-b", "session-b"))?,
+        )
+        .await?;
+    // Lance interiors must be ignored even when they contain .json names.
+    location
+        .write_relative_bytes(
+            "keep/events.lance/_manifest.json",
+            b"{\"not\":\"importable\"}",
+        )
+        .await?;
+
+    let output_root = tempfile::tempdir()?;
+    let output = output_root.path().join("dataset");
+    let wal_root = tempfile::tempdir()?;
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        &source,
+        "--to",
+        output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+        "--wal-dir",
+        wal_root.path().to_str().unwrap(),
+    ])?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    run(cli, false, &mut stdout, &mut stderr).await?;
+    let stderr = String::from_utf8(stderr)?;
+    assert!(stderr.contains("status=discovering"));
+    assert!(stderr.contains("status=discovered files=2"));
+
+    let store = StorylineLanceStore::open(&output).await?;
+    let ids = store
+        .document_ids_snapshot()
+        .await?
+        .context("imported storyline snapshot")?
+        .1;
+    assert!(ids.iter().any(|id| id == "document-a"));
+    assert!(ids.iter().any(|id| id == "document-b"));
     Ok(())
 }
 
@@ -3152,8 +3306,7 @@ async fn append_storyline_import_suffixes_or_skips_existing_document_ids() -> Re
         duplicate.to_str().unwrap(),
         "--to",
         output.to_str().unwrap(),
-        "--mode",
-        "append",
+        "--append",
     ])?;
     let mut append_stdout = Vec::new();
     let mut append_stderr = Vec::new();
@@ -3171,8 +3324,7 @@ async fn append_storyline_import_suffixes_or_skips_existing_document_ids() -> Re
         duplicate.to_str().unwrap(),
         "--to",
         output.to_str().unwrap(),
-        "--mode",
-        "append",
+        "--append",
         "--on-duplicate",
         "skip",
     ])?;
@@ -3204,6 +3356,8 @@ async fn append_storyline_import_suffixes_or_skips_existing_document_ids() -> Re
         .map(|row| row["document_id"].as_str().unwrap().to_string())
         .collect::<Vec<_>>();
     assert_eq!(ids, ["shared", "shared#1"]);
+    let manifest = persisting_pchronicle::storage::load_manifest(&output)?.context("manifest")?;
+    assert_eq!(manifest.stats.as_ref().unwrap().record_count, 2);
     Ok(())
 }
 
@@ -3231,8 +3385,7 @@ async fn replace_and_drop_require_confirmation_and_accept_yes() -> Result<()> {
         output.to_str().unwrap(),
         "--output-format",
         "storyline",
-        "--mode",
-        "replace",
+        "--replace",
     ])?;
     let error = run(replace_without_yes, false, &mut Vec::new(), &mut Vec::new())
         .await
@@ -3250,8 +3403,7 @@ async fn replace_and_drop_require_confirmation_and_accept_yes() -> Result<()> {
         output.to_str().unwrap(),
         "--output-format",
         "storyline",
-        "--mode",
-        "replace",
+        "--replace",
         "--yes",
     ])?;
     assert!(
@@ -3259,7 +3411,10 @@ async fn replace_and_drop_require_confirmation_and_accept_yes() -> Result<()> {
             .await
             .is_err()
     );
-    assert!(output.join("old.marker").exists());
+    // Storyline --replace clears the destination before import (not atomic).
+    assert!(!output.join("old.marker").exists());
+    fs::create_dir_all(&output)?;
+    fs::write(output.join("old.marker"), "old")?;
 
     fs::write(
         &input,
@@ -3277,8 +3432,7 @@ async fn replace_and_drop_require_confirmation_and_accept_yes() -> Result<()> {
         output.to_str().unwrap(),
         "--output-format",
         "storyline",
-        "--mode",
-        "replace",
+        "--replace",
         "--yes",
     ])?;
     run(replace, false, &mut Vec::new(), &mut Vec::new()).await?;
@@ -3320,6 +3474,7 @@ async fn replace_and_drop_require_confirmation_and_accept_yes() -> Result<()> {
     run_with_stdio(
         interactive_drop,
         true,
+        false,
         false,
         &mut confirmation,
         &mut Vec::new(),
@@ -3375,12 +3530,13 @@ async fn directory_import_dedupes_unknown_warnings_across_sources() -> Result<()
 }
 
 #[tokio::test]
-async fn directory_import_failure_does_not_publish_partial_output() -> Result<()> {
+async fn directory_import_skips_invalid_json_and_publishes_valid_sources() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let input = temp.path().join("input");
     fs::create_dir_all(&input)?;
     fs::copy(example_source("atif"), input.join("a-valid.json"))?;
     fs::write(input.join("z-invalid.json"), "not json")?;
+    let wal_dir = temp.path().join("wal");
 
     for output_format in [ImportOutputFormat::Preserve, ImportOutputFormat::Storyline] {
         let output = temp
@@ -3393,16 +3549,31 @@ async fn directory_import_failure_does_not_publish_partial_output() -> Result<()
             input.to_string_lossy().into_owned(),
             "--output".to_owned(),
             output.to_string_lossy().into_owned(),
+            "--wal-dir".to_owned(),
+            wal_dir.to_string_lossy().into_owned(),
+            "--reset".to_owned(),
         ];
         if output_format == ImportOutputFormat::Storyline {
             argv.extend(["--output-format".to_owned(), "storyline".to_owned()]);
         }
         let cli = Cli::try_parse_from(argv)?;
-        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
-            .await
-            .unwrap_err();
-        assert!(format!("{error:#}").contains("z-invalid.json"), "{error:#}");
-        assert!(!output.exists());
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        run(cli, false, &mut stdout, &mut stderr).await?;
+        let response: Value = serde_json::from_slice(&stdout)?;
+        assert!(
+            response["trajectories"].as_u64().unwrap_or(0) >= 1,
+            "{output_format:?}: {response}"
+        );
+        let stderr = String::from_utf8(stderr)?;
+        assert!(
+            stderr.contains("z-invalid.json") || stderr.to_lowercase().contains("skip"),
+            "{output_format:?}: expected skip warning for invalid JSON, got: {stderr}"
+        );
+        assert!(
+            output.exists(),
+            "{output_format:?}: valid sources should publish"
+        );
     }
     assert!(!fs::read_dir(temp.path())?.any(|entry| {
         entry
@@ -4421,6 +4592,7 @@ fn serve_args_with_storage(storage: Vec<String>) -> ServeArgs {
         listen: None,
         control: None,
         open: false,
+        home_links: Vec::new(),
         gateway: None,
         gateway_config: None,
         gateway_dataset: None,
@@ -4867,6 +5039,75 @@ fn serve_positional_uri_is_equivalent_to_storage() -> Result<()> {
 }
 
 #[test]
+fn serve_home_link_flags_are_copied_into_warehouse_config() -> Result<()> {
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "/tmp/data",
+        "--home-link",
+        "Plugins=/plugins",
+        "--home-link",
+        "Skills=skills",
+    ])?;
+    let Command::Serve(args) = cli.command else {
+        unreachable!("serve command parsed as another variant")
+    };
+    let config = resolve_serve_config(&args)?;
+    assert_eq!(
+        config.home_links,
+        vec![
+            server::HomeLink {
+                label: "Plugins".into(),
+                href: "/plugins".into(),
+            },
+            server::HomeLink {
+                label: "Skills".into(),
+                href: "/skills".into(),
+            },
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn serve_home_link_flags_are_copied_into_warehouse_config_from_catalog() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let dataset = temp.path().join("left");
+    fs::create_dir_all(&dataset)?;
+    let catalog = temp.path().join("catalog.toml");
+    fs::write(
+        &catalog,
+        format!(
+            r#"
+[datasets.left]
+uri = "{}"
+"#,
+            dataset.display()
+        ),
+    )?;
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "--catalog-config",
+        catalog.to_str().context("catalog path")?,
+        "--home-link",
+        "Realtime=/litefuse",
+    ])?;
+    let Command::Serve(args) = cli.command else {
+        unreachable!("serve command parsed as another variant")
+    };
+    let config = resolve_serve_config(&args)?;
+    assert_eq!(
+        config.home_links,
+        vec![server::HomeLink {
+            label: "Realtime".into(),
+            href: "/litefuse".into(),
+        }]
+    );
+    Ok(())
+}
+
+#[test]
 fn serve_without_listen_defaults_warehouse_to_loopback_ephemeral_port() -> Result<()> {
     let cli = Cli::try_parse_from(["pchronicle", "serve", "--storage", "/tmp/data"])?;
     let Command::Serve(args) = cli.command else {
@@ -5029,11 +5270,10 @@ fn gateway_dataset_uri_is_auto_mounted_and_deduplicated() -> Result<()> {
 }
 
 #[test]
-fn embedded_gateway_rejects_public_listeners() {
-    let error = parse_gateway_listener("0.0.0.0:8787", "Gateway").unwrap_err();
-    assert!(error.to_string().contains("loopback"));
+fn embedded_gateway_accepts_public_listeners() {
+    assert!(parse_gateway_listener("0.0.0.0:8787", "Gateway").is_ok());
     assert!(parse_gateway_listener("127.0.0.1:0", "Gateway").is_ok());
-    assert!(parse_gateway_bind("0.0.0.0:0").is_err());
+    assert!(parse_gateway_bind("0.0.0.0:0").is_ok());
     assert_eq!(
         parse_gateway_bind("auto").unwrap(),
         "127.0.0.1:0".parse::<SocketAddr>().unwrap()

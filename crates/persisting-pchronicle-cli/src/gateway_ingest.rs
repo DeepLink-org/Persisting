@@ -67,10 +67,6 @@ impl PreparedIngestGateway {
         split: Option<GatewaySplitTemplate>,
         manifest_write_mode: ObjectStoreManifestWriteMode,
     ) -> Result<Self> {
-        anyhow::ensure!(
-            listen.ip().is_loopback(),
-            "pChronicle ingest Gateway may only bind to a loopback address"
-        );
         let listener = tokio::net::TcpListener::bind(listen)
             .await
             .with_context(|| format!("bind pChronicle ingest Gateway to {listen}"))?;

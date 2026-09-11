@@ -5,6 +5,7 @@ use std::process::Command;
 use std::time::Duration;
 
 mod claude_code;
+mod generic;
 mod mini_swe_agent;
 mod openhands;
 mod pi_agent;
@@ -41,8 +42,14 @@ pub struct RunContext<'a> {
 pub fn build_plan(request: &PlaybackRequest) -> Result<AdapterPlan, ReplayError> {
     match request.agent {
         AgentKind::ClaudeCode => claude_code::build(request),
+        AgentKind::Codex => {
+            generic::build(request, generic::NativeJsonlAgent::Codex).map(AdapterPlan::Codex)
+        }
         AgentKind::MiniSweAgent => mini_swe_agent::build(request),
         AgentKind::Openhands => openhands::build(request),
+        AgentKind::Opencode => {
+            generic::build(request, generic::NativeJsonlAgent::Opencode).map(AdapterPlan::Opencode)
+        }
         AgentKind::PiAgent => pi_agent::build(request),
         AgentKind::SweAgent => swe_agent::build(request),
     }
@@ -55,8 +62,14 @@ pub fn run(
 ) -> Result<ReplayOutcome, ReplayError> {
     match plan {
         AdapterPlan::ClaudeCode(plan) => claude_code::execute(plan, context, journal),
+        AdapterPlan::Codex(plan) => {
+            generic::execute(plan, context, journal, generic::NativeJsonlAgent::Codex)
+        }
         AdapterPlan::MiniSweAgent(plan) => mini_swe_agent::execute(plan, context, journal),
         AdapterPlan::Openhands(plan) => openhands::execute(plan, context, journal),
+        AdapterPlan::Opencode(plan) => {
+            generic::execute(plan, context, journal, generic::NativeJsonlAgent::Opencode)
+        }
         AdapterPlan::PiAgent(plan) => pi_agent::execute(plan, context, journal),
         AdapterPlan::SweAgent(plan) => swe_agent::execute(plan, context, journal),
     }

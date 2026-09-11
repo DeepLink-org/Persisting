@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::fs;
 
-use common::{examples_root, run_cli};
+use common::{examples_corpus, examples_root, run_cli};
 
 fn jsonl_rows(bytes: &[u8]) -> Result<Vec<Value>> {
     bytes
@@ -19,7 +19,7 @@ fn jsonl_rows(bytes: &[u8]) -> Result<Vec<Value>> {
 
 #[tokio::test]
 async fn overview_reports_stable_cross_format_totals() -> Result<()> {
-    let dataset = examples_root().to_string_lossy().into_owned();
+    let dataset = examples_corpus().to_string_lossy().into_owned();
     let output = run_cli(["stats", "overview", &dataset, "--format", "jsonl"]).await?;
     assert_eq!(
         output.json()?,
@@ -42,7 +42,7 @@ async fn overview_reports_stable_cross_format_totals() -> Result<()> {
 
 #[tokio::test]
 async fn grouped_analysis_subcommands_have_deterministic_semantics() -> Result<()> {
-    let dataset = examples_root().to_string_lossy().into_owned();
+    let dataset = examples_corpus().to_string_lossy().into_owned();
 
     let agents = run_cli(["stats", "agents", &dataset, "--format", "jsonl"]).await?;
     assert_eq!(
@@ -122,7 +122,7 @@ async fn analysis_uses_default_pin_and_explicit_dataset_overrides_it() -> Result
         .join("config.toml")
         .to_string_lossy()
         .into_owned();
-    let warehouse = examples_root().to_string_lossy().into_owned();
+    let warehouse = examples_corpus().to_string_lossy().into_owned();
     run_cli([
         "--config", &settings, "dataset", "pin", "default", &warehouse,
     ])
@@ -148,7 +148,7 @@ async fn analysis_uses_default_pin_and_explicit_dataset_overrides_it() -> Result
 
 #[tokio::test]
 async fn analysis_supports_table_csv_and_group_limits() -> Result<()> {
-    let dataset = examples_root().to_string_lossy().into_owned();
+    let dataset = examples_corpus().to_string_lossy().into_owned();
     let table = run_cli(["stats", "models", &dataset, "--format", "table"]).await?;
     let table = std::str::from_utf8(&table.stdout)?;
     assert!(table.lines().next().unwrap().contains("model"));
@@ -201,7 +201,7 @@ async fn empty_warehouse_has_an_overview_and_empty_grouped_analyses() -> Result<
 
 #[tokio::test]
 async fn analysis_rejects_zero_limits_and_bounded_output_without_partial_stdout() -> Result<()> {
-    let dataset = examples_root().to_string_lossy().into_owned();
+    let dataset = examples_corpus().to_string_lossy().into_owned();
     for args in [
         vec!["stats", "agents", &dataset, "--limit", "0"],
         vec!["stats", "agents", &dataset, "--limit", "10001"],

@@ -2,11 +2,17 @@
 
 <img src="/img/logos/pchronicle-with-text.png" alt="pChronicle logo" width="240" />
 
-**pChronicle 是 Agent 轨迹存储引擎。** 用于浏览、查询、交换和服务运行 Dataset；既可以读取
-Persisting 产生的运行记录，也可以直接读取受支持的外部格式；不要求先运行 pVisor。
+**为 Agent 时代记录经验**
 
-在 Persisting 里，pChronicle 负责保存与查询轨迹历史；不要求先跑 pVisor。
-它可以作为本地工具使用，也可以在多条 path 前面以服务方式部署。
+*让每一次 Agent 运行都更易于理解与改进*
+
+Agent 的经验，是它做过的一切。**pChronicle 是 Agent 轨迹存储引擎**：它以真正有意义的
+单位——Run（运行）——记录这些经验，让每一次运行都更易于理解与改进。可用于浏览、查询、
+交换和服务运行 Dataset；既可以读取 Persisting 产生的运行记录，也可以直接读取受支持的外部
+格式；不要求先运行 pVisor。
+
+在 Persisting 里，pChronicle 负责保存与查询轨迹历史；它可以作为本地工具使用，也可以在多条
+path 前面以服务方式部署。
 
 :::tip 你将完成什么
 第一次快速开始会创建临时数据，打开它，跑一次只读摘要，再回答一个 SQL 问题。

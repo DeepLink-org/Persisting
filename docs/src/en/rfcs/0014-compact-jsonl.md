@@ -176,16 +176,16 @@ pchronicle import \
 ```text
 pchronicle sync \
   --from ./jsonl-root \
-  --to ./warehouse-copy \
-  --convert ./records.lance \
+  --mirror ./records.lance \
   --input-format compact-jsonl \
   --column id=$.event.id \
   --column timestamp=$.event.time
 ```
 
-v1 sync 是 snapshot sync。每批变化 MUST 重新扫描完整 input root，并用一个完整的新 compact
-snapshot 替换 `--convert`。创建、修改和删除源文件都必须反映到下一快照。v1 不承诺行级增量
-更新。
+v1 sync is snapshot sync. Each changed batch MUST rescan the full input root and
+atomically replace `--mirror` with a complete compact snapshot. Adds, edits, and
+deletes MUST appear in the next snapshot. v1 does not promise row-level
+incremental updates.
 
 ## Export
 

@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use persisting_pchronicle::model::EventRecord;
-use persisting_pchronicle::storage::CatalogEventProvenance;
+use persisting_pchronicle::storage::{
+    CatalogDataset, CatalogEventProvenance, CatalogSourceKind, DiscoveredSource, ShallowNavEntry,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -62,8 +64,21 @@ pub(crate) struct CatalogTreeChild {
     pub(crate) entries: Vec<CatalogTreeChild>,
 }
 
+#[allow(dead_code)]
 pub(crate) fn catalog_tree(
     summaries: &[RunSummary],
+    dataset: Option<&str>,
+    prefix: &str,
+    max_children: usize,
+) -> CatalogTree {
+    catalog_tree_with_mounts(summaries, &[], dataset, prefix, max_children)
+}
+
+/// Build an explorer tree from run summaries, then fold in catalog mounts /
+/// sources so Dataset and Directory nodes remain navigable before any runs exist.
+pub(crate) fn catalog_tree_with_mounts(
+    summaries: &[RunSummary],
+    datasets: &[CatalogDataset],
     dataset: Option<&str>,
     prefix: &str,
     max_children: usize,
@@ -87,10 +102,24 @@ pub(crate) fn catalog_tree(
             }
         })
         .sum();
-    let children = if dataset.is_none() {
-        fold_tree_children(dataset_children(&scoped), max_children, prefix)
-    } else {
-        fold_tree_children(file_children(&scoped, prefix), max_children, prefix)
+    let children = match dataset {
+        None => fold_tree_children(
+            merge_dataset_children(dataset_children(&scoped), datasets),
+            max_children,
+            prefix,
+        ),
+        Some(dataset_name) => {
+            let sources = datasets
+                .iter()
+                .find(|row| row.mount.name == dataset_name)
+                .map(|row| row.sources.as_slice())
+                .unwrap_or(&[]);
+            fold_tree_children(
+                merge_file_children(file_children(&scoped, prefix), sources, prefix),
+                max_children,
+                prefix,
+            )
+        }
     };
     CatalogTree {
         dataset: dataset.map(str::to_string),
@@ -100,6 +129,176 @@ pub(crate) fn catalog_tree(
         children,
         ..CatalogTree::default()
     }
+}
+
+/// Append one-level object/local children when catalog sources do not yet
+/// expose the next path segment (typical while a Directory is still importing).
+pub(crate) fn append_shallow_nav_children(
+    tree: &mut CatalogTree,
+    prefix: &str,
+    entries: &[ShallowNavEntry],
+    max_children: usize,
+) {
+    if entries.is_empty() {
+        return;
+    }
+    let prefix = prefix.trim().trim_matches('/');
+    let mut children = std::mem::take(&mut tree.children);
+    let existing: BTreeSet<_> = children.iter().map(|child| child.name.clone()).collect();
+    for entry in entries {
+        if existing.contains(&entry.name) {
+            continue;
+        }
+        let path = if prefix.is_empty() {
+            entry.name.clone()
+        } else {
+            format!("{prefix}/{}", entry.name)
+        };
+        children.push(CatalogTreeChild {
+            name: entry.name.clone(),
+            kind: if entry.is_dir {
+                "dir".into()
+            } else {
+                "file".into()
+            },
+            data_type: entry.dataset_kind.clone().unwrap_or_else(|| {
+                if entry.is_dir {
+                    "directory".into()
+                } else {
+                    "other".into()
+                }
+            }),
+            path,
+            run_count: 0,
+            failed_count: 0,
+            total_tokens: None,
+            entries: Vec::new(),
+        });
+    }
+    tree.children = fold_tree_children(children, max_children, prefix);
+}
+
+fn merge_dataset_children(
+    mut children: Vec<CatalogTreeChild>,
+    datasets: &[CatalogDataset],
+) -> Vec<CatalogTreeChild> {
+    let existing: BTreeSet<_> = children.iter().map(|child| child.name.clone()).collect();
+    for dataset in datasets {
+        if existing.contains(&dataset.mount.name) {
+            continue;
+        }
+        children.push(CatalogTreeChild {
+            name: dataset.mount.name.clone(),
+            kind: "dataset".into(),
+            data_type: "unknown".into(),
+            path: dataset.mount.name.clone(),
+            run_count: 0,
+            failed_count: 0,
+            total_tokens: None,
+            entries: Vec::new(),
+        });
+    }
+    children
+}
+
+fn merge_file_children(
+    mut children: Vec<CatalogTreeChild>,
+    sources: &[DiscoveredSource],
+    prefix: &str,
+) -> Vec<CatalogTreeChild> {
+    let mut groups = BTreeMap::<String, ChildAcc>::new();
+    for child in &children {
+        let entry = groups.entry(child.name.clone()).or_insert(ChildAcc {
+            run_count: 0,
+            failed_count: 0,
+            has_deeper: child.kind == "dir",
+            data_types: BTreeSet::new(),
+        });
+        entry.run_count = entry.run_count.max(child.run_count);
+        entry.failed_count = entry.failed_count.max(child.failed_count);
+        entry.has_deeper |= child.kind == "dir";
+        if !child.data_type.is_empty() {
+            entry.data_types.insert(child.data_type.clone());
+        }
+    }
+    for source in sources {
+        if source.file == "." {
+            continue;
+        }
+        let rest = if prefix.is_empty() {
+            source.file.as_str()
+        } else if source.file == prefix {
+            // Standing on this source: Directory stays navigable via shallow
+            // listing; leaf Stores/Files show no further path children here.
+            continue;
+        } else {
+            match source.file.strip_prefix(&format!("{prefix}/")) {
+                Some(rest) => rest,
+                None => continue,
+            }
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        let (name, has_deeper) = match rest.split_once('/') {
+            Some((name, _)) => (name, true),
+            None => (
+                rest,
+                source.kind == CatalogSourceKind::Directory || source.file.contains('/'),
+            ),
+        };
+        // A Directory leaf under this prefix is always a folder to open.
+        let has_deeper = has_deeper || source.kind == CatalogSourceKind::Directory;
+        if name.is_empty() {
+            continue;
+        }
+        let entry = groups.entry(name.to_string()).or_insert(ChildAcc {
+            run_count: 0,
+            failed_count: 0,
+            has_deeper: false,
+            data_types: BTreeSet::new(),
+        });
+        if let Some(count) = source.record_count {
+            let weight = usize::try_from(count).unwrap_or(usize::MAX);
+            entry.run_count = entry.run_count.max(weight);
+        }
+        if let Some(count) = source.failed_count {
+            let weight = usize::try_from(count).unwrap_or(usize::MAX);
+            entry.failed_count = entry.failed_count.max(weight);
+        }
+        entry.has_deeper |= has_deeper;
+        entry.data_types.insert(match source.kind {
+            CatalogSourceKind::Directory => "directory".into(),
+            CatalogSourceKind::Store | CatalogSourceKind::File => {
+                data_type(source.format.as_deref()).into()
+            }
+        });
+    }
+    if groups.is_empty() {
+        return children;
+    }
+    children = groups
+        .into_iter()
+        .map(|(name, acc)| CatalogTreeChild {
+            path: if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            },
+            kind: if acc.has_deeper {
+                "dir".into()
+            } else {
+                "file".into()
+            },
+            name,
+            run_count: acc.run_count,
+            failed_count: acc.failed_count,
+            data_type: combined_data_type(&acc.data_types),
+            total_tokens: None,
+            entries: Vec::new(),
+        })
+        .collect();
+    children
 }
 
 fn is_failed_status(status: &str) -> bool {
@@ -1503,6 +1702,63 @@ mod tests {
         assert_eq!(
             names,
             vec![("evals", "dataset", 2), ("archive", "dataset", 1)]
+        );
+    }
+
+    #[test]
+    fn empty_runs_still_list_catalog_mounts_and_directories() {
+        use persisting_pchronicle::storage::{
+            CatalogDataset, CatalogSourceKind, CatalogSourceStatus, DatasetMount, DiscoveredSource,
+        };
+
+        let mounts = vec![
+            CatalogDataset {
+                mount: DatasetMount::new("default", "/tmp/default").unwrap(),
+                sources: Vec::new(),
+            },
+            CatalogDataset {
+                mount: DatasetMount::new("prod", "s3://prod").unwrap(),
+                sources: vec![DiscoveredSource {
+                    file: "infra".into(),
+                    format: None,
+                    kind: CatalogSourceKind::Directory,
+                    revision: None,
+                    projection_status: None,
+                    projection_generation: None,
+                    projection_candidates: 0,
+                    size_bytes: None,
+                    last_modified: None,
+                    status: CatalogSourceStatus::Ready,
+                    error: None,
+                    record_count: None,
+                    failed_count: None,
+                }],
+            },
+        ];
+
+        let root = catalog_tree_with_mounts(&[], &mounts, None, "", 16);
+        assert_eq!(root.run_count, 0);
+        let names: Vec<_> = root
+            .children
+            .iter()
+            .map(|child| (child.name.as_str(), child.kind.as_str(), child.run_count))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("default", "dataset", 0), ("prod", "dataset", 0)]
+        );
+
+        let prod = catalog_tree_with_mounts(&[], &mounts, Some("prod"), "", 16);
+        assert_eq!(
+            prod.children
+                .iter()
+                .map(|child| (
+                    child.name.as_str(),
+                    child.kind.as_str(),
+                    child.data_type.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![("infra", "dir", "directory")]
         );
     }
 

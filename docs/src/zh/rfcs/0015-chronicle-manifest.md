@@ -40,7 +40,10 @@ pChronicle 已对其它布局使用应用控制文件（Storyline 的 `CURRENT`�
 - 让 discovery 通过读小 TOML 文件即可分类 Dataset 节点；
 - 持久化 explorer tree / dataset 摘要所需的聚合统计；
 - 通过**自动扫描**子目录中的 `chronicle.manifest` 支持嵌套 Dataset 树；
-- 在 sidecar 缺失或过期时，仍兼容现有启发式发现。
+- 无 manifest 的普通目录按 **Directory** 处理：只检查**一层**子目录是否为
+  Dataset（manifest / `CURRENT` / events），不把松散文件登记为 Source；
+- 在 sidecar 缺失时，仍可用 `CURRENT` / events / compact-jsonl 标记做 Dataset
+  分类，但 MUST NOT 为分类而全量递归列举对象存储前缀。
 
 非目标（v1）：
 
@@ -71,7 +74,12 @@ pChronicle 已对其它布局使用应用控制文件（Storyline 的 `CURRENT`�
 1. 若当前目录存在 `chronicle.manifest`，则解析它；
 2. 若 `kind = "leaf"`，将该目录视为对应 `format` 的一个 source 候选，且 MUST NOT 再递归其内部寻找其它 source；
 3. 若 `kind = "branch"`，只扫描**一层**子目录；对每个含有 `chronicle.manifest` 的子目录，按该子节点的 kind 继续处理；
-4. 若当前目录没有 `chronicle.manifest`，保留现有启发式发现，但当子目录含有 `chronicle.manifest` 时，优先采用该节点，且 MUST NOT 仅为分类而打开 Lance。
+4. 若当前目录没有 `chronicle.manifest`，则视为 **Directory**：只检查**一层**
+   子目录。子目录若含 Dataset 标记（`chronicle.manifest`、`CURRENT`、
+   `events.lance/_manifest.json`、compact-jsonl Lance）则登记为可查询 Source；
+   否则登记为导航项（`kind = directory`，`ls` 可见，不可 query）。松散文件
+   MUST NOT 登记为 Source。MUST NOT 为发现而递归列举整棵对象前缀树。
+   **`import` / `sync` 使用独立递归 JSON 扫描**，不受本条 Directory 浅层约束。
 
 MUST 忽略符号链接。现有 `max_entries` / `max_files` 遍历上限仍然适用。
 
@@ -121,7 +129,7 @@ Warehouse / Catalog MAY 在进程内缓存已发现的 leaf stats 与前缀聚�
 
 | 字段 | 类型 | 规则 |
 |---|---|---|
-| `format` | string | `kind = "leaf"` 时 MUST 存在；v1 写入方 MUST 使用 `compact-jsonl/v1` |
+| `format` | string | `kind = "leaf"` 时 MUST 存在；v1 写入方 MUST 使用 `compact-jsonl/v1` 或 `storyline/v1` |
 
 未知 `format` 值 MUST 被通用读者保留；特定格式 opener MAY 拒绝不支持的值。
 
@@ -177,6 +185,9 @@ kind = "branch"
   MUST 只通过该 store API，不得在上层另写并行 sidecar。
 - Compact JSONL `import` / 成功 republish / `sync` snapshot MUST 在输出 dataset 根写入
   `chronicle.manifest`。
+- Storyline `import`（`--output-format storyline`）MUST 在每次分批 commit 后更新输出根上的
+  leaf `chronicle.manifest`（`format = "storyline/v1"`，`record_count` 为已提交累计条数），
+  以便 Warehouse catalog / explorer 在导入过程中观察到进展。
 - 本机文件系统上的写入 MUST 原子（写临时文件再 rename）。
 - 物理写入成功后，`fingerprint` MUST 匹配已发布修订，且 `[stats].record_count` MUST 等于已发布行数。
 - 若 dataset 写成功但 manifest 写失败，`import_path` MUST 失败（不发布半成品契约）；对

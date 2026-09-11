@@ -4,6 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+// Pi runtimes may be launched with Node 16/18 in older sandboxes where the
+// global structuredClone helper is unavailable. JSON is sufficient for the
+// native event objects we copy here and keeps replay portable across runtimes.
+const clone = globalThis.structuredClone ?? ((value) => JSON.parse(JSON.stringify(value)));
+
 function load(filename) {
   return JSON.parse(fs.readFileSync(filename, "utf8"));
 }
@@ -181,15 +186,15 @@ async function run(request) {
 
   for (const event of events) {
     if (event?.type === "message_end" && event?.message?.role === "user") {
-      sessionManager.appendMessage(structuredClone(event.message));
-      reconstructedEvents.push(structuredClone(event));
+      sessionManager.appendMessage(clone(event.message));
+      reconstructedEvents.push(clone(event));
       continue;
     }
     if (event?.type !== "turn_end" || event?.message?.role !== "assistant") continue;
     const calls = toolCalls(event.message);
     if (calls.length > 0 && replayedBatches >= request.after_step) break;
     prefixTurns += 1;
-    const assistant = structuredClone(event.message);
+    const assistant = clone(event.message);
     sessionManager.appendMessage(assistant);
     const freshResults = [];
     for (const call of calls) {
@@ -198,7 +203,7 @@ async function run(request) {
       observations.push(fresh.observation);
       sessionManager.appendMessage(fresh.message);
     }
-    reconstructedEvents.push({ ...structuredClone(event), toolResults: freshResults });
+    reconstructedEvents.push({ ...clone(event), toolResults: freshResults });
     if (calls.length > 0) {
       replayedBatches += 1;
       if (replayedBatches === request.after_step) break;
@@ -259,7 +264,7 @@ async function run(request) {
   let terminalError = null;
   const remaining = request.max_steps == null ? null : request.max_steps - prefixTurns;
   const unsubscribe = session.subscribe((event) => {
-    liveEvents.push(structuredClone(event));
+    liveEvents.push(clone(event));
     if (event.type === "turn_end") {
       continuedSteps += 1;
       if (event.message?.stopReason === "error") {

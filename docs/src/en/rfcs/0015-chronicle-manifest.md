@@ -45,7 +45,12 @@ Goals:
 - Persist aggregate stats used by explorer tree / dataset summaries.
 - Support nested Dataset trees by **automatically scanning** child directories for
   `chronicle.manifest`.
-- Keep missing or stale manifests compatible with existing heuristic discovery.
+- Treat a prefix without `chronicle.manifest` as a **Directory**: inspect only
+  **immediate** child directories for Dataset markers, and do not register loose
+  files as Sources.
+- When the sidecar is missing, still classify Datasets via `CURRENT` / events /
+  compact-jsonl markers, but MUST NOT recursively list an entire object-store
+  prefix just to classify.
 
 Non-goals (v1):
 
@@ -84,10 +89,15 @@ Parents MUST NOT require an explicit children list. Discovery MUST:
 3. If `kind = "branch"`, scan **immediate** child directories only; for each
    child that contains `chronicle.manifest`, treat that child as a nested
    Dataset node and continue according to that child's kind.
-4. If the current directory has no `chronicle.manifest`, keep the existing
-   heuristic discovery, but when a subdirectory contains
-   `chronicle.manifest`, prefer that node and MUST NOT open Lance solely to
-   classify it.
+4. If the current directory has no `chronicle.manifest`, treat it as a
+   **Directory**: inspect **immediate** child directories only. Children with
+   Dataset markers (`chronicle.manifest`, `CURRENT`,
+   `events.lance/_manifest.json`, compact-jsonl Lance) become queryable
+   Sources; other children become navigational entries (`kind = directory`,
+   visible to `ls`, not queryable). Loose files MUST NOT be registered as
+   Sources. Discovery MUST NOT recursively list an entire object-store prefix
+   tree to classify. **`import` / `sync` use a separate recursive JSON scan**
+   and are not bound by this Directory shallow rule.
 
 Symlinks MUST be ignored. Existing `max_entries` / `max_files` limits still
 apply to traversal.
@@ -145,7 +155,7 @@ source of truth that travels with the dataset.
 
 | Field | Type | Rules |
 |---|---|---|
-| `format` | string | MUST be present for `kind = "leaf"`; v1 writers MUST use `compact-jsonl/v1` |
+| `format` | string | MUST be present for `kind = "leaf"`; v1 writers MUST use `compact-jsonl/v1` or `storyline/v1` |
 
 Unknown `format` values MUST be preserved by generic readers; format-specific
 openers MAY reject unsupported values.

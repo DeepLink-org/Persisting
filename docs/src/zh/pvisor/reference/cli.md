@@ -116,13 +116,20 @@ pvisor replay \
   --boundary-user-prompt 'Review the fresh observation before continuing.'
 ```
 
-OpenHands、mini-swe-agent、Pi agent 和 SWE-agent 使用环境中已有的模型端点
+OpenHands、mini-swe-agent、Pi agent、OpenCode、Codex 和 SWE-agent 使用环境中已有的模型端点
 和凭据。Pi 要求精确的 `0.83.0` runtime，并接受包含核心 `read`、`bash`、
 `edit` 和 `write` 工具的原生 RPC event JSONL。Claude Code 使用
 SandboxReplay 拥有的临时 bridge，因为它的原生 resume 传输会插入 wake-up
 消息。该 bridge 在转发模型请求前校验并去掉那份精确的 Resume Transport
 envelope。它不启用 pVisor Gateway、不捕获模型流量、也不持久化 bridge
 审计。
+
+OpenCode 要求精确的 `1.17.7` runtime，轨迹格式为
+`opencode run --format=json` 的事件 JSONL；Codex 要求精确的 `0.149.0` runtime，
+轨迹格式为 Codex rollout `response_item` JSONL。两者均在新沙箱中重建原生前缀，
+并调用各自的原生 resume 命令续跑。
+Codex 的 native session ID 从轨迹 `session_meta` 提取；`session_id` 只作为模型
+路由/Run 标识，不能覆盖该 native session。缺少 native session 时会 fail-closed。
 
 等价的严格 replay TOML 是：
 
@@ -139,8 +146,7 @@ disable_thinking = true
 boundary_user_prompt = "Review the fresh observation before continuing."
 ```
 
-Pi 使用同一套 CLI/TOML 面。它的默认 SweEval entrypoint 是
-`/opt/pi-agent/bin/pi`，例如：
+Pi 使用同一套 CLI/TOML 面。runtime 安装在 `/opt/pi-agent` 时，例如：
 
 ```bash
 pvisor replay --agent pi-agent \
@@ -166,10 +172,10 @@ Agent 原生的 prepared 或 continued 轨迹可以包含这条用户消息。
 原先只用 `replay_only = true` 来构造前缀的非 Claude 调用方必须迁移到
 `prepare_only = true`。
 
-`disable_thinking` 属于 `[replay]`，也暴露为 `--disable-thinking`；它由
-Claude 协议 bridge 应用，且不会打开 Gateway capture。可选的 `[run]`、
-`[overlayfs]` 和 `[overlaynet]` 段会创建外层受管 `pvisor run`；它们不改变
-内部 replay 模型路径。
+`disable_thinking` 属于 `[replay]`，也暴露为 `--disable-thinking`。Claude Code
+由协议 bridge 将其应用到上游请求；OpenCode 设置后会省略 `--thinking`。该选项
+不会打开 Gateway capture。可选的 `[run]`、`[overlayfs]` 和 `[overlaynet]` 段会
+创建外层受管 `pvisor run`；它们不改变内部 replay 模型路径。
 
 默认情况下，replay 的内部状态、WAL、manifest、新鲜 observation 比较和原生
 工作文件留在 `/tmp/pvisor-sandbox-replay`，并随 sandbox 消失。Replay 不启用

@@ -3,7 +3,7 @@
 **Standalone `pchronicle` CLI for onboarding, browsing, querying, importing,
 exporting, and serving trajectory Datasets.**
 
-Owns the `pchronicle` binary, loopback-only Warehouse HTTP, the write-capable
+Owns the `pchronicle` binary, Warehouse HTTP, the write-capable
 `--control` plane used by pPilot and pVisor, optional Gateway ingest/forwarding
 flags, and the embed of staged `pchronicle-web` assets at build time.
 
@@ -17,14 +17,13 @@ Current commands include `onboard`, `dataset` (pin/unpin/list/show/set/rename),
 `list`/`ls`, `stats`, bounded read-only `query`, built-in `stats` reports, assisted
 `agent` sessions, Source-local `find`, create/append/replace `import`,
 destructive `drop`, complete-trajectory `export`, directory `sync`, `echo`, and
-loopback-only `serve`. Import and export support ATIF, OpenAI Messages, ACTF,
-Storyline JSON, and record-level Compact JSONL. `sync --from SOURCE --to
-WAREHOUSE --convert OUTPUT` polls a local source directory, atomically mirrors
-supported JSON files into a local Warehouse Dataset byte-for-byte, and rebuilds
-a Storyline Lance Dataset at the conversion output on each coalesced batch.
-With `--input-format compact-jsonl`, each batch instead replaces a compact Lance
-snapshot at `OUTPUT`; `--to` remains required but is not written. Use `--once`
-for a finite run.
+`serve`. Import and export support ATIF, OpenAI Messages, ACTF,
+Storyline JSON, and record-level Compact JSONL. `sync --from SOURCE [--mirror
+MIRROR] [--to OUTPUT]` polls a source directory and, on each coalesced batch,
+optionally rebuilds a Compact JSONL Lance Dataset at `--mirror` and/or a
+Storyline Lance Dataset at `--to`. Provide at least one destination. With
+`--input-format compact-jsonl`, only `--mirror` is valid. Use `--once` for a
+finite run.
 
 `pchronicle serve --control 127.0.0.1:0 URI` is normally launched by pPilot or
 pVisor. `serve --listen` is the read-only Warehouse. Public bind addresses are
