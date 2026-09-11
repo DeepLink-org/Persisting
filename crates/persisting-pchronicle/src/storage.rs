@@ -57,11 +57,11 @@ pub use crate::store::{
     ProjectionSourceSnapshot, RawEventLanceAppender, RawEventLanceStore, ReplayOutcome,
     RunControlStore, ShallowNavEntry, StorylineContentOptions, StorylineContentReadMode,
     StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
-    StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
-    StorylineStreamOptions, StorylineTablePaths, TrajectoryStats, attempt_registry_now_ms,
-    distinct_session_ids_in_run, export_source_dirs, export_story_bundle, inspect_physical_file,
-    inspect_physical_layout, inspect_physical_page, list_physical_sources, load_manifest,
-    load_manifest_at_uri, raw_event_lance_path, write_compact_jsonl_manifest,
+    StorylineMaintenanceReport, StorylineProjectionLineage, StorylineSearchIndexSuppressGuard,
+    StorylineStreamImportReport, StorylineStreamOptions, StorylineTablePaths, TrajectoryStats,
+    attempt_registry_now_ms, distinct_session_ids_in_run, export_source_dirs, export_story_bundle,
+    inspect_physical_file, inspect_physical_layout, inspect_physical_page, list_physical_sources,
+    load_manifest, load_manifest_at_uri, raw_event_lance_path, write_compact_jsonl_manifest,
     write_storyline_manifest, write_storyline_manifest_at_uri,
 };
 

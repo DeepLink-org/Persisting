@@ -8,7 +8,7 @@ const codeTheme = {
 const config = {
   title: 'Persisting',
   tagline: 'Persistent Infrastructure for the Agent Era',
-  favicon: 'img/logos/persisting-mark.svg',
+  favicon: 'img/logos/persisting-icon.png',
   url: 'https://deeplink-org.github.io',
   // Use `/` for local previews; GitHub Pages sets DOCUSAURUS_BASE_URL=/Persisting/.
   baseUrl: process.env.DOCUSAURUS_BASE_URL || '/',
@@ -54,7 +54,7 @@ const config = {
     },
     navbar: {
       title: 'Persisting',
-      logo: { alt: 'Persisting', src: 'img/logos/persisting-mark.svg' },
+      logo: { alt: 'Persisting', src: 'img/logos/persisting-icon.png' },
       items: [
         { to: '/docs/', label: 'Start here', position: 'left' },
         { to: '/docs/pvisor/', label: 'pVisor', position: 'left' },

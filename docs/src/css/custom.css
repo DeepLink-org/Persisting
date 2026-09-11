@@ -100,7 +100,7 @@ a { text-underline-offset: .2em; }
 .navbar__title { font-weight: 600; letter-spacing: -.025em; }
 .navbar__link { font-size: .875rem; border-radius: 999px; }
 .navbar__link--active { background: rgb(168 206 250 / 9%); }
-.navbar__logo { width: 2rem; height: 2rem; object-fit: contain; }
+.navbar__logo { width: 2rem; height: 2rem; object-fit: contain; filter: brightness(0) invert(1); }
 .navbar__search-input { min-height: 2.5rem; border: 1px solid var(--docs-border); }
 .navbar-sidebar { background: #0c121e; }
 .navbar-sidebar__brand { border-bottom: 1px solid var(--docs-border); box-shadow: none; }
@@ -133,6 +133,11 @@ a { text-underline-offset: .2em; }
 .markdown blockquote { border-left: 2px solid #7ca5d5; background: rgb(168 206 250 / 4%); padding: 1rem 1.25rem; color: #bfcee2; border-radius: 0 .75rem .75rem 0; }
 .markdown blockquote > :last-child { margin-bottom: 0; }
 .markdown img { border-radius: .75rem; }
+.markdown img[alt*='logo' i] {
+  /* Existing product wordmarks use navy ink; invert it for the dark reading surface. */
+  filter: brightness(0) invert(1) drop-shadow(0 0 10px rgb(92 168 255 / 18%));
+  opacity: .94;
+}
 .markdown table { width: 100%; border-radius: .75rem; background: rgb(12 18 30 / 65%); font-size: .9375rem; }
 .markdown th { color: #e9eef8; }
 .markdown td { color: #cad5e6; }

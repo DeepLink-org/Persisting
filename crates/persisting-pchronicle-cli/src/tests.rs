@@ -2743,16 +2743,12 @@ async fn directory_import_auto_detects_each_file_and_skips_unknown_json() -> Res
         assert_eq!(response["trajectories"], 3, "{output_format:?}: {response}");
         let warnings = String::from_utf8(stderr)?;
         assert!(
-            warnings.contains("root.json"),
+            warnings.contains("warning: skipped import source details/_error_gravitational-wave-detection_astronomy.json: cannot detect import format"),
             "{output_format:?}: {warnings}"
         );
         assert!(
-            warnings.contains("_error_gravitational-wave-detection_astronomy.json"),
-            "{output_format:?}: {warnings}"
-        );
-        assert!(
-            warnings.contains("cannot detect import format"),
-            "{output_format:?}: {warnings}"
+            !warnings.contains("skipped import source root.json"),
+            "auto-detected ATIF must not be skipped: {output_format:?}: {warnings}"
         );
         if output_format == ImportOutputFormat::Preserve {
             assert!(!output.join(unknown.file_name().unwrap()).exists());
@@ -3308,6 +3304,8 @@ async fn append_storyline_import_suffixes_or_skips_existing_document_ids() -> Re
     let initial = temp.path().join("initial.json");
     let duplicate = temp.path().join("duplicate.json");
     let output = temp.path().join("dataset");
+    let _suppress =
+        persisting_pchronicle::storage::StorylineSearchIndexSuppressGuard::for_path(&output);
     fs::write(
         &initial,
         serde_json::to_vec(&atif_identity_document("shared", "session-initial"))?,

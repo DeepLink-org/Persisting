@@ -400,6 +400,9 @@ mod tests {
     #[tokio::test]
     async fn startup_converges_every_initial_projection_before_returning() -> Result<()> {
         let temp = tempfile::tempdir()?;
+        let _suppress = persisting_pchronicle::storage::StorylineSearchIndexSuppressGuard::for_path(
+            temp.path(),
+        );
         let storage = temp.path().join("capture");
         append_note(&storage, "b", 0).await?;
         append_note(&storage, "a", 0).await?;
@@ -429,6 +432,9 @@ mod tests {
     #[tokio::test]
     async fn startup_rejects_a_foreign_deterministic_destination() -> Result<()> {
         let temp = tempfile::tempdir()?;
+        let _suppress = persisting_pchronicle::storage::StorylineSearchIndexSuppressGuard::for_path(
+            temp.path(),
+        );
         let storage = temp.path().join("capture");
         let source_a = append_note(&storage, "a", 0).await?;
         append_note(&storage, "b", 0).await?;
@@ -453,6 +459,9 @@ mod tests {
     #[tokio::test]
     async fn runtime_discovers_sources_and_coalesces_catalog_refreshes() -> Result<()> {
         let temp = tempfile::tempdir()?;
+        let _suppress = persisting_pchronicle::storage::StorylineSearchIndexSuppressGuard::for_path(
+            temp.path(),
+        );
         let root = temp.path().join("dataset");
         // Mount the agent leaf so shallow Directory discovery sees run/
         // events.lance Sources (not an unlabeled `agent/` Directory stub).
@@ -528,6 +537,9 @@ mod tests {
     #[tokio::test]
     async fn projection_idle_defers_existing_source_until_quiet_window() -> Result<()> {
         let temp = tempfile::tempdir()?;
+        let _suppress = persisting_pchronicle::storage::StorylineSearchIndexSuppressGuard::for_path(
+            temp.path(),
+        );
         let root = temp.path().join("dataset");
         let agent = root.join("agent");
         std::fs::create_dir_all(&agent)?;
@@ -565,6 +577,9 @@ mod tests {
     #[tokio::test]
     async fn runtime_backoff_is_per_source_and_does_not_delay_healthy_sources() -> Result<()> {
         let temp = tempfile::tempdir()?;
+        let _suppress = persisting_pchronicle::storage::StorylineSearchIndexSuppressGuard::for_path(
+            temp.path(),
+        );
         let root = temp.path().join("dataset");
         let good_source = append_note(&root, "good", 0).await?;
         append_note(&root, "bad", 0).await?;
@@ -604,6 +619,9 @@ mod tests {
     #[tokio::test]
     async fn failed_catalog_refresh_stays_dirty_and_retries_independently() -> Result<()> {
         let temp = tempfile::tempdir()?;
+        let _suppress = persisting_pchronicle::storage::StorylineSearchIndexSuppressGuard::for_path(
+            temp.path(),
+        );
         let root = temp.path().join("dataset");
         let agent = root.join("agent");
         std::fs::create_dir_all(&agent)?;
