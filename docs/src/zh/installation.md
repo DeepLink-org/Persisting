@@ -38,14 +38,15 @@ pip install persisting
 ## 2. 检查平台要求
 
 CLI 支持 macOS 和 Linux，要求 Python 3.10 或更新版本。普通 host Run 不需要文件系统扩展。
-在 macOS 上使用 host-process 的 `pvisor run --safe` 前，先安装 macFUSE：
+在 macOS 上使用 host-process 的 staged Run（`pvisor run --stage …`）前，先安装 macFUSE：
 
 ```bash
 brew install --cask macfuse
 ```
 
-macOS 提示时允许 macFUSE system extension。如果挂载能力不可用，`--safe` 会 fail closed，
-不会退化为直接写入项目目录。libkrun VM executor 不需要 macFUSE。
+macOS 提示时允许 macFUSE system extension。不带 `--stage` 时 Agent 可能直写项目目录；
+带 `--stage` 且挂载能力不可用时，Run 会 fail closed，而不会静默退化为无 COW 直写。
+libkrun VM executor 不需要 macFUSE。
 
 ## 3. 需要时从源码安装
 

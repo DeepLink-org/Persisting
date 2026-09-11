@@ -97,6 +97,14 @@ pub(crate) async fn warehouse_request_layer(
         .insert(RequestId(request_id.clone()));
     request.extensions_mut().insert(fts.clone());
 
+    tracing::info!(
+        target: LOG_TARGET,
+        request_id = %request_id,
+        method = %method,
+        path = %path,
+        query = %truncate_utf8(&query, QUERY_LOG_LIMIT),
+        "warehouse request start"
+    );
     let response = next.run(request).await;
     let status = response.status();
     let root_cause = response
@@ -106,32 +114,29 @@ pub(crate) async fn warehouse_request_layer(
         .unwrap_or_default();
     let (response, error_fields) = attach_request_id(response, &request_id).await;
 
-    let is_api = path.starts_with("/api/");
-    if is_api {
-        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        tracing::info!(
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    tracing::info!(
+        target: LOG_TARGET,
+        request_id = %request_id,
+        method = %method,
+        path = %path,
+        status = status.as_u16(),
+        elapsed_ms,
+        query = %truncate_utf8(&query, QUERY_LOG_LIMIT),
+        "warehouse request"
+    );
+    if (400..500).contains(&status.as_u16()) {
+        let (code, message) = error_fields.unwrap_or_default();
+        let fts_errors = fts.joined();
+        tracing::warn!(
             target: LOG_TARGET,
             request_id = %request_id,
-            method = %method,
-            path = %path,
-            status = status.as_u16(),
-            elapsed_ms,
-            query = %truncate_utf8(&query, QUERY_LOG_LIMIT),
-            "warehouse request"
+            code = %code,
+            message = %message,
+            root_cause = %root_cause,
+            fts_errors = %fts_errors,
+            "warehouse request rejected"
         );
-        if (400..500).contains(&status.as_u16()) {
-            let (code, message) = error_fields.unwrap_or_default();
-            let fts_errors = fts.joined();
-            tracing::warn!(
-                target: LOG_TARGET,
-                request_id = %request_id,
-                code = %code,
-                message = %message,
-                root_cause = %root_cause,
-                fts_errors = %fts_errors,
-                "warehouse request rejected"
-            );
-        }
     }
     response
 }

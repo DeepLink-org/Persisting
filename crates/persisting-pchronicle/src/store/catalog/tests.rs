@@ -479,11 +479,19 @@ async fn empty_dataset_still_exposes_the_stable_catalog_tables() -> Result<()> {
 }
 
 #[tokio::test]
-async fn directory_lists_child_dirs_and_dataset_sources_separately() -> Result<()> {
+async fn open_directory_unions_nested_leaves_and_peripheral_json() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    let plain = temp.path().join("plain");
-    fs::create_dir_all(&plain)?;
-    fs::write(plain.join("notes.txt"), "skip")?;
+    fs::create_dir_all(temp.path().join("plain"))?;
+    fs::write(temp.path().join("plain/notes.txt"), "skip")?;
+    fs::create_dir_all(temp.path().join("nested"))?;
+    write_openai_source(
+        &temp.path().join("nested/trajectory.json"),
+        "nested-session",
+    )?;
+    fs::write(
+        temp.path().join("trajectory.jsonl"),
+        r#"{"schema_version":"ATIF-v1.4","session_id":"root","steps":[],"agent":{"id":"a"}}"#,
+    )?;
     let story = temp.path().join("story");
     let store = StorylineLanceStore::open(&story).await?;
     store
@@ -496,12 +504,20 @@ async fn directory_lists_child_dirs_and_dataset_sources_separately() -> Result<(
     )
     .await?;
     let dataset = &snapshot.datasets()[0];
-    assert_eq!(dataset.directory_count(), 1);
-    assert_eq!(dataset.ready_source_count(), 1);
-    assert_eq!(dataset.sources[0].kind, CatalogSourceKind::Directory);
-    assert_eq!(dataset.sources[0].file, "plain");
-    assert_eq!(dataset.sources[1].kind, CatalogSourceKind::Store);
-    assert_eq!(dataset.sources[1].file, "story");
+    assert_eq!(dataset.directory_count(), 0);
+    let files: Vec<_> = dataset
+        .sources
+        .iter()
+        .map(|source| (source.file.as_str(), source.kind))
+        .collect();
+    assert_eq!(
+        files,
+        vec![
+            ("nested/trajectory.json", CatalogSourceKind::File),
+            ("story", CatalogSourceKind::Store),
+            ("trajectory.jsonl", CatalogSourceKind::File),
+        ]
+    );
     Ok(())
 }
 
@@ -1175,7 +1191,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: lazy Directory discovery interaction with multi-projection Fresh status; revisit without changing discovery"]
+#[ignore = "known failure: canonical events binding with multiple fresh projections"]
 async fn multiple_fresh_projections_choose_one_without_hiding_canonical_events() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let storage = temp.path().join("capture");

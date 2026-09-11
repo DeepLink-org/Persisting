@@ -4,6 +4,7 @@
 //! protocol is intended for trusted local orchestrators such as pPilot.
 
 use anyhow::{Context, Result};
+use fs2::FileExt;
 use persisting_events::{
     AttemptRecord as ProtocolAttemptRecord, AttemptRecordState as ProtocolAttemptRecordState,
     CHRONICLE_CONTROL_MAX_FRAME_BYTES, CHRONICLE_CONTROL_VERSION, ChronicleControlEnvelope,
@@ -342,11 +343,16 @@ async fn append_json_trajectory(
             .create(true)
             .append(true)
             .open(&file_path)?;
+        // Serialize concurrent AppendTrajectory(Json) writers so lines are not
+        // interleaved across serve connections (and across processes).
+        file.lock_exclusive()
+            .with_context(|| format!("lock {}", file_path.display()))?;
         for record in &request.records {
             serde_json::to_writer(&mut file, record)?;
             file.write_all(b"\n")?;
         }
         file.flush()?;
+        let _ = file.unlock();
     } else {
         // Object stores do not provide an atomic append primitive. Keep each
         // event immutable and independently recoverable under the warehouse
@@ -435,6 +441,69 @@ mod tests {
 
         stop_tx.send(()).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), server).await???;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_json_trajectory_appends_do_not_interleave_lines() -> Result<()> {
+        let storage = tempfile::tempdir()?;
+        let storage_path = storage.path().to_string_lossy().into_owned();
+        let writers = 8usize;
+        let records_per_writer = 20usize;
+        let mut handles = Vec::new();
+        for writer in 0..writers {
+            let storage_path = storage_path.clone();
+            handles.push(tokio::spawn(async move {
+                let mut records = Vec::with_capacity(records_per_writer);
+                for index in 0..records_per_writer {
+                    let seq = (writer * records_per_writer + index) as u64;
+                    records.push(persisting_events::EventRecord {
+                        identity: Default::default(),
+                        seq,
+                        source: "test".into(),
+                        kind: "note".into(),
+                        timestamp: None,
+                        session_id: Some("session".into()),
+                        agent_id: Some("agent".into()),
+                        parent_uuid: None,
+                        trace_id: None,
+                        call_id: None,
+                        subagent_id: None,
+                        parent_agent_id: None,
+                        branch: None,
+                        parent_call_id: None,
+                        payload: serde_json::json!({"writer": writer, "index": index}),
+                    });
+                }
+                append_json_trajectory(TrajectoryAppendRequest {
+                    storage: storage_path,
+                    agent_id: "agent".into(),
+                    session_id: "session".into(),
+                    format: TrajectoryFormat::Json,
+                    root_session_id: Some("session".into()),
+                    records,
+                })
+                .await
+            }));
+        }
+        for handle in handles {
+            handle.await??;
+        }
+        let path = storage
+            .path()
+            .join("json")
+            .join("agent")
+            .join("session")
+            .join("events.jsonl");
+        let text = std::fs::read_to_string(&path)?;
+        let mut lines = 0usize;
+        for line in text.lines() {
+            let value: serde_json::Value = serde_json::from_str(line)
+                .with_context(|| format!("invalid JSONL line: {line:?}"))?;
+            assert!(value.get("seq").is_some());
+            lines += 1;
+        }
+        assert_eq!(lines, writers * records_per_writer);
         Ok(())
     }
 }

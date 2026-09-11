@@ -594,6 +594,7 @@ async fn capture_list(dataset_uri: String) -> Result<String> {
         ListArgs {
             dataset_uri: Some(dataset_uri),
             physical: false,
+            sources: false,
             format: OutputFormat::Table,
             errors: ErrorMode::Report,
             max_files: MAX_FILES,

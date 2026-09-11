@@ -19,7 +19,7 @@ imported="$(pchronicle_capture 02-import "$pchronicle" --config "$settings" \
 dataset_uri="$(jq -er '.dataset_uri' <<<"$imported")"
 
 sources="$(pchronicle_capture 03-ls "$pchronicle" --config "$settings" \
-  ls "$dataset_uri" --physical --format json)"
+  ls "$dataset_uri" --sources --physical --format json)"
 stats="$(pchronicle_capture 04-stats "$pchronicle" --config "$settings" \
   stats "$dataset_uri" --format json)"
 query_result="$(pchronicle_capture 05-query "$pchronicle" --config "$settings" query "$dataset_uri" \

@@ -125,12 +125,15 @@ pub(crate) use local_query_manifest::{
     LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
 };
 #[cfg(feature = "lance-store")]
-pub use location::{DatasetLocation, DatasetLocationKind, ImportableObjectEvent, ShallowNavEntry};
+pub use location::{
+    DatasetLocation, DatasetLocationKind, ImportableObjectEvent, PathListEntry, PathListKind,
+    ShallowNavEntry,
+};
 #[cfg(feature = "lance-store")]
 pub use query_engine::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, DEFAULT_QUERY_MEMORY_LIMIT_BYTES,
-    ExternalTableFormat, ExternalTableSpec, IntrospectedField, IntrospectedTable, QueryBackendInfo,
-    QuerySnapshot, QueryWriteOutcome,
+    ExternalTableFormat, ExternalTableSpec, IntrospectedField, IntrospectedTable,
+    QUERY_MEMORY_LIMIT_ENV, QueryBackendInfo, QuerySnapshot, QueryWriteOutcome,
 };
 #[cfg(feature = "lance-store")]
 pub use run_control::{CommitRunOutcome, LeaseAcquireOutcome, RunControlStore};
@@ -143,10 +146,10 @@ pub use storyline::{
     ProjectionSourceSnapshot, StorylineContentOptions, StorylineContentReadMode,
     StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
     StorylineLanceStore, StorylineMaintenanceReport, StorylineProjectionLineage,
-    StorylineStreamImportReport, StorylineStreamOptions, StorylineTableKind, StorylineTablePaths,
-    story_runs_arrow_schema, story_runs_from_batch, story_runs_to_batch, story_steps_arrow_schema,
-    story_steps_from_batch, story_steps_to_batch, story_tool_calls_arrow_schema,
-    story_tool_calls_from_batch, story_tool_calls_to_batch,
+    StorylineSearchIndexSuppressGuard, StorylineStreamImportReport, StorylineStreamOptions,
+    StorylineTableKind, StorylineTablePaths, story_runs_arrow_schema, story_runs_from_batch,
+    story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch, story_steps_to_batch,
+    story_tool_calls_arrow_schema, story_tool_calls_from_batch, story_tool_calls_to_batch,
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_model::{

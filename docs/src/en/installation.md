@@ -41,15 +41,16 @@ already have trajectory data, continue with [Explore your first Dataset](pchroni
 
 The CLI supports macOS and Linux with Python 3.10 or newer. A normal host Run
 works without a filesystem extension. On macOS, install macFUSE before using a
-host-process `pvisor run --safe` workflow:
+host-process staged Run (`pvisor run --stage …`):
 
 ```bash
 brew install --cask macfuse
 ```
 
-Approve the macFUSE system extension when macOS asks. If the required mount
-capability is unavailable, `--safe` fails closed rather than writing directly
-to the project workspace. The libkrun VM executor does not require macFUSE.
+Approve the macFUSE system extension when macOS asks. Without `--stage`, the
+Agent may write the real project tree. With `--stage`, if the required mount
+capability is unavailable, the Run fails closed rather than silently writing
+the workspace without COW. The libkrun VM executor does not require macFUSE.
 
 ## 3. Install from source when needed
 

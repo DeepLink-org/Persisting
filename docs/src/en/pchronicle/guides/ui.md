@@ -32,8 +32,11 @@ The left rail separates the common tasks into five surfaces. Click the **pC** ma
 
 | Surface | Use it to |
 | --- | --- |
-| **Datasets** | See mounted Datasets and Run counts, then enter Runs. |
+| **Datasets** | Browse the current path one level at a time, like `pchronicle ls`. Dataset folders show type and trajectory count. |
 | **Runs** | Filter by path, Dataset, status, or text and open one Run. |
+| **Analysis** | Inspect available fields and analyze with a question or read-only SQL. |
+| **Storage** | Inspect Lance tables, data groups, column distributions, and storage size. |
+| **Assistant** | Ask about the current Run after configuring a compatible model. |
 | **Analysis** | Inspect available fields and analyze with a question or read-only SQL. |
 | **Storage** | Inspect Lance tables, data groups, column distributions, and storage size. |
 | **Assistant** | Ask about the current Run after configuring a compatible model. |
@@ -43,16 +46,20 @@ local pChronicle server.
 
 ![The Datasets page shows the test and data Datasets and their Run counts](/img/screenshots/pchronicle/data-overview.jpg)
 
-**Datasets** is the warehouse landing page after you leave Home. Each card shows a Dataset name and Run count.
-Select a card to open that Dataset's data overview, then use **Open in Runs**
-to open the current scope. The button with the same name on the landing page
-opens all Runs.
+**Datasets** is the warehouse landing page after you leave Home. The warehouse
+root lists serve mounts. Inside a mount, each card is one child of the current
+path — the same listing as `pchronicle ls`. Dataset children show type and
+trajectory count from `chronicle.manifest` when present. Select a directory to
+go one level down. Select a Dataset to stay on that Dataset (Lance interiors
+are not a browse folder). **Open in Runs** opens the current query root as a
+Snapshot; a plain directory is a virtual dataset of nested Datasets and JSON.
 
 ## Browse and filter Runs
 
 ![The Runs page combines a path tree with a filterable Run table](/img/screenshots/pchronicle/runs-browser.jpg)
 
-The Runs page combines a path tree and a result table:
+The Runs page combines a path tree and a result table. **Run paths** is built
+from run summaries (the import-path tree). It is not the Datasets `ls` listing.
 
 1. Select a Dataset, folder level, or Session in **Run paths**. The number at
    the right of a node is the number of Runs below it.

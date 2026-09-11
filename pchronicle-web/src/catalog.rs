@@ -9,7 +9,6 @@ pub fn CatalogExplorer(
     on_open: EventHandler<(String, String)>,
     on_runs: EventHandler<(String, String)>,
 ) -> Element {
-    let mut other_open = use_signal(|| false);
     let dataset = tree
         .as_ref()
         .and_then(|tree| tree.dataset.clone())
@@ -55,22 +54,6 @@ pub fn CatalogExplorer(
                         tree: tree.clone().unwrap(),
                         on_open,
                         on_runs,
-                        on_other: move |_| other_open.set(!other_open()),
-                    }
-                }
-            }
-            if other_open() {
-                if let Some(other) = tree.as_ref().and_then(other_child) {
-                    ul { class: "pc-catalog-other",
-                        for entry in other.entries.clone() {
-                            OtherEntry {
-                                key: "{entry.path}",
-                                dataset: dataset.clone(),
-                                entry,
-                                on_open,
-                                on_runs,
-                            }
-                        }
                     }
                 }
             }
@@ -125,21 +108,12 @@ fn CatalogStats(tree: Option<CatalogTree>) -> Element {
     let Some(tree) = tree else {
         return rsx! {};
     };
-    let fail = if tree.run_count == 0 {
-        "—".into()
-    } else {
-        format!(
-            "{:.1}%",
-            100.0 * tree.failed_count as f64 / tree.run_count as f64
-        )
-    };
     let errors = tree.error_sources.unwrap_or(0);
     rsx! {
         div { class: "pc-catalog-stats",
-            div { span { "Runs" } strong { "{tree.run_count}" } }
-            div { span { "Fail rate" } strong { "{fail}" } }
-            div { span { "Duration" } strong { "{format_duration(tree.duration_ms)}" } }
-            div { span { "Tokens" } strong { "{format_tokens(tree.total_tokens)}" } }
+            div { span { "Items" } strong { "{tree.children.len()}" } }
+            div { span { "Trajectories" } strong { "{tree.run_count}" } }
+            div { span { "Failed" } strong { "{tree.failed_count}" } }
         }
         if errors > 0 {
             p { class: "pc-catalog-errors", "{errors} source files could not be loaded" }
@@ -152,7 +126,6 @@ fn CatalogFolders(
     tree: CatalogTree,
     on_open: EventHandler<(String, String)>,
     on_runs: EventHandler<(String, String)>,
-    on_other: EventHandler<MouseEvent>,
 ) -> Element {
     let dataset = tree.dataset.clone().unwrap_or_default();
     rsx! {
@@ -164,7 +137,6 @@ fn CatalogFolders(
                     dataset: dataset.clone(),
                     on_open,
                     on_runs,
-                    on_other,
                 }
             }
         }
@@ -177,20 +149,24 @@ fn CatalogFolder(
     dataset: String,
     on_open: EventHandler<(String, String)>,
     on_runs: EventHandler<(String, String)>,
-    on_other: EventHandler<MouseEvent>,
 ) -> Element {
     let kind = child.kind.clone();
     let path = child.path.clone();
     let name = child.name.clone();
     let data_type = child.data_type.clone();
-    let tokens = format_tokens(child.total_tokens);
+    let is_dir = kind == "dir";
     rsx! {
         button {
             class: "pc-catalog-folder type-{data_type} kind-{kind}",
-            title: "{name} · {child.run_count} trajectories · {tokens} tokens",
-            onclick: move |event| {
+            title: if is_dir {
+                format!("{name} · directory")
+            } else if child.run_count > 0 {
+                format!("{name} · {} trajectories", child.run_count)
+            } else {
+                name.clone()
+            },
+            onclick: move |_| {
                 match kind.as_str() {
-                    "other" => on_other.call(event),
                     "file" => on_runs.call((dataset.clone(), path.clone())),
                     "dataset" => on_open.call((name.clone(), String::new())),
                     _ => on_open.call((dataset.clone(), path.clone())),
@@ -202,81 +178,27 @@ fn CatalogFolder(
             }
             span { class: "pc-catalog-folder-type", "{data_type}" }
             div { class: "pc-catalog-folder-meta",
-                span { "{child.run_count} trajectories" }
-                span { "{tokens} tokens" }
+                if is_dir {
+                    span { "Directory" }
+                } else if child.run_count > 0 {
+                    span { "{child.run_count} trajectories" }
+                } else {
+                    span { "Source" }
+                }
             }
         }
     }
-}
-
-#[component]
-fn OtherEntry(
-    dataset: String,
-    entry: CatalogTreeChild,
-    on_open: EventHandler<(String, String)>,
-    on_runs: EventHandler<(String, String)>,
-) -> Element {
-    let kind = entry.kind.clone();
-    let path = entry.path.clone();
-    let name = entry.name.clone();
-    rsx! {
-        li {
-            button {
-                onclick: move |_| {
-                    match kind.as_str() {
-                        "file" => on_runs.call((dataset.clone(), path.clone())),
-                        "dataset" => on_open.call((name.clone(), String::new())),
-                        _ => on_open.call((dataset.clone(), path.clone())),
-                    }
-                },
-                strong { "{entry.name}" }
-                span { "{entry.run_count}" }
-            }
-        }
-    }
-}
-
-fn other_child(tree: &CatalogTree) -> Option<&CatalogTreeChild> {
-    tree.children.iter().find(|child| child.kind == "other")
 }
 
 fn catalog_subtitle(tree: Option<&CatalogTree>) -> String {
     let Some(tree) = tree else {
-        return "Browse datasets by run count.".into();
+        return "Browse the current path, like ls.".into();
     };
     if tree.dataset.is_none() {
-        format!("{} datasets · {} runs", tree.children.len(), tree.run_count)
+        format!("{} mounts", tree.children.len())
     } else if tree.prefix.is_empty() {
-        "Folders follow source file paths.".into()
+        format!("{} items", tree.children.len())
     } else {
-        format!("Prefix {} · {} runs", tree.prefix, tree.run_count)
-    }
-}
-
-fn format_duration(ms: Option<i64>) -> String {
-    let Some(ms) = ms.filter(|value| *value >= 0) else {
-        return "—".into();
-    };
-    if ms >= 3_600_000 {
-        format!("{:.0}h", ms as f64 / 3_600_000.0)
-    } else if ms >= 60_000 {
-        format!("{:.0}m", ms as f64 / 60_000.0)
-    } else if ms >= 1_000 {
-        format!("{:.1}s", ms as f64 / 1_000.0)
-    } else {
-        format!("{ms}ms")
-    }
-}
-
-fn format_tokens(tokens: Option<u64>) -> String {
-    let Some(tokens) = tokens else {
-        return "—".into();
-    };
-    if tokens >= 1_000_000 {
-        format!("{:.0}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
-    } else {
-        tokens.to_string()
+        format!("Prefix {} · {} items", tree.prefix, tree.children.len())
     }
 }

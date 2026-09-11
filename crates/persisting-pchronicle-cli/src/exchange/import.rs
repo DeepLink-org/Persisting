@@ -466,6 +466,12 @@ pub(crate) async fn run_import(
                                 progress.note_parsed(&name, input.len() as u64)?;
                             }
                             Err(error) => {
+                                if !directory_input {
+                                    // An explicit file must keep the original
+                                    // diagnostic (path + line) instead of being
+                                    // collapsed into a generic empty-import error.
+                                    return Err(error);
+                                }
                                 let warning =
                                     skipped_import_warning(Path::new(&name), &format!("{error:#}"));
                                 let _ = append_import_log(&name, &error);
@@ -1547,6 +1553,7 @@ pub(crate) async fn squash_storyline_files_pipeline(
                 parse: progress.stage(StageId::Parse),
                 commit: progress.stage(StageId::Commit),
                 skip_paths: Arc::clone(&skip_paths),
+                soft_skip_parse_errors: directory_input,
             },
         ),
         ObjectStoreImportSource::Location(location) => {
@@ -1564,6 +1571,7 @@ pub(crate) async fn squash_storyline_files_pipeline(
                     parse: progress.stage(StageId::Parse),
                     commit: progress.stage(StageId::Commit),
                     skip_paths,
+                    soft_skip_parse_errors: directory_input,
                 },
             )
         }

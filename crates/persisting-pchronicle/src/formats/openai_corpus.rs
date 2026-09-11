@@ -213,16 +213,25 @@ pub fn parse_openai_msg_corpus_value(
     for (session_id, mut records) in groups {
         let story_index = stories.len();
         let mut story = rows_to_storyline(&session_id, &mut records, &relative_path)?;
-        capture_openai_unknowns(&mut story, &relative_path, &root_unknown, &records)?;
+        // Unknown paths use story-local session_steps indices (post step_id sort)
+        // so encode relocate can map them onto the combined corpus. Carrier
+        // bindings keep the original corpus ordinals so pointers stay unique in
+        // the source document for envelope attach.
+        let local_records: Vec<(usize, Value)> = records
+            .iter()
+            .enumerate()
+            .map(|(local, (_, value))| (local, value.clone()))
+            .collect();
+        capture_openai_unknowns(&mut story, &relative_path, &root_unknown, &local_records)?;
         story.unknown_key_counts = validate_unknown_fields_with(
             &story.unknown_fields,
             UnknownFieldLimits::default(),
             normalize_openai_pointer,
         )?;
-        for (ordinal, _) in records {
+        for (global, _) in &records {
             carriers.push(CarrierBinding {
                 story_index,
-                pointer: format!("/session_steps/{ordinal}"),
+                pointer: format!("/session_steps/{global}"),
             });
         }
         stories.push(story);
@@ -1145,7 +1154,7 @@ pub(crate) fn storylines_to_openai_value(stories: &[StorylineDocument]) -> Resul
 }
 
 fn relocate_openai_unknown_pointer(
-    target: &Value,
+    _target: &Value,
     pointer: &str,
     story_carriers: &[String],
 ) -> Result<String> {
@@ -1156,15 +1165,12 @@ fn relocate_openai_unknown_pointer(
     let source_index = tokens[1]
         .parse::<usize>()
         .with_context(|| format!("OpenAI unknown pointer '{pointer}' has an invalid row index"))?;
-    let source_row_pointer = format!("/session_steps/{source_index}");
-    if target.pointer(&source_row_pointer).is_some() {
-        return Ok(pointer.to_string());
-    }
-
-    if story_carriers.len() != 1 {
-        return Ok(pointer.to_string());
-    }
-    let mut relocated = story_carriers[0].clone();
+    let Some(base) = story_carriers.get(source_index) else {
+        anyhow::bail!(
+            "OpenAI unknown pointer '{pointer}' has no matching encode row for this story"
+        );
+    };
+    let mut relocated = base.clone();
     for token in &tokens[2..] {
         relocated = pointer_join(&relocated, token);
     }

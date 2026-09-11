@@ -1014,6 +1014,7 @@ fn tool_call_part(value: &Value) -> LlmContentPart {
     let arguments = function
         .get("arguments")
         .or_else(|| value.get("arguments"))
+        .or_else(|| value.get("input"))
         .cloned()
         .unwrap_or_else(|| Value::Object(Map::new()));
     let arguments = match arguments {
@@ -1133,6 +1134,11 @@ mod tests {
         assert_eq!(parsed.request.tool_names(), ["shell"]);
         assert_eq!(parsed.request.visible_user_turns(), 1);
         assert_eq!(parsed.request.generation.max_output_tokens, Some(64));
+        assert!(matches!(
+            &parsed.request.messages[1].parts[0],
+            LlmContentPart::ToolCall { arguments, .. }
+                if arguments.get("cmd").and_then(Value::as_str) == Some("pwd")
+        ));
     }
 
     #[test]

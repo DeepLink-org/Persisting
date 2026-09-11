@@ -10,5 +10,6 @@ pub use crate::store::{
     ChronicleQueryExecutionOptions, DATAFUSION_EVENTS_TABLE, DATAFUSION_RUNS_TABLE,
     DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE, DEFAULT_QUERY_MEMORY_LIMIT_BYTES,
     ExternalTableFormat, ExternalTableSpec, FileTrajectoryQueryMetricsSnapshot, IntrospectedField,
-    IntrospectedTable, QueryBackendInfo, QuerySnapshot, QueryWriteOutcome, SOURCE_FILE_COLUMN,
+    IntrospectedTable, QUERY_MEMORY_LIMIT_ENV, QueryBackendInfo, QuerySnapshot, QueryWriteOutcome,
+    SOURCE_FILE_COLUMN,
 };

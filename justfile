@@ -512,12 +512,16 @@ ci-nextest +packages:
     done
     cargo nextest run --locked "${args[@]}"
 
-# 单 crate：pchronicle | pchronicle-cli | agentctl | capture | ppilot | pvisor | dlcapt
+# 单 crate：pchronicle（含 CLI，对齐 CI pchronicle shard）| pchronicle-cli | …
 test-crate crate:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ crate }}" in
-      pchronicle) cargo nextest run -p persisting-pchronicle --locked ;;
+      pchronicle)
+        cargo nextest run --locked \
+          -p persisting-pchronicle \
+          -p persisting-pchronicle-cli
+        ;;
       pchronicle-cli) cargo nextest run -p persisting-pchronicle-cli --locked ;;
       agentctl) cargo nextest run -p persisting-agentctl --locked ;;
       capture) cargo nextest run -p persisting-gateway --locked ;;
@@ -628,8 +632,8 @@ proptest package:
 
 # Rust + Python. Rust tests run debug-mode nextest for faster iteration; use
 # `just test-rust` with a package for targeted coverage. Passing a package runs
-# only that Rust package; the full Python suite runs only for the no-argument
-# repository-wide invocation.
+# only that Rust package; `pchronicle` also runs persisting-pchronicle-cli.
+# The full Python suite runs only for the no-argument repository-wide invocation.
 test package="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -705,6 +709,19 @@ check-quick:
 # capture 相关 Rust 测试（Gateway 包测试已覆盖全部 capture targets）。
 capture-test:
     just test-crate capture
+
+# Execute pChronicle single-machine/self-service cases.
+[group('test')]
+test-pchronicle-cases:
+    cargo build --release -p persisting-pchronicle-cli --locked
+    python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle target/release/pchronicle --report target/pchronicle-self-case-report.md
+
+# List and execute pChronicle platform/Catalog cases. Server lifecycle cases are
+# reported as MANUAL unless explicitly selected with PCHRONICLE_CASE_MODE.
+[group('test')]
+test-pchronicle-cases-platform:
+    cargo build --release -p persisting-pchronicle-cli --locked
+    python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle target/release/pchronicle --report target/pchronicle-platform-case-report.md
 
 # Run documented integration cases by component.
 # Examples:

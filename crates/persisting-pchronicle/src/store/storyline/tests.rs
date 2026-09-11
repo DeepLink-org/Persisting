@@ -154,21 +154,14 @@ impl Drop for MaintenanceAfterPublishPause {
 }
 
 struct SuppressInvertedIndexes {
-    root_uri: String,
+    _guard: super::StorylineSearchIndexSuppressGuard,
 }
 
 impl SuppressInvertedIndexes {
     fn install(root_uri: &str) -> Self {
-        install_inverted_index_suppression(root_uri);
         Self {
-            root_uri: root_uri.to_string(),
+            _guard: super::StorylineSearchIndexSuppressGuard::for_uri(root_uri),
         }
-    }
-}
-
-impl Drop for SuppressInvertedIndexes {
-    fn drop(&mut self) {
-        remove_inverted_index_suppression(&self.root_uri);
     }
 }
 

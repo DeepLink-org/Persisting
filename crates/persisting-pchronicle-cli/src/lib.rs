@@ -32,7 +32,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use futures::{StreamExt, stream, stream::FuturesUnordered};
 use persisting_events::{CHRONICLE_SERVE_READY_VERSION, ChronicleServeReady};
-use persisting_pchronicle::query::ChronicleQueryEngine;
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 use persisting_pchronicle::search::{
     FindExpr, FindJsonOperator, FindJsonPredicate, FindTextPredicate, combine_match_expressions,
     search_storyline_step_matches_fts_in_columns,
@@ -43,9 +43,9 @@ use persisting_pchronicle::storage::{
     AutomaticProjectionInspection, AutomaticProjectionState, CatalogErrorPolicy,
     CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, DEFAULT_DATASET_NAME,
     DatasetCatalogSnapshot, DatasetLocation, DatasetMount, DiscoveredSource, EventFactSnapshot,
-    ObjectStoreManifestWriteMode, StorylineProjectionBuildOutcome, automatic_projection_inventory,
-    build_storyline_projection, inspect_automatic_storyline_projection,
-    probe_canonical_event_store,
+    ObjectStoreManifestWriteMode, PathListKind, StorylineProjectionBuildOutcome,
+    automatic_projection_inventory, build_storyline_projection,
+    inspect_automatic_storyline_projection, probe_canonical_event_store,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +57,10 @@ fn cli_boundary_error(code: BoundaryCode, message: impl Into<String>) -> anyhow:
         code,
         message: message.into(),
     })
+}
+
+fn chronicle_query_options() -> Result<ChronicleQueryExecutionOptions> {
+    ChronicleQueryExecutionOptions::from_env()
 }
 
 pub fn error_code(error: &anyhow::Error) -> &'static str {
@@ -282,6 +286,10 @@ struct ListArgs {
     /// Include storage size, modification time, and version columns.
     #[arg(long)]
     physical: bool,
+
+    /// Print Snapshot query sources (`open`) instead of one directory level.
+    #[arg(long)]
+    sources: bool,
 
     /// Output format. Auto uses a table on a terminal and JSON when piped.
     #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
@@ -1338,6 +1346,10 @@ struct SourceResponse {
     last_modified: Option<String>,
     status: CatalogSourceStatus,
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    record_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failed_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
@@ -2710,6 +2722,16 @@ async fn run_list(
         }
     }
     let dataset_uri = resolve_dataset_uri(args.dataset_uri.as_deref(), settings_override)?;
+    if !args.sources {
+        return run_list_path(
+            &dataset_uri,
+            args.format,
+            stdout_is_terminal,
+            stdout,
+            stderr,
+        )
+        .await;
+    }
     let (dataset_uri, snapshot) =
         discover_snapshot(&dataset_uri, args.errors, args.max_files, args.max_entries).await?;
     let dataset = snapshot
@@ -2759,6 +2781,64 @@ async fn run_list(
     )
     .context("write pChronicle ls metadata")?;
     Ok(())
+}
+
+async fn run_list_path(
+    dataset_uri: &str,
+    format: OutputFormat,
+    stdout_is_terminal: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    let location = DatasetLocation::parse(dataset_uri)?;
+    let mut entries = location.list("").await?;
+    entries.sort_by(|left, right| {
+        path_list_sort_key(left.kind)
+            .cmp(&path_list_sort_key(right.kind))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let output_format = match format {
+        OutputFormat::Auto if stdout_is_terminal => OutputFormat::Table,
+        OutputFormat::Auto => OutputFormat::Json,
+        explicit => explicit,
+    };
+    match output_format {
+        OutputFormat::Table => write_path_list_table(stdout, &entries)?,
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(
+                &mut *stdout,
+                &serde_json::json!({
+                    "dataset_uri": dataset_uri,
+                    "entries": entries,
+                }),
+            )
+            .context("encode pChronicle ls JSON")?;
+            writeln!(stdout).context("write pChronicle ls JSON")?;
+        }
+        OutputFormat::Auto => unreachable!("auto output format was resolved"),
+    }
+    let datasets = entries
+        .iter()
+        .filter(|entry| entry.kind == PathListKind::Dataset)
+        .count();
+    let directories = entries
+        .iter()
+        .filter(|entry| entry.kind == PathListKind::Directory)
+        .count();
+    writeln!(
+        stderr,
+        "dataset_uri={dataset_uri} entries={} datasets={datasets} directories={directories}",
+        entries.len(),
+    )
+    .context("write pChronicle ls metadata")?;
+    Ok(())
+}
+
+fn path_list_sort_key(kind: PathListKind) -> u8 {
+    match kind {
+        PathListKind::Directory => 0,
+        PathListKind::Dataset | PathListKind::File => 1,
+    }
 }
 
 fn directory_list_sort_key(kind: CatalogSourceKind) -> u8 {
@@ -2833,6 +2913,8 @@ fn source_response(source: &DiscoveredSource) -> SourceResponse {
         status: source.status,
         error: (source.status == CatalogSourceStatus::Error)
             .then(|| "Source discovery failed".into()),
+        record_count: source.record_count,
+        failed_count: source.failed_count,
     }
 }
 
@@ -2895,7 +2977,10 @@ async fn run_status(
             error: "Source discovery failed".into(),
         })
         .collect::<Vec<_>>();
-    let engine = snapshot.clone().query_engine(Default::default()).await?;
+    let engine = snapshot
+        .clone()
+        .query_engine(chronicle_query_options()?)
+        .await?;
     let timeout = Duration::from_secs(args.timeout_seconds);
     let deadline = tokio::time::Instant::now() + timeout;
     let counts = match query_status_counts(&engine, None, deadline, timeout).await {
@@ -3041,7 +3126,7 @@ async fn run_query(
     .await?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = snapshot.query_engine(Default::default()).await?;
+    let engine = snapshot.query_engine(chronicle_query_options()?).await?;
     let mut buffer = LimitedBuffer::new(args.max_output_bytes);
     let query_result = tokio::time::timeout(
         Duration::from_secs(args.timeout_seconds),
@@ -3139,7 +3224,7 @@ async fn run_stats_report(
             .await?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = snapshot.query_engine(Default::default()).await?;
+    let engine = snapshot.query_engine(chronicle_query_options()?).await?;
     let bounded_sql = format!("{sql}\nLIMIT {}", options.limit);
     let mut buffer = LimitedBuffer::new(options.max_output_bytes);
     let query_result = tokio::time::timeout(
@@ -3345,7 +3430,10 @@ async fn run_find(
         .context("find Dataset URI missing after discovery")?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = snapshot.clone().query_engine(Default::default()).await?;
+    let engine = snapshot
+        .clone()
+        .query_engine(chronicle_query_options()?)
+        .await?;
     let (search_predicate, fts_available, fts_errors) = if let Some(expression) = &expression {
         find_expression_predicate(&snapshot, expression, args.source.as_deref()).await?
     } else {

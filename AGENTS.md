@@ -42,7 +42,10 @@ required. Do not use incidental cleanup as a reason to broaden scope.
 ## Test command
 
 Use `just test` as the default validation command. It runs Rust tests through
-`cargo nextest` in release mode and then runs the Python test suite. To limit
-Rust coverage to one package, pass its Cargo package name positionally, for
-example `just test persisting-agentctl`. Use a direct `cargo test` invocation
-only when doctests or an explicitly documented special runner is required.
+`cargo nextest` in debug mode (for faster iteration) and then runs the Python
+test suite. To limit Rust coverage to one package, pass its Cargo package name
+positionally, for example `just test persisting-agentctl`. The `pchronicle`
+alias also runs `persisting-pchronicle-cli` (same as the CI pchronicle shard);
+use `just test pchronicle-cli` for the CLI crate alone. Use a direct
+`cargo test` invocation only when doctests or an explicitly documented special
+runner is required.

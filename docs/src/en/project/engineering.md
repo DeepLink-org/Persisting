@@ -22,8 +22,10 @@ Run these from the repository root. `just --list` shows the full recipe set.
 
 `just test` uses the debug nextest profile for faster iteration. Pass a Cargo
 package name or a short crate alias (`pvisor`, `pchronicle`,
-`pchronicle-cli`, `agentctl`, `capture`). The no-argument form also runs
-`just test-py`.
+`pchronicle-cli`, `agentctl`, `capture`). `just test pchronicle` runs both
+`persisting-pchronicle` and `persisting-pchronicle-cli` (same as the CI
+pchronicle shard); use `just test pchronicle-cli` for the CLI crate alone.
+The no-argument form also runs `just test-py`.
 
 ## Current notes
 

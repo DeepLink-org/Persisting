@@ -21,7 +21,7 @@ path from execution to queryable history:
   staged Effects and execution records from one Agent Run;
 - **`pchronicle`** browses, queries, exchanges, and serves trajectory Datasets.
 
-Each command works on its own. Connected, they cover `pvisor run --safe` →
+Each command works on its own. Connected, they cover `pvisor run --stage …` →
 review/apply → configured capture → a queryable Dataset.
 
 ![Current Persisting workflows and the execution-to-history throughline](docs/src/assets/diagrams/persisting/system-products.svg)
@@ -46,14 +46,15 @@ for platform requirements and executor setup.
 ## Run one Agent and review its changes
 
 ```bash
-pvisor run --safe codex
+pvisor run --stage ./runs/task-001 -- codex
 pvisor review last
 pvisor apply last --all   # or: pvisor drop last
 ```
 
-`--safe` stages workspace changes; nothing enters your project tree before you
-accept it. The exact boundary is platform-dependent and recorded with the
-Run—consult the [execution guide](https://deeplink-org.github.io/Persisting/pvisor/guides/execution/)
+`--stage` creates a copy-on-write workspace view for review; without it the
+Agent may write the real project tree. The exact boundary is
+platform-dependent and recorded with the Run—consult the
+[execution guide](https://deeplink-org.github.io/Persisting/pvisor/guides/execution/)
 before treating it as a security boundary.
 
 ## Query Agent trajectory history

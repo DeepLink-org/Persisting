@@ -318,6 +318,7 @@ fn spawn_parse_stage(
     _unknown_field_warnings: Arc<
         tokio::sync::Mutex<persisting_pchronicle::model::UnknownFieldImportWarnings>,
     >,
+    soft_skip_parse_errors: bool,
 ) -> (mpsc::Receiver<Result<ParsedItem>>, JoinHandle<()>) {
     spawn_parallel_map_stage(
         fetched_rx,
@@ -372,8 +373,9 @@ fn spawn_parse_stage(
                             bytes: fetched.bytes.len() as u64,
                         })
                     }
-                    Err(error) => {
-                        // Soft-skip: keep large imports moving; commit worker logs.
+                    Err(error) if soft_skip_parse_errors => {
+                        // Directory imports skip unreadable files so the rest of
+                        // the tree can continue; commit worker logs the reason.
                         parse.record_error(format!("{error:#}"));
                         Ok(ParsedItem::Skipped {
                             path: PathBuf::from(&name),
@@ -381,6 +383,7 @@ fn spawn_parse_stage(
                             bytes: fetched.bytes.len() as u64,
                         })
                     }
+                    Err(error) => Err(error),
                 }
             }
         },
@@ -405,6 +408,8 @@ pub(crate) struct ImportPipelineConfig {
     pub(crate) commit: StageHandle,
     /// Relative source paths already completed or failed in a prior run.
     pub(crate) skip_paths: Arc<HashSet<String>>,
+    /// Directory imports skip unreadable files; an explicit file must fail.
+    pub(crate) soft_skip_parse_errors: bool,
 }
 
 /// Build discover→fetch→parse for a prelisted candidate set.
@@ -421,6 +426,7 @@ pub(crate) fn spawn_candidates_fetch_pipeline(
         parse,
         commit,
         skip_paths,
+        soft_skip_parse_errors,
     } = config;
     let unknown_field_warnings = Arc::new(tokio::sync::Mutex::new(
         persisting_pchronicle::model::UnknownFieldImportWarnings::default(),
@@ -503,6 +509,7 @@ pub(crate) fn spawn_candidates_fetch_pipeline(
         parse,
         commit,
         Arc::clone(&unknown_field_warnings),
+        soft_skip_parse_errors,
     );
 
     ImportPipelineHandles {
@@ -526,6 +533,7 @@ pub(crate) fn spawn_location_fetch_pipeline(
         parse,
         commit,
         skip_paths,
+        soft_skip_parse_errors,
     } = config;
     let unknown_field_warnings = Arc::new(tokio::sync::Mutex::new(
         persisting_pchronicle::model::UnknownFieldImportWarnings::default(),
@@ -653,6 +661,7 @@ pub(crate) fn spawn_location_fetch_pipeline(
         parse,
         commit,
         Arc::clone(&unknown_field_warnings),
+        soft_skip_parse_errors,
     );
 
     ImportPipelineHandles {

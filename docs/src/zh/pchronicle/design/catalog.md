@@ -182,7 +182,8 @@ capture-root/
         └── session.json
 ```
 
-Catalog 产生四个 source：
+Catalog 在 **把 `capture-root` 当作 query 根打开**（虚拟 dataset）时产生四个 source。
+`_file_` 相对该根：
 
 | `_file_` | `kind` | 可能的 `format` |
 |---|---|---|
@@ -194,25 +195,39 @@ Catalog 产生四个 source：
 `live` 和 `events.lance` 的内部文件不会再次成为 source。这一“识别复合根后停止下探”的规则
 避免把 manifest、generation、segment 或 `objects.lance` 错当成用户输入。
 
+`pchronicle ls capture-root` 不是上面这张表。它只列一层：`live/`（dataset）、
+`agents/`（directory）、`imports/`（directory）。再 `ls capture-root/imports` 才会看到
+`batch-a.atif.jsonl` 和 `nested/`。浏览成员是 [RFC-0015](../../rfcs/0015-chronicle-manifest.md)
+的 `list`；query 成员是 `open`。
+
 当目录含有 `chronicle.manifest`
 （[RFC-0015](../../rfcs/0015-chronicle-manifest.md)）时，discovery 优先采用该 sidecar：
-`leaf` 且 `format = compact-jsonl/v1` 时可不打开 Lance 即归类为 Compact source；
-`branch` 只扫描同样含有 sidecar 的一层子目录。Explorer 目录合计可对 leaf
-`record_count` 做读侧汇总；写入方只更新 leaf manifest，不回写祖先。
+`leaf` 且 `format = compact-jsonl/v1` 时可不打开 Lance 即归类为 Compact source。
+对 branch 或纯目录做 `list` 只看一层 children；对两者做 `open` 则收集嵌套叶子以及
+叶子外的 JSON。写入方只更新 leaf manifest，不回写祖先。
 
 ### 5.2 本地发现
 
-本地 URI 支持普通路径、`local://` 和 `file://`：
+本地 URI 支持普通路径、`local://` 和 `file://`。**`open`**：
 
 1. 如果根是 `.json`、`.jsonl` 或 `.ndjson` 文件，直接建立单个 source。
-2. 如果根目录包含 `CURRENT`，整个根是一个 Storyline source。
-3. 如果根名为 `events.lance` 且包含 `_manifest.json`，整个根是一个 events source。
-4. 否则按稳定路径顺序递归目录：识别复合根，或收集支持的外围文件。
-5. 符号链接不会跟随，避免循环、越界读取和同一物理文件的重复身份。
+2. 如果根是叶子 Dataset（`chronicle.manifest` leaf、`CURRENT`、
+   `events.lance/_manifest.json`、或 compact-jsonl Lance），整个根是一个 source
+   `_file_ = "."`。
+3. 否则根是 Directory：按稳定路径顺序递归，在叶子 Dataset 处停止，并把剩余支持的
+   外围 JSON 收为 file source（虚拟 dataset）。
+4. 符号链接不会跟随，避免循环、越界读取和同一物理文件的重复身份。
+
+对同一 URI 的 **`list`** 只返回一层 children，见 RFC-0015。它不会打印虚拟 dataset 的
+source 表。
 
 ### 5.3 对象存储发现
 
-对象 URI 通过 Lance/object-store 适配层解析。Catalog 流式消费前缀 listing，并在读取
+对象 URI 通过 Lance/object-store 适配层解析。对对象前缀做 **`open`** 即下面的虚拟
+dataset 遍历；对同一 URI 做 **`list`** 仍只列一层（RFC-0015），MUST NOT 为浏览而列举
+整棵树。
+
+Catalog 流式消费前缀 listing，并在读取
 `max_entries + 1` 个对象前失败；不会先把无界 listing 收进内存再检查。随后：
 
 1. 用 `CURRENT` 对象识别 Storyline 根；

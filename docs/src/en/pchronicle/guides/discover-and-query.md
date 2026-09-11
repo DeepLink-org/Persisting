@@ -15,9 +15,12 @@ pchronicle list ./dataset
 pchronicle stats ./dataset
 ```
 
-`list` (`ls`) shows the independently queryable run data sources pChronicle found.
-`stats` summarizes Dataset readiness and available data. Use JSON in
-automation:
+`list` (`ls`) lists one directory level, like a shell `ls`. A child directory
+with `chronicle.manifest` (or another Dataset marker) is shown as a Dataset
+with type and trajectory count. `ls --sources` opens the path and prints the
+Snapshot members that `query` will union. `stats` summarizes Dataset readiness after the
+path is opened as a Snapshot. Automation can still use
+JSON:
 
 ```bash
 pchronicle list ./dataset --format json
@@ -70,8 +73,9 @@ limited by explicit row, byte, discovery, and timeout budgets.
 
 ## 5. Locate, then analyze
 
-`list`/`ls` / `sources` discover what exists. `find` locates candidates inside a pinned
-Snapshot. `query` analyzes. CLI `--match` and Web `q` share the same expression,
+`list`/`ls` lists the current path. `ls --sources` and `query` **open** that path: a leaf Dataset
+is one source; a plain directory becomes a virtual dataset of nested Datasets
+and JSON. `find` locates candidates inside a pinned Snapshot. CLI `--match` and Web `q` share the same expression,
 reported scope, and `snapshot_id`; the Web UI may highlight returned fields
 without changing the match set.
 

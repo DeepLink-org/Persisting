@@ -4,8 +4,8 @@
 |---|---|
 | **Status** | Proposed |
 | **Format name** | `chronicle.manifest`（TOML） |
-| **Date** | 2026-09-07 |
-| **Component** | `persisting-pchronicle`、`pchronicle` CLI、Warehouse explorer |
+| **Date** | 2026-09-07（2026-09-11 更新） |
+| **Component** | `persisting-pchronicle`、`pchronicle` CLI、Warehouse Datasets UI |
 | **Implements** | `crates/persisting-pchronicle/src/store/chronicle_manifest.rs` |
 | **Related** | [RFC-0014 Compact JSONL](0014-compact-jsonl.md) · [RFC-0013 path Directory](0013-pchronicle-warehouse-catalog.md) · [RFC-0001 Storyline](0001-storyline-format.md) |
 
@@ -14,17 +14,17 @@
 ## 摘要
 
 `chronicle.manifest` 是放在 Dataset 节点根目录的 **pChronicle 自有 TOML sidecar**。
-它用于廉价发现，并保存常用聚合统计，使 Warehouse catalog / explorer 不必在每次刷新时
-打开 Lance 或扫描全部记录。
+它用于廉价发现，并保存常用聚合统计，使 `pchronicle ls` 和 Web Datasets 不必打开 Lance
+或扫描全部记录即可分类目录，并展示类型 / 轨迹数预览。
 
 本文使用 RFC 2119 的 **MUST**、**MUST NOT**、**SHOULD** 与 **MAY**。
 
 ## 动机
 
 大型本地数据集（例如含大量行与 `_offload/` 的 compact-jsonl Lance 目录）目前会迫使
-discovery 执行 `Dataset::open`，并迫使 explorer acceleration 物化逐条 run 摘要。当
+discovery 执行 `Dataset::open`，并迫使 Datasets UI 用 run 摘要反推文件夹。当
 Warehouse 挂载多个此类根目录时，约五秒一次的 catalog 刷新与 tree 轮询会让 serve 进程
-持续高 CPU，即便用户只在浏览文件夹计数。
+持续高 CPU，即便用户只在浏览一层目录。
 
 Lance 内部的 `_versions/*.manifest` 是 Lance 的 MVCC 控制面。pChronicle MUST NOT 在其中
 编码应用层发现或 UI 统计。
@@ -38,12 +38,15 @@ pChronicle 已对其它布局使用应用控制文件（Storyline 的 `CURRENT`�
 
 - 定义稳定的文件名、TOML schema 与嵌套规则；
 - 让 discovery 通过读小 TOML 文件即可分类 Dataset 节点；
-- 持久化 explorer tree / dataset 摘要所需的聚合统计；
+- 持久化 `ls` / Web Datasets 预览所需的聚合统计（类型与轨迹数）；
 - 通过**自动扫描**子目录中的 `chronicle.manifest` 支持嵌套 Dataset 树；
-- 无 manifest 的普通目录按 **Directory** 处理：只检查**一层**子目录是否为
-  Dataset（manifest / `CURRENT` / events），不把松散文件登记为 Source；
+- 把 **list** 和 **open** 分开：
+  - `list(path)` 与 shell `ls` 一致：只列一层 children，MUST NOT 把嵌套 source 摊平；
+  - `open(path)` 生成 Snapshot。叶子 Dataset 是一个 source。纯目录 MAY 被当成
+    **虚拟 dataset** 打开：该路径下所有嵌套 Dataset 叶子与外围 JSON 合成一个查询空间。
 - 在 sidecar 缺失时，仍可用 `CURRENT` / events / compact-jsonl 标记做 Dataset
-  分类，但 MUST NOT 为分类而全量递归列举对象存储前缀。
+  分类。`list` MUST NOT 为分类而全量递归列举对象存储前缀。对 Directory 做 `open`
+  时 MAY 在现有 `max_entries` / `max_files` 上限内递归。
 
 非目标（v1）：
 
@@ -55,8 +58,14 @@ pChronicle 已对其它布局使用应用控制文件（Storyline 的 `CURRENT`�
 ## 术语
 
 - **Dataset 节点**：作为物理 source 根（leaf）或聚合嵌套 Dataset 节点（branch）的目录。
-- **Leaf**：`format` 标识物理存储的节点（v1：`compact-jsonl/v1`）。
+- **Leaf**：`format` 标识物理存储的节点（v1：`compact-jsonl/v1` 或 `storyline/v1`）。
 - **Branch**：用于嵌套子节点、没有物理 `format` 的节点。
+- **Directory**：没有叶子 Dataset 标记的路径。对 `list` 而言是导航文件夹；仍 MAY 被
+  `open` 成虚拟 dataset。这不是 RFC-0013 的 path Directory（名字 → path + ACL）。
+- **list**：对某一 path 的一层列举。CLI `pchronicle ls` 与 Web Datasets MUST 共用此操作。
+- **open**：把 path 钉成 Snapshot（`query` / `find` / `stats` / serve 挂载 / Open in Runs）。
+- **虚拟 dataset**：`open` 一个 Directory 得到的 Snapshot：嵌套 Dataset 叶子，加上不在
+  leaf 内部的 JSON / JSONL / NDJSON。
 - **Fingerprint**：把 `[stats]` 绑定到某一物理修订的字符串，供读者检测过期。
 
 ## 文件位置与名称
@@ -67,32 +76,77 @@ pChronicle 已对其它布局使用应用控制文件（Storyline 的 `CURRENT`�
 
 ## 嵌套与发现
 
-### 自动扫描子节点
+`list` 与 `open` 共用分类规则，MUST NOT 共用结果形态。
 
-父节点 MUST NOT 要求显式 children 列表。Discovery MUST：
+路径按以下顺序判定为 **叶子 Dataset**：
 
-1. 若当前目录存在 `chronicle.manifest`，则解析它；
-2. 若 `kind = "leaf"`，将该目录视为对应 `format` 的一个 source 候选，且 MUST NOT 再递归其内部寻找其它 source；
-3. 若 `kind = "branch"`，只扫描**一层**子目录；对每个含有 `chronicle.manifest` 的子目录，按该子节点的 kind 继续处理；
-4. 若当前目录没有 `chronicle.manifest`，则视为 **Directory**：只检查**一层**
-   子目录。子目录若含 Dataset 标记（`chronicle.manifest`、`CURRENT`、
-   `events.lance/_manifest.json`、compact-jsonl Lance）则登记为可查询 Source；
-   否则登记为导航项（`kind = directory`，`ls` 可见，不可 query）。松散文件
-   MUST NOT 登记为 Source。MUST NOT 为发现而递归列举整棵对象前缀树。
-   **`import` / `sync` 使用独立递归 JSON 扫描**，不受本条 Directory 浅层约束。
+1. `chronicle.manifest` 且 `kind = "leaf"`
+2. `CURRENT`（Storyline）
+3. `events.lance/_manifest.json`，或名为 `events.lance` 且含 `_manifest.json` 的目录
+4. compact-jsonl Lance（`pchronicle.format = compact-jsonl/v1`，或 leaf sidecar
+   `format = "compact-jsonl/v1"`）
+
+否则该路径是 **Directory**（包括 `chronicle.manifest` 的 `kind = "branch"`）。
 
 MUST 忽略符号链接。现有 `max_entries` / `max_files` 遍历上限仍然适用。
+**`import` / `sync` 使用独立递归 JSON 扫描**，不受 `list` 约束。
+
+### `list(path)` — 与 shell 一层列举一致
+
+`pchronicle ls PATH` 与 Web Datasets MUST 只列出 `PATH` 的**一层** children，行为对齐
+shell `ls`。MUST NOT 把嵌套 source 摊到当前列表。
+
+每个 child 属于：
+
+| 子项 | `list` kind | 预览 |
+|---|---|---|
+| 叶子 Dataset 目录 | dataset | `format`，以及 sidecar 中的 `[stats].record_count` / `failed_count` |
+| Directory | directory | 仅名称；MUST NOT 为预览做深扫 |
+| 本层 `.json` / `.jsonl` / `.ndjson` | file | 名称；`open` 前 format MAY 未知 |
+
+对 **叶子 Dataset** 做 `list` 时 MUST NOT 列出 Lance 内部（`data/`、`_versions/`、
+`generations/`、`_offload/` 等）。结果就是这一条 Dataset 及其预览。继续下钻是 `open` /
+Runs，不是再一次 `ls`。
+
+`pchronicle ls --sources` MUST 对 `path` 做 `open` 并打印 Snapshot 的 source 表（虚拟
+dataset 成员）。默认 `ls` 仍是一层 children。`--sources` MUST NOT 改变 `list` 本身。
+
+父节点 MUST NOT 要求 branch manifest 里写显式 children。对 branch 或 Directory 的
+`list` 只看**一层**子项：有 Dataset 标记的列为 dataset，其余目录列为 directory，
+本层松散 JSON 列为 file。
+
+### `open(path)` — Snapshot，含虚拟 dataset
+
+`open(path)` 构造查询 Snapshot：
+
+1. 若 `path` 是叶子 Dataset，Snapshot 只有一个 source `_file_ = "."`。
+   即使 leaf 内部还有嵌套 `chronicle.manifest`，也 MUST NOT 再为其产出 source。
+2. 若 `path` 是 JSON / JSONL / NDJSON 文件，Snapshot 只有一个 file source。
+3. 若 `path` 是 Directory，调用方 MAY **把它强行当作 query 根**。
+   Snapshot 是 **虚拟 dataset**：在 `path` 下递归收集所有嵌套叶子 Dataset，以及
+   **不在 leaf 内部**的 JSON / JSONL / NDJSON。未标注的中间目录本身不是 source，
+   只构成 `_file_` 的路径段。`_file_` 相对这个 `path`。
+
+serve 的每个挂载就是一次 `open(uri)`。进入挂载后的浏览是对 prefix 做 `list`。
+**Open in Runs** SHOULD 沿用该 Snapshot，并 MAY 用 `_file_` 收窄。Runs 页 MAY 继续用
+run 摘要重建路径树（`PathExplorer`）；那棵树不是 Datasets 的 `list`。
+`pchronicle query ./warehouse/team` 是对该 URI 的另一次 `open`。
+
+branch manifest 仍表示「此节点用于嵌套子节点」。对 branch 或无 sidecar 的 Directory
+做 `open`，走同一套虚拟 dataset 遍历。对两者做 `list` 仍只列一层。
 
 ### Branch 聚合与轨迹计数
 
 Branch 节点 MAY 省略 `[stats]`，且 MUST NOT 被当成轨迹 source。
 只有 leaf 贡献轨迹数。
 
-Catalog / explorer 展示文件夹合计（`run_count` / `record_count`）时：
+`open` 之后的 Dataset 预览，以及 `list` 上的叶子卡片：
 
-- 读者 MUST 将某一 path 前缀的总数算为该前缀下**所有子孙 leaf** 的
-  `[stats].record_count`（以及 `failed_count`）之和；
-- 中间 branch 自身贡献 **0**，只负责嵌套；
+- 叶子的轨迹数在 sidecar 存在且 fingerprint 可信时，用 `[stats].record_count`
+  （以及 `failed_count`）；
+- 对 Directory 做 `list` MUST NOT 上卷子孙计数（那是深扫）。上卷属于 Snapshot /
+  `open`；
+- 中间 branch 自身不作为 source；
 - leaf MUST NOT 再向下递归寻找嵌套 source，避免物理 leaf 与子 leaf 双计。
 
 #### 禁止祖先回写（写放大）
@@ -110,11 +164,11 @@ kind = "branch"
 
 #### 进程内刷新缓存
 
-Warehouse / Catalog MAY 在进程内缓存已发现的 leaf stats 与前缀聚合（例如挂在
-现有 catalog snapshot / acceleration 路径上），使周期性 UI 刷新不必重开 Lance
-或重扫大目录树。当 leaf 的 `fingerprint` / manifest mtime 变化，或扫描前缀下
-出现新的 `chronicle.manifest` 时，缓存条目 SHOULD 失效。进程缓存 MUST NOT
-取代随数据一起分发的磁盘 leaf manifest 作为真相源。
+Warehouse / Catalog MAY 在进程内缓存 `list` 的 children 与可信 leaf stats，使周期性
+UI 刷新不必重开 Lance。当 leaf 的 `fingerprint` / manifest mtime 变化，或一层 children
+中出现新的 `chronicle.manifest` 时，缓存条目 SHOULD 失效。进程缓存 MUST NOT
+取代随数据一起分发的磁盘 leaf manifest 作为真相源。`list` 刷新 MUST NOT 跑
+acceleration SQL 或 `steps` 的 token/duration 查询。
 
 ## TOML schema（v1）
 
@@ -195,34 +249,46 @@ kind = "branch"
 
 ## 读路径与过期
 
-- 当 `fingerprint` 与已打开物理修订一致时，读者 MAY 信任 `[stats]` 做 explorer 聚合，而无需扫行。
+- 当 `fingerprint` 与已打开物理修订一致时，读者 MAY 信任 `[stats]` 做 `ls` / Datasets
+  预览，而无需扫行。
 - 文件缺失、不可读或 fingerprint 不匹配时，store 层 `ensure_manifest` SHOULD 就地补写；
   若补写失败，读者 MUST 回退现有 discovery / summary 路径。
 - Manifest stats MUST NOT 成为查询正确性的唯一权威；SQL 与 record 列表仍读物理存储。
 
-## 对 Warehouse explorer 的影响
+## 对 Warehouse Datasets / `ls` 的影响
 
-- Catalog 刷新与 `/api/explorer/tree` 在可用时应优先用嵌套 manifest 做发现与文件夹
-  `run_count` / `record_count` 聚合。
-- 任意前缀上的文件夹 `run_count` MUST 等于其下子孙 leaf 轨迹权重之和（有 manifesto 时用
-  `record_count`），而不是子 dataset 节点个数。
+- CLI 默认 `ls` 与 `/api/explorer/tree`（或其后继）MUST 是同一个 `list(path)`：一层 children，
+  Dataset 子项在有 `chronicle.manifest` 时带预览。
+- `pchronicle ls --sources` MUST 打印 `open(path)` 的 Snapshot 成员。SQL
+  `dataset.sources` 仍是查询内的等价视图。
+- Web Datasets MUST NOT 用 `RunSummary`、`explorer_weight`、shallow-nav 回退或 `other`
+  溢出桶反推文件夹。
+- Runs 的 **Run paths** 树 MAY 继续按 `_file_` / import path 分组（run 反推树）。
+  该面属于 Runs，不属于 Datasets。
+- 单击 Directory 即导航（对该 prefix 再 `list`）。单击叶子 Dataset 不得钻进 Lance 内部。
+  **Open in Runs** 对当前 query 根（serve 挂载）做 `open`，并 MAY 用 `_file_` 过滤。
 - 详细 run/record 页仍可打开物理 leaf；本 RFC 不要求 sidecar 索引每条 record 身份。
 
 ## 必需单元测试（v1）
 
 实现 MUST 至少覆盖：
 
-1. **嵌套发现**：`warehouse/(branch)` → `team/(branch)` → `codex_jsonl/(leaf, N)`
-   恰好得到一条 compact source，路径为 `team/codex_jsonl`，`record_count = N`，且在
-   leaf manifesto 存在时不打开 Lance。
-2. **兄弟 leaf**：同一 branch 下两个 leaf，计数分别为 `A`、`B`，得到两条 source；
-   tree 根 `run_count = A + B`；各子文件夹显示各自 leaf 总量。
-3. **前缀上卷**：在 dataset 作用域内，前缀 `team` 聚合 `team/…` 下全部 leaf；前缀等于
-   某 leaf 路径时只显示该 leaf。
-4. **Leaf 不递归**：leaf 目录内即使还有嵌套 `chronicle.manifest`，也 MUST NOT 再为该
-   子节点额外产出 source。
-5. **写隔离（契约）**：只更新某一个 leaf 的 manifesto 后，重新 discovery 仍能通过读侧
-   求和得到正确祖先总数，且无需改动父 branch 文件。
+1. **`list` 只列一层**：`warehouse/(Directory)` 下有 `team/(Directory)` 与
+   `archive/(leaf, N)` 时，列出 `team/` 为 directory、`archive` 为 dataset 且
+   `record_count = N`。MUST NOT 列出 `team/codex_jsonl`。
+2. **`open` 是虚拟 dataset**：`open(warehouse)` 得到 `_file_ = team/codex_jsonl` 的
+   compact source，`record_count = N`（以及其它兄弟 leaf / 不在 leaf 内的 JSON），
+   且在 leaf manifesto 存在时不打开 Lance。
+3. **对叶子做 `list`**：`list(archive)` 只报告这一条 Dataset 及预览，MUST NOT 列出
+   `data/` 或 `_versions/`。
+4. **`open` 时 Leaf 不递归**：leaf 目录内即使还有嵌套 `chronicle.manifest`，也 MUST NOT
+   再为该子节点额外产出 source。
+5. **写隔离（契约）**：只更新某一个 leaf 的 manifesto 后，无需改动父 branch 文件，该
+   leaf 的 `list` 预览仍正确。
+6. **CLI/UI 一致**：同一 path 上 Web Datasets 的 children 与 `pchronicle ls` 的名称、
+   kind、Dataset 预览一致。
+7. **`ls --sources`**：`ls --sources warehouse` 列出 `team/codex_jsonl`（以及其它
+   Snapshot 成员），且 MUST 与 `open(warehouse)` / `dataset.sources` 一致。
 
 ## 兼容性
 
@@ -239,3 +305,7 @@ kind = "branch"
    仍可作为磁盘 leaf manifesto 之上的**刷新优化**。
 3. **父节点显式 `children` 列表** — 延后：自动扫描更贴合目录树，也避免子列表过期。
 4. **把累计 `[stats]` 回写到每个祖先 branch** — v1 否决：单 leaf 更新会写放大，且易产生脏父节点。
+5. **用 run 摘要 / acceleration 反推 Datasets 文件夹** — 否决用于 Datasets / 默认 `ls`。
+   Runs 的 **Run paths** 树 MAY 继续按 run `_file_` / import path 分组。
+6. **默认 `ls` 打印 Snapshot 成员** — 否决。默认 `ls` 对齐 shell。`ls --sources` 与
+   `dataset.sources` 仍是 Snapshot 成员视图。

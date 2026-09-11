@@ -443,6 +443,8 @@ mod tests {
         )?;
 
         let storyline = temporary.path().join("storyline");
+        let _suppress =
+            persisting_pchronicle::storage::StorylineSearchIndexSuppressGuard::for_path(&storyline);
         let mut stderr = Vec::new();
         run(
             SyncArgs {
