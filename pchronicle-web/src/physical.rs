@@ -1012,8 +1012,8 @@ mod tests {
     }
 
     #[test]
-    fn format_bytes_uses_gb_for_large_fragments() {
-        assert_eq!(format_bytes(Some(3 * 1024 * 1024 * 1024)), "3.0 GB");
+    fn format_bytes_uses_gib_for_large_fragments() {
+        assert_eq!(format_bytes(Some(3 * 1024 * 1024 * 1024)), "3.0 GiB");
     }
 
     #[test]
