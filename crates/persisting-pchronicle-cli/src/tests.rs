@@ -4060,7 +4060,9 @@ async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_
             vec!["--max-input-bytes", "1"],
             "resource_exhausted",
         ),
-        ("unsupported", &unsupported, vec![], "unsupported"),
+        // Explicit non-JSON files are undetectable under --format auto, so they
+        // share invalid_request with malformed JSON rather than unsupported.
+        ("undetectable", &unsupported, vec![], "invalid_request"),
     ] {
         let output = temp.path().join(name);
         let mut args = vec![
@@ -4077,9 +4079,9 @@ async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_
         let error = run(cli, false, &mut stdout, &mut Vec::new())
             .await
             .unwrap_err();
-        assert!(format!("{error:#}").starts_with(code), "{error:#}");
-        assert!(stdout.is_empty());
-        assert!(!output.exists());
+        assert!(format!("{error:#}").starts_with(code), "{name}: {error:#}");
+        assert!(stdout.is_empty(), "{name}");
+        assert!(!output.exists(), "{name}");
     }
     assert!(!fs::read_dir(temp.path())?.any(|entry| {
         entry
