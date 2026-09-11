@@ -5,6 +5,19 @@ sidebar_label: Start here
 
 # Start here
 
+## Persistent infrastructure for the Agent era
+
+Run Agents inside a reviewable execution boundary, then preserve accepted
+decisions and resulting history as a queryable Dataset. Persisting turns Agent
+work from an opaque process into a durable workflow you can inspect, approve,
+and remember.
+
+Its core value is simple:
+
+- **Govern execution:** isolate a Run and record the capabilities and Evidence that actually applied.
+- **Review change:** keep Effects staged until a person decides what enters the project.
+- **Remember outcomes:** preserve selected execution facts and trajectories as traceable, queryable history.
+
 Persisting gives you two independent product paths. Choose the one that matches the work in front of you:
 
 - [Run an Agent safely with pVisor](pvisor/get-started.md): run the Agent in a staged workspace, inspect its changes, and write only what you approve into the project.

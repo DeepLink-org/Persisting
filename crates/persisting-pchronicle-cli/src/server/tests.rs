@@ -584,7 +584,11 @@ async fn query_evidence_info_truncates_sql() {
 fn warehouse_tracing_filter_matches_log_level() {
     assert_eq!(
         super::request_log::tracing_filter(crate::LogLevel::Info),
-        "info,persisting_pchronicle=warn,pchronicle.serve=info"
+        "info,persisting_pchronicle=warn,pchronicle.serve=info,lance=warn,lance_index=warn,opendal=warn,pchronicle.opendal=warn,object_store=warn,pchronicle.object_store_gate=warn"
+    );
+    assert_eq!(
+        super::request_log::tracing_filter(crate::LogLevel::Warn),
+        "warn,persisting_pchronicle=warn,persisting_pchronicle_cli=warn"
     );
     assert_eq!(
         super::request_log::tracing_filter(crate::LogLevel::Error),

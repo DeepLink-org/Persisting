@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Persisting</title>
+  <defs>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8ec5ff"/>
+      <stop offset="1" stop-color="#2684ff"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 15 32 6l22 9-22 9-22-9Z" fill="#e7f1ff" stroke="#e7f1ff" stroke-width="2"/>
+    <path d="M10 15v8l22 9 22-9v-8" stroke="url(#edge)" stroke-width="4"/>
+    <path d="M10 29 32 38l22-9" stroke="#e7f1ff" stroke-width="7"/>
+    <path d="M10 29v8l22 9 22-9v-8" stroke="url(#edge)" stroke-width="4"/>
+    <path d="M10 43 32 52l22-9" stroke="#e7f1ff" stroke-width="7"/>
+    <path d="M10 43v8l22 9 22-9v-8" stroke="url(#edge)" stroke-width="4"/>
+  </g>
+</svg>

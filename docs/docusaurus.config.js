@@ -1,9 +1,14 @@
 const path = require('path');
+const { themes } = require('prism-react-renderer');
+const codeTheme = {
+  ...themes.nightOwl,
+  plain: { ...themes.nightOwl.plain, backgroundColor: '#0c121e' },
+};
 
 const config = {
   title: 'Persisting',
   tagline: 'Persistent Infrastructure for the Agent Era',
-  favicon: 'img/logos/persisting-icon.png',
+  favicon: 'img/logos/persisting-mark.svg',
   url: 'https://deeplink-org.github.io',
   // Use `/` for local previews; GitHub Pages sets DOCUSAURUS_BASE_URL=/Persisting/.
   baseUrl: process.env.DOCUSAURUS_BASE_URL || '/',
@@ -35,6 +40,7 @@ const config = {
     }],
   ],
   themeConfig: {
+    colorMode: { defaultMode: 'dark', disableSwitch: true, respectPrefersColorScheme: false },
     docs: {
       sidebar: {
         hideable: true,
@@ -48,7 +54,7 @@ const config = {
     },
     navbar: {
       title: 'Persisting',
-      logo: { alt: 'Persisting', src: 'img/logos/persisting-icon.png' },
+      logo: { alt: 'Persisting', src: 'img/logos/persisting-mark.svg' },
       items: [
         { to: '/docs/', label: 'Start here', position: 'left' },
         { to: '/docs/pvisor/', label: 'pVisor', position: 'left' },
@@ -67,7 +73,7 @@ const config = {
       ],
       copyright: `Copyright © ${new Date().getFullYear()} DeepLink-org`,
     },
-    prism: { theme: require('prism-react-renderer').themes.github, darkTheme: require('prism-react-renderer').themes.dracula },
+    prism: { theme: codeTheme, darkTheme: codeTheme },
   },
 };
 module.exports = config;
