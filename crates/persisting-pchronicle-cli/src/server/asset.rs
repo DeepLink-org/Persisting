@@ -67,6 +67,13 @@ fn accepts_brotli(headers: &HeaderMap) -> bool {
         })
 }
 
+fn serve_brotli(path: &str, headers: &HeaderMap) -> bool {
+    // Safari's WebAssembly.instantiateStreaming does not reliably decode
+    // Content-Encoding: br on application/wasm, so the UI stays blank.
+    let logical = path.strip_suffix(".br").unwrap_or(path);
+    !logical.ends_with(".wasm") && accepts_brotli(headers)
+}
+
 fn content_type(path: &str) -> &'static str {
     let logical = path.strip_suffix(".br").unwrap_or(path);
     if logical.ends_with(".html") {
@@ -103,7 +110,7 @@ fn is_static_path(path: &str) -> bool {
 
 fn response_for(path: &str, headers: &HeaderMap) -> Option<Response> {
     let key = safe_key(path)?;
-    let (body, encoding) = if accepts_brotli(headers) {
+    let (body, encoding) = if serve_brotli(&key, headers) {
         let compressed = format!("{key}.br");
         match read(&compressed) {
             Some(bytes) if !bytes.is_empty() => (bytes, Some("br")),
@@ -206,5 +213,16 @@ mod tests {
         assert_eq!(content_type("app.js"), "application/javascript");
         assert_eq!(content_type("app_bg.wasm.br"), "application/wasm");
         assert_eq!(content_type("app.css"), "text/css");
+    }
+
+    #[test]
+    fn wasm_is_not_offered_as_brotli() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT_ENCODING, "gzip, br".parse().unwrap());
+        assert!(serve_brotli("assets/app.js", &headers));
+        assert!(serve_brotli("assets/home.css", &headers));
+        assert!(!serve_brotli("assets/app_bg.wasm", &headers));
+        assert!(!serve_brotli("assets/app_bg.wasm.br", &headers));
+        assert!(!serve_brotli("assets/app.js", &HeaderMap::new()));
     }
 }

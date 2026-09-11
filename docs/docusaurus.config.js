@@ -1,4 +1,9 @@
 const path = require('path');
+const { themes } = require('prism-react-renderer');
+const codeTheme = {
+  ...themes.nightOwl,
+  plain: { ...themes.nightOwl.plain, backgroundColor: '#0c121e' },
+};
 
 const config = {
   title: 'Persisting',
@@ -35,6 +40,7 @@ const config = {
     }],
   ],
   themeConfig: {
+    colorMode: { defaultMode: 'dark', disableSwitch: true, respectPrefersColorScheme: false },
     docs: {
       sidebar: {
         hideable: true,
@@ -67,7 +73,7 @@ const config = {
       ],
       copyright: `Copyright © ${new Date().getFullYear()} DeepLink-org`,
     },
-    prism: { theme: require('prism-react-renderer').themes.github, darkTheme: require('prism-react-renderer').themes.dracula },
+    prism: { theme: codeTheme, darkTheme: codeTheme },
   },
 };
 module.exports = config;

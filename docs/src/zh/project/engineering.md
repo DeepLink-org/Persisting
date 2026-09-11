@@ -21,7 +21,10 @@
 
 `just test` 使用 debug nextest profile 以便更快迭代。传入 Cargo package 名
 或短 crate 别名（`pvisor`、`pchronicle`、`pchronicle-cli`、
-`agentctl`、`capture`）。无参数形式还会跑 `just test-py`。
+`agentctl`、`capture`）。`just test pchronicle` 会同时跑
+`persisting-pchronicle` 与 `persisting-pchronicle-cli`（与 CI 的 pchronicle
+shard 一致）；只要 CLI 时用 `just test pchronicle-cli`。无参数形式还会跑
+`just test-py`。
 
 ## 当前笔记
 

@@ -173,33 +173,43 @@ impl ServerAcceleration {
         snapshot: &DatasetCatalogSnapshot,
         engine: &ChronicleQueryEngine,
     ) -> Result<Arc<Vec<RunSummary>>> {
-        self.run_summaries_with(|| async { build_run_summaries(snapshot, engine, None).await })
-            .await
+        self.run_summaries_with(|| async {
+            build_run_summaries(snapshot, engine, None, None).await
+        })
+        .await
     }
 
-    /// Build summaries for one Dataset without waiting for the all-Dataset
-    /// acceleration cell. This lets callers fan out expensive JSON sources
-    /// while a fast Lance source can complete independently.
-    pub(crate) async fn run_summaries_for_dataset(
+    /// Prune Sources before scanning, and serialize cold summary builds across
+    /// Datasets sharing the same DataFusion memory pool.
+    pub(crate) async fn scoped_run_summaries(
         &self,
         snapshot: &DatasetCatalogSnapshot,
         engine: &ChronicleQueryEngine,
-        dataset: &str,
-    ) -> Result<Arc<Vec<RunSummary>>> {
-        if let Some(summaries) = self
-            .run_summaries_by_dataset
-            .lock()
-            .await
-            .get(dataset)
-            .cloned()
+        dataset: Option<&str>,
+        file: Option<&str>,
+    ) -> Result<CachedRunSummaries> {
+        if dataset.is_none() && file.is_none() {
+            return self.run_summaries(snapshot, engine).await;
+        }
+        // ponytail: serialize cold builds; use budgeted concurrency if latency warrants it.
+        let _admission = self.build_gate.lock().await;
+        if let Some(dataset) = dataset.filter(|_| file.is_none())
+            && let Some(summaries) = self
+                .run_summaries_by_dataset
+                .lock()
+                .await
+                .get(dataset)
+                .cloned()
         {
             return Ok(summaries);
         }
-        let summaries = build_run_summaries(snapshot, engine, Some(dataset)).await?;
-        self.run_summaries_by_dataset
-            .lock()
-            .await
-            .insert(dataset.to_string(), summaries.clone());
+        let summaries = build_run_summaries(snapshot, engine, dataset, file).await?;
+        if let Some(dataset) = dataset.filter(|_| file.is_none()) {
+            self.run_summaries_by_dataset
+                .lock()
+                .await
+                .insert(dataset.to_owned(), summaries.clone());
+        }
         Ok(summaries)
     }
 
@@ -902,6 +912,7 @@ async fn build_run_summaries(
     snapshot: &DatasetCatalogSnapshot,
     engine: &ChronicleQueryEngine,
     dataset_filter: Option<&str>,
+    file_filter: Option<&str>,
 ) -> Result<Arc<Vec<RunSummary>>> {
     let mut summaries = Vec::new();
     for dataset in snapshot.datasets() {
@@ -909,122 +920,132 @@ async fn build_run_summaries(
             continue;
         }
         let name = &dataset.mount.name;
-        let event_stats = build_event_stats(engine, name).await?;
+        // The join keys include _file_, so each Source can be summarized
+        // independently. Exact predicates prune other Sources before resolution.
         for source in dataset
             .sources
             .iter()
-            .filter(|source| source.format.as_deref() == Some("compact-jsonl/v1"))
+            .filter(|source| explorer::file_matches_prefix(&source.file, file_filter.unwrap_or("")))
         {
-            // Manifest-backed compact sources are paged on demand by the runs
-            // API. Expanding hundreds of thousands of identities here freezes
-            // both Warehouse refresh and the WebAssembly client path_index.
-            if source.record_count.is_some() {
-                continue;
-            }
-            if let Some(records) = snapshot.compact_records(name, &source.file).await? {
-                for record in records {
-                    let path = explorer::explorer_run_path(
-                        name,
-                        &source.file,
-                        &record.id,
-                        &record.id,
-                        None,
-                        None,
-                    );
-                    summaries.push(RunSummary {
-                        dataset: name.clone(),
-                        file: source.file.clone(),
-                        document_id: record.id.clone(),
-                        run_id: None,
-                        agent_id: "compact-jsonl".into(),
-                        model_name: None,
-                        session_id: record.id,
-                        root_session_id: None,
-                        path,
-                        row_count: 1,
-                        duplicate_event_ids: 0,
-                        status: "record".into(),
-                        format: Some("compact-jsonl/v1".into()),
-                        explorer_weight: None,
-                    });
+            if source.format.as_deref() == Some("compact-jsonl/v1") {
+                // Manifest-backed compact sources are paged on demand by the runs
+                // API. Expanding hundreds of thousands of identities here freezes
+                // both Warehouse refresh and the WebAssembly client path_index.
+                if source.record_count.is_some() {
+                    continue;
+                }
+                if let Some(records) = snapshot.compact_records(name, &source.file).await? {
+                    for record in records {
+                        let path = explorer::explorer_run_path(
+                            name,
+                            &source.file,
+                            &record.id,
+                            &record.id,
+                            None,
+                            None,
+                        );
+                        summaries.push(RunSummary {
+                            dataset: name.clone(),
+                            file: source.file.clone(),
+                            document_id: record.id.clone(),
+                            run_id: None,
+                            agent_id: "compact-jsonl".into(),
+                            model_name: None,
+                            session_id: record.id,
+                            root_session_id: None,
+                            path,
+                            row_count: 1,
+                            duplicate_event_ids: 0,
+                            status: "record".into(),
+                            format: Some("compact-jsonl/v1".into()),
+                        });
+                    }
                 }
             }
-        }
-        let sql = format!(
-            "SELECT r._file_, r.document_id, r.run_id, r.session_id, r.agent_id, r.agent_model_name, \
+            let event_stats = build_event_stats(engine, name, &source.file).await?;
+            let file = crate::sql_string(&source.file);
+            let sql = format!(
+                "WITH step_counts AS ( \
+                SELECT _file_, document_id, COUNT(*) AS row_count \
+                FROM {name}.steps WHERE _file_ = {file} \
+                GROUP BY _file_, document_id \
+             ) \
+             SELECT r._file_, r.document_id, r.run_id, r.session_id, r.agent_id, r.agent_model_name, \
                     r.parent, r.final_metrics, r.extra, r.unknown_fields, \
-                    (SELECT COUNT(*) FROM {name}.steps s \
-                      WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS row_count \
-             FROM {name}.runs r"
-        );
-        let body = engine.query_jsonl(&sql).await?;
-        for line in body.lines().filter(|line| !line.trim().is_empty()) {
-            let row: JsonValue = serde_json::from_str(line).context("decode run index row")?;
-            let file = required_json_string(&row, "_file_")?.to_string();
-            let document_id = required_json_string(&row, "document_id")?.to_string();
-            let run_id = row
-                .get("run_id")
-                .and_then(JsonValue::as_str)
-                .map(str::to_owned);
-            let session_id = required_json_string(&row, "session_id")?.to_string();
-            let agent_id = required_json_string(&row, "agent_id")?.to_string();
-            let model_name = row
-                .get("agent_model_name")
-                .and_then(JsonValue::as_str)
-                .map(str::to_owned);
-            let parent_session_id = row
-                .get("parent")
-                .or_else(|| row.get("parent_json"))
-                .and_then(JsonValue::as_str)
-                .and_then(|parent| serde_json::from_str::<JsonValue>(parent).ok())
-                .and_then(|parent| {
-                    parent
-                        .get("psid")
-                        .or_else(|| parent.get("parent_session_id"))
-                        .and_then(JsonValue::as_str)
-                        .map(str::to_owned)
-                });
-            let root_session_id = parent_session_id
-                .clone()
-                .or_else(|| run_id.as_ref().filter(|id| *id != &session_id).cloned());
-            let path = explorer::explorer_run_path(
-                name,
-                &file,
-                &document_id,
-                &session_id,
-                run_id.as_deref(),
-                parent_session_id.as_deref(),
+                    COALESCE(sc.row_count, 0) AS row_count \
+             FROM {name}.runs r \
+             LEFT JOIN step_counts sc \
+               ON sc._file_ = r._file_ AND sc.document_id = r.document_id \
+             WHERE r._file_ = {file}"
             );
-            let status = event_stats
-                .get(&(file.clone(), session_id.clone()))
-                .map_or_else(
-                    || run_status(&row),
-                    |stats| stats.status.clone().unwrap_or_else(|| "active".into()),
+            let body = engine.query_jsonl(&sql).await?;
+            for line in body.lines().filter(|line| !line.trim().is_empty()) {
+                let row: JsonValue = serde_json::from_str(line).context("decode run index row")?;
+                let file = required_json_string(&row, "_file_")?.to_string();
+                let document_id = required_json_string(&row, "document_id")?.to_string();
+                let run_id = row
+                    .get("run_id")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_owned);
+                let session_id = required_json_string(&row, "session_id")?.to_string();
+                let agent_id = required_json_string(&row, "agent_id")?.to_string();
+                let model_name = row
+                    .get("agent_model_name")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_owned);
+                let parent_session_id = row
+                    .get("parent")
+                    .or_else(|| row.get("parent_json"))
+                    .and_then(JsonValue::as_str)
+                    .and_then(|parent| serde_json::from_str::<JsonValue>(parent).ok())
+                    .and_then(|parent| {
+                        parent
+                            .get("psid")
+                            .or_else(|| parent.get("parent_session_id"))
+                            .and_then(JsonValue::as_str)
+                            .map(str::to_owned)
+                    });
+                let root_session_id = parent_session_id
+                    .clone()
+                    .or_else(|| run_id.as_ref().filter(|id| *id != &session_id).cloned());
+                let path = explorer::explorer_run_path(
+                    name,
+                    &file,
+                    &document_id,
+                    &session_id,
+                    run_id.as_deref(),
+                    parent_session_id.as_deref(),
                 );
-            let event_stats = event_stats.get(&(file.clone(), session_id.clone()));
-            summaries.push(RunSummary {
-                dataset: name.clone(),
-                file,
-                document_id,
-                run_id,
-                agent_id,
-                model_name,
-                session_id,
-                root_session_id,
-                path,
-                row_count: event_stats.map_or_else(
-                    || {
-                        row.get("row_count")
-                            .and_then(JsonValue::as_u64)
-                            .unwrap_or(0) as usize
-                    },
-                    |stats| stats.row_count,
-                ),
-                duplicate_event_ids: event_stats.map_or(0, |stats| stats.duplicate_event_ids),
-                status,
-                format: None,
-                explorer_weight: None,
-            });
+                let status = event_stats
+                    .get(&(file.clone(), session_id.clone()))
+                    .map_or_else(
+                        || run_status(&row),
+                        |stats| stats.status.clone().unwrap_or_else(|| "active".into()),
+                    );
+                let event_stats = event_stats.get(&(file.clone(), session_id.clone()));
+                summaries.push(RunSummary {
+                    dataset: name.clone(),
+                    file,
+                    document_id,
+                    run_id,
+                    agent_id,
+                    model_name,
+                    session_id,
+                    root_session_id,
+                    path,
+                    row_count: event_stats.map_or_else(
+                        || {
+                            row.get("row_count")
+                                .and_then(JsonValue::as_u64)
+                                .unwrap_or(0) as usize
+                        },
+                        |stats| stats.row_count,
+                    ),
+                    duplicate_event_ids: event_stats.map_or(0, |stats| stats.duplicate_event_ids),
+                    status,
+                    format: None,
+                });
+            }
         }
     }
     summaries.sort_by(|left, right| left.path.cmp(&right.path));
@@ -1041,7 +1062,9 @@ struct EventStats {
 async fn build_event_stats(
     engine: &ChronicleQueryEngine,
     dataset: &str,
+    file: &str,
 ) -> Result<HashMap<(String, String), EventStats>> {
+    let file = crate::sql_string(file);
     let sql = format!(
         "SELECT _file_, session_id, COUNT(*) AS row_count, \
                 COUNT(event_id) - COUNT(DISTINCT event_id) AS duplicate_event_ids, \
@@ -1056,7 +1079,7 @@ async fn build_event_stats(
                     AS request_count, \
                 SUM(CASE WHEN kind = 'llm.response' OR kind = 'llm.response.stream' \
                     THEN 1 ELSE 0 END) AS response_count \
-         FROM {dataset}.events GROUP BY _file_, session_id"
+         FROM {dataset}.events WHERE _file_ = {file} GROUP BY _file_, session_id"
     );
     let body = engine.query_jsonl(&sql).await?;
     body.lines()

@@ -3,6 +3,9 @@
 Persisting has two independent entry points. Start with the one that matches
 the work in front of you, then follow the short path to a useful result.
 
+The product promise is consistent across both paths: govern what an Agent can
+do, review what it changed, and preserve the useful history that follows.
+
 ## I want to run an Agent safely and review its changes
 
 Start with **pVisor**. It lets one Agent work in an isolated Run, records the execution boundary, and

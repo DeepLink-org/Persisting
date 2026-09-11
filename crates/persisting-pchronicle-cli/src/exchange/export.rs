@@ -150,7 +150,10 @@ pub(crate) async fn export_from_snapshot(
     );
 
     let sql = export_address_sql(args)?;
-    let engine = snapshot.clone().query_engine(Default::default()).await?;
+    let engine = snapshot
+        .clone()
+        .query_engine(chronicle_query_options()?)
+        .await?;
     let row_limit = args
         .max_trajectories
         .checked_add(1)

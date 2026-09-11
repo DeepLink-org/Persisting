@@ -33,6 +33,35 @@ pub struct ShallowNavEntry {
     pub dataset_kind: Option<String>,
 }
 
+/// One child of RFC-0015 `list(path)` — shell-like one-level listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathListKind {
+    Directory,
+    Dataset,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PathListEntry {
+    pub name: String,
+    pub path: String,
+    pub kind: PathListKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_count: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct DatasetListPreview {
+    format: Option<String>,
+    record_count: Option<u64>,
+    failed_count: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DatasetLocationKind {
     Local,
@@ -314,6 +343,134 @@ impl DatasetLocation {
             return Ok(Some("other"));
         }
         Ok(None)
+    }
+
+    /// RFC-0015 `list(path)`: one shell-like level under `relative`.
+    ///
+    /// If `relative` is already a leaf Dataset, returns that Dataset as a
+    /// single entry (no Lance interiors). Otherwise lists immediate children:
+    /// directories, leaf Datasets (with sidecar preview when present), and
+    /// JSON / JSONL / NDJSON files.
+    pub async fn list(&self, relative: &str) -> Result<Vec<PathListEntry>> {
+        let relative = relative.trim().trim_matches('/');
+        anyhow::ensure!(
+            !relative.split('/').any(|part| part == ".."),
+            "relative object path must not contain '..'"
+        );
+        if let Some(preview) = self.list_dataset_preview(relative).await? {
+            let name = if relative.is_empty() {
+                ".".to_string()
+            } else {
+                relative.rsplit('/').next().unwrap_or(relative).to_string()
+            };
+            return Ok(vec![PathListEntry {
+                name,
+                path: if relative.is_empty() {
+                    ".".into()
+                } else {
+                    relative.to_string()
+                },
+                kind: PathListKind::Dataset,
+                format: preview.format,
+                record_count: preview.record_count,
+                failed_count: preview.failed_count,
+            }]);
+        }
+
+        let nav = self.list_shallow_nav(relative).await?;
+        let mut out = Vec::with_capacity(nav.len());
+        for entry in nav {
+            let path = if relative.is_empty() {
+                entry.name.clone()
+            } else {
+                format!("{relative}/{}", entry.name)
+            };
+            if let Some(preview) = self.list_dataset_preview(&path).await? {
+                out.push(PathListEntry {
+                    name: entry.name,
+                    path,
+                    kind: PathListKind::Dataset,
+                    format: preview.format,
+                    record_count: preview.record_count,
+                    failed_count: preview.failed_count,
+                });
+            } else if entry.is_dir {
+                out.push(PathListEntry {
+                    name: entry.name,
+                    path,
+                    kind: PathListKind::Directory,
+                    format: None,
+                    record_count: None,
+                    failed_count: None,
+                });
+            } else {
+                out.push(PathListEntry {
+                    name: entry.name,
+                    path,
+                    kind: PathListKind::File,
+                    format: None,
+                    record_count: None,
+                    failed_count: None,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    async fn list_dataset_preview(&self, relative: &str) -> Result<Option<DatasetListPreview>> {
+        let Some(kind) = self.probe_nav_dataset_kind(relative).await? else {
+            return Ok(None);
+        };
+        let mut preview = DatasetListPreview {
+            format: Some(match kind {
+                "storyline" => "storyline-lance".into(),
+                "compact-jsonl" => "compact-jsonl/v1".into(),
+                other => other.to_string(),
+            }),
+            record_count: None,
+            failed_count: None,
+        };
+        if let Some(root) = &self.local_path {
+            let dir = if relative.is_empty() {
+                root.clone()
+            } else {
+                root.join(relative)
+            };
+            if let Some(manifest) = crate::store::chronicle_manifest::try_load_manifest(&dir)
+                && matches!(manifest.kind, crate::store::ManifestKind::Leaf)
+            {
+                if let Some(format) = manifest.format {
+                    preview.format = Some(format);
+                }
+                if let Some(stats) = manifest.stats {
+                    preview.record_count = Some(stats.record_count);
+                    preview.failed_count = Some(stats.failed_count);
+                }
+            }
+            return Ok(Some(preview));
+        }
+        let store = OpendalStore::from_uri(&self.uri).await?;
+        let key = if relative.is_empty() {
+            crate::store::CHRONICLE_MANIFEST_FILE.to_string()
+        } else {
+            format!("{relative}/{}", crate::store::CHRONICLE_MANIFEST_FILE)
+        };
+        if let Some(entry) = store.stat_file(&key).await?
+            && let Some((bytes, _)) = store.read(&entry.path).await?
+            && let Ok(text) = std::str::from_utf8(&bytes)
+            && let Ok(manifest) = toml::from_str::<crate::store::ChronicleManifest>(text)
+            && manifest.validate().is_ok()
+            && matches!(manifest.kind, crate::store::ManifestKind::Leaf)
+        {
+            if let Some(format) = manifest.format {
+                preview.format = Some(format);
+            }
+            if let Some(stats) = manifest.stats {
+                preview.record_count = Some(stats.record_count);
+                preview.failed_count = Some(stats.failed_count);
+            }
+        }
+        Ok(Some(preview))
     }
 
     /// Immediate children under a Dataset-relative prefix for explorer navigation.
@@ -1061,6 +1218,64 @@ mod tests {
         assert!(error.contains("already exists"), "{error}");
         location.put_bytes(b"two", true).await.unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"two");
+    }
+
+    #[tokio::test]
+    async fn list_is_one_level_and_previews_manifest_leaves() {
+        let temp = tempdir().unwrap();
+        let warehouse = temp.path().join("warehouse");
+        let team = warehouse.join("team");
+        let archive = warehouse.join("archive");
+        std::fs::create_dir_all(team.join("codex_jsonl")).unwrap();
+        std::fs::create_dir_all(&archive).unwrap();
+        crate::store::chronicle_manifest::write_compact_jsonl_manifest(&archive, 1, 7).unwrap();
+        std::fs::write(warehouse.join("notes.json"), b"[]").unwrap();
+
+        let location = DatasetLocation::parse(warehouse.to_str().unwrap()).unwrap();
+        let listed = location.list("").await.unwrap();
+        let summary: Vec<_> = listed
+            .iter()
+            .map(|entry| {
+                (
+                    entry.name.as_str(),
+                    entry.kind,
+                    entry.record_count,
+                    entry.format.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (
+                    "archive",
+                    PathListKind::Dataset,
+                    Some(7),
+                    Some("compact-jsonl/v1")
+                ),
+                ("notes.json", PathListKind::File, None, None),
+                ("team", PathListKind::Directory, None, None),
+            ]
+        );
+        assert!(
+            !listed
+                .iter()
+                .any(|entry| entry.path.contains("codex_jsonl"))
+        );
+
+        let leaf = location.list("archive").await.unwrap();
+        assert_eq!(leaf.len(), 1);
+        assert_eq!(leaf[0].kind, PathListKind::Dataset);
+        assert_eq!(leaf[0].record_count, Some(7));
+        assert_eq!(leaf[0].path, "archive");
+    }
+
+    #[tokio::test]
+    async fn list_rejects_parent_paths() {
+        let temp = tempdir().unwrap();
+        let location = DatasetLocation::parse(temp.path().to_str().unwrap()).unwrap();
+        let error = location.list("team/../secrets").await.unwrap_err();
+        assert!(error.to_string().contains("must not contain '..'"));
     }
 
     #[tokio::test]

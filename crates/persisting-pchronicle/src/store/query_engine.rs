@@ -62,6 +62,8 @@ pub struct ExternalTableSpec {
 }
 
 pub const DEFAULT_QUERY_MEMORY_LIMIT_BYTES: usize = 2 * 1024 * 1024 * 1024;
+/// DataFusion FairSpillPool size. Accepts an integer byte count or `KiB`/`MiB`/`GiB`.
+pub const QUERY_MEMORY_LIMIT_ENV: &str = "PCHRONICLE_QUERY_MEMORY_LIMIT";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChronicleQueryExecutionOptions {
@@ -81,6 +83,49 @@ impl Default for ChronicleQueryExecutionOptions {
             max_spill_bytes: None,
         }
     }
+}
+
+impl ChronicleQueryExecutionOptions {
+    /// Default options with `PCHRONICLE_QUERY_MEMORY_LIMIT` applied when set.
+    pub fn from_env() -> Result<Self> {
+        let mut options = Self::default();
+        match std::env::var(QUERY_MEMORY_LIMIT_ENV) {
+            Ok(value) if value.trim().is_empty() => {}
+            Ok(value) => {
+                options.memory_limit_bytes =
+                    Some(parse_query_memory_limit(&value).map_err(|error| {
+                        anyhow::anyhow!("{QUERY_MEMORY_LIMIT_ENV}={value:?} is invalid: {error}")
+                    })?);
+            }
+            Err(std::env::VarError::NotPresent) => {}
+            Err(error) => anyhow::bail!("{QUERY_MEMORY_LIMIT_ENV} is not valid UTF-8: {error}"),
+        }
+        Ok(options)
+    }
+}
+
+pub(crate) fn parse_query_memory_limit(value: &str) -> std::result::Result<usize, String> {
+    let value = value.trim();
+    let suffixes = [
+        ("KiB", 1024usize),
+        ("MiB", 1024usize * 1024),
+        ("GiB", 1024usize * 1024 * 1024),
+    ];
+    let (number, multiplier) = suffixes
+        .iter()
+        .find_map(|(suffix, multiplier)| {
+            value
+                .strip_suffix(suffix)
+                .map(|number| (number, *multiplier))
+        })
+        .unwrap_or((value, 1));
+    let amount = number
+        .parse::<usize>()
+        .map_err(|_| format!("invalid byte size '{value}'; use an integer or KiB, MiB, GiB"))?;
+    amount
+        .checked_mul(multiplier)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| "byte size must be greater than zero and fit in usize".to_owned())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -697,5 +742,30 @@ fn sql_type(data_type: &DataType, nullable: bool) -> String {
         format!("{base}?")
     } else {
         base.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_query_memory_limit_accepts_binary_units() {
+        assert_eq!(
+            parse_query_memory_limit("8GiB").unwrap(),
+            8 * 1024 * 1024 * 1024
+        );
+        assert_eq!(
+            parse_query_memory_limit(" 64MiB ").unwrap(),
+            64 * 1024 * 1024
+        );
+        assert_eq!(parse_query_memory_limit("1024").unwrap(), 1024);
+    }
+
+    #[test]
+    fn parse_query_memory_limit_rejects_zero_and_unknown_units() {
+        assert!(parse_query_memory_limit("0").is_err());
+        assert!(parse_query_memory_limit("8GB").is_err());
+        assert!(parse_query_memory_limit("").is_err());
     }
 }

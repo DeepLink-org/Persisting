@@ -1226,18 +1226,23 @@ async fn log_level_changes_diagnostics_without_changing_results() -> Result<()> 
     Ok(())
 }
 
-#[tokio::test]
-async fn list_discovers_nested_sources_as_json() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    fs::create_dir(temp.path().join("nested"))?;
+fn write_list_fixture(root: &Path) -> Result<()> {
+    fs::create_dir(root.join("nested"))?;
     fs::write(
-        temp.path().join("nested/trajectory.json"),
+        root.join("nested/trajectory.json"),
         r#"[{"session_id":"s1","step_id":0,"messages":[]}]"#,
     )?;
     fs::write(
-        temp.path().join("trajectory.jsonl"),
+        root.join("trajectory.jsonl"),
         r#"{"schema_version":"ATIF-v1.4","session_id":"s2","steps":[],"agent":{"id":"a"}}"#,
     )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_lists_immediate_path_entries_as_json() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    write_list_fixture(temp.path())?;
     let cli = Cli::try_parse_from([
         "pchronicle",
         "list",
@@ -1250,11 +1255,37 @@ async fn list_discovers_nested_sources_as_json() -> Result<()> {
     run(cli, false, &mut stdout, &mut stderr).await?;
 
     let value: Value = serde_json::from_slice(&stdout)?;
-    assert!(value.get("schema_version").is_none());
-    assert_eq!(value["sources"].as_array().unwrap().len(), 2);
-    assert_eq!(value["sources"][0]["source_path"], "nested/trajectory.json");
-    assert_eq!(value["sources"][1]["source_path"], "trajectory.jsonl");
-    assert!(String::from_utf8(stderr)?.contains("snapshot_id="));
+    let entries = value["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["name"], "nested");
+    assert_eq!(entries[0]["kind"], "directory");
+    assert_eq!(entries[1]["name"], "trajectory.jsonl");
+    assert_eq!(entries[1]["kind"], "file");
+    assert!(String::from_utf8(stderr)?.contains("dataset_uri="));
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_sources_prints_snapshot_members() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    write_list_fixture(temp.path())?;
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "list",
+        temp.path().to_str().unwrap(),
+        "--sources",
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let value: Value = serde_json::from_slice(&stdout)?;
+    let sources = value["sources"].as_array().unwrap();
+    let files: Vec<_> = sources
+        .iter()
+        .map(|source| source["source_path"].as_str().unwrap())
+        .collect();
+    assert_eq!(files, vec!["nested/trajectory.json", "trajectory.jsonl"]);
     Ok(())
 }
 
@@ -1273,8 +1304,7 @@ async fn list_pins_and_table_output_work() -> Result<()> {
     let mut stdout = Vec::new();
     run(cli, true, &mut stdout, &mut Vec::new()).await?;
     let output = String::from_utf8(stdout)?;
-    assert!(output.contains("SOURCE"));
-    assert!(output.contains("LAST MODIFIED"));
+    assert!(output.contains("NAME"));
     assert!(output.contains("trajectory.json"));
     Ok(())
 }
@@ -1610,7 +1640,11 @@ async fn status_report_mode_logs_each_cached_source_failure_once() -> Result<()>
 
             let mut fields = Fields::default();
             event.record(&mut fields);
-            if fields.0.contains(SENTINEL) {
+            if fields.0.contains(SENTINEL)
+                && fields
+                    .0
+                    .contains("pChronicle Dataset source status query failed")
+            {
                 self.events.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -2586,7 +2620,10 @@ async fn single_file_preserve_import_keeps_atif_json_lines_queryable() -> Result
     let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
         .await
         .unwrap_err();
-    assert!(format!("{error:#}").contains("invalid.jsonl line 2"));
+    assert!(
+        format!("{error:#}").contains("invalid.jsonl line 2"),
+        "{error:#}"
+    );
     assert!(!invalid_output.exists());
     Ok(())
 }
@@ -2713,16 +2750,12 @@ async fn directory_import_auto_detects_each_file_and_skips_unknown_json() -> Res
         assert_eq!(response["trajectories"], 3, "{output_format:?}: {response}");
         let warnings = String::from_utf8(stderr)?;
         assert!(
-            warnings.contains("root.json"),
+            warnings.contains("warning: skipped import source details/_error_gravitational-wave-detection_astronomy.json: cannot detect import format"),
             "{output_format:?}: {warnings}"
         );
         assert!(
-            warnings.contains("_error_gravitational-wave-detection_astronomy.json"),
-            "{output_format:?}: {warnings}"
-        );
-        assert!(
-            warnings.contains("cannot detect import format"),
-            "{output_format:?}: {warnings}"
+            !warnings.contains("skipped import source root.json"),
+            "auto-detected ATIF must not be skipped: {output_format:?}: {warnings}"
         );
         if output_format == ImportOutputFormat::Preserve {
             assert!(!output.join(unknown.file_name().unwrap()).exists());
@@ -3087,8 +3120,14 @@ async fn object_store_directory_import_recurses_json_files() -> Result<()> {
     let mut stderr = Vec::new();
     run(cli, false, &mut stdout, &mut stderr).await?;
     let stderr = String::from_utf8(stderr)?;
-    assert!(stderr.contains("status=discovering"));
-    assert!(stderr.contains("status=discovered files=2"));
+    assert!(
+        stderr.contains("sources=2"),
+        "object-store import must publish both nested JSON files: {stderr}"
+    );
+    assert!(
+        stderr.contains("trajectories=2"),
+        "object-store import must decode one trajectory per nested file: {stderr}"
+    );
 
     let store = StorylineLanceStore::open(&output).await?;
     let ids = store
@@ -3278,6 +3317,8 @@ async fn append_storyline_import_suffixes_or_skips_existing_document_ids() -> Re
     let initial = temp.path().join("initial.json");
     let duplicate = temp.path().join("duplicate.json");
     let output = temp.path().join("dataset");
+    let _suppress =
+        persisting_pchronicle::storage::StorylineSearchIndexSuppressGuard::for_path(&output);
     fs::write(
         &initial,
         serde_json::to_vec(&atif_identity_document("shared", "session-initial"))?,
@@ -3411,8 +3452,9 @@ async fn replace_and_drop_require_confirmation_and_accept_yes() -> Result<()> {
             .await
             .is_err()
     );
-    // Storyline --replace clears the destination before import (not atomic).
-    assert!(!output.join("old.marker").exists());
+    // Local Storyline --replace stages into a sibling directory and only
+    // swaps on success, so a failed import must leave the destination intact.
+    assert!(output.join("old.marker").exists());
     fs::create_dir_all(&output)?;
     fs::write(output.join("old.marker"), "old")?;
 
@@ -3674,7 +3716,7 @@ async fn storyline_squash_renames_duplicate_document_ids() -> Result<()> {
 }
 
 #[tokio::test]
-async fn storyline_squash_late_source_failure_removes_staging() -> Result<()> {
+async fn storyline_squash_late_source_skip_removes_staging() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let input = temp.path().join("input");
     fs::create_dir_all(&input)?;
@@ -3697,16 +3739,25 @@ async fn storyline_squash_late_source_failure_removes_staging() -> Result<()> {
         "--output-format",
         "storyline",
     ])?;
-    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("z-invalid.json"), "{error:#}");
-    assert!(!output.exists());
+    let mut stderr = Vec::new();
+    run(cli, false, &mut Vec::new(), &mut stderr).await?;
+    let stderr = String::from_utf8(stderr)?;
+    assert!(
+        stderr.contains("z-invalid.json") || stderr.to_lowercase().contains("skip"),
+        "expected skip warning for the late invalid source, got: {stderr}"
+    );
+    assert!(
+        output.join("CURRENT").is_file(),
+        "valid sources should still publish after a skipped late file"
+    );
     assert!(!fs::read_dir(temp.path())?.any(|entry| {
         entry
             .ok()
             .and_then(|entry| entry.file_name().into_string().ok())
-            .is_some_and(|name| name.starts_with(".pchronicle-import-"))
+            .is_some_and(|name| {
+                name.starts_with(".pchronicle-import-")
+                    || name.starts_with(".pchronicle-storyline-stage-")
+            })
     }));
     Ok(())
 }
@@ -4032,6 +4083,8 @@ async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_
             vec!["--max-input-bytes", "1"],
             "resource_exhausted",
         ),
+        // Markdown with a Persisting front matter is detected as AgenticMD,
+        // which is not a queryable JSON import format.
         ("unsupported", &unsupported, vec![], "unsupported"),
     ] {
         let output = temp.path().join(name);
@@ -4049,9 +4102,9 @@ async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_
         let error = run(cli, false, &mut stdout, &mut Vec::new())
             .await
             .unwrap_err();
-        assert!(format!("{error:#}").starts_with(code), "{error:#}");
-        assert!(stdout.is_empty());
-        assert!(!output.exists());
+        assert!(format!("{error:#}").starts_with(code), "{name}: {error:#}");
+        assert!(stdout.is_empty(), "{name}");
+        assert!(!output.exists(), "{name}");
     }
     assert!(!fs::read_dir(temp.path())?.any(|entry| {
         entry

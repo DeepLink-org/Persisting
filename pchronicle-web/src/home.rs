@@ -6,12 +6,17 @@ use crate::model::HomeNavLink;
 const GITHUB: &str = "https://github.com/DeepLink-org/Persisting";
 const DOCS: &str = "https://deeplink-org.github.io/Persisting/";
 const QUICK_START: &str = "pchronicle serve --open ./trajectory-data";
-const FROM_SOURCE: &str = "git clone https://github.com/DeepLink-org/Persisting";
+const FROM_SOURCE: &str = "curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash";
 
-fn copy_text(text: &str) {
+async fn copy_text(text: &str) -> bool {
     if let Some(window) = web_sys::window() {
-        let _ = window.navigator().clipboard().write_text(text);
+        return wasm_bindgen_futures::JsFuture::from(
+            window.navigator().clipboard().write_text(text),
+        )
+        .await
+        .is_ok();
     }
+    false
 }
 
 fn assign_location(href: &str) {
@@ -90,7 +95,7 @@ pub fn HomeLanding(on_open: EventHandler<String>) -> Element {
                                     tab.set(1);
                                     copied.set(false);
                                 },
-                                "Install from source"
+                                "Install nightly"
                             }
                         }
                         div { class: "pc-home-terminal",
@@ -101,8 +106,7 @@ pub fn HomeLanding(on_open: EventHandler<String>) -> Element {
                                 button {
                                     class: "pc-home-copy-btn",
                                     onclick: move |_| {
-                                        copy_text(command);
-                                        copied.set(true);
+                                        spawn(async move { if copy_text(command).await { copied.set(true); } });
                                     },
                                     if copied() { "Copied" } else { "Copy" }
                                 }

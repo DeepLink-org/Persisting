@@ -2085,6 +2085,7 @@ dependencies = [
  "time",
  "urlencoding",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
  "web-time",
 ]

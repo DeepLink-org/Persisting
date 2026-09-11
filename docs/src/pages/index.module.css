@@ -1,2 +1,21 @@
-.hero { position: relative; min-height: 40rem; padding: 7rem 0 5rem; text-align: left; overflow: hidden; display: flex; align-items: center; }
-.eyebrow { color: #5eead4; font-size: .75rem; font-weight: 700; letter-spacing: .16em; }
+.hero {
+  position: relative;
+  min-height: 36rem;
+  padding: 6rem 0 5rem;
+  text-align: left;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  background: radial-gradient(ellipse 65% 90% at 90% 0%, rgb(132 181 232 / 18%), transparent 75%);
+}
+
+.eyebrow {
+  color: #a8cefa;
+  font-size: .75rem;
+  font-weight: 600;
+  letter-spacing: .16em;
+}
+
+@media (max-width: 996px) {
+  .hero { min-height: auto; padding: 4rem 0; }
+}

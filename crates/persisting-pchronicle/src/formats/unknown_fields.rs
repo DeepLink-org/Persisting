@@ -69,27 +69,33 @@ impl UnknownFieldImportWarnings {
     /// Observe all Storylines decoded from one physical input Source.
     ///
     /// Converters may attach a document-level unknown pointer to multiple
-    /// Storylines. Within this call, identical physical pointers are counted
-    /// once by `(source format, source document id, exact pointer)`. Callers
-    /// invoke this method separately for each input Source so identical files
-    /// still contribute independently to command-wide occurrence totals.
+    /// Storylines. Within this call, identical document-level pointers are
+    /// counted once by `(source format, source document id, exact pointer)`.
+    /// Pointers that normalize to a wildcard (row, step, or event indexes)
+    /// are counted per Storyline: formats such as OpenAI corpus store
+    /// story-local array indexes, so the same pointer string can name two
+    /// distinct physical rows. Callers invoke this method separately for
+    /// each input Source so identical files still contribute independently
+    /// to command-wide occurrence totals.
     pub fn observe_storylines<'a>(
         &mut self,
         storylines: impl IntoIterator<Item = &'a StorylineDocument>,
     ) -> InputResult<()> {
         let mut seen = BTreeSet::new();
-        for story in storylines {
+        for (story_index, story) in storylines.into_iter().enumerate() {
             for (source, source_fields) in &story.unknown_fields.sources {
                 for pointer in source_fields.fields.keys() {
+                    let normalized_pointer = normalize_unknown_pointer(source, pointer)?;
+                    let instance_local = normalized_pointer != *pointer;
                     let occurrence = (
                         source.clone(),
                         source_fields.source_document_id.clone(),
                         pointer.clone(),
+                        instance_local.then_some(story_index),
                     );
                     if !seen.insert(occurrence) {
                         continue;
                     }
-                    let normalized_pointer = normalize_unknown_pointer(source, pointer)?;
                     let total = self
                         .counts
                         .entry(source.clone())
@@ -1033,6 +1039,50 @@ mod tests {
         assert_eq!(
             warnings.warning_lines(),
             ["warning: unknown field source=actf key=/vendor_root occurrences=2"]
+        );
+    }
+
+    #[test]
+    fn import_warnings_count_story_local_openai_rows_once_each() {
+        let mut first = StorylineDocument::new("first", "agent");
+        first
+            .unknown_fields
+            .insert("openai-msg", "sessions.json", "/vendor_root", json!(true))
+            .unwrap();
+        first
+            .unknown_fields
+            .insert(
+                "openai-msg",
+                "sessions.json",
+                "/session_steps/0/vendor_row",
+                json!({"kept": true}),
+            )
+            .unwrap();
+        first.refresh_unknown_key_counts().unwrap();
+        let mut second = StorylineDocument::new("second", "agent");
+        second
+            .unknown_fields
+            .insert("openai-msg", "sessions.json", "/vendor_root", json!(true))
+            .unwrap();
+        second
+            .unknown_fields
+            .insert(
+                "openai-msg",
+                "sessions.json",
+                "/session_steps/0/vendor_row",
+                json!({"kept": true}),
+            )
+            .unwrap();
+        second.refresh_unknown_key_counts().unwrap();
+
+        let mut warnings = UnknownFieldImportWarnings::default();
+        warnings.observe_storylines([&first, &second]).unwrap();
+        assert_eq!(
+            warnings.warning_lines(),
+            [
+                "warning: unknown field source=openai-msg key=/session_steps/*/vendor_row occurrences=2",
+                "warning: unknown field source=openai-msg key=/vendor_root occurrences=1",
+            ]
         );
     }
 

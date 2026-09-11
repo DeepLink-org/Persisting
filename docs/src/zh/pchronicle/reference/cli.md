@@ -157,16 +157,19 @@ S3 凭证用 `--ak`/`--sk` 写在同一 pin 表中，不会被 `dataset list` / 
 ### 2.3 `list`
 
 ```text
-pchronicle list [DATASET] [--physical] [--format auto|table|json] [--errors report|strict]
+pchronicle list [DATASET] [--sources] [--physical] [--format auto|table|json] [--errors report|strict]
  [--max-files N] [--max-entries N]
 ```
 
 ```bash
 pchronicle list
-pchronicle list @prod --physical --format json --errors strict
+pchronicle list @prod --sources --physical --format json --errors strict
+pchronicle list @prod --sources --format json
 ```
 
-`list`（`ls`）显示 Dataset 中可独立查询的 Run 数据源，而不是底层 Lance fragment。`--physical` 增加大小、
+`list`（`ls`）列出当前路径的一层 children，体验对齐 shell `ls`。若某一子目录是 Dataset
+（含 `chronicle.manifest` 或其它叶子标记），同时显示类型和轨迹数。`--sources` 会
+**打开**该路径并打印 Snapshot 成员（`query` 会合成的虚拟 dataset）。`--physical` 增加大小、
 修改时间和存储版本信息。还可以用 `--max-files` 和 `--max-entries` 限制发现范围。
 `--errors report` 会报告坏数据项并继续；`strict` 遇到第一个坏数据项即失败。
 

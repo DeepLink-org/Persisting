@@ -25,7 +25,7 @@ use persisting_pchronicle::analysis_compile::{
 };
 use persisting_pchronicle::document::InputIssue;
 use persisting_pchronicle::model::{EventRecord, StorylineTurn};
-use persisting_pchronicle::query::ChronicleQueryEngine;
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 use persisting_pchronicle::search::storyline_steps_fts_available;
 #[cfg(test)]
 use persisting_pchronicle::storage::StoryCoords;
@@ -175,10 +175,6 @@ pub(crate) struct RunSummary {
     pub(crate) status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) format: Option<String>,
-    /// When set, explorer tree counts this summary as `explorer_weight` runs
-    /// instead of 1. Used for compact-jsonl leaves backed by chronicle.manifest.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) explorer_weight: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -488,7 +484,12 @@ async fn build_catalog_runtime(
         )
         .await?,
     );
-    let engine = Arc::new(snapshot.clone().query_engine(Default::default()).await?);
+    let engine = Arc::new(
+        snapshot
+            .clone()
+            .query_engine(ChronicleQueryExecutionOptions::from_env()?)
+            .await?,
+    );
     Ok(Arc::new(CatalogRuntime {
         snapshot,
         engine,
@@ -593,29 +594,23 @@ async fn runs(
     State(state): State<AppState>,
     request_id: RequestId,
 ) -> Result<Json<Vec<RunSummary>>, ApiError> {
-    Ok(Json(load_run_summaries(&state, None, &request_id).await?))
+    Ok(Json(
+        load_run_summaries(&state, None, None, &request_id).await?,
+    ))
 }
 
 async fn load_run_summaries(
     state: &AppState,
     dataset: Option<&str>,
+    file: Option<&str>,
     request_id: &RequestId,
 ) -> Result<Vec<RunSummary>, ApiError> {
     let runtime = current_catalog_for_runs(state, request_id).await?;
-    let summaries = match dataset {
-        Some(dataset) => {
-            runtime
-                .acceleration
-                .run_summaries_for_dataset(&runtime.snapshot, &runtime.engine, dataset)
-                .await
-        }
-        None => {
-            runtime
-                .acceleration
-                .run_summaries(&runtime.snapshot, &runtime.engine)
-                .await
-        }
-    };
+    let file = file.map(str::trim).filter(|value| !value.is_empty());
+    let summaries = runtime
+        .acceleration
+        .scoped_run_summaries(&runtime.snapshot, &runtime.engine, dataset, file)
+        .await;
     summaries
         .map(|summaries| summaries.as_ref().clone())
         .map_err(|error| fail(request_id, "load_run_summaries", error))
@@ -770,7 +765,6 @@ async fn try_compact_jsonl_runs_page(
                     duplicate_event_ids: 0,
                     status: "record".into(),
                     format: Some("compact-jsonl/v1".into()),
-                    explorer_weight: None,
                 },
             }
         })
@@ -919,7 +913,6 @@ async fn try_on_demand_storyline_runs_page(
                     duplicate_event_ids: 0,
                     status: "completed".into(),
                     format: Some("storyline-lance".into()),
-                    explorer_weight: None,
                 },
             }
         })
@@ -965,7 +958,8 @@ async fn explorer_runs(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "all");
-    let summaries = load_run_summaries(&state, dataset_filter, &request_id).await?;
+    let summaries =
+        load_run_summaries(&state, dataset_filter, query.file.as_deref(), &request_id).await?;
     let (fts_matches, fts_available, search_mode) = if query
         .q
         .as_deref()
@@ -1201,250 +1195,37 @@ async fn explorer_tree(
 ) -> Result<Json<explorer::CatalogTree>, ApiError> {
     let query = api_query(query)?;
     let runtime = current_catalog_for_runs(&state, &request_id).await?;
-    let summaries = tree_run_summaries(&runtime, &request_id).await?;
     let dataset = query
         .dataset
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let prefix = query.prefix.as_deref().unwrap_or("");
-    let mut tree = explorer::catalog_tree_with_mounts(
-        &summaries,
-        runtime.snapshot.datasets(),
-        dataset,
-        prefix,
-        explorer::MAX_TREE_CHILDREN,
-    );
-    if let Some(name) = tree.dataset.clone() {
-        if tree.prefix.is_empty()
-            && let Some(dataset) = runtime.snapshot.dataset(&name)
-        {
-            tree.ready_sources = Some(dataset.ready_source_count());
-            tree.error_sources = Some(dataset.error_source_count());
-        }
-        // Directory prefixes often have no run summaries yet; fill the next
-        // level from the live Dataset URI so import progress stays navigable.
-        if tree.children.is_empty()
-            && let Some(dataset) = runtime.snapshot.dataset(&name)
-        {
-            let under_directory = dataset.sources.iter().any(|source| {
-                source.kind == persisting_pchronicle::storage::CatalogSourceKind::Directory
-                    && (tree.prefix == source.file
-                        || tree.prefix.starts_with(&format!("{}/", source.file)))
-            });
-            if under_directory
-                && let Ok(location) =
-                    persisting_pchronicle::storage::DatasetLocation::parse(&dataset.mount.uri)
-                && let Ok(entries) = location.list_shallow_nav(&tree.prefix).await
-            {
-                let prefix = tree.prefix.clone();
-                explorer::append_shallow_nav_children(
-                    &mut tree,
-                    &prefix,
-                    &entries,
-                    explorer::MAX_TREE_CHILDREN,
-                );
-            }
-        }
-        let (duration_ms, total_tokens) = tree_prefix_metrics(&runtime, &name, &tree.prefix).await;
-        tree.duration_ms = duration_ms;
-        tree.total_tokens = total_tokens;
-        let file_tokens = tree_file_tokens(&runtime, &name, &tree.prefix).await;
-        explorer::apply_total_tokens(&mut tree.children, &file_tokens);
+    if dataset.is_none() {
+        return Ok(Json(explorer::catalog_tree_from_mounts(
+            runtime.snapshot.datasets(),
+        )));
+    }
+    let name = dataset.unwrap();
+    let Some(mounted) = runtime.snapshot.dataset(name) else {
+        return Ok(Json(explorer::catalog_tree_from_path_list(
+            name,
+            prefix,
+            &[],
+        )));
+    };
+    let location = persisting_pchronicle::storage::DatasetLocation::parse(&mounted.mount.uri)
+        .map_err(|error| fail(&request_id, "explorer_tree", error))?;
+    let entries = location
+        .list(prefix)
+        .await
+        .map_err(|error| fail(&request_id, "explorer_tree", error))?;
+    let mut tree = explorer::catalog_tree_from_path_list(name, prefix, &entries);
+    if prefix.trim().trim_matches('/').is_empty() {
+        tree.ready_sources = Some(mounted.ready_source_count());
+        tree.error_sources = Some(mounted.error_source_count());
     }
     Ok(Json(tree))
-}
-
-async fn tree_run_summaries(
-    runtime: &CatalogRuntime,
-    request_id: &RequestId,
-) -> Result<Vec<RunSummary>, ApiError> {
-    let mut summaries = Vec::new();
-    let mut manifest_weighted = BTreeSet::new();
-    for dataset in runtime.snapshot.datasets() {
-        for source in &dataset.sources {
-            let Some(record_count) = source.record_count else {
-                continue;
-            };
-            let is_compact = source.format.as_deref() == Some("compact-jsonl/v1");
-            let is_storyline = source.format.as_deref() == Some("storyline-lance");
-            if !is_compact && !is_storyline {
-                continue;
-            }
-            let weight = usize::try_from(record_count).unwrap_or(usize::MAX);
-            let path = explorer::explorer_run_path(
-                &dataset.mount.name,
-                &source.file,
-                "",
-                &source.file,
-                None,
-                None,
-            );
-            summaries.push(RunSummary {
-                dataset: dataset.mount.name.clone(),
-                file: source.file.clone(),
-                document_id: String::new(),
-                run_id: None,
-                agent_id: if is_compact {
-                    "compact-jsonl".into()
-                } else {
-                    "storyline".into()
-                },
-                model_name: None,
-                session_id: source.file.clone(),
-                root_session_id: None,
-                path,
-                row_count: weight,
-                duplicate_event_ids: 0,
-                status: "record".into(),
-                format: source.format.clone(),
-                explorer_weight: Some(weight.max(1)),
-            });
-            manifest_weighted.insert((dataset.mount.name.clone(), source.file.clone()));
-        }
-    }
-    if !runtime.snapshot.datasets().iter().any(|dataset| {
-        dataset.sources.iter().any(|source| {
-            if source.kind == persisting_pchronicle::storage::CatalogSourceKind::Directory {
-                return false;
-            }
-            match source.format.as_deref() {
-                Some("compact-jsonl/v1") | Some("storyline-lance") => source.record_count.is_none(),
-                _ => true,
-            }
-        })
-    }) {
-        return Ok(summaries);
-    }
-    let full = runtime
-        .acceleration
-        .run_summaries(&runtime.snapshot, &runtime.engine)
-        .await
-        .map_err(|error| fail(request_id, "explorer_tree", error))?;
-    for summary in full.iter() {
-        if manifest_weighted.contains(&(summary.dataset.clone(), summary.file.clone())) {
-            continue;
-        }
-        summaries.push(summary.clone());
-    }
-    Ok(summaries)
-}
-
-fn sql_ident(name: &str) -> Option<&str> {
-    let mut chars = name.chars();
-    let first = chars.next()?;
-    (first.is_ascii_alphabetic() || first == '_')
-        .then_some(name)
-        .filter(|_| chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
-}
-
-async fn tree_prefix_metrics(
-    runtime: &CatalogRuntime,
-    dataset: &str,
-    prefix: &str,
-) -> (Option<i64>, Option<u64>) {
-    let Some(ident) = sql_ident(dataset) else {
-        return (None, None);
-    };
-    let file_clause = if prefix.is_empty() {
-        String::new()
-    } else {
-        let escaped = prefix.replace('\'', "''");
-        format!(" WHERE _file_ = '{escaped}' OR _file_ LIKE '{escaped}/%'")
-    };
-    let sql = format!(
-        "SELECT MIN(timestamp) AS start_ts, MAX(timestamp) AS end_ts, SUM(COALESCE(\
-            json_get_int(metrics, 'total_tokens'),\
-            json_get_int(metrics, 'prompt_tokens') + json_get_int(metrics, 'completion_tokens'),\
-            json_get_int(metrics, 'prompt_tokens_len') + json_get_int(metrics, 'completion_tokens_len')\
-        )) AS total_tokens FROM {ident}.steps{file_clause}"
-    );
-    let mut buffer = Vec::new();
-    let write = tokio::time::timeout(
-        Duration::from_secs(3),
-        runtime
-            .engine
-            .write_query_jsonl_with_max_rows(&sql, &mut buffer, Some(1)),
-    )
-    .await;
-    let Ok(Ok(())) = write else {
-        return (None, None);
-    };
-    let line = String::from_utf8(buffer).unwrap_or_default();
-    let line = line.lines().find(|line| !line.trim().is_empty());
-    let Some(Ok(row)) = line.map(serde_json::from_str::<Value>) else {
-        return (None, None);
-    };
-    (
-        timestamp_span_ms(row.get("start_ts"), row.get("end_ts")),
-        row.get("total_tokens").and_then(Value::as_u64),
-    )
-}
-
-async fn tree_file_tokens(
-    runtime: &CatalogRuntime,
-    dataset: &str,
-    prefix: &str,
-) -> BTreeMap<String, u64> {
-    let Some(ident) = sql_ident(dataset) else {
-        return BTreeMap::new();
-    };
-    let file_clause = if prefix.is_empty() {
-        String::new()
-    } else {
-        let escaped = prefix.replace('\'', "''");
-        format!(" WHERE _file_ = '{escaped}' OR _file_ LIKE '{escaped}/%'")
-    };
-    let sql = format!(
-        "SELECT _file_, SUM(COALESCE(\
-            json_get_int(metrics, 'total_tokens'),\
-            json_get_int(metrics, 'prompt_tokens') + json_get_int(metrics, 'completion_tokens'),\
-            json_get_int(metrics, 'prompt_tokens_len') + json_get_int(metrics, 'completion_tokens_len')\
-        )) AS total_tokens FROM {ident}.steps{file_clause} GROUP BY _file_"
-    );
-    let mut buffer = Vec::new();
-    let write = tokio::time::timeout(
-        Duration::from_secs(3),
-        runtime
-            .engine
-            .write_query_jsonl_with_max_rows(&sql, &mut buffer, None),
-    )
-    .await;
-    let Ok(Ok(())) = write else {
-        return BTreeMap::new();
-    };
-    buffer
-        .split(|byte| *byte == b'\n')
-        .filter_map(|line| {
-            let row: Value = serde_json::from_slice(line).ok()?;
-            let file = row.get("_file_")?.as_str()?.to_owned();
-            let tokens = row
-                .get("total_tokens")
-                .and_then(Value::as_u64)
-                .or_else(|| {
-                    row.get("total_tokens")
-                        .and_then(Value::as_i64)
-                        .map(|value| value.max(0) as u64)
-                })?;
-            Some((file, tokens))
-        })
-        .collect()
-}
-
-fn timestamp_span_ms(start: Option<&Value>, end: Option<&Value>) -> Option<i64> {
-    let start = json_timestamp_ms(start?)?;
-    let end = json_timestamp_ms(end?)?;
-    (end >= start).then_some(end - start)
-}
-
-fn json_timestamp_ms(value: &Value) -> Option<i64> {
-    match value {
-        Value::Number(number) => number
-            .as_i64()
-            .or_else(|| number.as_f64().map(|value| value as i64)),
-        Value::String(text) if !text.is_empty() => text.parse().ok(),
-        _ => None,
-    }
 }
 
 async fn resolve_run_summary(
@@ -1457,7 +1238,7 @@ async fn resolve_run_summary(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "all");
-    let mut matches = load_run_summaries(state, dataset_filter, request_id)
+    let mut matches = load_run_summaries(state, dataset_filter, query.file.as_deref(), request_id)
         .await?
         .into_iter()
         .filter(|run| {
@@ -1597,7 +1378,6 @@ async fn try_resolve_on_demand_storyline_run(
         duplicate_event_ids: 0,
         status: "completed".into(),
         format: Some("storyline-lance".into()),
-        explorer_weight: None,
     }))
 }
 

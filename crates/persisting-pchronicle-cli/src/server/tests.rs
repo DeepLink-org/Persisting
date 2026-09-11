@@ -472,7 +472,7 @@ async fn middleware_rejects_illegal_incoming_id() {
 }
 
 #[tokio::test]
-async fn middleware_does_not_info_log_static_assets() {
+async fn middleware_info_logs_static_assets() {
     use tower::ServiceExt;
 
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CapturedLogEvent>::new()));
@@ -496,8 +496,21 @@ async fn middleware_does_not_info_log_static_assets() {
         .unwrap();
     let logged = events.lock().unwrap().clone();
     assert!(
-        !logged.iter().any(|event| {
+        logged.iter().any(|event| {
             event.level == tracing::Level::INFO
+                && event.message.contains("warehouse request start")
+                && event
+                    .fields
+                    .get("path")
+                    .is_some_and(|path| path.contains("/assets/app.css"))
+        }),
+        "{logged:?}"
+    );
+    assert!(
+        logged.iter().any(|event| {
+            event.level == tracing::Level::INFO
+                && event.message.contains("warehouse request")
+                && !event.message.contains("start")
                 && event
                     .fields
                     .get("path")
@@ -571,7 +584,11 @@ async fn query_evidence_info_truncates_sql() {
 fn warehouse_tracing_filter_matches_log_level() {
     assert_eq!(
         super::request_log::tracing_filter(crate::LogLevel::Info),
-        "info,persisting_pchronicle=warn,pchronicle.serve=info"
+        "info,persisting_pchronicle=warn,pchronicle.serve=info,lance=warn,lance_index=warn,opendal=warn,pchronicle.opendal=warn,object_store=warn,pchronicle.object_store_gate=warn"
+    );
+    assert_eq!(
+        super::request_log::tracing_filter(crate::LogLevel::Warn),
+        "warn,persisting_pchronicle=warn,persisting_pchronicle_cli=warn"
     );
     assert_eq!(
         super::request_log::tracing_filter(crate::LogLevel::Error),
@@ -864,7 +881,6 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
         duplicate_event_ids: 0,
         status: "completed".into(),
         format: None,
-        explorer_weight: None,
     };
 
     let analysis = explorer::analyze(run, &turns, &events, CatalogEventProvenance::Canonical);
@@ -911,7 +927,6 @@ fn canonical_event_uri_resolves_write_coordinates_independent_of_mount_root() {
         duplicate_event_ids: 0,
         status: "active".into(),
         format: None,
-        explorer_weight: None,
     };
     let local = event_uri_coords("/tmp/capture/agent/run-1/events.lance", &run).unwrap();
     assert_eq!(local.storage, "/tmp/capture");
@@ -1046,7 +1061,14 @@ async fn explorer_automatically_refreshes_new_dataset_sources() {
         .unwrap();
     let tree: Value =
         serde_json::from_slice(&tree.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(tree["run_count"], 2);
+    let names: Vec<_> = tree["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|child| child["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"gateway.json".into()));
+    assert!(names.contains(&"second.json".into()));
 
     let refreshed = app
         .oneshot(
@@ -1549,6 +1571,81 @@ async fn warehouse_does_not_expose_unused_har_or_revisions_routes() {
 }
 
 #[tokio::test]
+async fn explorer_runs_prunes_unrelated_sources_before_querying() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = "nested/a'_%";
+    std::fs::create_dir_all(root.path().join(prefix)).unwrap();
+    write_gateway_fixture(
+        root.path(),
+        &format!("{prefix}/run.json"),
+        "selected",
+        "job",
+    );
+    // A LIKE-based prefix or an unscoped SQL scan would resolve this bad source.
+    std::fs::create_dir_all(root.path().join("nested/a'Xother")).unwrap();
+    std::fs::write(root.path().join("nested/a'Xother/broken.json"), "{invalid").unwrap();
+    let app = router(root.path().to_string_lossy().to_string());
+    for dataset in ["dataset", "all"] {
+        let (status, page) = get_json(
+            &app,
+            &format!(
+                "/api/explorer/runs?dataset={dataset}&file={}&limit=1",
+                encode_query(prefix)
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(page["snapshot"]["total"], 1);
+        assert_eq!(page["records"][0]["session_id"], "selected");
+    }
+    // A filtered result must not poison the full-Dataset cache or hide errors.
+    let (status, _) = get_json(&app, "/api/explorer/runs?dataset=dataset").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn explorer_runs_counts_steps_per_source_including_empty_runs() {
+    use persisting_pchronicle::storage::StorylineLanceStore;
+
+    let root = tempfile::tempdir().unwrap();
+    for (file, empty) in [("nested/empty", true), ("nested/full", false)] {
+        let mut document = storyline_document("same-session", "same-run");
+        if empty {
+            document.turns.clear();
+        }
+        StorylineLanceStore::open(root.path().join(file))
+            .await
+            .unwrap()
+            .replace_storyline(&document)
+            .await
+            .unwrap();
+    }
+    let app = router(root.path().to_string_lossy().to_string());
+    let (status, scoped) =
+        get_json(&app, "/api/explorer/runs?dataset=dataset&file=nested/full").await;
+    assert_eq!(status, StatusCode::OK, "{scoped}");
+    assert_eq!(scoped["snapshot"]["total"], 1);
+    let (status, page) = get_json(&app, "/api/explorer/runs?dataset=dataset").await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["snapshot"]["total"], 2);
+    let counts = page["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["file"].as_str().unwrap(),
+                row["row_count"].as_u64().unwrap(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        counts,
+        BTreeMap::from([("nested/empty", 0), ("nested/full", 1)])
+    );
+}
+
+#[tokio::test]
 async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -1969,12 +2066,15 @@ async fn explorer_tree_lists_mounted_datasets_by_run_count() -> anyhow::Result<(
     assert_eq!(warehouse.status(), StatusCode::OK);
     let warehouse: Value =
         serde_json::from_slice(&warehouse.into_body().collect().await?.to_bytes())?;
-    assert_eq!(warehouse["run_count"], 3);
-    assert_eq!(warehouse["children"][0]["name"], "live");
+    let names: Vec<_> = warehouse["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|child| child["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, vec!["archive".to_string(), "live".to_string()]);
     assert_eq!(warehouse["children"][0]["kind"], "dataset");
-    assert_eq!(warehouse["children"][0]["run_count"], 2);
-    assert_eq!(warehouse["children"][1]["name"], "archive");
-    assert_eq!(warehouse["children"][1]["run_count"], 1);
+    assert_eq!(warehouse["children"][1]["kind"], "dataset");
 
     let dataset = app
         .clone()
@@ -1987,7 +2087,6 @@ async fn explorer_tree_lists_mounted_datasets_by_run_count() -> anyhow::Result<(
     assert_eq!(dataset.status(), StatusCode::OK);
     let dataset: Value = serde_json::from_slice(&dataset.into_body().collect().await?.to_bytes())?;
     assert_eq!(dataset["dataset"], "live");
-    assert_eq!(dataset["run_count"], 2);
     assert!(dataset["ready_sources"].as_u64().unwrap() >= 1);
     let names: Vec<_> = dataset["children"]
         .as_array()
@@ -1997,6 +2096,13 @@ async fn explorer_tree_lists_mounted_datasets_by_run_count() -> anyhow::Result<(
         .collect();
     assert!(names.contains(&"gateway.json".into()));
     assert!(names.contains(&"nested".into()));
+    let nested = dataset["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|child| child["name"] == "nested")
+        .unwrap();
+    assert_eq!(nested["kind"], "dir");
 
     let prefixed = app
         .oneshot(

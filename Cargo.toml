@@ -145,7 +145,7 @@ split-debuginfo = "off"
 opt-level = "z"
 lto = "thin"
 strip = "symbols"
-codegen-units = 1
+codegen-units = 8
 panic = "abort"
 
 [patch.crates-io]
