@@ -203,41 +203,41 @@
 .pc-home-terminal-wrap {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  gap: 12px;
   min-width: 0;
 }
 
 .pc-home-tabs {
+  position: relative;
   display: flex;
-  align-self: flex-end;
   gap: 4px;
   z-index: 2;
-  margin: 0 18px -1px 0;
-  padding: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-bottom: 0;
-  border-radius: 12px 12px 0 0;
-  background: rgba(12, 18, 30, 0.92);
+  margin: 0 0 0 6px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
 }
 
 .pc-home-tabs button {
-  height: 30px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 8px;
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
   background: transparent;
   color: #93a4bb;
-  font-size: 12px;
-  font-weight: 650;
+  font-size: 13px;
+  font-weight: 550;
   cursor: pointer;
 }
 
 .pc-home-tabs button.active {
-  background: #243044;
+  background: rgba(12, 18, 30, 0.92);
+  border-color: rgba(255, 255, 255, 0.1);
   color: #fff;
 }
 
 .pc-home-terminal {
+  margin-top: -13px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 16px;
   background: rgba(12, 18, 30, 0.92);

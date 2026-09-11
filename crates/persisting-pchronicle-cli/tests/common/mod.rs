@@ -84,6 +84,8 @@ pub fn examples_root() -> PathBuf {
 }
 
 /// Flat multi-format corpus for shallow Directory discovery (no nested dirs).
+/// Shared across integration binaries; not every crate uses it.
+#[allow(dead_code)]
 pub fn examples_corpus() -> PathBuf {
     examples_root().join("corpus")
 }
