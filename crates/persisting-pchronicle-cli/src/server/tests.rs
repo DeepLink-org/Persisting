@@ -1571,6 +1571,81 @@ async fn warehouse_does_not_expose_unused_har_or_revisions_routes() {
 }
 
 #[tokio::test]
+async fn explorer_runs_prunes_unrelated_sources_before_querying() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = "nested/a'_%";
+    std::fs::create_dir_all(root.path().join(prefix)).unwrap();
+    write_gateway_fixture(
+        root.path(),
+        &format!("{prefix}/run.json"),
+        "selected",
+        "job",
+    );
+    // A LIKE-based prefix or an unscoped SQL scan would resolve this bad source.
+    std::fs::create_dir_all(root.path().join("nested/a'Xother")).unwrap();
+    std::fs::write(root.path().join("nested/a'Xother/broken.json"), "{invalid").unwrap();
+    let app = router(root.path().to_string_lossy().to_string());
+    for dataset in ["dataset", "all"] {
+        let (status, page) = get_json(
+            &app,
+            &format!(
+                "/api/explorer/runs?dataset={dataset}&file={}&limit=1",
+                encode_query(prefix)
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(page["snapshot"]["total"], 1);
+        assert_eq!(page["records"][0]["session_id"], "selected");
+    }
+    // A filtered result must not poison the full-Dataset cache or hide errors.
+    let (status, _) = get_json(&app, "/api/explorer/runs?dataset=dataset").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn explorer_runs_counts_steps_per_source_including_empty_runs() {
+    use persisting_pchronicle::storage::StorylineLanceStore;
+
+    let root = tempfile::tempdir().unwrap();
+    for (file, empty) in [("nested/empty", true), ("nested/full", false)] {
+        let mut document = storyline_document("same-session", "same-run");
+        if empty {
+            document.turns.clear();
+        }
+        StorylineLanceStore::open(root.path().join(file))
+            .await
+            .unwrap()
+            .replace_storyline(&document)
+            .await
+            .unwrap();
+    }
+    let app = router(root.path().to_string_lossy().to_string());
+    let (status, scoped) =
+        get_json(&app, "/api/explorer/runs?dataset=dataset&file=nested/full").await;
+    assert_eq!(status, StatusCode::OK, "{scoped}");
+    assert_eq!(scoped["snapshot"]["total"], 1);
+    let (status, page) = get_json(&app, "/api/explorer/runs?dataset=dataset").await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["snapshot"]["total"], 2);
+    let counts = page["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["file"].as_str().unwrap(),
+                row["row_count"].as_u64().unwrap(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        counts,
+        BTreeMap::from([("nested/empty", 0), ("nested/full", 1)])
+    );
+}
+
+#[tokio::test]
 async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
     use http_body_util::BodyExt;
     use tower::ServiceExt;

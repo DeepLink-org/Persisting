@@ -1640,7 +1640,11 @@ async fn status_report_mode_logs_each_cached_source_failure_once() -> Result<()>
 
             let mut fields = Fields::default();
             event.record(&mut fields);
-            if fields.0.contains(SENTINEL) {
+            if fields.0.contains(SENTINEL)
+                && fields
+                    .0
+                    .contains("pChronicle Dataset source status query failed")
+            {
                 self.events.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -2616,7 +2620,10 @@ async fn single_file_preserve_import_keeps_atif_json_lines_queryable() -> Result
     let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
         .await
         .unwrap_err();
-    assert!(format!("{error:#}").contains("invalid.jsonl line 2"));
+    assert!(
+        format!("{error:#}").contains("invalid.jsonl line 2"),
+        "{error:#}"
+    );
     assert!(!invalid_output.exists());
     Ok(())
 }
@@ -3709,7 +3716,7 @@ async fn storyline_squash_renames_duplicate_document_ids() -> Result<()> {
 }
 
 #[tokio::test]
-async fn storyline_squash_late_source_failure_removes_staging() -> Result<()> {
+async fn storyline_squash_late_source_skip_removes_staging() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let input = temp.path().join("input");
     fs::create_dir_all(&input)?;
@@ -3732,16 +3739,25 @@ async fn storyline_squash_late_source_failure_removes_staging() -> Result<()> {
         "--output-format",
         "storyline",
     ])?;
-    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("z-invalid.json"), "{error:#}");
-    assert!(!output.exists());
+    let mut stderr = Vec::new();
+    run(cli, false, &mut Vec::new(), &mut stderr).await?;
+    let stderr = String::from_utf8(stderr)?;
+    assert!(
+        stderr.contains("z-invalid.json") || stderr.to_lowercase().contains("skip"),
+        "expected skip warning for the late invalid source, got: {stderr}"
+    );
+    assert!(
+        output.join("CURRENT").is_file(),
+        "valid sources should still publish after a skipped late file"
+    );
     assert!(!fs::read_dir(temp.path())?.any(|entry| {
         entry
             .ok()
             .and_then(|entry| entry.file_name().into_string().ok())
-            .is_some_and(|name| name.starts_with(".pchronicle-import-"))
+            .is_some_and(|name| {
+                name.starts_with(".pchronicle-import-")
+                    || name.starts_with(".pchronicle-storyline-stage-")
+            })
     }));
     Ok(())
 }
@@ -4067,9 +4083,9 @@ async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_
             vec!["--max-input-bytes", "1"],
             "resource_exhausted",
         ),
-        // Explicit non-JSON files are undetectable under --format auto, so they
-        // share invalid_request with malformed JSON rather than unsupported.
-        ("undetectable", &unsupported, vec![], "invalid_request"),
+        // Markdown with a Persisting front matter is detected as AgenticMD,
+        // which is not a queryable JSON import format.
+        ("unsupported", &unsupported, vec![], "unsupported"),
     ] {
         let output = temp.path().join(name);
         let mut args = vec![

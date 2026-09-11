@@ -32,7 +32,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use futures::{StreamExt, stream, stream::FuturesUnordered};
 use persisting_events::{CHRONICLE_SERVE_READY_VERSION, ChronicleServeReady};
-use persisting_pchronicle::query::ChronicleQueryEngine;
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 use persisting_pchronicle::search::{
     FindExpr, FindJsonOperator, FindJsonPredicate, FindTextPredicate, combine_match_expressions,
     search_storyline_step_matches_fts_in_columns,
@@ -57,6 +57,10 @@ fn cli_boundary_error(code: BoundaryCode, message: impl Into<String>) -> anyhow:
         code,
         message: message.into(),
     })
+}
+
+fn chronicle_query_options() -> Result<ChronicleQueryExecutionOptions> {
+    ChronicleQueryExecutionOptions::from_env()
 }
 
 pub fn error_code(error: &anyhow::Error) -> &'static str {
@@ -2973,7 +2977,10 @@ async fn run_status(
             error: "Source discovery failed".into(),
         })
         .collect::<Vec<_>>();
-    let engine = snapshot.clone().query_engine(Default::default()).await?;
+    let engine = snapshot
+        .clone()
+        .query_engine(chronicle_query_options()?)
+        .await?;
     let timeout = Duration::from_secs(args.timeout_seconds);
     let deadline = tokio::time::Instant::now() + timeout;
     let counts = match query_status_counts(&engine, None, deadline, timeout).await {
@@ -3119,7 +3126,7 @@ async fn run_query(
     .await?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = snapshot.query_engine(Default::default()).await?;
+    let engine = snapshot.query_engine(chronicle_query_options()?).await?;
     let mut buffer = LimitedBuffer::new(args.max_output_bytes);
     let query_result = tokio::time::timeout(
         Duration::from_secs(args.timeout_seconds),
@@ -3217,7 +3224,7 @@ async fn run_stats_report(
             .await?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = snapshot.query_engine(Default::default()).await?;
+    let engine = snapshot.query_engine(chronicle_query_options()?).await?;
     let bounded_sql = format!("{sql}\nLIMIT {}", options.limit);
     let mut buffer = LimitedBuffer::new(options.max_output_bytes);
     let query_result = tokio::time::timeout(
@@ -3423,7 +3430,10 @@ async fn run_find(
         .context("find Dataset URI missing after discovery")?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = snapshot.clone().query_engine(Default::default()).await?;
+    let engine = snapshot
+        .clone()
+        .query_engine(chronicle_query_options()?)
+        .await?;
     let (search_predicate, fts_available, fts_errors) = if let Some(expression) = &expression {
         find_expression_predicate(&snapshot, expression, args.source.as_deref()).await?
     } else {

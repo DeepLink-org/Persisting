@@ -157,7 +157,7 @@ pub(crate) fn catalog_tree_from_path_list(
     }
 }
 
-fn file_matches_prefix(file: &str, prefix: &str) -> bool {
+pub(super) fn file_matches_prefix(file: &str, prefix: &str) -> bool {
     prefix.is_empty() || file == prefix || file.starts_with(&format!("{prefix}/"))
 }
 

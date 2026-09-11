@@ -512,12 +512,16 @@ ci-nextest +packages:
     done
     cargo nextest run --locked "${args[@]}"
 
-# 单 crate：pchronicle | pchronicle-cli | agentctl | capture | ppilot | pvisor | dlcapt
+# 单 crate：pchronicle（含 CLI，对齐 CI pchronicle shard）| pchronicle-cli | …
 test-crate crate:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ crate }}" in
-      pchronicle) cargo nextest run -p persisting-pchronicle --locked ;;
+      pchronicle)
+        cargo nextest run --locked \
+          -p persisting-pchronicle \
+          -p persisting-pchronicle-cli
+        ;;
       pchronicle-cli) cargo nextest run -p persisting-pchronicle-cli --locked ;;
       agentctl) cargo nextest run -p persisting-agentctl --locked ;;
       capture) cargo nextest run -p persisting-gateway --locked ;;
@@ -628,8 +632,8 @@ proptest package:
 
 # Rust + Python. Rust tests run debug-mode nextest for faster iteration; use
 # `just test-rust` with a package for targeted coverage. Passing a package runs
-# only that Rust package; the full Python suite runs only for the no-argument
-# repository-wide invocation.
+# only that Rust package; `pchronicle` also runs persisting-pchronicle-cli.
+# The full Python suite runs only for the no-argument repository-wide invocation.
 test package="":
     #!/usr/bin/env bash
     set -euo pipefail

@@ -25,7 +25,7 @@ use persisting_pchronicle::analysis_compile::{
 };
 use persisting_pchronicle::document::InputIssue;
 use persisting_pchronicle::model::{EventRecord, StorylineTurn};
-use persisting_pchronicle::query::ChronicleQueryEngine;
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 use persisting_pchronicle::search::storyline_steps_fts_available;
 #[cfg(test)]
 use persisting_pchronicle::storage::StoryCoords;
@@ -484,7 +484,12 @@ async fn build_catalog_runtime(
         )
         .await?,
     );
-    let engine = Arc::new(snapshot.clone().query_engine(Default::default()).await?);
+    let engine = Arc::new(
+        snapshot
+            .clone()
+            .query_engine(ChronicleQueryExecutionOptions::from_env()?)
+            .await?,
+    );
     Ok(Arc::new(CatalogRuntime {
         snapshot,
         engine,
@@ -589,29 +594,23 @@ async fn runs(
     State(state): State<AppState>,
     request_id: RequestId,
 ) -> Result<Json<Vec<RunSummary>>, ApiError> {
-    Ok(Json(load_run_summaries(&state, None, &request_id).await?))
+    Ok(Json(
+        load_run_summaries(&state, None, None, &request_id).await?,
+    ))
 }
 
 async fn load_run_summaries(
     state: &AppState,
     dataset: Option<&str>,
+    file: Option<&str>,
     request_id: &RequestId,
 ) -> Result<Vec<RunSummary>, ApiError> {
     let runtime = current_catalog_for_runs(state, request_id).await?;
-    let summaries = match dataset {
-        Some(dataset) => {
-            runtime
-                .acceleration
-                .run_summaries_for_dataset(&runtime.snapshot, &runtime.engine, dataset)
-                .await
-        }
-        None => {
-            runtime
-                .acceleration
-                .run_summaries(&runtime.snapshot, &runtime.engine)
-                .await
-        }
-    };
+    let file = file.map(str::trim).filter(|value| !value.is_empty());
+    let summaries = runtime
+        .acceleration
+        .scoped_run_summaries(&runtime.snapshot, &runtime.engine, dataset, file)
+        .await;
     summaries
         .map(|summaries| summaries.as_ref().clone())
         .map_err(|error| fail(request_id, "load_run_summaries", error))
@@ -959,7 +958,8 @@ async fn explorer_runs(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "all");
-    let summaries = load_run_summaries(&state, dataset_filter, &request_id).await?;
+    let summaries =
+        load_run_summaries(&state, dataset_filter, query.file.as_deref(), &request_id).await?;
     let (fts_matches, fts_available, search_mode) = if query
         .q
         .as_deref()
@@ -1238,7 +1238,7 @@ async fn resolve_run_summary(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "all");
-    let mut matches = load_run_summaries(state, dataset_filter, request_id)
+    let mut matches = load_run_summaries(state, dataset_filter, query.file.as_deref(), request_id)
         .await?
         .into_iter()
         .filter(|run| {

@@ -132,8 +132,8 @@ pub use location::{
 #[cfg(feature = "lance-store")]
 pub use query_engine::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, DEFAULT_QUERY_MEMORY_LIMIT_BYTES,
-    ExternalTableFormat, ExternalTableSpec, IntrospectedField, IntrospectedTable, QueryBackendInfo,
-    QuerySnapshot, QueryWriteOutcome,
+    ExternalTableFormat, ExternalTableSpec, IntrospectedField, IntrospectedTable,
+    QUERY_MEMORY_LIMIT_ENV, QueryBackendInfo, QuerySnapshot, QueryWriteOutcome,
 };
 #[cfg(feature = "lance-store")]
 pub use run_control::{CommitRunOutcome, LeaseAcquireOutcome, RunControlStore};
