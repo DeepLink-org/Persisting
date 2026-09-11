@@ -274,6 +274,10 @@ pub async fn query_catalog() -> Result<QueryCatalog, ApiFailure> {
     .await
 }
 
+pub async fn ui_config() -> Result<crate::model::UiConfig, ApiFailure> {
+    json_checked(Request::get("/api/ui").send().await).await
+}
+
 pub async fn refresh_catalog() -> Result<(), ApiFailure> {
     send_checked(
         with_catalog_headers(Request::post("/api/catalog"))
@@ -347,6 +351,14 @@ pub async fn physical_page(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_config_deserializes_home_links() {
+        let config: crate::model::UiConfig =
+            serde_json::from_str(r#"{"links":[{"label":"Plugins","href":"/plugins"}]}"#).unwrap();
+        assert_eq!(config.links[0].label, "Plugins");
+        assert_eq!(config.links[0].href, "/plugins");
+    }
 
     #[test]
     fn parse_api_failure_reads_code_and_request_id() {

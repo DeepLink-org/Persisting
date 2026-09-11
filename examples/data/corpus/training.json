@@ -1,0 +1,36 @@
+[
+  {
+    "id": "example-openai-001",
+    "session_id": "training-001",
+    "step_id": 1,
+    "created_at": 1785578400,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Summarize the incident."
+      }
+    ],
+    "response": {
+      "role": "assistant",
+      "content": "A capacity shortage delayed the deployment."
+    },
+    "agent_model": "example-model"
+  },
+  {
+    "id": "example-openai-002",
+    "session_id": "training-002",
+    "step_id": 1,
+    "created_at": 1785578460,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Classify the incident severity."
+      }
+    ],
+    "response": {
+      "role": "assistant",
+      "content": "The incident severity is medium."
+    },
+    "agent_model": "example-model"
+  }
+]

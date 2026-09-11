@@ -958,6 +958,14 @@ struct ServeArgs {
     #[arg(long, requires = "listen")]
     open: bool,
 
+    /// Extra homepage nav capsule as TEXT=PATH. PATH is a same-origin relative path.
+    #[arg(
+        long = "home-link",
+        value_name = "TEXT=PATH",
+        value_parser = server::parse_home_link
+    )]
+    home_links: Vec<server::HomeLink>,
+
     /// Start the config-free canonical event ingest Gateway.
     /// `auto` selects loopback and an ephemeral port.
     #[arg(
@@ -2270,23 +2278,7 @@ async fn run_serve(
     if let Some(uri) = gateway_dataset_uri.as_deref() {
         prepare_local_gateway_dataset(uri).await?;
     }
-    let catalog_only = args.catalog_config.is_some();
-    let config = if catalog_only {
-        // Projection supervisor still needs the mount list; Warehouse prepare
-        // reloads the same catalog. Avoid front_only here so Gateway/Control
-        // siblings see the configured datasets.
-        let acl = server::catalog::CatalogAcl::load(
-            args.catalog_config
-                .as_ref()
-                .expect("catalog_only implies catalog_config"),
-        )?;
-        // OpenDAL/Lance read AWS_* from the process environment. Apply catalog
-        // backend keys before any discover/projection work touches s3:// mounts.
-        acl.apply_backend_env();
-        server::ChronicleServerConfig::mounted(acl.mounts()?)?
-    } else {
-        resolve_serve_config_with_settings(&args, settings_override)?
-    };
+    let config = resolve_serve_config_with_settings(&args, settings_override)?;
     let control_uri = args
         .control
         .is_some()
@@ -2315,7 +2307,7 @@ async fn run_serve(
                 .with_context(|| format!("bind pChronicle Warehouse to {listen}"))?;
             let warehouse = if let Some(path) = args.catalog_config.as_ref() {
                 let acl = server::catalog::CatalogAcl::load(path)?;
-                server::PreparedWarehouse::prepare_catalog(acl).await?
+                server::PreparedWarehouse::prepare_catalog(acl, config.clone()).await?
             } else if args.gateway.is_some() {
                 server::PreparedWarehouse::prepare_live(config.clone()).await?
             } else {
@@ -2473,37 +2465,46 @@ fn resolve_serve_config_with_settings(
 ) -> Result<server::ChronicleServerConfig> {
     let storage = serve_storage_uris(args);
     let gateway_dataset = resolve_gateway_dataset_uri(args, settings_override)?;
-    let mut config = match (args.config.as_deref(), storage.as_slice()) {
-        (Some(config), []) => load_warehouse_config_with_user_config(config, settings_override)?,
-        (None, storage) if !storage.is_empty() => {
-            let mut config = server::ChronicleServerConfig::mounted(resolve_storage_mounts(
-                storage,
-                settings_override,
-            )?)?;
-            if config
-                .datasets
-                .iter()
-                .any(|dataset| dataset.name == SERVE_STORAGE_DATASET_NAME)
-            {
-                config.default_dataset = Some(SERVE_STORAGE_DATASET_NAME.into());
+    let mut config = if let Some(path) = args.catalog_config.as_deref() {
+        let acl = server::catalog::CatalogAcl::load(path)?;
+        acl.apply_backend_env();
+        server::ChronicleServerConfig::mounted(acl.mounts()?)?
+    } else {
+        match (args.config.as_deref(), storage.as_slice()) {
+            (Some(config), []) => {
+                load_warehouse_config_with_user_config(config, settings_override)?
             }
-            // A single unreadable source (for example a trajectory file that
-            // exceeds max_file_bytes) must degrade to an error source instead
-            // of preventing the Warehouse from serving the remaining data.
-            config.catalog_options.error_policy = CatalogErrorPolicy::Report;
-            config
+            (None, storage) if !storage.is_empty() => {
+                let mut config = server::ChronicleServerConfig::mounted(resolve_storage_mounts(
+                    storage,
+                    settings_override,
+                )?)?;
+                if config
+                    .datasets
+                    .iter()
+                    .any(|dataset| dataset.name == SERVE_STORAGE_DATASET_NAME)
+                {
+                    config.default_dataset = Some(SERVE_STORAGE_DATASET_NAME.into());
+                }
+                // A single unreadable source (for example a trajectory file that
+                // exceeds max_file_bytes) must degrade to an error source instead
+                // of preventing the Warehouse from serving the remaining data.
+                config.catalog_options.error_policy = CatalogErrorPolicy::Report;
+                config
+            }
+            (None, []) if gateway_dataset.is_some() => {
+                server::ChronicleServerConfig::mounted(vec![DatasetMount::new(
+                    SERVE_STORAGE_DATASET_NAME,
+                    gateway_dataset.as_deref().context("Gateway Dataset")?,
+                )?])?
+            }
+            _ => bail!("serve requires at least one Dataset"),
         }
-        (None, []) if gateway_dataset.is_some() => {
-            server::ChronicleServerConfig::mounted(vec![DatasetMount::new(
-                SERVE_STORAGE_DATASET_NAME,
-                gateway_dataset.as_deref().context("Gateway Dataset")?,
-            )?])?
-        }
-        _ => bail!("serve requires at least one Dataset"),
     };
     if let Some(uri) = gateway_dataset {
         ensure_gateway_mount(&mut config, uri)?;
     }
+    config.home_links = args.home_links.clone();
     Ok(config)
 }
 

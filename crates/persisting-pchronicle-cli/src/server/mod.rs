@@ -65,11 +65,60 @@ struct AppState {
 
 const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomeLink {
+    pub label: String,
+    pub href: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChronicleServerConfig {
     pub datasets: Vec<DatasetMount>,
     pub default_dataset: Option<String>,
     pub catalog_options: CatalogSnapshotOptions,
+    pub home_links: Vec<HomeLink>,
+}
+
+pub fn parse_home_link(raw: &str) -> Result<HomeLink, String> {
+    let raw = raw.trim();
+    let Some((label, href)) = raw.split_once('=') else {
+        return Err(format!("home link must be TEXT=PATH, got '{raw}'"));
+    };
+    let label = label.trim();
+    let href = href.trim();
+    if label.is_empty() {
+        return Err("home link text must not be empty".into());
+    }
+    if href.is_empty() {
+        return Err("home link path must not be empty".into());
+    }
+    if href.contains("://") || href.starts_with("//") || href.contains(':') {
+        return Err(format!(
+            "home link path must be a same-origin relative path, got '{href}'"
+        ));
+    }
+    if href.contains('?') || href.contains('#') {
+        return Err(format!(
+            "home link path must not include a query or fragment, got '{href}'"
+        ));
+    }
+    let href = if href.starts_with('/') {
+        href.to_string()
+    } else {
+        format!("/{href}")
+    };
+    if href
+        .split('/')
+        .any(|segment| segment == ".." || segment == ".")
+    {
+        return Err(format!(
+            "home link path must not contain '.' or '..' segments, got '{href}'"
+        ));
+    }
+    Ok(HomeLink {
+        label: label.to_string(),
+        href,
+    })
 }
 
 impl ChronicleServerConfig {
@@ -88,6 +137,7 @@ impl ChronicleServerConfig {
             datasets,
             default_dataset,
             catalog_options: CatalogSnapshotOptions::default(),
+            home_links: Vec::new(),
         })
     }
 
@@ -96,6 +146,7 @@ impl ChronicleServerConfig {
             datasets: Vec::new(),
             default_dataset: None,
             catalog_options: CatalogSnapshotOptions::default(),
+            home_links: Vec::new(),
         }
     }
 }
@@ -205,14 +256,15 @@ impl PreparedWarehouse {
     ///
     /// Discovery runs in the background so `serve --listen` can accept
     /// connections before large object prefixes finish classifying.
-    pub(crate) async fn prepare_catalog(acl: catalog::CatalogAcl) -> anyhow::Result<Self> {
+    pub(crate) async fn prepare_catalog(
+        acl: catalog::CatalogAcl,
+        config: ChronicleServerConfig,
+    ) -> anyhow::Result<Self> {
         acl.apply_backend_env();
-        let mounts = acl.mounts()?;
         anyhow::ensure!(
-            !mounts.is_empty(),
+            !config.datasets.is_empty(),
             "catalog config needs at least one dataset"
         );
-        let config = ChronicleServerConfig::mounted(mounts)?;
         let mut state = app_state(config);
         state.catalog_acl = Some(Arc::new(acl));
         let warehouse = Self { state };
@@ -304,6 +356,7 @@ impl PreparedWarehouse {
 fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(warehouse_health))
+        .route("/ui", get(ui_config))
         .route("/runs", get(runs))
         .route("/explorer/runs", get(explorer_runs))
         .route("/explorer/tree", get(explorer_tree))
@@ -418,6 +471,10 @@ async fn asset_fallback(
 
 async fn warehouse_health() -> Json<Value> {
     Json(json!({"status":"ok","mode":"read_only"}))
+}
+
+async fn ui_config(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({ "links": state.config.home_links }))
 }
 
 async fn build_catalog_runtime(

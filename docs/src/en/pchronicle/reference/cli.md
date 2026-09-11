@@ -298,6 +298,7 @@ pchronicle agent claude @prod --ask 'Compare model latency'
 ```text
 pchronicle serve
  [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
+ [--home-link TEXT=PATH]...
  [--gateway ADDRESS --gateway-dataset DATASET [--gateway-split TEMPLATE]
  [--gateway-split-idle DURATION]]
  [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
@@ -323,6 +324,8 @@ pchronicle serve \
 Every listener must use a loopback address. A bare single Dataset is mounted as
 `default`; with several Datasets, use `NAME=DATASET` when a stable mount name is
 needed. Control requires a mount named `default`.
+Repeatable `--home-link TEXT=PATH` adds homepage nav capsules beside Warehouse.
+`PATH` must be a same-origin relative path such as `/plugins`.
 `--catalog-config FILE` mounts every `[datasets.*]` library in the Directory
 file into Warehouse and enables `catalog://` locators. It conflicts with
 positional Dataset mounts. Pair Directory clients with

@@ -2,13 +2,18 @@
 
 <img src="/img/logos/pchronicle-with-text.png" alt="pChronicle logo" width="240" />
 
-**pChronicle is an Agent trajectory storage engine.** Use it to browse, query,
-exchange, and serve run Datasets produced by Persisting or by supported
-external formats; pChronicle does not require pVisor to run.
+**Chronicled Experience for the Agent Era**
 
-In Persisting, pChronicle stores and queries trajectory history. It does not
-require pVisor. It can run as a local tool or be deployed as a service in front
-of many paths.
+*makes every agent run easier to understand and improve*
+
+Agent experience is the sum of everything an agent did. **pChronicle is an Agent
+trajectory storage engine**: it records that experience at the unit that matters
+— the Run — and makes every Run easier to understand and improve. Use it to
+browse, query, exchange, and serve run Datasets produced by Persisting or by
+supported external formats; pChronicle does not require pVisor to run.
+
+In Persisting, pChronicle stores and queries trajectory history. It can run as a
+local tool or be deployed as a service in front of many paths.
 
 :::tip What you will complete
 The first walkthrough creates temporary data, opens it, runs a read-only

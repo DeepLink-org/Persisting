@@ -4592,6 +4592,7 @@ fn serve_args_with_storage(storage: Vec<String>) -> ServeArgs {
         listen: None,
         control: None,
         open: false,
+        home_links: Vec::new(),
         gateway: None,
         gateway_config: None,
         gateway_dataset: None,
@@ -5034,6 +5035,75 @@ fn serve_positional_uri_is_equivalent_to_storage() -> Result<()> {
     assert_eq!(config.datasets[0].name, "default");
     assert_eq!(config.datasets[0].uri, "s3://my-bucket/prefix");
     assert_eq!(config.default_dataset.as_deref(), Some("default"));
+    Ok(())
+}
+
+#[test]
+fn serve_home_link_flags_are_copied_into_warehouse_config() -> Result<()> {
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "/tmp/data",
+        "--home-link",
+        "Plugins=/plugins",
+        "--home-link",
+        "Skills=skills",
+    ])?;
+    let Command::Serve(args) = cli.command else {
+        unreachable!("serve command parsed as another variant")
+    };
+    let config = resolve_serve_config(&args)?;
+    assert_eq!(
+        config.home_links,
+        vec![
+            server::HomeLink {
+                label: "Plugins".into(),
+                href: "/plugins".into(),
+            },
+            server::HomeLink {
+                label: "Skills".into(),
+                href: "/skills".into(),
+            },
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn serve_home_link_flags_are_copied_into_warehouse_config_from_catalog() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let dataset = temp.path().join("left");
+    fs::create_dir_all(&dataset)?;
+    let catalog = temp.path().join("catalog.toml");
+    fs::write(
+        &catalog,
+        format!(
+            r#"
+[datasets.left]
+uri = "{}"
+"#,
+            dataset.display()
+        ),
+    )?;
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "serve",
+        "--catalog-config",
+        catalog.to_str().context("catalog path")?,
+        "--home-link",
+        "Realtime=/litefuse",
+    ])?;
+    let Command::Serve(args) = cli.command else {
+        unreachable!("serve command parsed as another variant")
+    };
+    let config = resolve_serve_config(&args)?;
+    assert_eq!(
+        config.home_links,
+        vec![server::HomeLink {
+            label: "Realtime".into(),
+            href: "/litefuse".into(),
+        }]
+    );
     Ok(())
 }
 

@@ -747,7 +747,10 @@ fn parent_handles_path(path: &str) -> bool {
         .strip_prefix("/api/v1")
         .or_else(|| path.strip_prefix("/api"))
         .unwrap_or(path);
-    rest == "/health" || rest == "/catalog/datasets" || rest.starts_with("/catalog/datasets/")
+    rest == "/health"
+        || rest == "/ui"
+        || rest == "/catalog/datasets"
+        || rest.starts_with("/catalog/datasets/")
 }
 
 pub(super) async fn list_datasets(
@@ -1275,10 +1278,61 @@ uri = "{}"
         .unwrap();
 
         let acl = CatalogAcl::load(&catalog).unwrap();
-        let warehouse = crate::server::PreparedWarehouse::prepare_catalog(acl)
+        let config = crate::server::ChronicleServerConfig::mounted(acl.mounts().unwrap()).unwrap();
+        let warehouse = crate::server::PreparedWarehouse::prepare_catalog(acl, config)
             .await
             .unwrap();
         assert_eq!(warehouse.dataset_names(), vec!["left", "right"]);
+    }
+
+    #[tokio::test]
+    async fn catalog_warehouse_exposes_home_links_on_ui_route() {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let dataset = temporary.path().join("left");
+        std::fs::create_dir_all(&dataset).unwrap();
+        let catalog = temporary.path().join("catalog.toml");
+        std::fs::write(
+            &catalog,
+            format!(
+                r#"
+[datasets.left]
+uri = "{}"
+"#,
+                dataset.display()
+            ),
+        )
+        .unwrap();
+
+        let acl = CatalogAcl::load(&catalog).unwrap();
+        let mut config =
+            crate::server::ChronicleServerConfig::mounted(acl.mounts().unwrap()).unwrap();
+        config.home_links = vec![crate::server::parse_home_link("Realtime=/litefuse").unwrap()];
+        let warehouse = crate::server::PreparedWarehouse::prepare_catalog(acl, config)
+            .await
+            .unwrap();
+        let response = warehouse
+            .router()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/ui")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "links": [{"label": "Realtime", "href": "/litefuse"}]
+            })
+        );
     }
 
     async fn catalog_body(response: axum::response::Response) -> (axum::http::StatusCode, String) {

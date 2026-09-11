@@ -409,6 +409,7 @@ Agent 注入是行为引导，不是 filesystem、network 或 tool permission �
 ```text
 pchronicle serve
  [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
+ [--home-link TEXT=PATH]...
  [--gateway ADDRESS --gateway-dataset DATASET [--gateway-split TEMPLATE]
  [--gateway-split-idle DURATION]]
  [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
@@ -432,7 +433,9 @@ pchronicle serve \
 ```
 
 未指定服务 flag 时，只读 Web/API 默认监听 `127.0.0.1:0`。多个 Dataset 使用
-`NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。`--catalog-config FILE`
+`NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。可重复的
+`--home-link TEXT=PATH` 会在首页 Warehouse 旁增加胶囊；`PATH` 必须是同源相对路径。
+`--catalog-config FILE`
 会把文件中全部 `[datasets.*]` 挂进 Warehouse，并启用 `catalog://` locator；不能与位置参数
 Dataset 同时使用。配合 `dataset pin NAME catalog://127.0.0.1:PORT --ak --sk`。
 `pchronicle serve catalog dataset add|remove|list` 与 `issue|grant|revoke` 只改该文件、

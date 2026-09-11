@@ -143,7 +143,8 @@ pub async fn fallback(uri: Uri, headers: HeaderMap) -> Response {
     if is_static_path(path) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    index(headers).await
+    // Home extra links (e.g. /plugins) must not silently re-render the SPA.
+    StatusCode::NOT_FOUND.into_response()
 }
 
 #[cfg(test)]
@@ -169,6 +170,13 @@ mod tests {
         assert!(contains("/index.html"));
         assert!(read("/./index.html").is_some());
         assert!(read("./index.html").is_some());
+    }
+
+    #[test]
+    fn fallback_does_not_serve_the_spa_for_home_link_paths() {
+        let headers = HeaderMap::new();
+        let response = futures::executor::block_on(fallback(Uri::from_static("/plugins"), headers));
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]

@@ -11,6 +11,7 @@ mod catalog_auth;
 mod chat_view;
 mod components;
 mod copilot_sessions;
+mod home;
 mod json_value;
 mod llm;
 mod llm_settings;
