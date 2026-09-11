@@ -142,6 +142,16 @@ impl CatalogAcl {
         Some(user)
     }
 
+    fn authenticate_headers(
+        &self,
+        headers: &axum::http::HeaderMap,
+    ) -> std::result::Result<&CatalogUser, ApiError> {
+        let (access_key, secret_key) =
+            credentials_from_headers(headers).ok_or_else(catalog_unauthorized)?;
+        self.authenticate(&access_key, &secret_key)
+            .ok_or_else(catalog_unauthorized)
+    }
+
     pub(crate) fn list_for(&self, user: &CatalogUser) -> Vec<CatalogLibraryPublic> {
         user.datasets
             .iter()
@@ -761,11 +771,7 @@ pub(super) async fn list_datasets(
         .catalog_acl
         .as_ref()
         .ok_or_else(|| ApiError::not_found("catalog is not enabled"))?;
-    let (access_key, secret_key) =
-        credentials_from_headers(&headers).ok_or_else(catalog_unauthorized)?;
-    let user = acl
-        .authenticate(&access_key, &secret_key)
-        .ok_or_else(catalog_unauthorized)?;
+    let user = acl.authenticate_headers(&headers)?;
     Ok(axum::Json(acl.list_for(user)))
 }
 
@@ -778,11 +784,7 @@ pub(super) async fn get_dataset(
         .catalog_acl
         .as_ref()
         .ok_or_else(|| ApiError::not_found("catalog is not enabled"))?;
-    let (access_key, secret_key) =
-        credentials_from_headers(&headers).ok_or_else(catalog_unauthorized)?;
-    let user = acl
-        .authenticate(&access_key, &secret_key)
-        .ok_or_else(catalog_unauthorized)?;
+    let user = acl.authenticate_headers(&headers)?;
     let ticket = acl
         .ticket_for(user, &name)
         .ok_or_else(|| ApiError::not_found("dataset not found"))?;
@@ -838,12 +840,7 @@ async fn dispatch_query_worker(
         .catalog_acl
         .as_ref()
         .ok_or_else(|| ApiError::not_found("catalog is not enabled"))?;
-    let (access_key, secret_key) =
-        credentials_from_headers(request.headers()).ok_or_else(catalog_unauthorized)?;
-    let user = acl
-        .authenticate(&access_key, &secret_key)
-        .ok_or_else(catalog_unauthorized)?
-        .clone();
+    let user = acl.authenticate_headers(request.headers())?.clone();
     tracing::debug!(
         target: super::problem::LOG_TARGET,
         user = %user.name,

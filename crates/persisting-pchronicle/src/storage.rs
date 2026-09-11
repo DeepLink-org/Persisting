@@ -2,6 +2,31 @@
 
 pub type Result<T> = anyhow::Result<T>;
 
+/// Parse an integer byte size with binary IEC suffixes.
+pub fn parse_byte_size(value: &str) -> std::result::Result<usize, String> {
+    let value = value.trim();
+    let suffixes = [
+        ("KiB", 1024usize),
+        ("MiB", 1024 * 1024),
+        ("GiB", 1024 * 1024 * 1024),
+    ];
+    let (number, multiplier) = suffixes
+        .iter()
+        .find_map(|(suffix, multiplier)| {
+            value
+                .strip_suffix(suffix)
+                .map(|number| (number, *multiplier))
+        })
+        .unwrap_or((value, 1));
+    let amount = number
+        .parse::<usize>()
+        .map_err(|_| format!("invalid byte size '{value}'; use an integer or KiB, MiB, GiB"))?;
+    amount
+        .checked_mul(multiplier)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| "byte size must be greater than zero and fit in usize".to_owned())
+}
+
 #[cfg(feature = "lance-store")]
 pub use crate::append_queue::{
     DEFAULT_RAW_EVENT_BATCH_DELAY, DEFAULT_RAW_EVENT_BATCH_SIZE,

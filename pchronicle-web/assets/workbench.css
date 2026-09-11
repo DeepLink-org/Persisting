@@ -3,6 +3,107 @@
 /* copilot composer + wide panel */
 .pc2-copilot{transition:width .18s ease}
 .pc2-copilot.wide{width:calc((100vw - 56px)*2 / 3);max-width:none}
+
+/* The application shares the homepage palette; reading surfaces stay white. */
+.pc2-shell {
+  --rail-width: 208px;
+  grid-template-columns: var(--rail-width) minmax(0, 1fr);
+  background: #0b192c;
+  color-scheme: light;
+}
+.pc2-shell > .rail {
+  min-height: 0;
+  align-items: stretch;
+  gap: 6px;
+  padding: 16px 12px;
+  overflow-y: auto;
+  background: radial-gradient(ellipse at 0% 100%, #1a3d6866, transparent 65%),
+    linear-gradient(180deg, #102746, #081322 85%);
+  border-right: 1px solid #35547a;
+  color: #d7e3f5;
+}
+.pc2-shell .brand-mark {
+  flex: none;
+  width: 100%;
+  height: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 10px 4px 22px;
+  border: 0;
+  border-bottom: 1px solid #ffffff14;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+}
+.rail-logo {
+  display: grid;
+  place-items: center;
+  flex: 0 0 42px;
+  height: 42px;
+  border: 1px solid #68b7ff55;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #5aa6ff, #2563eb);
+  box-shadow: 0 4px 16px #2563eb33;
+  color: #fff;
+  font-size: 24px;
+}
+.rail-wordmark { color: #fff; font-size: 15px; line-height: 1.25; letter-spacing: -.03em; }
+.workspace-icon { display: block; flex: none; }
+.pc2-shell .rail-button {
+  flex: none;
+  width: 100%;
+  min-height: 42px;
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: #bfd0e7;
+  font-size: 13px;
+  font-weight: 500;
+}
+.pc2-shell .rail-button:hover { background: #ffffff0a; color: #fff; }
+.pc2-shell .rail-button.active {
+  border-color: #5aa6ff88;
+  background: linear-gradient(110deg, #2878e7, #2055bd);
+  color: #fff;
+  box-shadow: inset 0 1px 0 #ffffff20, 0 3px 14px #2563eb26;
+}
+.pc2-shell .rail-button:focus-visible, .pc2-shell .brand-mark:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 2px;
+}
+.pc2-shell .rail-spacer { min-height: 20px; }
+.pc2-shell .rail-status {
+  flex: none;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 14px 4px;
+  border-top: 1px solid #ffffff14;
+  color: #bfd0e7;
+  font-size: 12px;
+}
+.pc2-main {
+  background-color: #fff;
+  background-image: linear-gradient(#2563eb08 1px, transparent 1px),
+    linear-gradient(90deg, #2563eb08 1px, transparent 1px);
+  background-size: 52px 48px;
+}
+.pc2-copilot.wide { width: calc((100vw - var(--rail-width)) * 2 / 3); }
+@media (max-width: 850px) {
+  .pc2-shell { --rail-width: 56px; }
+  .pc2-shell > .rail { align-items: center; padding: 12px 6px; }
+  .pc2-shell .brand-mark { width: 42px; padding: 0 0 12px; justify-content: center; }
+  .rail-logo { flex-basis: 36px; height: 36px; font-size: 20px; }
+  .rail-wordmark { display: none; }
+  .pc2-shell .rail-button { width: 42px; min-height: 50px; flex-direction: column; gap: 4px; padding: 4px 0; border-radius: 9px; font-size: 9px; }
+  .pc2-shell .rail-status { flex-direction: column; gap: 5px; padding: 12px 0 0; font-size: 9px; }
+}
 .pc2-composer{align-items:stretch}
 .pc2-composer textarea{min-height:76px;height:76px}
 .pc2-composer button{align-self:stretch;height:auto;min-height:76px;padding:0 14px;justify-content:center;white-space:nowrap;border-radius:7px}
@@ -44,3 +145,7 @@
 .pc2-message.tool{max-width:100%;margin-bottom:6px;padding:2px 0;border:0;background:transparent;color:#93a4bb}
 .pc2-message.tool .pc2-action-label{margin:0;color:#93c5fd;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0;text-transform:none;font-weight:600}
 .pc2-chat-working,.pc2-chat-working{justify-content:flex-start;padding:4px 2px;color:#93c5fd;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.pc2-shell .rail-primary,.pc2-shell .rail-secondary{display:flex;flex-direction:column;gap:6px}
+.pc2-shell .rail-secondary{padding-top:12px;border-top:1px solid #ffffff14}
+.pc2-shell .rail-secondary .rail-button{color:#b8cbe4}
+@media(max-width:850px){.pc2-shell .rail-secondary{padding-top:0;border-top:0}}

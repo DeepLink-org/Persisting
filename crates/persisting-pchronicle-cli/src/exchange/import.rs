@@ -1185,7 +1185,6 @@ pub(crate) fn spawn_commit_stage(
             };
             match received {
                 Some(Ok(ParsedItem::Imported {
-                    diagnostic_path: _,
                     mut metadata,
                     storylines,
                     warnings,
@@ -1208,11 +1207,7 @@ pub(crate) fn spawn_commit_stage(
                     imported_sources.push(metadata);
                     current_storylines = storylines.into_iter();
                 }
-                Some(Ok(ParsedItem::Skipped {
-                    path,
-                    reason,
-                    bytes: _,
-                })) => {
+                Some(Ok(ParsedItem::Skipped { path, reason })) => {
                     discovered_any = true;
                     let path_key = path.to_string_lossy().into_owned();
                     let warning = skipped_import_warning(&path, &reason);

@@ -4944,7 +4944,7 @@ dependencies = [
  "libc",
  "libloading",
  "log",
- "lru 0.12.5",
+ "lru 0.18.4",
  "nix 0.30.1",
  "persisting-overlay-core",
  "rand 0.9.4",
@@ -7110,7 +7110,7 @@ checksum = "df202b0b0f5b8e389955afd5f27b007b00fb948162953f1db9c70d2c7e3157d7"
 
 [[package]]
 name = "persisting-agentctl"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "ipnet",
@@ -7125,7 +7125,7 @@ dependencies = [
 
 [[package]]
 name = "persisting-dlcapt"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -7150,7 +7150,7 @@ dependencies = [
 
 [[package]]
 name = "persisting-events"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7164,7 +7164,7 @@ dependencies = [
 
 [[package]]
 name = "persisting-gateway"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7199,7 +7199,7 @@ dependencies = [
 
 [[package]]
 name = "persisting-overlay-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "log",
@@ -7211,7 +7211,7 @@ dependencies = [
 
 [[package]]
 name = "persisting-overlayfs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -7227,7 +7227,7 @@ dependencies = [
 
 [[package]]
 name = "persisting-overlaynet"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7248,7 +7248,7 @@ dependencies = [
 
 [[package]]
 name = "persisting-pchronicle"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7288,7 +7288,7 @@ dependencies = [
 
 [[package]]
 name = "persisting-pchronicle-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -7322,7 +7322,7 @@ dependencies = [
 
 [[package]]
 name = "persisting-ppilot"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7347,7 +7347,7 @@ dependencies = [
 
 [[package]]
 name = "persisting-pvisor"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7386,7 +7386,7 @@ dependencies = [
 
 [[package]]
 name = "persisting-replay"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -7747,7 +7747,7 @@ name = "prost-build"
 version = "0.14.3"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph",
@@ -7767,7 +7767,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn",
