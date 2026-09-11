@@ -61,7 +61,7 @@ pub fn HomeLanding(on_open: EventHandler<String>) -> Element {
                 div { class: "pc-home-hero-grid",
                     div { class: "pc-home-copy",
                         p { class: "pc-home-kicker", "Persisting Chronicle" }
-                        h1 { "Chronicled Experience for the Agent Era" }
+                        h1 { "Chronicled Experience" br {} "for the Agent Era" }
                         p { "Persisting Chronicle is now in developer preview for agent infrastructure developers worldwide — source code included." }
                         p { "Every capability of a run is recorded so it can be browsed, queried, and recomposed: prompts, tools, skills, sessions, sandboxes, storage, loops, scheduling, and the UI." }
                         div { class: "pc-home-actions",
