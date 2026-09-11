@@ -371,16 +371,15 @@ async fn forward_handler(
                 String::from_utf8_lossy(&body[..body.len().min(300)]).replace('\n', " ")
             );
         }
-        if debug_level >= 2 {
-            if let Ok(mut bodies) = std::fs::OpenOptions::new()
+        if debug_level >= 2
+            && let Ok(mut bodies) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open("/tmp/pvisor-opencode-bridge-bodies.log")
-            {
-                use std::io::Write as _;
-                let _ = bodies.write_all(&body);
-                let _ = bodies.write_all(b"\n===REQUEST-END===\n");
-            }
+        {
+            use std::io::Write as _;
+            let _ = bodies.write_all(&body);
+            let _ = bodies.write_all(b"\n===REQUEST-END===\n");
         }
     }
     let content_type = headers
