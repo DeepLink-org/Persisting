@@ -3,7 +3,7 @@ use crate::formats::StorylineDocument;
 use crate::{InputIssue, InputResult, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
 /// Default unknown-field count limit. `usize::MAX` means unbounded.
 pub const DEFAULT_MAX_UNKNOWN_FIELDS: usize = usize::MAX;
@@ -69,27 +69,33 @@ impl UnknownFieldImportWarnings {
     /// Observe all Storylines decoded from one physical input Source.
     ///
     /// Converters may attach a document-level unknown pointer to multiple
-    /// Storylines. Within this call, identical physical pointers are counted
-    /// once by `(source format, source document id, exact pointer)`. Callers
-    /// invoke this method separately for each input Source so identical files
-    /// still contribute independently to command-wide occurrence totals.
+    /// Storylines. Within this call, identical document-level pointers are
+    /// counted once by `(source format, source document id, exact pointer)`.
+    /// Pointers that normalize to a wildcard (row, step, or event indexes)
+    /// are counted per Storyline: formats such as OpenAI corpus store
+    /// story-local array indexes, so the same pointer string can name two
+    /// distinct physical rows. Callers invoke this method separately for
+    /// each input Source so identical files still contribute independently
+    /// to command-wide occurrence totals.
     pub fn observe_storylines<'a>(
         &mut self,
         storylines: impl IntoIterator<Item = &'a StorylineDocument>,
     ) -> InputResult<()> {
         let mut seen = BTreeSet::new();
-        for story in storylines {
+        for (story_index, story) in storylines.into_iter().enumerate() {
             for (source, source_fields) in &story.unknown_fields.sources {
                 for pointer in source_fields.fields.keys() {
+                    let normalized_pointer = normalize_unknown_pointer(source, pointer)?;
+                    let instance_local = normalized_pointer != *pointer;
                     let occurrence = (
                         source.clone(),
                         source_fields.source_document_id.clone(),
                         pointer.clone(),
+                        instance_local.then_some(story_index),
                     );
                     if !seen.insert(occurrence) {
                         continue;
                     }
-                    let normalized_pointer = normalize_unknown_pointer(source, pointer)?;
                     let total = self
                         .counts
                         .entry(source.clone())
@@ -1037,6 +1043,50 @@ mod tests {
     }
 
     #[test]
+    fn import_warnings_count_story_local_openai_rows_once_each() {
+        let mut first = StorylineDocument::new("first", "agent");
+        first
+            .unknown_fields
+            .insert("openai-msg", "sessions.json", "/vendor_root", json!(true))
+            .unwrap();
+        first
+            .unknown_fields
+            .insert(
+                "openai-msg",
+                "sessions.json",
+                "/session_steps/0/vendor_row",
+                json!({"kept": true}),
+            )
+            .unwrap();
+        first.refresh_unknown_key_counts().unwrap();
+        let mut second = StorylineDocument::new("second", "agent");
+        second
+            .unknown_fields
+            .insert("openai-msg", "sessions.json", "/vendor_root", json!(true))
+            .unwrap();
+        second
+            .unknown_fields
+            .insert(
+                "openai-msg",
+                "sessions.json",
+                "/session_steps/0/vendor_row",
+                json!({"kept": true}),
+            )
+            .unwrap();
+        second.refresh_unknown_key_counts().unwrap();
+
+        let mut warnings = UnknownFieldImportWarnings::default();
+        warnings.observe_storylines([&first, &second]).unwrap();
+        assert_eq!(
+            warnings.warning_lines(),
+            [
+                "warning: unknown field source=openai-msg key=/session_steps/*/vendor_row occurrences=2",
+                "warning: unknown field source=openai-msg key=/vendor_root occurrences=1",
+            ]
+        );
+    }
+
+    #[test]
     fn import_warnings_collapse_jsonl_event_indexes() {
         let mut story = StorylineDocument::new("sess", "codex");
         story
@@ -1079,11 +1129,9 @@ mod tests {
         );
         assert_eq!(story.unknown_key_counts["codex"]["/events/*"], 2);
         assert_eq!(story.unknown_key_counts["codex"]["/events/*/content/*"], 1);
-        assert!(
-            story.unknown_fields.sources["codex"]
-                .fields
-                .contains_key("/events/9989")
-        );
+        assert!(story.unknown_fields.sources["codex"]
+            .fields
+            .contains_key("/events/9989"));
     }
 
     #[test]
@@ -1105,12 +1153,10 @@ mod tests {
                 "warning: unknown field source=atif key= occurrences=1".to_owned(),
             ]
         );
-        assert!(
-            warnings
-                .warning_lines()
-                .iter()
-                .all(|line| !line.contains(['\n', '\r', '\u{1b}']))
-        );
+        assert!(warnings
+            .warning_lines()
+            .iter()
+            .all(|line| !line.contains(['\n', '\r', '\u{1b}'])));
     }
 
     #[test]
@@ -1190,40 +1236,36 @@ mod tests {
         assert!(take_unknown_fields_envelope(&mut bad_pointer).is_err());
 
         let stories = &mut [StorylineDocument::new("s", "a")];
-        assert!(
-            attach_carried_unknown_fields(
-                DocumentFormat::OpenaiMsg,
-                BTreeMap::new(),
-                &[
-                    CarrierBinding {
-                        story_index: 0,
-                        pointer: "/same".into()
-                    },
-                    CarrierBinding {
-                        story_index: 0,
-                        pointer: "/same".into()
-                    },
-                ],
-                stories,
-                UnknownFieldLimits::default(),
-            )
-            .is_err()
-        );
+        assert!(attach_carried_unknown_fields(
+            DocumentFormat::OpenaiMsg,
+            BTreeMap::new(),
+            &[
+                CarrierBinding {
+                    story_index: 0,
+                    pointer: "/same".into()
+                },
+                CarrierBinding {
+                    story_index: 0,
+                    pointer: "/same".into()
+                },
+            ],
+            stories,
+            UnknownFieldLimits::default(),
+        )
+        .is_err());
 
         let unbound = BTreeMap::from([("/missing".into(), StorylineUnknownFields::default())]);
-        assert!(
-            attach_carried_unknown_fields(
-                DocumentFormat::OpenaiMsg,
-                unbound,
-                &[CarrierBinding {
-                    story_index: 0,
-                    pointer: "/bound".into()
-                }],
-                stories,
-                UnknownFieldLimits::default(),
-            )
-            .is_err()
-        );
+        assert!(attach_carried_unknown_fields(
+            DocumentFormat::OpenaiMsg,
+            unbound,
+            &[CarrierBinding {
+                story_index: 0,
+                pointer: "/bound".into()
+            }],
+            stories,
+            UnknownFieldLimits::default(),
+        )
+        .is_err());
     }
 
     #[test]
@@ -1247,19 +1289,17 @@ mod tests {
                 )]),
             },
         )]);
-        assert!(
-            attach_carried_unknown_fields(
-                DocumentFormat::OpenaiMsg,
-                changed_id,
-                &[CarrierBinding {
-                    story_index: 0,
-                    pointer: "".into()
-                }],
-                std::slice::from_mut(&mut story),
-                UnknownFieldLimits::default(),
-            )
-            .is_err()
-        );
+        assert!(attach_carried_unknown_fields(
+            DocumentFormat::OpenaiMsg,
+            changed_id,
+            &[CarrierBinding {
+                story_index: 0,
+                pointer: "".into()
+            }],
+            std::slice::from_mut(&mut story),
+            UnknownFieldLimits::default(),
+        )
+        .is_err());
         assert_eq!(
             story.unknown_fields.sources["atif"].source_document_id,
             "first"
@@ -1277,22 +1317,20 @@ mod tests {
                 )]),
             },
         )]);
-        assert!(
-            attach_carried_unknown_fields(
-                DocumentFormat::OpenaiMsg,
-                carried,
-                &[CarrierBinding {
-                    story_index: 0,
-                    pointer: "".into()
-                }],
-                std::slice::from_mut(&mut story),
-                UnknownFieldLimits {
-                    max_fields: 1,
-                    max_bytes: 1024
-                },
-            )
-            .is_err()
-        );
+        assert!(attach_carried_unknown_fields(
+            DocumentFormat::OpenaiMsg,
+            carried,
+            &[CarrierBinding {
+                story_index: 0,
+                pointer: "".into()
+            }],
+            std::slice::from_mut(&mut story),
+            UnknownFieldLimits {
+                max_fields: 1,
+                max_bytes: 1024
+            },
+        )
+        .is_err());
         assert!(!story.unknown_fields.sources.contains_key("actf"));
     }
 
@@ -1327,15 +1365,13 @@ mod tests {
         assert_eq!(sources["atif"]["fields"]["/vendor"], 7);
 
         let mut collision = json!({"attempts": {"1": {}}, "_storyline": {}});
-        assert!(
-            write_foreign_unknown_fields_envelope(
-                DocumentFormat::Actf,
-                &mut collision,
-                &[story],
-                &carriers,
-            )
-            .is_err()
-        );
+        assert!(write_foreign_unknown_fields_envelope(
+            DocumentFormat::Actf,
+            &mut collision,
+            &[story],
+            &carriers,
+        )
+        .is_err());
     }
 
     // This catches a missing validation/normalization pass that would otherwise
@@ -1365,11 +1401,9 @@ mod tests {
             max_fields: 0,
             max_bytes: 1_048_576,
         };
-        assert!(
-            fields
-                .validate_with(too_many, normalize_test_pointer)
-                .is_err()
-        );
+        assert!(fields
+            .validate_with(too_many, normalize_test_pointer)
+            .is_err());
         assert!(validate_json_pointer("/bad~2escape").is_err());
     }
 
@@ -1391,14 +1425,12 @@ mod tests {
             .unwrap();
 
         validate_unknown_fields(&fields, UnknownFieldLimits::default()).unwrap();
-        assert!(
-            UnknownFieldLimits {
-                max_fields: usize::MAX,
-                max_bytes: usize::MAX,
-            }
-            .validate()
-            .is_ok()
-        );
+        assert!(UnknownFieldLimits {
+            max_fields: usize::MAX,
+            max_bytes: usize::MAX,
+        }
+        .validate()
+        .is_ok());
     }
 
     #[test]
@@ -1472,13 +1504,11 @@ mod tests {
             )]),
         };
 
-        assert!(
-            fields
-                .validate_with(UnknownFieldLimits::default(), |_, pointer| Ok(
-                    pointer.into()
-                ))
-                .is_err()
-        );
+        assert!(fields
+            .validate_with(UnknownFieldLimits::default(), |_, pointer| Ok(
+                pointer.into()
+            ))
+            .is_err());
     }
 
     #[test]
