@@ -226,8 +226,12 @@
   background: transparent;
   color: #93a4bb;
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 500;
   cursor: pointer;
+}
+
+.pc-home-tabs button:hover {
+  color: #fff;
 }
 
 .pc-home-tabs button.active {
