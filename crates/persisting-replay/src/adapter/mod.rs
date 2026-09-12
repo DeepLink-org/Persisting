@@ -307,6 +307,9 @@ fn run_sdk_bridge(
     let output = run_process(ProcessSpec {
         command,
         stdin: None,
+        idle_timeout: None,
+        step_finish_limit: None,
+        stdout_redirect: None,
         timeout: Duration::from_secs(24 * 60 * 60),
         termination_grace: Duration::from_secs(2),
         pipe_grace: Duration::from_millis(250),

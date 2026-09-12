@@ -85,6 +85,51 @@ SandboxReplay 在新沙箱中重新执行命令型工具以及 `read`、`write`�
 用新的 `state.output` 重建前缀，并通过 `opencode run --format=json --session` 从边界
 继续。工具执行期间的中间 `tool_use` 状态会合并，避免同一调用被重复回放。
 
+`opencode run` 没有 CLI 步数参数，且 1.17.7 在 resume 会话上不执行
+`agent.build.steps` 配置预算。SandboxReplay 因此为 OpenCode 引入了两个外部看门狗
+（对其它 Agent 不启用），详见下文「OpenCode 看门狗」。
+
+#### OpenCode 看门狗
+
+OpenCode 是目前唯一既以黑盒 CLI 形式续跑、又缺乏可靠停止机制的 Agent：
+Claude Code 的 `max_turns`、Codex 的 `agent_max_steps`、mini-swe-agent 的
+`step_limit` 都在 resume 上原生生效，mini-swe 与 Pi 的循环本身由 pVisor 驱动；
+而 OpenCode 两头都不占。看门狗由 `run_process` 的两个监督条件实现，仅对
+OpenCode 续跑启用。
+
+**为什么必须引入（两个实测问题）**
+
+1. **resume 会话无视步数预算（上游缺陷）**。`agent.build.steps` 在全新会话上
+   原生生效，但用 `opencode import` + `run --session` 恢复的会话完全忽略该
+   配置。绕开 pVisor 的裸实验可直接复现：新会话设 `steps=2` 恰好 2 步停；
+   resume 会话设 `steps=3` 连跑 32 步以上不停。pVisor 已把剩余预算
+   （`max_steps - after_step`）写入隔离配置，但该值目前不被读取。贪心采样下
+   模型还会陷入无限循环（实测单回合刷 24 万 token、本地循环 200+ 回合），
+   若无外部干预，续跑会一直占用沙箱直到外层 agent 超时（小时级）。
+2. **续跑进程偶发静默僵死**。实测抓到过：CLI 进程存活但无网络连接、无工具
+   子进程、事件循环空转，既不推进也不退出。根因在 OpenCode/Bun 一侧，且不会
+   自行恢复；同样会耗尽整个 agent 超时窗口。
+
+**如何解决（两个看门狗的机制）**
+
+| 看门狗 | 触发条件 | 动作 |
+|---|---|---|
+| 步数看门狗 | stderr 进度日志中的回合行数达到剩余预算 | SIGINT 优雅终止 |
+| 空闲看门狗 | stdout/stderr 连续 10 分钟无任何输出（僵死特征） | 终止进程组 |
+
+步数看门狗的信号源经过专门筛选。OpenCode 的 stdout JSONL 事件流被 Bun 运行时
+按 ~8KB 块缓冲（管道、PTY、文件重定向均非实时），不能作为计数源；`--print-logs`
+输出到 stderr 的进度日志实时流式，且每个模型回合固定产生一行
+`message=loop ... step=N`。续跑命令因此固定附加 `--print-logs`，pVisor 实时统计
+该行数，达到剩余预算即向进程组发 SIGINT——SIGINT 下 OpenCode 会优雅退出并刷出
+缓冲的全部事件；若进程被更强信号杀死导致 stdout 缓冲丢失，则从 OpenCode 的
+sqlite 会话库重建续跑事件（任务沙箱自带 python3，无需新增依赖），续跑轨迹不丢。
+
+终止结果如实上报：步数看门狗触发时 `agent_status` 为 `max_steps`，结果 metadata
+携带 `opencode_step_budget` 标记（`enforced_by: pvisor_event_watchdog`）。
+隔离配置中的 `agent.build.steps` 仍然保留：一旦上游修复 resume 会话读取该配置，
+原生预算将直接生效，看门狗自动退化为兜底保险。
+
 ### 3.6 Codex
 
 Codex 适配固定支持 CLI `0.149.0`，输入为 Codex 原生 rollout JSONL。一个 replay step
@@ -248,8 +293,10 @@ replay journal 不记录提示词明文；Agent 原生的 prepared 或 continued
 - 模型：`Qwen3.6-35B-A3B`；
 - reasoning/thinking：关闭；
 - 题目：NodeBB（291）、Vuls（666）、qutebrowser（667）；
-- Agent：Claude Code、OpenHands、mini-swe-agent、Pi agent；
+- Agent：Claude Code、OpenHands、mini-swe-agent、Pi agent、OpenCode；
 - 每个 Agent 先在新沙箱中生成原始轨迹，再创建另一个新沙箱，仅使用 pVisor SandboxReplay 续跑；
+- OpenCode 录制与续跑均使用贪心采样：OpenCode 不透传采样参数，SweEval 与续跑桥在
+  wire 级注入 `temperature=0`、`top_p=1`，thinking 经 `chat_template_kwargs` 关闭；
 - 每个沙箱资源：2 CPU、7 GiB 内存、70 GiB 存储；
 - `N` 按 Rust 解析器识别出的完整原生工具批次序号统计；原始和续跑总步数按相应
   Agent 原生轨迹中的 turn/action 数统计；
@@ -275,6 +322,9 @@ replay journal 不记录提示词明文；Agent 原生的 prepared 或 continued
 | Codex | NodeBB（291） | 37 | 74 | 88 | 1 | 1 | 否 | 0.42 |
 | Codex | Vuls（666） | 28 | 57 | 69 | 1 | 1 | 否 | 0.47 |
 | Codex | qutebrowser（667） | 27 | 54 | 43 | 1 | 1 | 是 | 0.97 |
+| OpenCode | NodeBB（291） | 20 | 40 | 44 | 1 | 1 | 否 | 0.65 |
+| OpenCode | Vuls（666） | 7 | 16 | 31 | 1 | 1 | 否 | N/A |
+| OpenCode | qutebrowser（667） | 15 | 31 | 39 | 1 | 1 | 是 | 0.76 |
 
 Claude Code / NodeBB 使用 `N=1`，以避开异步子 Agent 完成后的 Resume Transport canonical-prefix 歧义。边界后的原始可见文本非空，且 `A′(N+1)` 成功复现同一个 `TaskOutput` 调用。
 
@@ -285,6 +335,16 @@ verifier Reward 均为 1。NodeBB 边界两侧的下一动作可见文本均为�
 Codex 三题使用 `Ornith-1.5-35B-A3B`，原始轨迹来自 r24，续跑轨迹来自最终成功的
 r30；续跑使用新的任务沙箱和默认 `replayed_boundary_only` 输入条件。Codex 轨迹中未
 发现 transport nonce 或 `Continue from the replay boundary.` 消息。
+
+OpenCode 三题（`1.17.7`）与上表其余 Agent 相同使用 `Qwen3.6-35B-A3B`，贪心采样，
+三题并发录制与并发续跑均一次通过，verifier Reward 全部为 1；Vuls（666）与
+qutebrowser（667）另复跑一轮续跑，Reward 与下一动作行为一致（可复现）。续跑的
+`max_steps=N+25` 由 pVisor 事件看门狗在剩余预算处软停，三题 live 步数均为 24。
+无污染在 wire 级验证：首个上游模型请求共 51 项，精确终止于边界观测 `O'N`
+（`function_call_output`），传输 nonce 在全部上游请求中出现 0 次，
+`boundary_user_prompt` 未注入。OpenCode 关闭 thinking 时常直接调用工具而不输出
+可见文本，此时文本相似度按 Pi agent 的同一语义记为 N/A，而不是把两个空字符串
+报告为 1.00。
 
 ### 5.3 A(N+1) 与 A′(N+1)
 
@@ -700,6 +760,82 @@ Now let me run the gold-style verification test.
 工具：`exec_command`，命令和参数与原始轨迹完全一致。
 
 区别：工具完全一致，文本相似度为 0.97。
+
+#### OpenCode
+
+##### NodeBB（291），N=20
+
+`A(N+1)`：
+
+~~~text
+The tests need Redis running. Let me check if there's a way to start it or if there are unit tests:
+
+Bash:
+  which redis-server 2>/dev/null || echo "redis-server not found"
+  redis-cli ping 2>/dev/null || echo "Redis not running"
+~~~
+
+`A′(N+1)`：
+
+~~~text
+The tests need Redis running. Let me check if there's a way to run tests with MongoDB instead, or look at the test structure:
+
+Bash:
+  cat /app/config.json 2>/dev/null | head -30
+~~~
+
+区别：两边以同一句 "The tests need Redis running. Let me check..." 开头（相同前缀
+上下文的强收敛），但探查动作不同：原轨迹检查 Redis 进程，续跑读取应用配置。文本
+相似度为 0.65。
+
+##### Vuls（666），N=7
+
+`A(N+1)`：
+
+~~~text
+Now let me check if there's an `oracle` type in the scan package that I need to reference:
+
+grep:
+  pattern="type oracle struct" path="/app/scan"
+~~~
+
+`A′(N+1)`：
+
+~~~text
+[可见文本为空白，直接调用工具]
+
+grep:
+  path="/app/scan/*.go"
+grep:
+  pattern="Oracle" path="*.go"
+~~~
+
+区别：工具语义同向——都在第 8 步去 scan 包定位 oracle 类型定义，续跑用两个更宽的
+grep 变体覆盖同一目标。续跑侧可见文本为空白（OpenCode 关闭 thinking 后的常见风格），
+文本相似度按指标语义记为 N/A。复跑一轮行为一致。
+
+##### qutebrowser（667），N=15
+
+`A(N+1)`：
+
+~~~text
+Let me run the tests to see if my changes work:
+
+Bash:
+  python -m pytest tests/unit/browser/webengine/test_webview.py::test_suffixes_workaround_extras_returned -v --tb=short 2>&1 | tail -30
+~~~
+
+`A′(N+1)`：
+
+~~~text
+Now let me run the tests to see if they pass:
+
+Bash:
+  python -m pytest tests/unit/browser/webengine/test_webview.py::test_suffixes_workaround_extras_returned -v --tb=short 2>&1 | tail -30
+~~~
+
+区别：同一条 pytest 命令逐字符一致，仅解说文本措辞不同，文本相似度为 0.76。首轮
+续跑的 `A′(N+1)` 可见文本为空白但命令同样逐字复现；两轮续跑 verifier Reward 均为 1。
 
 精确参数见
 [`pvisor replay` 命令参考](../reference/cli.md#replay-an-agent-trajectory)；执行边界见

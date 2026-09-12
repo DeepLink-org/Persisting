@@ -16,6 +16,21 @@ use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 pub(crate) struct ProcessSpec {
     pub command: Command,
     pub stdin: Option<Vec<u8>>,
+    /// Terminate the process when neither stdout, stderr, nor a redirected
+    /// stdout file produced new bytes for this long. Long silent stretches
+    /// are the signature of an agent CLI that wedged internally instead of
+    /// working.
+    pub idle_timeout: Option<Duration>,
+    /// Terminate the process once stdout has carried this many
+    /// `"type":"step_finish"` JSONL events. OpenCode ignores its
+    /// `agent.steps` budget on resumed sessions, so pVisor enforces the
+    /// remaining live-action budget itself.
+    pub step_finish_limit: Option<usize>,
+    /// Redirect the child's stdout straight to this file instead of a pipe.
+    /// OpenCode's Bun runtime fully buffers stdout on pipes (events only
+    /// appear at exit) but streams into regular files, so event-driven
+    /// watchdogs must watch the file.
+    pub stdout_redirect: Option<std::path::PathBuf>,
     pub timeout: Duration,
     pub termination_grace: Duration,
     pub pipe_grace: Duration,
@@ -33,6 +48,7 @@ pub(crate) struct ProcessOutput {
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
     pub timed_out: bool,
+    pub step_limited: bool,
     pub background_cleanup: bool,
 }
 
@@ -46,7 +62,23 @@ struct StreamCapture {
 pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, ReplayError> {
     let log = owner_only_log(&spec.log_path)?;
     let log = Arc::new(Mutex::new(log));
-    spec.command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let stdout_redirect = spec.stdout_redirect.take();
+    if let Some(target) = &stdout_redirect {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .replay_context(ReplayErrorKind::Executor, "create stdout redirect parent")?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(target)
+            .replay_context(ReplayErrorKind::Executor, "open stdout redirect file")?;
+        spec.command.stdout(Stdio::from(file));
+    } else {
+        spec.command.stdout(Stdio::piped());
+    }
+    spec.command.stderr(Stdio::piped());
     if spec.stdin.is_some() {
         spec.command.stdin(Stdio::piped());
     }
@@ -65,16 +97,41 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
         .spawn()
         .replay_context(ReplayErrorKind::Executor, "spawn supervised replay process")?;
     let process_group = child.id() as i32;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| ReplayError::new(ReplayErrorKind::Internal, "stdout pipe missing"))?;
+    let stdout = child.stdout.take();
     let stderr = child
         .stderr
         .take()
         .ok_or_else(|| ReplayError::new(ReplayErrorKind::Internal, "stderr pipe missing"))?;
-    let stdout_reader = spawn_reader(stdout, Arc::clone(&log), spec.retained_bytes);
-    let stderr_reader = spawn_reader(stderr, Arc::clone(&log), spec.retained_bytes);
+    let last_activity = Arc::new(std::sync::atomic::AtomicU64::new(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_millis() as u64)
+            .unwrap_or(0),
+    ));
+    let step_finish_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // With a redirected stdout there is no pipe to drain; the wait loop
+    // below polls the redirect file for growth so idle_timeout still sees
+    // live event writes. Step budget keeps watching `--print-logs` stderr.
+    let mut redirect_seen_bytes = 0_u64;
+    let stdout_reader = stdout.map(|pipe| {
+        spawn_reader(
+            pipe,
+            Arc::clone(&log),
+            spec.retained_bytes,
+            Some(Arc::clone(&last_activity)),
+            None,
+        )
+    });
+    let stderr_reader = spawn_reader(
+        stderr,
+        Arc::clone(&log),
+        spec.retained_bytes,
+        Some(Arc::clone(&last_activity)),
+        Some((
+            Arc::clone(&step_finish_seen),
+            spec.step_finish_limit.is_some(),
+        )),
+    );
     if let Some(input) = spec.stdin.take() {
         let write_result = child
             .stdin
@@ -87,7 +144,9 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
             #[cfg(not(unix))]
             let _ = child.kill();
             let _ = child.wait();
-            let _ = stdout_reader.join();
+            if let Some(reader) = stdout_reader {
+                let _ = reader.join();
+            }
             let _ = stderr_reader.join();
             return Err(ReplayError::new(
                 ReplayErrorKind::Executor,
@@ -98,6 +157,7 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
 
     let started = Instant::now();
     let mut timed_out = false;
+    let mut step_limited = false;
     let mut background_cleanup = false;
     let status = loop {
         if let Some(status) = child
@@ -111,6 +171,44 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
             background_cleanup = true;
             break terminate_running_group(&mut child, process_group, spec.termination_grace)?;
         }
+        if let Some(limit) = spec.step_finish_limit
+            && step_finish_seen.load(std::sync::atomic::Ordering::Acquire) >= limit
+        {
+            step_limited = true;
+            background_cleanup = true;
+            // SIGINT lets OpenCode exit gracefully and flush its buffered
+            // stdout events; SIGTERM would discard them.
+            break terminate_running_group_with(
+                &mut child,
+                process_group,
+                Duration::from_secs(20).max(spec.termination_grace),
+                libc::SIGINT,
+            )?;
+        }
+        if let Some(path) = &stdout_redirect
+            && let Ok(meta) = std::fs::metadata(path)
+        {
+            let len = meta.len();
+            if len > redirect_seen_bytes {
+                redirect_seen_bytes = len;
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|value| value.as_millis() as u64)
+                    .unwrap_or(0);
+                last_activity.store(now_ms, std::sync::atomic::Ordering::Release);
+            }
+        }
+        if let Some(idle_timeout) = spec.idle_timeout {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|value| value.as_millis() as u64)
+                .unwrap_or(0);
+            let last_ms = last_activity.load(std::sync::atomic::Ordering::Acquire);
+            if now_ms.saturating_sub(last_ms) >= idle_timeout.as_millis() as u64 {
+                background_cleanup = true;
+                break terminate_running_group(&mut child, process_group, spec.termination_grace)?;
+            }
+        }
         thread::sleep(Duration::from_millis(10));
     };
 
@@ -121,21 +219,41 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
     }
 
     let pipe_deadline = Instant::now() + spec.pipe_grace + spec.termination_grace;
-    while (!stdout_reader.is_finished() || !stderr_reader.is_finished())
-        && Instant::now() < pipe_deadline
-    {
+    let stdout_pending = stdout_reader
+        .as_ref()
+        .is_some_and(|reader| !reader.is_finished());
+    while (stdout_pending || !stderr_reader.is_finished()) && Instant::now() < pipe_deadline {
         thread::sleep(Duration::from_millis(5));
     }
     #[cfg(unix)]
-    if !stdout_reader.is_finished() || !stderr_reader.is_finished() {
+    let stdout_still_pending = stdout_reader
+        .as_ref()
+        .is_some_and(|reader| !reader.is_finished());
+    if stdout_still_pending || !stderr_reader.is_finished() {
         background_cleanup = true;
         let _ = signal_group(process_group, libc::SIGKILL);
     }
 
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| ReplayError::new(ReplayErrorKind::Internal, "stdout reader panicked"))?
-        .replay_context(ReplayErrorKind::Executor, "drain supervised stdout")?;
+    let stdout = match stdout_reader {
+        Some(reader) => reader
+            .join()
+            .map_err(|_| ReplayError::new(ReplayErrorKind::Internal, "stdout reader panicked"))?
+            .replay_context(ReplayErrorKind::Executor, "drain supervised stdout")?,
+        None => {
+            // Redirected stdout: summarize the redirect file itself so the
+            // caller keeps its usual byte accounting.
+            let bytes = stdout_redirect
+                .as_deref()
+                .and_then(|path| std::fs::read(path).ok())
+                .unwrap_or_default();
+            let tail_len = bytes.len().min(spec_retained(spec.retained_bytes));
+            StreamCapture {
+                tail: bytes[bytes.len() - tail_len..].to_vec(),
+                total: bytes.len() as u64,
+                log_error: None,
+            }
+        }
+    };
     let stderr = stderr_reader
         .join()
         .map_err(|_| ReplayError::new(ReplayErrorKind::Internal, "stderr reader panicked"))?
@@ -156,6 +274,7 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
         stdout_bytes: stdout.total,
         stderr_bytes: stderr.total,
         timed_out,
+        step_limited,
         background_cleanup,
     })
 }
@@ -182,6 +301,8 @@ fn spawn_reader<R>(
     mut reader: R,
     log: Arc<Mutex<File>>,
     retained_bytes: usize,
+    activity: Option<Arc<std::sync::atomic::AtomicU64>>,
+    step_counter: Option<(Arc<std::sync::atomic::AtomicUsize>, bool)>,
 ) -> thread::JoinHandle<io::Result<StreamCapture>>
 where
     R: Read + Send + 'static,
@@ -197,6 +318,19 @@ where
                 break;
             }
             total = total.saturating_add(count as u64);
+            if let Some((counter, _)) = &step_counter {
+                let hits = count_step_finish(&chunk[..count]);
+                if hits > 0 {
+                    counter.fetch_add(hits, std::sync::atomic::Ordering::AcqRel);
+                }
+            }
+            if let Some(activity) = &activity {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|value| value.as_millis() as u64)
+                    .unwrap_or(0);
+                activity.store(now_ms, std::sync::atomic::Ordering::Release);
+            }
             if log_error.is_none() {
                 let write_result = log
                     .lock()
@@ -214,6 +348,28 @@ where
             log_error,
         })
     })
+}
+
+fn spec_retained(retained_bytes: usize) -> usize {
+    retained_bytes.max(1)
+}
+
+fn count_step_finish(chunk: &[u8]) -> usize {
+    // OpenCode's stdout JSONL is block-buffered (events only flush in ~8KB
+    // batches or at exit), but `--print-logs` stderr carries one
+    // `message=loop ... step=N` line per live turn in real time.
+    const NEEDLE: &[u8] = b"message=loop";
+    let mut hits = 0;
+    let mut offset = 0;
+    while offset + NEEDLE.len() <= chunk.len() {
+        if &chunk[offset..offset + NEEDLE.len()] == NEEDLE {
+            hits += 1;
+            offset += NEEDLE.len();
+        } else {
+            offset += 1;
+        }
+    }
+    hits
 }
 
 fn retain_tail(tail: &mut Vec<u8>, chunk: &[u8], limit: usize) {
@@ -237,7 +393,17 @@ fn terminate_running_group(
     process_group: i32,
     grace: Duration,
 ) -> Result<ExitStatus, ReplayError> {
-    let _ = signal_group(process_group, libc::SIGTERM)?;
+    terminate_running_group_with(child, process_group, grace, libc::SIGTERM)
+}
+
+#[cfg(unix)]
+fn terminate_running_group_with(
+    child: &mut std::process::Child,
+    process_group: i32,
+    grace: Duration,
+    first_signal: libc::c_int,
+) -> Result<ExitStatus, ReplayError> {
+    let _ = signal_group(process_group, first_signal)?;
     let deadline = Instant::now() + grace;
     loop {
         if let Some(status) = child
@@ -343,6 +509,9 @@ mod tests {
         ProcessSpec {
             command,
             stdin: None,
+            idle_timeout: None,
+            step_finish_limit: None,
+            stdout_redirect: None,
             timeout: Duration::from_secs(5),
             termination_grace: Duration::from_millis(100),
             pipe_grace: Duration::from_millis(100),
@@ -421,6 +590,77 @@ mod tests {
         assert!(
             !classify_process_group_kill(4242, "inspect replay process group", -1, error).unwrap()
         );
+    }
+
+    #[test]
+    fn counts_stderr_loop_progress_lines() {
+        use super::count_step_finish;
+        assert_eq!(count_step_finish(b"message=loop step=1"), 1);
+        assert_eq!(
+            count_step_finish(b"message=loop step=1\nmessage=loop step=2"),
+            2
+        );
+        assert_eq!(count_step_finish(b"message=tracking"), 0);
+        assert_eq!(count_step_finish(b"message=exiting loop"), 0);
+    }
+
+    #[test]
+    fn step_finish_limit_terminates_the_process_early() {
+        let temporary = tempfile::tempdir().unwrap();
+        let log_path = temporary.path().join("steps.log");
+        let script =
+            "for i in 1 2 3 4 5; do echo 'level=INFO message=loop step='$i >&2; sleep 10; done";
+        let mut spec = shell_spec(script, &log_path);
+        spec.step_finish_limit = Some(2);
+        spec.timeout = Duration::from_secs(120);
+        let output = run_process(spec).unwrap();
+        assert!(output.step_limited);
+        assert!(!output.timed_out);
+        // The third emission never happens: the loop is killed during the
+        // second sleep.
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert_eq!(log.matches("message=loop").count(), 2);
+    }
+
+    #[test]
+    fn redirected_stdout_growth_refreshes_idle_watchdog() {
+        let temporary = tempfile::tempdir().unwrap();
+        let log_path = temporary.path().join("redirect-idle.log");
+        let events_path = temporary.path().join("events.jsonl");
+        // stderr stays silent; only the redirect file grows. Without polling
+        // the redirect, a 300ms idle watchdog would kill this mid-loop.
+        let script = "for i in 1 2 3 4 5 6; do echo event-$i; sleep 0.2; done";
+        let mut spec = shell_spec(script, &log_path);
+        spec.stdout_redirect = Some(events_path.clone());
+        spec.idle_timeout = Some(Duration::from_millis(300));
+        spec.timeout = Duration::from_secs(10);
+
+        let output = run_process(spec).unwrap();
+
+        assert!(output.status.success());
+        assert!(!output.timed_out);
+        assert!(!output.step_limited);
+        let events = std::fs::read_to_string(&events_path).unwrap();
+        assert_eq!(events.lines().count(), 6);
+    }
+
+    #[test]
+    fn idle_timeout_still_fires_when_redirect_stalls() {
+        let temporary = tempfile::tempdir().unwrap();
+        let log_path = temporary.path().join("redirect-stall.log");
+        let events_path = temporary.path().join("events.jsonl");
+        let mut spec = shell_spec("echo once; sleep 5", &log_path);
+        spec.stdout_redirect = Some(events_path);
+        spec.idle_timeout = Some(Duration::from_millis(200));
+        spec.timeout = Duration::from_secs(10);
+        let started = Instant::now();
+
+        let output = run_process(spec).unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!output.status.success());
+        assert!(!output.timed_out);
+        assert!(output.background_cleanup);
     }
 
     #[test]
