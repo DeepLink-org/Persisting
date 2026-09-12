@@ -1,64 +1,133 @@
-# 查看 Run Dataset
+# 探索第一个 Dataset
 
-pChronicle 使用同一套接口读取本地、对象存储或dataset pin 指向的 Agent 运行记录。本页中的
-浏览、find、analysis 和 query 命令都是只读的。
+用示例数据学会三个日常命令，再选择一个专题，或换成自己的 Dataset。基础引导只读数据；
+导入导出专题只在隔离的临时工作区里执行写入。
 
-## 1. 不准备数据，直接体验
+!!! tip "pChronicle 的工作循环"
+
+    **打开 → 汇总 → 提问 → 定位 → 继续。** 先完成内置体验，再把同样的习惯
+    带到真实轨迹数据中。
+
+## 1. 运行引导体验
+
+尚未安装时先运行 `pip install persisting`。不需要源码、账户、后台服务，也不需要已有 Dataset：
 
 ```bash
 pchronicle onboard
 ```
 
-Walkthrough 会创建临时示例 Dataset，并依次介绍主要命令。也可以直接跳到查询：
+默认引导（也可以显式运行 `onboard basics`）依次回答三个问题：
+
+| 问题 | 学会的命令 | 重点看什么 |
+| --- | --- | --- |
+| 这里有哪些数据？ | `list` | 当前路径下的文件和子 Dataset |
+| 发生了多少事情？ | `stats overview` | 轨迹数、步骤数和错误来源 |
+| 哪个 session 的步骤最多？ | `query --sql …` | 一次真实只读查询的小结果集 |
+
+引导会替你执行命令并展示真实结果。交互式终端中按 **Enter** 继续，输入 **q** 退出。
+不需要另开终端复制临时命令。当前 CLI 的教学说明使用中文，两个语言版本的文档对应相同命令。
+
+!!! success "可以尝试自己的数据了"
+
+    你已经使用过 `pchronicle <操作> <数据路径> [选项]`：列出数据、读取汇总、提出一个问题。
+    示例目录会在退出时清理，不要在结束后复用输出中的临时路径。
+
+## 按方面学习
+
+所有专题都可以不带路径，使用内置数据。直接选择当前需要的方面，不必先看完整教程。
+
+| 我想…… | 运行 | 实际做什么 |
+| --- | --- | --- |
+| 再走一次最短路径 | `pchronicle onboard basics` | 三个只读操作 |
+| 理解常用词汇 | `pchronicle onboard concepts` | 解释 Dataset、Source、Snapshot 和表 |
+| 确认数据能否使用 | `pchronicle onboard inspect` | 列表和健康检查 |
+| 不写 SQL 先看汇总 | `pchronicle onboard analyze` | 总览和工具使用报告 |
+| 自己编写查询 | `pchronicle onboard query` | Schema、步骤、工具调用和输出格式 |
+| 使用不同轨迹格式 | `pchronicle onboard formats` | 联合查询内置 ATIF、ACTF、OpenAI 示例 |
+| 定位具体记录 | `pchronicle onboard find` | 记录坐标与匹配语法 |
+| 导入数据或取回数据 | `pchronicle onboard exchange` | 在隔离的临时工作区内执行导入导出 |
+| 使用 Web/API 浏览 | `pchronicle onboard serve` | 展示配置示例，不启动服务 |
+
+需要完整课程时运行 `pchronicle onboard all`。专题同样支持 Enter/q。
+无人值守时加 `--no-pause`；管道和重定向也会禁用暂停，输出 Markdown：
 
 ```bash
-pchronicle onboard query
+pchronicle onboard --no-pause > introduction.md
+pchronicle onboard query --no-pause
+pchronicle onboard all --no-pause > full-walkthrough.md
 ```
 
-两条命令都不要求源码 checkout，也不要求已有 Dataset。
+## 2. 打开自己的 Dataset
 
-## 2. 浏览已有的 Dataset
+先用已有数据重走基础引导，再进入你需要的专题：
 
-onboarding 创建的 Dataset 是临时数据，Walkthrough 结束后会被清理。要进行持久查询，请把下面的命令替换为你已有的 Dataset 路径；如果还没有数据，完成 onboarding 查询后继续阅读[发现并查询自己的 Dataset](guides/discover-and-query.md)即可。
+```bash
+pchronicle onboard ./trajectory-data
+pchronicle onboard query ./trajectory-data
+```
 
-Dataset 可以是本地路径、对象存储 URI 前缀，或 `@prod` 这样的dataset pin：
+`basics`、`inspect`、`analyze`、`query` 和 `find` 接受可选 Dataset 路径，演练只读你的数据。
+`formats` 和 `exchange` 继续使用内置示例。把下面的 `./trajectory-data` 替换为本地路径、对象存储 URI 前缀，或 `@prod` 这样的
+Dataset pin：
 
 ```bash
 pchronicle list ./trajectory-data
 pchronicle stats overview ./trajectory-data
 ```
 
-`list`（`ls`）显示 pChronicle 可以使用的 Run 数据；`stats overview` 无需编写 SQL，即可给出稳定汇总。
+`list` 列出当前目录一级的文件和子 Dataset；`stats overview` 在编写 SQL 前提供稳定汇总。
+需要把结果交给脚本时使用 JSON：
 
-需要定位具体内容时，使用统一的 `find --match` 语法：
+```bash
+pchronicle list ./trajectory-data --format json
+```
+
+## 3. 提出一个有边界的问题
+
+先查看 schema，再从一个小而可复现的问题开始：
+
+```bash
+pchronicle query ./trajectory-data --sql "DESCRIBE dataset.steps"
+pchronicle query ./trajectory-data \
+  --sql "SELECT session_id, COUNT(*) AS steps
+         FROM dataset.steps
+         GROUP BY session_id
+         ORDER BY steps DESC"
+```
+
+查询只读，并受明确的资源上限约束。需要把结果交给其他工具时，使用
+`--format jsonl|csv` 和 `--output`。
+
+!!! success "检查点：答案可以复现"
+
+    记录 Dataset 路径、查询和输出格式。在数据不变时重跑可以比较结果；仅记录路径不会冻结之后的数据变化。
+
+## 4. 定位答案背后的证据
+
+从汇总继续定位匹配的步骤或 session：
 
 ```bash
 pchronicle find ./trajectory-data --match "timeout" --format json
-pchronicle find ./trajectory-data --match '#system("retry")'
+pchronicle find ./trajectory-data --session-id session-42
 ```
 
-## 3. 提出一个具体问题
+如果外部 ID 重复，带上 `--source`，让引用保持稳定：
 
 ```bash
-pchronicle query ./trajectory-data \
-  --sql 'SELECT source, COUNT(*) AS steps
-         FROM dataset.steps
-         GROUP BY source
-         ORDER BY source'
+pchronicle find ./trajectory-data \
+  --source nested/source.json --session-id session-42
 ```
 
-查询只读，并受明确的资源上限约束。pChronicle 会在语义对齐时，把支持的运行数据格式规范化为公共的 `runs`、
-`steps` 和 `tool_calls` 表。
+面对陌生数据时使用 `pchronicle list ./trajectory-data --errors report`；自动化中如果
+不允许部分结果，则使用 `--errors strict` 让任务失败。
 
-## 你刚刚完成了什么
+## 5. 选择下一步
 
-你打开了一个 Dataset，运行了内建汇总，查询了规范化表，并可以用 FTS/JSONB 定位具体轨迹。整个过程没有修改 Dataset。
-
-按任务继续：
-
-- [发现并查询自己的 Dataset](guides/discover-and-query.md)
+- [深入发现并查询 Dataset](guides/discover-and-query.md)
+- [打开本地 Web UI](guides/ui.md)
 - [导入或导出 Run](guides/exchange.md)
-- [查看统一产品术语](reference/terminology.md)
-- [使用 dataset pin 并查阅完整命令行](reference/cli.md)
-- [使用 pVisor 采集新 Run](../pvisor/guides/capture.md)
-- [理解 pChronicle 核心概念](concepts/index.md)
+- [在本地提供 Dataset 服务](guides/serve.md)
+- [使用 pVisor 捕获新 Run](../pvisor/guides/capture.md)
+- [理解 Dataset 与 Source 模型](concepts/index.md)
+
+Walkthrough 创建的 Dataset 是临时的。继续导入、服务化或生产自动化前，请换成自己的路径。

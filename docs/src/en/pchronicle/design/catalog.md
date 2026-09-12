@@ -89,7 +89,7 @@ or require a background sync job. The code type name
 
 ## 3. Core model
 
-![Snapshot query path](/assets/diagrams/persisting/dataset-catalog.svg)
+![Snapshot query path](../../../assets/diagrams/persisting/dataset-catalog.svg)
 
 The core objects have seven layers:
 
@@ -782,3 +782,76 @@ stronger guarantee.
   same-generation in-memory source-routing index, conservative SQL
   analysis, and `_file_` injection;
 - `pchronicle-web/src/`: Dataset selection and full Run identity.
+
+## Browse index and query consistency
+
+The Warehouse maintains a **rebuildable browse index** independently of
+`DatasetCatalogSnapshot`. Tree requests never build a query engine or discover
+all query sources. A Tree response retains its existing fields and adds `browse`:
+
+- `consistency: best_effort` distinguishes browsing from pinned query sources;
+- `generation` hashes the observed directory view, not source contents;
+- `observed_at` is Unix time in seconds (zero means an incomplete root view);
+- `stale`, `refreshing`, and `last_error` describe the returned observation.
+
+A cached directory returns immediately. Cold requests for the same prefix share
+one refresh. A serve-owned worker handles both requests and periodic traversal;
+it stops when its last owning server state is dropped. Its request queue and
+same-prefix waiter count are each limited to 128. Process-wide browse scans are
+serialized with at least 100 ms between prefix-list starts, and each list has a
+20-second deadline. These limits do not govern SQL or imply a bound on every
+individual storage request inside a list.
+
+Every 30 seconds the worker resumes a shallow-directory traversal from configured
+roots. It treats Dataset leaves as opaque, checks foreground requests between
+prefixes, skips missed timer ticks, and bounds a background round to 10,000
+prefixes. Larger trees can still be opened explicitly; background coverage is
+not a completeness guarantee. Failures retain the previous view and back off
+up to five minutes. Only a successful complete parent listing removes cached
+views below children that disappeared. The listing itself is not a cross-object
+transaction.
+
+Lance files live under `PCHRONICLE_CACHE_DIR`, or the system's pChronicle cache
+directory, as `catalog-<configuration fingerprint>.lance`. Keys also contain a
+mount URI fingerprint. Different URIs with the same SQL alias cannot share rows.
+Schema v2 retains JSON row payloads; the schema version is checked before any
+loaded rows become visible. Unreadable files are rebuilt under an exclusive
+advisory lock. If another process owns the cache, or disk repair is unavailable,
+that server uses an in-memory index. Unchanged observations update memory without
+creating another Lance version; their persisted timestamps remain conservative
+after restart. Historical `catalog-ui.lance` files are not used by this schema.
+
+**Query membership must not be inferred from this index.** Revalidating only its
+known sources would still omit new, uncached sources. Accurate queries retain
+source discovery and version pinning. When Runs supplies an exact dataset and
+`_file_`, `QueryScope` performs complete discovery of that source path while
+representing unrelated mounts as empty; the browse index still does not decide
+membership. `/api/catalog` labels the general contract `per_source_pinned`:
+sources have individually fixed revisions, not one global transaction timestamp.
+Unscoped queries retain full recursive discovery.
+
+### Scoped query admission and summary budgets
+
+Overlapping Runs summary requests for one `QueryScope` share the whole operation,
+including discovery, pinning, execution and its result/error. A serve instance
+admits at most two distinct scoped operations through execution, with up to 128
+active scopes. It keeps only weak flight references: once callers finish, a later
+request discovers and pins again. Cancellation releases admission; an existing
+waiter can take over initialization. No permanent per-path lock map or stale
+query-runtime cache is retained.
+
+Local source scopes respect opaque ancestors, source identity and symlink rules
+from full discovery. Storyline subtrees fall back to full mount discovery because
+linked projections may refer to canonical sources outside the subtree.
+Remote source scopes currently use full discovery of the
+selected mount before filtering after projection binding. This conservative
+fallback is required because lack of a manifest does not prove absence of JSON
+objects or ordinary prefixes. Remote subtree discovery remains future work.
+
+Summary SQL retains per-source predicates and grouped step counts before the
+join. Results now stream instead of collecting all Arrow batches before JSONL
+encoding. The summary set is limited to 100,000 rows; each source's stats or run
+JSONL output is limited to 64 MiB. Exceeding a budget returns an error asking for
+a narrower scope, never a partial successful result. These output budgets do not
+bound HashJoin build memory: DataFusion's operator memory pool still governs that
+stage. Arbitrary Analysis SQL is not rewritten by this change.

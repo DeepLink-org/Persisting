@@ -18,6 +18,52 @@ fn write_openai_source(path: &Path, event_id: &str) -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn scoped_discovery_does_not_walk_sibling_sources() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    write_openai_source(&temp.path().join("one.json"), "event-one")?;
+    write_openai_source(&temp.path().join("two.json"), "event-two")?;
+    let mut options = CatalogSnapshotOptions::default();
+    options.manifest.max_entries = 1;
+    options.manifest.max_files = 1;
+    assert!(
+        DatasetCatalogSnapshot::discover(
+            vec![DatasetMount::default(temp.path().to_string_lossy())?],
+            Some(DEFAULT_DATASET_NAME.into()),
+            options,
+        )
+        .await
+        .is_err()
+    );
+    let snapshot = DatasetCatalogSnapshot::discover_scoped(
+        vec![DatasetMount::default(temp.path().to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        options,
+        QueryScope {
+            dataset: DEFAULT_DATASET_NAME.into(),
+            source_file: Some("one.json".into()),
+        },
+    )
+    .await?;
+    assert_eq!(snapshot.datasets()[0].sources.len(), 1);
+    assert_eq!(snapshot.datasets()[0].sources[0].file, "one.json");
+    fs::create_dir(temp.path().join("nested"))?;
+    write_openai_source(&temp.path().join("nested/one.json"), "nested")?;
+    let error = DatasetCatalogSnapshot::discover_scoped(
+        vec![DatasetMount::default(temp.path().to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        options,
+        QueryScope {
+            dataset: DEFAULT_DATASET_NAME.into(),
+            source_file: Some("nested".into()),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("max_entries"));
+    Ok(())
+}
+
 fn storyline(session_id: &str, run_id: &str) -> StorylineDocument {
     StorylineDocument {
         schema_version: crate::model::STORYLINE_SCHEMA_VERSION.into(),
@@ -1341,4 +1387,85 @@ mod proptests {
             prop_assert!(!encoded.contains("secret diagnostic"));
         }
     }
+}
+
+#[tokio::test]
+async fn scoped_remote_discovery_includes_json_and_new_prefix_members() -> Result<()> {
+    let uri = format!(
+        "shared-memory://scoped-query-{}/root",
+        uuid::Uuid::new_v4().simple()
+    );
+    let store = OpendalStore::from_uri(&uri).await?;
+    store
+        .write_overwrite("nested/one.json", b"[]".to_vec())
+        .await?;
+    store
+        .write_overwrite("nested2/other.json", b"[]".to_vec())
+        .await?;
+    let discover = |file: &str| {
+        DatasetCatalogSnapshot::discover_scoped(
+            vec![DatasetMount::default(uri.clone()).unwrap()],
+            Some(DEFAULT_DATASET_NAME.into()),
+            CatalogSnapshotOptions::default(),
+            QueryScope {
+                dataset: DEFAULT_DATASET_NAME.into(),
+                source_file: Some(file.into()),
+            },
+        )
+    };
+    let exact = discover("nested/one.json").await?;
+    assert_eq!(exact.datasets()[0].sources.len(), 1);
+    assert_eq!(exact.datasets()[0].sources[0].file, "nested/one.json");
+    store
+        .write_overwrite("nested/new.json", b"[]".to_vec())
+        .await?;
+    let prefix = discover("nested").await?;
+    let files: Vec<_> = prefix.datasets()[0]
+        .sources
+        .iter()
+        .map(|s| s.file.as_str())
+        .collect();
+    assert_eq!(files, ["nested/new.json", "nested/one.json"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn scoped_discovery_preserves_single_file_mount_identity() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("one.json");
+    write_openai_source(&path, "one")?;
+    let snapshot = DatasetCatalogSnapshot::discover_scoped(
+        vec![DatasetMount::default(path.to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        CatalogSnapshotOptions::default(),
+        QueryScope {
+            dataset: DEFAULT_DATASET_NAME.into(),
+            source_file: Some("one.json".into()),
+        },
+    )
+    .await?;
+    assert_eq!(snapshot.datasets()[0].sources.len(), 1);
+    assert_eq!(snapshot.datasets()[0].sources[0].file, "one.json");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn scoped_discovery_does_not_follow_symlinks_skipped_by_full_discovery() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let external = tempfile::tempdir()?;
+    write_openai_source(&external.path().join("hidden.json"), "external")?;
+    std::os::unix::fs::symlink(external.path(), temp.path().join("link"))?;
+    let snapshot = DatasetCatalogSnapshot::discover_scoped(
+        vec![DatasetMount::default(temp.path().to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        CatalogSnapshotOptions::default(),
+        QueryScope {
+            dataset: DEFAULT_DATASET_NAME.into(),
+            source_file: Some("link/hidden.json".into()),
+        },
+    )
+    .await?;
+    assert!(snapshot.datasets()[0].sources.is_empty());
+    Ok(())
 }

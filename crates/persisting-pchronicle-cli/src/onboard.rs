@@ -43,13 +43,16 @@ GROUP BY session_id
 ORDER BY dataset_name, session_id"#;
 
 #[derive(Debug, Args)]
-#[command(args_conflicts_with_subcommands = true)]
+#[command(
+    args_conflicts_with_subcommands = true,
+    after_help = "Start here:\n  pchronicle onboard                     Three-command introduction with sample data\n  pchronicle onboard ./my-trajectories   Repeat it with your own data\n\nGo deeper:\n  pchronicle onboard query               Learn one topic with sample data\n  pchronicle onboard query ./my-data     Learn that topic with your data\n  pchronicle onboard all                 Complete curriculum\n\nIn a terminal: Enter continues; q quits. Use --no-pause for unattended output."
+)]
 pub(crate) struct OnboardArgs {
-    /// Print the complete walkthrough without waiting between steps.
+    /// Run the selected walkthrough without waiting between steps.
     #[arg(long, global = true)]
     no_pause: bool,
 
-    /// Explore this Dataset through the complete walkthrough.
+    /// Use your Dataset for the introductory walkthrough (default: temporary sample).
     #[arg(value_name = "DATASET_URI")]
     dataset_uri: Option<String>,
 
@@ -59,6 +62,8 @@ pub(crate) struct OnboardArgs {
 
 #[derive(Debug, Subcommand)]
 enum OnboardSection {
+    /// Start here: list data, read a summary, and answer one question (default).
+    Basics(DatasetSectionArgs),
     /// Run every onboarding section.
     All(DatasetSectionArgs),
     /// Learn the Dataset, Source, Snapshot, and normalized-table concepts.
@@ -88,6 +93,7 @@ struct DatasetSectionArgs {
 }
 
 enum Selection {
+    Basics(Option<String>),
     All(Option<String>),
     Concepts,
     Inspect(Option<String>),
@@ -102,7 +108,8 @@ enum Selection {
 impl OnboardArgs {
     fn into_selection(self) -> Selection {
         match self.section {
-            None => Selection::All(self.dataset_uri),
+            None => Selection::Basics(self.dataset_uri),
+            Some(OnboardSection::Basics(args)) => Selection::Basics(args.dataset_uri),
             Some(OnboardSection::All(args)) => Selection::All(args.dataset_uri),
             Some(OnboardSection::Concepts) => Selection::Concepts,
             Some(OnboardSection::Inspect(args)) => Selection::Inspect(args.dataset_uri),
@@ -126,10 +133,7 @@ pub(crate) async fn run(
 ) -> Result<()> {
     let no_pause = args.no_pause;
     let selection = args.into_selection();
-    let interactive = matches!(&selection, Selection::All(_))
-        && stdin_is_terminal
-        && stdout_is_terminal
-        && !no_pause;
+    let interactive = stdin_is_terminal && stdout_is_terminal && !no_pause;
     let demo = DemoWorkspace::create()?;
     let selected_dataset = match selection.dataset_uri() {
         Some(dataset) => super::resolve_dataset_uri(Some(dataset), settings_override)?,
@@ -139,6 +143,10 @@ pub(crate) async fn run(
         WalkthroughRenderer::for_output(stdout, stdout_is_terminal, interactive.then_some(stdin));
 
     match selection {
+        Selection::Basics(_) => {
+            render_basics(&mut renderer, &selected_dataset).await?;
+            render_section_footer(&mut renderer)?;
+        }
         Selection::All(_) => {
             render_concepts(&mut renderer, Some(&selected_dataset))?;
             if renderer.stopped() {
@@ -174,7 +182,10 @@ pub(crate) async fn run(
             }
             render_completion(&mut renderer)?;
         }
-        Selection::Concepts => render_concepts(&mut renderer, None)?,
+        Selection::Concepts => {
+            render_concepts(&mut renderer, None)?;
+            render_section_footer(&mut renderer)?;
+        }
         Selection::Inspect(_) => {
             render_section_header(&mut renderer, "Inspect", &selected_dataset)?;
             render_inspect(&mut renderer, &selected_dataset).await?;
@@ -217,7 +228,8 @@ pub(crate) async fn run(
 impl Selection {
     fn dataset_uri(&self) -> Option<&str> {
         match self {
-            Self::All(uri)
+            Self::Basics(uri)
+            | Self::All(uri)
             | Self::Inspect(uri)
             | Self::Analyze(uri)
             | Self::Query(uri)
@@ -274,7 +286,7 @@ fn render_concepts(
     dataset_uri: Option<&str>,
 ) -> Result<()> {
     let dataset = dataset_uri
-        .map(|uri| format!("本次完整流程将实际读取 `{uri}`。"))
+        .map(|uri| format!("本次流程将实际读取 `{uri}`。"))
         .unwrap_or_default();
     renderer.render(&format!(
         r#"# pChronicle Onboard
@@ -291,6 +303,7 @@ pChronicle 把 ATIF、ACTF、OpenAI Messages 等轨迹格式投影为统一的 D
 
 ```console
 pchronicle onboard
+pchronicle onboard all
 pchronicle onboard inspect ./my-trajectories
 pchronicle onboard analyze ./my-trajectories
 pchronicle onboard query ./my-trajectories
@@ -316,8 +329,89 @@ fn render_section_header(
 }
 
 fn render_section_footer(renderer: &mut WalkthroughRenderer<'_>) -> Result<()> {
+    if renderer.stopped() {
+        return Ok(());
+    }
     renderer.render(
-        "其他章节可通过 `pchronicle onboard --help` 查看；运行 `pchronicle onboard` 可执行完整引导。\n",
+        r#"## 接下来，按目标继续
+
+- 看懂数据与健康状态：`pchronicle onboard inspect`
+- 查看工具使用等内建汇总：`pchronicle onboard analyze`
+- 学会 Schema、SQL 和结果输出：`pchronicle onboard query`
+- 理解 Dataset、Source、Snapshot：`pchronicle onboard concepts`
+- 比较不同轨迹格式：`pchronicle onboard formats`
+- 定位具体记录：`pchronicle onboard find`
+- 导入导出并验证往返：`pchronicle onboard exchange`
+- 了解 Web/API 启动方式（只展示配置，不启动服务）：`pchronicle onboard serve`
+- 完整进阶教程：`pchronicle onboard all`
+
+所有专题都可以不带路径，使用临时示例。`basics`、`inspect`、`analyze`、`query`、`find`
+也接受你自己的 Dataset 路径，例如 `pchronicle onboard query ./my-trajectories`。
+这里的 `./my-trajectories` 需要替换为已有数据路径。
+
+临时示例会在退出后清理；输出中的临时路径不能在退出后复用。
+`exchange` 只修改隔离的临时目录和配置。自有 Dataset 的入门演练只读。
+查看参数：`pchronicle onboard --help`；保存当前教程：加上 `--no-pause` 并重定向输出。
+"#,
+    )
+}
+
+async fn render_basics(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &str) -> Result<()> {
+    let dataset = shell_quote(dataset_uri);
+    renderer.render(&format!(
+        r#"# pChronicle Onboard
+
+先回答一个小问题：这份 Agent 运行记录里，有哪些数据、规模多大、每次运行有多少步骤？
+本次只学习三个命令：`list` → `stats overview` → `query`。
+
+当前读取：`{dataset_uri}`。下面的命令由引导实际执行，结果来自这份数据；无需另开终端复制命令。
+未提供路径时使用临时示例，不要求账户、服务或已有数据。交互终端中按 Enter 继续，q 退出；
+`--no-pause` 或管道输出不会等待输入。
+
+命令形状是 `pchronicle <操作> <数据路径> [选项]`。先认识 Dataset（数据集合）和
+Source（其中的数据来源）即可；需要写 SQL 时再认识表。
+
+"#
+    ))?;
+    renderer.pause()?;
+    if renderer.stopped() {
+        return Ok(());
+    }
+
+    let listing = capture_list(dataset_uri.to_owned()).await?;
+    renderer.render(&command_section(
+        "1/3 · 这里有哪些数据？",
+        "`list` 像 ls 一样列出当前目录一级的文件和子 Dataset，先确认找对路径。",
+        &format!("pchronicle list {dataset} --format table"),
+        &listing,
+    ))?;
+    renderer.pause()?;
+    if renderer.stopped() {
+        return Ok(());
+    }
+
+    let overview = capture_analysis(dataset_uri.to_owned(), AnalysisKind::Overview).await?;
+    renderer.render(&command_section(
+        "2/3 · 有多少运行和步骤？",
+        "`stats overview` 打开数据并汇总。先看 trajectories、steps 和 error_sources；空结果或错误来源不代表已完整读取所有数据。",
+        &format!("pchronicle stats overview {dataset} --format table"),
+        &overview,
+    ))?;
+    renderer.pause()?;
+    if renderer.stopped() {
+        return Ok(());
+    }
+
+    let sql = "SELECT session_id, COUNT(*) AS steps FROM dataset.steps GROUP BY session_id ORDER BY steps DESC, session_id LIMIT 5";
+    let answer = capture_query(dataset_uri.to_owned(), sql, QueryOutputFormat::Table).await?;
+    renderer.render(&command_section(
+        "3/3 · 哪个 session 的步骤最多？",
+        "`query` 执行只读 SQL。这里按 session_id 统计步骤，最多显示五行；session_id 相同的记录会合并，跨 Source 的身份区分留到 query 专题学习。",
+        &format!("pchronicle query {dataset} --sql {} --format table", shell_quote(sql)),
+        &answer,
+    ))?;
+    renderer.render(
+        "\n## 已完成基础体验\n\n你已执行数据浏览、内建汇总和一个自定义问题。表格来自实际查询，不是预设答案。\n\n下一次尝试：`pchronicle onboard ./my-trajectories`，把路径换成自己的数据；\n或运行 `pchronicle query --help` 查看参数。需要脚本输出时，把 `--format table` 换为 `--format jsonl`。\n\n",
     )
 }
 
@@ -326,7 +420,7 @@ async fn render_inspect(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &st
     let list = capture_list(dataset_uri.to_owned()).await?;
     renderer.render(&command_section(
         "Inspect · 发现 Source",
-        "`list`（`ls`）展示 Dataset 中可供查询的逻辑 Source，而不是底层存储碎片。",
+        "`list`（`ls`）列出当前目录一级的文件和子 Dataset；需要查看查询会读取的 Source 时使用 `list --sources`。",
         &format!("pchronicle list {dataset} --format table"),
         &list,
     ))?;
@@ -565,8 +659,8 @@ fn render_completion(renderer: &mut WalkthroughRenderer<'_>) -> Result<()> {
     renderer.render(
         r#"# 完成
 
-你已经走通 Dataset 发现、内置分析、Schema、SQL、FTS/JSONB 检索、跨格式查询、ID 定位、
-Storyline Lance 导入导出和只读 Web/API 服务边界。
+你已执行 Dataset 浏览、内建分析、Schema、SQL、跨格式查询、ID 定位和临时导入导出，
+并阅读了匹配语法与 Web/API 配置。配置示例没有启动服务。
 
 本引导创建的内置示例和隔离 Warehouse 将在命令退出时自动清理。把自己的 Dataset 接入相同流程：
 
@@ -1179,5 +1273,42 @@ mod tests {
         assert_eq!(shell_quote("./demo"), "./demo");
         assert_eq!(shell_quote("a b"), "'a b'");
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+}
+
+#[cfg(test)]
+mod walkthrough_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn onboard_can_quit_default_and_topic_without_running_later_steps() -> Result<()> {
+        for section in [
+            None,
+            Some(OnboardSection::Query(DatasetSectionArgs {
+                dataset_uri: None,
+            })),
+        ] {
+            let mut input = std::io::Cursor::new(b"q\n");
+            let mut output = Vec::new();
+            run(
+                OnboardArgs {
+                    no_pause: false,
+                    dataset_uri: None,
+                    section,
+                },
+                None,
+                true,
+                true,
+                &mut input,
+                &mut output,
+            )
+            .await?;
+            let text = String::from_utf8(output)?;
+            assert!(text.contains("已退出引导"), "{text}");
+            assert!(!text.contains("1/3 ·"), "{text}");
+            assert!(!text.contains("Query · 查看 Step"), "{text}");
+            assert!(!text.contains("接下来，按目标继续"), "{text}");
+        }
+        Ok(())
     }
 }

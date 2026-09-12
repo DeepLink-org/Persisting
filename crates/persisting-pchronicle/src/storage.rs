@@ -79,7 +79,7 @@ pub use crate::store::{
     ManifestStats, NamespacePath, ObjectStoreManifestWriteMode, PathListEntry, PathListKind,
     PhysicalColumn, PhysicalDataFile, PhysicalFileLayout, PhysicalFragment, PhysicalLayout,
     PhysicalPage, PhysicalPagePreview, PhysicalPageQuery, PhysicalSource, PhysicalTable,
-    ProjectionSourceSnapshot, RawEventLanceAppender, RawEventLanceStore, ReplayOutcome,
+    ProjectionSourceSnapshot, QueryScope, RawEventLanceAppender, RawEventLanceStore, ReplayOutcome,
     RunControlStore, ShallowNavEntry, StorylineContentOptions, StorylineContentReadMode,
     StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
     StorylineMaintenanceReport, StorylineProjectionLineage, StorylineSearchIndexSuppressGuard,

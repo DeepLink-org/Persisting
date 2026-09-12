@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use persisting_pchronicle::model::EventRecord;
 use persisting_pchronicle::storage::{
-    CatalogDataset, CatalogEventProvenance, DatasetMount, PathListEntry, PathListKind,
+    CatalogEventProvenance, DatasetMount, PathListEntry, PathListKind,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -62,7 +62,10 @@ pub(crate) struct CatalogTreeChild {
     pub(crate) entries: Vec<CatalogTreeChild>,
 }
 
-pub(crate) fn catalog_tree_from_mounts(datasets: &[CatalogDataset]) -> CatalogTree {
+#[cfg(test)]
+pub(crate) fn catalog_tree_from_mounts(
+    datasets: &[persisting_pchronicle::storage::CatalogDataset],
+) -> CatalogTree {
     let mut children: Vec<CatalogTreeChild> = datasets
         .iter()
         .map(|dataset| {
@@ -104,6 +107,8 @@ pub(crate) fn catalog_tree_from_mounts(datasets: &[CatalogDataset]) -> CatalogTr
 }
 
 pub(crate) fn catalog_tree_from_mount_specs(datasets: &[DatasetMount]) -> CatalogTree {
+    let mut datasets: Vec<_> = datasets.iter().collect();
+    datasets.sort_by(|a, b| a.name.cmp(&b.name));
     CatalogTree {
         children: datasets
             .iter()

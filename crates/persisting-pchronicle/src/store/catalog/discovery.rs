@@ -520,6 +520,86 @@ pub(super) async fn discover_candidates(
     }
 }
 
+pub(super) async fn discover_candidate_at(
+    mount: &DatasetMount,
+    file: &str,
+    options: LocalQueryManifestOptions,
+) -> Result<Vec<Candidate>> {
+    let file = file.trim().trim_matches('/');
+    anyhow::ensure!(
+        !file.is_empty()
+            && (file == "."
+                || !file.split('/').any(|part| part.is_empty()
+                    || matches!(part, "." | "..")
+                    || part.contains('\\'))),
+        "invalid source scope"
+    );
+    let Some(root) = local_mount_path(&mount.uri) else {
+        // A missing remote manifest is not proof that a prefix or JSON object
+        // is absent. Preserve full membership and projection binding here until
+        // object-store discovery supports a bounded ancestor-aware traversal.
+        return discover_candidates(mount, options).await;
+    };
+    let root_metadata = fs::metadata(&root).context("inspect scoped Dataset root")?;
+    if file == "." || root_metadata.is_file() {
+        return discover_candidates(mount, options).await;
+    }
+    let mut current = root.clone();
+    let mut budget = DiscoveryBudget::new(options);
+    let parts: Vec<_> = file.split('/').collect();
+    for (index, part) in parts.iter().enumerate() {
+        // Respect opaque Dataset ancestors. Directly jumping into a Lance
+        // interior or a linked projection would change the source namespace.
+        match classify_local_dir(&root, &current).await? {
+            LocalDirClass::Recurse => {}
+            _ => return discover_candidates(mount, options).await,
+        }
+        current.push(part);
+        budget.observe_entry()?;
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error).context("inspect scoped source"),
+        };
+        if metadata.file_type().is_symlink() {
+            return Ok(Vec::new());
+        }
+        if metadata.is_file() {
+            if index + 1 != parts.len() || !is_json_candidate(&current) {
+                return Ok(Vec::new());
+            }
+            budget.observe_source()?;
+            return Ok(vec![Candidate::LocalFile {
+                file: file.to_owned(),
+                root,
+                path: current,
+                size_bytes: metadata.len(),
+                last_modified: modified_string(&metadata),
+            }]);
+        }
+    }
+    let candidates = match classify_local_dir(&root, &current).await? {
+        LocalDirClass::Leaf(candidates) => {
+            anyhow::ensure!(
+                candidates.len() <= options.max_files,
+                "scoped discovery exceeds max_files"
+            );
+            candidates
+        }
+        LocalDirClass::Skip => Vec::new(),
+        LocalDirClass::Recurse => collect_local_virtual(&root, &current, budget).await?,
+    };
+    // ponytail: linked projections can point outside this subtree. Discover the
+    // mount until discovery has an authoritative reverse lineage index.
+    if candidates
+        .iter()
+        .any(|candidate| matches!(candidate, Candidate::Storyline { .. }))
+    {
+        return discover_candidates(mount, options).await;
+    }
+    Ok(candidates)
+}
+
 async fn discover_local_candidates(
     original_uri: &str,
     root: &Path,
@@ -570,7 +650,9 @@ async fn discover_local_candidates(
             Ok(candidates)
         }
         LocalDirClass::Skip => Ok(Vec::new()),
-        LocalDirClass::Recurse => collect_local_virtual(root, root, options).await,
+        LocalDirClass::Recurse => {
+            collect_local_virtual(root, root, DiscoveryBudget::new(options)).await
+        }
     }
 }
 
@@ -733,9 +815,8 @@ async fn classify_local_dir(mount_root: &Path, path: &Path) -> Result<LocalDirCl
 async fn collect_local_virtual(
     mount_root: &Path,
     start: &Path,
-    options: LocalQueryManifestOptions,
+    mut budget: DiscoveryBudget,
 ) -> Result<Vec<Candidate>> {
-    let mut budget = DiscoveryBudget::new(options);
     let mut candidates = Vec::new();
     let mut stack = vec![start.to_path_buf()];
     while let Some(dir) = stack.pop() {

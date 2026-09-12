@@ -1,6 +1,6 @@
 # pChronicle
 
-<img src="/assets/logos/pchronicle-with-text.png" alt="pChronicle logo" width="240" />
+<img src="../../assets/logos/pchronicle-with-text.png" alt="pChronicle logo" width="240" />
 
 **Chronicled Experience for the Agent Era**
 
@@ -15,10 +15,10 @@ supported external formats; pChronicle does not require pVisor to run.
 In Persisting, pChronicle stores and queries trajectory history. It can run as a
 local tool or be deployed as a service in front of many paths.
 
-:::tip What you will complete
-The first walkthrough creates temporary data, opens it, runs a read-only
-summary, and answers one SQL question. You do not need a production store first.
-:::
+!!! tip "What you will complete"
+
+    The first walkthrough creates temporary data, opens it, runs a read-only
+    summary, and answers one SQL question. You do not need a production store first.
 
 ## The one object you work with
 

@@ -36,7 +36,7 @@ Lance 存储。下面的截图和示例由这个命令直接生成：
 
 左下角的 **Local** 表示当前连接的是本地 pChronicle 服务。
 
-![Datasets 页面显示 test 和 data 两个 Dataset，以及各自的 Run 数量](/assets/screenshots/pchronicle/data-overview.jpg)
+![Datasets 页面显示 test 和 data 两个 Dataset，以及各自的 Run 数量](../../../assets/screenshots/pchronicle/data-overview.jpg)
 
 **Datasets** 是离开首页后的仓库入口。仓库根列出 serve 挂载。进入某个挂载后，每张卡片是
 当前路径的一个 child，与 `pchronicle ls` 同一份列举。Dataset 子项在有 `chronicle.manifest`
@@ -46,7 +46,7 @@ Lance 存储。下面的截图和示例由这个命令直接生成：
 
 ## 浏览和筛选 Run
 
-![Runs 页面左侧是路径树，右侧是可筛选的 Run 表格](/assets/screenshots/pchronicle/runs-browser.jpg)
+![Runs 页面左侧是路径树，右侧是可筛选的 Run 表格](../../../assets/screenshots/pchronicle/runs-browser.jpg)
 
 Runs 页面由路径树和结果表组成。**Run paths** 由 run 摘要按 import path 反推，不是
 Datasets 的 `ls` 列举。
@@ -63,7 +63,7 @@ Datasets 的 `ls` 列举。
 
 ## 阅读一次 Run
 
-![Run 详情页展示概要指标、覆盖率和按序排列的步骤](/assets/screenshots/pchronicle/run-detail.jpg)
+![Run 详情页展示概要指标、覆盖率和按序排列的步骤](../../../assets/screenshots/pchronicle/run-detail.jpg)
 
 Run 详情页从上到下分为三层：
 
@@ -78,7 +78,7 @@ Run 详情页从上到下分为三层：
 
 ## 分析 Dataset
 
-![Analysis 页面执行只读 SQL，并在 Result Explorer 中展示返回行和列分布](/assets/screenshots/pchronicle/analysis-sql.jpg)
+![Analysis 页面执行只读 SQL，并在 Result Explorer 中展示返回行和列分布](../../../assets/screenshots/pchronicle/analysis-sql.jpg)
 
 Analysis 左侧列出每个 Dataset 可查询的表和字段。挂载名就是 SQL schema，因此本例使用
 `test.runs`、`data.runs` 等表名。
@@ -105,7 +105,7 @@ ORDER BY runs DESC
 
 ## 检查 Lance 存储
 
-![Storage 页面展示 Lance 数据组、列值分布和存储大小](/assets/screenshots/pchronicle/storage-layout.jpg)
+![Storage 页面展示 Lance 数据组、列值分布和存储大小](../../../assets/screenshots/pchronicle/storage-layout.jpg)
 
 Storage 是高级诊断页，不是日常浏览 Run 的必经步骤。左侧按 Dataset 展示 Lance 表及其数据组；
 选择数据组后，右侧按列展示行数、非空数量、编码后的存储大小、值分布和尺寸分布。它适合回答：
@@ -118,7 +118,7 @@ Storage 是高级诊断页，不是日常浏览 Run 的必经步骤。左侧按 
 
 ## 配置 Assistant
 
-![Assistant 的 Browser BYOK 设置包含 API base、API key 和 Model](/assets/screenshots/pchronicle/assistant-settings.jpg)
+![Assistant 的 Browser BYOK 设置包含 API base、API key 和 Model](../../../assets/screenshots/pchronicle/assistant-settings.jpg)
 
 1. 单击左侧 **Assistant** 打开侧栏，再单击齿轮按钮。
 2. 填写 OpenAI-compatible 的 **API base**、**API key** 和 **Model**。

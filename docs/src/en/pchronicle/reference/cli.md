@@ -62,6 +62,11 @@ pchronicle onboard
 pchronicle onboard query @prod
 ```
 
+The default `onboard` (or `onboard basics`) teaches listing, a summary, and one SQL question.
+Use `onboard all` for the complete curriculum. Topic commands pause in an
+interactive terminal (Enter to continue, q to quit); `--no-pause` or redirected
+output disables prompts.
+
 The complete walkthrough covers Dataset discovery, health and built-in
 analysis, normalized SQL, unified FTS/JSONB `find` expressions, cross-format
 queries, Storyline Lance import/export, and the read-only Web/API boundary.

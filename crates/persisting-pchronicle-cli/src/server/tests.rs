@@ -2087,7 +2087,8 @@ async fn explorer_tree_lists_mounted_datasets_by_run_count() -> anyhow::Result<(
     assert_eq!(dataset.status(), StatusCode::OK);
     let dataset: Value = serde_json::from_slice(&dataset.into_body().collect().await?.to_bytes())?;
     assert_eq!(dataset["dataset"], "live");
-    assert!(dataset["ready_sources"].as_u64().unwrap() >= 1);
+    // Browse views do not open sources to certify query readiness.
+    assert_eq!(dataset["browse"]["consistency"], "best_effort");
     let names: Vec<_> = dataset["children"]
         .as_array()
         .unwrap()
@@ -2506,4 +2507,41 @@ async fn physical_api_inspects_storyline_lance_layout_file_and_page() {
                 .is_some_and(|cells| cells.iter().any(|cell| cell == "session-a"))),
         "{preview}"
     );
+}
+
+#[tokio::test]
+async fn browse_tree_does_not_build_query_runtime() -> anyhow::Result<()> {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    std::fs::create_dir_all(&source)?;
+    std::fs::write(source.join("invalid.json"), "not a valid trajectory")?;
+    let config = ChronicleServerConfig::mounted(vec![DatasetMount::new(
+        "browse",
+        source.to_string_lossy(),
+    )?])?;
+    let state = app_state(config);
+    let coordinator = ui_cache::BrowseCoordinator::start_at(
+        state.config.datasets.clone(),
+        temp.path().join("cache"),
+    )
+    .await;
+    assert!(state.browse.set(coordinator).is_ok());
+    let response = finish_routes(state.clone())
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/tree?dataset=browse")
+                .body(axum::body::Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+    assert_eq!(body["browse"]["consistency"], "best_effort");
+    assert_eq!(body["children"][0]["name"], "invalid.json");
+    assert!(
+        state.catalog.read().await.is_none(),
+        "browsing must not initialize the query engine"
+    );
+    Ok(())
 }

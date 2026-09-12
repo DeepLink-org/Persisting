@@ -1,20 +1,33 @@
-# 从你当前的问题开始
+---
+hide:
+  - toc
+---
 
-Persisting 有两个独立入口。先选择与你当前任务相符的入口，再沿着短路径完成一个有用结果。
+# 开始使用
 
-两条路径遵循同一个产品承诺：治理 Agent 能做什么，审查它产生的修改，并留存随后产生的有用历史。
+沿着一条主线，从安装 CLI 到运行一个可以审查和查询的 Agent Run。
 
-## 我想运行 Agent，并审查它产生的修改
+## 1. 安装
 
-从 **pVisor** 开始。它让单个 Agent 在独立 Run 中工作，记录执行边界，并把文件修改
-留在暂存区，直到你决定写入真实项目还是丢弃。
+安装命令行工具，并确认两个产品入口可用：
 
-1. [安装命令行工具](installation.md)。
-2. [运行第一个 Agent](pvisor/get-started.md)。
-3. [审查并选择性应用修改](pvisor/guides/review-apply.md)。
-4. [选择 host、OCI 或 VM 执行环境](pvisor/guides/execution.md)。
+```bash
+pip install persisting
+pvisor --help
+pchronicle --help
+```
 
-完成后，Agent 已停止，改动留在暂存区，你可以审查后写入或丢弃。
+macOS 使用 staged host workspace 前，需要安装 macFUSE：
+
+```bash
+brew install --cask macfuse
+```
+
+[阅读安装指南 →](installation.md)
+
+## 2. 使用 pVisor 运行 Agent
+
+在 staged workspace 中运行 Agent，检查实际发生的事情，只应用你信任的修改：
 
 ```bash
 pvisor run --stage ./runs/task-001 -- codex
@@ -22,56 +35,27 @@ pvisor review last
 pvisor apply last --path src
 ```
 
-## 我已经有 Agent 轨迹数据
+Agent 工作期间，基础项目保持不变。Run Bundle 会记录文件 Effect、实际控制机制、网络证据和警告。
+继续阅读[运行第一个 Agent](pvisor/get-started.md)完成完整流程，再学习[选择性 apply](pvisor/guides/review-apply.md)。
 
-从 **pChronicle** 开始。它可以检查本地或对象存储中的数据，也可以导入支持的外部格式。第一
-个 walkthrough 会创建临时示例数据，因此无需先准备 Dataset 就能学习查询流程。
+**完成本节后：**你会得到一次经过审查的项目修改，并清楚哪些内容仍留在 stage 中。
 
-1. [探索第一个 Dataset](pchronicle/get-started.md)。
-2. [发现并查询自己的数据](pchronicle/guides/discover-and-query.md)。
-3. [导入或导出支持的格式](pchronicle/guides/exchange.md)。
-4. [在本地提供 Dataset 服务](pchronicle/guides/serve.md)。
+## 3. 记录并分析 Agent 轨迹
 
-完成后，你应该能执行只读查询，看到规范化视图，并清楚查的是哪份数据、哪个来源。
+Agent 运行后，使用 pChronicle 把轨迹变成可以检查和查询的 Dataset。先用临时示例，安全地熟悉流程：
 
 ```bash
-pchronicle onboard query
+pchronicle onboard
+```
+
+引导会带你列出数据、查看汇总，并提出一个只读 SQL 问题。然后用自己的数据重走同一条路径：
+
+```bash
+pchronicle onboard ./trajectory-data
 pchronicle query ./trajectory-data \
-  --sql 'SELECT source, COUNT(*) FROM dataset.steps GROUP BY source'
+  --sql 'SELECT session_id, COUNT(*) AS steps FROM dataset.steps GROUP BY session_id'
 ```
 
-## 我想把执行和历史连接起来
+继续阅读[探索第一个 Dataset](pchronicle/get-started.md)，学习 Dataset 健康检查、证据定位、格式、导入导出和只读 Web/API。
 
-等两个独立工作流都能运行后，再连接它们。配置 pVisor capture，把选定的 Gateway 轨迹事件和
-lifecycle record 发布到 pChronicle。这个交接是显式且有限的：它不会搬运私有 Run Bundle，也
-不会补造原始 Source 没有提供的 Evidence。
-
-pVisor capture 与 `pchronicle serve --gateway` 是两条入口：前者随 Agent Run 启停并共享执行边界；后者独立接收或转发已有 Agent/SDK 的流量，不启动 pVisor Run。
-
-1. [捕获 Agent 轨迹](pvisor/guides/capture.md)。
-2. [理解 event 与 sidecar 契约](rfcs/0007-events-contract-pchronicle-sidecar.md)（需要改协议或排障时再读）。
-3. [阅读从执行到历史的架构](system-design/architecture.md)。
-
-```text
-pVisor Run ── configured capture ──> canonical event Source ──> Dataset views
-external trajectory Source ──────────────────────────────────> Dataset views
-```
-
-## 我需要先理解边界，再运行 Agent
-
-按这个顺序阅读核心概念：
-
-1. [Run、Attempt 与 Effect](pvisor/concepts/run-model.md) —— 稳定对象。
-2. [Capability 与 Evidence](pvisor/concepts/capabilities-and-evidence.md) —— Run 能够声明什么。
-3. [执行环境](pvisor/guides/execution.md) —— Provider 选择如何改变边界。
-4. [安全与 Evidence](system-design/security-evidence.md) —— 哪些内容会持久化，哪些仍留在本地。
-
-整套文档遵循同一条规则：命令成功退出，不代表所有请求的 capability 都已 enforcement。
-Run Bundle 会记录实际生效的机制与限制。
-
-## 继续阅读
-
-- [pVisor 命令模型](pvisor/design/cli.md)
-- [pVisor Case 目录](pvisor/reference/cases.md)
-- [pChronicle 核心概念](pchronicle/concepts/index.md)
-- [系统设计](system-design/index.md)
+**完成本节后：**你可以把一个答案连接到产生它的 Dataset 和 Source。需要连接两个产品时，继续阅读[pVisor 捕获指南](pvisor/guides/capture.md)。

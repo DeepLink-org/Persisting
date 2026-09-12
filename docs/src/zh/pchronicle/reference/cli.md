@@ -107,8 +107,8 @@ pchronicle onboard
 pchronicle onboard query @prod
 ```
 
-通过内建示例或自己的 Dataset 体验 pChronicle 工作流。`SECTION` 可以是 `all`、`concepts`、
-`inspect`、`analyze`、`query`、`formats`、`find`、`exchange` 或 `serve`，默认为 `all`。
+通过内建示例或自己的 Dataset 体验 pChronicle 工作流。`SECTION` 可以是 `basics`、`all`、`concepts`、
+`inspect`、`analyze`、`query`、`formats`、`find`、`exchange` 或 `serve`，默认为 `basics`：列表、汇总和一个 SQL 问题。`all` 保留完整进阶课程。
 交互式终端会在章节之间暂停；pipe、重定向或 `--no-pause` 输出连续 Markdown。
 完整引导还会演示统一的 FTS/JSONB `find` 表达式、Storyline Lance 导入导出以及只读 Web/API
 边界；使用 `pchronicle onboard find DATASET` 可以直接查看检索语法。

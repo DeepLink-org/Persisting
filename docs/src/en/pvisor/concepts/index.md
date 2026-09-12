@@ -4,11 +4,11 @@ pVisor is built around an **Agent Run**, not a process, container, or virtual
 machine. Read these concepts before comparing providers or interpreting a Run
 Bundle.
 
-:::note When this section helps
-Come here after the first Run when a command succeeded but you need to know what
-was actually isolated, which changes are still staged, or why two execution
-providers make different guarantees.
-:::
+!!! note "When this section helps"
+
+    Come here after the first Run when a command succeeded but you need to know what
+    was actually isolated, which changes are still staged, or why two execution
+    providers make different guarantees.
 
 Follow these articles in order:
 

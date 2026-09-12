@@ -74,7 +74,7 @@ pub use catalog::{
     CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind,
     CatalogSourceRevision, CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle,
     DEFAULT_DATASET_NAME, DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS,
-    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, NamespacePath,
+    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, NamespacePath, QueryScope,
 };
 #[cfg(feature = "lance-store")]
 #[allow(unused_imports)]

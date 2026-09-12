@@ -671,16 +671,16 @@ install-nightly:
 # ── 文档（docs/ 子项目）──────────────────────────────────────────────────────
 
 docs-sync:
-    cd "{{ docs_dir }}" && if [[ ! -x .venv/bin/zensical ]]; then uv venv .venv && UV_CACHE_DIR=/tmp/uv-cache uv pip install --python .venv/bin/python zensical; fi
+    cd "{{ docs_dir }}" && if [[ ! -x .venv/bin/zensical ]]; then uv venv .venv && UV_CACHE_DIR=/tmp/uv-cache uv pip install --python .venv/bin/python zensical==0.0.61; fi
 
 docs-serve: docs-sync
-    cd "{{ docs_dir }}" && .venv/bin/zensical build && python3 "{{ repo }}/scripts/serve-docs.py" --host 127.0.0.1 --port 3000 --directory site
+    cd "{{ docs_dir }}" && .venv/bin/python "{{ repo }}/scripts/build-docs.py" && .venv/bin/python "{{ repo }}/scripts/serve-docs.py" --host 127.0.0.1 --port 3000 --directory site
 
 docs-serve-dirty: docs-sync
-    cd "{{ docs_dir }}" && .venv/bin/zensical serve --dev-addr 127.0.0.1:3000
+    cd "{{ docs_dir }}" && .venv/bin/python "{{ repo }}/scripts/build-docs.py" && .venv/bin/python "{{ repo }}/scripts/serve-docs.py" --host 127.0.0.1 --port 3000 --directory site --watch
 
 docs-build: docs-sync
-    cd "{{ docs_dir }}" && .venv/bin/zensical build
+    cd "{{ docs_dir }}" && .venv/bin/python "{{ repo }}/scripts/build-docs.py"
 
 # ── 数据与 fixture ───────────────────────────────────────────────────────────
 

@@ -3,10 +3,10 @@
 Use this workflow when you have a local path, object-store URI, or dataset pin and
 want to understand its run data before writing a report.
 
-:::tip What you will have at the end
-You will know which Sources a Dataset contains, which relations are available,
-and how to answer one bounded, read-only question reproducibly.
-:::
+!!! tip "What you will have at the end"
+
+    You will know which Sources a Dataset contains, which relations are available,
+    and how to answer one bounded, read-only question reproducibly.
 
 ## 1. Inspect the Dataset
 
