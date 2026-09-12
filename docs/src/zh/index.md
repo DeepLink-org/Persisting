@@ -1,4 +1,5 @@
 ---
+template: home.html
 title: 从这里开始
 sidebar_label: 从这里开始
 ---

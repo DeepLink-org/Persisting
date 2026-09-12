@@ -5,6 +5,7 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 import CodeBlock from '@theme/CodeBlock';
 import clsx from 'clsx';
 import styles from './index.module.css';
+import HomeQuickstart from '../components/HomeQuickstart';
 
 const capabilities = [
   ['Governed execution', 'Run an Agent inside a provider-aware, reviewable workspace.'],
@@ -18,12 +19,12 @@ const capabilities = [
 export default function Home() {
   const productDiagram = useBaseUrl('/img/diagrams/persisting/system-products.svg');
   return <Layout title="Persistent Infrastructure for the Agent Era" description="Run Agents under a reviewable execution boundary and preserve queryable history.">
-    <header className={clsx('hero hero--primary', styles.hero)}><div className="container">
+    <header className={clsx('hero hero--primary', styles.hero)}><div className={`container ${styles.heroGrid}`}><div>
       <p className={styles.eyebrow}>PERSISTENT INFRASTRUCTURE FOR AGENTS</p>
       <h1 className="hero__title">Persistent Infrastructure for the Agent Era</h1>
       <p className="hero__subtitle">Run Agents inside a reviewable execution boundary. Preserve accepted decisions and resulting history as a queryable Dataset.</p>
       <div className="buttons"><Link className="button button--secondary button--lg" to="/docs/">Get started</Link><Link className="button button--outline button--lg" to="/docs/system-design/">Read the system design</Link></div>
-    </div></header>
+    </div><HomeQuickstart /></div></header>
     <main>
       <section className="container padding-vert--xl"><div className="row product-choices">
         <div className="col col--6"><article className="product-card"><p className="product-kicker">GOVERNED EXECUTION</p><h2>pVisor</h2><p>Give an Agent a staged workspace and an explicit execution provider. Inspect Evidence before any Effect reaches the project.</p><p className="product-outcome">You finish with a reviewable Run Bundle and controlled changes.</p><Link to="/docs/pvisor/">Start a Run →</Link></article></div>

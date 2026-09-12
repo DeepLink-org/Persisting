@@ -1,50 +1,12 @@
 # Persisting Documentation
 
-The documentation site is built with [Docusaurus](https://docusaurus.io/).
-English and Chinese are separate documentation instances so each language has
-stable routes, sidebars, and searchable content.
-
-## Quick start
-
-Run these commands from the repository root:
+The documentation site is built with [Zensical](https://zensical.org/). English and Chinese live in one site under `docs/src/en/` and `docs/src/zh/`, so the header language selector stays consistent while the URL remains stable per language.
 
 ```bash
-just docs-sync    # install website dependencies
-just docs-serve   # build and start a stable static preview
-just docs-serve-dirty # start the hot-reload development server
-just docs-build   # build docs/build
+just docs-sync          # create docs/.venv and install Zensical
+just docs-serve         # build and serve the static site
+just docs-serve-dirty   # hot-reload preview
+just docs-build         # build docs/site
 ```
 
-The published site includes a local search index, so search works on the static
-GitHub Pages deployment without a separate service.
-
-The canonical Markdown sources are `docs/src/en/` and `docs/src/zh/`. Docusaurus
-reads these two trees directly; internal pPilot, Queue, and API material lives
-under `docs/src/internal/` and stays outside the public site.
-The Docusaurus site is rooted at `docs/`. Its React homepage lives in
-`docs/src/pages/index.js`, and shared visual tokens live in
-`docs/src/css/custom.css`.
-
-Use `docs-serve` for a stable preview of the generated site. Use
-`docs-serve-dirty` only while editing and needing hot reload; it runs the
-Docusaurus watcher and uses substantially more memory for a large bilingual
-site. The stable preview is available at
-`http://localhost:3000/Persisting/`, matching the GitHub Pages base path.
-
-The public reading path is intentionally progressive:
-
-1. **Start here** explains which product matches the reader's task.
-2. **Get Started** completes one useful Run or Dataset workflow.
-3. **Concepts** names the stable objects and guarantees.
-4. **Guides** solve task-shaped problems with verification steps.
-5. **Design and Reference** document implementation boundaries and exact syntax.
-
-Internal orchestration material remains outside the public navigation. Queue,
-search, and standalone capture documentation remain separate project areas and
-are not part of the default product onboarding path.
-
-## Contributing
-
-Edit the Markdown under `docs/src/en/` or `docs/src/zh/`, and the React/CSS files under
-`docs/src/pages/`, `docs/src/css/`, and `docs/src/theme/`. Check command examples against the corresponding binary's
-`--help`, then run `just docs-build` before opening a PR.
+The landing page template is `docs/overrides/home.html`; visual tokens and the grid background are in `docs/src/stylesheets/extra.css`. Edit Markdown in `docs/src/en/` or `docs/src/zh/`, then run `just docs-build` before opening a PR.

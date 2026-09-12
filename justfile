@@ -671,17 +671,16 @@ install-nightly:
 # ── 文档（docs/ 子项目）──────────────────────────────────────────────────────
 
 docs-sync:
-    cd "{{ docs_dir }}" && if [[ ! -x node_modules/.bin/docusaurus ]]; then npm ci; fi
+    cd "{{ docs_dir }}" && if [[ ! -x .venv/bin/zensical ]]; then uv venv .venv && UV_CACHE_DIR=/tmp/uv-cache uv pip install --python .venv/bin/python zensical; fi
 
 docs-serve: docs-sync
-    cd "{{ docs_dir }}" && npm run build && python3 "{{ repo }}/scripts/serve-docs.py" --host 0.0.0.0 --port 3000 --directory build
+    cd "{{ docs_dir }}" && .venv/bin/zensical build && python3 "{{ repo }}/scripts/serve-docs.py" --host 127.0.0.1 --port 3000 --directory site
 
-# Hot-reload development mode. Use docs-serve for a stable static preview.
 docs-serve-dirty: docs-sync
-    cd "{{ docs_dir }}" && npm run start -- --host 0.0.0.0
+    cd "{{ docs_dir }}" && .venv/bin/zensical serve --dev-addr 127.0.0.1:3000
 
 docs-build: docs-sync
-    cd "{{ docs_dir }}" && npm run build
+    cd "{{ docs_dir }}" && .venv/bin/zensical build
 
 # ── 数据与 fixture ───────────────────────────────────────────────────────────
 

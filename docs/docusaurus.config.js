@@ -5,13 +5,16 @@ const codeTheme = {
   plain: { ...themes.nightOwl.plain, backgroundColor: '#0c121e' },
 };
 
+const baseUrl = process.env.DOCUSAURUS_BASE_URL || '/';
+const activeRoot = `^${baseUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`;
+
 const config = {
   title: 'Persisting',
   tagline: 'Persistent Infrastructure for the Agent Era',
   favicon: 'img/logos/persisting-icon.png',
   url: 'https://deeplink-org.github.io',
   // Use `/` for local previews; GitHub Pages sets DOCUSAURUS_BASE_URL=/Persisting/.
-  baseUrl: process.env.DOCUSAURUS_BASE_URL || '/',
+  baseUrl,
   organizationName: 'DeepLink-org',
   projectName: 'Persisting',
   onBrokenLinks: 'throw',
@@ -25,10 +28,10 @@ const config = {
   ],
   plugins: [
     [require.resolve('@docusaurus/plugin-content-docs'), {
-      path: path.resolve(__dirname, 'src/en'), routeBasePath: 'docs', sidebarPath: require.resolve('./sidebars.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/'
+      path: path.resolve(__dirname, 'src/en'), routeBasePath: 'docs', sidebarPath: require.resolve('./sidebars.en.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/'
     }],
     [require.resolve('@docusaurus/plugin-content-docs'), {
-      id: 'zh', path: path.resolve(__dirname, 'src/zh'), routeBasePath: 'zh/docs', sidebarPath: require.resolve('./sidebars.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/'
+      id: 'zh', path: path.resolve(__dirname, 'src/zh'), routeBasePath: 'zh/docs', sidebarPath: require.resolve('./sidebars.zh.js'), editUrl: 'https://github.com/DeepLink-org/Persisting/edit/main/docs/'
     }],
     [require.resolve('@easyops-cn/docusaurus-search-local'), {
       hashed: true,
@@ -47,20 +50,15 @@ const config = {
         autoCollapseCategories: true,
       },
     },
-    announcementBar: {
-      id: 'agent-era',
-      content: 'Persistent Infrastructure for the Agent Era · Start with a Run or a Dataset',
-      isCloseable: true,
-    },
     navbar: {
       title: 'Persisting',
       logo: { alt: 'Persisting', src: 'img/logos/persisting-icon.png' },
       items: [
-        { to: '/docs/', label: 'Start here', position: 'left' },
-        { to: '/docs/pvisor/', label: 'pVisor', position: 'left' },
-        { to: '/docs/pchronicle/', label: 'pChronicle', position: 'left' },
+        { to: '/docs/', label: 'Start here', position: 'left', activeBaseRegex: `${activeRoot}(zh/)?docs/?$` },
+        { to: '/docs/pvisor/', label: 'pVisor', position: 'left', activeBaseRegex: `${activeRoot}(zh/)?docs/pvisor/` },
+        { to: '/docs/pchronicle/', label: 'pChronicle', position: 'left', activeBaseRegex: `${activeRoot}(zh/)?docs/pchronicle/` },
         { href: 'https://github.com/DeepLink-org/Persisting', label: 'GitHub', position: 'right' },
-        { to: '/docs/', label: 'English', position: 'right' },
+        { to: '/', label: 'English', position: 'right', activeBaseRegex: `${activeRoot}$` },
         { to: '/zh/', label: '中文', position: 'right' },
       ],
     },

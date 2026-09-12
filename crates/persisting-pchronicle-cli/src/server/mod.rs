@@ -7,10 +7,12 @@ mod explorer;
 mod physical;
 pub(crate) mod problem;
 pub(crate) mod request_log;
+mod ui_cache;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -61,9 +63,11 @@ struct AppState {
     live_reads: bool,
     catalog_acl: Option<Arc<catalog::CatalogAcl>>,
     catalog_query_worker: bool,
+    ui_tree_cache: Arc<ui_cache::UiTreeCache>,
 }
 
 const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const UI_CACHE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HomeLink {
@@ -211,6 +215,7 @@ fn app_state_with_catalog_refresh_interval(
         live_reads: false,
         catalog_acl: None,
         catalog_query_worker: false,
+        ui_tree_cache: Arc::new(ui_cache::UiTreeCache::new()),
     }
 }
 
@@ -224,6 +229,8 @@ impl PreparedWarehouse {
         let warehouse = Self {
             state: app_state(config),
         };
+        warehouse.state.ui_tree_cache.load_safely().await;
+        spawn_ui_cache_refresh(&warehouse.state);
         warehouse.install_initial_runtime().await?;
         Ok(warehouse)
     }
@@ -232,6 +239,8 @@ impl PreparedWarehouse {
         let mut state = app_state(config);
         state.live_reads = true;
         let warehouse = Self { state };
+        warehouse.state.ui_tree_cache.load_safely().await;
+        spawn_ui_cache_refresh(&warehouse.state);
         warehouse.install_initial_runtime().await?;
         Ok(warehouse)
     }
@@ -264,8 +273,17 @@ impl PreparedWarehouse {
         let mut state = app_state(config);
         state.catalog_acl = Some(Arc::new(acl));
         let warehouse = Self { state };
+        warehouse.state.ui_tree_cache.load_safely().await;
+        spawn_ui_cache_refresh(&warehouse.state);
         let background = warehouse.state.clone();
         tokio::spawn(async move {
+            // Serialize startup discovery with the first API request. Without
+            // this guard both paths can scan the same mounted trees and build
+            // two query engines before either publishes the snapshot.
+            let _refresh = background.catalog_refresh.lock().await;
+            if background.catalog.read().await.is_some() {
+                return;
+            }
             match build_catalog_runtime(&background.config).await {
                 Ok(runtime) => {
                     let snapshot_id = runtime.snapshot.snapshot_id().to_string();
@@ -295,6 +313,8 @@ impl PreparedWarehouse {
         let mut state = app_state(config);
         state.catalog_query_worker = true;
         let warehouse = Self { state };
+        warehouse.state.ui_tree_cache.load_safely().await;
+        spawn_ui_cache_refresh(&warehouse.state);
         warehouse.install_initial_runtime().await?;
         Ok(warehouse)
     }
@@ -347,6 +367,44 @@ impl PreparedWarehouse {
             .as_ref()
             .map(|runtime| runtime.snapshot.snapshot_id().to_string())
     }
+}
+
+fn spawn_ui_cache_refresh(state: &AppState) {
+    if state.config.datasets.is_empty() {
+        return;
+    }
+    static REFRESH_STARTED: OnceLock<()> = OnceLock::new();
+    // One process-wide loop avoids duplicate S3/catalog scans.
+    if REFRESH_STARTED.set(()).is_err() {
+        return;
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(UI_CACHE_REFRESH_INTERVAL);
+        loop {
+            interval.tick().await;
+            for mount in state.config.datasets.iter().cloned() {
+                let Ok(location) =
+                    persisting_pchronicle::storage::DatasetLocation::parse(&mount.uri)
+                else {
+                    continue;
+                };
+                let Ok(entries) = location.list("").await else {
+                    continue;
+                };
+                state
+                    .ui_tree_cache
+                    .put(
+                        ui_cache::TreeKey {
+                            dataset: mount.name.clone(),
+                            prefix: String::new(),
+                        },
+                        explorer::catalog_tree_from_path_list(&mount.name, "", &entries),
+                    )
+                    .await;
+            }
+        }
+    });
 }
 
 fn api_routes() -> Router<AppState> {
@@ -1194,7 +1252,6 @@ async fn explorer_tree(
     query: Result<Query<explorer::ExplorerTreeQuery>, QueryRejection>,
 ) -> Result<Json<explorer::CatalogTree>, ApiError> {
     let query = api_query(query)?;
-    let runtime = current_catalog_for_runs(&state, &request_id).await?;
     let dataset = query
         .dataset
         .as_deref()
@@ -1202,29 +1259,59 @@ async fn explorer_tree(
         .filter(|value| !value.is_empty());
     let prefix = query.prefix.as_deref().unwrap_or("");
     if dataset.is_none() {
-        return Ok(Json(explorer::catalog_tree_from_mounts(
-            runtime.snapshot.datasets(),
+        return Ok(Json(explorer::catalog_tree_from_mount_specs(
+            &state.config.datasets,
         )));
     }
     let name = dataset.unwrap();
-    let Some(mounted) = runtime.snapshot.dataset(name) else {
+    let Some(mounted) = state
+        .config
+        .datasets
+        .iter()
+        .find(|mount| mount.name == name)
+    else {
         return Ok(Json(explorer::catalog_tree_from_path_list(
             name,
             prefix,
             &[],
         )));
     };
-    let location = persisting_pchronicle::storage::DatasetLocation::parse(&mounted.mount.uri)
+    let prefix = prefix.trim().trim_matches('/');
+    let key = ui_cache::TreeKey {
+        dataset: name.to_owned(),
+        prefix: prefix.to_owned(),
+    };
+    if let Some(tree) = state.ui_tree_cache.get(&key).await {
+        let cache = state.ui_tree_cache.clone();
+        let mount = mounted.clone();
+        let key = key.clone();
+        tokio::spawn(async move {
+            if let Ok(location) = persisting_pchronicle::storage::DatasetLocation::parse(&mount.uri)
+            {
+                if let Ok(entries) = location.list(&key.prefix).await {
+                    cache
+                        .put(
+                            key.clone(),
+                            explorer::catalog_tree_from_path_list(
+                                &mount.name,
+                                &key.prefix,
+                                &entries,
+                            ),
+                        )
+                        .await;
+                }
+            }
+        });
+        return Ok(Json(tree));
+    }
+    let location = persisting_pchronicle::storage::DatasetLocation::parse(&mounted.uri)
         .map_err(|error| fail(&request_id, "explorer_tree", error))?;
     let entries = location
         .list(prefix)
         .await
         .map_err(|error| fail(&request_id, "explorer_tree", error))?;
-    let mut tree = explorer::catalog_tree_from_path_list(name, prefix, &entries);
-    if prefix.trim().trim_matches('/').is_empty() {
-        tree.ready_sources = Some(mounted.ready_source_count());
-        tree.error_sources = Some(mounted.error_source_count());
-    }
+    let tree = explorer::catalog_tree_from_path_list(name, prefix, &entries);
+    state.ui_tree_cache.put(key, tree.clone()).await;
     Ok(Json(tree))
 }
 

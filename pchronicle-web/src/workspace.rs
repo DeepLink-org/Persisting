@@ -320,7 +320,7 @@ pub fn App() -> Element {
     let mut llm_config = use_signal(llm::load_config);
 
     use_effect(move || {
-        if page() == "home" {
+        if !matches!(page().as_str(), "runs" | "detail") {
             return;
         }
         load_runs(

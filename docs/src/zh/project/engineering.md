@@ -12,8 +12,8 @@
 | `just test` | 通过 `cargo nextest` 跑工作区 Rust 测试，再跑 Python 套件 |
 | `just test <package>` | 单个 crate 或 Cargo package（例如 `pvisor` 或 `persisting-pvisor`） |
 | `just docs-sync` | 安装锁定的文档环境 |
-| `just docs-serve` | 本地 Docusaurus 预览，文件修改时自动刷新 |
-| `just docs-serve-dirty` | 自动重载卡住时重新启动 Docusaurus 预览 |
+| `just docs-serve` | 本地 Zensical 预览，文件修改时自动刷新 |
+| `just docs-serve-dirty` | 自动重载卡住时重新启动 Zensical 预览 |
 | `just docs-build` | 构建静态文档站点 |
 | `just examples` | pVisor 与 pChronicle 产品示例套件 |
 | `just gate` | 格式化、lint 以及完整 Rust 测试工作区 |

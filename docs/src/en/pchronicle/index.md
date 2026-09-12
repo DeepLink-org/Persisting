@@ -1,6 +1,6 @@
 # pChronicle
 
-<img src="/img/logos/pchronicle-with-text.png" alt="pChronicle logo" width="240" />
+<img src="/assets/logos/pchronicle-with-text.png" alt="pChronicle logo" width="240" />
 
 **Chronicled Experience for the Agent Era**
 

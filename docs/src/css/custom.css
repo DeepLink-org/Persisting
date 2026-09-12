@@ -21,7 +21,7 @@
   --ifm-heading-color: #f7f9ff;
   --ifm-font-family-base: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --ifm-heading-font-family: var(--ifm-font-family-base);
-  --ifm-heading-font-weight: 560;
+  --ifm-heading-font-weight: 600;
   --ifm-line-height-base: 1.75;
   --ifm-code-font-size: 90%;
   --ifm-code-background: rgb(168 206 250 / 8%);
@@ -77,9 +77,9 @@ body {
 }
 #__docusaurus::before {
   background:
-    radial-gradient(ellipse 90% 55% at 78% 0%, rgb(132 181 232 / 25%), transparent 65%),
-    radial-gradient(ellipse 70% 50% at 0% 95%, rgb(46 92 156 / 15%), transparent 65%),
-    linear-gradient(180deg, #122944 0%, #0b1524 36%, #07090f 85%);
+    radial-gradient(ellipse 90% 55% at 78% 0%, rgb(132 181 232 / 48%), transparent 65%),
+    radial-gradient(ellipse 70% 50% at 0% 95%, rgb(46 92 156 / 32%), transparent 65%),
+    linear-gradient(180deg, #1a3d68 0%, #0d1b30 42%, #07090f 85%);
 }
 #__docusaurus::after {
   background-image: linear-gradient(rgb(255 255 255 / 4%) 1px, transparent 1px),
@@ -93,12 +93,18 @@ a { text-underline-offset: .2em; }
 
 /* Keep the native sticky navbar and mobile drawer geometry. */
 .navbar {
-  background: rgb(8 14 26 / 78%);
-  border-bottom: 1px solid var(--docs-border);
-  backdrop-filter: blur(18px);
+  background: #142b47;
+  padding: .5rem 1rem;
 }
 .navbar__title { font-weight: 600; letter-spacing: -.025em; }
-.navbar__link { font-size: .875rem; border-radius: 999px; }
+.navbar__inner {
+  padding: .35rem .75rem;
+  border: 1px solid var(--docs-border);
+  border-radius: 999px;
+  background: rgb(8 14 26 / 65%);
+}
+.navbar__link { font-size: .875rem; border: 1px solid transparent; border-radius: 999px; }
+.navbar__link:hover { background: rgb(255 255 255 / 5%); border-color: var(--docs-border); }
 .navbar__link--active { background: rgb(168 206 250 / 9%); }
 .navbar__logo { width: 2rem; height: 2rem; object-fit: contain; filter: brightness(0) invert(1); }
 .navbar__search-input { min-height: 2.5rem; border: 1px solid var(--docs-border); }
@@ -118,7 +124,15 @@ a { text-underline-offset: .2em; }
 .menu { padding: 1.25rem .75rem; }
 .menu__link { border-radius: .6rem; padding: .6rem .75rem; line-height: 1.45; }
 .menu__list .menu__list { border-left: 1px solid var(--docs-border); margin-left: .75rem; padding-left: .5rem; }
-.menu__link--active { color: #d8e9fd; }
+.menu__link--active:not(.menu__link--sublist) {
+  color: #fff;
+  background: linear-gradient(110deg, #1673e6, #2156bc);
+  box-shadow: inset 0 0 0 1px rgb(114 177 255 / 35%);
+}
+.theme-doc-sidebar-container {
+  background: linear-gradient(160deg, #112b4b, #091525 75%);
+  border-right: 1px solid rgb(132 181 232 / 20%) !important;
+}
 .menu__list-item-collapsible--active { background: var(--ifm-menu-color-background-active); }
 .theme-doc-breadcrumbs { margin-bottom: 1.5rem; }
 .breadcrumbs__link { font-size: .8125rem; }
@@ -180,14 +194,14 @@ a { text-underline-offset: .2em; }
 
 /* Homepage and 404 share the same blue horizon and pill controls. */
 .hero--primary { background: transparent; color: var(--ifm-font-color-base); }
-.hero__title { max-width: 58rem; font-size: clamp(2.75rem, 6.4vw, 5.5rem); line-height: 1.08; letter-spacing: -.045em; text-wrap: balance; }
+.hero__title { max-width: 58rem; font-size: clamp(2.5rem, 4.6vw, 3.65rem); line-height: 1.08; letter-spacing: -.045em; text-wrap: balance; }
 .hero__subtitle { max-width: 42rem; margin: 1.5rem 0 2rem; color: #becfe4; font-size: 1.1875rem; line-height: 1.7; }
 .buttons { display: flex; flex-wrap: wrap; gap: .75rem; }
 .text--center .buttons { justify-content: center; }
 .button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; font-weight: 500; font-size: .9375rem; padding: .65rem 1.3rem; }
 .button--primary, .button--secondary { background: #f0f4fa; border-color: #f0f4fa; color: #0a1020; }
 .button--primary:hover, .button--secondary:hover { background: #d3e5fb; border-color: #d3e5fb; color: #0a1020; }
-.button--outline { background: rgb(8 14 26 / 45%); border-color: rgb(255 255 255 / 20%); color: #e9eef8; }
+.button--outline { border: 1px solid rgb(255 255 255 / 20%); background: rgb(8 14 26 / 45%); border-color: rgb(255 255 255 / 20%); color: #e9eef8; }
 .button--outline:hover { background: rgb(168 206 250 / 12%); border-color: #a8cefa; color: #fff; }
 .architecture-section, .quickstart-section { border-top: 1px solid var(--docs-border); }
 .product-choices { row-gap: 1rem; }
@@ -219,6 +233,63 @@ a { text-underline-offset: .2em; }
 .footer__title { font-size: .875rem; font-weight: 600; }
 .footer__link-item { font-size: .875rem; }
 .footer__copyright { margin-top: 2rem; color: var(--docs-muted); font-size: .8125rem; }
+
+/* The same terminal interaction as Web, using native Docusaurus tabs and copy. */
+.home-terminal { min-width: 0; }
+.home-terminal .tabs { margin: 0; border: 0; gap: .25rem; }
+.home-terminal .tabs__item { border: 1px solid transparent; border-bottom: 0; border-radius: .75rem .75rem 0 0; }
+.home-terminal .tabs__item--active { color: #fff; background: #0c121e; border-color: var(--docs-border); }
+.home-terminal .theme-code-block { margin-bottom: .75rem; border-top-left-radius: 0; }
+.home-terminal .theme-code-block pre { padding-block: 1.75rem; }
+.home-terminal .tabs + div { margin-top: 0 !important; }
+.home-terminal [role='tabpanel'] > a { display: inline-block; font-size: .875rem; padding: .5rem 0; }
+
+/* White reading canvas, quiet blue grid; the surrounding navigation stays navy. */
+.theme-doc-sidebar-container + main {
+  color-scheme: light;
+  --docs-border: #dce4ef;
+  --docs-muted: #52637b;
+  --docs-surface: #fff;
+  --ifm-color-primary: #245ac2;
+  --ifm-color-primary-dark: #1e4da9;
+  --ifm-font-color-base: #233047;
+  --ifm-font-color-secondary: #52637b;
+  --ifm-color-content: #233047;
+  --ifm-color-content-secondary: #52637b;
+  --ifm-heading-color: #10203a;
+  --ifm-background-color: #fff;
+  --ifm-background-surface-color: #fff;
+  --ifm-code-background: #edf2f8;
+  --ifm-card-background-color: #fff;
+  --ifm-toc-border-color: #dce4ef;
+  --ifm-breadcrumb-color-active: #245ac2;
+  --ifm-breadcrumb-item-background-active: #eaf1fc;
+  --ifm-table-border-color: #dce4ef;
+  --ifm-table-stripe-background: #f8fafc;
+  --ifm-table-head-background: #f1f5fb;
+  --ifm-menu-color-background-hover: #edf2f8;
+  --ifm-menu-color-background-active: #eaf1fc;
+  --ifm-menu-link-sublist-icon-filter: none;
+  background-color: #fff;
+  background-image: linear-gradient(rgb(36 90 194 / 3%) 1px, transparent 1px), linear-gradient(90deg, rgb(36 90 194 / 3%) 1px, transparent 1px);
+  background-size: 52px 48px;
+}
+.theme-doc-sidebar-container + main article { background: #fff; border-radius: .75rem; }
+.theme-doc-sidebar-container + main .markdown { color: #233047; }
+.theme-doc-sidebar-container + main .markdown :is(p, ul, ol, td) { color: inherit; }
+.theme-doc-sidebar-container + main .markdown :is(strong, th) { color: #10203a; }
+.theme-doc-sidebar-container + main .markdown a:not(.hash-link):not(.card) { text-decoration-color: #a0b9e0; }
+.theme-doc-sidebar-container + main .markdown blockquote { color: #435570; background: #f3f6fb; }
+.theme-doc-sidebar-container + main .markdown img[alt*='logo' i] { filter: none; opacity: 1; }
+.theme-doc-sidebar-container + main .markdown table { background: #fff; }
+.theme-doc-sidebar-container + main .markdown details { background: #f8fafc; color: #233047; }
+.theme-doc-sidebar-container + main .theme-admonition { --ifm-alert-background-color: #f3f6fb; color: #233047; }
+.theme-doc-sidebar-container + main .theme-code-block { color-scheme: dark; --ifm-color-primary: #a8cefa; --ifm-font-color-base: #e9eef8; --ifm-code-background: #0c121e; }
+.theme-doc-sidebar-container + main .theme-doc-toc-mobile button { color: #233047; }
+.theme-doc-sidebar-container + main .theme-code-block { box-shadow: 0 3px 10px rgb(12 18 30 / 6%); }
+.theme-doc-sidebar-container + main .table-of-contents__link--active { color: #245ac2; font-weight: 600; }
+.theme-doc-sidebar-container + main :is(.pagination-nav__link, .card) { background: #fff; }
+.theme-doc-sidebar-container + main :is(.pagination-nav__link, .card):hover { border-color: #8daedc; background: #f6f9fe; }
 
 @media (min-width: 997px) {
   .theme-doc-markdown { padding: .5rem .75rem; }

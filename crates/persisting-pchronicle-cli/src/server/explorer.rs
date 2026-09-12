@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use persisting_pchronicle::model::EventRecord;
 use persisting_pchronicle::storage::{
-    CatalogDataset, CatalogEventProvenance, PathListEntry, PathListKind,
+    CatalogDataset, CatalogEventProvenance, DatasetMount, PathListEntry, PathListKind,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,7 +30,7 @@ pub(crate) struct ExplorerTreeQuery {
     pub(crate) prefix: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CatalogTree {
     pub(crate) dataset: Option<String>,
     #[serde(default)]
@@ -48,7 +48,7 @@ pub(crate) struct CatalogTree {
     pub(crate) children: Vec<CatalogTreeChild>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CatalogTreeChild {
     pub(crate) name: String,
     pub(crate) kind: String,
@@ -100,6 +100,22 @@ pub(crate) fn catalog_tree_from_mounts(datasets: &[CatalogDataset]) -> CatalogTr
         failed_count: children.iter().map(|child| child.failed_count).sum(),
         children,
         ..CatalogTree::default()
+    }
+}
+
+pub(crate) fn catalog_tree_from_mount_specs(datasets: &[DatasetMount]) -> CatalogTree {
+    CatalogTree {
+        children: datasets
+            .iter()
+            .map(|mount| CatalogTreeChild {
+                name: mount.name.clone(),
+                kind: "dataset".into(),
+                data_type: "dataset".into(),
+                path: mount.name.clone(),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
     }
 }
 

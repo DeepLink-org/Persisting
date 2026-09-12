@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve a built Docusaurus site for local preview."""
+"""Serve a built Zensical site for local preview."""
 from __future__ import annotations
 
 import argparse

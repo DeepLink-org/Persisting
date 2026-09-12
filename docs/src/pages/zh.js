@@ -4,6 +4,7 @@ import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import CodeBlock from '@theme/CodeBlock';
 import styles from './index.module.css';
+import HomeQuickstart from '../components/HomeQuickstart';
 
 const capabilities = [
   ['受治理执行', '在了解 Provider 边界、可审查的 workspace 中运行 Agent。'],
@@ -17,12 +18,12 @@ const capabilities = [
 export default function ChineseHome() {
   const productDiagram = useBaseUrl('/img/diagrams/persisting/system-products.svg');
   return <Layout title="Agent 时代的持久化基础设施" description="在可审查的执行边界中运行 Agent，并保存可查询历史。">
-    <header className={`hero hero--primary ${styles.hero}`}><div className="container">
+    <header className={`hero hero--primary ${styles.hero}`}><div className={`container ${styles.heroGrid}`}><div>
       <p className={styles.eyebrow}>面向 AGENT 的持久化基础设施</p>
       <h1 className="hero__title">Agent 时代的持久化基础设施</h1>
       <p className="hero__subtitle">在可审查的执行边界中运行 Agent，保留经过确认的决策，并将产生的历史保存为可查询 Dataset。</p>
       <div className="buttons"><Link className="button button--secondary button--lg" to="/zh/docs/">开始使用</Link><Link className="button button--outline button--lg" to="/zh/docs/system-design/">阅读系统设计</Link></div>
-    </div></header>
+    </div><HomeQuickstart chinese /></div></header>
     <main>
       <section className="container padding-vert--xl"><div className="row product-choices">
         <div className="col col--6"><article className="product-card"><p className="product-kicker">受治理执行</p><h2>pVisor</h2><p>为 Agent 提供 staged workspace 与明确的执行 Provider。在 Effect 进入项目之前先查看 Evidence。</p><p className="product-outcome">最终得到可审查的 Run Bundle，并控制哪些修改进入项目。</p><Link to="/zh/docs/pvisor/">开始一次 Run →</Link></article></div>

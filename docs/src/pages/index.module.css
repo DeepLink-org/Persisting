@@ -1,21 +1,27 @@
 .hero {
   position: relative;
-  min-height: 36rem;
-  padding: 6rem 0 5rem;
+  min-height: min(44rem, calc(100svh - 5.5rem));
+  padding: 5rem 0;
   text-align: left;
-  overflow: hidden;
   display: flex;
   align-items: center;
-  background: radial-gradient(ellipse 65% 90% at 90% 0%, rgb(132 181 232 / 18%), transparent 75%);
+}
+
+.heroGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr);
+  gap: 3rem;
+  align-items: center;
 }
 
 .eyebrow {
-  color: #a8cefa;
-  font-size: .75rem;
-  font-weight: 600;
-  letter-spacing: .16em;
+  color: #becfe4;
+  font-size: .875rem;
+  font-weight: 500;
+  letter-spacing: .08em;
 }
 
 @media (max-width: 996px) {
-  .hero { min-height: auto; padding: 4rem 0; }
+  .hero { min-height: auto; padding: 3.5rem 0; }
+  .heroGrid { grid-template-columns: 1fr; gap: 2rem; }
 }

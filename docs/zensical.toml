@@ -1,0 +1,54 @@
+[project]
+site_name = "Persisting"
+site_description = "Persistent Infrastructure for the Agent Era"
+site_url = "https://deeplink-org.github.io/Persisting/"
+docs_dir = "src"
+site_dir = "site"
+exclude_docs = ["installation.md"]
+repo_name = "DeepLink-org/Persisting"
+repo_url = "https://github.com/DeepLink-org/Persisting"
+extra_css = ["stylesheets/extra.css"]
+
+nav = [
+  { "Home" = "en/index.md" },
+  { "Get started" = ["en/overview.md", "en/installation.md"] },
+  { "pVisor" = ["en/pvisor/index.md", "en/pvisor/get-started.md", { "Concepts" = ["en/pvisor/concepts/index.md", "en/pvisor/concepts/agentvisor.md", "en/pvisor/concepts/run-model.md", "en/pvisor/concepts/capabilities-and-evidence.md"] }, { "Guides" = ["en/pvisor/guides/index.md", "en/pvisor/guides/execution.md", "en/pvisor/guides/review-apply.md", "en/pvisor/guides/network.md", "en/pvisor/guides/capture.md", "en/pvisor/guides/sandbox-replay.md", "en/pvisor/guides/troubleshooting.md"] }, { "Design" = ["en/pvisor/design/index.md", "en/pvisor/design/isolation.md", "en/pvisor/design/overlaynet.md", "en/pvisor/design/gateway.md", "en/pvisor/design/cli.md"] }, { "Reference" = ["en/pvisor/reference/index.md", "en/pvisor/reference/cli.md", "en/pvisor/reference/cases.md"] }] },
+  { "pChronicle" = ["en/pchronicle/index.md", "en/pchronicle/get-started.md", { "Concepts" = ["en/pchronicle/concepts/index.md", "en/pchronicle/concepts/dataset-and-source.md", "en/pchronicle/concepts/facts-and-projections.md"] }, { "Guides" = ["en/pchronicle/guides/index.md", "en/pchronicle/guides/discover-and-query.md", "en/pchronicle/guides/exchange.md", "en/pchronicle/guides/serve.md", "en/pchronicle/guides/serve-gateway.md", "en/pchronicle/guides/ui.md", "en/pchronicle/guides/troubleshooting.md"] }, { "Design" = ["en/pchronicle/design/index.md", "en/pchronicle/design/architecture.md", "en/pchronicle/design/catalog.md", "en/pchronicle/design/trajectory-storage.md", "en/pchronicle/design/storyline-lance.md"] }, { "Reference" = ["en/pchronicle/reference/index.md", "en/pchronicle/reference/cli.md", "en/pchronicle/reference/query-model.md", "en/pchronicle/reference/terminology.md", "en/pchronicle/reference/agenticmd.md", "en/pchronicle/reference/formats/index.md", "en/pchronicle/reference/cases-self.md", "en/pchronicle/reference/cases-platform.md"] }] },
+  { "Agent Infra Thinkings" = ["en/system-design/index.md", "en/system-design/architecture.md", "en/system-design/local-to-fleet.md", "en/system-design/security-evidence.md", "en/project/index.md", "en/project/examples.md", "en/project/engineering.md", "en/project/releasing.md", { "RFCs" = ["en/rfcs/index.md", "en/rfcs/0001-storyline-format.md", "en/rfcs/0002-events-format.md", "en/rfcs/0003-pchronicle-ownership.md", "en/rfcs/0004-actf-format.md", "en/rfcs/0005-pchronicle-revision-lineage.md", "en/rfcs/0006-pchronicle-vortex-backend.md", "en/rfcs/0007-events-contract-pchronicle-sidecar.md", "en/rfcs/0008-atif-format.md", "en/rfcs/0009-openai-messages-format.md", "en/rfcs/0010-agent-corpus-lance-layout.md", "en/rfcs/0012-pchronicle-find-query-syntax.md", "en/rfcs/0013-pchronicle-warehouse-catalog.md", "en/rfcs/0014-compact-jsonl.md", "en/rfcs/0015-chronicle-manifest.md"] }] },
+]
+
+[project.theme]
+language = "en"
+custom_dir = "overrides"
+logo = "assets/persisting-icon.png"
+favicon = "assets/persisting-icon.png"
+features = [
+  "navigation.tabs",
+  "navigation.sections",
+  "navigation.indexes",
+  "navigation.tracking",
+  "navigation.top",
+  "search.highlight",
+  "content.code.copy",
+]
+
+[project.theme.palette]
+scheme = "slate"
+primary = "custom"
+accent = "custom"
+
+
+[project.extra]
+alternate = [
+  { name = "English", link = "/Persisting/en/", lang = "en" },
+  { name = "中文", link = "/Persisting/zh/", lang = "zh" },
+]
+
+[project.markdown_extensions]
+admonition = {}
+pymdownx.details = {}
+attr_list = {}
+md_in_html = {}
+def_list = {}
+tables = {}
+toc.permalink = true
