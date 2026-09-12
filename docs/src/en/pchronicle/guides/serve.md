@@ -126,6 +126,20 @@ and arbitrary filesystem access are not exposed through the API. Refreshes
 replace the readable view only after the replacement is ready; a failed refresh
 keeps the previous view available.
 
+Runs lists allow a short freshness delay. Successful summaries are reused by
+Dataset and file scope. After 30 seconds, the next visit returns cached results
+and starts a background refresh. At most one automatic Runs refresh runs per
+process. Failures retain the previous result and wait at least 30 seconds before
+retrying. The summary cache retains at most 32 scopes and 64 MiB in memory;
+first access, process restart, or eviction still requires source discovery.
+The existing Datasets browse cache remains persisted in local Lance storage.
+Unscoped Runs requests also reuse their Catalog and refresh it in the background.
+**Refresh** explicitly rebuilds the Catalog and invalidates scoped summaries on
+success; an older in-flight build cannot republish an invalidated cache entry.
+CLI `query`, query workers, and Gateway live reads bypass the summary cache.
+
+During startup the Web UI uses the lightweight `query/tables?ui=1` Catalog view. Dataset names and source counts come from the local Browse/manifest cache without triggering accurate Catalog discovery. It returns the `ui-cache` marker; Analysis compilation and SQL execution still bind to the current accurate Snapshot on the server. CLI and API requests without `ui=1` do not use this view.
+
 ## Logs and failed requests
 
 `pchronicle serve` writes Warehouse request logs to stderr at `--log-level`

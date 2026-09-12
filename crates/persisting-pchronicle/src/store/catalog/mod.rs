@@ -17,8 +17,8 @@ use provider::*;
 use source::*;
 
 use discovery::{
-    bind_canonical_storyline_projections, discover_candidate_at, discover_candidates,
-    freeze_candidate, normalize_event_storylines,
+    bind_canonical_storyline_projections, discover_cached_candidates, discover_candidate_at,
+    discover_candidates, freeze_candidate, normalize_event_storylines,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -340,7 +340,7 @@ impl DatasetCatalogSnapshot {
         default_dataset: Option<String>,
         options: CatalogSnapshotOptions,
     ) -> Result<Self> {
-        Self::discover_impl(mounts, default_dataset, options, None).await
+        Self::discover_impl(mounts, default_dataset, options, None, None).await
     }
 
     pub async fn discover_scoped(
@@ -349,7 +349,27 @@ impl DatasetCatalogSnapshot {
         options: CatalogSnapshotOptions,
         scope: QueryScope,
     ) -> Result<Self> {
-        Self::discover_impl(mounts, default_dataset, options, Some(scope)).await
+        Self::discover_impl(mounts, default_dataset, options, Some(scope), None).await
+    }
+
+    /// Build a snapshot from source paths already observed by a UI cache.
+    /// Missing or unsupported cached paths are ignored; callers that require
+    /// exact membership must use [`Self::discover`] instead.
+    pub async fn discover_scoped_from_cached_files(
+        mounts: Vec<DatasetMount>,
+        default_dataset: Option<String>,
+        options: CatalogSnapshotOptions,
+        scope: QueryScope,
+        cached_files: Vec<String>,
+    ) -> Result<Self> {
+        Self::discover_impl(
+            mounts,
+            default_dataset,
+            options,
+            Some(scope),
+            Some(&cached_files),
+        )
+        .await
     }
 
     async fn discover_impl(
@@ -357,6 +377,7 @@ impl DatasetCatalogSnapshot {
         default_dataset: Option<String>,
         options: CatalogSnapshotOptions,
         scope: Option<QueryScope>,
+        cached_files: Option<&[String]>,
     ) -> Result<Self> {
         anyhow::ensure!(!mounts.is_empty(), "mount at least one Dataset");
         validate_catalog_options(options)?;
@@ -393,7 +414,12 @@ impl DatasetCatalogSnapshot {
                 Some(scope) if scope.dataset != mount.name => Vec::new(),
                 Some(scope) => match scope.source_file.as_deref() {
                     Some(file) => discover_candidate_at(&mount, file, options.manifest).await?,
-                    None => discover_candidates(&mount, options.manifest).await?,
+                    None => match cached_files {
+                        Some(files) => {
+                            discover_cached_candidates(&mount, files, options.manifest).await?
+                        }
+                        None => discover_candidates(&mount, options.manifest).await?,
+                    },
                 },
                 None => discover_candidates(&mount, options.manifest).await?,
             };

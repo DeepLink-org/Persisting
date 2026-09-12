@@ -520,6 +520,74 @@ pub(super) async fn discover_candidates(
     }
 }
 
+pub(super) async fn discover_cached_candidates(
+    mount: &DatasetMount,
+    files: &[String],
+    options: LocalQueryManifestOptions,
+) -> Result<Vec<Candidate>> {
+    if local_mount_path(&mount.uri).is_none() {
+        // Remote discovery is mount-wide; do it once and filter the result.
+        let wanted: BTreeSet<_> = files.iter().map(|file| file.trim_matches('/')).collect();
+        return Ok(discover_candidates(mount, options)
+            .await?
+            .into_iter()
+            .filter(|candidate| wanted.contains(candidate.source_stub().file.as_str()))
+            .collect());
+    }
+    let mut candidates = Vec::new();
+    for file in files {
+        candidates.extend(discover_cached_candidate_at(mount, file, options).await?);
+    }
+    Ok(candidates)
+}
+
+pub(super) async fn discover_cached_candidate_at(
+    mount: &DatasetMount,
+    file: &str,
+    options: LocalQueryManifestOptions,
+) -> Result<Vec<Candidate>> {
+    let file = file.trim().trim_matches('/');
+    anyhow::ensure!(
+        !file.is_empty()
+            && !file
+                .split('/')
+                .any(|part| part.is_empty() || matches!(part, "." | "..") || part.contains('\\')),
+        "invalid cached source path"
+    );
+    let Some(root) = local_mount_path(&mount.uri) else {
+        // Remote cache entries are hints only until object metadata can be
+        // validated without a full listing.
+        return discover_candidates(mount, options).await;
+    };
+    let path = root.join(file);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error).context("inspect cached source"),
+    };
+    if metadata.is_file() {
+        anyhow::ensure!(
+            is_json_candidate(&path),
+            "cached source is not a supported JSON file"
+        );
+        return Ok(vec![Candidate::LocalFile {
+            file: file.to_owned(),
+            root: root.clone(),
+            path,
+            size_bytes: metadata.len(),
+            last_modified: modified_string(&metadata),
+        }]);
+    }
+    let candidates = match classify_local_dir(&root, &path).await? {
+        LocalDirClass::Leaf(candidates) => candidates,
+        LocalDirClass::Skip => Vec::new(),
+        LocalDirClass::Recurse => {
+            collect_local_virtual(&root, &path, DiscoveryBudget::new(options)).await?
+        }
+    };
+    Ok(candidates)
+}
+
 pub(super) async fn discover_candidate_at(
     mount: &DatasetMount,
     file: &str,

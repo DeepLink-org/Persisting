@@ -6,6 +6,7 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
+use futures::{StreamExt, TryStreamExt};
 use url::Url;
 
 use super::opendal_store::Store as OpendalStore;
@@ -357,7 +358,8 @@ impl DatasetLocation {
             !relative.split('/').any(|part| part == ".."),
             "relative object path must not contain '..'"
         );
-        if let Some(preview) = self.list_dataset_preview(relative).await? {
+        if let Some(kind) = self.probe_nav_dataset_kind(relative).await? {
+            let preview = self.list_dataset_preview(relative, kind).await?;
             let name = if relative.is_empty() {
                 ".".to_string()
             } else {
@@ -377,7 +379,7 @@ impl DatasetLocation {
             }]);
         }
 
-        let nav = self.list_shallow_nav(relative).await?;
+        let nav = self.list_nav_children(relative).await?;
         let mut out = Vec::with_capacity(nav.len());
         for entry in nav {
             let path = if relative.is_empty() {
@@ -385,7 +387,8 @@ impl DatasetLocation {
             } else {
                 format!("{relative}/{}", entry.name)
             };
-            if let Some(preview) = self.list_dataset_preview(&path).await? {
+            if let Some(kind) = entry.dataset_kind.as_deref() {
+                let preview = self.list_dataset_preview(&path, kind).await?;
                 out.push(PathListEntry {
                     name: entry.name,
                     path,
@@ -417,10 +420,7 @@ impl DatasetLocation {
         Ok(out)
     }
 
-    async fn list_dataset_preview(&self, relative: &str) -> Result<Option<DatasetListPreview>> {
-        let Some(kind) = self.probe_nav_dataset_kind(relative).await? else {
-            return Ok(None);
-        };
+    async fn list_dataset_preview(&self, relative: &str, kind: &str) -> Result<DatasetListPreview> {
         let mut preview = DatasetListPreview {
             format: Some(match kind {
                 "storyline" => "storyline-lance".into(),
@@ -447,7 +447,7 @@ impl DatasetLocation {
                     preview.failed_count = Some(stats.failed_count);
                 }
             }
-            return Ok(Some(preview));
+            return Ok(preview);
         }
         let store = OpendalStore::from_uri(&self.uri).await?;
         let key = if relative.is_empty() {
@@ -470,7 +470,7 @@ impl DatasetLocation {
                 preview.failed_count = Some(stats.failed_count);
             }
         }
-        Ok(Some(preview))
+        Ok(preview)
     }
 
     /// Immediate children under a Dataset-relative prefix for explorer navigation.
@@ -491,6 +491,11 @@ impl DatasetLocation {
         if self.probe_nav_dataset_kind(relative).await?.is_some() {
             return Ok(Vec::new());
         }
+        self.list_nav_children(relative).await
+    }
+
+    // Caller has validated the path and established that it is not a Dataset leaf.
+    async fn list_nav_children(&self, relative: &str) -> Result<Vec<ShallowNavEntry>> {
         if let Some(root) = &self.local_path {
             let dir = if relative.is_empty() {
                 root.clone()
@@ -586,27 +591,24 @@ impl DatasetLocation {
             }
             dirs.insert(child.to_string());
         }
-        let mut out = Vec::with_capacity(dirs.len() + files.len());
-        for name in dirs {
+        // Bound remote marker probes so wide directories do not serialize every
+        // round trip, without launching an unbounded number of storage requests.
+        let mut out: Vec<_> = futures::stream::iter(dirs.into_iter().map(|name| async move {
             let child_rel = if relative.is_empty() {
                 name.clone()
             } else {
                 format!("{relative}/{name}")
             };
-            if let Some(kind) = self.probe_nav_dataset_kind(&child_rel).await? {
-                out.push(ShallowNavEntry {
-                    name,
-                    is_dir: false,
-                    dataset_kind: Some(kind.into()),
-                });
-            } else {
-                out.push(ShallowNavEntry {
-                    name,
-                    is_dir: true,
-                    dataset_kind: None,
-                });
-            }
-        }
+            let kind = self.probe_nav_dataset_kind(&child_rel).await?;
+            Ok::<_, anyhow::Error>(ShallowNavEntry {
+                name,
+                is_dir: kind.is_none(),
+                dataset_kind: kind.map(str::to_owned),
+            })
+        }))
+        .buffered(8)
+        .try_collect()
+        .await?;
         for name in files {
             out.push(ShallowNavEntry {
                 name,
@@ -1231,43 +1233,75 @@ mod tests {
         crate::store::chronicle_manifest::write_compact_jsonl_manifest(&archive, 1, 7).unwrap();
         std::fs::write(warehouse.join("notes.json"), b"[]").unwrap();
 
-        let location = DatasetLocation::parse(warehouse.to_str().unwrap()).unwrap();
-        let listed = location.list("").await.unwrap();
-        let summary: Vec<_> = listed
-            .iter()
-            .map(|entry| {
-                (
-                    entry.name.as_str(),
-                    entry.kind,
-                    entry.record_count,
-                    entry.format.as_deref(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            summary,
-            vec![
-                (
-                    "archive",
-                    PathListKind::Dataset,
-                    Some(7),
-                    Some("compact-jsonl/v1")
-                ),
-                ("notes.json", PathListKind::File, None, None),
-                ("team", PathListKind::Directory, None, None),
-            ]
-        );
-        assert!(
-            !listed
-                .iter()
-                .any(|entry| entry.path.contains("codex_jsonl"))
-        );
+        let remote = DatasetLocation::parse(&format!(
+            "shared-memory://pchronicle-list-{}/warehouse",
+            uuid::Uuid::new_v4().simple()
+        ))
+        .unwrap();
+        remote
+            .write_relative_bytes("team/codex_jsonl/data.jsonl", b"{}")
+            .await
+            .unwrap();
+        remote
+            .write_relative_bytes("notes.json", b"[]")
+            .await
+            .unwrap();
+        remote
+            .write_relative_bytes(
+                "archive/chronicle.manifest",
+                &std::fs::read(archive.join("chronicle.manifest")).unwrap(),
+            )
+            .await
+            .unwrap();
 
-        let leaf = location.list("archive").await.unwrap();
-        assert_eq!(leaf.len(), 1);
-        assert_eq!(leaf[0].kind, PathListKind::Dataset);
-        assert_eq!(leaf[0].record_count, Some(7));
-        assert_eq!(leaf[0].path, "archive");
+        for location in [
+            DatasetLocation::parse(warehouse.to_str().unwrap()).unwrap(),
+            remote,
+        ] {
+            let listed = location.list("").await.unwrap();
+            let summary: Vec<_> = listed
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.name.as_str(),
+                        entry.kind,
+                        entry.record_count,
+                        entry.format.as_deref(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                summary,
+                vec![
+                    (
+                        "archive",
+                        PathListKind::Dataset,
+                        Some(7),
+                        Some("compact-jsonl/v1")
+                    ),
+                    ("notes.json", PathListKind::File, None, None),
+                    ("team", PathListKind::Directory, None, None),
+                ]
+            );
+            assert!(
+                !listed
+                    .iter()
+                    .any(|entry| entry.path.contains("codex_jsonl"))
+            );
+
+            let leaf = location.list("archive").await.unwrap();
+            assert_eq!(leaf.len(), 1);
+            assert_eq!(leaf[0].kind, PathListKind::Dataset);
+            assert_eq!(leaf[0].record_count, Some(7));
+            assert_eq!(leaf[0].path, "archive");
+            assert!(
+                location
+                    .list_shallow_nav("archive")
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 
     #[tokio::test]

@@ -360,6 +360,13 @@ async fn middleware_echoes_request_id_on_json_errors() {
         response.headers().get("x-request-id").unwrap(),
         "client-id-123"
     );
+    assert!(
+        response
+            .headers()
+            .get("server-timing")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.contains("total;dur="))
+    );
     let body = response_json(response).await;
     assert_eq!(body["request_id"], "client-id-123");
     assert_eq!(body["code"], "invalid_request");
@@ -1568,6 +1575,130 @@ async fn warehouse_does_not_expose_unused_har_or_revisions_routes() {
             String::from_utf8_lossy(&response.into_body().collect().await.unwrap().to_bytes())
         );
     }
+}
+
+#[tokio::test]
+async fn unscoped_runs_refresh_in_background_and_back_off_after_failure() {
+    let root = tempfile::tempdir().unwrap();
+    write_gateway_fixture(root.path(), "first.json", "first-session", "job");
+    let config = ChronicleServerConfig::mounted(vec![
+        DatasetMount::default(root.path().to_string_lossy().to_string()).unwrap(),
+    ])
+    .unwrap();
+    let state = app_state(config);
+    let request_id = RequestId("ui-cache-test".into());
+    let mut initial = build_catalog_runtime(&state.config).await.unwrap();
+    Arc::get_mut(&mut initial).unwrap().built_at = Instant::now() - Duration::from_secs(60);
+    let old_id = initial.snapshot.snapshot_id().to_owned();
+    *state.catalog.write().await = Some(initial);
+    write_gateway_fixture(root.path(), "second.json", "second-session", "job");
+
+    // An ongoing Catalog refresh must never make a warm UI request wait.
+    let guard = state.catalog_refresh.lock().await;
+    let cached = tokio::time::timeout(
+        Duration::from_secs(1),
+        current_catalog_for_runs(&state, &request_id),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(cached.snapshot.snapshot_id(), old_id);
+    drop(cached);
+    drop(guard);
+    let cached = current_catalog_for_runs(&state, &request_id).await.unwrap();
+    assert_eq!(cached.snapshot.snapshot_id(), old_id);
+    drop(cached);
+    let permit = query_admission::REFRESH_SLOT.acquire().await.unwrap();
+    let new_id = state
+        .catalog
+        .read()
+        .await
+        .as_ref()
+        .unwrap()
+        .snapshot
+        .snapshot_id()
+        .to_owned();
+    assert_ne!(new_id, old_id);
+    drop(permit);
+    let summaries = load_run_summaries(&state, None, None, &request_id, None)
+        .await
+        .unwrap();
+    assert_eq!(summaries.len(), 2);
+
+    // A failed refresh must preserve the published runtime and delay retries.
+    std::fs::write(root.path().join("broken.json"), "{invalid").unwrap();
+    {
+        let mut catalog = state.catalog.write().await;
+        Arc::get_mut(catalog.as_mut().unwrap()).unwrap().built_at =
+            Instant::now() - Duration::from_secs(60);
+    }
+    *state.catalog_refresh.lock().await = Instant::now();
+    let retained = current_catalog_for_runs(&state, &request_id).await.unwrap();
+    assert_eq!(retained.snapshot.snapshot_id(), new_id);
+    drop(retained);
+    let _permit = query_admission::REFRESH_SLOT.acquire().await.unwrap();
+    assert_eq!(
+        state
+            .catalog
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .snapshot_id(),
+        new_id
+    );
+    assert!(*state.catalog_refresh.lock().await > Instant::now());
+}
+
+#[tokio::test]
+async fn explorer_runs_reuses_ui_summaries_until_explicit_catalog_refresh() {
+    use tower::ServiceExt;
+
+    let root = tempfile::tempdir().unwrap();
+    write_gateway_fixture(root.path(), "first.json", "first-session", "job");
+    let app = router(root.path().to_string_lossy().to_string());
+    let uri = "/api/explorer/runs?dataset=dataset&limit=1";
+    let (status, initial) = get_json(&app, uri).await;
+    assert_eq!(status, StatusCode::OK, "{initial}");
+    assert_eq!(initial["snapshot"]["total"], 1);
+
+    write_gateway_fixture(root.path(), "second.json", "second-session", "job");
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers()["server-timing"]
+            .to_str()
+            .unwrap()
+            .contains("summary_cache_hit")
+    );
+    let cached = response_json(response).await;
+    assert_eq!(cached["snapshot"]["total"], 1);
+
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/catalog")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let (status, refreshed) = get_json(&app, uri).await;
+    assert_eq!(status, StatusCode::OK, "{refreshed}");
+    assert_eq!(refreshed["snapshot"]["total"], 2);
 }
 
 #[tokio::test]

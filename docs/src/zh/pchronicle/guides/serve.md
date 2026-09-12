@@ -114,6 +114,16 @@ readiness 记录；Control 凭据不会写入 stderr。
 挂载的 Dataset 和 HTTP 操作均为只读。API 不暴露 import、export、maintenance 或任意文件
 访问。刷新只会在新视图准备完成后替换当前可读视图；刷新失败时，旧视图继续可用。
 
+Runs 列表允许短暂滞后：按 Dataset 和文件范围复用最近成功的摘要，30 秒后再次访问时先
+返回旧结果，再触发后台刷新。全进程最多一个自动 Runs 刷新任务；失败保留旧结果，并至少
+等待 30 秒再重试。摘要缓存最多保留 32 个范围、64 MiB；它只驻留内存，首次访问、进程重启
+或缓存淘汰后仍需发现 source。已有的 Datasets 目录浏览缓存仍使用本地 Lance 持久化。
+未限定 Dataset 的 Runs 请求同样复用已有 Catalog，过期时后台更新。点击 **Refresh** 会
+强制刷新 Catalog，成功后使旧的分范围摘要失效；刷新前的任务不能重新发布旧缓存。
+命令行 `query`、查询 worker 和 Gateway 实时读取不使用这层摘要缓存。
+
+Web UI 启动阶段使用 `query/tables?ui=1` 的轻量 Catalog 视图：Dataset 名称和 source 统计优先来自本地 Browse/manifest cache，不触发准确 Catalog discovery。它返回 `ui-cache` 标识；真正的 Analysis 编译和 SQL 执行仍在服务端绑定当前准确 Snapshot。CLI 和未带 `ui=1` 的 API 不使用此视图。
+
 ## 日志与失败请求
 
 `pchronicle serve` 把 Warehouse 请求日志写到 stderr，级别由 `--log-level` 控制（默认
