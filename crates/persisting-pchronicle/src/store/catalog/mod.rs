@@ -17,8 +17,8 @@ use provider::*;
 use source::*;
 
 use discovery::{
-    bind_canonical_storyline_projections, discover_candidates, freeze_candidate,
-    normalize_event_storylines,
+    bind_canonical_storyline_projections, discover_candidate_at, discover_candidates,
+    freeze_candidate, normalize_event_storylines,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -270,6 +270,12 @@ pub struct CatalogSnapshotOptions {
     pub max_event_fallback_bytes: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct QueryScope {
+    pub dataset: String,
+    pub source_file: Option<String>,
+}
+
 impl CatalogSnapshotOptions {
     /// Configure bounded source discovery without exposing provider manifests.
     pub fn with_discovery_limits(mut self, max_files: usize, max_entries: usize) -> Self {
@@ -334,6 +340,24 @@ impl DatasetCatalogSnapshot {
         default_dataset: Option<String>,
         options: CatalogSnapshotOptions,
     ) -> Result<Self> {
+        Self::discover_impl(mounts, default_dataset, options, None).await
+    }
+
+    pub async fn discover_scoped(
+        mounts: Vec<DatasetMount>,
+        default_dataset: Option<String>,
+        options: CatalogSnapshotOptions,
+        scope: QueryScope,
+    ) -> Result<Self> {
+        Self::discover_impl(mounts, default_dataset, options, Some(scope)).await
+    }
+
+    async fn discover_impl(
+        mounts: Vec<DatasetMount>,
+        default_dataset: Option<String>,
+        options: CatalogSnapshotOptions,
+        scope: Option<QueryScope>,
+    ) -> Result<Self> {
         anyhow::ensure!(!mounts.is_empty(), "mount at least one Dataset");
         validate_catalog_options(options)?;
 
@@ -365,7 +389,14 @@ impl DatasetCatalogSnapshot {
         let mut datasets = Vec::with_capacity(mounts.len());
         let mut prepared = Vec::with_capacity(mounts.len());
         for mount in mounts {
-            let candidates = discover_candidates(&mount, options.manifest).await?;
+            let candidates = match scope.as_ref() {
+                Some(scope) if scope.dataset != mount.name => Vec::new(),
+                Some(scope) => match scope.source_file.as_deref() {
+                    Some(file) => discover_candidate_at(&mount, file, options.manifest).await?,
+                    None => discover_candidates(&mount, options.manifest).await?,
+                },
+                None => discover_candidates(&mount, options.manifest).await?,
+            };
             let mut source_rows = Vec::with_capacity(candidates.len());
             let mut prepared_sources = Vec::with_capacity(candidates.len());
             for candidate in candidates {
@@ -386,6 +417,18 @@ impl DatasetCatalogSnapshot {
                 }
             }
             bind_canonical_storyline_projections(&mut source_rows, &mut prepared_sources)?;
+            if let Some(prefix) = scope
+                .as_ref()
+                .and_then(|scope| scope.source_file.as_deref())
+            {
+                let prefix = prefix.trim().trim_matches('/');
+                let matches =
+                    |file: &str| file == prefix || file.starts_with(&format!("{prefix}/"));
+                // Filter after canonical/projection binding, preserving the same
+                // source identity as full discovery even on fallback paths.
+                source_rows.retain(|source| matches(&source.file));
+                prepared_sources.retain(|source| matches(source.file()));
+            }
             source_rows.sort_by(|left, right| {
                 directory_sort_key(left.kind)
                     .cmp(&directory_sort_key(right.kind))

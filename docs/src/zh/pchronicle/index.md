@@ -1,6 +1,6 @@
 # pChronicle
 
-<img src="/img/logos/pchronicle-with-text.png" alt="pChronicle logo" width="240" />
+<img src="../../assets/logos/pchronicle-with-text.png" alt="pChronicle logo" width="240" />
 
 **为 Agent 时代记录经验**
 
@@ -14,10 +14,10 @@ Agent 的经验，是它做过的一切。**pChronicle 是 Agent 轨迹存储引
 在 Persisting 里，pChronicle 负责保存与查询轨迹历史；它可以作为本地工具使用，也可以在多条
 path 前面以服务方式部署。
 
-:::tip 你将完成什么
-第一次快速开始会创建临时数据，打开它，跑一次只读摘要，再回答一个 SQL 问题。
-你不需要先准备生产存储。
-:::
+!!! tip "你将完成什么"
+
+    第一次快速开始会创建临时数据，打开它，跑一次只读摘要，再回答一个 SQL 问题。
+    你不需要先准备生产存储。
 
 ## 你只需要面对 Dataset
 

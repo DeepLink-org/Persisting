@@ -1,6 +1,6 @@
 # pVisor
 
-<img src="/img/logos/pvisor-with-text.png" alt="pVisor logo" width="240" />
+<img src="../../assets/logos/pvisor-with-text.png" alt="pVisor logo" width="240" />
 
 **pVisor runs an existing Agent command inside a controlled execution
 environment.** It gives each Run its own workspace boundary, records the
@@ -10,12 +10,12 @@ before they reach the project.
 In Persisting, pVisor runs one Agent and reviews its changes. You can use it
 without pChronicle.
 
-:::tip What you will complete
-By the end of the first walkthrough: the Agent has stopped; its changes remain
-in a Run-owned staging directory; you deliberately write them into the project
-or discard them. Your first `pvisor review` shows the record of controls that
-were actually installed.
-:::
+!!! tip "What you will complete"
+
+    By the end of the first walkthrough: the Agent has stopped; its changes remain
+    in a Run-owned staging directory; you deliberately write them into the project
+    or discard them. Your first `pvisor review` shows the record of controls that
+    were actually installed.
 
 pVisor does not replace the Agent's reasoning loop. You can keep using Agent
 CLIs, scripts, and frameworks you already have.

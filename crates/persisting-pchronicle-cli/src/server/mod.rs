@@ -6,7 +6,9 @@ pub(crate) mod catalog;
 mod explorer;
 mod physical;
 pub(crate) mod problem;
+mod query_admission;
 pub(crate) mod request_log;
+mod ui_cache;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -61,6 +63,8 @@ struct AppState {
     live_reads: bool,
     catalog_acl: Option<Arc<catalog::CatalogAcl>>,
     catalog_query_worker: bool,
+    browse: Arc<tokio::sync::OnceCell<ui_cache::BrowseCoordinator>>,
+    scoped_queries: Arc<query_admission::ScopedQueries>,
 }
 
 const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -211,6 +215,8 @@ fn app_state_with_catalog_refresh_interval(
         live_reads: false,
         catalog_acl: None,
         catalog_query_worker: false,
+        browse: Arc::new(tokio::sync::OnceCell::new()),
+        scoped_queries: Arc::new(query_admission::ScopedQueries::default()),
     }
 }
 
@@ -224,6 +230,7 @@ impl PreparedWarehouse {
         let warehouse = Self {
             state: app_state(config),
         };
+        browse_coordinator(&warehouse.state).await;
         warehouse.install_initial_runtime().await?;
         Ok(warehouse)
     }
@@ -232,6 +239,7 @@ impl PreparedWarehouse {
         let mut state = app_state(config);
         state.live_reads = true;
         let warehouse = Self { state };
+        browse_coordinator(&warehouse.state).await;
         warehouse.install_initial_runtime().await?;
         Ok(warehouse)
     }
@@ -264,28 +272,9 @@ impl PreparedWarehouse {
         let mut state = app_state(config);
         state.catalog_acl = Some(Arc::new(acl));
         let warehouse = Self { state };
-        let background = warehouse.state.clone();
-        tokio::spawn(async move {
-            match build_catalog_runtime(&background.config).await {
-                Ok(runtime) => {
-                    let snapshot_id = runtime.snapshot.snapshot_id().to_string();
-                    *background.catalog.write().await = Some(runtime);
-                    *background.trajectory_cache.write().await = None;
-                    tracing::info!(
-                        target: "pchronicle.serve",
-                        snapshot_id = %snapshot_id,
-                        "catalog discovery ready"
-                    );
-                }
-                Err(error) => {
-                    tracing::error!(
-                        target: "pchronicle.serve",
-                        error = %error,
-                        "catalog discovery failed"
-                    );
-                }
-            }
-        });
+        browse_coordinator(&warehouse.state).await;
+        // The UI is served by BrowseCoordinator. Build the accurate query
+        // snapshot lazily when an endpoint actually needs it.
         Ok(warehouse)
     }
 
@@ -347,6 +336,13 @@ impl PreparedWarehouse {
             .as_ref()
             .map(|runtime| runtime.snapshot.snapshot_id().to_string())
     }
+}
+
+async fn browse_coordinator(state: &AppState) -> &ui_cache::BrowseCoordinator {
+    state
+        .browse
+        .get_or_init(|| ui_cache::BrowseCoordinator::start(state.config.datasets.clone()))
+        .await
 }
 
 fn api_routes() -> Router<AppState> {
@@ -498,6 +494,33 @@ async fn build_catalog_runtime(
     }))
 }
 
+async fn build_scoped_query_runtime(
+    config: &ChronicleServerConfig,
+    scope: persisting_pchronicle::storage::QueryScope,
+) -> anyhow::Result<Arc<CatalogRuntime>> {
+    let snapshot = Arc::new(
+        DatasetCatalogSnapshot::discover_scoped(
+            config.datasets.clone(),
+            config.default_dataset.clone(),
+            config.catalog_options,
+            scope,
+        )
+        .await?,
+    );
+    let engine = Arc::new(
+        snapshot
+            .clone()
+            .query_engine(ChronicleQueryExecutionOptions::from_env()?)
+            .await?,
+    );
+    Ok(Arc::new(CatalogRuntime {
+        snapshot,
+        engine,
+        acceleration: ServerAcceleration::default(),
+        built_at: Instant::now(),
+    }))
+}
+
 async fn current_catalog(
     state: &AppState,
     request_id: &RequestId,
@@ -549,6 +572,7 @@ async fn current_catalog_for_runs(
 
 #[derive(Debug, Serialize)]
 struct CatalogResponse {
+    consistency: &'static str,
     snapshot_id: String,
     created_at: String,
     default_dataset: Option<String>,
@@ -559,6 +583,7 @@ struct CatalogResponse {
 
 fn catalog_response(state: &AppState, runtime: &CatalogRuntime) -> CatalogResponse {
     CatalogResponse {
+        consistency: "per_source_pinned",
         snapshot_id: runtime.snapshot.snapshot_id().to_string(),
         created_at: runtime.snapshot.created_at().to_string(),
         default_dataset: runtime.snapshot.default_dataset().map(str::to_owned),
@@ -605,8 +630,26 @@ async fn load_run_summaries(
     file: Option<&str>,
     request_id: &RequestId,
 ) -> Result<Vec<RunSummary>, ApiError> {
-    let runtime = current_catalog_for_runs(state, request_id).await?;
     let file = file.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(dataset) = dataset {
+        let scope = persisting_pchronicle::storage::QueryScope {
+            dataset: dataset.to_owned(),
+            source_file: file.map(str::to_owned),
+        };
+        return state
+            .scoped_queries
+            .run(scope.clone(), || async {
+                let runtime = build_scoped_query_runtime(&state.config, scope).await?;
+                runtime
+                    .acceleration
+                    .scoped_run_summaries(&runtime.snapshot, &runtime.engine, Some(dataset), file)
+                    .await
+            })
+            .await
+            .map(|summaries| summaries.as_ref().clone())
+            .map_err(|error| fail(request_id, "load_run_summaries", error));
+    }
+    let runtime = current_catalog_for_runs(state, request_id).await?;
     let summaries = runtime
         .acceleration
         .scoped_run_summaries(&runtime.snapshot, &runtime.engine, dataset, file)
@@ -1192,40 +1235,37 @@ async fn explorer_tree(
     State(state): State<AppState>,
     request_id: RequestId,
     query: Result<Query<explorer::ExplorerTreeQuery>, QueryRejection>,
-) -> Result<Json<explorer::CatalogTree>, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     let query = api_query(query)?;
-    let runtime = current_catalog_for_runs(&state, &request_id).await?;
     let dataset = query
         .dataset
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let prefix = query.prefix.as_deref().unwrap_or("");
-    if dataset.is_none() {
-        return Ok(Json(explorer::catalog_tree_from_mounts(
-            runtime.snapshot.datasets(),
-        )));
-    }
-    let name = dataset.unwrap();
-    let Some(mounted) = runtime.snapshot.dataset(name) else {
-        return Ok(Json(explorer::catalog_tree_from_path_list(
-            name,
-            prefix,
-            &[],
-        )));
+    let Some(name) = dataset else {
+        let view = browse_coordinator(&state)
+            .await
+            .roots(&state.config.datasets)
+            .await;
+        return Ok(Json(serde_json::to_value(view).unwrap()));
     };
-    let location = persisting_pchronicle::storage::DatasetLocation::parse(&mounted.mount.uri)
-        .map_err(|error| fail(&request_id, "explorer_tree", error))?;
-    let entries = location
-        .list(prefix)
+    let Some(mount) = state
+        .config
+        .datasets
+        .iter()
+        .find(|mount| mount.name == name)
+    else {
+        return Ok(Json(
+            serde_json::to_value(explorer::catalog_tree_from_path_list(name, prefix, &[])).unwrap(),
+        ));
+    };
+    let view = browse_coordinator(&state)
+        .await
+        .tree(mount, prefix)
         .await
         .map_err(|error| fail(&request_id, "explorer_tree", error))?;
-    let mut tree = explorer::catalog_tree_from_path_list(name, prefix, &entries);
-    if prefix.trim().trim_matches('/').is_empty() {
-        tree.ready_sources = Some(mounted.ready_source_count());
-        tree.error_sources = Some(mounted.error_source_count());
-    }
-    Ok(Json(tree))
+    Ok(Json(serde_json::to_value(view).unwrap()))
 }
 
 async fn resolve_run_summary(

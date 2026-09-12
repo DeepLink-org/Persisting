@@ -1,0 +1,362 @@
+/* Keep Zensical's native reading experience. These tokens only brand the site. */
+:root {
+  --md-primary-fg-color: #a8cefa;
+  --md-primary-fg-color--light: #c8e0fc;
+  --md-primary-fg-color--dark: #4998f4;
+  --md-accent-fg-color: #a8cefa;
+}
+.pc-home {
+  color: #e9eef8;
+  background: transparent;
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.pc-home-hero {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 28px 24px;
+  overflow: hidden;
+}
+
+.pc-home-hero-grid,
+.pc-home-value,
+.pc-home-split,
+.pc-home-modes,
+.pc-home-footer {
+  position: relative;
+  z-index: 1;
+}
+
+.pc-home-hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
+  gap: 56px;
+  align-items: center;
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  padding: 28px 0 24px;
+}
+
+.pc-home-copy h1 {
+  max-width: none;
+  margin: 0 0 22px;
+  color: #fff;
+  font-size: clamp(2.4rem, 4.6vw, 3.35rem);
+  font-weight: 560;
+  line-height: 1.08;
+  letter-spacing: -0.045em;
+}
+
+.pc-home-kicker {
+  margin: 0 0 18px;
+  color: rgba(233, 238, 248, 0.78);
+  font-size: 15px;
+}
+
+.pc-home-copy p {
+  max-width: 38rem;
+  margin: 0 0 14px;
+  color: rgba(214, 224, 240, 0.78);
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+.pc-home-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.pc-home-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(12, 20, 34, 0.55);
+  color: #fff;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.pc-home-btn.primary {
+  background: #fff;
+  border-color: #fff;
+  color: #0b1220;
+}
+
+.pc-home-terminal-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.pc-home-tabs {
+  position: relative;
+  display: flex;
+  gap: 4px;
+  z-index: 2;
+  margin: 0 0 0 6px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+}
+
+.pc-home-terminal {
+  margin-top: -13px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  background: rgba(12, 18, 30, 0.92);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.pc-home-terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 42px;
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pc-home-terminal-bar .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.dot.red { background: #ff5f57; }
+.dot.yellow { background: #febc2e; }
+.dot.green { background: #28c840; }
+
+.pc-home-terminal-body {
+  margin: 0;
+  padding: 28px 22px 36px;
+  color: #e8eef8;
+  font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+}
+
+.pc-home-command-line {
+  display: block;
+}
+
+.pc-home-prompt {
+  color: #7dd3fc;
+  user-select: none;
+}
+
+.pc-home-value,
+.pc-home-split,
+.pc-home-modes {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 64px 28px;
+}
+
+.pc-home-value {
+  text-align: center;
+}
+
+.pc-home-badge {
+  display: inline-flex;
+  margin: 0 0 18px;
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  color: #b7c6db;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pc-home-value h2,
+.pc-home-split h2,
+.pc-home-modes h2 {
+  margin: 0 0 16px;
+  color: #fff;
+  font-size: clamp(2rem, 4vw, 3.1rem);
+  font-weight: 560;
+  letter-spacing: -0.04em;
+  line-height: 1.15;
+}
+
+.pc-home-lede {
+  max-width: 42rem;
+  margin: 0 auto 40px;
+  color: #c1cfe2;
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.pc-home-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  text-align: left;
+}
+
+.pc-home-cards article,
+.pc-home-mode {
+  padding: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.pc-home-cards h3,
+.pc-home-split h3,
+.pc-home-mode strong {
+  margin: 0 0 8px;
+  color: #fff;
+  font-size: 17px;
+}
+
+.pc-home-cards p,
+.pc-home-split p,
+.pc-home-mode span,
+.pc-home-footer p {
+  margin: 0;
+  color: #c1cfe2;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.pc-home-split {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 48px;
+  align-items: center;
+}
+
+.pc-home-split-copy h3 {
+  margin-top: 22px;
+}
+
+.pc-home-split-media {
+  position: relative;
+  min-height: 360px;
+}
+
+.pc-home-shot {
+  display: block;
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.4);
+  object-fit: cover;
+}
+
+.pc-home-shot.secondary {
+  position: absolute;
+  right: -8%;
+  bottom: -12%;
+  width: 72%;
+  transform: rotate(-4deg);
+}
+
+.pc-home-shot.analysis {
+  margin-top: 28px;
+}
+
+.pc-home-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.pc-home-mode {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.pc-home-mode:hover,
+.pc-home-btn:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pc-home-btn.primary:hover {
+  background: #edf2ff;
+}
+
+.pc-home-footer {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 28px 28px 48px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+@media (max-width: 980px) {
+  .pc-home-hero-grid, .pc-home-split, .pc-home-cards, .pc-home-mode-grid { grid-template-columns: minmax(0, 1fr); }
+  .pc-home-shot.secondary { position: static; width: 100%; margin-top: 14px; transform: none; }
+}
+
+/* A single full-page canvas shared by all Zensical templates. */
+html { background: #07090f; }
+body {
+  height: auto;
+  min-height: 100vh;
+  isolation: isolate;
+  background:
+    radial-gradient(ellipse 90% 55% at 78% 8%, rgba(132,181,232,.38), transparent 58%),
+    radial-gradient(ellipse 70% 50% at 18% 92%, rgba(46,92,156,.3), transparent 62%),
+    linear-gradient(180deg, #1a3d68 0%, #0d1b30 42%, #07090f 100%);
+  background-repeat: no-repeat;
+}
+body::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  background-image:
+    linear-gradient(rgba(255,255,255,.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.04) 1px, transparent 1px);
+  background-size: 52px 48px;
+}
+/* Preserve native sticky positioning and stacking: header menus must be above tabs. */
+.md-header, .md-tabs { background: transparent; backdrop-filter: none; }
+.md-header--shadow { background: rgba(13,27,48,.96); }
+.md-nav--secondary .md-nav__title { background: transparent; box-shadow: none; }
+.md-select__inner { background: #142840; border: 1px solid #416080; border-radius: 12px; }
+.md-select__link:hover { background: rgba(255,255,255,.1); }
+.md-main__inner:has(.pc-home-container) { display: block; width: 100%; max-width: none; margin-top: 0; }
+.pc-home-container { width: 100%; }
+.pc-home-article a.pc-home-btn, .pc-home-article a.pc-home-mode { text-decoration: none; }
+.pc-home-article a.pc-home-btn.primary { color: #0b1220; }
+.pc-home-article .pc-home-terminal-body { color: #e8eef8; }
+/* Keep the original dark brand marks readable on the blue canvas. */
+.md-logo img { background: #e7effb; border-radius: 7px; padding: 3px; }
+.md-typeset img[src*="/logos/"] { background: #e7effb; border-radius: 16px; padding: 16px; max-width: 180px; }
+.md-typeset img[src$=".svg"] { background: #f4f7fc; border-radius: 12px; }
+@media (max-width: 76.234375em) {
+  .md-nav--primary { background: #102138; }
+}
+.md-code__button, .md-clipboard { color: #afc5df; }
+.md-code__button:hover, .md-clipboard:hover { color: #fff; }
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #102138;
+  --md-default-fg-color: rgba(239,245,252,.9);
+  --md-code-bg-color: #0d1b2e;
+}
+.md-footer, .md-footer-meta { background: transparent; }
+.md-typeset img[src$=".jpg"] { border-radius: 12px; }

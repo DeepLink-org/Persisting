@@ -125,6 +125,8 @@ pub struct QueryDatasetSummary {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct CatalogTree {
     #[serde(default)]
+    pub browse: Option<BrowseStatus>,
+    #[serde(default)]
     pub dataset: Option<String>,
     #[serde(default)]
     pub prefix: String,
@@ -829,4 +831,13 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["default.runs"]);
     }
+}
+
+/// Directory observations are independent of the query's pinned revisions.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct BrowseStatus {
+    pub observed_at: i64,
+    pub stale: bool,
+    pub refreshing: bool,
+    pub last_error: Option<String>,
 }

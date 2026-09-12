@@ -13,8 +13,8 @@ Run these from the repository root. `just --list` shows the full recipe set.
 | `just test` | Workspace Rust tests through `cargo nextest`, then the Python suite |
 | `just test <package>` | One crate or Cargo package (for example `pvisor` or `persisting-pvisor`) |
 | `just docs-sync` | Install the locked documentation environment |
-| `just docs-serve` | Local Docusaurus preview with automatic reload when files change |
-| `just docs-serve-dirty` | Local Docusaurus preview when automatic reload stalls |
+| `just docs-serve` | Local Zensical preview with automatic reload when files change |
+| `just docs-serve-dirty` | Local Zensical preview when automatic reload stalls |
 | `just docs-build` | Build the static documentation site |
 | `just examples` | pVisor and pChronicle product example suites |
 | `just gate` | Format, lint, and the full Rust test workspace |

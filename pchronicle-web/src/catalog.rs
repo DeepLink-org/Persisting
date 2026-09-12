@@ -30,6 +30,17 @@ pub fn CatalogExplorer(
                         on_open,
                     }
                     p { "{catalog_subtitle(tree.as_ref())}" }
+                    if let Some(status) = tree.as_ref().and_then(|tree| tree.browse.as_ref()) {
+                        p { role: "status",
+                            if status.last_error.is_some() {
+                                "Showing cached view · Refresh failed; retrying automatically"
+                            } else if status.refreshing {
+                                "Showing cached view · Refreshing in background"
+                            } else if status.stale {
+                                "Showing cached view · Waiting for refresh"
+                            }
+                        }
+                    }
                 }
                 button {
                     class: "button pc-catalog-open",

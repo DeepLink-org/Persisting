@@ -33,6 +33,8 @@ use super::RunSummary;
 use super::explorer;
 
 const MAX_INJECTED_SOURCES: usize = 512;
+const MAX_SUMMARY_ROWS: usize = 100_000;
+const MAX_SUMMARY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ROUTING_INDEX_ROWS: usize = 1_000_000;
 const MAX_ROUTING_INDEX_VALUES: usize = 1_000_000;
 const RUN_COLUMNS: &[&str] = &["run_id", "session_id", "agent_id", "agent_model_name"];
@@ -66,10 +68,10 @@ enum OptionalAcceleration<T> {
 }
 
 #[derive(Clone, Debug)]
-struct SharedAccelerationFailure(Arc<dyn std::error::Error + Send + Sync>);
+pub(super) struct SharedAccelerationFailure(Arc<dyn std::error::Error + Send + Sync>);
 
 impl SharedAccelerationFailure {
-    fn new(error: anyhow::Error) -> Self {
+    pub(super) fn new(error: anyhow::Error) -> Self {
         Self(Arc::from(error.into_boxed_dyn_error()))
     }
 }
@@ -944,6 +946,10 @@ async fn build_run_summaries(
                             None,
                             None,
                         );
+                        anyhow::ensure!(
+                            summaries.len() < MAX_SUMMARY_ROWS,
+                            "run summary row budget exhausted; narrow the dataset or source scope"
+                        );
                         summaries.push(RunSummary {
                             dataset: name.clone(),
                             file: source.file.clone(),
@@ -978,8 +984,19 @@ async fn build_run_summaries(
                ON sc._file_ = r._file_ AND sc.document_id = r.document_id \
              WHERE r._file_ = {file}"
             );
-            let body = engine.query_jsonl(&sql).await?;
+            let remaining = MAX_SUMMARY_ROWS.saturating_sub(summaries.len());
+            let body = bounded_summary_jsonl(
+                engine,
+                &sql,
+                remaining.saturating_add(1) as u64,
+                MAX_SUMMARY_BYTES,
+            )
+            .await?;
             for line in body.lines().filter(|line| !line.trim().is_empty()) {
+                anyhow::ensure!(
+                    summaries.len() < MAX_SUMMARY_ROWS,
+                    "run summary row budget exhausted; narrow the dataset or source scope"
+                );
                 let row: JsonValue = serde_json::from_str(line).context("decode run index row")?;
                 let file = required_json_string(&row, "_file_")?.to_string();
                 let document_id = required_json_string(&row, "document_id")?.to_string();
@@ -1052,6 +1069,27 @@ async fn build_run_summaries(
     Ok(Arc::new(summaries))
 }
 
+// Preserve the complete query semantics: budgets return errors, never a
+// silently truncated set of runs. Stream Arrow batches instead of collecting
+// them all before creating a second full-size JSONL copy.
+async fn bounded_summary_jsonl(
+    engine: &ChronicleQueryEngine,
+    sql: &str,
+    max_rows: u64,
+    max_bytes: usize,
+) -> Result<String> {
+    let mut output = super::BoundedOutput::new(max_bytes);
+    let result = engine
+        .write_query_jsonl_with_max_rows(sql, &mut output, Some(max_rows))
+        .await;
+    anyhow::ensure!(
+        !output.exhausted(),
+        "run summary byte budget exhausted; narrow the dataset or source scope"
+    );
+    result.context("stream run summary within its row budget")?;
+    String::from_utf8(output.bytes).context("decode run summary JSONL")
+}
+
 #[derive(Debug, Clone)]
 struct EventStats {
     row_count: usize,
@@ -1081,7 +1119,8 @@ async fn build_event_stats(
                     THEN 1 ELSE 0 END) AS response_count \
          FROM {dataset}.events WHERE _file_ = {file} GROUP BY _file_, session_id"
     );
-    let body = engine.query_jsonl(&sql).await?;
+    let body =
+        bounded_summary_jsonl(engine, &sql, MAX_SUMMARY_ROWS as u64, MAX_SUMMARY_BYTES).await?;
     body.lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
@@ -1228,6 +1267,39 @@ fn normalize_run_status(status: &str) -> String {
 #[cfg(test)]
 mod run_summary_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn summary_stream_rejects_row_and_byte_overflow_without_partial_success() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let config = super::super::ChronicleServerConfig::mounted(vec![
+            persisting_pchronicle::storage::DatasetMount::new(
+                "test",
+                temp.path().to_string_lossy(),
+            )?,
+        ])?;
+        let runtime = super::super::build_catalog_runtime(&config).await?;
+        let sql = "SELECT 1 AS n UNION ALL SELECT 2 AS n ORDER BY n";
+        let expected = runtime.engine.query_jsonl(sql).await?;
+        assert_eq!(
+            bounded_summary_jsonl(&runtime.engine, sql, 2, 1024).await?,
+            expected
+        );
+        assert!(
+            bounded_summary_jsonl(&runtime.engine, sql, 1, 1024)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("row budget")
+        );
+        assert!(
+            bounded_summary_jsonl(&runtime.engine, sql, 2, 1)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("byte budget")
+        );
+        Ok(())
+    }
 
     #[test]
     fn run_status_uses_normalized_terminal_metadata() {

@@ -5,7 +5,7 @@ use crate::model::HomeNavLink;
 
 const GITHUB: &str = "https://github.com/DeepLink-org/Persisting";
 const DOCS: &str = "https://deeplink-org.github.io/Persisting/";
-const QUICK_START: &str = "pchronicle serve --open ./trajectory-data";
+const QUICK_START: &str = "pip install persisting\npchronicle onboard";
 const FROM_SOURCE: &str = "curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash";
 
 async fn copy_text(text: &str) -> bool {
@@ -112,8 +112,12 @@ pub fn HomeLanding(on_open: EventHandler<String>) -> Element {
                                 }
                             }
                             pre { class: "pc-home-terminal-body",
-                                span { class: "pc-home-prompt", "$" }
-                                " {command}"
+                                for line in command.lines() {
+                                    span { class: "pc-home-command-line",
+                                        span { class: "pc-home-prompt", aria_hidden: "true", "$ " }
+                                        "{line}"
+                                    }
+                                }
                             }
                         }
                     }

@@ -159,8 +159,37 @@ fn serve_catalog_help_lists_issue_grant_revoke() -> Result<()> {
 }
 
 #[test]
-fn piped_onboard_is_markdown_without_terminal_escapes() -> Result<()> {
+fn onboard_defaults_to_a_short_read_only_workflow() -> Result<()> {
     let output = pchronicle(&["onboard"])?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    for text in [
+        "1/3 ·",
+        "2/3 ·",
+        "3/3 ·",
+        "support-001",
+        "已完成基础体验",
+        "pchronicle onboard all",
+    ] {
+        assert!(stdout.contains(text), "{stdout}");
+    }
+    assert!(!stdout.contains("DESCRIBE dataset.steps"), "{stdout}");
+    assert!(!stdout.contains("## Exchange ·"), "{stdout}");
+    assert!(
+        !stdout.contains("按 Enter 继续，输入 q 退出引导："),
+        "{stdout}"
+    );
+    assert!(!stdout.contains('\u{1b}'), "{stdout}");
+    Ok(())
+}
+
+#[test]
+fn piped_onboard_all_is_markdown_without_terminal_escapes() -> Result<()> {
+    let output = pchronicle(&["onboard", "all"])?;
     assert!(
         output.status.success(),
         "{}",
@@ -204,7 +233,7 @@ fn onboard_accepts_an_explicit_dataset_read_only() -> Result<()> {
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("code-repair.actf.json"), "{stdout}");
     assert!(stdout.contains("example-code-repair"), "{stdout}");
-    assert!(stdout.contains("本次完整流程将实际读取"), "{stdout}");
+    assert!(stdout.contains("当前读取："), "{stdout}");
     Ok(())
 }
 
@@ -234,7 +263,8 @@ fn onboard_help_lists_every_section() -> Result<()> {
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout)?;
     for section in [
-        "all", "concepts", "inspect", "analyze", "query", "formats", "find", "exchange", "serve",
+        "basics", "all", "concepts", "inspect", "analyze", "query", "formats", "find", "exchange",
+        "serve",
     ] {
         assert!(
             stdout

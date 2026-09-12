@@ -1,5 +1,10 @@
 # RFCs
 
+!!! note "Original-language decision records"
+
+    Several RFCs retain their original Chinese text. The English catalog describes
+    their purpose and status; these historical records have not all been translated.
+
 RFCs are historical decision records for Persisting formats, ownership, and
 storage contracts. They preserve accepted or proposed decisions. They are not
 command references. Current syntax, schemas, and supported workflows live in

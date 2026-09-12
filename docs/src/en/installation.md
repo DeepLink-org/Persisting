@@ -31,11 +31,11 @@ python -m pip install --upgrade pip
 pip install persisting
 ```
 
-:::tip You can start with either product
-You do not need a pVisor Run to explore pChronicle. If you want to run an Agent
-first, continue with [Run your first Agent](pvisor/get-started.md). If you
-already have trajectory data, continue with [Explore your first Dataset](pchronicle/get-started.md).
-:::
+!!! tip "You can start with either product"
+
+    You do not need a pVisor Run to explore pChronicle. If you want to run an Agent
+    first, continue with [Run your first Agent](pvisor/get-started.md). If you
+    already have trajectory data, continue with [Explore your first Dataset](pchronicle/get-started.md).
 
 ## 2. Check platform requirements
 

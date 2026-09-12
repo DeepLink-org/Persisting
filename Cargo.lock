@@ -4944,7 +4944,7 @@ dependencies = [
  "libc",
  "libloading",
  "log",
- "lru 0.18.4",
+ "lru 0.12.5",
  "nix 0.30.1",
  "persisting-overlay-core",
  "rand 0.9.4",
@@ -7302,6 +7302,7 @@ dependencies = [
  "futures",
  "http-body-util",
  "include_dir",
+ "lance",
  "libc",
  "persisting-agentctl",
  "persisting-events",
@@ -7747,7 +7748,7 @@ name = "prost-build"
 version = "0.14.3"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -7767,7 +7768,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn",

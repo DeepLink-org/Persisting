@@ -30,10 +30,10 @@ python -m pip install --upgrade pip
 pip install persisting
 ```
 
-:::tip 可以从任意一个产品开始
-探索 pChronicle 不要求先运行 pVisor。如果你想先运行 Agent，继续阅读[运行第一个 Agent](pvisor/get-started.md)；
-如果已经有轨迹数据，继续阅读[探索第一个 Dataset](pchronicle/get-started.md)。
-:::
+!!! tip "可以从任意一个产品开始"
+
+    探索 pChronicle 不要求先运行 pVisor。如果你想先运行 Agent，继续阅读[运行第一个 Agent](pvisor/get-started.md)；
+    如果已经有轨迹数据，继续阅读[探索第一个 Dataset](pchronicle/get-started.md)。
 
 ## 2. 检查平台要求
 
