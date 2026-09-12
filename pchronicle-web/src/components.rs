@@ -967,10 +967,10 @@ fn CompactSpanRow(
             }
             OccupancyTrack { bars, expose_range, focus_left, caption: caption.clone(), title: "{caption} · {meta}", exposed_ids, expanded_turn_id, hovered_ids }
             div { class: "span-evidence-count", if event_refs > 0 { span { class: "span-count-chip event", "{event_refs} events" } } }
-            if !embedded {
-                if let Some(id) = drawer_id {
-                    button { class: "pc2-conversation-drawer-button", title: "Open conversation as AgenticMD", aria_label: "Open {drawer_label} as AgenticMD", onclick: move |event| { event.prevent_default(); event.stop_propagation(); on_open_drawer.call((id, drawer_label.clone(), drawer_ids.clone())); }, "↗" }
-                }
+        }
+        if !embedded {
+            if let Some(id) = drawer_id {
+                button { class: "pc2-conversation-drawer-button", title: "Open conversation as AgenticMD", aria_label: "Open {drawer_label} as AgenticMD", onclick: move |event| { event.prevent_default(); event.stop_propagation(); on_open_drawer.call((id, drawer_label.clone(), drawer_ids.clone())); }, "↗" }
             }
         }
         if row_open {

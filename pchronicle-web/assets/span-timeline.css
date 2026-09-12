@@ -96,6 +96,7 @@
 
 .trace-root,
 .span-row {
+  position: relative;
   border: 0;
 }
 

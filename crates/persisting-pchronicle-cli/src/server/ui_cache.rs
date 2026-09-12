@@ -166,6 +166,31 @@ impl BrowseCoordinator {
         }
     }
 
+    pub(crate) async fn cached_dataset(&self, mount: &DatasetMount) -> Option<CatalogTree> {
+        let key = TreeKey::new(mount, "").ok()?;
+        self.index
+            .values
+            .read()
+            .await
+            .get(&key)
+            .map(|entry| entry.tree.clone())
+    }
+
+    pub(crate) async fn cached_source_paths(&self, mount: &DatasetMount) -> Vec<String> {
+        let values = self.index.values.read().await;
+        let fingerprint = mount_fingerprint(mount);
+        let mut paths = values
+            .iter()
+            .filter(|(key, _)| key.dataset == mount.name && key.uri_fingerprint == fingerprint)
+            .flat_map(|(_, entry)| entry.tree.children.iter())
+            .filter(|child| child.kind == "file")
+            .map(|child| child.path.clone())
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
     pub(crate) async fn roots(&self, mounts: &[DatasetMount]) -> BrowseSnapshot {
         let mut tree = catalog_tree_from_mount_specs(mounts);
         let values = self.index.values.read().await;
@@ -383,6 +408,7 @@ async fn run_worker(
             }
             Err(error) => {
                 let error = format!("{error:#}");
+                let cached_view = index.values.read().await.contains_key(&key);
                 let mut states = states.lock().unwrap();
                 let state = states.entry(key.clone()).or_default();
                 state.failures = state.failures.saturating_add(1);
@@ -391,7 +417,7 @@ async fn run_worker(
                         + Duration::from_secs((30u64 * (1u64 << state.failures.min(4))).min(300)),
                 );
                 state.error = Some(error.clone());
-                tracing::warn!(target: "pchronicle.serve", dataset = %key.dataset, prefix = %key.prefix, error = %error, "browse refresh failed; retaining previous view");
+                tracing::warn!(target: "pchronicle.serve", dataset = %key.dataset, prefix = %key.prefix, cached_view, error = %error, "browse refresh failed");
                 Err(error)
             }
         };
