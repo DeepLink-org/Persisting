@@ -1,24 +1,18 @@
 //! Rebuildable browse index. Accurate queries never use this index to establish
 //! source membership or revisions: an old index may omit newly created sources.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use futures::TryStreamExt;
-use lance::Dataset;
-use lance::dataset::{InsertBuilder, MergeInsertBuilder, WhenMatched, WhenNotMatched};
-use lance::deps::arrow_array::{Array, RecordBatch, RecordBatchIterator, StringArray};
-use lance::deps::arrow_schema::{DataType, Field, Schema};
-use persisting_pchronicle::storage::{DatasetLocation, DatasetMount};
+use persisting_pchronicle::storage::{DatasetLocation, DatasetMount, ManifestCache};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc, oneshot};
 
 use super::explorer::{CatalogTree, catalog_tree_from_mount_specs, catalog_tree_from_path_list};
 
-const CACHE_SCHEMA_VERSION: &str = "ui-tree-v2";
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const QUEUE_CAPACITY: usize = 128;
 // ponytail: one process-wide browse scan at a time; per-backend budgets if
@@ -115,7 +109,7 @@ type Pending = Arc<Mutex<HashMap<TreeKey, Vec<Reply>>>>;
 /// The task owns the index, not the coordinator; dropping the last AppState
 /// aborts it, including an in-flight list. No permanent process singleton.
 pub(crate) struct BrowseCoordinator {
-    index: Arc<CatalogIndex>,
+    index: Arc<BrowseTreeProjection>,
     pending: Pending,
     refresh: Arc<Mutex<HashMap<TreeKey, RefreshState>>>,
     sender: mpsc::Sender<TreeKey>,
@@ -145,14 +139,18 @@ impl BrowseCoordinator {
             .collect();
         identities.sort();
         let namespace = blake3::hash(&serde_json::to_vec(&identities).unwrap()).to_hex();
-        let index =
-            Arc::new(CatalogIndex::open(root.join(format!("catalog-{namespace}.lance"))).await);
+        let index = Arc::new(
+            BrowseTreeProjection::open(root.join(format!("catalog-{namespace}.lance"))).await,
+        );
+        let manifests =
+            Arc::new(ManifestCache::open(root.join(format!("manifest-{namespace}.lance"))).await);
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let refresh = Arc::new(Mutex::new(HashMap::new()));
         let (sender, receiver) = mpsc::channel(QUEUE_CAPACITY);
         let task = tokio::spawn(run_worker(
             mounts,
             index.clone(),
+            manifests.clone(),
             pending.clone(),
             refresh.clone(),
             receiver,
@@ -321,7 +319,8 @@ impl BrowseCoordinator {
 
 async fn run_worker(
     mounts: Vec<DatasetMount>,
-    index: Arc<CatalogIndex>,
+    index: Arc<BrowseTreeProjection>,
+    manifests: Arc<ManifestCache>,
     pending: Pending,
     states: Arc<Mutex<HashMap<TreeKey, RefreshState>>>,
     mut receiver: mpsc::Receiver<TreeKey>,
@@ -330,7 +329,9 @@ async fn run_worker(
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Incremental round over roots and previously browsed prefixes. Foreground
     // requests are checked between each scan, not after the entire mount set.
-    let mut background = Vec::new();
+    // Breadth-first keeps shallow datasets visible while a deep subtree is
+    // still being indexed.
+    let mut background = VecDeque::new();
     let mut visited = HashSet::new();
     loop {
         let key = tokio::select! {
@@ -344,7 +345,7 @@ async fn run_worker(
                 }
                 continue;
             }
-            _ = std::future::ready(()), if !background.is_empty() => background.pop().unwrap(),
+            _ = std::future::ready(()), if !background.is_empty() => background.pop_front().unwrap(),
         };
         let Some(mount) = mounts
             .iter()
@@ -376,9 +377,14 @@ async fn run_worker(
                     .await
                     .context("browse path unavailable")?;
             }
-            let entries = tokio::time::timeout(Duration::from_secs(20), location.list(&key.prefix))
-                .await
-                .context("browse list timed out")??;
+            let manifest_key = format!("{}\0{}\0{}", key.dataset, key.uri_fingerprint, key.prefix);
+            let listing = tokio::time::timeout(
+                Duration::from_secs(20),
+                manifests.refresh(manifest_key, &location, &key.prefix),
+            )
+            .await
+            .context("browse list timed out")??;
+            let entries = listing.entries;
             let tree = catalog_tree_from_path_list(&mount.name, &key.prefix, &entries);
             // Walk only navigational directories; a Dataset leaf is opaque.
             // A bounded frontier prevents the background walk growing without limit.
@@ -387,7 +393,7 @@ async fn run_worker(
                 if child.kind == "dir" && visited.len() < 10_000 {
                     let next = TreeKey::new(mount, &child.path)?;
                     if visited.insert(next.clone()) {
-                        background.push(next);
+                        background.push_back(next);
                     }
                 }
             }
@@ -437,52 +443,30 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-/// Disk is optional: corruption or a competing process never prevents browsing.
-struct CatalogIndex {
-    path: PathBuf,
+/// UI-only tree projection over the core ManifestCache. It preserves the legacy tree wire format.
+struct BrowseTreeProjection {
+    disk: Arc<ManifestCache>,
     values: RwLock<HashMap<TreeKey, IndexEntry>>,
-    // Hold an advisory lock for the writer lifetime, including corruption repair.
-    // A second process uses memory only instead of deleting/writing active data.
-    _disk_lock: Option<std::fs::File>,
 }
 
-impl CatalogIndex {
+impl BrowseTreeProjection {
     async fn open(path: PathBuf) -> Self {
-        let lock = (|| -> Result<std::fs::File> {
-            std::fs::create_dir_all(path.parent().context("cache parent")?)?;
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .open(path.with_extension("lock"))?;
-            fs2::FileExt::try_lock_exclusive(&file)?;
-            Ok(file)
-        })();
-        let mut index = Self {
-            path,
-            values: RwLock::new(HashMap::new()),
-            _disk_lock: lock.ok(),
-        };
-        if index._disk_lock.is_none() {
-            return index;
+        let disk = Arc::new(ManifestCache::open(path).await);
+        let values = disk
+            .projection_values()
+            .await
+            .into_iter()
+            .filter_map(|(key, value)| {
+                Some((
+                    serde_json::from_str(&key).ok()?,
+                    serde_json::from_value(value).ok()?,
+                ))
+            })
+            .collect();
+        Self {
+            disk,
+            values: RwLock::new(values),
         }
-        match index.load().await {
-            Ok(values) => *index.values.get_mut() = values,
-            Err(error) => {
-                tracing::warn!(target: "pchronicle.serve", error = %error, "browse cache unreadable; rebuilding");
-                let removed = if index.path.is_dir() {
-                    tokio::fs::remove_dir_all(&index.path).await
-                } else {
-                    tokio::fs::remove_file(&index.path).await
-                };
-                if removed.is_err() && index.path.exists() {
-                    // No repeated broken-dataset writes if repair is impossible.
-                    index._disk_lock = None;
-                }
-            }
-        }
-        index
     }
 
     async fn put(&self, key: TreeKey, tree: CatalogTree) {
@@ -528,104 +512,35 @@ impl CatalogIndex {
         // Unchanged directory observations update memory without creating a
         // new Lance version every 30 seconds. On restart the older timestamp
         // conservatively marks the persisted view stale until revalidated.
-        if self._disk_lock.is_some()
+        if self.disk.writable()
             && (changed || !removed.is_empty())
-            && let Err(error) = self.persist(&key, &entry, &removed).await
+            && let Err(error) = async {
+                let removed_keys = removed
+                    .iter()
+                    .map(|key| serde_json::to_string(key).unwrap())
+                    .collect::<Vec<_>>();
+                self.disk.remove_projections(&removed_keys).await?;
+                self.disk
+                    .put_projection(
+                        serde_json::to_string(&key).unwrap(),
+                        &serde_json::to_value(&entry).unwrap(),
+                    )
+                    .await
+            }
+            .await
         {
             tracing::warn!(target: "pchronicle.serve", error = %error, "browse cache persistence failed; using memory");
         }
     }
-
-    async fn load(&self) -> Result<HashMap<TreeKey, IndexEntry>> {
-        if !self.path.exists() {
-            return Ok(HashMap::new());
-        }
-        let dataset = Dataset::open(self.path.to_string_lossy().as_ref()).await?;
-        let batches: Vec<RecordBatch> = dataset
-            .scan()
-            .try_into_stream()
-            .await?
-            .try_collect()
-            .await?;
-        let mut values = HashMap::new();
-        for batch in batches {
-            let keys = text_column(&batch, "key")?;
-            let payloads = text_column(&batch, "payload")?;
-            let versions = text_column(&batch, "schema_version")?;
-            for row in 0..batch.num_rows() {
-                anyhow::ensure!(
-                    versions[row] == CACHE_SCHEMA_VERSION,
-                    "unsupported browse cache schema"
-                );
-                values.insert(
-                    serde_json::from_str(&keys[row])?,
-                    serde_json::from_str(&payloads[row])?,
-                );
-            }
-        }
-        Ok(values)
-    }
-
-    async fn persist(&self, key: &TreeKey, entry: &IndexEntry, removed: &[TreeKey]) -> Result<()> {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("key", DataType::Utf8, false),
-            Field::new("payload", DataType::Utf8, false),
-            Field::new("schema_version", DataType::Utf8, false),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(StringArray::from(vec![serde_json::to_string(key)?])) as _,
-                Arc::new(StringArray::from(vec![serde_json::to_string(entry)?])) as _,
-                Arc::new(StringArray::from(vec![CACHE_SCHEMA_VERSION])) as _,
-            ],
-        )?;
-        if self.path.exists() {
-            let mut dataset = Dataset::open(self.path.to_string_lossy().as_ref()).await?;
-            for chunk in removed.chunks(128) {
-                let keys = chunk
-                    .iter()
-                    .map(|key| {
-                        Ok(format!(
-                            "'{}'",
-                            serde_json::to_string(key)?.replace("'", "''")
-                        ))
-                    })
-                    .collect::<Result<Vec<_>>>()?
-                    .join(",");
-                dataset.delete(&format!("key IN ({keys})")).await?;
-            }
-            let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
-            MergeInsertBuilder::try_new(Arc::new(dataset), vec!["key".into()])?
-                .when_matched(WhenMatched::UpdateAll)
-                .when_not_matched(WhenNotMatched::InsertAll)
-                .try_build()?
-                .execute_reader(reader)
-                .await?;
-        } else {
-            InsertBuilder::new(self.path.to_string_lossy().as_ref())
-                .execute(vec![batch])
-                .await?;
-        }
-        Ok(())
-    }
-}
-
-fn text_column(batch: &RecordBatch, name: &str) -> Result<Vec<String>> {
-    let array = batch
-        .column(batch.schema().index_of(name)?)
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .with_context(|| format!("browse cache column {name} must be Utf8"))?;
-    anyhow::ensure!(array.null_count() == 0, "null browse cache field");
-    Ok((0..array.len())
-        .map(|index| array.value(index).to_owned())
-        .collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lance::Dataset;
+    use lance::dataset::InsertBuilder;
+    use lance::deps::arrow_array::{RecordBatch, StringArray};
+    use lance::deps::arrow_schema::{DataType, Field, Schema};
 
     fn mount(path: &std::path::Path) -> DatasetMount {
         DatasetMount::new("test", path.to_string_lossy()).unwrap()
@@ -636,13 +551,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("cache.lance");
         std::fs::write(&path, "broken cache").unwrap();
-        let index = CatalogIndex::open(path.clone()).await;
+        let index = BrowseTreeProjection::open(path.clone()).await;
         let key = TreeKey::new(&mount(temp.path()), "").unwrap();
         index.put(key.clone(), CatalogTree::default()).await;
         assert!(path.is_dir());
         assert_eq!(index.values.read().await.len(), 1);
         drop(index);
-        let reloaded = CatalogIndex::open(path).await;
+        let reloaded = BrowseTreeProjection::open(path).await;
         assert!(reloaded.values.read().await.contains_key(&key));
     }
 
@@ -661,7 +576,7 @@ mod tests {
             .execute(vec![batch])
             .await
             .unwrap();
-        let index = CatalogIndex::open(path.clone()).await;
+        let index = BrowseTreeProjection::open(path.clone()).await;
         assert!(index.values.read().await.is_empty());
         assert!(!path.exists());
         index
@@ -682,7 +597,7 @@ mod tests {
         let second =
             BrowseCoordinator::start_at(vec![mount(&temp.path().join("b"))], temp.path().into())
                 .await;
-        assert_ne!(first.index.path, second.index.path);
+        assert_ne!(first.index.disk.path(), second.index.disk.path());
         let weak = Arc::downgrade(&first.index);
         drop(first);
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -732,7 +647,7 @@ mod tests {
     async fn successful_parent_refresh_removes_deleted_descendants_on_disk() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("cache.lance");
-        let index = CatalogIndex::open(path.clone()).await;
+        let index = BrowseTreeProjection::open(path.clone()).await;
         let mount = mount(temp.path());
         let child = TreeKey::new(&mount, "gone/nested").unwrap();
         index.put(child.clone(), CatalogTree::default()).await;
@@ -741,7 +656,7 @@ mod tests {
             .await;
         assert!(!index.values.read().await.contains_key(&child));
         drop(index);
-        let reloaded = CatalogIndex::open(path).await;
+        let reloaded = BrowseTreeProjection::open(path).await;
         assert!(!reloaded.values.read().await.contains_key(&child));
     }
 
@@ -767,7 +682,7 @@ mod tests {
     async fn unchanged_observations_do_not_create_lance_versions() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("cache.lance");
-        let index = CatalogIndex::open(path.clone()).await;
+        let index = BrowseTreeProjection::open(path.clone()).await;
         let key = TreeKey::new(&mount(temp.path()), "").unwrap();
         index.put(key.clone(), CatalogTree::default()).await;
         let version = Dataset::open(path.to_string_lossy().as_ref())
@@ -790,10 +705,10 @@ mod tests {
     async fn second_writer_does_not_remove_or_mutate_owned_cache() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("cache.lance");
-        let first = CatalogIndex::open(path.clone()).await;
-        let second = CatalogIndex::open(path.clone()).await;
-        assert!(first._disk_lock.is_some());
-        assert!(second._disk_lock.is_none());
+        let first = BrowseTreeProjection::open(path.clone()).await;
+        let second = BrowseTreeProjection::open(path.clone()).await;
+        assert!(first.disk.writable());
+        assert!(!second.disk.writable());
         second
             .put(
                 TreeKey::new(&mount(temp.path()), "").unwrap(),

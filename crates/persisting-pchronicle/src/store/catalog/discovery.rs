@@ -1,5 +1,5 @@
 use super::*;
-use crate::store::chronicle_manifest::{ManifestKind, try_load_manifest};
+use crate::store::catalog::manifest::{ManifestKind, try_load_manifest};
 use crate::store::opendal_store::Store as OpendalStore;
 
 #[derive(Debug)]
@@ -140,7 +140,7 @@ pub(super) async fn freeze_candidate(
                 generation: paths.generation.clone(),
             });
             if let Ok(Some(manifest)) =
-                crate::store::chronicle_manifest::load_manifest_at_uri(&uri).await
+                crate::store::catalog::manifest::load_manifest_at_uri(&uri).await
                 && manifest.is_storyline_leaf()
                 && let Some(stats) = manifest.stats
             {
@@ -184,7 +184,7 @@ pub(super) async fn freeze_candidate(
         }
         Candidate::Compact { file, uri, .. } => {
             if let Some(manifest) =
-                crate::store::chronicle_manifest::try_load_manifest(Path::new(&uri))
+                crate::store::catalog::manifest::try_load_manifest(Path::new(&uri))
                 && let Some(stats) = manifest.stats
             {
                 source_row.record_count = Some(stats.record_count);

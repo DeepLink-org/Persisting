@@ -179,12 +179,8 @@ impl CompactJsonlStore {
         validate_dataset_schema(&dataset)?;
         let version = dataset.version_id();
         let record_count = dataset.count_rows(None).await? as u64;
-        crate::store::chronicle_manifest::write_compact_jsonl_manifest(
-            root,
-            version,
-            record_count,
-        )?;
-        crate::store::chronicle_manifest::load_manifest(root)?
+        crate::store::catalog::manifest::write_compact_jsonl_manifest(root, version, record_count)?;
+        crate::store::catalog::manifest::load_manifest(root)?
             .context("chronicle.manifest missing after publish")
     }
 
@@ -200,18 +196,18 @@ impl CompactJsonlStore {
             return Ok(None);
         }
         let version = dataset.version_id();
-        if let Some(manifest) = crate::store::chronicle_manifest::try_load_manifest(root)
-            && crate::store::chronicle_manifest::compact_jsonl_manifest_matches(&manifest, version)
+        if let Some(manifest) = crate::store::catalog::manifest::try_load_manifest(root)
+            && crate::store::catalog::manifest::compact_jsonl_manifest_matches(&manifest, version)
         {
             return Ok(Some(manifest));
         }
         let record_count = dataset.count_rows(None).await? as u64;
-        match crate::store::chronicle_manifest::write_compact_jsonl_manifest(
+        match crate::store::catalog::manifest::write_compact_jsonl_manifest(
             root,
             version,
             record_count,
         ) {
-            Ok(()) => Ok(crate::store::chronicle_manifest::try_load_manifest(root)),
+            Ok(()) => Ok(crate::store::catalog::manifest::try_load_manifest(root)),
             Err(error) => {
                 tracing::warn!(
                     target: "persisting_pchronicle::compact_jsonl",
@@ -1016,7 +1012,7 @@ mod tests {
             b"{\"id\":\"a\",\"timestamp\":1}\n{\"id\":\"b\",\"timestamp\":2}\n",
         )?;
         CompactJsonlStore::import_path(&input, &dataset, &CompactJsonlOptions::default()).await?;
-        fs::remove_file(crate::store::chronicle_manifest::manifest_path(&dataset))?;
+        fs::remove_file(crate::store::catalog::manifest::manifest_path(&dataset))?;
         assert!(crate::store::load_manifest(&dataset)?.is_none());
 
         let ensured = CompactJsonlStore::ensure_manifest(&dataset)

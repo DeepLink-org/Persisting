@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow};
 use futures::{StreamExt, TryStreamExt};
 use url::Url;
 
-use super::opendal_store::Store as OpendalStore;
+use crate::store::opendal_store::Store as OpendalStore;
 
 /// One discovery event while walking importable JSON objects.
 #[derive(Debug, Clone)]
@@ -35,7 +35,7 @@ pub struct ShallowNavEntry {
 }
 
 /// One child of RFC-0015 `list(path)` — shell-like one-level listing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PathListKind {
     Directory,
@@ -43,7 +43,7 @@ pub enum PathListKind {
     File,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PathListEntry {
     pub name: String,
     pub path: String,
@@ -282,7 +282,7 @@ impl DatasetLocation {
             if !dir.is_dir() {
                 return Ok(None);
             }
-            if let Some(manifest) = crate::store::chronicle_manifest::try_load_manifest(&dir) {
+            if let Some(manifest) = crate::store::catalog::manifest::try_load_manifest(&dir) {
                 if manifest.is_storyline_leaf() {
                     return Ok(Some("storyline"));
                 }
@@ -436,7 +436,7 @@ impl DatasetLocation {
             } else {
                 root.join(relative)
             };
-            if let Some(manifest) = crate::store::chronicle_manifest::try_load_manifest(&dir)
+            if let Some(manifest) = crate::store::catalog::manifest::try_load_manifest(&dir)
                 && matches!(manifest.kind, crate::store::ManifestKind::Leaf)
             {
                 if let Some(format) = manifest.format {
@@ -1230,7 +1230,7 @@ mod tests {
         let archive = warehouse.join("archive");
         std::fs::create_dir_all(team.join("codex_jsonl")).unwrap();
         std::fs::create_dir_all(&archive).unwrap();
-        crate::store::chronicle_manifest::write_compact_jsonl_manifest(&archive, 1, 7).unwrap();
+        crate::store::catalog::manifest::write_compact_jsonl_manifest(&archive, 1, 7).unwrap();
         std::fs::write(warehouse.join("notes.json"), b"[]").unwrap();
 
         let remote = DatasetLocation::parse(&format!(

@@ -7,13 +7,32 @@
 
 mod discovery;
 mod identity;
+pub mod location;
+pub mod manifest;
+mod manifest_cache;
 mod namespace;
 mod provider;
+mod resolver;
 mod source;
 
 pub use identity::{CatalogSourceRevision, DatasetMount, NamespacePath};
+#[allow(unused_imports)]
+pub use location::{
+    DatasetLocation, DatasetLocationKind, ImportableObjectEvent, PathListEntry, PathListKind,
+    ShallowNavEntry,
+};
+#[allow(unused_imports)]
+pub use manifest::{CHRONICLE_MANIFEST_FILE, ChronicleManifest, ManifestKind, ManifestStats};
+#[allow(unused_imports)]
+pub use manifest::{
+    STORYLINE_FORMAT, atomic_write_manifest, compact_jsonl_manifest_matches, load_manifest,
+    load_manifest_at_uri, try_load_manifest, write_compact_jsonl_manifest,
+    write_storyline_manifest, write_storyline_manifest_at_uri,
+};
+pub use manifest_cache::{LocationSummary, ManifestCache, ManifestListing, ManifestReadMode};
 pub use namespace::{CatalogNamespace, CatalogPage, CatalogSourceDescription};
 use provider::*;
+pub use resolver::{CachedDataset, Dataset, DatasetResolver, ResolveMode, ResolveTarget};
 use source::*;
 
 use discovery::{

@@ -502,24 +502,33 @@ async fn build_scoped_query_runtime(
     scope: persisting_pchronicle::storage::QueryScope,
     cached_files: Vec<String>,
 ) -> anyhow::Result<Arc<CatalogRuntime>> {
-    let snapshot = Arc::new(if cached_files.is_empty() {
-        DatasetCatalogSnapshot::discover_scoped(
-            config.datasets.clone(),
-            config.default_dataset.clone(),
-            config.catalog_options,
-            scope,
-        )
-        .await?
+    let target = match scope.source_file.clone() {
+        Some(file) => persisting_pchronicle::storage::ResolveTarget::Dataset {
+            mount: scope.dataset.clone(),
+            file,
+        },
+        None => persisting_pchronicle::storage::ResolveTarget::Mount {
+            mount: scope.dataset.clone(),
+            prefix: None,
+        },
+    };
+    let cached_datasets: Vec<_> = cached_files
+        .iter()
+        .map(|file| {
+            persisting_pchronicle::storage::CachedDataset::new(scope.dataset.clone(), file.clone())
+        })
+        .collect();
+    let mode = if cached_datasets.is_empty() {
+        persisting_pchronicle::storage::ResolveMode::Fresh
     } else {
-        DatasetCatalogSnapshot::discover_scoped_from_cached_files(
-            config.datasets.clone(),
-            config.default_dataset.clone(),
-            config.catalog_options,
-            scope,
-            cached_files,
-        )
-        .await?
-    });
+        persisting_pchronicle::storage::ResolveMode::Cached
+    };
+    let resolver = persisting_pchronicle::storage::DatasetResolver::new(
+        config.datasets.clone(),
+        config.default_dataset.clone(),
+        config.catalog_options,
+    );
+    let snapshot = Arc::new(resolver.resolve(target, mode, &cached_datasets).await?);
     let engine = Arc::new(
         snapshot
             .clone()
