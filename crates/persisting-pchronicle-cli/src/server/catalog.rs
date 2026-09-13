@@ -242,13 +242,13 @@ pub(crate) fn grant_datasets(path: &Path, name: &str, datasets: &[String]) -> Re
             }
         }
     }
+    let mut seen = HashSet::new();
     let granted = file
         .grants
         .iter()
         .filter(|grant| users.iter().any(|user| user == &grant.user))
         .map(|grant| grant.dataset.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
+        .filter(|dataset| seen.insert(dataset.clone()))
         .collect();
     write_catalog_file(path, &file)?;
     Ok(granted)
@@ -274,20 +274,20 @@ pub(crate) fn revoke_datasets(path: &Path, name: &str, datasets: &[String]) -> R
                 .iter()
                 .any(|grant| users.iter().any(|user| user == &grant.user)
                     && grant.dataset == *dataset),
-            "catalog grant does not exist for dataset '{dataset}'"
+            "catalog user '{name}' does not grant '{dataset}'"
         );
     }
     file.grants.retain(|grant| {
         !(users.iter().any(|user| user == &grant.user)
             && to_remove.iter().any(|dataset| dataset == &grant.dataset))
     });
+    let mut seen = HashSet::new();
     let remaining = file
         .grants
         .iter()
         .filter(|grant| users.iter().any(|user| user == &grant.user))
         .map(|grant| grant.dataset.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
+        .filter(|dataset| seen.insert(dataset.clone()))
         .collect();
     write_catalog_file(path, &file)?;
     Ok(remaining)
@@ -1379,13 +1379,13 @@ uri = "{}"
     #[tokio::test]
     async fn prepare_catalog_keeps_public_mounts_for_browse_cache() {
         let temporary = tempfile::tempdir().unwrap();
-        let dataset = temporary.path().join("public");
+        let dataset = temporary.path().join("shared");
         std::fs::create_dir_all(&dataset).unwrap();
         let catalog = temporary.path().join("catalog.toml");
         std::fs::write(
             &catalog,
             format!(
-                "[datasets.public]\nuri = \"{}\"\n\n[[grants]]\nuser = \"*\"\ndataset = \"public\"\n",
+                "[datasets.shared]\nuri = \"{}\"\n\n[[grants]]\nuser = \"*\"\ndataset = \"shared\"\n",
                 dataset.display()
             ),
         )
@@ -1398,7 +1398,7 @@ uri = "{}"
             .unwrap();
         assert!(warehouse.state.config.datasets.is_empty());
         assert_eq!(warehouse.state.browse_mounts.len(), 1);
-        assert_eq!(warehouse.state.browse_mounts[0].name, "public");
+        assert_eq!(warehouse.state.browse_mounts[0].name, "shared");
     }
 
     #[tokio::test]
