@@ -439,10 +439,20 @@ pchronicle serve \
 `NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。可重复的
 `--home-link TEXT=PATH` 会在首页 Warehouse 旁增加胶囊；`PATH` 必须是同源相对路径。
 `--catalog-config FILE`
-会把文件中全部 `[datasets.*]` 挂进 Warehouse，并启用 `catalog://` locator；不能与位置参数
-Dataset 同时使用。配合 `dataset pin NAME catalog://127.0.0.1:PORT --ak --sk`。
+启用逐请求 AK/SK 认证及 `catalog://` locator。父进程只监听、认证和调度，已授权数据集由
+独立 exec worker 读取；不能与位置参数 Dataset、Gateway 或 Control 同时使用。配合 `dataset pin NAME catalog://127.0.0.1:PORT --ak --sk`。
 `pchronicle serve catalog dataset add|remove|list` 与 `issue|grant|revoke` 只改该文件、
 不启动 HTTP；`issue` 把用户 sk 只打印一次。改 library、用户或授权后必须重启 serve。
+worker 池最多 8 个进程、32 个正在处理或排队的请求；每个 worker 串行处理请求，
+计算等待上限为 60 秒，请求体读取上限为 10 秒。过载返回 503，超时或 IPC 失败会淘汰进程。
+同一用户、授权范围和后端凭证版本复用 worker 及独立磁盘缓存；修改授权后重启生效。
+缓存位于 `PCHRONICLE_CACHE_DIR/workers/`，未设置时使用系统 pchronicle 缓存目录。
+子进程不继承父进程的 AWS 环境、profile 或用户主目录配置；登录 AK/SK 用于认证，
+数据集的 AK/SK 经私有 IPC 传入并用于对象存储访问。不同 S3 endpoint/凭证的数据集必须
+分别通过 `dataset` 参数选择，暂不支持这类跨凭证查询。健康检查、UI 配置和静态页面公开，
+数据 API 需要认证。没有用户的 catalog 仍可管理，但数据 API 不接受匿名访问。
+这是进程与凭证上下文隔离，不是 OS 用户降权或文件系统沙箱；本地路径仍使用服务进程的 OS 身份。
+
 `catalog` 是 `serve` 的保留子命令，挂载同名路径请用 `./catalog`。见
 [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md) 与
 [RFC-0015](../../rfcs/0015-chronicle-manifest.md)。无需配置的 `--gateway`

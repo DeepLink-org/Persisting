@@ -92,6 +92,6 @@ export PCHRONICLE_RUSTFS_BUCKET=pchronicle-cases
 - ACL 可从空文件开始构建；
 - 用户、dataset 与 grants 修改是确定性的；
 - 后端对象存储密钥留在 catalog 文件 / ticket 路径，不出现在 `dataset list`；
-- `--catalog-config` serve 会挂载全部已登记 library；
+- `--catalog-config` serve 逐请求认证，独立 worker 仅挂载该用户获准的数据集；
 - Snapshot refresh 不改动进行中查询的 Snapshot；
 - 覆盖路径上 RustFS Warehouse 行为与本地 Dataset 一致。

@@ -3,7 +3,7 @@
 //! This module deliberately knows nothing about DataFusion.  It is the single
 //! boundary used by navigational callers that can tolerate a stale snapshot.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -104,6 +104,7 @@ impl ManifestCache {
         self.disk
             .upsert(&key, &serde_json::to_value(&listing)?, &[])
             .await?;
+        tracing::info!(target: "pchronicle.serve", %key, prefix, entries = listing.entries.len(), "manifest cache updated");
         Ok(listing)
     }
 
@@ -145,13 +146,30 @@ impl ManifestCache {
     /// Aggregate the currently cached manifest observations for one mount.
     /// This never performs I/O and is therefore safe for UI rendering.
     pub async fn summary(&self, key_prefix: &str) -> LocationSummary {
+        self.summary_under(key_prefix).await
+    }
+
+    /// Aggregate every cached manifest at `key_prefix` and below it.
+    pub async fn summary_under(&self, key_prefix: &str) -> LocationSummary {
         let values = self.values.read().await;
+        let mut seen = HashSet::new();
         values
             .iter()
-            .filter(|(key, _)| key == &key_prefix || key.starts_with(&format!("{key_prefix}\0")))
+            .filter(|(key, _)| {
+                // NUL separates the mount identity from the relative path;
+                // slashes separate directories inside that path.
+                key.strip_prefix(key_prefix).is_some_and(|suffix| {
+                    suffix.is_empty() || suffix.starts_with('\0') || suffix.starts_with('/')
+                })
+            })
             .fold(LocationSummary::default(), |mut total, (_, listing)| {
                 for entry in &listing.entries {
-                    if matches!(entry.kind, crate::store::PathListKind::Dataset) {
+                    let is_dataset = matches!(entry.kind, crate::store::PathListKind::Dataset)
+                        || (matches!(entry.kind, crate::store::PathListKind::File)
+                            && entry.format.as_deref().is_none_or(|format| {
+                                matches!(format, "storyline-lance" | "compact-jsonl/v1")
+                            }));
+                    if is_dataset && seen.insert(entry.path.clone()) {
                         total.datasets += 1;
                         total.trajectories += entry.record_count.unwrap_or_default();
                     }
@@ -164,7 +182,9 @@ impl ManifestCache {
     /// shallow paths are published before deeper paths.
     pub async fn refresh_mount(&self, key_prefix: &str, location: &DatasetLocation) -> Result<()> {
         let _guard = self.refresh_gate.lock().await;
+        tracing::info!(target: "pchronicle.serve", %key_prefix, "manifest cache refresh started");
         let mut queue = VecDeque::from([String::new()]);
+        let mut refreshed = 0usize;
         while let Some(prefix) = queue.pop_front() {
             let listing = ManifestListing {
                 entries: location.list(&prefix).await?,
@@ -182,6 +202,7 @@ impl ManifestCache {
             self.disk
                 .upsert(&key, &serde_json::to_value(&listing)?, &[])
                 .await?;
+            refreshed += 1;
             for child in listing
                 .entries
                 .iter()
@@ -191,6 +212,7 @@ impl ManifestCache {
             }
             tokio::task::yield_now().await;
         }
+        tracing::info!(target: "pchronicle.serve", %key_prefix, refreshed, "manifest cache refresh finished");
         Ok(())
     }
 
@@ -241,6 +263,90 @@ mod tests {
             LocationSummary {
                 datasets: 1,
                 trajectories: 3
+            }
+        );
+        cache.values.write().await.insert(
+            "mount\0nested".into(),
+            ManifestListing {
+                entries: vec![PathListEntry {
+                    name: "b".into(),
+                    path: "nested/b".into(),
+                    kind: PathListKind::File,
+                    format: Some("storyline-lance".into()),
+                    record_count: Some(4),
+                    failed_count: None,
+                }],
+                observed_at: 0,
+            },
+        );
+        assert_eq!(cache.summary_under("mount").await.trajectories, 7);
+    }
+
+    #[tokio::test]
+    async fn summary_under_aggregates_slash_descendants_from_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        for (path, count) in [
+            ("codex2", 0),
+            ("codex3", 0),
+            ("nested/nested1/codex2", 354),
+            ("nested/nested2/codex2", 354),
+        ] {
+            let leaf = source.join(path);
+            std::fs::create_dir_all(&leaf).unwrap();
+            crate::store::catalog::manifest::write_compact_jsonl_manifest(&leaf, 1, count).unwrap();
+        }
+        let location = DatasetLocation::parse(source.to_str().unwrap()).unwrap();
+        let cache_path = temp.path().join("manifest.lance");
+        let cache = ManifestCache::open(cache_path.clone()).await;
+        let mount = "rfs\0fingerprint";
+        cache.refresh_mount(mount, &location).await.unwrap();
+        assert!(
+            cache
+                .get("rfs\0fingerprint\0nested/nested1")
+                .await
+                .is_some()
+        );
+        drop(cache);
+        std::fs::remove_dir_all(&source).unwrap();
+
+        // No source I/O or projection merging: aggregate persisted observations.
+        let cache = ManifestCache::open(cache_path).await;
+        for (prefix, datasets, trajectories) in [
+            ("rfs\0fingerprint", 4, 708),
+            ("rfs\0fingerprint\0nested", 2, 708),
+            ("rfs\0fingerprint\0nested/nested1", 1, 354),
+            ("rfs\0fingerprint\0missing", 0, 0),
+        ] {
+            assert_eq!(
+                cache.summary_under(prefix).await,
+                LocationSummary {
+                    datasets,
+                    trajectories
+                },
+                "{prefix:?}"
+            );
+        }
+        let distractor = cache.get("rfs\0fingerprint\0nested/nested1").await.unwrap();
+        let mut distractor = distractor;
+        distractor.entries[0].path = "unrelated/leaf".into();
+        distractor.entries[0].record_count = Some(999);
+        for key in [
+            "rfs\0fingerprint\0nested-other/child",
+            "rfs\0different\0nested/child",
+            "other\0fingerprint\0nested/child",
+        ] {
+            cache
+                .values
+                .write()
+                .await
+                .insert(key.into(), distractor.clone());
+        }
+        assert_eq!(
+            cache.summary_under("rfs\0fingerprint\0nested").await,
+            LocationSummary {
+                datasets: 2,
+                trajectories: 708
             }
         );
     }

@@ -3,6 +3,7 @@
 mod acceleration;
 mod asset;
 pub(crate) mod catalog;
+pub(crate) mod catalog_worker;
 mod explorer;
 mod physical;
 pub(crate) mod problem;
@@ -64,6 +65,8 @@ struct AppState {
     live_reads: bool,
     catalog_acl: Option<Arc<catalog::CatalogAcl>>,
     catalog_query_worker: bool,
+    catalog_workers: Arc<catalog_worker::WorkerPool>,
+    browse_mounts: Arc<Vec<DatasetMount>>,
     browse: Arc<tokio::sync::OnceCell<ui_cache::BrowseCoordinator>>,
     scoped_queries: Arc<query_admission::ScopedQueries>,
 }
@@ -207,6 +210,7 @@ fn app_state_with_catalog_refresh_interval(
     config: ChronicleServerConfig,
     catalog_refresh_interval: Duration,
 ) -> AppState {
+    let browse_mounts = config.datasets.clone();
     AppState {
         config: Arc::new(config),
         catalog: Arc::new(tokio::sync::RwLock::new(None)),
@@ -216,6 +220,8 @@ fn app_state_with_catalog_refresh_interval(
         live_reads: false,
         catalog_acl: None,
         catalog_query_worker: false,
+        catalog_workers: Arc::new(catalog_worker::WorkerPool::default()),
+        browse_mounts: Arc::new(browse_mounts),
         browse: Arc::new(tokio::sync::OnceCell::new()),
         scoped_queries: Arc::new(query_admission::ScopedQueries::default()),
     }
@@ -245,38 +251,32 @@ impl PreparedWarehouse {
         Ok(warehouse)
     }
 
-    /// Directory front-only mode: parent authenticates and dispatches query
-    /// workers. Retained for isolation tests; `serve --catalog-config` uses
-    /// [`Self::prepare_catalog`] (inline mounts) instead.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) async fn prepare_catalog_front(acl: catalog::CatalogAcl) -> anyhow::Result<Self> {
-        let mut state = app_state(ChronicleServerConfig::front_only());
-        state.catalog_acl = Some(Arc::new(acl));
-        Ok(Self { state })
+        Self::prepare_catalog(acl, ChronicleServerConfig::front_only()).await
     }
 
-    /// Mount every library from `catalog.toml` into the Warehouse process.
-    /// Directory ticket routes remain available when users exist; the data
-    /// plane serves in-process mounts instead of spawning query workers.
-    ///
-    /// Discovery runs in the background so `serve --listen` can accept
-    /// connections before large object prefixes finish classifying.
+    /// The listener authenticates and brokers credentials; only workers mount
+    /// datasets. Keep public UI configuration, never storage state, in the parent.
     pub(crate) async fn prepare_catalog(
         acl: catalog::CatalogAcl,
-        config: ChronicleServerConfig,
+        mut config: ChronicleServerConfig,
     ) -> anyhow::Result<Self> {
-        acl.apply_backend_env();
-        anyhow::ensure!(
-            !config.datasets.is_empty(),
-            "catalog config needs at least one dataset"
-        );
+        let browse_mounts = acl
+            .public_for_all()
+            .into_iter()
+            .filter_map(|library| DatasetMount::new(&library.name, &library.uri).ok())
+            .collect::<Vec<_>>();
+        config.datasets.clear();
+        config.default_dataset = None;
         let mut state = app_state(config);
+        state.browse_mounts = Arc::new(browse_mounts);
         state.catalog_acl = Some(Arc::new(acl));
-        let warehouse = Self { state };
-        browse_coordinator(&warehouse.state).await;
-        // The UI is served by BrowseCoordinator. Build the accurate query
-        // snapshot lazily when an endpoint actually needs it.
-        Ok(warehouse)
+        // The front process owns the public browse cache. Query workers remain
+        // isolated, but UI navigation must be available without mounting data
+        // in the front process.
+        browse_coordinator(&state).await;
+        Ok(Self { state })
     }
 
     pub(crate) async fn prepare_query_worker(
@@ -285,7 +285,7 @@ impl PreparedWarehouse {
         let mut state = app_state(config);
         state.catalog_query_worker = true;
         let warehouse = Self { state };
-        warehouse.install_initial_runtime().await?;
+        browse_coordinator(&warehouse.state).await;
         Ok(warehouse)
     }
 
@@ -344,7 +344,7 @@ impl PreparedWarehouse {
 async fn browse_coordinator(state: &AppState) -> &ui_cache::BrowseCoordinator {
     state
         .browse
-        .get_or_init(|| ui_cache::BrowseCoordinator::start(state.config.datasets.clone()))
+        .get_or_init(|| ui_cache::BrowseCoordinator::start((*state.browse_mounts).clone()))
         .await
 }
 
@@ -570,7 +570,7 @@ async fn current_catalog_for_runs(
         return Ok(runtime);
     }
     // A zero interval requests synchronous freshness (used by embedded callers).
-    if state.catalog_refresh_interval.is_zero() || state.live_reads || state.catalog_query_worker {
+    if state.catalog_refresh_interval.is_zero() || state.live_reads {
         let _refresh = state.catalog_refresh.lock().await;
         return Ok(rebuild_catalog_for_runs(state, runtime).await);
     }
@@ -700,7 +700,7 @@ async fn load_run_summaries(
         };
         let config = state.config.clone();
         let query_scope = scope.clone();
-        let cached_files = if file.is_none() && !state.live_reads && !state.catalog_query_worker {
+        let cached_files = if file.is_none() && !state.live_reads {
             browse_coordinator(state)
                 .await
                 .cached_source_paths(
@@ -741,7 +741,7 @@ async fn load_run_summaries(
             summaries
         };
         let started = Instant::now();
-        let result = if state.live_reads || state.catalog_query_worker {
+        let result = if state.live_reads {
             state
                 .scoped_queries
                 .run(scope, || execute(false))
@@ -1375,21 +1375,34 @@ async fn explorer_tree(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let prefix = query.prefix.as_deref().unwrap_or("");
+    tracing::info!(
+        target: "pchronicle.serve",
+        dataset = ?dataset,
+        prefix,
+        catalog_worker = state.catalog_query_worker,
+        "explorer tree request"
+    );
     let Some(name) = dataset else {
         let started = Instant::now();
         let view = browse_coordinator(&state)
             .await
-            .roots(&state.config.datasets)
+            .roots(&state.browse_mounts)
             .await;
         metrics.record("browse", started);
         return Ok(Json(serde_json::to_value(view).unwrap()));
     };
-    let Some(mount) = state
-        .config
-        .datasets
-        .iter()
-        .find(|mount| mount.name == name)
-    else {
+    let owned_mount;
+    let mount = if let Some(mount) = state.browse_mounts.iter().find(|mount| mount.name == name) {
+        mount
+    } else if let Some(library) = state.catalog_acl.as_ref().and_then(|acl| {
+        acl.public_for_all()
+            .into_iter()
+            .find(|library| library.name == name)
+    }) {
+        owned_mount = DatasetMount::new(&library.name, &library.uri)
+            .map_err(|error| fail(&request_id, "explorer_tree", error))?;
+        &owned_mount
+    } else {
         return Ok(Json(
             serde_json::to_value(explorer::catalog_tree_from_path_list(name, prefix, &[])).unwrap(),
         ));

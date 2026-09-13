@@ -10,6 +10,7 @@ use wasm_bindgen::closure::Closure;
 use crate::agent::{self, ThreadMessage, ThreadRole};
 use crate::api;
 use crate::catalog::CatalogExplorer;
+use crate::catalog_auth;
 use crate::chat_view::normalize_trace_view;
 use crate::components::{
     DataTable, HighlightedText, RichBlock, StepDrawer, TrajectoryView, WorkspaceIcon,
@@ -283,6 +284,7 @@ pub fn App() -> Element {
     let catalog_loading = use_signal(|| false);
     let mut offset = use_signal(|| 0usize);
     let mut error = use_signal(|| None::<WorkspaceNotice>);
+    let mut catalog_auth_configured = use_signal(|| catalog_auth::load().is_configured());
 
     let mut selected_run = use_signal(move || initial_run);
     let mut analysis = use_signal(|| None::<RunAnalysis>);
@@ -543,7 +545,21 @@ pub fn App() -> Element {
                     button { class: if copilot_open() { "rail-button active" } else { "rail-button" }, aria_label: "Toggle Assistant", aria_expanded: copilot_open(), onclick: move |_| copilot_open.set(!copilot_open()), WorkspaceIcon { name: "assistant" } span { {ASSISTANT} } }
                     button { class: if settings_open() { "rail-button active" } else { "rail-button" }, aria_label: "Settings", onclick: move |_| settings_open.set(true), WorkspaceIcon { name: "keys" } span { "Keys" } }
                 }
-                div { class: "rail-status", span { class: "live-dot" } span { "Local" } }
+                {
+                    let identity = catalog_auth::load();
+                    let configured = identity.is_configured();
+                    let label = if configured {
+                        if identity.label.is_empty() { "Catalog".to_string() } else { identity.label.clone() }
+                    } else {
+                        "Public access".to_string()
+                    };
+                    rsx! {
+                        div { class: "rail-status", title: "Active catalog profile: {label}",
+                            span { class: if configured { "live-dot" } else { "live-dot muted" } }
+                            span { "Local · {label}" }
+                        }
+                    }
+                }
             }
 
             main { id: "pc2-main", class: "pc2-main", tabindex: "-1",
@@ -558,6 +574,8 @@ pub fn App() -> Element {
                         CatalogExplorer {
                             tree: catalog_tree(),
                             loading: catalog_loading(),
+                            auth_required: !catalog_auth_configured() && catalog_tree().is_none(),
+                            on_settings: move |_| settings_open.set(true),
                             on_open: move |(dataset, prefix): (String, String)| {
                                 catalog_dataset.set(dataset);
                                 catalog_prefix.set(prefix);
@@ -893,6 +911,7 @@ pub fn App() -> Element {
                         llm::save_config(&value);
                         llm_config.set(value);
                         settings_open.set(false);
+                        catalog_auth_configured.set(catalog_auth::load().is_configured());
                     },
                 }
             }
@@ -1071,6 +1090,16 @@ fn load_catalog_tree(
     spawn(async move {
         match api::explorer_tree(&dataset, &prefix).await {
             Ok(value) => tree.set(Some(value)),
+            Err(failure)
+                if matches!(failure.status, 400 | 401)
+                    && dataset.is_empty()
+                    && prefix.is_empty() =>
+            {
+                match api::explorer_tree_anonymous(&dataset, &prefix).await {
+                    Ok(value) => tree.set(Some(value)),
+                    Err(failure) => error.set(Some(workspace_notice(&failure))),
+                }
+            }
             Err(failure) => error.set(Some(workspace_notice(&failure))),
         }
         loading.set(false);

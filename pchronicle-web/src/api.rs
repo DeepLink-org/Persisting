@@ -176,6 +176,18 @@ pub async fn explorer_tree(dataset: &str, prefix: &str) -> Result<CatalogTree, A
     json_checked(with_catalog_headers(Request::get(&url)).send().await).await
 }
 
+pub async fn explorer_tree_anonymous(
+    dataset: &str,
+    prefix: &str,
+) -> Result<CatalogTree, ApiFailure> {
+    let url = format!(
+        "/api/explorer/tree?dataset={}&prefix={}",
+        urlencoding::encode(dataset),
+        urlencoding::encode(prefix),
+    );
+    json_checked(Request::get(&url).send().await).await
+}
+
 pub async fn run_analysis(run: &RunSummary) -> Result<RunAnalysis, ApiFailure> {
     json_checked(
         with_catalog_headers(Request::get(&format!("/api/explorer/run?{}", run.query())))

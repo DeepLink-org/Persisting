@@ -334,13 +334,27 @@ Every listener must use a loopback address. A bare single Dataset is mounted as
 needed. Control requires a mount named `default`.
 Repeatable `--home-link TEXT=PATH` adds homepage nav capsules beside Warehouse.
 `PATH` must be a same-origin relative path such as `/plugins`.
-`--catalog-config FILE` mounts every `[datasets.*]` library in the Directory
-file into Warehouse and enables `catalog://` locators. It conflicts with
-positional Dataset mounts. Pair Directory clients with
+`--catalog-config FILE` authenticates every data API request and dispatches it to
+an isolated exec worker containing only authorized mounts. It also enables
+`catalog://` locators, and conflicts with positional mounts, Gateway, and Control. Pair Directory clients with
 `dataset pin NAME catalog://127.0.0.1:PORT --ak --sk`.
 `pchronicle serve catalog dataset add|remove|list` and
 `issue|grant|revoke` rewrite that file and do not start HTTP; `issue` prints
 the user secret once. Restart serve after changing libraries, users, or grants.
+The pool allows at most 8 workers and 32 admitted requests, with serial execution
+per worker, a 60-second execution/queue timeout and a 10-second body-read timeout.
+Overload returns 503; timeout or IPC failure discards the worker. Worker and disk
+cache identity includes the user, grants and backend credential version. Caches
+live under `PCHRONICLE_CACHE_DIR/workers/` or the system pchronicle cache directory.
+Workers receive backend keys over private IPC before starting runtime threads;
+they do not inherit AWS environment, profiles or the server's home configuration.
+Login AK/SK authenticate the user; dataset AK/SK authenticate storage access.
+Datasets with different S3 endpoints or credentials require explicit `dataset`
+selection; cross-credential queries are currently rejected. Health, UI config
+and static pages remain public; data APIs require authentication even for a
+catalog with no users. Processes still use the server's OS identity: this is not
+an OS privilege drop or a filesystem sandbox.
+
 `catalog` is a reserved `serve` subcommand; mount a path of that name as
 `./catalog`.
 See [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md) and

@@ -110,6 +110,7 @@ type Pending = Arc<Mutex<HashMap<TreeKey, Vec<Reply>>>>;
 /// aborts it, including an in-flight list. No permanent process singleton.
 pub(crate) struct BrowseCoordinator {
     index: Arc<BrowseTreeProjection>,
+    manifests: Arc<ManifestCache>,
     pending: Pending,
     refresh: Arc<Mutex<HashMap<TreeKey, RefreshState>>>,
     sender: mpsc::Sender<TreeKey>,
@@ -144,6 +145,12 @@ impl BrowseCoordinator {
         );
         let manifests =
             Arc::new(ManifestCache::open(root.join(format!("manifest-{namespace}.lance"))).await);
+        tracing::info!(
+            target: "pchronicle.serve",
+            mounts = mounts.len(),
+            cache_root = %root.display(),
+            "catalog cache worker started"
+        );
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let refresh = Arc::new(Mutex::new(HashMap::new()));
         let (sender, receiver) = mpsc::channel(QUEUE_CAPACITY);
@@ -157,6 +164,7 @@ impl BrowseCoordinator {
         ));
         Self {
             index,
+            manifests,
             pending,
             refresh,
             sender,
@@ -218,11 +226,27 @@ impl BrowseCoordinator {
             } else {
                 complete = false;
             }
+            let summary = self
+                .manifests
+                .summary(&format!("{}\0{}", mount.name, mount_fingerprint(mount)))
+                .await;
+            if let Some(child) = tree.children.iter_mut().find(|c| c.name == mount.name) {
+                child.run_count = summary.trajectories as usize;
+                child.dataset_count = Some(summary.datasets as usize);
+                child.trajectory_count = Some(summary.trajectories as usize);
+            }
         }
         tree.run_count = tree
             .children
             .iter()
             .fold(0usize, |sum, c| sum.saturating_add(c.run_count));
+        tree.dataset_count = Some(
+            tree.children
+                .iter()
+                .map(|child| child.dataset_count.unwrap_or_default())
+                .sum(),
+        );
+        tree.trajectory_count = Some(tree.run_count);
         tree.failed_count = tree
             .children
             .iter()
@@ -244,10 +268,16 @@ impl BrowseCoordinator {
 
     pub(crate) async fn tree(&self, mount: &DatasetMount, prefix: &str) -> Result<BrowseSnapshot> {
         let key = TreeKey::new(mount, prefix)?;
+        tracing::info!(
+            target: "pchronicle.serve",
+            dataset = %key.dataset,
+            prefix = %key.prefix,
+            "browse tree request"
+        );
         let existing = self.index.values.read().await.get(&key).cloned();
         if let Some(entry) = existing {
             let _ = self.enqueue(&key, None);
-            return Ok(self.snapshot(&key, entry));
+            return Ok(self.snapshot_with_summary(&key, entry).await);
         }
         let (reply, wait) = oneshot::channel();
         self.enqueue(&key, Some(reply))?;
@@ -265,7 +295,7 @@ impl BrowseCoordinator {
             .get(&key)
             .cloned()
             .context("browse refresh produced no view")?;
-        Ok(self.snapshot(&key, entry))
+        Ok(self.snapshot_with_summary(&key, entry).await)
     }
 
     fn enqueue(&self, key: &TreeKey, reply: Option<Reply>) -> Result<()> {
@@ -315,6 +345,132 @@ impl BrowseCoordinator {
             },
         }
     }
+
+    async fn snapshot_with_summary(&self, key: &TreeKey, mut entry: IndexEntry) -> BrowseSnapshot {
+        let current_manifest_key = manifest_key(key, None);
+        let summary = self.manifests.summary_under(&current_manifest_key).await;
+        entry.tree.dataset_count = Some(summary.datasets as usize);
+        entry.tree.trajectory_count = Some(summary.trajectories as usize);
+        entry.tree.run_count = summary.trajectories as usize;
+        let cached_trees = self
+            .index
+            .values
+            .read()
+            .await
+            .values()
+            .map(|entry| entry.tree.clone())
+            .collect::<Vec<_>>();
+        let (cached_datasets, cached_trajectories) = cached_leaf_summary(&cached_trees, "");
+        if cached_datasets > 0 {
+            entry.tree.dataset_count = Some(cached_datasets);
+            entry.tree.trajectory_count = Some(cached_trajectories);
+            entry.tree.run_count = cached_trajectories;
+        }
+        for child in &mut entry.tree.children {
+            if child.kind != "dir" {
+                continue;
+            }
+            let child_prefix = if key.prefix.is_empty()
+                || child.path == key.prefix
+                || child.path.starts_with(&format!("{}/", key.prefix))
+            {
+                child.path.clone()
+            } else {
+                format!("{}/{}", key.prefix, child.path)
+            };
+            let summary = self
+                .manifests
+                .summary_under(&manifest_key(key, Some(&child_prefix)))
+                .await;
+            child.dataset_count = (summary.datasets > 0).then_some(summary.datasets as usize);
+            child.trajectory_count =
+                (summary.trajectories > 0).then_some(summary.trajectories as usize);
+            let child_key = TreeKey {
+                dataset: key.dataset.clone(),
+                uri_fingerprint: key.uri_fingerprint.clone(),
+                prefix: child_prefix.trim_matches('/').to_owned(),
+            };
+            // A directory can be discovered after the background walk started.
+            // Schedule it here so its descendant manifests become available to
+            // the next render without making the request wait on storage I/O.
+            let _ = self.enqueue(&child_key, None);
+            let cached = self.index.values.read().await.get(&child_key).cloned();
+            tracing::info!(
+                target: "pchronicle.serve",
+                dataset = %key.dataset,
+                parent_prefix = %key.prefix,
+                child_prefix = %child.path,
+                manifest_datasets = summary.datasets,
+                manifest_trajectories = summary.trajectories,
+                projection_hit = cached.is_some(),
+                "catalog directory summary"
+            );
+            if let Some(cached) = cached {
+                if let Some(count) = cached.tree.dataset_count.filter(|count| *count > 0) {
+                    child.dataset_count = Some(count);
+                }
+                if let Some(count) = cached
+                    .tree
+                    .trajectory_count
+                    .or(Some(cached.tree.run_count))
+                    .filter(|count| *count > 0)
+                {
+                    child.trajectory_count = Some(count);
+                }
+            }
+            let (datasets, trajectories) = cached_leaf_summary(&cached_trees, &child_prefix);
+            if datasets > 0 {
+                child.dataset_count = Some(datasets);
+                child.trajectory_count = Some(trajectories);
+            }
+        }
+        let child_summary =
+            entry
+                .tree
+                .children
+                .iter()
+                .fold((0usize, 0usize), |(datasets, trajectories), child| {
+                    let datasets = datasets.saturating_add(
+                        child
+                            .dataset_count
+                            .unwrap_or_else(|| (child.kind == "dataset") as usize),
+                    );
+                    let trajectories = trajectories
+                        .saturating_add(child.trajectory_count.unwrap_or(child.run_count));
+                    (datasets, trajectories)
+                });
+        entry.tree.dataset_count = Some((summary.datasets as usize).max(child_summary.0));
+        entry.tree.trajectory_count = Some((summary.trajectories as usize).max(child_summary.1));
+        entry.tree.run_count = entry.tree.trajectory_count.unwrap_or_default();
+        self.snapshot(key, entry)
+    }
+}
+
+fn manifest_key(key: &TreeKey, child_prefix: Option<&str>) -> String {
+    let prefix = child_prefix.unwrap_or(&key.prefix);
+    if prefix.is_empty() {
+        format!("{}\0{}", key.dataset, key.uri_fingerprint)
+    } else {
+        format!("{}\0{}\0{}", key.dataset, key.uri_fingerprint, prefix)
+    }
+}
+
+fn cached_leaf_summary(trees: &[CatalogTree], prefix: &str) -> (usize, usize) {
+    let mut leaves = HashMap::<String, usize>::new();
+    for tree in trees {
+        for child in &tree.children {
+            if child.kind == "file"
+                && child.data_type != "other"
+                && (child.path == prefix || child.path.starts_with(&format!("{prefix}/")))
+            {
+                leaves.insert(child.path.clone(), child.run_count);
+            }
+        }
+    }
+    (
+        leaves.len(),
+        leaves.values().copied().fold(0usize, usize::saturating_add),
+    )
 }
 
 async fn run_worker(
@@ -336,8 +492,10 @@ async fn run_worker(
     loop {
         let key = tokio::select! {
             biased;
+            _ = std::future::ready(()), if !background.is_empty() => background.pop_front().unwrap(),
             request = receiver.recv() => match request { Some(key) => key, None => break },
             _ = interval.tick() => {
+                tracing::info!(target: "pchronicle.serve", mounts = mounts.len(), "browse manifest refresh round started");
                 if background.is_empty() {
                     visited.clear();
                     background.extend(mounts.iter().filter_map(|m| TreeKey::new(m, "").ok()));
@@ -345,7 +503,6 @@ async fn run_worker(
                 }
                 continue;
             }
-            _ = std::future::ready(()), if !background.is_empty() => background.pop_front().unwrap(),
         };
         let Some(mount) = mounts
             .iter()
@@ -377,7 +534,11 @@ async fn run_worker(
                     .await
                     .context("browse path unavailable")?;
             }
-            let manifest_key = format!("{}\0{}\0{}", key.dataset, key.uri_fingerprint, key.prefix);
+            let manifest_key = if key.prefix.is_empty() {
+                format!("{}\0{}", key.dataset, key.uri_fingerprint)
+            } else {
+                format!("{}\0{}\0{}", key.dataset, key.uri_fingerprint, key.prefix)
+            };
             let listing = tokio::time::timeout(
                 Duration::from_secs(20),
                 manifests.refresh(manifest_key, &location, &key.prefix),
@@ -403,6 +564,7 @@ async fn run_worker(
         .await;
         let outcome = match result {
             Ok(()) => {
+                tracing::info!(target: "pchronicle.serve", dataset = %key.dataset, prefix = %key.prefix, "browse manifest level refreshed");
                 states.lock().unwrap().insert(
                     key.clone(),
                     RefreshState {
@@ -544,6 +706,70 @@ mod tests {
 
     fn mount(path: &std::path::Path) -> DatasetMount {
         DatasetMount::new("test", path.to_string_lossy()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn directory_statistics_use_cached_descendants_without_child_projections() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        for (path, count) in [
+            ("codex2", 0),
+            ("codex3", 0),
+            ("nested/nested1/codex2", 354),
+            ("nested/nested2/codex2", 354),
+        ] {
+            let leaf = source.join(path);
+            std::fs::create_dir_all(&leaf).unwrap();
+            persisting_pchronicle::storage::write_compact_jsonl_manifest(&leaf, 1, count).unwrap();
+        }
+        let mount = mount(&source);
+        // Keep the scheduler idle: only manifest observations supply the response.
+        let browse = BrowseCoordinator::start_at(Vec::new(), temp.path().join("cache")).await;
+        browse.task.abort();
+        let root_key = TreeKey::new(&mount, "").unwrap();
+        browse
+            .manifests
+            .refresh_mount(
+                &manifest_key(&root_key, None),
+                &DatasetLocation::parse(&mount.uri).unwrap(),
+            )
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(&source).unwrap();
+        assert!(browse.index.values.read().await.is_empty());
+        for (prefix, datasets) in [("", 4), ("nested", 2)] {
+            let key = TreeKey::new(&mount, prefix).unwrap();
+            let listing = browse
+                .manifests
+                .get(&manifest_key(&key, None))
+                .await
+                .unwrap();
+            let view = browse
+                .snapshot_with_summary(
+                    &key,
+                    IndexEntry {
+                        tree: catalog_tree_from_path_list(&mount.name, prefix, &listing.entries),
+                        generation: String::new(),
+                        observed_at: now(),
+                    },
+                )
+                .await;
+            let json = serde_json::to_value(view).unwrap();
+            assert_eq!(json["dataset_count"], datasets);
+            assert_eq!(json["trajectory_count"], 708);
+            for child in json["children"].as_array().unwrap() {
+                if child["kind"] == "dir" {
+                    assert_eq!(
+                        child["dataset_count"],
+                        if prefix.is_empty() { 2 } else { 1 }
+                    );
+                    assert_eq!(
+                        child["trajectory_count"],
+                        if prefix.is_empty() { 708 } else { 354 }
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]

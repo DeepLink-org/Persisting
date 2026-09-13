@@ -130,10 +130,10 @@ Server 静态挂载命名 path。Refresh 先完整构造新 Snapshot，再切换
 Dataset table 先按 Source 裁剪，再打开命中的固定 version；cache 和 routing index 与 Snapshot
 generation 绑定。
 
-使用 `--catalog-config` 时，Warehouse 会把 Directory ACL 文件中的全部
-`[datasets.*]` library 挂进数据面（与位置参数挂载等价），并同时提供
-`catalog://` 列表/换票路由。文件中的 S3 endpoint、region 与后端密钥在打开存储前
-写入进程环境。CLI 换票后打开票里的 `uri`（一条 path）并注入存储钥。这是 path 上的
+使用 `--catalog-config` 时，父进程逐请求认证，并调度到有上限的 exec worker 池。
+每个 worker 的用户、授权及后端凭证范围固定，缓存独立；父进程不挂载数据集。
+后端凭证经私有 IPC 在 runtime 启动前传入。worker 仍使用服务端 OS 身份，进程隔离
+不等于文件系统沙箱。同时保留 `catalog://` 列表/换票路由。CLI 换票后打开票里的 `uri`（一条 path）并注入存储钥。这是 path 上的
 平台寻址，不是新的 Dataset 种类。
 
 Web 与 API 是同一读取模型的 consumer，不形成新事实源。未知 API route 保持 error，不进入
