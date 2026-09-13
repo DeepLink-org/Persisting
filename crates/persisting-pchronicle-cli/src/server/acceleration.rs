@@ -1078,6 +1078,16 @@ async fn bounded_summary_jsonl(
     max_rows: u64,
     max_bytes: usize,
 ) -> Result<String> {
+    if tracing::enabled!(target: "pchronicle.query", tracing::Level::DEBUG) {
+        match engine.query_jsonl(&format!("EXPLAIN {sql}")).await {
+            Ok(plan) => {
+                tracing::debug!(target: "pchronicle.query", sql = %sql, plan = %plan, "summary query plan")
+            }
+            Err(error) => {
+                tracing::debug!(target: "pchronicle.query", sql = %sql, error = %error, "summary query plan unavailable")
+            }
+        }
+    }
     let mut output = super::BoundedOutput::new(max_bytes);
     let result = engine
         .write_query_jsonl_with_max_rows(sql, &mut output, Some(max_rows))
@@ -1087,6 +1097,13 @@ async fn bounded_summary_jsonl(
         "run summary byte budget exhausted; narrow the dataset or source scope"
     );
     result.context("stream run summary within its row budget")?;
+    tracing::debug!(
+        target: "pchronicle.query",
+        sql = %sql,
+        rows = output.bytes.iter().filter(|byte| **byte == b'\n').count(),
+        bytes = output.bytes.len(),
+        "summary query completed"
+    );
     String::from_utf8(output.bytes).context("decode run summary JSONL")
 }
 

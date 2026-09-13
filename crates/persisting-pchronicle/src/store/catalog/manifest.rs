@@ -262,7 +262,7 @@ pub async fn write_storyline_manifest_at_uri(
         failed_count,
     );
     manifest.validate()?;
-    let location = crate::store::location::DatasetLocation::parse(root_uri)
+    let location = crate::store::catalog::location::DatasetLocation::parse(root_uri)
         .with_context(|| format!("parse Dataset URI for chronicle.manifest ({root_uri})"))?;
     if let Some(path) = location.local_path() {
         return atomic_write_manifest(path, &manifest);
@@ -276,7 +276,7 @@ pub async fn write_storyline_manifest_at_uri(
 
 /// Load a manifesto from a local path or object-store Dataset URI.
 pub async fn load_manifest_at_uri(root_uri: &str) -> Result<Option<ChronicleManifest>> {
-    let location = crate::store::location::DatasetLocation::parse(root_uri)
+    let location = crate::store::catalog::location::DatasetLocation::parse(root_uri)
         .with_context(|| format!("parse Dataset URI for chronicle.manifest ({root_uri})"))?;
     if let Some(path) = location.local_path() {
         return load_manifest(path);

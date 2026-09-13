@@ -267,7 +267,7 @@ pub async fn compile_analysis(
 
 pub async fn query_catalog() -> Result<QueryCatalog, ApiFailure> {
     json_checked(
-        with_catalog_headers(Request::get("/api/query/tables"))
+        with_catalog_headers(Request::get("/api/query/tables?ui=true"))
             .send()
             .await,
     )

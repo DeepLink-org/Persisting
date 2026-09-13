@@ -26,6 +26,27 @@ impl RequestId {
 #[derive(Clone, Default)]
 pub(crate) struct FtsDiagnostics(pub Arc<Mutex<Vec<String>>>);
 
+#[derive(Clone, Default)]
+pub(crate) struct RequestMetrics(pub Arc<Mutex<Vec<(&'static str, u64)>>>);
+
+impl RequestMetrics {
+    pub(crate) fn record(&self, name: &'static str, started: Instant) {
+        if let Ok(mut values) = self.0.lock() {
+            values.push((name, started.elapsed().as_millis() as u64));
+        }
+    }
+
+    fn server_timing(&self, total_ms: u64) -> String {
+        let mut values = self.0.lock().map(|v| v.clone()).unwrap_or_default();
+        values.push(("total", total_ms));
+        values
+            .into_iter()
+            .map(|(name, ms)| format!("{name};dur={ms}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 impl FtsDiagnostics {
     pub(crate) fn push(&self, message: impl Into<String>) {
         if let Ok(mut errors) = self.0.lock() {
@@ -77,6 +98,21 @@ where
     }
 }
 
+impl<S> FromRequestParts<S> for RequestMetrics
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(parts
+            .extensions
+            .get::<RequestMetrics>()
+            .cloned()
+            .unwrap_or_default())
+    }
+}
+
 pub(crate) async fn warehouse_request_layer(
     mut request: Request<axum::body::Body>,
     next: Next,
@@ -92,10 +128,12 @@ pub(crate) async fn warehouse_request_layer(
     let query = request.uri().query().unwrap_or("").to_owned();
     let started = Instant::now();
     let fts = FtsDiagnostics::default();
+    let metrics = RequestMetrics::default();
     request
         .extensions_mut()
         .insert(RequestId(request_id.clone()));
     request.extensions_mut().insert(fts.clone());
+    request.extensions_mut().insert(metrics.clone());
 
     tracing::info!(
         target: LOG_TARGET,
@@ -112,9 +150,10 @@ pub(crate) async fn warehouse_request_layer(
         .get::<FourXxRootCause>()
         .map(|value| value.0.clone())
         .unwrap_or_default();
-    let (response, error_fields) = attach_request_id(response, &request_id).await;
-
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let (response, error_fields) =
+        attach_request_id(response, &request_id, &metrics, elapsed_ms).await;
+    let server_timing = metrics.server_timing(elapsed_ms);
     tracing::info!(
         target: LOG_TARGET,
         request_id = %request_id,
@@ -122,6 +161,7 @@ pub(crate) async fn warehouse_request_layer(
         path = %path,
         status = status.as_u16(),
         elapsed_ms,
+        server_timing = %server_timing,
         query = %truncate_utf8(&query, QUERY_LOG_LIMIT),
         "warehouse request"
     );
@@ -135,6 +175,7 @@ pub(crate) async fn warehouse_request_layer(
             message = %message,
             root_cause = %root_cause,
             fts_errors = %fts_errors,
+            server_timing = %server_timing,
             "warehouse request rejected"
         );
     }
@@ -144,10 +185,15 @@ pub(crate) async fn warehouse_request_layer(
 async fn attach_request_id(
     response: Response,
     request_id: &str,
+    metrics: &RequestMetrics,
+    total_ms: u64,
 ) -> (Response, Option<(String, String)>) {
     let (mut parts, body) = response.into_parts();
     if let Ok(value) = HeaderValue::from_str(request_id) {
         parts.headers.insert("x-request-id", value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&metrics.server_timing(total_ms)) {
+        parts.headers.insert("server-timing", value);
     }
     let is_json = parts
         .headers

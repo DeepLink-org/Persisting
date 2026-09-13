@@ -293,7 +293,7 @@ async fn discovers_extensionless_compact_lance_dataset() -> Result<()> {
     assert_eq!(sources[0].file, "compact");
     assert_eq!(sources[0].format.as_deref(), Some("compact-jsonl/v1"));
 
-    let manifest = crate::storage::load_manifest(&compact)?.expect("import writes manifesto");
+    let manifest = super::manifest::load_manifest(&compact)?.expect("import writes manifest");
     assert!(manifest.is_compact_jsonl_leaf());
     assert_eq!(manifest.stats.as_ref().unwrap().record_count, 1);
     Ok(())
@@ -306,11 +306,11 @@ async fn discovers_nested_branch_and_leaf_chronicle_manifests_without_opening_la
     let warehouse = temp.path().join("warehouse");
     let leaf = warehouse.join("codex_jsonl");
     fs::create_dir_all(&leaf)?;
-    crate::store::chronicle_manifest::atomic_write_manifest(
+    crate::store::catalog::manifest::atomic_write_manifest(
         &warehouse,
         &crate::store::ChronicleManifest::branch(),
     )?;
-    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&leaf, 1, 42)?;
+    crate::store::catalog::manifest::write_compact_jsonl_manifest(&leaf, 1, 42)?;
     // No Lance data/ tree: discovery must trust the leaf manifesto.
 
     let snapshot = DatasetCatalogSnapshot::discover(
@@ -339,17 +339,17 @@ async fn discovers_multi_level_branch_tree_and_preserves_leaf_counts() -> Result
     for dir in [&warehouse, &team, &leaf_a, &leaf_b, &sibling] {
         fs::create_dir_all(dir)?;
     }
-    crate::store::chronicle_manifest::atomic_write_manifest(
+    crate::store::catalog::manifest::atomic_write_manifest(
         &warehouse,
         &crate::store::ChronicleManifest::branch(),
     )?;
-    crate::store::chronicle_manifest::atomic_write_manifest(
+    crate::store::catalog::manifest::atomic_write_manifest(
         &team,
         &crate::store::ChronicleManifest::branch(),
     )?;
-    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&leaf_a, 1, 10)?;
-    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&leaf_b, 2, 20)?;
-    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&sibling, 3, 7)?;
+    crate::store::catalog::manifest::write_compact_jsonl_manifest(&leaf_a, 1, 10)?;
+    crate::store::catalog::manifest::write_compact_jsonl_manifest(&leaf_b, 2, 20)?;
+    crate::store::catalog::manifest::write_compact_jsonl_manifest(&sibling, 3, 7)?;
 
     let snapshot = DatasetCatalogSnapshot::discover(
         vec![DatasetMount::default(warehouse.to_string_lossy())?],
@@ -385,8 +385,8 @@ async fn leaf_manifest_does_not_recurse_into_nested_child_manifest() -> Result<(
     let leaf = temp.path().join("leaf");
     let nested = leaf.join("nested_child");
     fs::create_dir_all(&nested)?;
-    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&leaf, 1, 5)?;
-    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&nested, 1, 99)?;
+    crate::store::catalog::manifest::write_compact_jsonl_manifest(&leaf, 1, 5)?;
+    crate::store::catalog::manifest::write_compact_jsonl_manifest(&nested, 1, 99)?;
 
     let snapshot = DatasetCatalogSnapshot::discover(
         vec![DatasetMount::default(leaf.to_string_lossy())?],
@@ -407,14 +407,14 @@ async fn updating_one_leaf_manifest_does_not_require_rewriting_parent_branch() -
     let warehouse = temp.path().join("warehouse");
     let leaf = warehouse.join("codex_jsonl");
     fs::create_dir_all(&leaf)?;
-    crate::store::chronicle_manifest::atomic_write_manifest(
+    crate::store::catalog::manifest::atomic_write_manifest(
         &warehouse,
         &crate::store::ChronicleManifest::branch(),
     )?;
-    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&leaf, 1, 10)?;
+    crate::store::catalog::manifest::write_compact_jsonl_manifest(&leaf, 1, 10)?;
     let parent_before = fs::read(warehouse.join("chronicle.manifest"))?;
 
-    crate::store::chronicle_manifest::write_compact_jsonl_manifest(&leaf, 2, 42)?;
+    crate::store::catalog::manifest::write_compact_jsonl_manifest(&leaf, 2, 42)?;
     let parent_after = fs::read(warehouse.join("chronicle.manifest"))?;
     assert_eq!(
         parent_before, parent_after,

@@ -16,7 +16,6 @@ mod cas_store;
 #[cfg(feature = "lance-store")]
 mod catalog;
 #[cfg(feature = "lance-store")]
-mod chronicle_manifest;
 #[cfg(feature = "lance-store")]
 mod compact_jsonl;
 #[cfg(feature = "lance-store")]
@@ -42,13 +41,16 @@ mod inspect;
 #[cfg(feature = "lance-store")]
 mod local_query_manifest;
 #[cfg(feature = "lance-store")]
-mod location;
 #[cfg(feature = "lance-store")]
 pub(crate) mod object_store_io_gate;
 #[cfg(feature = "lance-store")]
 pub(crate) mod opendal_store;
 #[cfg(feature = "lance-store")]
+pub mod persistent_cache;
+#[cfg(feature = "lance-store")]
 mod query_engine;
+#[cfg(feature = "lance-store")]
+pub use persistent_cache::PersistentCache;
 #[cfg(feature = "lance-store")]
 mod root_write_lock;
 #[cfg(feature = "lance-store")]
@@ -68,21 +70,28 @@ pub use attempt_registry::{AttemptRecord, AttemptRecordState, AttemptRegistry};
 #[cfg(feature = "lance-store")]
 pub use cas_store::unix_now_ms as attempt_registry_now_ms;
 #[cfg(feature = "lance-store")]
-pub use catalog::{
-    CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE, CatalogDataset, CatalogErrorPolicy,
-    CatalogEventProvenance, CatalogEventView, CatalogNamespace, CatalogPage,
-    CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind,
-    CatalogSourceRevision, CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle,
-    DEFAULT_DATASET_NAME, DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS,
-    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, NamespacePath, QueryScope,
+pub use catalog::location::{
+    DatasetLocation, DatasetLocationKind, ImportableObjectEvent, PathListEntry, PathListKind,
+    ShallowNavEntry,
 };
 #[cfg(feature = "lance-store")]
 #[allow(unused_imports)]
-pub use chronicle_manifest::{
+pub use catalog::manifest::{
     CHRONICLE_MANIFEST_FILE, ChronicleManifest, ManifestKind, ManifestStats, STORYLINE_FORMAT,
     atomic_write_manifest, compact_jsonl_manifest_matches, load_manifest, load_manifest_at_uri,
     try_load_manifest, write_compact_jsonl_manifest, write_storyline_manifest,
     write_storyline_manifest_at_uri,
+};
+#[cfg(feature = "lance-store")]
+pub use catalog::{
+    CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE, CachedDataset, CatalogDataset,
+    CatalogErrorPolicy, CatalogEventProvenance, CatalogEventView, CatalogNamespace, CatalogPage,
+    CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind,
+    CatalogSourceRevision, CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle,
+    DEFAULT_DATASET_NAME, DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+    Dataset, DatasetCatalogSnapshot, DatasetMount, DatasetResolver, DiscoveredSource,
+    LocationSummary, ManifestCache, ManifestListing, ManifestReadMode, NamespacePath, QueryScope,
+    ResolveMode, ResolveTarget,
 };
 #[cfg(feature = "lance-store")]
 pub use compact_jsonl::{
@@ -123,11 +132,6 @@ pub use local_query_manifest::{DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCA
 #[cfg(feature = "lance-store")]
 pub(crate) use local_query_manifest::{
     LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
-};
-#[cfg(feature = "lance-store")]
-pub use location::{
-    DatasetLocation, DatasetLocationKind, ImportableObjectEvent, PathListEntry, PathListKind,
-    ShallowNavEntry,
 };
 #[cfg(feature = "lance-store")]
 pub use query_engine::{
