@@ -48,6 +48,7 @@ permissions = ["read"]
         ),
     )?;
     let cache = home.path().join("cache");
+    let server_log = home.path().join("server.stderr");
     let mut server = tokio::process::Command::new(env!("CARGO_BIN_EXE_pchronicle"))
         .args(["serve", "--catalog-config"])
         .arg(&config)
@@ -56,7 +57,7 @@ permissions = ["read"]
         .env("AWS_ACCESS_KEY_ID", "ambient-must-not-be-used")
         .env("AWS_SECRET_ACCESS_KEY", "ambient-secret")
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&server_log)?)
         .kill_on_drop(true)
         .spawn()?;
     let mut stdout = BufReader::new(server.stdout.take().context("server stdout")?);
@@ -64,7 +65,12 @@ permissions = ["read"]
     tokio::time::timeout(Duration::from_secs(60), stdout.read_line(&mut line))
         .await
         .context("wait for catalog listener readiness")??;
-    let ready: Value = serde_json::from_str(&line).context("server readiness")?;
+    let ready: Value = serde_json::from_str(&line).with_context(|| {
+        format!(
+            "server readiness; stderr: {}",
+            std::fs::read_to_string(&server_log).unwrap_or_default()
+        )
+    })?;
     let endpoint = ready["warehouse_endpoint"]
         .as_str()
         .context("warehouse endpoint")?;
@@ -72,7 +78,7 @@ permissions = ["read"]
         .timeout(Duration::from_secs(70))
         .build()?;
     let url = format!("http://{endpoint}/api/explorer/tree");
-    assert_eq!(client.get(&url).send().await?.status(), 401);
+    assert_anonymous_access_is_scoped(&client, endpoint).await?;
     // Same keep-alive client alternates identities; identity belongs to the
     // request, never to the TCP connection or the previous worker.
     for (user, dataset) in [("alice", "left"), ("bob", "right"), ("alice", "left")] {
@@ -117,9 +123,50 @@ permissions = ["read"]
         .send()
         .await?;
     assert_eq!(response.status(), 404);
-    assert_eq!(client.get(&url).send().await?.status(), 401);
+    assert_anonymous_access_is_scoped(&client, endpoint).await?;
     assert_eq!(std::fs::read_dir(cache.join("workers"))?.count(), 2);
     server.kill().await?;
+    Ok(())
+}
+
+async fn assert_anonymous_access_is_scoped(client: &reqwest::Client, endpoint: &str) -> Result<()> {
+    let tree = format!("http://{endpoint}/api/explorer/tree");
+    let response = client.get(&tree).send().await?;
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await?;
+    // This catalog has no wildcard grants: private mounts must stay hidden,
+    // including after this keep-alive client has used an authenticated worker.
+    assert_eq!(body["children"], json!([]), "{body}");
+    for dataset in ["left", "right"] {
+        assert_eq!(
+            client
+                .get(&tree)
+                .query(&[("dataset", dataset)])
+                .send()
+                .await?
+                .status(),
+            401
+        );
+    }
+    assert_eq!(
+        client
+            .get(&tree)
+            .header("x-pchronicle-access-key", "alice-ak")
+            .header("x-pchronicle-secret-key", "wrong-secret")
+            .send()
+            .await?
+            .status(),
+        401
+    );
+    assert_eq!(
+        client
+            .post(format!("http://{endpoint}/api/query/evidence"))
+            .json(&json!({"sql":"SELECT session_id FROM runs", "max_rows":10, "max_bytes":4096}))
+            .send()
+            .await?
+            .status(),
+        401
+    );
     Ok(())
 }
 
