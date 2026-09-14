@@ -3,6 +3,37 @@ use axum::http::header;
 use axum::response::Response;
 
 #[test]
+fn home_link_parses_label_and_relative_path() {
+    let link = parse_home_link("Plugins=/plugins").unwrap();
+    assert_eq!(link.label, "Plugins");
+    assert_eq!(link.href, "/plugins");
+}
+
+#[test]
+fn home_link_normalizes_path_without_leading_slash() {
+    let link = parse_home_link("Skills=skills/catalog").unwrap();
+    assert_eq!(link.label, "Skills");
+    assert_eq!(link.href, "/skills/catalog");
+}
+
+#[test]
+fn home_link_rejects_absolute_urls_and_traversal() {
+    for raw in [
+        "Docs=https://example.com",
+        "X=//evil.example",
+        "X=/../secret",
+        "X=javascript:alert(1)",
+        "=/plugins",
+        "Label=",
+        "nopath",
+        "X=/plugins?q=1",
+        "X=/plugins#frag",
+    ] {
+        assert!(parse_home_link(raw).is_err(), "{raw}");
+    }
+}
+
+#[test]
 fn explorer_run_identity_sql_does_not_project_step_payloads() {
     let sql = explorer_run_identity_sql("dataset", "steps", "step_id = 1");
     let lowered = sql.to_ascii_lowercase();
@@ -329,6 +360,13 @@ async fn middleware_echoes_request_id_on_json_errors() {
         response.headers().get("x-request-id").unwrap(),
         "client-id-123"
     );
+    assert!(
+        response
+            .headers()
+            .get("server-timing")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.contains("total;dur="))
+    );
     let body = response_json(response).await;
     assert_eq!(body["request_id"], "client-id-123");
     assert_eq!(body["code"], "invalid_request");
@@ -441,7 +479,7 @@ async fn middleware_rejects_illegal_incoming_id() {
 }
 
 #[tokio::test]
-async fn middleware_does_not_info_log_static_assets() {
+async fn middleware_info_logs_static_assets() {
     use tower::ServiceExt;
 
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CapturedLogEvent>::new()));
@@ -465,8 +503,21 @@ async fn middleware_does_not_info_log_static_assets() {
         .unwrap();
     let logged = events.lock().unwrap().clone();
     assert!(
-        !logged.iter().any(|event| {
+        logged.iter().any(|event| {
             event.level == tracing::Level::INFO
+                && event.message.contains("warehouse request start")
+                && event
+                    .fields
+                    .get("path")
+                    .is_some_and(|path| path.contains("/assets/app.css"))
+        }),
+        "{logged:?}"
+    );
+    assert!(
+        logged.iter().any(|event| {
+            event.level == tracing::Level::INFO
+                && event.message.contains("warehouse request")
+                && !event.message.contains("start")
                 && event
                     .fields
                     .get("path")
@@ -540,11 +591,15 @@ async fn query_evidence_info_truncates_sql() {
 fn warehouse_tracing_filter_matches_log_level() {
     assert_eq!(
         super::request_log::tracing_filter(crate::LogLevel::Info),
-        "pchronicle.serve=info"
+        "info,persisting_pchronicle=warn,pchronicle.serve=info,lance=warn,lance_index=warn,opendal=warn,pchronicle.opendal=warn,object_store=warn,pchronicle.object_store_gate=warn"
+    );
+    assert_eq!(
+        super::request_log::tracing_filter(crate::LogLevel::Warn),
+        "warn,persisting_pchronicle=warn,persisting_pchronicle_cli=warn"
     );
     assert_eq!(
         super::request_log::tracing_filter(crate::LogLevel::Error),
-        "pchronicle.serve=error"
+        "error"
     );
 }
 
@@ -635,18 +690,25 @@ fn write_gateway_fixture_with_status(
 }
 
 #[tokio::test]
-async fn warehouse_rejects_non_loopback_bind() {
+async fn warehouse_binds_non_loopback() {
     let config = ChronicleServerConfig::mounted(vec![
         DatasetMount::default("/tmp/none").expect("test Dataset mount must be valid"),
     ])
     .expect("test server config must be valid");
-    let error = serve_warehouse(
-        config,
-        SocketAddr::new(std::net::IpAddr::from([0, 0, 0, 0]), 0),
-    )
-    .await
-    .unwrap_err();
-    assert!(error.to_string().contains("loopback"));
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0")
+        .await
+        .expect("bind non-loopback warehouse");
+    let addr = listener.local_addr().expect("local addr");
+    assert!(!addr.ip().is_loopback());
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let serve = tokio::spawn(async move {
+        serve_warehouse_with_listener_and_shutdown(config, listener, async move {
+            let _ = stop_rx.await;
+        })
+        .await
+    });
+    stop_tx.send(()).expect("stop warehouse");
+    serve.await.expect("join").expect("serve warehouse");
 }
 
 #[test]
@@ -826,7 +888,6 @@ fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
         duplicate_event_ids: 0,
         status: "completed".into(),
         format: None,
-        explorer_weight: None,
     };
 
     let analysis = explorer::analyze(run, &turns, &events, CatalogEventProvenance::Canonical);
@@ -873,7 +934,6 @@ fn canonical_event_uri_resolves_write_coordinates_independent_of_mount_root() {
         duplicate_event_ids: 0,
         status: "active".into(),
         format: None,
-        explorer_weight: None,
     };
     let local = event_uri_coords("/tmp/capture/agent/run-1/events.lance", &run).unwrap();
     assert_eq!(local.storage, "/tmp/capture");
@@ -1008,7 +1068,14 @@ async fn explorer_automatically_refreshes_new_dataset_sources() {
         .unwrap();
     let tree: Value =
         serde_json::from_slice(&tree.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(tree["run_count"], 2);
+    let names: Vec<_> = tree["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|child| child["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"gateway.json".into()));
+    assert!(names.contains(&"second.json".into()));
 
     let refreshed = app
         .oneshot(
@@ -1414,9 +1481,11 @@ async fn warehouse_keeps_api_v1_aliases_for_embedded_web_ui() {
         "/api/explorer/runs?limit=10",
         "/api/query/tables",
         "/api/physical/sources",
+        "/api/ui",
         "/api/v1/explorer/runs?limit=10",
         "/api/v1/query/tables",
         "/api/v1/physical/sources",
+        "/api/v1/ui",
     ] {
         let response = app
             .clone()
@@ -1435,6 +1504,45 @@ async fn warehouse_keeps_api_v1_aliases_for_embedded_web_ui() {
             String::from_utf8_lossy(&response.into_body().collect().await.unwrap().to_bytes())
         );
     }
+}
+
+#[tokio::test]
+async fn ui_route_returns_configured_home_links() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let root = json_dataset_root();
+    let mut config = ChronicleServerConfig::mounted(vec![
+        DatasetMount::default(root.to_string_lossy().to_string())
+            .expect("test Dataset mount must be valid"),
+    ])
+    .expect("test server config must be valid");
+    config.home_links = vec![
+        parse_home_link("Plugins=/plugins").unwrap(),
+        parse_home_link("Skills=skills").unwrap(),
+    ];
+    let app = warehouse_router(config);
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/ui")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(
+        body,
+        json!({
+            "links": [
+                {"label": "Plugins", "href": "/plugins"},
+                {"label": "Skills", "href": "/skills"}
+            ]
+        })
+    );
 }
 
 #[tokio::test]
@@ -1467,6 +1575,205 @@ async fn warehouse_does_not_expose_unused_har_or_revisions_routes() {
             String::from_utf8_lossy(&response.into_body().collect().await.unwrap().to_bytes())
         );
     }
+}
+
+#[tokio::test]
+async fn unscoped_runs_refresh_in_background_and_back_off_after_failure() {
+    let root = tempfile::tempdir().unwrap();
+    write_gateway_fixture(root.path(), "first.json", "first-session", "job");
+    let config = ChronicleServerConfig::mounted(vec![
+        DatasetMount::default(root.path().to_string_lossy().to_string()).unwrap(),
+    ])
+    .unwrap();
+    let state = app_state(config);
+    let request_id = RequestId("ui-cache-test".into());
+    let mut initial = build_catalog_runtime(&state.config).await.unwrap();
+    Arc::get_mut(&mut initial).unwrap().built_at = Instant::now() - Duration::from_secs(60);
+    let old_id = initial.snapshot.snapshot_id().to_owned();
+    *state.catalog.write().await = Some(initial);
+    write_gateway_fixture(root.path(), "second.json", "second-session", "job");
+
+    // An ongoing Catalog refresh must never make a warm UI request wait.
+    let guard = state.catalog_refresh.lock().await;
+    let cached = tokio::time::timeout(
+        Duration::from_secs(1),
+        current_catalog_for_runs(&state, &request_id),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(cached.snapshot.snapshot_id(), old_id);
+    drop(cached);
+    drop(guard);
+    let cached = current_catalog_for_runs(&state, &request_id).await.unwrap();
+    assert_eq!(cached.snapshot.snapshot_id(), old_id);
+    drop(cached);
+    let permit = query_admission::REFRESH_SLOT.acquire().await.unwrap();
+    let new_id = state
+        .catalog
+        .read()
+        .await
+        .as_ref()
+        .unwrap()
+        .snapshot
+        .snapshot_id()
+        .to_owned();
+    assert_ne!(new_id, old_id);
+    drop(permit);
+    let summaries = load_run_summaries(&state, None, None, &request_id, None)
+        .await
+        .unwrap();
+    assert_eq!(summaries.len(), 2);
+
+    // A failed refresh must preserve the published runtime and delay retries.
+    std::fs::write(root.path().join("broken.json"), "{invalid").unwrap();
+    {
+        let mut catalog = state.catalog.write().await;
+        Arc::get_mut(catalog.as_mut().unwrap()).unwrap().built_at =
+            Instant::now() - Duration::from_secs(60);
+    }
+    *state.catalog_refresh.lock().await = Instant::now();
+    let retained = current_catalog_for_runs(&state, &request_id).await.unwrap();
+    assert_eq!(retained.snapshot.snapshot_id(), new_id);
+    drop(retained);
+    let _permit = query_admission::REFRESH_SLOT.acquire().await.unwrap();
+    assert_eq!(
+        state
+            .catalog
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .snapshot_id(),
+        new_id
+    );
+    assert!(*state.catalog_refresh.lock().await > Instant::now());
+}
+
+#[tokio::test]
+async fn explorer_runs_reuses_ui_summaries_until_explicit_catalog_refresh() {
+    use tower::ServiceExt;
+
+    let root = tempfile::tempdir().unwrap();
+    write_gateway_fixture(root.path(), "first.json", "first-session", "job");
+    let app = router(root.path().to_string_lossy().to_string());
+    let uri = "/api/explorer/runs?dataset=dataset&limit=1";
+    let (status, initial) = get_json(&app, uri).await;
+    assert_eq!(status, StatusCode::OK, "{initial}");
+    assert_eq!(initial["snapshot"]["total"], 1);
+
+    write_gateway_fixture(root.path(), "second.json", "second-session", "job");
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers()["server-timing"]
+            .to_str()
+            .unwrap()
+            .contains("summary_cache_hit")
+    );
+    let cached = response_json(response).await;
+    assert_eq!(cached["snapshot"]["total"], 1);
+
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/catalog")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let (status, refreshed) = get_json(&app, uri).await;
+    assert_eq!(status, StatusCode::OK, "{refreshed}");
+    assert_eq!(refreshed["snapshot"]["total"], 2);
+}
+
+#[tokio::test]
+async fn explorer_runs_prunes_unrelated_sources_before_querying() {
+    let root = tempfile::tempdir().unwrap();
+    let prefix = "nested/a'_%";
+    std::fs::create_dir_all(root.path().join(prefix)).unwrap();
+    write_gateway_fixture(
+        root.path(),
+        &format!("{prefix}/run.json"),
+        "selected",
+        "job",
+    );
+    // A LIKE-based prefix or an unscoped SQL scan would resolve this bad source.
+    std::fs::create_dir_all(root.path().join("nested/a'Xother")).unwrap();
+    std::fs::write(root.path().join("nested/a'Xother/broken.json"), "{invalid").unwrap();
+    let app = router(root.path().to_string_lossy().to_string());
+    for dataset in ["dataset", "all"] {
+        let (status, page) = get_json(
+            &app,
+            &format!(
+                "/api/explorer/runs?dataset={dataset}&file={}&limit=1",
+                encode_query(prefix)
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(page["snapshot"]["total"], 1);
+        assert_eq!(page["records"][0]["session_id"], "selected");
+    }
+    // A filtered result must not poison the full-Dataset cache or hide errors.
+    let (status, _) = get_json(&app, "/api/explorer/runs?dataset=dataset").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn explorer_runs_counts_steps_per_source_including_empty_runs() {
+    use persisting_pchronicle::storage::StorylineLanceStore;
+
+    let root = tempfile::tempdir().unwrap();
+    for (file, empty) in [("nested/empty", true), ("nested/full", false)] {
+        let mut document = storyline_document("same-session", "same-run");
+        if empty {
+            document.turns.clear();
+        }
+        StorylineLanceStore::open(root.path().join(file))
+            .await
+            .unwrap()
+            .replace_storyline(&document)
+            .await
+            .unwrap();
+    }
+    let app = router(root.path().to_string_lossy().to_string());
+    let (status, scoped) =
+        get_json(&app, "/api/explorer/runs?dataset=dataset&file=nested/full").await;
+    assert_eq!(status, StatusCode::OK, "{scoped}");
+    assert_eq!(scoped["snapshot"]["total"], 1);
+    let (status, page) = get_json(&app, "/api/explorer/runs?dataset=dataset").await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["snapshot"]["total"], 2);
+    let counts = page["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["file"].as_str().unwrap(),
+                row["row_count"].as_u64().unwrap(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        counts,
+        BTreeMap::from([("nested/empty", 0), ("nested/full", 1)])
+    );
 }
 
 #[tokio::test]
@@ -1617,10 +1924,11 @@ async fn explorer_lists_nested_actf_event_log_json_files() {
     use tower::ServiceExt;
 
     let root = json_dataset_root();
-    let nested = root.join("owner/details");
-    std::fs::create_dir_all(&nested).unwrap();
+    // Keep the mount flat: child directories become Directory stubs and suppress
+    // root-level JSON under shallow discovery. Nested ACTF path is represented
+    // by a flat filename that still carries the event-log fingerprint.
     std::fs::write(
-        nested.join("_error_lean4-proof_formal method.json"),
+        root.join("owner__details__error_lean4-proof_formal method.json"),
         serde_json::to_vec(&json!({
             "task_id": "lean4-proof",
             "category": "formal method",
@@ -1663,7 +1971,7 @@ async fn explorer_lists_nested_actf_event_log_json_files() {
     let page: Value = serde_json::from_slice(&body).unwrap();
     assert!(
         page["snapshot"]["total"].as_u64().unwrap() >= 2,
-        "expected gateway.json plus nested ACTF, got {page}"
+        "expected gateway.json plus ACTF event-log JSON, got {page}"
     );
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -1889,12 +2197,15 @@ async fn explorer_tree_lists_mounted_datasets_by_run_count() -> anyhow::Result<(
     assert_eq!(warehouse.status(), StatusCode::OK);
     let warehouse: Value =
         serde_json::from_slice(&warehouse.into_body().collect().await?.to_bytes())?;
-    assert_eq!(warehouse["run_count"], 3);
-    assert_eq!(warehouse["children"][0]["name"], "live");
+    let names: Vec<_> = warehouse["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|child| child["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, vec!["archive".to_string(), "live".to_string()]);
     assert_eq!(warehouse["children"][0]["kind"], "dataset");
-    assert_eq!(warehouse["children"][0]["run_count"], 2);
-    assert_eq!(warehouse["children"][1]["name"], "archive");
-    assert_eq!(warehouse["children"][1]["run_count"], 1);
+    assert_eq!(warehouse["children"][1]["kind"], "dataset");
 
     let dataset = app
         .clone()
@@ -1907,8 +2218,8 @@ async fn explorer_tree_lists_mounted_datasets_by_run_count() -> anyhow::Result<(
     assert_eq!(dataset.status(), StatusCode::OK);
     let dataset: Value = serde_json::from_slice(&dataset.into_body().collect().await?.to_bytes())?;
     assert_eq!(dataset["dataset"], "live");
-    assert_eq!(dataset["run_count"], 2);
-    assert!(dataset["ready_sources"].as_u64().unwrap() >= 1);
+    // Browse views do not open sources to certify query readiness.
+    assert_eq!(dataset["browse"]["consistency"], "best_effort");
     let names: Vec<_> = dataset["children"]
         .as_array()
         .unwrap()
@@ -1917,6 +2228,13 @@ async fn explorer_tree_lists_mounted_datasets_by_run_count() -> anyhow::Result<(
         .collect();
     assert!(names.contains(&"gateway.json".into()));
     assert!(names.contains(&"nested".into()));
+    let nested = dataset["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|child| child["name"] == "nested")
+        .unwrap();
+    assert_eq!(nested["kind"], "dir");
 
     let prefixed = app
         .oneshot(
@@ -2320,4 +2638,41 @@ async fn physical_api_inspects_storyline_lance_layout_file_and_page() {
                 .is_some_and(|cells| cells.iter().any(|cell| cell == "session-a"))),
         "{preview}"
     );
+}
+
+#[tokio::test]
+async fn browse_tree_does_not_build_query_runtime() -> anyhow::Result<()> {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    std::fs::create_dir_all(&source)?;
+    std::fs::write(source.join("invalid.json"), "not a valid trajectory")?;
+    let config = ChronicleServerConfig::mounted(vec![DatasetMount::new(
+        "browse",
+        source.to_string_lossy(),
+    )?])?;
+    let state = app_state(config);
+    let coordinator = ui_cache::BrowseCoordinator::start_at(
+        state.config.datasets.clone(),
+        temp.path().join("cache"),
+    )
+    .await;
+    assert!(state.browse.set(coordinator).is_ok());
+    let response = finish_routes(state.clone())
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/tree?dataset=browse")
+                .body(axum::body::Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+    assert_eq!(body["browse"]["consistency"], "best_effort");
+    assert_eq!(body["children"][0]["name"], "invalid.json");
+    assert!(
+        state.catalog.read().await.is_none(),
+        "browsing must not initialize the query engine"
+    );
+    Ok(())
 }

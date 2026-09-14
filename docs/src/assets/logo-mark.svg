@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-labelledby="title desc">
+  <title id="title">Persisting</title><desc id="desc">A small constellation of four persistent points</desc>
+  <defs><linearGradient id="g" x1="8" y1="40" x2="40" y2="8" gradientUnits="userSpaceOnUse"><stop stop-color="#67e8f9"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs>
+  <rect x="3" y="3" width="42" height="42" rx="13" fill="#07102d" stroke="#294477" stroke-width="1.5"/>
+  <path d="M11 31 19 18l10 12 8-16" fill="none" stroke="url(#g)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="11" cy="31" r="2.8" fill="#67e8f9"/><circle cx="19" cy="18" r="2.8" fill="#dbeafe"/><circle cx="29" cy="30" r="2.8" fill="#c4b5fd"/><circle cx="37" cy="14" r="2.8" fill="#f0abfc"/>
+</svg>

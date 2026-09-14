@@ -1,97 +1,96 @@
 # Run your first Agent
 
-This walkthrough completes one useful cycle: install Persisting, run an Agent
-inside a staged environment, inspect its effects, and selectively accept them.
-It assumes macOS or Linux.
+This path takes you from an empty project to a reviewed change. Each step leaves
+you with a useful checkpoint, so you can stop before adding more power.
 
-## 1. Install the CLI
+!!! tip "The pVisor loop"
 
-The wheel installs the current Persisting command-line entry points together:
+    **Run → review → choose → continue.** The Agent works in a staged view;
+    your project changes only when you apply an Effect.
+
+## Before you start
+
+You need macOS or Linux, a project directory, and an Agent command such as
+`codex`. Install the CLI and confirm both product entry points:
 
 ```bash
 pip install persisting
+pvisor --help
+pchronicle --help
 ```
 
-To use the current nightly build instead:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
-```
-
-On macOS, install macFUSE once before using a staged host workspace:
+On macOS, install macFUSE before using a staged host workspace:
 
 ```bash
 brew install --cask macfuse
 ```
 
-Confirm the entry points:
+See [Installation](../installation.md) for source builds, VM support, and
+platform requirements.
 
-```bash
-pvisor --help
-pchronicle --help
-```
+## 1. Run one Agent in a stage
 
-See [Installation](../installation.md) for source builds, VM support, platform
-requirements, and component overrides.
-
-## 2. Run one Agent
-
-From a project directory:
+From the project directory, start with one explicit stage:
 
 ```bash
 pvisor run --stage ./runs/task-001 -- codex
 ```
 
-Replace `codex` with another Agent command if needed. `--stage ./runs/task-001` creates a
-Run-owned stage for workspace writes and installs the supported platform
-controls. It does not silently describe every platform as providing the same
-isolation; the Run Bundle records filesystem, network, and other capability
-evidence separately.
+Replace `codex` with your Agent command. The Agent edits the staged view while
+the base project stays unchanged. When the command finishes, you have a Run
+Bundle to inspect.
 
-During the Run, the Agent edits its staged view. The base project is unchanged.
+!!! success "Checkpoint: the base is still safe"
 
-## 3. Review the effects
+    Check `git status` in the base project. The Agent's edits should not appear
+    there until you apply them.
+
+## 2. Review what actually happened
+
+Start with the summary, then inspect the staged view:
 
 ```bash
 pvisor review last
 pvisor inspect last -- git status --short
 ```
 
-Review the file changes, network counters, effective controls, and warnings
-before accepting anything.
+Review file Effects, effective controls, network evidence, and warnings before
+deciding what crosses the boundary. A successful command does not mean every
+requested capability was available; the Run Bundle records the mechanisms that
+actually applied.
 
-## 4. Accept a subset
+## 3. Apply one small, trusted change
 
-Apply one area first:
+Apply a path first. Everything else remains staged:
 
 ```bash
 pvisor apply last --path src
+pvisor review last
 ```
 
-The rest remains staged. Review again and select another batch:
+You can apply another dependency-closed selection later:
 
 ```bash
-pvisor review last
 pvisor apply last --include 'tests/**' --exclude 'tests/generated/**'
 ```
 
-Finish by accepting everything that remains, or discard it:
+Finish with `pvisor apply last --all`, or discard the remaining Effects with
+`pvisor drop last`.
 
-```bash
-pvisor apply last --all
-# or
-pvisor drop last
-```
+!!! success "Checkpoint: you control the boundary"
 
-This separation is the core local workflow: the Agent can operate without an
-approval prompt for every edit, while the user controls which effects enter the
-real project.
+    The accepted batch is in the real project. The remaining batch is still
+    reviewable and can be applied, inspected, or dropped independently.
 
-## 5. Choose where to continue
+## 4. Choose the next layer
 
-- [Understand the Persisting product overview](../overview.md)
-- [Learn selective, repeatable apply](guides/review-apply.md)
-- [Choose a host, container, or VM layout](guides/execution.md)
+Only add the control you need for the next Run:
+
+- [Apply changes repeatedly and keep checkpoints](guides/review-apply.md)
+- [Choose a host, OCI, or VM execution environment](guides/execution.md)
 - [Control network access](guides/network.md)
-- [Capture Agent trajectories](guides/capture.md)
-- [Explore durable history](../pchronicle/get-started.md)
+- [Capture the Run as pChronicle history](guides/capture.md)
+- [Replay or compare a sandbox](guides/sandbox-replay.md)
+
+For the complementary history workflow, continue with [Explore your first
+Dataset](../pchronicle/get-started.md).

@@ -1,20 +1,22 @@
 # 运行第一个 Agent
 
-这篇指南只完成一条有用的闭环：安装 Persisting，在 staged environment 中运行 Agent，
-检查它产生的 Effect，再选择性接受修改。支持 macOS 与 Linux。
+这条路径把你从空项目带到一次经过审查的修改。每一步都有明确的检查点，
+你可以在需要时停下来，不必一次学完所有能力。
 
-## 1. 安装 CLI
+!!! tip "pVisor 的工作循环"
 
-Wheel 会同时安装 Persisting 当前的命令行入口：
+    **运行 → 审查 → 选择 → 继续。** Agent 在 staged view 中工作，只有
+    `apply` 的 Effect 才会进入真实项目。
+
+## 开始前
+
+你需要 macOS 或 Linux、一个项目目录，以及 `codex` 这样的 Agent 命令。
+先安装 CLI，并确认两个产品入口都可用：
 
 ```bash
 pip install persisting
-```
-
-也可以安装当前 nightly build：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
+pvisor --help
+pchronicle --help
 ```
 
 macOS 使用 staged host workspace 前，需要安装一次 macFUSE：
@@ -23,69 +25,64 @@ macOS 使用 staged host workspace 前，需要安装一次 macFUSE：
 brew install --cask macfuse
 ```
 
-确认命令入口：
+源码构建、VM 支持和平台要求见[安装指南](../installation.md)。
 
-```bash
-pvisor --help
-pchronicle --help
-```
+## 1. 在 stage 中运行一个 Agent
 
-源码构建、VM 支持、平台要求与组件覆盖见[安装指南](../installation.md)。
-
-## 2. 运行一个 Agent
-
-进入项目目录：
+进入项目目录，先使用一个明确的 stage：
 
 ```bash
 pvisor run --stage ./runs/task-001 -- codex
 ```
 
-也可以把 `codex` 换成其他 Agent 命令。`--stage ./runs/task-001` 为 workspace 写入创建 Run 独占 stage，
-并安装当前平台支持的控制机制。它不会把所有平台描述成具有相同隔离强度；Run Bundle
-会分别记录文件系统、网络与其他 capability evidence。
+也可以换成你的 Agent 命令。Agent 修改的是 staged view，基础项目保持不变。
+命令结束后，你会得到一个可以审查的 Run Bundle。
 
-Run 期间，Agent 修改的是 staged view，基础项目保持不变。
+!!! success "检查点：基础项目仍然安全"
 
-## 3. 检查 Effect
+    在基础项目中运行 `git status`。在 `apply` 之前，不应看到 Agent 的修改。
+
+## 2. 审查实际发生的事情
+
+先看汇总，再检查 staged view：
 
 ```bash
 pvisor review last
 pvisor inspect last -- git status --short
 ```
 
-接受修改前，检查文件变化、网络计数、实际控制机制与警告。
+在决定哪些内容越过边界前，检查文件 Effect、实际控制机制、网络证据和警告。
+命令成功并不代表所有请求的 capability 都可用；Run Bundle 会记录实际生效的机制。
 
-## 4. 接受一部分修改
+## 3. 先应用一小块可信修改
 
-先应用一个区域：
+先应用一个路径，其余内容继续留在 stage 中：
 
 ```bash
 pvisor apply last --path src
+pvisor review last
 ```
 
-其他修改继续留在 stage 中。再次 review，并选择下一批：
+之后可以继续应用另一组依赖闭合的选择：
 
 ```bash
-pvisor review last
 pvisor apply last --include 'tests/**' --exclude 'tests/generated/**'
 ```
 
-最后接受全部剩余修改，或者丢弃：
+完成时使用 `pvisor apply last --all`，或用 `pvisor drop last` 丢弃剩余 Effect。
 
-```bash
-pvisor apply last --all
-# 或者
-pvisor drop last
-```
+!!! success "检查点：边界由你控制"
 
-这就是本地工作流的核心：Agent 无需为每次编辑弹出 approval，而用户仍然决定哪些
-Effect 可以进入真实项目。
+    已接受的批次进入真实项目；剩余批次仍然可以独立审查、应用或丢弃。
 
-## 5. 按任务继续
+## 4. 选择下一层能力
 
-- [查看 Persisting 产品概览](../overview.md)
-- [学习选择性、多次 apply](guides/review-apply.md)
-- [选择 host、Container 或 VM 运行方式](guides/execution.md)
+只为下一次 Run 增加你需要的控制：
+
+- [多次选择性 apply，并保留检查点](guides/review-apply.md)
+- [选择 host、OCI 或 VM 执行环境](guides/execution.md)
 - [控制网络访问](guides/network.md)
-- [捕获 Agent 轨迹](guides/capture.md)
-- [查询持久化历史](../pchronicle/get-started.md)
+- [把 Run 捕获为 pChronicle 历史](guides/capture.md)
+- [回放或比较 sandbox](guides/sandbox-replay.md)
+
+要学习配套的历史工作流，请继续阅读[探索第一个 Dataset](../pchronicle/get-started.md)。

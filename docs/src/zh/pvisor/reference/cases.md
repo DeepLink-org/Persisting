@@ -186,7 +186,9 @@ Linux host stage 示例需要可用的 user/mount namespace。VM 示例需要可
 
   准备：Linux user/mount namespace 或 macOS Seatbelt 可用。
 
-  预期：当前 host 执行路径在启动 Agent 前拒绝请求，并列出缺少执行证据的能力。此例验证拒绝路径，不代表 strict 在所有 executor 上都不可用。
+  预期：当前 host / container / VM 执行路径在启动 Agent 前均因缺少 Subprocess
+  enforcement 证据而拒绝请求（`UnsupportedPolicy`）。此例验证 fail-closed，
+  不代表 `--strict` 当前在任一 executor 上可达“更强沙箱已就绪”。
 
   <!-- pvisor-case: expect=nonzero -->
 

@@ -1,6 +1,6 @@
 //! ACTF ⇄ Storyline conversion.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use anyhow::Context as _;
 use serde_json::{Map, Value, json};
@@ -59,12 +59,14 @@ fn actf_tool_to_storyline(
 
 fn actf_observation_to_storyline_with_call_id(
     observation: &ActfObservation,
-    fallback_call_id: Option<&str>,
+    override_call_id: Option<&str>,
 ) -> Value {
     let mut result =
         serde_json::to_value(observation).unwrap_or_else(|_| Value::Object(Map::new()));
     if let Some(object) = result.as_object_mut() {
-        if let Some(source_call_id) = actf_observation_call_id(observation).or(fallback_call_id) {
+        if let Some(source_call_id) =
+            override_call_id.or_else(|| actf_observation_call_id(observation))
+        {
             object.insert(
                 "source_call_id".into(),
                 Value::String(source_call_id.to_string()),
@@ -81,12 +83,11 @@ fn actf_observation_to_storyline_with_call_id(
     result
 }
 
-fn actf_observation_fallback_call_id(
+fn actf_observation_fallback_call_index(
     observation: &ActfObservation,
     source_tools: &[ActfToolCall],
-    step_id: i64,
     assigned: &mut [bool],
-) -> Option<String> {
+) -> Option<usize> {
     if actf_observation_call_id(observation).is_some() {
         return None;
     }
@@ -120,7 +121,37 @@ fn actf_observation_fallback_call_id(
         })
         .map(|(index, _)| index)?;
     assigned[position] = true;
-    Some(source_tools[position].effective_id(step_id, position))
+    Some(position)
+}
+
+fn actf_observation_tool_index(
+    observation: &ActfObservation,
+    source_tools: &[ActfToolCall],
+    step_id: i64,
+    assigned: &mut [bool],
+) -> Option<usize> {
+    if let Some(call_id) = actf_observation_call_id(observation) {
+        return source_tools.iter().enumerate().find_map(|(index, call)| {
+            (call.effective_id(step_id, index) == call_id).then_some(index)
+        });
+    }
+    actf_observation_fallback_call_index(observation, source_tools, assigned)
+}
+
+/// Skillsbench / retry dumps often reuse the same tool call id across steps.
+/// Storyline requires document-unique ids, so allocate a stable suffix here.
+fn allocate_unique_tool_call_id(preferred: String, seen: &mut HashSet<String>) -> String {
+    if seen.insert(preferred.clone()) {
+        return preferred;
+    }
+    let mut suffix = 2u32;
+    loop {
+        let candidate = format!("{preferred}#{suffix}");
+        if seen.insert(candidate.clone()) {
+            return candidate;
+        }
+        suffix = suffix.saturating_add(1);
+    }
 }
 
 pub(crate) fn actf_to_storylines(document: &ActfDocument) -> Result<Vec<StorylineDocument>> {
@@ -171,6 +202,7 @@ fn attempt_to_storyline(
         .as_ref()
         .and_then(|(system, user)| StorylinePrompt::from_pair(system, user));
     let mut turns = Vec::with_capacity(attempt.trajectory.steps.len());
+    let mut seen_tool_call_ids = HashSet::new();
     for (step, pair) in attempt.trajectory.steps.iter().zip(prompt_pairs) {
         let source_tools = step.effective_tools();
         let mut assigned_observation_calls = vec![false; source_tools.len()];
@@ -183,13 +215,23 @@ fn attempt_to_storyline(
                 assigned_observation_calls[position] = true;
             }
         }
+        let unique_ids = source_tools
+            .iter()
+            .enumerate()
+            .map(|(call_index, call)| {
+                allocate_unique_tool_call_id(
+                    call.effective_id(step.step_id, call_index),
+                    &mut seen_tool_call_ids,
+                )
+            })
+            .collect::<Vec<_>>();
         let tool_calls = (!source_tools.is_empty())
             .then(|| {
                 source_tools
                     .iter()
                     .enumerate()
                     .map(|(call_index, call)| {
-                        Ok(actf_tool_to_storyline(
+                        let mut converted = actf_tool_to_storyline(
                             call,
                             if source_tools.len() == 1 {
                                 step.metric.env_action_ms.as_f64().map(|value| value as i64)
@@ -198,7 +240,9 @@ fn attempt_to_storyline(
                             },
                             step.step_id,
                             call_index,
-                        ))
+                        );
+                        converted.tool_call_id = unique_ids[call_index].clone();
+                        Ok(converted)
                     })
                     .collect::<Result<Vec<_>>>()
             })
@@ -208,16 +252,14 @@ fn attempt_to_storyline(
                 .observation
                 .iter()
                 .map(|observation| {
-                    let fallback_call_id = actf_observation_fallback_call_id(
+                    let call_index = actf_observation_tool_index(
                         observation,
                         source_tools,
                         step.step_id,
                         &mut assigned_observation_calls,
                     );
-                    actf_observation_to_storyline_with_call_id(
-                        observation,
-                        fallback_call_id.as_deref(),
-                    )
+                    let unique_call_id = call_index.map(|index| unique_ids[index].as_str());
+                    actf_observation_to_storyline_with_call_id(observation, unique_call_id)
                 })
                 .collect::<Vec<_>>();
             json!({"results": results})
@@ -425,8 +467,7 @@ fn openclaw_message_to_turn(event: &Value, id: i64) -> Result<Option<StorylineTu
     let timestamp = event
         .get("timestamp")
         .and_then(Value::as_str)
-        .map(StorylineTimestamp::from_rfc3339)
-        .transpose()?;
+        .and_then(StorylineTimestamp::from_rfc3339_lenient);
     let content = message.get("content").cloned().unwrap_or(Value::Null);
     match role {
         "user" => Ok(Some(StorylineTurn {
@@ -1577,6 +1618,50 @@ mod tests {
             "/app"
         );
         assert_eq!(storyline_to_actf(&story).unwrap(), document);
+    }
+
+    #[test]
+    fn actf_reused_tool_call_ids_across_steps_are_uniquified() {
+        let document = parse_actf_document(
+            r#"{
+              "task_id":"task-reuse","category":"software-engineering","k":1,
+              "correct":false,"attempts_tried":1,"solved_at":null,
+              "attempts":{"1":{"correct":false,"final_answer":null,"ground_truth":"expected",
+              "trajectory":{"schema_version":"ACTF_v1.0","steps":[{
+                "step_id":1,
+                "assistant_content":{"content":"one","reasoning_content":"","tool_calls":[{"type":"tool_use","id":"call_ab31e377d3db4d3187f55bdc","name":"Bash","input":{"command":"pwd"}}]},
+                "metric":{"prompt_tokens_len":1,"completion_tokens_len":2,"llm_infer_ms":3.5,"env_action_ms":4.5,"stop_reason":null},
+                "system_prompt":"sys","user_content":"task",
+                "tools":[{"type":"tool_use","id":"call_ab31e377d3db4d3187f55bdc","name":"Bash","input":{"command":"pwd"}}],
+                "observation":[{"tool_use_id":"call_ab31e377d3db4d3187f55bdc","type":"tool_result","content":"/app","is_error":false}],
+                "started_at":"2026-01-01 00:00:00+00:00","finished_at":"2026-01-01 00:00:01+00:00"
+              },{
+                "step_id":2,
+                "assistant_content":{"content":"two","reasoning_content":"","tool_calls":[{"type":"tool_use","id":"call_ab31e377d3db4d3187f55bdc","name":"Bash","input":{"command":"ls"}}]},
+                "metric":{"prompt_tokens_len":1,"completion_tokens_len":2,"llm_infer_ms":3.5,"env_action_ms":4.5,"stop_reason":null},
+                "system_prompt":"sys","user_content":"task",
+                "tools":[{"type":"tool_use","id":"call_ab31e377d3db4d3187f55bdc","name":"Bash","input":{"command":"ls"}}],
+                "observation":[{"tool_use_id":"call_ab31e377d3db4d3187f55bdc","type":"tool_result","content":"ok","is_error":false}],
+                "started_at":"2026-01-01 00:00:02+00:00","finished_at":"2026-01-01 00:00:03+00:00"
+              }],"started_at":"2026-01-01 00:00:00+00:00","finished_at":"2026-01-01 00:00:03+00:00"},
+              "status":"completed","score":null,"error":"","artifacts":{},"extra":{},"analysis_result":{},"meta":{}}}
+            }"#,
+        )
+        .unwrap();
+        let story = actf_to_storyline(&document).unwrap();
+        story.validate().unwrap();
+        assert_eq!(
+            story.turns[0].tool_calls.as_ref().unwrap()[0].tool_call_id,
+            "call_ab31e377d3db4d3187f55bdc"
+        );
+        assert_eq!(
+            story.turns[1].tool_calls.as_ref().unwrap()[0].tool_call_id,
+            "call_ab31e377d3db4d3187f55bdc#2"
+        );
+        assert_eq!(
+            story.turns[1].observation.as_ref().unwrap()["results"][0]["source_call_id"],
+            "call_ab31e377d3db4d3187f55bdc#2"
+        );
     }
 
     #[test]

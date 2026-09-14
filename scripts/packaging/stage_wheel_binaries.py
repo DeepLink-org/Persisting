@@ -365,6 +365,13 @@ def _build_web_assets() -> None:
     assets.mkdir(parents=True, exist_ok=True)
     for stylesheet in sorted((WEB_ROOT / "assets").glob("*.css")):
         shutil.copy2(stylesheet, assets / stylesheet.name)
+    home_assets = WEB_ROOT / "assets" / "home"
+    if home_assets.is_dir():
+        destination = assets / "home"
+        destination.mkdir(parents=True, exist_ok=True)
+        for asset in sorted(home_assets.iterdir()):
+            if asset.is_file():
+                shutil.copy2(asset, destination / asset.name)
     manifest.write_text(
         f"__PCHRONICLE_EMBEDDED_WEB_ASSETS_V1__\n{digest}\n",
         encoding="utf-8",

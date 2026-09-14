@@ -609,10 +609,9 @@ async fn object_store_append_failure_preserves_committed_rows() {
     let session = flat_session(&storage, "agent", "session");
     append_events(&session, &[note("committed")]).await.unwrap();
 
-    let error = append_events(&session, &[identified_note("invalid", u64::MAX, "invalid")])
+    append_events(&session, &[identified_note("invalid", u64::MAX, "invalid")])
         .await
         .unwrap_err();
-    assert!(!error.to_string().is_empty());
 
     let replay = replay(&session, 0, None).await.unwrap();
     assert_eq!(replay.records.len(), 1);

@@ -4,13 +4,6 @@ use persisting_pchronicle::query::{
 };
 use proptest::prelude::*;
 
-fn runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("build test runtime")
-}
-
 proptest! {
     #![proptest_config(proptest::test_runner::Config {
         cases: 8,
@@ -27,7 +20,7 @@ proptest! {
             "step_id": 1,
             "response": {"role": "assistant", "content": message}
         }]);
-        let runtime = runtime();
+        let runtime = common::runtime();
         let temporary = tempfile::tempdir().expect("create temporary directory");
         let path = temporary.path().join("generated.json");
         std::fs::write(&path, input.to_string()).expect("write OpenAI input");
@@ -66,7 +59,7 @@ proptest! {
             "step_id": 1,
             "response": {"role": "assistant", "content": message},
         })).collect::<Vec<_>>();
-        let runtime = runtime();
+        let runtime = common::runtime();
         let temporary = tempfile::tempdir().expect("create temporary directory");
         let path = temporary.path().join("generated.json");
         std::fs::write(&path, serde_json::Value::Array(input).to_string()).expect("write OpenAI input");
@@ -89,3 +82,5 @@ proptest! {
         prop_assert!(actual.iter().all(|row| row[SOURCE_FILE_COLUMN] == "generated.json"));
     }
 }
+#[path = "../common/mod.rs"]
+mod common;

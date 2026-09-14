@@ -512,12 +512,16 @@ ci-nextest +packages:
     done
     cargo nextest run --locked "${args[@]}"
 
-# 单 crate：pchronicle | pchronicle-cli | agentctl | capture | ppilot | pvisor | dlcapt
+# 单 crate：pchronicle（含 CLI，对齐 CI pchronicle shard）| pchronicle-cli | …
 test-crate crate:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ crate }}" in
-      pchronicle) cargo nextest run -p persisting-pchronicle --locked ;;
+      pchronicle)
+        cargo nextest run --locked \
+          -p persisting-pchronicle \
+          -p persisting-pchronicle-cli
+        ;;
       pchronicle-cli) cargo nextest run -p persisting-pchronicle-cli --locked ;;
       agentctl) cargo nextest run -p persisting-agentctl --locked ;;
       capture) cargo nextest run -p persisting-gateway --locked ;;
@@ -628,8 +632,8 @@ proptest package:
 
 # Rust + Python. Rust tests run debug-mode nextest for faster iteration; use
 # `just test-rust` with a package for targeted coverage. Passing a package runs
-# only that Rust package; the full Python suite runs only for the no-argument
-# repository-wide invocation.
+# only that Rust package; `pchronicle` also runs persisting-pchronicle-cli.
+# The full Python suite runs only for the no-argument repository-wide invocation.
 test package="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -667,17 +671,16 @@ install-nightly:
 # ── 文档（docs/ 子项目）──────────────────────────────────────────────────────
 
 docs-sync:
-    cd "{{ docs_dir }}" && if [[ ! -x node_modules/.bin/docusaurus ]]; then npm ci; fi
+    cd "{{ docs_dir }}" && if [[ ! -x .venv/bin/zensical ]]; then uv venv .venv && UV_CACHE_DIR=/tmp/uv-cache uv pip install --python .venv/bin/python zensical==0.0.61; fi
 
 docs-serve: docs-sync
-    cd "{{ docs_dir }}" && npm run build && python3 "{{ repo }}/scripts/serve-docs.py" --host 0.0.0.0 --port 3000 --directory build
+    cd "{{ docs_dir }}" && .venv/bin/python "{{ repo }}/scripts/build-docs.py" && .venv/bin/python "{{ repo }}/scripts/serve-docs.py" --host 127.0.0.1 --port 3000 --directory site
 
-# Hot-reload development mode. Use docs-serve for a stable static preview.
 docs-serve-dirty: docs-sync
-    cd "{{ docs_dir }}" && npm run start -- --host 0.0.0.0
+    cd "{{ docs_dir }}" && .venv/bin/python "{{ repo }}/scripts/build-docs.py" && .venv/bin/python "{{ repo }}/scripts/serve-docs.py" --host 127.0.0.1 --port 3000 --directory site --watch
 
 docs-build: docs-sync
-    cd "{{ docs_dir }}" && npm run build
+    cd "{{ docs_dir }}" && .venv/bin/python "{{ repo }}/scripts/build-docs.py"
 
 # ── 数据与 fixture ───────────────────────────────────────────────────────────
 
@@ -705,6 +708,19 @@ check-quick:
 # capture 相关 Rust 测试（Gateway 包测试已覆盖全部 capture targets）。
 capture-test:
     just test-crate capture
+
+# Execute pChronicle single-machine/self-service cases.
+[group('test')]
+test-pchronicle-cases:
+    cargo build --release -p persisting-pchronicle-cli --locked
+    python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle target/release/pchronicle --report target/pchronicle-self-case-report.md
+
+# List and execute pChronicle platform/Catalog cases. Server lifecycle cases are
+# reported as MANUAL unless explicitly selected with PCHRONICLE_CASE_MODE.
+[group('test')]
+test-pchronicle-cases-platform:
+    cargo build --release -p persisting-pchronicle-cli --locked
+    python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle target/release/pchronicle --report target/pchronicle-platform-case-report.md
 
 # Run documented integration cases by component.
 # Examples:

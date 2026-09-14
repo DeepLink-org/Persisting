@@ -12,8 +12,8 @@
 | `just test` | 通过 `cargo nextest` 跑工作区 Rust 测试，再跑 Python 套件 |
 | `just test <package>` | 单个 crate 或 Cargo package（例如 `pvisor` 或 `persisting-pvisor`） |
 | `just docs-sync` | 安装锁定的文档环境 |
-| `just docs-serve` | 本地 Docusaurus 预览，文件修改时自动刷新 |
-| `just docs-serve-dirty` | 自动重载卡住时重新启动 Docusaurus 预览 |
+| `just docs-serve` | 本地 Zensical 预览，文件修改时自动刷新 |
+| `just docs-serve-dirty` | 自动重载卡住时重新启动 Zensical 预览 |
 | `just docs-build` | 构建静态文档站点 |
 | `just examples` | pVisor 与 pChronicle 产品示例套件 |
 | `just gate` | 格式化、lint 以及完整 Rust 测试工作区 |
@@ -21,7 +21,10 @@
 
 `just test` 使用 debug nextest profile 以便更快迭代。传入 Cargo package 名
 或短 crate 别名（`pvisor`、`pchronicle`、`pchronicle-cli`、
-`agentctl`、`capture`）。无参数形式还会跑 `just test-py`。
+`agentctl`、`capture`）。`just test pchronicle` 会同时跑
+`persisting-pchronicle` 与 `persisting-pchronicle-cli`（与 CI 的 pchronicle
+shard 一致）；只要 CLI 时用 `just test pchronicle-cli`。无参数形式还会跑
+`just test-py`。
 
 ## 当前笔记
 

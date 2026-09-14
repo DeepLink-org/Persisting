@@ -154,21 +154,14 @@ impl Drop for MaintenanceAfterPublishPause {
 }
 
 struct SuppressInvertedIndexes {
-    root_uri: String,
+    _guard: super::StorylineSearchIndexSuppressGuard,
 }
 
 impl SuppressInvertedIndexes {
     fn install(root_uri: &str) -> Self {
-        install_inverted_index_suppression(root_uri);
         Self {
-            root_uri: root_uri.to_string(),
+            _guard: super::StorylineSearchIndexSuppressGuard::for_uri(root_uri),
         }
-    }
-}
-
-impl Drop for SuppressInvertedIndexes {
-    fn drop(&mut self) {
-        remove_inverted_index_suppression(&self.root_uri);
     }
 }
 
@@ -344,6 +337,11 @@ async fn repeated_unknown_value_is_stored_once() {
         .await
         .unwrap();
     assert_eq!(objects.count_rows(None).await.unwrap(), 1);
+    let on_disk = store.on_disk_bytes().await.unwrap();
+    assert!(
+        on_disk > 0,
+        "committed Storyline Dataset should occupy disk"
+    );
     let hydrated = store
         .get_storyline_full("unknown-first")
         .await
@@ -1699,10 +1697,9 @@ async fn open_rejects_malformed_or_incomplete_commit_pointer() {
     )
     .await
     .unwrap();
-    let error = StorylineLanceStore::open(complete_pointer.path())
+    StorylineLanceStore::open(complete_pointer.path())
         .await
         .unwrap_err();
-    assert!(!error.to_string().is_empty());
 }
 
 #[tokio::test]

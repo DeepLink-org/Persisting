@@ -2,13 +2,6 @@ use persisting_pchronicle::document::DocumentFormat;
 use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 use proptest::prelude::*;
 
-fn runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("build test runtime")
-}
-
 proptest! {
     #![proptest_config(proptest::test_runner::Config {
         cases: 8,
@@ -25,7 +18,7 @@ proptest! {
             "agent": {"name": "agent", "version": "1"},
             "steps": []
         });
-        let runtime = runtime();
+        let runtime = common::runtime();
         let temporary = tempfile::tempdir().expect("create temporary directory");
         let path = temporary.path().join("generated.json");
         std::fs::write(&path, input.to_string()).expect("write ATIF input");
@@ -63,7 +56,7 @@ proptest! {
             "agent": {"name": "agent", "version": "1"},
             "steps": [{"step_id": 1, "source": "user", "message": message}]
         });
-        let runtime = runtime();
+        let runtime = common::runtime();
         let temporary = tempfile::tempdir().expect("create temporary directory");
         let path = temporary.path().join("generated.json");
         std::fs::write(&path, input.to_string()).expect("write ATIF input");
@@ -88,3 +81,5 @@ proptest! {
         prop_assert_eq!(&rows[0]["message_json"], &serde_json::Value::String(expected_message_json));
     }
 }
+#[path = "../common/mod.rs"]
+mod common;

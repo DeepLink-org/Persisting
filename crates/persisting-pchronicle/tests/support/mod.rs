@@ -23,6 +23,9 @@ pub async fn persist_and_restore(
     lookup: LookupStrategy,
 ) -> Result<Vec<StorylineDocument>> {
     let temporary = tempfile::tempdir()?;
+    let _suppress = persisting_pchronicle::storage::StorylineSearchIndexSuppressGuard::for_path(
+        temporary.path(),
+    );
     let store = StorylineLanceStore::open(temporary.path()).await?;
     store.replace_storylines(stories).await?;
 

@@ -40,6 +40,7 @@ async fn warehouse_read_route_matrix_exposes_the_documented_surface() -> Result<
     let app = warehouse()?;
     for (path, assertion) in [
         ("/api/health", "health"),
+        ("/api/ui", "ui"),
         ("/api/catalog", "catalog"),
         ("/api/query/tables", "tables"),
     ] {
@@ -51,6 +52,7 @@ async fn warehouse_read_route_matrix_exposes_the_documented_surface() -> Result<
         let body = json_body(response).await?;
         match assertion {
             "health" => assert_eq!(body, json!({"status":"ok","mode":"read_only"})),
+            "ui" => assert_eq!(body, json!({"links":[]})),
             "catalog" => {
                 assert_eq!(body["datasets"].as_array().map(Vec::len), Some(3));
             }

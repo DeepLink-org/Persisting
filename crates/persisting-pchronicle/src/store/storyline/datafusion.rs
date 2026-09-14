@@ -435,12 +435,24 @@ impl StorylineDataSource {
         paths: StorylineTablePaths,
         options: StorylineDataSourceOptions,
     ) -> Result<Self> {
-        let (runs, steps, tool_calls, objects) = tokio::try_join!(
-            open_dataset(&paths.runs, paths.runs_version),
-            open_dataset(&paths.steps, paths.steps_version),
-            open_dataset(&paths.tool_calls, paths.tool_calls_version),
-            open_objects(&paths.objects, paths.objects_version),
-        )?;
+        let remote = paths.runs.to_string_lossy().contains("://")
+            && !paths.runs.to_string_lossy().starts_with("file:");
+        let (runs, steps, tool_calls, objects) = if remote {
+            // Avoid four concurrent Lance opens against flaky S3 gateways.
+            (
+                open_dataset(&paths.runs, paths.runs_version).await?,
+                open_dataset(&paths.steps, paths.steps_version).await?,
+                open_dataset(&paths.tool_calls, paths.tool_calls_version).await?,
+                open_objects(&paths.objects, paths.objects_version).await?,
+            )
+        } else {
+            tokio::try_join!(
+                open_dataset(&paths.runs, paths.runs_version),
+                open_dataset(&paths.steps, paths.steps_version),
+                open_dataset(&paths.tool_calls, paths.tool_calls_version),
+                open_objects(&paths.objects, paths.objects_version),
+            )?
+        };
         let objects = Arc::new(objects);
         Ok(Self {
             paths,
@@ -515,7 +527,7 @@ fn combine_filters(filters: &[Expr]) -> Option<Expr> {
 }
 
 async fn open_dataset(path: &Path, version: u64) -> Result<Dataset> {
-    let dataset = Dataset::open(path.to_string_lossy().as_ref())
+    let dataset = super::open_dataset_uri(path.to_string_lossy().as_ref())
         .await
         .with_context(|| format!("open Storyline DataFusion table {}", path.display()))?;
     dataset.checkout_version(version).await.with_context(|| {

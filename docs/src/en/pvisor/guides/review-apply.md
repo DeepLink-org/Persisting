@@ -5,12 +5,12 @@ permission to modify the base project. After the Run, you decide which effects
 cross that boundary. This workflow applies the filesystem
 [Effect model](../concepts/run-model.md).
 
-:::note Before you start
-You need a project directory and a command that can run your Agent. If you are
-starting from scratch, complete [Run your first Agent](../get-started.md) first.
-The workflow below assumes you want manual control over when staged changes
-enter the base project.
-:::
+!!! note "Before you start"
+
+    You need a project directory and a command that can run your Agent. If you are
+    starting from scratch, complete [Run your first Agent](../get-started.md) first.
+    The workflow below assumes you want manual control over when staged changes
+    enter the base project.
 
 ## Run with a manual stage
 
@@ -74,11 +74,11 @@ point and discard the remaining changes:
 pvisor drop last
 ```
 
-:::tip Verify the result
-After each batch, compare the staged view with the base project. A successful
-`apply` means that the selected dependency-closed batch crossed the boundary;
-it does not mean that every remaining Effect was applied.
-:::
+!!! tip "Verify the result"
+
+    After each batch, compare the staged view with the base project. A successful
+    `apply` means that the selected dependency-closed batch crossed the boundary;
+    it does not mean that every remaining Effect was applied.
 
 ## Continue from an accepted point
 

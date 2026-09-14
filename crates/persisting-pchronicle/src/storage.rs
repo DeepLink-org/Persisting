@@ -2,6 +2,31 @@
 
 pub type Result<T> = anyhow::Result<T>;
 
+/// Parse an integer byte size with binary IEC suffixes.
+pub fn parse_byte_size(value: &str) -> std::result::Result<usize, String> {
+    let value = value.trim();
+    let suffixes = [
+        ("KiB", 1024usize),
+        ("MiB", 1024 * 1024),
+        ("GiB", 1024 * 1024 * 1024),
+    ];
+    let (number, multiplier) = suffixes
+        .iter()
+        .find_map(|(suffix, multiplier)| {
+            value
+                .strip_suffix(suffix)
+                .map(|number| (number, *multiplier))
+        })
+        .unwrap_or((value, 1));
+    let amount = number
+        .parse::<usize>()
+        .map_err(|_| format!("invalid byte size '{value}'; use an integer or KiB, MiB, GiB"))?;
+    amount
+        .checked_mul(multiplier)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| "byte size must be greater than zero and fit in usize".to_owned())
+}
+
 #[cfg(feature = "lance-store")]
 pub use crate::append_queue::{
     DEFAULT_RAW_EVENT_BATCH_DELAY, DEFAULT_RAW_EVENT_BATCH_SIZE,
@@ -25,27 +50,44 @@ pub use crate::discovery::{
 };
 
 #[cfg(feature = "lance-store")]
+pub use crate::store::index_build_progress::{
+    Guard as IndexBuildProgressGuard, install as install_index_build_progress,
+};
+#[cfg(feature = "lance-store")]
+pub use crate::store::object_store_io_gate::{
+    IoKind as ObjectStoreIoKind, ObjectStoreGateSnapshot, ObjectStoreThrottleEvent,
+    ObjectStoreThrottleHookGuard, format_aimd_flow_label as format_object_store_aimd_flow_label,
+    install_throttle_hook as install_object_store_throttle_hook,
+    snapshot as object_store_gate_snapshot,
+};
+
+#[cfg(feature = "lance-store")]
 pub use crate::store::{
-    AppendOutcome, AttemptRecord, AttemptRecordState, AttemptRegistry, CatalogDataset,
-    CatalogErrorPolicy, CatalogEventProvenance, CatalogEventView, CatalogNamespace, CatalogPage,
-    CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind,
-    CatalogSourceRevision, CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle,
-    ChronicleManifest, CommitRunOutcome, CompactJsonlColumn, CompactJsonlOffload,
-    CompactJsonlOptions, CompactJsonlRecord, CompactJsonlStore, DEFAULT_CONTENT_OFFLOAD_THRESHOLD,
-    DEFAULT_CONTENT_PREVIEW_BYTES, DEFAULT_DATASET_NAME, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
-    DEFAULT_MAX_EVENT_FALLBACK_ROWS, DEFAULT_PHYSICAL_PAGE_LIMIT, DatasetCatalogSnapshot,
-    DatasetLocation, DatasetLocationKind, DatasetMount, DiscoveredSource, EventFactSnapshot,
-    EventLogLayoutStats, EventWriterFence, ExportOutcome, LanceMaintenanceOptions,
-    LanceMaintenanceReport, LeaseAcquireOutcome, ManifestKind, ManifestStats, NamespacePath,
+    AppendOutcome, AttemptRecord, AttemptRecordState, AttemptRegistry, CachedDataset,
+    CatalogDataset, CatalogErrorPolicy, CatalogEventProvenance, CatalogEventView, CatalogNamespace,
+    CatalogPage, CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceDescription,
+    CatalogSourceKind, CatalogSourceRevision, CatalogSourceStatus, CatalogStorylineKey,
+    CatalogTrajectoryBundle, ChronicleManifest, CommitRunOutcome, CompactJsonlBuildPhase,
+    CompactJsonlColumn, CompactJsonlImportEvent, CompactJsonlOffload, CompactJsonlOptions,
+    CompactJsonlRecord, CompactJsonlStore, DEFAULT_CONTENT_OFFLOAD_THRESHOLD,
+    DEFAULT_CONTENT_PREVIEW_BYTES, DEFAULT_DATASET_NAME, DEFAULT_MAX_CHUNK_BYTES,
+    DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS, DEFAULT_PHYSICAL_PAGE_LIMIT,
+    Dataset, DatasetCatalogSnapshot, DatasetLocation, DatasetLocationKind, DatasetMount,
+    DatasetResolver, DiscoveredSource, EventFactSnapshot, EventLogLayoutStats, EventWriterFence,
+    ExportOutcome, ImportableObjectEvent, LanceMaintenanceOptions, LanceMaintenanceReport,
+    LeaseAcquireOutcome, LocationSummary, ManifestCache, ManifestKind, ManifestListing,
+    ManifestReadMode, ManifestStats, NamespacePath, PathListEntry, PathListKind, PersistentCache,
     PhysicalColumn, PhysicalDataFile, PhysicalFileLayout, PhysicalFragment, PhysicalLayout,
     PhysicalPage, PhysicalPagePreview, PhysicalPageQuery, PhysicalSource, PhysicalTable,
-    ProjectionSourceSnapshot, RawEventLanceAppender, RawEventLanceStore, ReplayOutcome,
-    RunControlStore, StorylineContentOptions, StorylineContentReadMode, StorylineDataSource,
-    StorylineDataSourceOptions, StorylineLanceStore, StorylineMaintenanceReport,
-    StorylineProjectionLineage, StorylineStreamImportReport, StorylineTablePaths, TrajectoryStats,
+    ProjectionSourceSnapshot, QueryScope, RawEventLanceAppender, RawEventLanceStore, ReplayOutcome,
+    ResolveMode, ResolveTarget, RunControlStore, ShallowNavEntry, StorylineContentOptions,
+    StorylineContentReadMode, StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
+    StorylineMaintenanceReport, StorylineProjectionLineage, StorylineSearchIndexSuppressGuard,
+    StorylineStreamImportReport, StorylineStreamOptions, StorylineTablePaths, TrajectoryStats,
     attempt_registry_now_ms, distinct_session_ids_in_run, export_source_dirs, export_story_bundle,
     inspect_physical_file, inspect_physical_layout, inspect_physical_page, list_physical_sources,
-    load_manifest, raw_event_lance_path, write_compact_jsonl_manifest,
+    load_manifest, load_manifest_at_uri, raw_event_lance_path, write_compact_jsonl_manifest,
+    write_storyline_manifest, write_storyline_manifest_at_uri,
 };
 
 // Compatibility exports; new callers should use `crate::search`.

@@ -22,6 +22,7 @@ use crate::sink::CaptureEventSink;
 
 #[derive(Clone)]
 pub(crate) struct GatewayState {
+    pub(crate) gateway_enabled: bool,
     pub(crate) config: Arc<ProxyConfig>,
     pub(crate) storage: Arc<std::path::PathBuf>,
     pub(crate) client: reqwest::Client,
@@ -40,6 +41,7 @@ pub(crate) struct GatewayRuntimeControl {
     pub(crate) interception_metrics: InterceptionMetrics,
     pub(crate) bandwidth_registry: BandwidthRegistry,
     pub(crate) attempt_id: Option<String>,
+    pub(crate) gateway_enabled: bool,
 }
 
 pub async fn serve(
@@ -122,6 +124,7 @@ pub async fn serve_with_listeners_and_shutdown(
             interception_metrics: InterceptionMetrics::default(),
             bandwidth_registry: BandwidthRegistry::default(),
             attempt_id: None,
+            gateway_enabled: true,
         },
         listener,
         admin_listener,
@@ -154,6 +157,7 @@ pub async fn serve_with_runtime_control(
             interception_metrics: InterceptionMetrics::default(),
             bandwidth_registry: BandwidthRegistry::default(),
             attempt_id: None,
+            gateway_enabled: true,
         },
         ready,
         shutdown,
@@ -268,6 +272,7 @@ async fn serve_with_bound_listeners(
         interception_metrics: interception_metrics.clone(),
         bandwidth_registry: runtime_control.bandwidth_registry,
         attempt_id: runtime_control.attempt_id,
+        gateway_enabled: runtime_control.gateway_enabled,
     };
 
     let admin_state = AdminState {

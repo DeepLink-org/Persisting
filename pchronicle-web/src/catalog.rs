@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 
+use crate::components::WorkspaceIcon;
 use crate::model::{CatalogTree, CatalogTreeChild};
 
 #[component]
@@ -8,8 +9,9 @@ pub fn CatalogExplorer(
     loading: bool,
     on_open: EventHandler<(String, String)>,
     on_runs: EventHandler<(String, String)>,
+    #[props(default = false)] auth_required: bool,
+    on_settings: EventHandler<MouseEvent>,
 ) -> Element {
-    let mut other_open = use_signal(|| false);
     let dataset = tree
         .as_ref()
         .and_then(|tree| tree.dataset.clone())
@@ -30,10 +32,22 @@ pub fn CatalogExplorer(
                         on_open,
                     }
                     p { "{catalog_subtitle(tree.as_ref())}" }
+                    if let Some(status) = tree.as_ref().and_then(|tree| tree.browse.as_ref()) {
+                        p { role: "status",
+                            if status.last_error.is_some() {
+                                "Showing cached view · Refresh failed; retrying automatically"
+                            } else if status.refreshing {
+                                "Showing cached view · Refreshing in background"
+                            } else if status.stale {
+                                "Showing cached view · Waiting for refresh"
+                            }
+                        }
+                    }
                 }
                 button {
-                    class: "button",
+                    class: "button pc-catalog-open",
                     onclick: move |_| on_runs.call((dataset.clone(), prefix.clone())),
+                    WorkspaceIcon { name: "runs" }
                     "Open in Runs"
                 }
             }
@@ -43,6 +57,12 @@ pub fn CatalogExplorer(
             div { class: "pc-catalog-mosaic",
                 if loading && tree.is_none() {
                     div { class: "pc-catalog-empty", span { class: "spinner" } "Loading datasets…" }
+                } else if auth_required {
+                    div { class: "pc-catalog-empty",
+                        strong { "Catalog identity required" }
+                        span { "Add an access key and secret key to browse this catalog." }
+                        button { class: "button primary", onclick: on_settings, "Open Keys" }
+                    }
                 } else if tree.as_ref().is_none_or(|tree| tree.children.is_empty() && tree.run_count == 0) {
                     div { class: "pc-catalog-empty", strong { "No datasets" } span { "Add a dataset, then refresh this page." } }
                 } else if tree.as_ref().is_some_and(|tree| tree.children.is_empty()) {
@@ -55,22 +75,6 @@ pub fn CatalogExplorer(
                         tree: tree.clone().unwrap(),
                         on_open,
                         on_runs,
-                        on_other: move |_| other_open.set(!other_open()),
-                    }
-                }
-            }
-            if other_open() {
-                if let Some(other) = tree.as_ref().and_then(other_child) {
-                    ul { class: "pc-catalog-other",
-                        for entry in other.entries.clone() {
-                            OtherEntry {
-                                key: "{entry.path}",
-                                dataset: dataset.clone(),
-                                entry,
-                                on_open,
-                                on_runs,
-                            }
-                        }
                     }
                 }
             }
@@ -94,7 +98,7 @@ fn CatalogBreadcrumb(
         h1 {
             button { class: "pc-catalog-crumb", onclick: move |_| on_open.call((String::new(), String::new())), "Datasets" }
             if !dataset.is_empty() {
-                span { " / " }
+                span { class: "pc-catalog-separator", "/" }
                 button {
                     class: "pc-catalog-crumb",
                     onclick: move |_| on_open.call((root_dataset.clone(), String::new())),
@@ -102,7 +106,7 @@ fn CatalogBreadcrumb(
                 }
             }
             for (index, segment) in segments.iter().enumerate() {
-                span { " / " }
+                span { class: "pc-catalog-separator", "/" }
                 {
                     let dataset = dataset.clone();
                     let path = segments[..=index].join("/");
@@ -125,21 +129,12 @@ fn CatalogStats(tree: Option<CatalogTree>) -> Element {
     let Some(tree) = tree else {
         return rsx! {};
     };
-    let fail = if tree.run_count == 0 {
-        "—".into()
-    } else {
-        format!(
-            "{:.1}%",
-            100.0 * tree.failed_count as f64 / tree.run_count as f64
-        )
-    };
     let errors = tree.error_sources.unwrap_or(0);
     rsx! {
         div { class: "pc-catalog-stats",
-            div { span { "Runs" } strong { "{tree.run_count}" } }
-            div { span { "Fail rate" } strong { "{fail}" } }
-            div { span { "Duration" } strong { "{format_duration(tree.duration_ms)}" } }
-            div { span { "Tokens" } strong { "{format_tokens(tree.total_tokens)}" } }
+            div { WorkspaceIcon { name: "folder" } div { span { "Datasets" } strong { "{tree.dataset_count.unwrap_or_else(|| tree.children.len())}" } } }
+            div { WorkspaceIcon { name: "analysis" } div { span { "Trajectories" } strong { "{tree.trajectory_count.unwrap_or(tree.run_count)}" } } }
+            div { WorkspaceIcon { name: "warning" } div { span { "Failed" } strong { "{tree.failed_count}" } } }
         }
         if errors > 0 {
             p { class: "pc-catalog-errors", "{errors} source files could not be loaded" }
@@ -152,7 +147,6 @@ fn CatalogFolders(
     tree: CatalogTree,
     on_open: EventHandler<(String, String)>,
     on_runs: EventHandler<(String, String)>,
-    on_other: EventHandler<MouseEvent>,
 ) -> Element {
     let dataset = tree.dataset.clone().unwrap_or_default();
     rsx! {
@@ -164,7 +158,6 @@ fn CatalogFolders(
                     dataset: dataset.clone(),
                     on_open,
                     on_runs,
-                    on_other,
                 }
             }
         }
@@ -177,106 +170,66 @@ fn CatalogFolder(
     dataset: String,
     on_open: EventHandler<(String, String)>,
     on_runs: EventHandler<(String, String)>,
-    on_other: EventHandler<MouseEvent>,
 ) -> Element {
     let kind = child.kind.clone();
     let path = child.path.clone();
     let name = child.name.clone();
     let data_type = child.data_type.clone();
-    let tokens = format_tokens(child.total_tokens);
+    let is_dir = kind == "dir";
+    let trajectory_count = child.trajectory_count.unwrap_or(child.run_count);
+    let icon = if kind == "file" { "file" } else { "folder" };
     rsx! {
         button {
             class: "pc-catalog-folder type-{data_type} kind-{kind}",
-            title: "{name} · {child.run_count} trajectories · {tokens} tokens",
-            onclick: move |event| {
+            title: if is_dir {
+                format!("{name} · directory")
+            } else if trajectory_count > 0 {
+                format!("{name} · {trajectory_count} trajectories")
+            } else {
+                name.clone()
+            },
+            onclick: move |_| {
                 match kind.as_str() {
-                    "other" => on_other.call(event),
                     "file" => on_runs.call((dataset.clone(), path.clone())),
                     "dataset" => on_open.call((name.clone(), String::new())),
                     _ => on_open.call((dataset.clone(), path.clone())),
                 }
             },
             div { class: "pc-catalog-folder-title",
-                span { class: "pc-catalog-folder-icon", if child.kind == "file" { "▤" } else { "▰" } }
+                span { class: "pc-catalog-folder-icon", WorkspaceIcon { name: icon } }
                 strong { "{child.name}" }
             }
+            span { class: "pc-catalog-folder-path", title: "{child.path}", "{child.path}" }
             span { class: "pc-catalog-folder-type", "{data_type}" }
             div { class: "pc-catalog-folder-meta",
-                span { "{child.run_count} trajectories" }
-                span { "{tokens} tokens" }
-            }
-        }
-    }
-}
-
-#[component]
-fn OtherEntry(
-    dataset: String,
-    entry: CatalogTreeChild,
-    on_open: EventHandler<(String, String)>,
-    on_runs: EventHandler<(String, String)>,
-) -> Element {
-    let kind = entry.kind.clone();
-    let path = entry.path.clone();
-    let name = entry.name.clone();
-    rsx! {
-        li {
-            button {
-                onclick: move |_| {
-                    match kind.as_str() {
-                        "file" => on_runs.call((dataset.clone(), path.clone())),
-                        "dataset" => on_open.call((name.clone(), String::new())),
-                        _ => on_open.call((dataset.clone(), path.clone())),
+                if is_dir {
+                    if let Some(dataset_count) = child.dataset_count {
+                        span {
+                            "{dataset_count} datasets · {child.trajectory_count.unwrap_or(0)} trajectories"
+                        }
+                    } else {
+                        span { "Directory" }
                     }
-                },
-                strong { "{entry.name}" }
-                span { "{entry.run_count}" }
+                } else if trajectory_count > 0 {
+                    span { "{trajectory_count} trajectories" }
+                } else {
+                    span { "Source" }
+                }
+                WorkspaceIcon { name: "chevron" }
             }
         }
     }
-}
-
-fn other_child(tree: &CatalogTree) -> Option<&CatalogTreeChild> {
-    tree.children.iter().find(|child| child.kind == "other")
 }
 
 fn catalog_subtitle(tree: Option<&CatalogTree>) -> String {
     let Some(tree) = tree else {
-        return "Browse datasets by run count.".into();
+        return "Browse the current path, like ls.".into();
     };
     if tree.dataset.is_none() {
-        format!("{} datasets · {} runs", tree.children.len(), tree.run_count)
+        format!("{} mounts", tree.children.len())
     } else if tree.prefix.is_empty() {
-        "Folders follow source file paths.".into()
+        format!("{} items", tree.children.len())
     } else {
-        format!("Prefix {} · {} runs", tree.prefix, tree.run_count)
-    }
-}
-
-fn format_duration(ms: Option<i64>) -> String {
-    let Some(ms) = ms.filter(|value| *value >= 0) else {
-        return "—".into();
-    };
-    if ms >= 3_600_000 {
-        format!("{:.0}h", ms as f64 / 3_600_000.0)
-    } else if ms >= 60_000 {
-        format!("{:.0}m", ms as f64 / 60_000.0)
-    } else if ms >= 1_000 {
-        format!("{:.1}s", ms as f64 / 1_000.0)
-    } else {
-        format!("{ms}ms")
-    }
-}
-
-fn format_tokens(tokens: Option<u64>) -> String {
-    let Some(tokens) = tokens else {
-        return "—".into();
-    };
-    if tokens >= 1_000_000 {
-        format!("{:.0}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
-    } else {
-        tokens.to_string()
+        format!("Prefix {} · {} items", tree.prefix, tree.children.len())
     }
 }

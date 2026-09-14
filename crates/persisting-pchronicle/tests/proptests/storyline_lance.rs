@@ -3,13 +3,6 @@ use persisting_pchronicle::model::{StorylineDocument, StorylineTurn};
 use persisting_pchronicle::storage::StorylineLanceStore;
 use proptest::prelude::*;
 
-fn runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("build test runtime")
-}
-
 proptest! {
     #![proptest_config(proptest::test_runner::Config {
         cases: 8,
@@ -44,7 +37,7 @@ proptest! {
             finished_at: None,
         });
 
-        let runtime = runtime();
+        let runtime = common::runtime();
         let temporary = tempfile::tempdir().expect("create temporary directory");
         runtime
             .block_on(StorylineLanceStore::open(temporary.path()))
@@ -92,7 +85,7 @@ proptest! {
                 finished_at: None,
             })
             .collect();
-        let runtime = runtime();
+        let runtime = common::runtime();
         let temporary = tempfile::tempdir().expect("create temporary directory");
         runtime
             .block_on(StorylineLanceStore::open(temporary.path()))
@@ -107,3 +100,5 @@ proptest! {
         prop_assert_eq!(&restored[0].turns, &story.turns);
     }
 }
+#[path = "../common/mod.rs"]
+mod common;

@@ -1,5 +1,10 @@
 # RFCs
 
+!!! note "Original-language decision records"
+
+    Several RFCs retain their original Chinese text. The English catalog describes
+    their purpose and status; these historical records have not all been translated.
+
 RFCs are historical decision records for Persisting formats, ownership, and
 storage contracts. They preserve accepted or proposed decisions. They are not
 command references. Current syntax, schemas, and supported workflows live in
@@ -21,3 +26,4 @@ each product's Reference and Guides.
 | [0013](0013-pchronicle-warehouse-catalog.md) | pChronicle path Directory | Proposed |
 | [0014](0014-compact-jsonl.md) | Compact JSONL Lance storage format (`compact-jsonl/v1`) | Accepted |
 | [0015](0015-chronicle-manifest.md) | `chronicle.manifest` Dataset sidecar (TOML) | Proposed |
+| [0016](0016-pchronicle-catalog-resolution-and-cache.md) | pChronicle catalog resolution and manifest cache | Accepted |

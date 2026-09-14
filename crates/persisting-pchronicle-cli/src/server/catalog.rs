@@ -37,6 +37,7 @@ pub(crate) struct CatalogUser {
 pub(crate) struct CatalogAcl {
     libraries: BTreeMap<String, CatalogLibrary>,
     users_by_access_key: HashMap<String, CatalogUser>,
+    public_datasets: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,27 +112,25 @@ impl CatalogAcl {
 
     fn from_document(file: CatalogFile) -> Result<Self> {
         let libraries = build_libraries(&file)?;
+        let public_datasets = file
+            .grants
+            .iter()
+            .filter(|grant| grant.user == "*")
+            .map(|grant| grant.dataset.clone())
+            .collect();
         Ok(Self {
             users_by_access_key: build_users(&file, &libraries)?,
             libraries,
+            public_datasets,
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn mounts(&self) -> Result<Vec<DatasetMount>> {
         self.libraries
             .values()
             .map(|library| DatasetMount::new(&library.name, &library.uri))
             .collect()
-    }
-
-    pub(crate) fn apply_backend_env(&self) {
-        if let Some(library) = self
-            .libraries
-            .values()
-            .find(|library| library.access_key.is_some())
-        {
-            apply_library_env(library);
-        }
     }
 
     pub(crate) fn authenticate(&self, access_key: &str, secret_key: &str) -> Option<&CatalogUser> {
@@ -140,6 +139,35 @@ impl CatalogAcl {
             return None;
         }
         Some(user)
+    }
+
+    fn authenticate_headers(
+        &self,
+        headers: &axum::http::HeaderMap,
+    ) -> std::result::Result<&CatalogUser, ApiError> {
+        let (access_key, secret_key) =
+            credentials_from_headers(headers).ok_or_else(catalog_unauthorized)?;
+        self.authenticate(&access_key, &secret_key)
+            .ok_or_else(catalog_unauthorized)
+    }
+
+    pub(crate) fn public_for_all(&self) -> Vec<CatalogLibraryPublic> {
+        self.public_datasets
+            .iter()
+            .filter_map(|name| self.libraries.get(name))
+            .map(CatalogLibraryPublic::from)
+            .collect()
+    }
+
+    fn credentials_for_public(&self, dataset: &str) -> Option<(&str, &str)> {
+        self.users_by_access_key
+            .iter()
+            .find_map(|(access_key, user)| {
+                user.datasets
+                    .iter()
+                    .any(|name| name == dataset)
+                    .then_some((access_key.as_str(), user.secret_key.as_str()))
+            })
     }
 
     pub(crate) fn list_for(&self, user: &CatalogUser) -> Vec<CatalogLibraryPublic> {
@@ -188,59 +216,78 @@ pub(crate) fn issue_user(path: &Path, name: &str) -> Result<IssuedUser> {
 }
 
 pub(crate) fn grant_datasets(path: &Path, name: &str, datasets: &[String]) -> Result<Vec<String>> {
-    let name = canonical_user_name(name)?;
     let mut file = load_editable_catalog(path)?;
     let library_names = canonical_library_names(&file)?;
-    anyhow::ensure!(file.users.contains_key(&name), "unknown user '{name}'");
+    let users: Vec<String> = if name == "*" {
+        file.users.keys().cloned().collect()
+    } else {
+        vec![canonical_user_name(name)?]
+    };
+    for user in &users {
+        anyhow::ensure!(file.users.contains_key(user), "unknown user '{user}'");
+    }
     for dataset in datasets {
         let dataset = granted_library_name(&library_names, dataset)?;
-        if !file
-            .grants
-            .iter()
-            .any(|grant| grant.user == name && grant.dataset == dataset)
-        {
-            file.grants.push(CatalogGrantFile {
-                user: name.clone(),
-                dataset,
-                permissions: vec!["read".into(), "query".into(), "analyze".into()],
-            });
+        for user in &users {
+            if !file
+                .grants
+                .iter()
+                .any(|grant| grant.user == *user && grant.dataset == dataset)
+            {
+                file.grants.push(CatalogGrantFile {
+                    user: user.clone(),
+                    dataset: dataset.clone(),
+                    permissions: vec!["read".into(), "query".into(), "analyze".into()],
+                });
+            }
         }
     }
+    let mut seen = HashSet::new();
     let granted = file
         .grants
         .iter()
-        .filter(|grant| grant.user == name)
+        .filter(|grant| users.iter().any(|user| user == &grant.user))
         .map(|grant| grant.dataset.clone())
+        .filter(|dataset| seen.insert(dataset.clone()))
         .collect();
     write_catalog_file(path, &file)?;
     Ok(granted)
 }
 
 pub(crate) fn revoke_datasets(path: &Path, name: &str, datasets: &[String]) -> Result<Vec<String>> {
-    let name = canonical_user_name(name)?;
     let mut file = load_editable_catalog(path)?;
-    anyhow::ensure!(file.users.contains_key(&name), "unknown user '{name}'");
-    let mut to_remove = Vec::new();
-    for dataset in datasets {
-        let dataset = DatasetMount::new(dataset, "validation")
-            .with_context(|| format!("catalog library name '{dataset}'"))?
-            .name;
+    let users: Vec<String> = if name == "*" {
+        file.users.keys().cloned().collect()
+    } else {
+        vec![canonical_user_name(name)?]
+    };
+    for user in &users {
+        anyhow::ensure!(file.users.contains_key(user), "unknown user '{user}'");
+    }
+    let to_remove = datasets
+        .iter()
+        .map(|dataset| DatasetMount::new(dataset, "validation").map(|mount| mount.name))
+        .collect::<Result<Vec<_>>>()?;
+    for dataset in &to_remove {
         anyhow::ensure!(
             file.grants
                 .iter()
-                .any(|grant| grant.user == name && grant.dataset == dataset),
+                .any(|grant| users.iter().any(|user| user == &grant.user)
+                    && grant.dataset == *dataset),
             "catalog user '{name}' does not grant '{dataset}'"
         );
-        to_remove.push(dataset);
     }
     file.grants.retain(|grant| {
-        !(grant.user == name && to_remove.iter().any(|dataset| dataset == &grant.dataset))
+        !(users.iter().any(|user| user == &grant.user)
+            && to_remove.iter().any(|dataset| dataset == &grant.dataset))
     });
+    let mut seen = HashSet::new();
     let remaining = file
         .grants
         .iter()
-        .filter(|grant| grant.user == name)
+        .filter(|grant| users.iter().any(|user| user == &grant.user))
         .map(|grant| grant.dataset.clone())
+        .filter(|dataset| seen.insert(dataset.clone()))
         .collect();
     write_catalog_file(path, &file)?;
     Ok(remaining)
@@ -505,24 +552,31 @@ fn build_users(
     let mut users_by_access_key = HashMap::new();
     let mut datasets_by_user: HashMap<String, Vec<String>> = HashMap::new();
     for grant in &file.grants {
-        anyhow::ensure!(
-            file.users.contains_key(&grant.user),
-            "catalog grant references unknown user '{}'",
-            grant.user
-        );
-        anyhow::ensure!(
-            libraries.contains_key(&grant.dataset),
-            "catalog grant references unknown dataset '{}'",
-            grant.dataset
-        );
-        let entry = datasets_by_user.entry(grant.user.clone()).or_default();
-        anyhow::ensure!(
-            !entry.contains(&grant.dataset),
-            "catalog grant for user '{}' and dataset '{}' is duplicated",
-            grant.user,
-            grant.dataset
-        );
-        entry.push(grant.dataset.clone());
+        let grant_users: Vec<&str> = if grant.user == "*" {
+            file.users.keys().map(String::as_str).collect()
+        } else {
+            vec![grant.user.as_str()]
+        };
+        for grant_user in grant_users {
+            anyhow::ensure!(
+                file.users.contains_key(grant_user),
+                "catalog grant references unknown user '{}'",
+                grant_user
+            );
+            anyhow::ensure!(
+                libraries.contains_key(&grant.dataset),
+                "catalog grant references unknown dataset '{}'",
+                grant.dataset
+            );
+            let entry = datasets_by_user.entry(grant_user.to_owned()).or_default();
+            anyhow::ensure!(
+                !entry.contains(&grant.dataset),
+                "catalog grant for user '{}' and dataset '{}' is duplicated",
+                grant_user,
+                grant.dataset
+            );
+            entry.push(grant.dataset.clone());
+        }
     }
     for (name, user) in &file.users {
         let access_key = user.access_key.trim().to_owned();
@@ -690,13 +744,9 @@ pub(crate) fn parse_catalog_pin_target(input: &str) -> Result<String> {
     let host = url
         .host_str()
         .ok_or_else(|| anyhow!("catalog pin URL must include a host"))?;
-    let address: std::net::IpAddr = host
+    let _: std::net::IpAddr = host
         .parse()
-        .with_context(|| format!("catalog pin host '{host}' must be a loopback IP"))?;
-    anyhow::ensure!(
-        address.is_loopback(),
-        "catalog pin host must be a loopback address"
-    );
+        .with_context(|| format!("catalog pin host '{host}' must be an IP address"))?;
     let port = url
         .port()
         .ok_or_else(|| anyhow!("catalog pin URL must include a port"))?;
@@ -751,7 +801,10 @@ fn parent_handles_path(path: &str) -> bool {
         .strip_prefix("/api/v1")
         .or_else(|| path.strip_prefix("/api"))
         .unwrap_or(path);
-    rest == "/health" || rest == "/catalog/datasets" || rest.starts_with("/catalog/datasets/")
+    rest == "/health"
+        || rest == "/ui"
+        || rest == "/catalog/datasets"
+        || rest.starts_with("/catalog/datasets/")
 }
 
 pub(super) async fn list_datasets(
@@ -762,12 +815,17 @@ pub(super) async fn list_datasets(
         .catalog_acl
         .as_ref()
         .ok_or_else(|| ApiError::not_found("catalog is not enabled"))?;
-    let (access_key, secret_key) =
-        credentials_from_headers(&headers).ok_or_else(catalog_unauthorized)?;
-    let user = acl
-        .authenticate(&access_key, &secret_key)
-        .ok_or_else(catalog_unauthorized)?;
-    Ok(axum::Json(acl.list_for(user)))
+    let has_credential_headers =
+        headers.contains_key(ACCESS_KEY_HEADER) || headers.contains_key(SECRET_KEY_HEADER);
+    let libraries = match credentials_from_headers(&headers) {
+        Some((access, secret)) => acl
+            .authenticate(&access, &secret)
+            .map(|user| acl.list_for(user))
+            .ok_or_else(catalog_unauthorized)?,
+        None if !has_credential_headers => acl.public_for_all(),
+        None => return Err(catalog_unauthorized()),
+    };
+    Ok(axum::Json(libraries))
 }
 
 pub(super) async fn get_dataset(
@@ -779,11 +837,7 @@ pub(super) async fn get_dataset(
         .catalog_acl
         .as_ref()
         .ok_or_else(|| ApiError::not_found("catalog is not enabled"))?;
-    let (access_key, secret_key) =
-        credentials_from_headers(&headers).ok_or_else(catalog_unauthorized)?;
-    let user = acl
-        .authenticate(&access_key, &secret_key)
-        .ok_or_else(catalog_unauthorized)?;
+    let user = acl.authenticate_headers(&headers)?;
     let ticket = acl
         .ticket_for(user, &name)
         .ok_or_else(|| ApiError::not_found("dataset not found"))?;
@@ -792,20 +846,106 @@ pub(super) async fn get_dataset(
 
 pub(super) async fn catalog_data_plane_layer(
     axum::extract::State(state): axum::extract::State<super::AppState>,
-    request: axum::http::Request<axum::body::Body>,
+    mut request: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
 
-    if state.catalog_query_worker
-        || state.catalog_acl.is_none()
-        || !state.config.datasets.is_empty()
-    {
+    if state.catalog_query_worker || state.catalog_acl.is_none() {
         return next.run(request).await;
     }
     let path = request.uri().path().to_owned();
     if !path.starts_with("/api/") || parent_handles_path(&path) {
         return next.run(request).await;
+    }
+    // Anonymous browsing is limited to wildcard-granted datasets.
+    if credentials_from_headers(request.headers()).is_none()
+        && path.ends_with("/query/tables")
+        && url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
+            .any(|(key, value)| key == "ui" && (value == "true" || value == "1"))
+    {
+        if let Some(library) = state.catalog_acl.as_ref().and_then(|acl| {
+            acl.libraries.values().find(|library| {
+                acl.public_for_all()
+                    .iter()
+                    .any(|public| public.name == library.name)
+            })
+        }) {
+            apply_library_env(library);
+        }
+        let catalog = super::QueryCatalog {
+            snapshot_id: String::new(),
+            read_only: true,
+            database: String::new(),
+            storage_path: String::new(),
+            path_column: "_file_",
+            datasets: Vec::new(),
+            tables: super::query_table_summaries(),
+        };
+        return axum::Json(catalog).into_response();
+    }
+    if credentials_from_headers(request.headers()).is_none() && path.ends_with("/explorer/tree") {
+        let params: BTreeMap<_, _> =
+            url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
+                .into_owned()
+                .collect();
+        let dataset = params
+            .get("dataset")
+            .map(String::as_str)
+            .unwrap_or_default();
+        tracing::info!(
+            target: "pchronicle.serve",
+            dataset,
+            path,
+            "catalog explorer request entering data-plane router"
+        );
+        let public = state.catalog_acl.as_ref().is_some_and(|acl| {
+            dataset.is_empty()
+                || acl
+                    .public_for_all()
+                    .iter()
+                    .any(|library| library.name == dataset)
+        });
+        if !public {
+            return dispatch_query_worker(&state, request)
+                .await
+                .unwrap_or_else(|error| error.into_response());
+        }
+        if !dataset.is_empty() {
+            if let Some(library) = state.catalog_acl.as_ref().and_then(|acl| {
+                acl.libraries
+                    .values()
+                    .find(|library| library.name == dataset)
+            }) {
+                apply_library_env(library);
+            }
+            if let Some((access_key, secret_key)) = state
+                .catalog_acl
+                .as_ref()
+                .and_then(|acl| acl.credentials_for_public(dataset))
+            {
+                let headers = request.headers_mut();
+                if let (Ok(access_key), Ok(secret_key)) = (access_key.parse(), secret_key.parse()) {
+                    headers.insert(ACCESS_KEY_HEADER, access_key);
+                    headers.insert(SECRET_KEY_HEADER, secret_key);
+                }
+            }
+            tracing::info!(
+                target: "pchronicle.serve",
+                dataset,
+                "serving public catalog explorer request from front browse cache"
+            );
+            return next.run(request).await;
+        }
+        let mounts = state
+            .catalog_acl
+            .as_ref()
+            .unwrap()
+            .public_for_all()
+            .into_iter()
+            .filter_map(|library| DatasetMount::new(&library.name, &library.uri).ok())
+            .collect::<Vec<_>>();
+        return axum::Json(super::explorer::catalog_tree_from_mount_specs(&mounts)).into_response();
     }
     match dispatch_query_worker(&state, request).await {
         Ok(response) => response,
@@ -813,28 +953,11 @@ pub(super) async fn catalog_data_plane_layer(
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct CatalogWorkerJob {
-    request_id: String,
-    method: String,
-    path: String,
-    query: String,
-    body: Vec<u8>,
-    mounts: Vec<CatalogLibrary>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct CatalogWorkerResult {
-    status: u16,
-    #[serde(default)]
-    content_type: Option<String>,
-    body: Vec<u8>,
-}
-
 async fn dispatch_query_worker(
     state: &super::AppState,
     request: axum::http::Request<axum::body::Body>,
 ) -> Result<axum::response::Response, ApiError> {
+    use super::catalog_worker::{WorkerRequest, validate_backends};
     let acl = state
         .catalog_acl
         .as_ref()
@@ -843,167 +966,98 @@ async fn dispatch_query_worker(
         credentials_from_headers(request.headers()).ok_or_else(catalog_unauthorized)?;
     let user = acl
         .authenticate(&access_key, &secret_key)
-        .ok_or_else(catalog_unauthorized)?
-        .clone();
-    tracing::debug!(
-        target: super::problem::LOG_TARGET,
-        user = %user.name,
-        libraries = user.datasets.len(),
-        path = %request.uri().path(),
-        "dispatch catalog query worker"
-    );
-    if user.datasets.is_empty() {
+        .ok_or_else(catalog_unauthorized)?;
+    let _permit = state.catalog_workers.admit()?;
+    let selected = url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
+        .filter(|(name, _)| name == "dataset")
+        .map(|(_, value)| value.into_owned())
+        .collect::<Vec<_>>();
+    if selected.len() > 1 {
+        return Err(ApiError::invalid_request("duplicate dataset parameter"));
+    }
+    let selected = selected.first().filter(|name| !name.is_empty());
+    if let Some(name) = selected
+        && acl.ticket_for(user, name).is_none()
+    {
         return Err(ApiError::not_found("dataset not found"));
     }
-    let mounts: Vec<CatalogLibrary> = user
+    let mut mounts: Vec<CatalogLibrary> = user
         .datasets
         .iter()
-        .filter_map(|name| acl.ticket_for(&user, name))
+        .filter_map(|name| acl.ticket_for(user, name))
         .collect();
-    let request_id = request
-        .extensions()
-        .get::<super::request_log::RequestId>()
-        .map(|id| id.0.clone())
-        .unwrap_or_default();
-    let method = request.method().as_str().to_owned();
-    let path = request.uri().path().to_owned();
-    let query = request.uri().query().unwrap_or("").to_owned();
-    let body = axum::body::to_bytes(request.into_body(), 1024 * 1024)
-        .await
-        .map_err(|error| ApiError::invalid_request(format!("read catalog query body: {error}")))?;
-    let job = CatalogWorkerJob {
-        request_id,
-        method,
-        path,
-        query,
-        body: body.to_vec(),
-        mounts,
-    };
-    let payload = serde_json::to_vec(&job)
-        .map_err(|error| ApiError::internal("", "catalog_worker", anyhow::anyhow!(error)))?;
-    let exe = std::env::current_exe()
-        .map_err(|error| ApiError::internal("", "catalog_worker", anyhow::anyhow!(error)))?;
-    let mut child = tokio::process::Command::new(exe)
-        .arg("serve")
-        .arg("--catalog-query-worker")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|error| ApiError::internal("", "catalog_worker", anyhow::anyhow!(error)))?;
+    if mounts.is_empty() {
+        return Err(ApiError::not_found("dataset not found"));
+    }
+    // Keep one stable worker for all of this user's compatible mounts. Only
+    // split scopes when the backend's process-global credentials require it.
+    if validate_backends(&mounts).is_err()
+        && let Some(name) = selected
     {
-        use tokio::io::AsyncWriteExt;
-        let mut stdin = child.stdin.take().ok_or_else(|| {
-            ApiError::internal(
-                "",
-                "catalog_worker",
-                anyhow::anyhow!("catalog query worker stdin is missing"),
-            )
-        })?;
-        stdin
-            .write_all(&payload)
-            .await
-            .map_err(|error| ApiError::internal("", "catalog_worker", anyhow::anyhow!(error)))?;
-        stdin
-            .shutdown()
-            .await
-            .map_err(|error| ApiError::internal("", "catalog_worker", anyhow::anyhow!(error)))?;
+        mounts.retain(|mount| &mount.name == name);
     }
-    let output = tokio::time::timeout(std::time::Duration::from_secs(60), child.wait_with_output())
-        .await
-        .map_err(|_| ApiError::unavailable())?
-        .map_err(|error| ApiError::internal("", "catalog_worker", anyhow::anyhow!(error)))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!(
-            target: super::problem::LOG_TARGET,
-            handler = "catalog_worker",
-            exit = output.status.code().unwrap_or(-1),
-            stderr = %super::problem::truncate_utf8(&stderr, super::problem::QUERY_LOG_LIMIT),
-            "warehouse request failed"
-        );
-        return Err(ApiError::internal(
-            "",
-            "catalog_worker",
-            anyhow::anyhow!("catalog query worker exited unsuccessfully"),
-        ));
+    validate_backends(&mounts).map_err(|error| ApiError::invalid_request(error.to_string()))?;
+    // Workers use a private working directory; retain the server's interpretation
+    // of relative local mounts without opening any store in the parent.
+    for mount in &mut mounts {
+        if let Some(path) = DatasetLocation::parse(&mount.uri)
+            .ok()
+            .and_then(|l| l.local_path().map(std::path::Path::to_path_buf))
+        {
+            mount.uri = std::path::absolute(path)
+                .map_err(|error| ApiError::internal("", "catalog_worker", error.into()))?
+                .to_string_lossy()
+                .into_owned();
+        }
     }
-    let result: CatalogWorkerResult = serde_json::from_slice(&output.stdout)
-        .map_err(|error| ApiError::internal("", "catalog_worker", anyhow::anyhow!(error)))?;
-    let status = axum::http::StatusCode::from_u16(result.status)
-        .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-    let mut response = axum::response::Response::new(axum::body::Body::from(result.body));
-    *response.status_mut() = status;
-    if let Some(content_type) = result.content_type
-        && let Ok(value) = axum::http::HeaderValue::from_str(&content_type)
-    {
-        response
-            .headers_mut()
-            .insert(axum::http::header::CONTENT_TYPE, value);
-    }
-    Ok(response)
-}
-
-pub(crate) async fn run_catalog_query_worker() -> Result<()> {
-    use std::io::{Read, Write};
-
-    use axum::body::Body;
-    use tower::ServiceExt;
-
-    let mut stdin = Vec::new();
-    std::io::stdin()
-        .read_to_end(&mut stdin)
-        .context("read catalog query worker job")?;
-    let job: CatalogWorkerJob =
-        serde_json::from_slice(&stdin).context("decode catalog query worker job")?;
-    if let Some(library) = job.mounts.first() {
-        apply_library_env(library);
-    }
-    anyhow::ensure!(!job.mounts.is_empty(), "catalog query worker needs mounts");
-    let mounts = job
-        .mounts
-        .iter()
-        .map(|library| DatasetMount::new(&library.name, &library.uri))
-        .collect::<Result<Vec<_>>>()?;
-    let config = super::ChronicleServerConfig::mounted(mounts)?;
-    let warehouse = super::PreparedWarehouse::prepare_query_worker(config).await?;
-    let mut uri = job.path;
-    if !job.query.is_empty() {
-        uri.push('?');
-        uri.push_str(&job.query);
-    }
-    let mut builder = axum::http::Request::builder()
-        .method(job.method.as_str())
-        .uri(uri);
-    if !job.body.is_empty() {
-        builder = builder.header(axum::http::header::CONTENT_TYPE, "application/json");
-    }
-    let request = builder
-        .body(Body::from(job.body))
-        .context("build catalog query worker request")?;
-    let response = warehouse
-        .router()
-        .oneshot(request)
-        .await
-        .map_err(|error| anyhow!(error))?;
-    let status = response.status().as_u16();
-    let content_type = response
+    // Never persist credentials in filenames. Include grants and credential
+    // epochs so revocation/rotation cannot reopen an older user's cache.
+    let identity = serde_json::to_vec(&(
+        &access_key,
+        &user.name,
+        &user.secret_key,
+        &user.datasets,
+        &mounts,
+    ))
+    .map_err(|error| ApiError::internal("", "catalog_worker", error.into()))?;
+    let scope = blake3::hash(&identity).to_hex().to_string();
+    let mut headers = request
         .headers()
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    let body = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
+        .iter()
+        .filter(|(name, _)| matches!(name.as_str(), "content-type" | "accept"))
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|v| (name.to_string(), v.to_owned()))
+        })
+        .collect::<Vec<_>>();
+    if let Some(id) = request.extensions().get::<super::request_log::RequestId>() {
+        headers.push(("x-request-id".into(), id.0.clone()));
+    }
+    let method = request.method().to_string();
+    let uri = request.uri().to_string();
+    let body = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        axum::body::to_bytes(request.into_body(), 1024 * 1024),
+    )
+    .await
+    .map_err(|_| ApiError::unavailable())?
+    .map_err(|_| ApiError::invalid_request("catalog request body exceeds 1 MiB"))?
+    .to_vec();
+    state
+        .catalog_workers
+        .execute(
+            scope,
+            mounts,
+            WorkerRequest {
+                method,
+                uri,
+                headers,
+                body,
+            },
+        )
         .await
-        .context("read catalog query worker response")?;
-    let result = CatalogWorkerResult {
-        status,
-        content_type,
-        body: body.to_vec(),
-    };
-    serde_json::to_writer(std::io::stdout(), &result)
-        .context("write catalog query worker result")?;
-    std::io::stdout().flush().ok();
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1048,6 +1102,34 @@ user = "bob"
 dataset = "evals"
 permissions = ["read", "query"]
 "#;
+
+    #[test]
+    fn wildcard_grant_expands_to_all_users() {
+        let acl = CatalogAcl::parse(
+            r#"
+[datasets.prod]
+uri = "/tmp/prod"
+[datasets.private]
+uri = "/tmp/private"
+[users.alice]
+access_key = "a"
+secret_key = "as"
+[users.bob]
+access_key = "b"
+secret_key = "bs"
+[[grants]]
+user = "*"
+dataset = "prod"
+[[grants]]
+user = "alice"
+dataset = "private"
+"#,
+        )
+        .unwrap();
+        assert_eq!(acl.list_for(acl.authenticate("a", "as").unwrap()).len(), 2);
+        assert_eq!(acl.list_for(acl.authenticate("b", "bs").unwrap()).len(), 1);
+        assert_eq!(acl.public_for_all().len(), 1);
+    }
 
     #[test]
     fn parse_rejects_unknown_grant() {
@@ -1228,9 +1310,10 @@ dataset = "prod"
     }
 
     #[test]
-    fn catalog_pin_target_must_be_loopback_with_port() {
+    fn catalog_pin_target_accepts_any_ip_with_port() {
         assert!(parse_catalog_pin_target("catalog://127.0.0.1:8081").is_ok());
-        assert!(parse_catalog_pin_target("catalog://8.8.8.8:8081").is_err());
+        assert!(parse_catalog_pin_target("catalog://8.8.8.8:8081").is_ok());
+        assert!(parse_catalog_pin_target("catalog://10.12.111.136:8000").is_ok());
         assert!(parse_catalog_pin_target("catalog://127.0.0.1").is_err());
         assert!(parse_catalog_pin_target("s3://bucket/prod").is_err());
     }
@@ -1254,7 +1337,7 @@ dataset = "prod"
     }
 
     #[tokio::test]
-    async fn prepare_catalog_mounts_local_datasets_without_credentials() {
+    async fn prepare_catalog_does_not_mount_datasets_in_parent() {
         let temporary = tempfile::tempdir().unwrap();
         let left = temporary.path().join("left");
         let right = temporary.path().join("right");
@@ -1278,10 +1361,94 @@ uri = "{}"
         .unwrap();
 
         let acl = CatalogAcl::load(&catalog).unwrap();
-        let warehouse = crate::server::PreparedWarehouse::prepare_catalog(acl)
+        let config = crate::server::ChronicleServerConfig::mounted(acl.mounts().unwrap()).unwrap();
+        let warehouse = crate::server::PreparedWarehouse::prepare_catalog(acl, config)
             .await
             .unwrap();
-        assert_eq!(warehouse.dataset_names(), vec!["left", "right"]);
+        assert!(warehouse.dataset_names().is_empty());
+        assert!(warehouse.state.catalog.read().await.is_none());
+        use tower::ServiceExt;
+        let response = warehouse
+            .router()
+            .oneshot(catalog_request("/api/explorer/runs", None, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn prepare_catalog_keeps_public_mounts_for_browse_cache() {
+        let temporary = tempfile::tempdir().unwrap();
+        let dataset = temporary.path().join("shared");
+        std::fs::create_dir_all(&dataset).unwrap();
+        let catalog = temporary.path().join("catalog.toml");
+        std::fs::write(
+            &catalog,
+            format!(
+                "[datasets.shared]\nuri = \"{}\"\n\n[[grants]]\nuser = \"*\"\ndataset = \"shared\"\n",
+                dataset.display()
+            ),
+        )
+        .unwrap();
+
+        let acl = CatalogAcl::load(&catalog).unwrap();
+        let config = crate::server::ChronicleServerConfig::front_only();
+        let warehouse = crate::server::PreparedWarehouse::prepare_catalog(acl, config)
+            .await
+            .unwrap();
+        assert!(warehouse.state.config.datasets.is_empty());
+        assert_eq!(warehouse.state.browse_mounts.len(), 1);
+        assert_eq!(warehouse.state.browse_mounts[0].name, "shared");
+    }
+
+    #[tokio::test]
+    async fn catalog_warehouse_exposes_home_links_on_ui_route() {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let dataset = temporary.path().join("left");
+        std::fs::create_dir_all(&dataset).unwrap();
+        let catalog = temporary.path().join("catalog.toml");
+        std::fs::write(
+            &catalog,
+            format!(
+                r#"
+[datasets.left]
+uri = "{}"
+"#,
+                dataset.display()
+            ),
+        )
+        .unwrap();
+
+        let acl = CatalogAcl::load(&catalog).unwrap();
+        let mut config =
+            crate::server::ChronicleServerConfig::mounted(acl.mounts().unwrap()).unwrap();
+        config.home_links = vec![crate::server::parse_home_link("Realtime=/litefuse").unwrap()];
+        let warehouse = crate::server::PreparedWarehouse::prepare_catalog(acl, config)
+            .await
+            .unwrap();
+        let response = warehouse
+            .router()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/ui")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "links": [{"label": "Realtime", "href": "/litefuse"}]
+            })
+        );
     }
 
     async fn catalog_body(response: axum::response::Response) -> (axum::http::StatusCode, String) {
@@ -1308,7 +1475,7 @@ uri = "{}"
     }
 
     #[tokio::test]
-    async fn catalog_list_requires_credentials_and_omits_backend_secrets() {
+    async fn catalog_list_allows_anonymous_public_datasets_and_rejects_invalid_credentials() {
         use tower::ServiceExt;
 
         let app = catalog_front().await;
@@ -1319,7 +1486,7 @@ uri = "{}"
                 .unwrap(),
         )
         .await;
-        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(status, axum::http::StatusCode::OK);
 
         let (status, body) = catalog_body(
             app.clone()
@@ -1465,7 +1632,7 @@ secret_key = "BACKEND_SK"
     }
 
     #[test]
-    fn apply_catalog_backend_env_before_runtime_loads_s3_region() {
+    fn catalog_parent_does_not_install_backend_credentials() {
         use clap::Parser;
 
         let temporary = tempfile::tempdir().unwrap();
@@ -1492,13 +1659,20 @@ secret_key = "123"
             &catalog_arg,
         ])
         .unwrap();
-        unsafe {
-            std::env::remove_var("AWS_REGION");
-            std::env::remove_var("AWS_DEFAULT_REGION");
-        }
+        let keys = [
+            "AWS_REGION",
+            "AWS_DEFAULT_REGION",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_ENDPOINT_URL_S3",
+        ];
+        let before: Vec<_> = keys.iter().map(std::env::var_os).collect();
         crate::apply_catalog_backend_env_before_runtime(&cli).unwrap();
-        assert_eq!(std::env::var("AWS_REGION").unwrap(), "us-east-1");
-        assert_eq!(std::env::var("AWS_ACCESS_KEY_ID").unwrap(), "123");
+        let after: Vec<_> = keys.iter().map(std::env::var_os).collect();
+        assert!(
+            before == after,
+            "parent must not mutate storage credentials"
+        );
     }
 
     #[test]

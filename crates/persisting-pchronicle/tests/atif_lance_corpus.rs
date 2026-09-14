@@ -354,19 +354,23 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
     );
 
     assert!(storyline_steps_fts_available(&paths).await?);
-    let search_hits =
+    let mut search_hits =
         search_storyline_step_matches_fts_in_columns(&paths, "deterministic", &["message_value"])
             .await?;
     assert!(!search_hits.is_empty());
-    assert_eq!(
+    let mut compatibility_hits =
         persisting_pchronicle::storage::search_storyline_step_matches_fts_in_columns(
             &paths,
             "deterministic",
             &["message_value"],
         )
-        .await?,
-        search_hits,
-        "storage compatibility export must use the search kernel"
+        .await?;
+    // Independent FTS scans do not guarantee the same hit order.
+    search_hits.sort_unstable();
+    compatibility_hits.sort_unstable();
+    assert_eq!(
+        compatibility_hits, search_hits,
+        "storage compatibility export must return the same search hits"
     );
 
     // A registered datasource remains a consistent snapshot after CURRENT moves.

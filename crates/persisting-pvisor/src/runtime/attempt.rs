@@ -352,6 +352,7 @@ pub(crate) fn prepare_attempt(
             interception_metrics: network_metrics.clone(),
             bandwidth_registry: bandwidth_registry.clone(),
             attempt_id: Some(opts.attempt_id.to_owned()),
+            gateway_enabled: opts.gateway_enabled,
         },
     )?;
 
@@ -1125,6 +1126,17 @@ fn enrich_with_session(
     for (key, value) in proxy_environment_with_local_auth(listen, root_session, local_gateway_auth)
     {
         plan.env.insert(key, value);
+    }
+    if !gateway_enabled {
+        for key in [
+            "OPENAI_BASE_URL",
+            "OPENAI_API_BASE",
+            "AZURE_OPENAI_ENDPOINT",
+            "ANTHROPIC_BASE_URL",
+            "GEMINI_API_BASE",
+        ] {
+            plan.env.remove(key);
+        }
     }
     plan.notes
         .push(format!("network service: proxy env → http://{listen}"));

@@ -1,4 +1,5 @@
 use super::*;
+use persisting_pchronicle::storage::{PathListEntry, PathListKind};
 
 pub(super) struct LimitedBuffer {
     pub(super) bytes: Vec<u8>,
@@ -412,6 +413,35 @@ pub(super) fn write_table(
         rows.push(row);
     }
 
+    write_grid(stdout, &rows, "write pChronicle ls table")
+}
+
+pub(super) fn write_path_list_table(
+    stdout: &mut dyn Write,
+    entries: &[PathListEntry],
+) -> Result<()> {
+    let mut rows = Vec::with_capacity(entries.len() + 1);
+    rows.push(
+        ["NAME", "KIND", "FORMAT", "RECORDS"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    );
+    for entry in entries {
+        rows.push(vec![
+            truncate(&entry.name, 64),
+            match entry.kind {
+                PathListKind::Directory => "directory".into(),
+                PathListKind::Dataset => "dataset".into(),
+                PathListKind::File => "file".into(),
+            },
+            entry.format.as_deref().unwrap_or("-").to_string(),
+            entry
+                .record_count
+                .map(|count| count.to_string())
+                .unwrap_or_else(|| "-".into()),
+        ]);
+    }
     write_grid(stdout, &rows, "write pChronicle ls table")
 }
 

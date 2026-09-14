@@ -53,8 +53,8 @@ Dataset 内部可以保存一种或多种受支持的运行数据格式。pChron
 `@NAME` 明确表示一个 dataset pin。裸字符串始终按路径或 URI 解释：
 
 ```text
-prod       本地相对路径 ./prod
-@prod      名为 prod 的 Dataset pin
+prod 本地相对路径 ./prod
+@prod 名为 prod 的 Dataset pin
 ```
 
 这种区分可以避免同名目录出现或消失时，命令突然解析到不同位置。
@@ -71,7 +71,7 @@ pchronicle
 ├── find [DATASET]
 ├── query [DATASET]
 ├── import --from SOURCE --to DATASET
-├── sync --from DIRECTORY --to DIRECTORY --convert DIRECTORY
+├── sync --from DIRECTORY [--mirror DIRECTORY] [--to DIRECTORY]
 ├── export --from DATASET --to TARGET
 ├── agent codex|claude [DATASET]
 └── serve DATASET...
@@ -107,8 +107,8 @@ pchronicle onboard
 pchronicle onboard query @prod
 ```
 
-通过内建示例或自己的 Dataset 体验 pChronicle 工作流。`SECTION` 可以是 `all`、`concepts`、
-`inspect`、`analyze`、`query`、`formats`、`find`、`exchange` 或 `serve`，默认为 `all`。
+通过内建示例或自己的 Dataset 体验 pChronicle 工作流。`SECTION` 可以是 `basics`、`all`、`concepts`、
+`inspect`、`analyze`、`query`、`formats`、`find`、`exchange` 或 `serve`，默认为 `basics`：列表、汇总和一个 SQL 问题。`all` 保留完整进阶课程。
 交互式终端会在章节之间暂停；pipe、重定向或 `--no-pause` 输出连续 Markdown。
 完整引导还会演示统一的 FTS/JSONB `find` 表达式、Storyline Lance 导入导出以及只读 Web/API
 边界；使用 `pchronicle onboard find DATASET` 可以直接查看检索语法。
@@ -157,16 +157,19 @@ S3 凭证用 `--ak`/`--sk` 写在同一 pin 表中，不会被 `dataset list` / 
 ### 2.3 `list`
 
 ```text
-pchronicle list [DATASET] [--physical] [--format auto|table|json] [--errors report|strict]
-  [--max-files N] [--max-entries N]
+pchronicle list [DATASET] [--sources] [--physical] [--format auto|table|json] [--errors report|strict]
+ [--max-files N] [--max-entries N]
 ```
 
 ```bash
 pchronicle list
-pchronicle list @prod --physical --format json --errors strict
+pchronicle list @prod --sources --physical --format json --errors strict
+pchronicle list @prod --sources --format json
 ```
 
-`list`（`ls`）显示 Dataset 中可独立查询的 Run 数据源，而不是底层 Lance fragment。`--physical` 增加大小、
+`list`（`ls`）列出当前路径的一层 children，体验对齐 shell `ls`。若某一子目录是 Dataset
+（含 `chronicle.manifest` 或其它叶子标记），同时显示类型和轨迹数。`--sources` 会
+**打开**该路径并打印 Snapshot 成员（`query` 会合成的虚拟 dataset）。`--physical` 增加大小、
 修改时间和存储版本信息。还可以用 `--max-files` 和 `--max-entries` 限制发现范围。
 `--errors report` 会报告坏数据项并继续；`strict` 遇到第一个坏数据项即失败。
 
@@ -174,7 +177,7 @@ pchronicle list @prod --physical --format json --errors strict
 
 ```text
 pchronicle stats [DATASET] [--format auto|table|json] [--errors report|strict] [--timeout 30s]
-  [--max-files N] [--max-entries N]
+ [--max-files N] [--max-entries N]
 ```
 
 ```bash
@@ -190,8 +193,8 @@ canonical Event Store 的 Storyline projection 状态。还可以用 `--max-file
 
 ```text
 pchronicle stats <overview|agents|models|tools> [DATASET]
-  [--format auto|table|jsonl|csv|tsv]
-  [--limit 100] [--max-output-bytes 8MiB] [--timeout 30s]
+ [--format auto|table|jsonl|csv|tsv]
+ [--limit 100] [--max-output-bytes 8MiB] [--timeout 30s]
 ```
 
 ```bash
@@ -212,20 +215,20 @@ pchronicle stats tools @prod --format csv --limit 20
 
 ```text
 pchronicle find [DATASET]
-  (--run-id ID|--document-id ID|--session-id ID|--match EXPRESSION)
-  [--source PATH] [--step-id N] [--match EXPRESSION ...]
-  [--format auto|table|json] [--max-results N]
+ (--run-id ID|--document-id ID|--session-id ID|--match EXPRESSION)
+ [--source PATH] [--step-id N] [--match EXPRESSION ...]
+ [--format auto|table|json] [--max-results N]
 ```
 
 ```bash
 pchronicle find @prod --session-id session-42
 pchronicle find ./dataset \
-  --source nested/source.json \
-  --session-id session-42 --step-id 7
+ --source nested/source.json \
+ --session-id session-42 --step-id 7
 pchronicle find ./dataset \
-  --match "timeout" --match "retry" --format json
+ --match "timeout" --match "retry" --format json
 pchronicle find ./dataset \
-  --match '$.tags=important' --match '$.priority=2' --format json
+ --match '$.tags=important' --match '$.priority=2' --format json
 ```
 
 外部 ID 不保证在整个 Dataset 内唯一。没有 `--source` 时，同一个 ID 可以返回多个候选；结果中的
@@ -247,19 +250,19 @@ CLI 不一致时以 CLI 为准。
 
 ```text
 pchronicle query [DATASET|--mount NAME=DATASET ...] (--sql SQL|--file FILE_OR_STDIN)
-  [--format auto|table|jsonl|csv] [--output PATH_OR_STDOUT]
-  [--max-output-rows N] [--max-output-bytes BYTES] [--timeout 30s]
+ [--format auto|table|jsonl|csv] [--output PATH_OR_STDOUT]
+ [--max-output-rows N] [--max-output-bytes BYTES] [--timeout 30s]
 ```
 
 ```bash
 pchronicle query ./dataset \
-  --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
+ --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
 pchronicle query \
-  --mount live=./live \
-  --mount archive=@archive \
-  --sql 'SELECT * FROM live.runs
-         UNION ALL
-         SELECT * FROM archive.runs'
+ --mount live=./live \
+ --mount archive=@archive \
+ --sql 'SELECT * FROM live.runs
+ UNION ALL
+ SELECT * FROM archive.runs'
 ```
 
 `--file` 从文件读取 SQL，`--file -` 从 stdin 读取；`--format`、`--output`、输出上限和 `--timeout`
@@ -270,33 +273,41 @@ pchronicle query \
 
 ```text
 pchronicle import -f|--from SOURCE -t|--to NEW_DATASET
-  [-i|--input-format FORMAT] [-o|--output-format preserve|storyline|compact-jsonl]
-  [--mode create|append|replace] [--on-duplicate suffix|skip] [--yes]
-  [--column NAME=JSON_PATH]... [--max-input-bytes BYTES]
+ [-i|--input-format FORMAT] [-o|--output-format preserve|storyline|compact-jsonl]
+ [--replace] [--append] [--on-duplicate suffix|skip] [--yes]
+ [--resume] [--wal-dir DIR] [--reset]
+ [--column NAME=JSON_PATH]... [--max-input-bytes BYTES]
 ```
 
 ```bash
 pchronicle import \
-  -f input.json -t ./imported -i atif
+ -f input.json -t ./imported -i atif
 pchronicle import \
-  -f ./corpus \
-  -t s3://bucket/normalized \
-  -o storyline
+ -f ./corpus \
+ -t s3://bucket/normalized \
+ -o storyline
 pchronicle import \
-  -f more.json -t ./normalized --mode append --on-duplicate skip
+ -f more.json -t ./normalized --append --on-duplicate skip
 pchronicle import \
-  -f rebuilt.json -t ./normalized --mode replace --yes
+ -f rebuilt.json -t ./normalized --replace --yes
 pchronicle import \
-  -f ./jsonl-root -t ./records.lance \
-  -o compact-jsonl \
-  --column id=$.event.id --column timestamp=$.event.time \
-  --column model=$.payload.model
+ -f s3://bucket/corpus -t s3://bucket/out -o storyline --resume
+pchronicle import \
+ -f ./jsonl-root -t ./records.lance \
+ -o compact-jsonl \
+ --column id=$.event.id --column timestamp=$.event.time \
+ --column model=$.payload.model
 ```
 
 长参数分别是 `--from`、`--to`、`--input-format` 和 `--output-format`。短 option 始终只有一个字符，
 因此格式参数使用 `-i` 和 `-o`，而不是 `-if` 和 `-of`。文件和目录默认自动识别输入格式；stdin
 必须显式指定 `-i`。`preserve` 保留文件边界和相对路径，`storyline` 合并为 normalized Store；
 对象存储目标必须使用 `storyline`。
+
+长时间 Storyline import 会在 `./.pchronicle-import-wal/<job_id>/` 写入本地 checkpoint WAL
+（`job.json`、`done.jsonl`、`failed.jsonl`）。同一 `--from`/`--to` 指纹下使用 `--resume` 可跳过
+已标记 done/failed 的源；`--wal-dir` 覆盖 WAL 根目录；`--reset` 会先删除该 job 的 WAL。
+decode 与可跳过的 commit 失败会写入 WAL 与 `import.log`，进程继续处理其余源。
 
 | Format | Import | Export |
 |---|---:|---:|
@@ -309,10 +320,10 @@ pchronicle import \
 | `compact-jsonl` | 是 | 是 |
 
 Codex 和 Claude Code session 是 decode-only 输入格式。Canonical Event Store 会自动识别并投影为
-Storyline Dataset。默认 `create` 模式要求目标不存在。`append` 要求目标是已有 Storyline Dataset；
-重复 `document_id` 默认增加 `#N` 后缀，也可用 `--on-duplicate skip` 跳过。`replace` 会先将完整导入
+Storyline Dataset。默认创建要求目标不存在。`--append` 要求目标是已有 Storyline Dataset；
+重复 `document_id` 默认增加 `#N` 后缀，也可用 `--on-duplicate skip` 跳过。`--replace` 会先将完整导入
 写入临时路径，再将旧本地 Dataset rename 到备份路径、将新 Dataset rename 到正式路径，确认新路径
-发布后才删除备份；因此必须交互确认或传入 `--yes`。已有对象存储 Dataset 当前不支持原地 replace。
+发布后才删除备份；因此必须交互确认或传入 `--yes`。对象存储 Dataset 的 replace 会先清空目标前缀再写入（非原子）。
 
 Compact JSONL 是记录存储，不会转换或推断轨迹语义。指定
 `--input-format compact-jsonl` 或 `--output-format compact-jsonl` 均会选择该格式。输入必须是本地
@@ -326,21 +337,26 @@ Compact JSONL 是记录存储，不会转换或推断轨迹语义。指定
 ### 2.8 `sync`
 
 ```text
-pchronicle sync --from DIRECTORY --to DIRECTORY --convert DIRECTORY
-  [--input-format FORMAT] [--column NAME=JSON_PATH]...
-  [--interval DURATION] [--once]
+pchronicle sync --from DIRECTORY
+ [--mirror DIRECTORY] [--to DIRECTORY]
+ [--input-format FORMAT] [--suggested-format FORMAT]
+ [--column NAME=JSON_PATH]...
+ [--interval DURATION] [--once]
 ```
 
-`sync` 是常驻轮询器：监听源目录下的 `.json`、`.jsonl` 和 `.ndjson`。对于运行数据格式，它会将
-变更合并到 pending 池，并按 `--interval` 将源文件逐字节批量镜像到本地 Warehouse 目录，同时将
-数据转换为 Storyline Lance 写入 `--convert` 目标。一个批次成功后才清理 pending；失败会保留
-变更并指数退避重试。`--once` 只执行一次初始批次后退出。当前目标必须是本地目录，两个目标
-必须位于源目录之外。
+`sync` 是常驻轮询器：监听源目录下的 `.json`、`.jsonl` 和 `.ndjson`，将变更合并到 pending
+池，并按 `--interval` 做整树 snapshot 重建。`--mirror` 与 `--to` 至少提供一个，也可同时提供：
 
-指定 `--input-format compact-jsonl` 时，源目录必须是本地 `.json`、`.jsonl` 或 `.ndjson` 目录树，列映射规则与 Compact
-import 相同。每个成功批次都会重新扫描整个目录，并原子替换 `--convert` 指向的 Compact Lance
-快照，因此新增、修改和删除都会反映在下一快照中，但不提供行级增量更新。此模式仍要求传入
-`--to` 作为兼容参数，但不会写入该路径。
+- `--mirror`：把源树按 Compact JSONL 规则写入 Compact Lance Dataset（record-level；可用
+  `--column`）。每个成功批次原子替换该目标。
+- `--to`：把源轨迹转换为 Storyline Lance Dataset（可用 `--input-format` /
+  `--suggested-format`）。
+
+一个批次内启用的目标全部成功后才清理 pending；失败会保留变更并指数退避重试。`--once`
+只执行一次初始批次后退出。本地目标必须位于源目录之外。
+
+若 `--input-format compact-jsonl`，只能配合 `--mirror`（不能与 `--to` 同用）：每个成功批次
+重新扫描整个目录，并原子替换 `--mirror` 指向的 Compact Lance 快照。
 
 ### 2.9 `drop`
 
@@ -355,16 +371,16 @@ pchronicle drop DATASET [--yes]
 
 ```text
 pchronicle export -f|--from DATASET -t|--to TARGET -o|--output-format FORMAT
-  [--source PATH] [--run-id ID|--document-id ID|--session-id ID] [--where EXPRESSION]
-  [--strict] [--overwrite] [--max-trajectories N] [--max-output-bytes BYTES] [--timeout 30s]
+ [--source PATH] [--run-id ID|--document-id ID|--session-id ID] [--where EXPRESSION]
+ [--strict] [--overwrite] [--max-trajectories N] [--max-output-bytes BYTES] [--timeout 30s]
 ```
 
 ```bash
 pchronicle export \
-  -f ./imported -t restored.json -o atif
+ -f ./imported -t restored.json -o atif
 pchronicle export \
-  -f ./imported \
-  -t - -o actf --session-id session-42 --strict
+ -f ./imported \
+ -t - -o actf --session-id session-42 --strict
 ```
 
 长参数分别是 `--from`、`--to` 和 `--output-format`。过滤条件包括 `--source`、`--run-id`、
@@ -379,7 +395,7 @@ pchronicle export \
 
 ```text
 pchronicle agent <codex|claude> [DATASET]
-  [--ask QUESTION|--ask-file FILE_OR_STDIN] [--no-overview] [--dry-run]
+ [--ask QUESTION|--ask-file FILE_OR_STDIN] [--no-overview] [--dry-run]
 ```
 
 ```bash
@@ -395,35 +411,48 @@ Agent 注入是行为引导，不是 filesystem、network 或 tool permission �
 
 ```text
 pchronicle serve
-  [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
-  [--gateway ADDRESS --gateway-dataset DATASET [--gateway-split TEMPLATE]
-   [--gateway-split-idle DURATION]]
-  [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
-  [--gateway-stream-markdown] [--gateway-debug]
-  [--catalog-config FILE]
-  [<[NAME=]DATASET> ...]
-pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI [OPTIONS]
+ [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
+ [--home-link TEXT=PATH]...
+ [--gateway ADDRESS --gateway-dataset DATASET [--gateway-split TEMPLATE]
+ [--gateway-split-idle DURATION]]
+ [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
+ [--gateway-stream-markdown] [--gateway-debug]
+ [--catalog-config FILE]
+ [<[NAME=]DATASET> ...]
+pchronicle serve catalog dataset add --catalog-config FILE NAME --uri URI [OPTIONS]
 pchronicle serve catalog dataset remove --catalog-config FILE NAME...
-pchronicle serve catalog dataset list   --catalog-config FILE
-pchronicle serve catalog issue  --catalog-config FILE NAME
-pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
+pchronicle serve catalog dataset list --catalog-config FILE
+pchronicle serve catalog issue --catalog-config FILE NAME
+pchronicle serve catalog grant --catalog-config FILE NAME DATASET...
 pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
 ```
 
 ```bash
 pchronicle serve ./trajectory-data
 pchronicle serve \
-  --gateway auto \
-  --gateway-dataset ./trajectory-data \
-  --gateway-split '{user}/{date}/{hour}'
+ --gateway auto \
+ --gateway-dataset ./trajectory-data \
+ --gateway-split '{user}/{date}/{hour}'
 ```
 
 未指定服务 flag 时，只读 Web/API 默认监听 `127.0.0.1:0`。多个 Dataset 使用
-`NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。`--catalog-config FILE`
-会把文件中全部 `[datasets.*]` 挂进 Warehouse，并启用 `catalog://` locator；不能与位置参数
-Dataset 同时使用。配合 `dataset pin NAME catalog://127.0.0.1:PORT --ak --sk`。
+`NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。可重复的
+`--home-link TEXT=PATH` 会在首页 Warehouse 旁增加胶囊；`PATH` 必须是同源相对路径。
+`--catalog-config FILE`
+启用逐请求 AK/SK 认证及 `catalog://` locator。父进程只监听、认证和调度，已授权数据集由
+独立 exec worker 读取；不能与位置参数 Dataset、Gateway 或 Control 同时使用。配合 `dataset pin NAME catalog://127.0.0.1:PORT --ak --sk`。
 `pchronicle serve catalog dataset add|remove|list` 与 `issue|grant|revoke` 只改该文件、
 不启动 HTTP；`issue` 把用户 sk 只打印一次。改 library、用户或授权后必须重启 serve。
+worker 池最多 8 个进程、32 个正在处理或排队的请求；每个 worker 串行处理请求，
+计算等待上限为 60 秒，请求体读取上限为 10 秒。过载返回 503，超时或 IPC 失败会淘汰进程。
+同一用户、授权范围和后端凭证版本复用 worker 及独立磁盘缓存；修改授权后重启生效。
+缓存位于 `PCHRONICLE_CACHE_DIR/workers/`，未设置时使用系统 pchronicle 缓存目录。
+子进程不继承父进程的 AWS 环境、profile 或用户主目录配置；登录 AK/SK 用于认证，
+数据集的 AK/SK 经私有 IPC 传入并用于对象存储访问。不同 S3 endpoint/凭证的数据集必须
+分别通过 `dataset` 参数选择，暂不支持这类跨凭证查询。健康检查、UI 配置和静态页面公开，
+数据 API 需要认证。没有用户的 catalog 仍可管理，但数据 API 不接受匿名访问。
+这是进程与凭证上下文隔离，不是 OS 用户降权或文件系统沙箱；本地路径仍使用服务进程的 OS 身份。
+
 `catalog` 是 `serve` 的保留子命令，挂载同名路径请用 `./catalog`。见
 [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md) 与
 [RFC-0015](../../rfcs/0015-chronicle-manifest.md)。无需配置的 `--gateway`
@@ -442,13 +471,13 @@ loopback；服务准备完成后，stdout 输出一行版本化 readiness JSON�
 Directory ACL 文件包含用户、datasets（libraries）和 grants。配置文件不存在时，管理命令会自动创建。
 
 ```text
-pchronicle serve catalog issue  --catalog-config FILE NAME
-pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
+pchronicle serve catalog issue --catalog-config FILE NAME
+pchronicle serve catalog grant --catalog-config FILE NAME DATASET...
 pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
-pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI
-  [--endpoint URL] [--region REGION] [--access-key KEY] [--secret-key KEY]
+pchronicle serve catalog dataset add --catalog-config FILE NAME --uri URI
+ [--endpoint URL] [--region REGION] [--access-key KEY] [--secret-key KEY]
 pchronicle serve catalog dataset remove --catalog-config FILE NAME...
-pchronicle serve catalog dataset list   --catalog-config FILE
+pchronicle serve catalog dataset list --catalog-config FILE
 ```
 
 `issue` 生成用户 AK/SK 并只显示一次 secret；`dataset add` 只登记 URI 与可选后端存储凭据，
@@ -485,9 +514,9 @@ pchronicle dataset pin local ./trajectory-data
 pchronicle dataset pin default @local
 
 pchronicle import \
-  -f ./training.json \
-  -t ./trajectory-data/training \
-  -i openai-messages
+ -f ./training.json \
+ -t ./trajectory-data/training \
+ -i openai-messages
 
 pchronicle list
 pchronicle stats
@@ -501,16 +530,16 @@ pchronicle dataset pin live s3://bucket/live
 pchronicle dataset pin archive s3://bucket/archive
 
 pchronicle query \
-  --mount live=@live \
-  --mount archive=@archive \
-  --sql 'SELECT model_name, COUNT(*) AS steps
-         FROM (
-           SELECT model_name FROM live.steps
-           UNION ALL
-           SELECT model_name FROM archive.steps
-         )
-         GROUP BY model_name
-         ORDER BY steps DESC'
+ --mount live=@live \
+ --mount archive=@archive \
+ --sql 'SELECT model_name, COUNT(*) AS steps
+ FROM (
+ SELECT model_name FROM live.steps
+ UNION ALL
+ SELECT model_name FROM archive.steps
+ )
+ GROUP BY model_name
+ ORDER BY steps DESC'
 ```
 
 ### 找到并严格导出一条 Run
@@ -519,29 +548,29 @@ pchronicle query \
 pchronicle find @prod --session-id session-42 --format json
 
 pchronicle export \
-  -f @prod \
-  -t session-42.actf.json \
-  -o actf \
-  --source nested/source.json \
-  --session-id session-42 \
-  --strict
+ -f @prod \
+ -t session-42.actf.json \
+ -o actf \
+ --source nested/source.json \
+ --session-id session-42 \
+ --strict
 ```
 
 ### 在 CI 中使用
 
 ```bash
 pchronicle \
-  -c ./ci-config.toml \
-  --log-level error \
-  status ./fixtures \
-  --format json > status.json
+ -c ./ci-config.toml \
+ --log-level error \
+ status ./fixtures \
+ --format json > status.json
 
 pchronicle \
-  -c ./ci-config.toml \
-  --log-level error \
-  query ./fixtures \
-  --file checks.sql \
-  --format jsonl > checks.jsonl
+ -c ./ci-config.toml \
+ --log-level error \
+ query ./fixtures \
+ --file checks.sql \
+ --format jsonl > checks.jsonl
 ```
 
 定位后再写 SQL 见 [发现并查询](../guides/discover-and-query.md)，交换见

@@ -2,8 +2,8 @@
 
 **问题：三种交换格式能否不经转换就跑通内置分析并定位指定 Step？可复现结论：overview 汇总 3 个 ready Source / 4 条轨迹 / 9 个 Step；`find` 定位 `support-001` step 1。**
 
-这个示例直接分析 [`examples/data`](../../data/) 下的 ATIF、ACTF 和 OpenAI Messages
-三个确定性 Dataset，不需要先转换格式或启动服务。
+这个示例直接分析 [`examples/data/corpus`](../../data/corpus/) 下的扁平多格式
+Dataset（ATIF、ACTF、OpenAI Messages），不需要先转换格式或启动服务。
 
 它展示四个稳定的内置分析入口：
 

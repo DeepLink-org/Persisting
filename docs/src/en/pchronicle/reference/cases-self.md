@@ -15,7 +15,7 @@ cd /tmp/pchronicle-cases
 ## S01: Browse a local Dataset
 
 ```bash
-pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data --mode create
+pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data
 pchronicle list ./trajectory-data
 pchronicle stats ./trajectory-data
 ```
@@ -25,9 +25,9 @@ Expected: the commands list runs, steps, and tool calls in the Dataset.
 ## S02: Run a SQL query
 
 ```bash
-pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data --mode create
+pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data
 pchronicle query ./trajectory-data \
-  --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
+ --sql 'SELECT COUNT(*) AS runs FROM dataset.runs'
 ```
 
 Expected: the query succeeds and returns a definite run count.
@@ -35,7 +35,7 @@ Expected: the query succeeds and returns a definite run count.
 ## S03: Run a built-in analysis
 
 ```bash
-pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data --mode create
+pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data
 pchronicle stats overview ./trajectory-data
 ```
 
@@ -44,7 +44,7 @@ Expected: output includes run, step, and tool-call counts plus a time range.
 ## S04: Import and export
 
 ```bash
-pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data --mode create
+pchronicle import --from "$PCHRONICLE_CASE_FIXTURES/atif/support-ticket.json" --to ./trajectory-data
 pchronicle export --from ./trajectory-data --to ./output.atif.json --output-format atif
 test -s ./output.atif.json
 ```

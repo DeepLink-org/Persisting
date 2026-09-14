@@ -26,6 +26,27 @@ impl RequestId {
 #[derive(Clone, Default)]
 pub(crate) struct FtsDiagnostics(pub Arc<Mutex<Vec<String>>>);
 
+#[derive(Clone, Default)]
+pub(crate) struct RequestMetrics(pub Arc<Mutex<Vec<(&'static str, u64)>>>);
+
+impl RequestMetrics {
+    pub(crate) fn record(&self, name: &'static str, started: Instant) {
+        if let Ok(mut values) = self.0.lock() {
+            values.push((name, started.elapsed().as_millis() as u64));
+        }
+    }
+
+    fn server_timing(&self, total_ms: u64) -> String {
+        let mut values = self.0.lock().map(|v| v.clone()).unwrap_or_default();
+        values.push(("total", total_ms));
+        values
+            .into_iter()
+            .map(|(name, ms)| format!("{name};dur={ms}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 impl FtsDiagnostics {
     pub(crate) fn push(&self, message: impl Into<String>) {
         if let Ok(mut errors) = self.0.lock() {
@@ -77,6 +98,21 @@ where
     }
 }
 
+impl<S> FromRequestParts<S> for RequestMetrics
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(parts
+            .extensions
+            .get::<RequestMetrics>()
+            .cloned()
+            .unwrap_or_default())
+    }
+}
+
 pub(crate) async fn warehouse_request_layer(
     mut request: Request<axum::body::Body>,
     next: Next,
@@ -92,11 +128,21 @@ pub(crate) async fn warehouse_request_layer(
     let query = request.uri().query().unwrap_or("").to_owned();
     let started = Instant::now();
     let fts = FtsDiagnostics::default();
+    let metrics = RequestMetrics::default();
     request
         .extensions_mut()
         .insert(RequestId(request_id.clone()));
     request.extensions_mut().insert(fts.clone());
+    request.extensions_mut().insert(metrics.clone());
 
+    tracing::info!(
+        target: LOG_TARGET,
+        request_id = %request_id,
+        method = %method,
+        path = %path,
+        query = %truncate_utf8(&query, QUERY_LOG_LIMIT),
+        "warehouse request start"
+    );
     let response = next.run(request).await;
     let status = response.status();
     let root_cause = response
@@ -104,34 +150,34 @@ pub(crate) async fn warehouse_request_layer(
         .get::<FourXxRootCause>()
         .map(|value| value.0.clone())
         .unwrap_or_default();
-    let (response, error_fields) = attach_request_id(response, &request_id).await;
-
-    let is_api = path.starts_with("/api/");
-    if is_api {
-        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        tracing::info!(
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let (response, error_fields) =
+        attach_request_id(response, &request_id, &metrics, elapsed_ms).await;
+    let server_timing = metrics.server_timing(elapsed_ms);
+    tracing::info!(
+        target: LOG_TARGET,
+        request_id = %request_id,
+        method = %method,
+        path = %path,
+        status = status.as_u16(),
+        elapsed_ms,
+        server_timing = %server_timing,
+        query = %truncate_utf8(&query, QUERY_LOG_LIMIT),
+        "warehouse request"
+    );
+    if (400..500).contains(&status.as_u16()) {
+        let (code, message) = error_fields.unwrap_or_default();
+        let fts_errors = fts.joined();
+        tracing::warn!(
             target: LOG_TARGET,
             request_id = %request_id,
-            method = %method,
-            path = %path,
-            status = status.as_u16(),
-            elapsed_ms,
-            query = %truncate_utf8(&query, QUERY_LOG_LIMIT),
-            "warehouse request"
+            code = %code,
+            message = %message,
+            root_cause = %root_cause,
+            fts_errors = %fts_errors,
+            server_timing = %server_timing,
+            "warehouse request rejected"
         );
-        if (400..500).contains(&status.as_u16()) {
-            let (code, message) = error_fields.unwrap_or_default();
-            let fts_errors = fts.joined();
-            tracing::warn!(
-                target: LOG_TARGET,
-                request_id = %request_id,
-                code = %code,
-                message = %message,
-                root_cause = %root_cause,
-                fts_errors = %fts_errors,
-                "warehouse request rejected"
-            );
-        }
     }
     response
 }
@@ -139,10 +185,22 @@ pub(crate) async fn warehouse_request_layer(
 async fn attach_request_id(
     response: Response,
     request_id: &str,
+    metrics: &RequestMetrics,
+    total_ms: u64,
 ) -> (Response, Option<(String, String)>) {
     let (mut parts, body) = response.into_parts();
     if let Ok(value) = HeaderValue::from_str(request_id) {
         parts.headers.insert("x-request-id", value);
+    }
+    let timing = if parts.headers.contains_key("server-timing") {
+        // Preserve stages returned by an isolated worker; parent wall time
+        // includes admission and IPC and must have a distinct metric name.
+        format!("parent_total;dur={total_ms}")
+    } else {
+        metrics.server_timing(total_ms)
+    };
+    if let Ok(value) = HeaderValue::from_str(&timing) {
+        parts.headers.append("server-timing", value);
     }
     let is_json = parts
         .headers
@@ -194,13 +252,19 @@ fn inject_request_id_json(bytes: Vec<u8>, request_id: &str) -> (Vec<u8>, Option<
 }
 
 pub(crate) fn tracing_filter(level: crate::LogLevel) -> String {
-    let level = match level {
-        crate::LogLevel::Error => "error",
-        crate::LogLevel::Warn => "warn",
-        crate::LogLevel::Info => "info",
-        crate::LogLevel::Debug => "debug",
-    };
-    format!("pchronicle.serve={level}")
+    match level {
+        crate::LogLevel::Error => "error".to_owned(),
+        crate::LogLevel::Warn => {
+            "warn,persisting_pchronicle=warn,persisting_pchronicle_cli=warn".to_owned()
+        }
+        crate::LogLevel::Info => {
+            // Keep CLI/import diagnostics readable: silence Lance/OpenDAL INFO
+            // spam (dataset load, FTS workers, If-Match noise) while still
+            // showing pChronicle warn for lease/CAS issues.
+            "info,persisting_pchronicle=warn,pchronicle.serve=info,lance=warn,lance_index=warn,opendal=warn,pchronicle.opendal=warn,object_store=warn,pchronicle.object_store_gate=warn".to_owned()
+        }
+        crate::LogLevel::Debug => "debug".to_owned(),
+    }
 }
 
 pub(crate) fn init_warehouse_tracing(level: crate::LogLevel) {
@@ -212,6 +276,11 @@ pub(crate) fn init_warehouse_tracing(level: crate::LogLevel) {
         .with_writer(std::io::stderr)
         .with_target(true)
         .try_init();
+}
+
+/// Initialize stderr tracing for non-serve commands (import lease diagnostics, etc.).
+pub(crate) fn init_cli_tracing(level: crate::LogLevel) {
+    init_warehouse_tracing(level);
 }
 
 pub(crate) fn log_warehouse_startup(listen: &str, datasets: &[String], snapshot_id: Option<&str>) {

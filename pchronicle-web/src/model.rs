@@ -24,6 +24,18 @@ where
     })
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct UiConfig {
+    #[serde(default)]
+    pub links: Vec<HomeNavLink>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct HomeNavLink {
+    pub label: String,
+    pub href: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RunSummary {
     #[serde(default = "default_dataset_name")]
@@ -113,6 +125,8 @@ pub struct QueryDatasetSummary {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct CatalogTree {
     #[serde(default)]
+    pub browse: Option<BrowseStatus>,
+    #[serde(default)]
     pub dataset: Option<String>,
     #[serde(default)]
     pub prefix: String,
@@ -120,6 +134,10 @@ pub struct CatalogTree {
     pub run_count: usize,
     #[serde(default)]
     pub failed_count: usize,
+    #[serde(default)]
+    pub dataset_count: Option<usize>,
+    #[serde(default)]
+    pub trajectory_count: Option<usize>,
     #[serde(default)]
     pub ready_sources: Option<usize>,
     #[serde(default)]
@@ -144,6 +162,10 @@ pub struct CatalogTreeChild {
     pub run_count: usize,
     #[serde(default)]
     pub failed_count: usize,
+    #[serde(default)]
+    pub dataset_count: Option<usize>,
+    #[serde(default)]
+    pub trajectory_count: Option<usize>,
     #[serde(default)]
     pub total_tokens: Option<u64>,
     #[serde(default)]
@@ -817,4 +839,13 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["default.runs"]);
     }
+}
+
+/// Directory observations are independent of the query's pinned revisions.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct BrowseStatus {
+    pub observed_at: i64,
+    pub stale: bool,
+    pub refreshing: bool,
+    pub last_error: Option<String>,
 }

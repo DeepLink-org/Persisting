@@ -1,12 +1,15 @@
-//! Local, loopback-only pChronicle browser.
+//! Local pChronicle browser Warehouse.
 
 mod acceleration;
 mod asset;
 pub(crate) mod catalog;
+pub(crate) mod catalog_worker;
 mod explorer;
 mod physical;
 pub(crate) mod problem;
+mod query_admission;
 pub(crate) mod request_log;
+mod ui_cache;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -25,7 +28,7 @@ use persisting_pchronicle::analysis_compile::{
 };
 use persisting_pchronicle::document::InputIssue;
 use persisting_pchronicle::model::{EventRecord, StorylineTurn};
-use persisting_pchronicle::query::ChronicleQueryEngine;
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 use persisting_pchronicle::search::storyline_steps_fts_available;
 #[cfg(test)]
 use persisting_pchronicle::storage::StoryCoords;
@@ -40,7 +43,7 @@ use acceleration::{AccelerationStatus, ServerAcceleration};
 use problem::{
     ApiError, CHAIN_LIMIT, LOG_TARGET, QUERY_LOG_LIMIT, ROOT_CAUSE_LIMIT, truncate_utf8,
 };
-use request_log::{FtsDiagnostics, RequestId};
+use request_log::{FtsDiagnostics, RequestId, RequestMetrics};
 
 fn fail(request_id: &RequestId, handler: &'static str, error: anyhow::Error) -> ApiError {
     ApiError::from_anyhow(request_id.as_str(), handler, error)
@@ -53,7 +56,8 @@ use problem::BoundaryCode;
 struct AppState {
     config: Arc<ChronicleServerConfig>,
     catalog: Arc<tokio::sync::RwLock<Option<Arc<CatalogRuntime>>>>,
-    catalog_refresh: Arc<tokio::sync::Mutex<()>>,
+    /// Serializes global refreshes and stores the next automatic retry time.
+    catalog_refresh: Arc<tokio::sync::Mutex<Instant>>,
     catalog_refresh_interval: Duration,
     trajectory_cache: Arc<tokio::sync::RwLock<Option<(String, LoadedTrajectory)>>>,
     /// Gateway-backed Warehouses read canonical events from the latest
@@ -61,15 +65,68 @@ struct AppState {
     live_reads: bool,
     catalog_acl: Option<Arc<catalog::CatalogAcl>>,
     catalog_query_worker: bool,
+    catalog_workers: Arc<catalog_worker::WorkerPool>,
+    browse_mounts: Arc<Vec<DatasetMount>>,
+    browse: Arc<tokio::sync::OnceCell<ui_cache::BrowseCoordinator>>,
+    scoped_queries: Arc<query_admission::ScopedQueries>,
 }
 
-const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomeLink {
+    pub label: String,
+    pub href: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct ChronicleServerConfig {
     pub datasets: Vec<DatasetMount>,
     pub default_dataset: Option<String>,
     pub catalog_options: CatalogSnapshotOptions,
+    pub home_links: Vec<HomeLink>,
+}
+
+pub fn parse_home_link(raw: &str) -> Result<HomeLink, String> {
+    let raw = raw.trim();
+    let Some((label, href)) = raw.split_once('=') else {
+        return Err(format!("home link must be TEXT=PATH, got '{raw}'"));
+    };
+    let label = label.trim();
+    let href = href.trim();
+    if label.is_empty() {
+        return Err("home link text must not be empty".into());
+    }
+    if href.is_empty() {
+        return Err("home link path must not be empty".into());
+    }
+    if href.contains("://") || href.starts_with("//") || href.contains(':') {
+        return Err(format!(
+            "home link path must be a same-origin relative path, got '{href}'"
+        ));
+    }
+    if href.contains('?') || href.contains('#') {
+        return Err(format!(
+            "home link path must not include a query or fragment, got '{href}'"
+        ));
+    }
+    let href = if href.starts_with('/') {
+        href.to_string()
+    } else {
+        format!("/{href}")
+    };
+    if href
+        .split('/')
+        .any(|segment| segment == ".." || segment == ".")
+    {
+        return Err(format!(
+            "home link path must not contain '.' or '..' segments, got '{href}'"
+        ));
+    }
+    Ok(HomeLink {
+        label: label.to_string(),
+        href,
+    })
 }
 
 impl ChronicleServerConfig {
@@ -88,6 +145,7 @@ impl ChronicleServerConfig {
             datasets,
             default_dataset,
             catalog_options: CatalogSnapshotOptions::default(),
+            home_links: Vec::new(),
         })
     }
 
@@ -96,6 +154,7 @@ impl ChronicleServerConfig {
             datasets: Vec::new(),
             default_dataset: None,
             catalog_options: CatalogSnapshotOptions::default(),
+            home_links: Vec::new(),
         }
     }
 }
@@ -124,10 +183,6 @@ pub(crate) struct RunSummary {
     pub(crate) status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) format: Option<String>,
-    /// When set, explorer tree counts this summary as `explorer_weight` runs
-    /// instead of 1. Used for compact-jsonl leaves backed by chronicle.manifest.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) explorer_weight: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -155,15 +210,20 @@ fn app_state_with_catalog_refresh_interval(
     config: ChronicleServerConfig,
     catalog_refresh_interval: Duration,
 ) -> AppState {
+    let browse_mounts = config.datasets.clone();
     AppState {
         config: Arc::new(config),
         catalog: Arc::new(tokio::sync::RwLock::new(None)),
-        catalog_refresh: Arc::new(tokio::sync::Mutex::new(())),
+        catalog_refresh: Arc::new(tokio::sync::Mutex::new(Instant::now())),
         catalog_refresh_interval,
         trajectory_cache: Arc::new(tokio::sync::RwLock::new(None)),
         live_reads: false,
         catalog_acl: None,
         catalog_query_worker: false,
+        catalog_workers: Arc::new(catalog_worker::WorkerPool::default()),
+        browse_mounts: Arc::new(browse_mounts),
+        browse: Arc::new(tokio::sync::OnceCell::new()),
+        scoped_queries: Arc::new(query_admission::ScopedQueries::default()),
     }
 }
 
@@ -177,6 +237,7 @@ impl PreparedWarehouse {
         let warehouse = Self {
             state: app_state(config),
         };
+        browse_coordinator(&warehouse.state).await;
         warehouse.install_initial_runtime().await?;
         Ok(warehouse)
     }
@@ -185,36 +246,37 @@ impl PreparedWarehouse {
         let mut state = app_state(config);
         state.live_reads = true;
         let warehouse = Self { state };
+        browse_coordinator(&warehouse.state).await;
         warehouse.install_initial_runtime().await?;
         Ok(warehouse)
     }
 
-    /// Directory front-only mode: parent authenticates and dispatches query
-    /// workers. Retained for isolation tests; `serve --catalog-config` uses
-    /// [`Self::prepare_catalog`] (inline mounts) instead.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) async fn prepare_catalog_front(acl: catalog::CatalogAcl) -> anyhow::Result<Self> {
-        let mut state = app_state(ChronicleServerConfig::front_only());
-        state.catalog_acl = Some(Arc::new(acl));
-        Ok(Self { state })
+        Self::prepare_catalog(acl, ChronicleServerConfig::front_only()).await
     }
 
-    /// Mount every library from `catalog.toml` into the Warehouse process.
-    /// Directory ticket routes remain available when users exist; the data
-    /// plane serves in-process mounts instead of spawning query workers.
-    pub(crate) async fn prepare_catalog(acl: catalog::CatalogAcl) -> anyhow::Result<Self> {
-        acl.apply_backend_env();
-        let mounts = acl.mounts()?;
-        anyhow::ensure!(
-            !mounts.is_empty(),
-            "catalog config needs at least one dataset"
-        );
-        let config = ChronicleServerConfig::mounted(mounts)?;
+    /// The listener authenticates and brokers credentials; only workers mount
+    /// datasets. Keep public UI configuration, never storage state, in the parent.
+    pub(crate) async fn prepare_catalog(
+        acl: catalog::CatalogAcl,
+        mut config: ChronicleServerConfig,
+    ) -> anyhow::Result<Self> {
+        let browse_mounts = acl
+            .public_for_all()
+            .into_iter()
+            .filter_map(|library| DatasetMount::new(&library.name, &library.uri).ok())
+            .collect::<Vec<_>>();
+        config.datasets.clear();
+        config.default_dataset = None;
         let mut state = app_state(config);
+        state.browse_mounts = Arc::new(browse_mounts);
         state.catalog_acl = Some(Arc::new(acl));
-        let warehouse = Self { state };
-        warehouse.install_initial_runtime().await?;
-        Ok(warehouse)
+        // The front process owns the public browse cache. Query workers remain
+        // isolated, but UI navigation must be available without mounting data
+        // in the front process.
+        browse_coordinator(&state).await;
+        Ok(Self { state })
     }
 
     pub(crate) async fn prepare_query_worker(
@@ -223,7 +285,7 @@ impl PreparedWarehouse {
         let mut state = app_state(config);
         state.catalog_query_worker = true;
         let warehouse = Self { state };
-        warehouse.install_initial_runtime().await?;
+        browse_coordinator(&warehouse.state).await;
         Ok(warehouse)
     }
 
@@ -240,10 +302,12 @@ impl PreparedWarehouse {
         let snapshot_id = runtime.snapshot.snapshot_id().to_string();
         *self.state.catalog.write().await = Some(runtime);
         *self.state.trajectory_cache.write().await = None;
+        self.state.scoped_queries.invalidate();
         snapshot_id
     }
 
     async fn refresh_runtime(&self) -> anyhow::Result<Arc<CatalogRuntime>> {
+        let _refresh = self.state.catalog_refresh.lock().await;
         let runtime = build_catalog_runtime(&self.state.config).await?;
         self.install_catalog_runtime(runtime.clone()).await;
         Ok(runtime)
@@ -277,9 +341,17 @@ impl PreparedWarehouse {
     }
 }
 
+async fn browse_coordinator(state: &AppState) -> &ui_cache::BrowseCoordinator {
+    state
+        .browse
+        .get_or_init(|| ui_cache::BrowseCoordinator::start((*state.browse_mounts).clone()))
+        .await
+}
+
 fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(warehouse_health))
+        .route("/ui", get(ui_config))
         .route("/runs", get(runs))
         .route("/explorer/runs", get(explorer_runs))
         .route("/explorer/tree", get(explorer_tree))
@@ -328,10 +400,6 @@ pub async fn serve_warehouse(
     config: ChronicleServerConfig,
     addr: SocketAddr,
 ) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        addr.ip().is_loopback(),
-        "pChronicle Warehouse may only bind to a loopback address"
-    );
     let listener = tokio::net::TcpListener::bind(addr).await?;
     serve_warehouse_with_listener(config, listener).await
 }
@@ -354,10 +422,7 @@ pub async fn serve_warehouse_with_listener_and_shutdown(
     let addr = listener
         .local_addr()
         .context("read Warehouse listen address")?;
-    anyhow::ensure!(
-        addr.ip().is_loopback(),
-        "pChronicle Warehouse may only bind to a loopback address"
-    );
+    let _ = addr;
     axum::serve(listener, warehouse_router(config))
         .with_graceful_shutdown(shutdown)
         .await
@@ -372,10 +437,7 @@ pub(crate) async fn serve_prepared_warehouse_with_listener_and_shutdown(
     let addr = listener
         .local_addr()
         .context("read Warehouse listen address")?;
-    anyhow::ensure!(
-        addr.ip().is_loopback(),
-        "pChronicle Warehouse may only bind to a loopback address"
-    );
+    let _ = addr;
     axum::serve(listener, warehouse.router())
         .with_graceful_shutdown(shutdown)
         .await
@@ -406,6 +468,10 @@ async fn warehouse_health() -> Json<Value> {
     Json(json!({"status":"ok","mode":"read_only"}))
 }
 
+async fn ui_config(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({ "links": state.config.home_links }))
+}
+
 async fn build_catalog_runtime(
     config: &ChronicleServerConfig,
 ) -> anyhow::Result<Arc<CatalogRuntime>> {
@@ -417,7 +483,58 @@ async fn build_catalog_runtime(
         )
         .await?,
     );
-    let engine = Arc::new(snapshot.clone().query_engine(Default::default()).await?);
+    let engine = Arc::new(
+        snapshot
+            .clone()
+            .query_engine(ChronicleQueryExecutionOptions::from_env()?)
+            .await?,
+    );
+    Ok(Arc::new(CatalogRuntime {
+        snapshot,
+        engine,
+        acceleration: ServerAcceleration::default(),
+        built_at: Instant::now(),
+    }))
+}
+
+async fn build_scoped_query_runtime(
+    config: &ChronicleServerConfig,
+    scope: persisting_pchronicle::storage::QueryScope,
+    cached_files: Vec<String>,
+) -> anyhow::Result<Arc<CatalogRuntime>> {
+    let target = match scope.source_file.clone() {
+        Some(file) => persisting_pchronicle::storage::ResolveTarget::Dataset {
+            mount: scope.dataset.clone(),
+            file,
+        },
+        None => persisting_pchronicle::storage::ResolveTarget::Mount {
+            mount: scope.dataset.clone(),
+            prefix: None,
+        },
+    };
+    let cached_datasets: Vec<_> = cached_files
+        .iter()
+        .map(|file| {
+            persisting_pchronicle::storage::CachedDataset::new(scope.dataset.clone(), file.clone())
+        })
+        .collect();
+    let mode = if cached_datasets.is_empty() {
+        persisting_pchronicle::storage::ResolveMode::Fresh
+    } else {
+        persisting_pchronicle::storage::ResolveMode::Cached
+    };
+    let resolver = persisting_pchronicle::storage::DatasetResolver::new(
+        config.datasets.clone(),
+        config.default_dataset.clone(),
+        config.catalog_options,
+    );
+    let snapshot = Arc::new(resolver.resolve(target, mode, &cached_datasets).await?);
+    let engine = Arc::new(
+        snapshot
+            .clone()
+            .query_engine(ChronicleQueryExecutionOptions::from_env()?)
+            .await?,
+    );
     Ok(Arc::new(CatalogRuntime {
         snapshot,
         engine,
@@ -452,16 +569,50 @@ async fn current_catalog_for_runs(
     if runtime.built_at.elapsed() < state.catalog_refresh_interval {
         return Ok(runtime);
     }
-    let _refresh = state.catalog_refresh.lock().await;
-    let current = state.catalog.read().await.clone().unwrap_or(runtime);
-    if current.built_at.elapsed() < state.catalog_refresh_interval {
-        return Ok(current);
+    // A zero interval requests synchronous freshness (used by embedded callers).
+    if state.catalog_refresh_interval.is_zero() || state.live_reads {
+        let _refresh = state.catalog_refresh.lock().await;
+        return Ok(rebuild_catalog_for_runs(state, runtime).await);
     }
-    match build_catalog_runtime(&state.config).await {
+    if let Ok(mut refresh) = state.catalog_refresh.clone().try_lock_owned()
+        && *refresh <= Instant::now()
+        && let Ok(permit) = query_admission::REFRESH_SLOT.try_acquire()
+    {
+        let state = state.clone();
+        let current = runtime.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            rebuild_catalog_for_runs(&state, current).await;
+            *refresh = Instant::now() + state.catalog_refresh_interval;
+        });
+    }
+    Ok(runtime)
+}
+
+async fn rebuild_catalog_for_runs(
+    state: &AppState,
+    current: Arc<CatalogRuntime>,
+) -> Arc<CatalogRuntime> {
+    let current = state.catalog.read().await.clone().unwrap_or(current);
+    if current.built_at.elapsed() < state.catalog_refresh_interval {
+        return current;
+    }
+    // Publish only after summaries are readable too: discovery alone can succeed
+    // while a lazily opened source is broken.
+    let refreshed = async {
+        let runtime = build_catalog_runtime(&state.config).await?;
+        runtime
+            .acceleration
+            .run_summaries(&runtime.snapshot, &runtime.engine)
+            .await?;
+        anyhow::Ok(runtime)
+    }
+    .await;
+    match refreshed {
         Ok(runtime) => {
             *state.catalog.write().await = Some(Arc::clone(&runtime));
             *state.trajectory_cache.write().await = None;
-            Ok(runtime)
+            runtime
         }
         Err(error) => {
             tracing::warn!(
@@ -470,13 +621,14 @@ async fn current_catalog_for_runs(
                 chain = %truncate_utf8(&format!("{error:#}"), CHAIN_LIMIT),
                 "automatic Catalog refresh failed; retaining the last valid snapshot"
             );
-            Ok(current)
+            current
         }
     }
 }
 
 #[derive(Debug, Serialize)]
 struct CatalogResponse {
+    consistency: &'static str,
     snapshot_id: String,
     created_at: String,
     default_dataset: Option<String>,
@@ -487,6 +639,7 @@ struct CatalogResponse {
 
 fn catalog_response(state: &AppState, runtime: &CatalogRuntime) -> CatalogResponse {
     CatalogResponse {
+        consistency: "per_source_pinned",
         snapshot_id: runtime.snapshot.snapshot_id().to_string(),
         created_at: runtime.snapshot.created_at().to_string(),
         default_dataset: runtime.snapshot.default_dataset().map(str::to_owned),
@@ -499,8 +652,11 @@ fn catalog_response(state: &AppState, runtime: &CatalogRuntime) -> CatalogRespon
 async fn catalog(
     State(state): State<AppState>,
     request_id: RequestId,
+    metrics: RequestMetrics,
 ) -> Result<Json<CatalogResponse>, ApiError> {
+    let started = Instant::now();
     let runtime = current_catalog(&state, &request_id).await?;
+    metrics.record("catalog", started);
     Ok(Json(catalog_response(&state, &runtime)))
 }
 
@@ -521,30 +677,105 @@ async fn refresh_catalog(
 async fn runs(
     State(state): State<AppState>,
     request_id: RequestId,
+    metrics: RequestMetrics,
 ) -> Result<Json<Vec<RunSummary>>, ApiError> {
-    Ok(Json(load_run_summaries(&state, None, &request_id).await?))
+    let started = Instant::now();
+    let summaries = load_run_summaries(&state, None, None, &request_id, Some(&metrics)).await?;
+    metrics.record("summary_total", started);
+    Ok(Json(summaries))
 }
 
 async fn load_run_summaries(
     state: &AppState,
     dataset: Option<&str>,
+    file: Option<&str>,
     request_id: &RequestId,
+    metrics: Option<&RequestMetrics>,
 ) -> Result<Vec<RunSummary>, ApiError> {
+    let file = file.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(dataset) = dataset {
+        let scope = persisting_pchronicle::storage::QueryScope {
+            dataset: dataset.to_owned(),
+            source_file: file.map(str::to_owned),
+        };
+        let config = state.config.clone();
+        let query_scope = scope.clone();
+        let cached_files = if file.is_none() && !state.live_reads {
+            browse_coordinator(state)
+                .await
+                .cached_source_paths(
+                    config
+                        .datasets
+                        .iter()
+                        .find(|mount| mount.name == dataset)
+                        .expect("validated dataset mount"),
+                )
+                .await
+        } else {
+            Vec::new()
+        };
+        let query_metrics = metrics.cloned();
+        let execute = move |background: bool| async move {
+            // Background work must not be attributed to the triggering HTTP request.
+            let metrics = query_metrics.filter(|_| !background);
+            let phase = Instant::now();
+            let runtime =
+                build_scoped_query_runtime(&config, query_scope.clone(), cached_files.clone())
+                    .await?;
+            if let Some(metrics) = &metrics {
+                metrics.record("summary_catalog", phase);
+            }
+            let phase = Instant::now();
+            let summaries = runtime
+                .acceleration
+                .scoped_run_summaries(
+                    &runtime.snapshot,
+                    &runtime.engine,
+                    Some(&query_scope.dataset),
+                    query_scope.source_file.as_deref(),
+                )
+                .await;
+            if let Some(metrics) = &metrics {
+                metrics.record("summary_sql", phase);
+            }
+            summaries
+        };
+        let started = Instant::now();
+        let result = if state.live_reads {
+            state
+                .scoped_queries
+                .run(scope, || execute(false))
+                .await
+                .map(|summaries| (summaries, "summary_uncached"))
+        } else {
+            state.scoped_queries.cached(scope, execute).await
+        };
+        let result = result
+            .map(|(summaries, cache_status)| {
+                if let Some(metrics) = metrics {
+                    metrics.record(cache_status, started);
+                }
+                summaries.as_ref().clone()
+            })
+            .map_err(|error| fail(request_id, "load_run_summaries", error));
+        if let Some(metrics) = metrics {
+            metrics.record("summary_admission", started);
+        }
+        return result;
+    }
+    let phase = Instant::now();
     let runtime = current_catalog_for_runs(state, request_id).await?;
-    let summaries = match dataset {
-        Some(dataset) => {
-            runtime
-                .acceleration
-                .run_summaries_for_dataset(&runtime.snapshot, &runtime.engine, dataset)
-                .await
-        }
-        None => {
-            runtime
-                .acceleration
-                .run_summaries(&runtime.snapshot, &runtime.engine)
-                .await
-        }
-    };
+    if let Some(metrics) = metrics {
+        metrics.record("summary_catalog", phase);
+    }
+    let phase = Instant::now();
+    let summaries = runtime
+        .acceleration
+        .scoped_run_summaries(&runtime.snapshot, &runtime.engine, dataset, file)
+        .await;
+    if let Some(metrics) = metrics {
+        metrics.record("summary_sql", phase);
+    }
     summaries
         .map(|summaries| summaries.as_ref().clone())
         .map_err(|error| fail(request_id, "load_run_summaries", error))
@@ -699,7 +930,6 @@ async fn try_compact_jsonl_runs_page(
                     duplicate_event_ids: 0,
                     status: "record".into(),
                     format: Some("compact-jsonl/v1".into()),
-                    explorer_weight: None,
                 },
             }
         })
@@ -727,9 +957,158 @@ async fn try_compact_jsonl_runs_page(
     }))
 }
 
+/// Directory mounts only expose immediate children in the catalog. Nested
+/// Storyline leaves reached via explorer navigation are therefore absent from
+/// SQL acceleration. When the client asks for an exact `file=` that is a
+/// Storyline store under the mount, list document IDs directly from CURRENT.
+async fn try_on_demand_storyline_runs_page(
+    state: &AppState,
+    query: &explorer::ExplorerRunsQuery,
+    request_id: &RequestId,
+) -> Result<Option<explorer::RunExplorerPage>, ApiError> {
+    if query
+        .q
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Ok(None);
+    }
+    let Some(file) = query
+        .file
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let Some(dataset_name) = query
+        .dataset
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "all")
+    else {
+        return Ok(None);
+    };
+
+    let runtime = current_catalog(state, request_id).await?;
+    let Some(dataset) = runtime.snapshot.dataset(dataset_name) else {
+        return Ok(None);
+    };
+    // Prefer catalog-backed sources; only fall through for nested Directory paths.
+    if dataset.sources.iter().any(|source| {
+        source.kind != persisting_pchronicle::storage::CatalogSourceKind::Directory
+            && (source.file == file || source.file.starts_with(&format!("{file}/")))
+    }) {
+        return Ok(None);
+    }
+    let under_directory = dataset.sources.iter().any(|source| {
+        source.kind == persisting_pchronicle::storage::CatalogSourceKind::Directory
+            && (file == source.file || file.starts_with(&format!("{}/", source.file)))
+    });
+    if !under_directory && !dataset.sources.is_empty() {
+        return Ok(None);
+    }
+
+    let location = persisting_pchronicle::storage::DatasetLocation::parse(&dataset.mount.uri)
+        .map_err(|error| fail(request_id, "explorer_runs", error))?;
+    let kind = location
+        .probe_nav_dataset_kind(file)
+        .await
+        .map_err(|error| fail(request_id, "explorer_runs", error))?;
+    if kind != Some("storyline") {
+        return Ok(None);
+    }
+    let uri = format!(
+        "{}/{}",
+        dataset.mount.uri.trim_end_matches('/'),
+        file.trim_matches('/')
+    );
+    let store = persisting_pchronicle::storage::StorylineLanceStore::open_uri(&uri)
+        .await
+        .map_err(|error| fail(request_id, "explorer_runs", error))?;
+    let Some((_generation, ids)) = store
+        .document_ids_snapshot()
+        .await
+        .map_err(|error| fail(request_id, "explorer_runs", error))?
+    else {
+        let limit = query.limit.unwrap_or(50).clamp(1, 200);
+        return Ok(Some(explorer::RunExplorerPage {
+            snapshot: explorer::PageSnapshot {
+                offset: 0,
+                next_offset: 0,
+                total: 0,
+                has_more: false,
+                limit,
+            },
+            records: Vec::new(),
+            path_index: Vec::new(),
+            search: explorer::RunSearchStatus::default(),
+        }));
+    };
+
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let total = ids.len();
+    let page_ids = ids.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
+    let page_records = page_ids
+        .into_iter()
+        .map(|document_id| {
+            let path = explorer::explorer_run_path(
+                dataset_name,
+                file,
+                &document_id,
+                &document_id,
+                None,
+                None,
+            );
+            explorer::RunExplorerItem {
+                model: None,
+                search_preview: None,
+                run: RunSummary {
+                    dataset: dataset_name.to_string(),
+                    file: file.to_string(),
+                    document_id: document_id.clone(),
+                    run_id: None,
+                    agent_id: "storyline".into(),
+                    model_name: None,
+                    session_id: document_id,
+                    root_session_id: None,
+                    path,
+                    row_count: 1,
+                    duplicate_event_ids: 0,
+                    status: "completed".into(),
+                    format: Some("storyline-lance".into()),
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let next_offset = offset.saturating_add(page_records.len());
+    let path_index = page_records
+        .iter()
+        .map(|item| item.run.clone())
+        .collect::<Vec<_>>();
+    Ok(Some(explorer::RunExplorerPage {
+        snapshot: explorer::PageSnapshot {
+            offset,
+            next_offset,
+            total,
+            has_more: next_offset < total,
+            limit,
+        },
+        records: page_records,
+        path_index,
+        search: explorer::RunSearchStatus {
+            fts_available: false,
+            mode: "none",
+            tokenizer: None,
+        },
+    }))
+}
+
 async fn explorer_runs(
     State(state): State<AppState>,
     request_id: RequestId,
+    metrics: RequestMetrics,
     fts: FtsDiagnostics,
     query: Result<Query<explorer::ExplorerRunsQuery>, QueryRejection>,
 ) -> Result<Json<explorer::RunExplorerPage>, ApiError> {
@@ -737,12 +1116,24 @@ async fn explorer_runs(
     if let Some(page) = try_compact_jsonl_runs_page(&state, &query, &request_id).await? {
         return Ok(Json(page));
     }
+    if let Some(page) = try_on_demand_storyline_runs_page(&state, &query, &request_id).await? {
+        return Ok(Json(page));
+    }
     let dataset_filter = query
         .dataset
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "all");
-    let summaries = load_run_summaries(&state, dataset_filter, &request_id).await?;
+    let started = Instant::now();
+    let summaries = load_run_summaries(
+        &state,
+        dataset_filter,
+        query.file.as_deref(),
+        &request_id,
+        Some(&metrics),
+    )
+    .await?;
+    metrics.record("summary_total", started);
     let (fts_matches, fts_available, search_mode) = if query
         .q
         .as_deref()
@@ -974,258 +1365,131 @@ fn preview_needle(query: &str) -> String {
 async fn explorer_tree(
     State(state): State<AppState>,
     request_id: RequestId,
+    metrics: RequestMetrics,
     query: Result<Query<explorer::ExplorerTreeQuery>, QueryRejection>,
-) -> Result<Json<explorer::CatalogTree>, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     let query = api_query(query)?;
-    let runtime = current_catalog_for_runs(&state, &request_id).await?;
-    let summaries = tree_run_summaries(&runtime, &request_id).await?;
     let dataset = query
         .dataset
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let prefix = query.prefix.as_deref().unwrap_or("");
-    let mut tree = explorer::catalog_tree(&summaries, dataset, prefix, explorer::MAX_TREE_CHILDREN);
-    if let Some(name) = tree.dataset.clone() {
-        if tree.prefix.is_empty()
-            && let Some(dataset) = runtime.snapshot.dataset(&name)
-        {
-            tree.ready_sources = Some(dataset.ready_source_count());
-            tree.error_sources = Some(dataset.error_source_count());
-        }
-        let (duration_ms, total_tokens) = tree_prefix_metrics(&runtime, &name, &tree.prefix).await;
-        tree.duration_ms = duration_ms;
-        tree.total_tokens = total_tokens;
-        let file_tokens = tree_file_tokens(&runtime, &name, &tree.prefix).await;
-        explorer::apply_total_tokens(&mut tree.children, &file_tokens);
-    }
-    Ok(Json(tree))
-}
-
-async fn tree_run_summaries(
-    runtime: &CatalogRuntime,
-    request_id: &RequestId,
-) -> Result<Vec<RunSummary>, ApiError> {
-    let mut summaries = Vec::new();
-    let mut compact_with_manifest = BTreeSet::new();
-    for dataset in runtime.snapshot.datasets() {
-        for source in &dataset.sources {
-            if source.format.as_deref() != Some("compact-jsonl/v1") {
-                continue;
-            }
-            let Some(record_count) = source.record_count else {
-                continue;
-            };
-            let weight = usize::try_from(record_count).unwrap_or(usize::MAX);
-            let path = explorer::explorer_run_path(
-                &dataset.mount.name,
-                &source.file,
-                "",
-                &source.file,
-                None,
-                None,
-            );
-            summaries.push(RunSummary {
-                dataset: dataset.mount.name.clone(),
-                file: source.file.clone(),
-                document_id: String::new(),
-                run_id: None,
-                agent_id: "compact-jsonl".into(),
-                model_name: None,
-                session_id: source.file.clone(),
-                root_session_id: None,
-                path,
-                row_count: weight,
-                duplicate_event_ids: 0,
-                status: "record".into(),
-                format: source.format.clone(),
-                explorer_weight: Some(weight.max(1)),
-            });
-            compact_with_manifest.insert((dataset.mount.name.clone(), source.file.clone()));
-        }
-    }
-    if !runtime.snapshot.datasets().iter().any(|dataset| {
-        dataset.sources.iter().any(|source| {
-            source.format.as_deref() != Some("compact-jsonl/v1") || source.record_count.is_none()
-        })
+    tracing::info!(
+        target: "pchronicle.serve",
+        dataset = ?dataset,
+        prefix,
+        catalog_worker = state.catalog_query_worker,
+        "explorer tree request"
+    );
+    let Some(name) = dataset else {
+        let started = Instant::now();
+        let view = browse_coordinator(&state)
+            .await
+            .roots(&state.browse_mounts)
+            .await;
+        metrics.record("browse", started);
+        return Ok(Json(serde_json::to_value(view).unwrap()));
+    };
+    let owned_mount;
+    let mount = if let Some(mount) = state.browse_mounts.iter().find(|mount| mount.name == name) {
+        mount
+    } else if let Some(library) = state.catalog_acl.as_ref().and_then(|acl| {
+        acl.public_for_all()
+            .into_iter()
+            .find(|library| library.name == name)
     }) {
-        return Ok(summaries);
-    }
-    let full = runtime
-        .acceleration
-        .run_summaries(&runtime.snapshot, &runtime.engine)
+        owned_mount = DatasetMount::new(&library.name, &library.uri)
+            .map_err(|error| fail(&request_id, "explorer_tree", error))?;
+        &owned_mount
+    } else {
+        return Ok(Json(
+            serde_json::to_value(explorer::catalog_tree_from_path_list(name, prefix, &[])).unwrap(),
+        ));
+    };
+    let started = Instant::now();
+    let view = browse_coordinator(&state)
         .await
-        .map_err(|error| fail(request_id, "explorer_tree", error))?;
-    for summary in full.iter() {
-        if compact_with_manifest.contains(&(summary.dataset.clone(), summary.file.clone())) {
-            continue;
-        }
-        summaries.push(summary.clone());
-    }
-    Ok(summaries)
-}
-
-fn sql_ident(name: &str) -> Option<&str> {
-    let mut chars = name.chars();
-    let first = chars.next()?;
-    (first.is_ascii_alphabetic() || first == '_')
-        .then_some(name)
-        .filter(|_| chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
-}
-
-async fn tree_prefix_metrics(
-    runtime: &CatalogRuntime,
-    dataset: &str,
-    prefix: &str,
-) -> (Option<i64>, Option<u64>) {
-    let Some(ident) = sql_ident(dataset) else {
-        return (None, None);
-    };
-    let file_clause = if prefix.is_empty() {
-        String::new()
-    } else {
-        let escaped = prefix.replace('\'', "''");
-        format!(" WHERE _file_ = '{escaped}' OR _file_ LIKE '{escaped}/%'")
-    };
-    let sql = format!(
-        "SELECT MIN(timestamp) AS start_ts, MAX(timestamp) AS end_ts, SUM(COALESCE(\
-            json_get_int(metrics, 'total_tokens'),\
-            json_get_int(metrics, 'prompt_tokens') + json_get_int(metrics, 'completion_tokens'),\
-            json_get_int(metrics, 'prompt_tokens_len') + json_get_int(metrics, 'completion_tokens_len')\
-        )) AS total_tokens FROM {ident}.steps{file_clause}"
-    );
-    let mut buffer = Vec::new();
-    let write = tokio::time::timeout(
-        Duration::from_secs(3),
-        runtime
-            .engine
-            .write_query_jsonl_with_max_rows(&sql, &mut buffer, Some(1)),
-    )
-    .await;
-    let Ok(Ok(())) = write else {
-        return (None, None);
-    };
-    let line = String::from_utf8(buffer).unwrap_or_default();
-    let line = line.lines().find(|line| !line.trim().is_empty());
-    let Some(Ok(row)) = line.map(serde_json::from_str::<Value>) else {
-        return (None, None);
-    };
-    (
-        timestamp_span_ms(row.get("start_ts"), row.get("end_ts")),
-        row.get("total_tokens").and_then(Value::as_u64),
-    )
-}
-
-async fn tree_file_tokens(
-    runtime: &CatalogRuntime,
-    dataset: &str,
-    prefix: &str,
-) -> BTreeMap<String, u64> {
-    let Some(ident) = sql_ident(dataset) else {
-        return BTreeMap::new();
-    };
-    let file_clause = if prefix.is_empty() {
-        String::new()
-    } else {
-        let escaped = prefix.replace('\'', "''");
-        format!(" WHERE _file_ = '{escaped}' OR _file_ LIKE '{escaped}/%'")
-    };
-    let sql = format!(
-        "SELECT _file_, SUM(COALESCE(\
-            json_get_int(metrics, 'total_tokens'),\
-            json_get_int(metrics, 'prompt_tokens') + json_get_int(metrics, 'completion_tokens'),\
-            json_get_int(metrics, 'prompt_tokens_len') + json_get_int(metrics, 'completion_tokens_len')\
-        )) AS total_tokens FROM {ident}.steps{file_clause} GROUP BY _file_"
-    );
-    let mut buffer = Vec::new();
-    let write = tokio::time::timeout(
-        Duration::from_secs(3),
-        runtime
-            .engine
-            .write_query_jsonl_with_max_rows(&sql, &mut buffer, None),
-    )
-    .await;
-    let Ok(Ok(())) = write else {
-        return BTreeMap::new();
-    };
-    buffer
-        .split(|byte| *byte == b'\n')
-        .filter_map(|line| {
-            let row: Value = serde_json::from_slice(line).ok()?;
-            let file = row.get("_file_")?.as_str()?.to_owned();
-            let tokens = row
-                .get("total_tokens")
-                .and_then(Value::as_u64)
-                .or_else(|| {
-                    row.get("total_tokens")
-                        .and_then(Value::as_i64)
-                        .map(|value| value.max(0) as u64)
-                })?;
-            Some((file, tokens))
-        })
-        .collect()
-}
-
-fn timestamp_span_ms(start: Option<&Value>, end: Option<&Value>) -> Option<i64> {
-    let start = json_timestamp_ms(start?)?;
-    let end = json_timestamp_ms(end?)?;
-    (end >= start).then_some(end - start)
-}
-
-fn json_timestamp_ms(value: &Value) -> Option<i64> {
-    match value {
-        Value::Number(number) => number
-            .as_i64()
-            .or_else(|| number.as_f64().map(|value| value as i64)),
-        Value::String(text) if !text.is_empty() => text.parse().ok(),
-        _ => None,
-    }
+        .tree(mount, prefix)
+        .await
+        .map_err(|error| fail(&request_id, "explorer_tree", error))?;
+    metrics.record("browse", started);
+    Ok(Json(serde_json::to_value(view).unwrap()))
 }
 
 async fn resolve_run_summary(
     state: &AppState,
     query: &SessionQuery,
     request_id: &RequestId,
+    metrics: Option<&RequestMetrics>,
 ) -> Result<RunSummary, ApiError> {
+    // Exact Storyline leaves can identify a run with one document lookup;
+    // avoid scanning the whole source just to build a summary row.
+    if query
+        .dataset
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty() && value != "all")
+        && query
+            .file
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && !query.session_id.trim().is_empty()
+        && let Some(run) = try_resolve_on_demand_storyline_run(state, query, request_id).await?
+    {
+        return Ok(run);
+    }
     let dataset_filter = query
         .dataset
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "all");
-    let mut matches = load_run_summaries(state, dataset_filter, request_id)
-        .await?
-        .into_iter()
-        .filter(|run| {
-            query
-                .dataset
+    let mut matches = load_run_summaries(
+        state,
+        dataset_filter,
+        query.file.as_deref(),
+        request_id,
+        metrics,
+    )
+    .await?
+    .into_iter()
+    .filter(|run| {
+        query
+            .dataset
+            .as_ref()
+            .filter(|value| !value.is_empty())
+            .is_none_or(|value| value == &run.dataset)
+            && query
+                .file
                 .as_ref()
                 .filter(|value| !value.is_empty())
-                .is_none_or(|value| value == &run.dataset)
-                && query
-                    .file
-                    .as_ref()
-                    .filter(|value| !value.is_empty())
-                    .is_none_or(|value| value == &run.file)
-                && query
-                    .run_id
-                    .as_ref()
-                    .filter(|value| !value.is_empty())
-                    .is_none_or(|value| run.run_id.as_ref() == Some(value))
-                && (run.agent_id == query.agent_id
-                    || run.model_name.as_deref() == Some(query.agent_id.as_str()))
-                && run.session_id == query.session_id
-        })
-        .collect::<Vec<_>>();
+                .is_none_or(|value| value == &run.file)
+            && query
+                .run_id
+                .as_ref()
+                .filter(|value| !value.is_empty())
+                .is_none_or(|value| run.run_id.as_ref() == Some(value))
+            && (run.agent_id == query.agent_id
+                || run.model_name.as_deref() == Some(query.agent_id.as_str()))
+            && run.session_id == query.session_id
+    })
+    .collect::<Vec<_>>();
     // Legacy browser URLs did not carry the Catalog key. Treat the old
     // root_session_id coordinate as an ambiguity breaker, not as a required
     // identity field: direct JSON sources may not preserve that field in the
     // normalized run row.
+    let filter_started = Instant::now();
     if matches.len() > 1
         && let Some(root) = &query.root_session_id
     {
         matches.retain(|run| run.root_session_id.as_ref() == Some(root));
     }
+    if let Some(metrics) = metrics {
+        metrics.record("resolve_filter", filter_started);
+    }
     if matches.is_empty() {
+        if let Some(run) = try_resolve_on_demand_storyline_run(state, query, request_id).await? {
+            return Ok(run);
+        }
         return Err(ApiError::not_found("run was not found"));
     }
     if matches.len() > 1 {
@@ -1234,6 +1498,193 @@ async fn resolve_run_summary(
         ));
     }
     Ok(matches.into_iter().next().expect("one matching run"))
+}
+
+/// Synthesize a RunSummary for a nested Storyline leaf that is reachable under
+/// a Directory mount but absent from the catalog snapshot.
+async fn try_resolve_on_demand_storyline_run(
+    state: &AppState,
+    query: &SessionQuery,
+    request_id: &RequestId,
+) -> Result<Option<RunSummary>, ApiError> {
+    let Some(dataset_name) = query
+        .dataset
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "all")
+    else {
+        return Ok(None);
+    };
+    let Some(file) = query
+        .file
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let session_id = query.session_id.trim();
+    if session_id.is_empty() {
+        return Ok(None);
+    }
+
+    let runtime = current_catalog(state, request_id).await?;
+    let Some(dataset) = runtime.snapshot.dataset(dataset_name) else {
+        return Ok(None);
+    };
+    let exact_source = dataset.sources.iter().any(|source| {
+        source.kind != persisting_pchronicle::storage::CatalogSourceKind::Directory
+            && source.file == file
+    });
+    if dataset.sources.iter().any(|source| {
+        source.kind != persisting_pchronicle::storage::CatalogSourceKind::Directory
+            && source.file.starts_with(&format!("{file}/"))
+    }) {
+        return Ok(None);
+    }
+    let under_directory = dataset.sources.iter().any(|source| {
+        source.kind == persisting_pchronicle::storage::CatalogSourceKind::Directory
+            && (file == source.file || file.starts_with(&format!("{}/", source.file)))
+    });
+    if !under_directory && !exact_source && !dataset.sources.is_empty() {
+        return Ok(None);
+    }
+
+    let location = persisting_pchronicle::storage::DatasetLocation::parse(&dataset.mount.uri)
+        .map_err(|error| fail(request_id, "resolve_run", error))?;
+    if location
+        .probe_nav_dataset_kind(file)
+        .await
+        .map_err(|error| fail(request_id, "resolve_run", error))?
+        != Some("storyline")
+    {
+        return Ok(None);
+    }
+    let uri = format!(
+        "{}/{}",
+        dataset.mount.uri.trim_end_matches('/'),
+        file.trim_matches('/')
+    );
+    let store = persisting_pchronicle::storage::StorylineLanceStore::open_uri(&uri)
+        .await
+        .map_err(|error| fail(request_id, "resolve_run", error))?;
+    let Some((_generation, ids)) = store
+        .document_ids_snapshot()
+        .await
+        .map_err(|error| fail(request_id, "resolve_run", error))?
+    else {
+        return Ok(None);
+    };
+    if !ids.iter().any(|id| id == session_id) {
+        return Ok(None);
+    }
+    let path = explorer::explorer_run_path(dataset_name, file, session_id, session_id, None, None);
+    Ok(Some(RunSummary {
+        dataset: dataset_name.to_string(),
+        file: file.to_string(),
+        document_id: session_id.to_string(),
+        run_id: query.run_id.clone().filter(|value| !value.is_empty()),
+        agent_id: if query.agent_id.trim().is_empty() {
+            "storyline".into()
+        } else {
+            query.agent_id.clone()
+        },
+        model_name: None,
+        session_id: session_id.to_string(),
+        root_session_id: query.root_session_id.clone(),
+        path,
+        row_count: 1,
+        duplicate_event_ids: 0,
+        status: "completed".into(),
+        format: Some("storyline-lance".into()),
+    }))
+}
+
+async fn load_on_demand_storyline_bundle(
+    state: &AppState,
+    run: &RunSummary,
+    request_id: &RequestId,
+    op: &'static str,
+) -> Result<Option<persisting_pchronicle::storage::CatalogTrajectoryBundle>, ApiError> {
+    let runtime = current_catalog(state, request_id).await?;
+    let Some(dataset) = runtime.snapshot.dataset(&run.dataset) else {
+        return Ok(None);
+    };
+    // Never shadow a catalog-registered leaf source with a direct open.
+    if dataset.sources.iter().any(|source| {
+        source.kind != persisting_pchronicle::storage::CatalogSourceKind::Directory
+            && source.file == run.file
+    }) {
+        return Ok(None);
+    }
+    let under_directory = dataset.sources.iter().any(|source| {
+        source.kind == persisting_pchronicle::storage::CatalogSourceKind::Directory
+            && (run.file == source.file || run.file.starts_with(&format!("{}/", source.file)))
+    });
+    if !under_directory {
+        return Ok(None);
+    }
+    let uri = format!(
+        "{}/{}",
+        dataset.mount.uri.trim_end_matches('/'),
+        run.file.trim_matches('/')
+    );
+    let store = persisting_pchronicle::storage::StorylineLanceStore::open_uri(&uri)
+        .await
+        .map_err(|error| fail(request_id, op, error))?;
+    let document_id = if run.document_id.is_empty() {
+        run.session_id.clone()
+    } else {
+        run.document_id.clone()
+    };
+    let stories = store
+        .get_storylines_by_document_ids(std::slice::from_ref(&document_id))
+        .await
+        .map_err(|error| fail(request_id, op, error))?;
+    let Some(Some(storyline)) = stories.into_iter().next() else {
+        return Ok(None);
+    };
+    let document = persisting_pchronicle::document::storyline_to_events(&storyline)
+        .map_err(|error| fail(request_id, op, error))?;
+    Ok(Some(
+        persisting_pchronicle::storage::CatalogTrajectoryBundle {
+            storyline,
+            event_view: persisting_pchronicle::storage::CatalogEventView {
+                provenance: CatalogEventProvenance::SyntheticFromStoryline,
+                document,
+            },
+        },
+    ))
+}
+
+async fn catalog_or_on_demand_trajectory_bundle(
+    state: &AppState,
+    run: &RunSummary,
+    request_id: &RequestId,
+    op: &'static str,
+) -> Result<persisting_pchronicle::storage::CatalogTrajectoryBundle, ApiError> {
+    let runtime = current_catalog(state, request_id).await?;
+    let key = catalog_storyline_key(run);
+    let catalog_result = if state.live_reads {
+        runtime.snapshot.load_live_trajectory_bundle(&key).await
+    } else {
+        runtime.snapshot.load_trajectory_bundle(&key).await
+    };
+    match catalog_result {
+        Ok(Some(bundle)) => Ok(bundle),
+        Ok(None) => load_on_demand_storyline_bundle(state, run, request_id, op)
+            .await?
+            .ok_or_else(|| ApiError::not_found("run was not found")),
+        Err(error) => {
+            if let Some(bundle) =
+                load_on_demand_storyline_bundle(state, run, request_id, op).await?
+            {
+                Ok(bundle)
+            } else {
+                Err(fail(request_id, op, error))
+            }
+        }
+    }
 }
 
 fn catalog_storyline_key(run: &RunSummary) -> CatalogStorylineKey {
@@ -1281,16 +1732,10 @@ async fn load_events(
     query: &SessionQuery,
     request_id: &RequestId,
 ) -> Result<LoadedEventView, ApiError> {
-    let run = resolve_run_summary(state, query, request_id).await?;
-    let runtime = current_catalog(state, request_id).await?;
-    let key = catalog_storyline_key(&run);
-    let document = if state.live_reads {
-        runtime.snapshot.load_live_events(&key).await
-    } else {
-        runtime.snapshot.load_events(&key).await
-    }
-    .map_err(|error| fail(request_id, "load_events", error))?
-    .ok_or_else(|| ApiError::not_found("run was not found"))?;
+    let run = resolve_run_summary(state, query, request_id, None).await?;
+    let bundle =
+        catalog_or_on_demand_trajectory_bundle(state, &run, request_id, "load_events").await?;
+    let document = bundle.event_view;
     let offset = query
         .offset
         .unwrap_or(0)
@@ -1350,18 +1795,11 @@ async fn storyline(
     query: Result<Query<SessionQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let query = api_query(query)?;
-    let run = resolve_run_summary(&state, &query, &request_id).await?;
-    let runtime = current_catalog(&state, &request_id).await?;
-    let key = catalog_storyline_key(&run);
-    let document = if state.live_reads {
-        runtime.snapshot.load_live_storyline(&key).await
-    } else {
-        runtime.snapshot.load_storyline(&key).await
-    }
-    .map_err(|error| fail(&request_id, "storyline", error))?
-    .ok_or_else(|| ApiError::not_found("run was not found"))?;
+    let run = resolve_run_summary(&state, &query, &request_id, None).await?;
+    let bundle =
+        catalog_or_on_demand_trajectory_bundle(&state, &run, &request_id, "storyline").await?;
     Ok(Json(
-        serde_json::to_value(document)
+        serde_json::to_value(bundle.storyline)
             .map_err(anyhow::Error::from)
             .map_err(|error| fail(&request_id, "storyline", error))?,
     ))
@@ -1496,9 +1934,14 @@ async fn load_trajectory(
     state: &AppState,
     query: &SessionQuery,
     request_id: &RequestId,
+    metrics: &RequestMetrics,
 ) -> Result<LoadedTrajectory, ApiError> {
-    let run = resolve_run_summary(state, query, request_id).await?;
+    let phase = Instant::now();
+    let run = resolve_run_summary(state, query, request_id, Some(metrics)).await?;
+    metrics.record("resolve", phase);
+    let phase = Instant::now();
     let runtime = current_catalog(state, request_id).await?;
+    metrics.record("catalog", phase);
     let cache_key = format!(
         "{}\u{1f}{}\u{1f}{}\u{1f}{}",
         runtime.snapshot.snapshot_id(),
@@ -1514,6 +1957,7 @@ async fn load_trajectory(
             .as_ref()
             .filter(|(key, _)| key == &cache_key)
     {
+        metrics.record("trajectory_cache", Instant::now());
         return Ok(loaded.clone());
     }
     if run.format.as_deref() == Some("compact-jsonl/v1") {
@@ -1524,14 +1968,10 @@ async fn load_trajectory(
             turns: Vec::new(),
         });
     }
-    let key = catalog_storyline_key(&run);
-    let bundle = if state.live_reads {
-        runtime.snapshot.load_live_trajectory_bundle(&key).await
-    } else {
-        runtime.snapshot.load_trajectory_bundle(&key).await
-    }
-    .map_err(|error| fail(request_id, "load_trajectory", error))?
-    .ok_or_else(|| ApiError::not_found("run was not found"))?;
+    let phase = Instant::now();
+    let bundle =
+        catalog_or_on_demand_trajectory_bundle(state, &run, request_id, "load_trajectory").await?;
+    metrics.record("trajectory_read", phase);
     let event_provenance = bundle.event_view.provenance;
     let records = bundle.event_view.document.events;
     let document = bundle.storyline;
@@ -1610,10 +2050,11 @@ async fn load_trajectory(
 async fn trajectory_view(
     State(state): State<AppState>,
     request_id: RequestId,
+    metrics: RequestMetrics,
     query: Result<Query<SessionQuery>, QueryRejection>,
 ) -> Result<Json<TrajectoryView>, ApiError> {
     let query = api_query(query)?;
-    let loaded = load_trajectory(&state, &query, &request_id).await?;
+    let loaded = load_trajectory(&state, &query, &request_id, &metrics).await?;
     let mut event_kind_counts = BTreeMap::new();
     for event in &loaded.records {
         *event_kind_counts.entry(event.kind.clone()).or_insert(0) += 1;
@@ -1636,10 +2077,11 @@ async fn trajectory_view(
 async fn explorer_run(
     State(state): State<AppState>,
     request_id: RequestId,
+    metrics: RequestMetrics,
     query: Result<Query<SessionQuery>, QueryRejection>,
 ) -> Result<Json<explorer::RunAnalysis>, ApiError> {
     let query = api_query(query)?;
-    let loaded = load_trajectory(&state, &query, &request_id).await?;
+    let loaded = load_trajectory(&state, &query, &request_id, &metrics).await?;
     Ok(Json(explorer::analyze(
         loaded.run,
         &loaded.turns,
@@ -1660,7 +2102,7 @@ async fn explorer_record(
     query: Result<Query<SessionQuery>, QueryRejection>,
 ) -> Result<Json<CompactRecordDetail>, ApiError> {
     let query = api_query(query)?;
-    let run = resolve_run_summary(&state, &query, &request_id).await?;
+    let run = resolve_run_summary(&state, &query, &request_id, None).await?;
     if run.format.as_deref() != Some("compact-jsonl/v1") {
         return Err(ApiError::not_found("run is not a compact JSONL record"));
     }
@@ -1707,17 +2149,24 @@ impl TurnsQuery {
 async fn explorer_turns(
     State(state): State<AppState>,
     request_id: RequestId,
+    metrics: RequestMetrics,
     fts: FtsDiagnostics,
     query: Result<Query<TurnsQuery>, QueryRejection>,
 ) -> Result<Json<explorer::TurnExplorerPage>, ApiError> {
     let query = api_query(query)?;
     let session = query.session();
-    let loaded = load_trajectory(&state, &session, &request_id).await?;
+    let loaded = load_trajectory(&state, &session, &request_id, &metrics).await?;
+    let phase = Instant::now();
     let runtime = current_catalog(&state, &request_id).await?;
+    metrics.record("turn_catalog", phase);
+    // Nested Directory Storylines are opened on-demand and are absent from the
+    // prepared catalog; skip FTS path probing and keep in-memory turn pages.
     let paths = runtime
         .snapshot
         .storyline_table_paths(&loaded.run.dataset, &loaded.run.file)
-        .map_err(|error| fail(&request_id, "explorer_turns", error))?;
+        .ok()
+        .flatten();
+    let phase = Instant::now();
     let mut fts_available = if let Some(paths) = paths.as_ref() {
         match storyline_steps_fts_available(paths).await {
             Ok(available) => available,
@@ -1729,6 +2178,7 @@ async fn explorer_turns(
     } else {
         false
     };
+    metrics.record("turn_fts_probe", phase);
     let mut search_mode = if query
         .q
         .as_deref()
@@ -1744,74 +2194,84 @@ async fn explorer_turns(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let expression = crate::combine_match_expressions(&[needle.to_owned()])
-            .map_err(|error| ApiError::invalid_request(error.to_string()))?
-            .ok_or_else(|| ApiError::invalid_request("search query must not be empty"))?;
-        let runtime = current_catalog(&state, &request_id).await?;
-        let (predicate, available, fts_errors) = crate::find_expression_predicate_for_dataset(
-            &runtime.snapshot,
-            &expression,
-            Some(&loaded.run.file),
-            Some(&loaded.run.dataset),
-        )
-        .await
-        .map_err(|error| fail(&request_id, "explorer_turns", error))?;
-        fts.extend(fts_errors);
-        fts_available = fts_available || available;
-        let turns = if expression.has_text() || expression.has_step_json() {
-            let predicate = predicate.ok_or_else(|| {
-                fail(
-                    &request_id,
-                    "explorer_turns",
-                    anyhow::anyhow!("turn search expression did not produce a predicate"),
-                )
-            })?;
-            let sql = format!(
-                "SELECT DISTINCT step_id FROM {}.steps WHERE _file_ = {} AND document_id = {} AND session_id = {} AND ({predicate})",
-                loaded.run.dataset,
-                crate::sql_string(&loaded.run.file),
-                crate::sql_string(&loaded.run.document_id),
-                crate::sql_string(&loaded.run.session_id),
-            );
-            let jsonl = runtime
-                .engine
-                .query_jsonl(&sql)
-                .await
-                .map_err(|error| fail(&request_id, "explorer_turns", error))?;
-            let step_ids = jsonl
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .filter_map(|line| {
-                    serde_json::from_str::<Value>(line)
-                        .ok()
-                        .and_then(|row| row.get("step_id").and_then(Value::as_i64))
-                })
-                .collect::<BTreeSet<_>>();
-            search_mode = if expression.has_text() && expression.has_json() {
-                "fts+json"
-            } else if expression.has_text() {
-                "fts"
-            } else {
-                "json"
-            };
-            loaded
-                .turns
-                .iter()
-                .filter(|item| step_ids.contains(&item.turn.id))
-                .cloned()
-                .collect::<Vec<_>>()
+        if paths.is_none() {
+            // On-demand nested Storylines are not registered in DuckDB; filter
+            // the already-loaded turns in memory instead of SQL FTS.
+            search_mode = "memory";
+            (loaded.turns.clone(), Some(needle))
         } else {
-            // Run-level JSON predicates have no step identity to display in
-            // this view. Keep the detail search scoped to Step expressions,
-            // matching the CLI find scope instead of applying an ad-hoc
-            // in-memory text filter.
-            Vec::new()
-        };
-        (turns, None)
+            let expression = crate::combine_match_expressions(&[needle.to_owned()])
+                .map_err(|error| ApiError::invalid_request(error.to_string()))?
+                .ok_or_else(|| ApiError::invalid_request("search query must not be empty"))?;
+            let runtime = current_catalog(&state, &request_id).await?;
+            let phase = Instant::now();
+            let (predicate, available, fts_errors) = crate::find_expression_predicate_for_dataset(
+                &runtime.snapshot,
+                &expression,
+                Some(&loaded.run.file),
+                Some(&loaded.run.dataset),
+            )
+            .await
+            .map_err(|error| fail(&request_id, "explorer_turns", error))?;
+            fts.extend(fts_errors);
+            metrics.record("turn_search", phase);
+            fts_available = fts_available || available;
+            let turns = if expression.has_text() || expression.has_step_json() {
+                let predicate = predicate.ok_or_else(|| {
+                    fail(
+                        &request_id,
+                        "explorer_turns",
+                        anyhow::anyhow!("turn search expression did not produce a predicate"),
+                    )
+                })?;
+                let sql = format!(
+                    "SELECT DISTINCT step_id FROM {}.steps WHERE _file_ = {} AND document_id = {} AND session_id = {} AND ({predicate})",
+                    loaded.run.dataset,
+                    crate::sql_string(&loaded.run.file),
+                    crate::sql_string(&loaded.run.document_id),
+                    crate::sql_string(&loaded.run.session_id),
+                );
+                let jsonl = runtime
+                    .engine
+                    .query_jsonl(&sql)
+                    .await
+                    .map_err(|error| fail(&request_id, "explorer_turns", error))?;
+                let step_ids = jsonl
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .filter_map(|line| {
+                        serde_json::from_str::<Value>(line)
+                            .ok()
+                            .and_then(|row| row.get("step_id").and_then(Value::as_i64))
+                    })
+                    .collect::<BTreeSet<_>>();
+                search_mode = if expression.has_text() && expression.has_json() {
+                    "fts+json"
+                } else if expression.has_text() {
+                    "fts"
+                } else {
+                    "json"
+                };
+                loaded
+                    .turns
+                    .iter()
+                    .filter(|item| step_ids.contains(&item.turn.id))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                // Run-level JSON predicates have no step identity to display in
+                // this view. Keep the detail search scoped to Step expressions,
+                // matching the CLI find scope instead of applying an ad-hoc
+                // in-memory text filter.
+                Vec::new()
+            };
+            (turns, None)
+        }
     } else {
         (loaded.turns.clone(), query.q.as_deref())
     };
-    Ok(Json(explorer::turn_page_with_search(
+    let phase = Instant::now();
+    let page = explorer::turn_page_with_search(
         &turns,
         &loaded.records,
         search_query,
@@ -1823,7 +2283,9 @@ async fn explorer_turns(
             mode: search_mode,
             tokenizer: fts_available.then_some("jieba"),
         },
-    )))
+    );
+    metrics.record("turn_projection", phase);
+    Ok(Json(page))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1840,6 +2302,7 @@ struct TurnDetailQuery {
 async fn explorer_turn(
     State(state): State<AppState>,
     request_id: RequestId,
+    metrics: RequestMetrics,
     query: Result<Query<TurnDetailQuery>, QueryRejection>,
 ) -> Result<Json<explorer::TurnDetail>, ApiError> {
     let query = api_query(query)?;
@@ -1853,7 +2316,7 @@ async fn explorer_turn(
         offset: None,
         limit: None,
     };
-    let loaded = load_trajectory(&state, &session, &request_id).await?;
+    let loaded = load_trajectory(&state, &session, &request_id, &metrics).await?;
     let item = loaded
         .turns
         .iter()
@@ -2108,10 +2571,173 @@ fn format_query_fields() -> Vec<QueryFieldSummary> {
     ]
 }
 
+fn query_table_summaries() -> Vec<QueryTableSummary> {
+    vec![
+        QueryTableSummary {
+            name: "sources",
+            description: "One row per discovered run data source",
+            kind: "table",
+            grain: "source",
+            fields: source_query_fields(),
+        },
+        QueryTableSummary {
+            name: "runs",
+            description: "One row per run across the complete data path",
+            kind: "table",
+            grain: "run",
+            fields: run_query_fields(),
+        },
+        QueryTableSummary {
+            name: "steps",
+            description: "Ordered user, agent, and system steps for every run",
+            kind: "table",
+            grain: "step",
+            fields: step_query_fields(),
+        },
+        QueryTableSummary {
+            name: "tool_calls",
+            description: "Structured tool calls joined to their run and step",
+            kind: "table",
+            grain: "tool call",
+            fields: tool_call_query_fields(),
+        },
+        QueryTableSummary {
+            name: "trajectories",
+            description: "One complete run with ordered step and tool-call arrays",
+            kind: "view",
+            grain: "complete run",
+            fields: trajectory_query_fields(),
+        },
+        QueryTableSummary {
+            name: "events",
+            description: "Recorded events; empty for sources without recorded events",
+            kind: "table",
+            grain: "event",
+            fields: event_query_fields(),
+        },
+        QueryTableSummary {
+            name: "atif",
+            description: "ATIF documents exposed as id plus JSONB data",
+            kind: "view",
+            grain: "ATIF document",
+            fields: format_query_fields(),
+        },
+        QueryTableSummary {
+            name: "storyline",
+            description: "Storyline documents exposed as id plus JSONB data",
+            kind: "view",
+            grain: "Storyline document",
+            fields: format_query_fields(),
+        },
+        QueryTableSummary {
+            name: "actf",
+            description: "ACTF documents exposed as id plus JSONB data",
+            kind: "view",
+            grain: "ACTF document",
+            fields: format_query_fields(),
+        },
+        QueryTableSummary {
+            name: "openai_msg",
+            description: "OpenAI message documents exposed as id plus JSONB data",
+            kind: "view",
+            grain: "OpenAI message",
+            fields: format_query_fields(),
+        },
+        QueryTableSummary {
+            name: "codex",
+            description: "Codex documents exposed as id plus JSONB data",
+            kind: "view",
+            grain: "Codex document",
+            fields: format_query_fields(),
+        },
+        QueryTableSummary {
+            name: "markdown",
+            description: "Markdown/AgenticMD documents exposed as id plus JSONB data",
+            kind: "view",
+            grain: "Markdown document",
+            fields: format_query_fields(),
+        },
+        QueryTableSummary {
+            name: "claude",
+            description: "Claude Code documents exposed as id plus JSONB data",
+            kind: "view",
+            grain: "Claude Code document",
+            fields: format_query_fields(),
+        },
+    ]
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct QueryTablesQuery {
+    /// Accept both `ui=true` (new clients) and `ui=1` (cached clients).
+    #[serde(default)]
+    ui: Option<String>,
+}
+
+async fn ui_query_catalog(state: &AppState) -> Result<Json<QueryCatalog>, ApiError> {
+    let browse = browse_coordinator(state).await;
+    let default_name = state
+        .config
+        .default_dataset
+        .clone()
+        .or_else(|| {
+            state
+                .config
+                .datasets
+                .first()
+                .map(|mount| mount.name.clone())
+        })
+        .unwrap_or_else(|| DEFAULT_DATASET_NAME.into());
+    let storage_path = state
+        .config
+        .datasets
+        .iter()
+        .find(|mount| mount.name == default_name)
+        .map(|mount| mount.uri.clone())
+        .unwrap_or_default();
+    let mut datasets = Vec::with_capacity(state.config.datasets.len());
+    for mount in &state.config.datasets {
+        let tree = browse.cached_dataset(mount).await;
+        let (ready_sources, error_sources) = tree
+            .map(|tree| {
+                tree.children.iter().fold((0, 0), |(ready, failed), child| {
+                    (
+                        ready + usize::from(child.kind == "file"),
+                        failed + usize::from(child.failed_count > 0),
+                    )
+                })
+            })
+            .unwrap_or_default();
+        datasets.push(QueryDatasetSummary {
+            name: mount.name.clone(),
+            uri: mount.uri.clone(),
+            ready_sources,
+            error_sources,
+        });
+    }
+    Ok(Json(QueryCatalog {
+        snapshot_id: String::new(),
+        read_only: true,
+        database: default_name,
+        storage_path,
+        path_column: "_file_",
+        datasets,
+        tables: query_table_summaries(),
+    }))
+}
+
 async fn query_tables(
     State(state): State<AppState>,
     request_id: RequestId,
+    Query(query): Query<QueryTablesQuery>,
 ) -> Result<Json<QueryCatalog>, ApiError> {
+    if query
+        .ui
+        .as_deref()
+        .is_some_and(|value| value == "true" || value == "1")
+    {
+        return ui_query_catalog(&state).await;
+    }
     let runtime = current_catalog(&state, &request_id).await?;
     let database = runtime
         .snapshot
@@ -2147,99 +2773,7 @@ async fn query_tables(
                 error_sources: dataset.error_source_count(),
             })
             .collect(),
-        tables: vec![
-            QueryTableSummary {
-                name: "sources",
-                description: "One row per discovered run data source",
-                kind: "table",
-                grain: "source",
-                fields: source_query_fields(),
-            },
-            QueryTableSummary {
-                name: "runs",
-                description: "One row per run across the complete data path",
-                kind: "table",
-                grain: "run",
-                fields: run_query_fields(),
-            },
-            QueryTableSummary {
-                name: "steps",
-                description: "Ordered user, agent, and system steps for every run",
-                kind: "table",
-                grain: "step",
-                fields: step_query_fields(),
-            },
-            QueryTableSummary {
-                name: "tool_calls",
-                description: "Structured tool calls joined to their run and step",
-                kind: "table",
-                grain: "tool call",
-                fields: tool_call_query_fields(),
-            },
-            QueryTableSummary {
-                name: "trajectories",
-                description: "One complete run with ordered step and tool-call arrays",
-                kind: "view",
-                grain: "complete run",
-                fields: trajectory_query_fields(),
-            },
-            QueryTableSummary {
-                name: "events",
-                description: "Recorded events; empty for sources without recorded events",
-                kind: "table",
-                grain: "event",
-                fields: event_query_fields(),
-            },
-            QueryTableSummary {
-                name: "atif",
-                description: "ATIF documents exposed as id plus JSONB data",
-                kind: "view",
-                grain: "ATIF document",
-                fields: format_query_fields(),
-            },
-            QueryTableSummary {
-                name: "storyline",
-                description: "Storyline documents exposed as id plus JSONB data",
-                kind: "view",
-                grain: "Storyline document",
-                fields: format_query_fields(),
-            },
-            QueryTableSummary {
-                name: "actf",
-                description: "ACTF documents exposed as id plus JSONB data",
-                kind: "view",
-                grain: "ACTF document",
-                fields: format_query_fields(),
-            },
-            QueryTableSummary {
-                name: "openai_msg",
-                description: "OpenAI message documents exposed as id plus JSONB data",
-                kind: "view",
-                grain: "OpenAI message",
-                fields: format_query_fields(),
-            },
-            QueryTableSummary {
-                name: "codex",
-                description: "Codex documents exposed as id plus JSONB data",
-                kind: "view",
-                grain: "Codex document",
-                fields: format_query_fields(),
-            },
-            QueryTableSummary {
-                name: "markdown",
-                description: "Markdown/AgenticMD documents exposed as id plus JSONB data",
-                kind: "view",
-                grain: "Markdown document",
-                fields: format_query_fields(),
-            },
-            QueryTableSummary {
-                name: "claude",
-                description: "Claude Code documents exposed as id plus JSONB data",
-                kind: "view",
-                grain: "Claude Code document",
-                fields: format_query_fields(),
-            },
-        ],
+        tables: query_table_summaries(),
     }))
 }
 
@@ -2403,7 +2937,7 @@ async fn compile_analysis(
                 engine_detail: None,
             },
         })?;
-    if request.snapshot_id != runtime.snapshot.snapshot_id() {
+    if request.snapshot_id != "ui-cache" && request.snapshot_id != runtime.snapshot.snapshot_id() {
         return Err(CompileHttpError::stale_snapshot());
     }
     let schema = runtime

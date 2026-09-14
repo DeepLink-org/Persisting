@@ -61,7 +61,7 @@ canonical 数据，也不要求后台同步任务。代码类型名 `DatasetCata
 
 ## 3. 核心模型
 
-![Snapshot 查询路径](/img/diagrams/persisting/dataset-catalog.svg)
+![Snapshot 查询路径](../../../assets/diagrams/persisting/dataset-catalog.svg)
 
 核心对象分为七层：
 
@@ -182,7 +182,8 @@ capture-root/
         └── session.json
 ```
 
-Catalog 产生四个 source：
+Catalog 在 **把 `capture-root` 当作 query 根打开**（虚拟 dataset）时产生四个 source。
+`_file_` 相对该根：
 
 | `_file_` | `kind` | 可能的 `format` |
 |---|---|---|
@@ -194,25 +195,39 @@ Catalog 产生四个 source：
 `live` 和 `events.lance` 的内部文件不会再次成为 source。这一“识别复合根后停止下探”的规则
 避免把 manifest、generation、segment 或 `objects.lance` 错当成用户输入。
 
+`pchronicle ls capture-root` 不是上面这张表。它只列一层：`live/`（dataset）、
+`agents/`（directory）、`imports/`（directory）。再 `ls capture-root/imports` 才会看到
+`batch-a.atif.jsonl` 和 `nested/`。浏览成员是 [RFC-0015](../../rfcs/0015-chronicle-manifest.md)
+的 `list`；query 成员是 `open`。
+
 当目录含有 `chronicle.manifest`
 （[RFC-0015](../../rfcs/0015-chronicle-manifest.md)）时，discovery 优先采用该 sidecar：
-`leaf` 且 `format = compact-jsonl/v1` 时可不打开 Lance 即归类为 Compact source；
-`branch` 只扫描同样含有 sidecar 的一层子目录。Explorer 目录合计可对 leaf
-`record_count` 做读侧汇总；写入方只更新 leaf manifest，不回写祖先。
+`leaf` 且 `format = compact-jsonl/v1` 时可不打开 Lance 即归类为 Compact source。
+对 branch 或纯目录做 `list` 只看一层 children；对两者做 `open` 则收集嵌套叶子以及
+叶子外的 JSON。写入方只更新 leaf manifest，不回写祖先。
 
 ### 5.2 本地发现
 
-本地 URI 支持普通路径、`local://` 和 `file://`：
+本地 URI 支持普通路径、`local://` 和 `file://`。**`open`**：
 
 1. 如果根是 `.json`、`.jsonl` 或 `.ndjson` 文件，直接建立单个 source。
-2. 如果根目录包含 `CURRENT`，整个根是一个 Storyline source。
-3. 如果根名为 `events.lance` 且包含 `_manifest.json`，整个根是一个 events source。
-4. 否则按稳定路径顺序递归目录：识别复合根，或收集支持的外围文件。
-5. 符号链接不会跟随，避免循环、越界读取和同一物理文件的重复身份。
+2. 如果根是叶子 Dataset（`chronicle.manifest` leaf、`CURRENT`、
+   `events.lance/_manifest.json`、或 compact-jsonl Lance），整个根是一个 source
+   `_file_ = "."`。
+3. 否则根是 Directory：按稳定路径顺序递归，在叶子 Dataset 处停止，并把剩余支持的
+   外围 JSON 收为 file source（虚拟 dataset）。
+4. 符号链接不会跟随，避免循环、越界读取和同一物理文件的重复身份。
+
+对同一 URI 的 **`list`** 只返回一层 children，见 RFC-0015。它不会打印虚拟 dataset 的
+source 表。
 
 ### 5.3 对象存储发现
 
-对象 URI 通过 Lance/object-store 适配层解析。Catalog 流式消费前缀 listing，并在读取
+对象 URI 通过 Lance/object-store 适配层解析。对对象前缀做 **`open`** 即下面的虚拟
+dataset 遍历；对同一 URI 做 **`list`** 仍只列一层（RFC-0015），MUST NOT 为浏览而列举
+整棵树。
+
+Catalog 流式消费前缀 listing，并在读取
 `max_entries + 1` 个对象前失败；不会先把无界 listing 收进内存再检查。随后：
 
 1. 用 `CURRENT` 对象识别 Storyline 根；
@@ -585,3 +600,54 @@ Catalog 对它只做虚拟规范化。canonical `events.lance` 是例外：位�
 - `crates/persisting-pchronicle-cli/src/server/acceleration.rs`：同代内存 source-routing index、
   保守 SQL 分析与 `_file_` 注入；
 - `pchronicle-web/src/`：Dataset 选择和完整 Run identity。
+
+## 浏览索引与查询一致性
+
+Warehouse 的浏览索引与 `DatasetCatalogSnapshot` 独立。Tree 请求不构造查询
+引擎，也不等待查询来源的完整发现。响应保留原有字段，并增加 `browse`：
+`consistency: best_effort`、目录视图摘要 `generation`、Unix 秒数 `observed_at`、
+`stale`、`refreshing`、`last_error`。根目录观察不完整时 `observed_at` 为零。
+视图摘要不代表 source 内容版本。
+
+命中缓存立即返回；同一路径的冷请求共享一次刷新。serve 持有单个 worker，
+统一执行请求刷新和周期遍历，最后一个服务器状态释放时终止。请求队列与同路径
+等待者分别最多 128 项。进程内浏览扫描串行，prefix list 启动间隔至少 100ms，
+单次 list 超时为 20 秒；一次 list 可能包含多个存储请求，此限制不影响 SQL。
+
+worker 每 30 秒从配置根目录开始或继续遍历浅层目录，在 prefix 之间优先处理
+页面请求，不展开 Dataset 叶节点，不补执行错过的定时器。每轮后台遍历最多
+10,000 个 prefix，更大目录仍可手动访问。后台遍历不提供完整性保证。刷新失败
+保留旧视图并退避，最长五分钟；只有完整成功的父目录 listing 才删除已消失子项
+的缓存视图。listing 本身不构成跨对象事务。
+
+Lance 缓存位于 `PCHRONICLE_CACHE_DIR` 或系统 pChronicle 缓存目录，文件名为
+`catalog-<配置指纹>.lance`，行键另含 mount URI 指纹，避免同名不同路径串用。
+v2 暂保留 JSON payload，但加载时验证 schema version，全部成功后才发布内存
+索引。损坏缓存在独占文件锁保护下重建；另一个进程占用缓存或磁盘修复失败时
+退化为内存索引。未变化的观察只更新内存，避免每 30 秒产生 Lance 版本；重启后
+磁盘时间戳保守地标记缓存待刷新。旧 `catalog-ui.lance` 不再读取。
+
+**准确查询不能从该缓存推断 source 集合。** 只检查缓存里已有 source 的 revision
+仍可能漏掉新建来源。因此准确查询继续自行发现并逐 source pin。Runs 提供精确
+dataset 和 `_file_` 时，`QueryScope` 会完整发现该 source path，并将无关 mount
+表示为空；浏览索引仍不决定 source 集合。`/api/catalog` 使用
+`per_source_pinned` 标明一般一致性，不承诺跨来源统一事务时间点。未限定范围的
+查询继续使用完整递归发现。
+
+### 范围查询准入与摘要预算
+
+同一 `QueryScope` 的重叠 Runs 摘要请求共享 discovery、pin、执行及结果或错误。
+每个 serve 最多同时执行两个不同 scope 的完整操作，最多保留 128 个活跃 scope。
+flight 表只持有弱引用：调用者结束后，下一次独立请求重新发现和 pin。初始化者
+取消时释放许可，已有等待者可以接手。不会永久保留每路径锁或旧查询运行时。
+
+本地 scope 保留完整发现的叶节点边界、来源身份和符号链接规则。Storyline 子树
+退回完整 mount 发现，因为关联投影可能指向子树外的 canonical source。远端 scope 暂时
+先完整发现所选 mount，再于投影绑定之后过滤；缺少 manifest 不能证明普通目录
+或 JSON 对象不存在。远端子树剪枝仍待实现。
+
+摘要 SQL 保留逐 source 过滤和 join 前的 step 聚合。结果改成流式读取，避免先收集
+全部 Arrow batches 再创建完整 JSONL 副本。摘要集合最多 100,000 行；每个 source
+的统计或 Runs JSONL 输出最多 64 MiB。超限返回要求缩小范围的错误，不返回部分
+成功结果。这些输出预算不限制 HashJoin 构建端，后者仍由 DataFusion 内存池约束。
+此次不改写任意 Analysis SQL。

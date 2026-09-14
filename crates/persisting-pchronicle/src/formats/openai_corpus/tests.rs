@@ -84,6 +84,54 @@ fn openai_unknown_fields_use_exact_row_paths() {
 }
 
 #[test]
+fn openai_unknowns_stay_on_correct_session_after_out_of_order_multi_session_roundtrip() {
+    // Interleaved sessions with out-of-order step_ids: unknowns must not cross-attach.
+    let input = json!({
+        "session_steps": [
+            {
+                "session_id": "b",
+                "step_id": 2,
+                "messages": [{"role": "user", "content": "b2"}],
+                "response": {"role": "assistant", "content": "ok"},
+                "vendor_mark": "b-step-2"
+            },
+            {
+                "session_id": "a",
+                "step_id": 1,
+                "messages": [{"role": "user", "content": "a1"}],
+                "response": {"role": "assistant", "content": "ok"},
+                "vendor_mark": "a-step-1"
+            },
+            {
+                "session_id": "a",
+                "step_id": 2,
+                "messages": [{"role": "user", "content": "a2"}],
+                "response": {"role": "assistant", "content": "ok"},
+                "vendor_mark": "a-step-2"
+            },
+            {
+                "session_id": "b",
+                "step_id": 1,
+                "messages": [{"role": "user", "content": "b1"}],
+                "response": {"role": "assistant", "content": "ok"},
+                "vendor_mark": "b-step-1"
+            }
+        ]
+    });
+    let stories = parse_openai_msg_corpus_value(&input, "corpus.json").unwrap();
+    assert_eq!(stories.len(), 2);
+    let encoded = storylines_to_openai_value(&stories).unwrap();
+    let rows = encoded["session_steps"].as_array().unwrap();
+    assert_eq!(rows.len(), 4);
+    for row in rows {
+        let session = row["session_id"].as_str().unwrap();
+        let step = row["step_id"].as_i64().unwrap();
+        let mark = row["vendor_mark"].as_str().unwrap();
+        assert_eq!(mark, format!("{session}-step-{step}"));
+    }
+}
+
+#[test]
 fn openai_step_id_maps_to_storyline_turn_ids() {
     let input = json!([{
         "session_id": "s",
@@ -247,7 +295,7 @@ fn openai_string_meta_maps_without_using_extra() {
 }
 
 #[test]
-fn openai_rejects_invalid_non_null_created_at() {
+fn openai_soft_accepts_invalid_non_null_created_at() {
     let input = json!({"session_steps": [{
         "session_id": "session-1",
         "step_id": 1,
@@ -256,9 +304,13 @@ fn openai_rejects_invalid_non_null_created_at() {
         "response": {"role": "assistant", "content": "done"}
     }]});
 
-    let error = parse_openai_msg_corpus_value(&input, "invalid-created-at.json").unwrap_err();
-    assert_eq!(error.location(), Some("rows[0].created_at"));
-    assert!(error.to_string().contains("timestamp"), "{error}");
+    let stories = parse_openai_msg_corpus_value(&input, "invalid-created-at.json").unwrap();
+    assert_eq!(stories.len(), 1);
+    assert!(stories[0].started_at.is_none());
+    assert!(
+        stories[0].turns.iter().all(|turn| turn.timestamp.is_none()),
+        "unparseable created_at should soft-drop turn timestamps"
+    );
 }
 
 #[test]

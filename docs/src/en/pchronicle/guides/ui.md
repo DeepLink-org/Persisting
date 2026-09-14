@@ -8,8 +8,11 @@ storage. The screenshots and examples on this page were produced directly by:
 ./target/release/pchronicle serve tmp/test/ data/ --listen 127.0.0.1:9980
 ```
 
-After the listener is ready, open [http://127.0.0.1:9980/](http://127.0.0.1:9980/). This command mounts
-two Datasets. Because neither has an explicit name, the UI derives `test` and
+After the listener is ready, open [http://127.0.0.1:9980/](http://127.0.0.1:9980/). The homepage is
+the landing page. **Warehouse** and **Open Warehouse** enter Datasets. Deep links such as
+`/?page=catalog` still open the warehouse directly. Repeatable `--home-link TEXT=PATH`
+capsules appear next to Warehouse; `PATH` must be a same-origin relative path.
+This command mounts two Datasets. Because neither has an explicit name, the UI derives `test` and
 `data` from the last path component. Give mounts stable UI and SQL schema names
 when they will be reused:
 
@@ -25,11 +28,11 @@ UI or API do not modify a mounted Dataset.
 
 ## Workspace map
 
-The left rail separates the common tasks into five surfaces:
+The left rail separates the common tasks into five surfaces. Click the **pC** mark to return to the homepage.
 
 | Surface | Use it to |
 | --- | --- |
-| **Datasets** | See mounted Datasets and Run counts, then enter Runs. |
+| **Datasets** | Browse the current path one level at a time, like `pchronicle ls`. Dataset folders show type and trajectory count. |
 | **Runs** | Filter by path, Dataset, status, or text and open one Run. |
 | **Analysis** | Inspect available fields and analyze with a question or read-only SQL. |
 | **Storage** | Inspect Lance tables, data groups, column distributions, and storage size. |
@@ -38,18 +41,22 @@ The left rail separates the common tasks into five surfaces:
 **Local** at the bottom of the rail indicates that the UI is connected to the
 local pChronicle server.
 
-![The Datasets page shows the test and data Datasets and their Run counts](/img/screenshots/pchronicle/data-overview.jpg)
+![The Datasets page shows the test and data Datasets and their Run counts](../../../assets/screenshots/pchronicle/data-overview.jpg)
 
-**Datasets** is the landing page. Each card shows a Dataset name and Run count.
-Select a card to open that Dataset's data overview, then use **Open in Runs**
-to open the current scope. The button with the same name on the landing page
-opens all Runs.
+**Datasets** is the warehouse landing page after you leave Home. The warehouse
+root lists serve mounts. Inside a mount, each card is one child of the current
+path — the same listing as `pchronicle ls`. Dataset children show type and
+trajectory count from `chronicle.manifest` when present. Select a directory to
+go one level down. Select a Dataset to stay on that Dataset (Lance interiors
+are not a browse folder). **Open in Runs** opens the current query root as a
+Snapshot; a plain directory is a virtual dataset of nested Datasets and JSON.
 
 ## Browse and filter Runs
 
-![The Runs page combines a path tree with a filterable Run table](/img/screenshots/pchronicle/runs-browser.jpg)
+![The Runs page combines a path tree with a filterable Run table](../../../assets/screenshots/pchronicle/runs-browser.jpg)
 
-The Runs page combines a path tree and a result table:
+The Runs page combines a path tree and a result table. **Run paths** is built
+from run summaries (the import-path tree). It is not the Datasets `ls` listing.
 
 1. Select a Dataset, folder level, or Session in **Run paths**. The number at
    the right of a node is the number of Runs below it.
@@ -66,7 +73,7 @@ paste a known Session ID directly into the search box.
 
 ## Read one Run
 
-![The Run detail page shows summary metrics, coverage, and ordered steps](/img/screenshots/pchronicle/run-detail.jpg)
+![The Run detail page shows summary metrics, coverage, and ordered steps](../../../assets/screenshots/pchronicle/run-detail.jpg)
 
 The Run page has three layers:
 
@@ -84,7 +91,7 @@ not a wall-clock latency chart. Captured text, tool calls, and metrics remain us
 
 ## Analyze Datasets
 
-![Analysis runs read-only SQL and profiles the returned rows in Result Explorer](/img/screenshots/pchronicle/analysis-sql.jpg)
+![Analysis runs read-only SQL and profiles the returned rows in Result Explorer](../../../assets/screenshots/pchronicle/analysis-sql.jpg)
 
 The left panel lists the queryable tables and fields for each Dataset. A mount
 name is also its SQL schema, so this example exposes `test.runs`, `data.runs`,
@@ -115,7 +122,7 @@ discarding the results.
 
 ## Inspect Lance storage
 
-![Storage shows Lance data groups, column value distributions, and storage size](/img/screenshots/pchronicle/storage-layout.jpg)
+![Storage shows Lance data groups, column value distributions, and storage size](../../../assets/screenshots/pchronicle/storage-layout.jpg)
 
 Storage is an advanced diagnostic surface, not a prerequisite for browsing
 Runs. The left panel shows Lance tables and their data groups by Dataset. The
@@ -131,7 +138,7 @@ or maintenance operations.
 
 ## Configure Assistant
 
-![Assistant Browser BYOK settings include API base, API key, and Model](/img/screenshots/pchronicle/assistant-settings.jpg)
+![Assistant Browser BYOK settings include API base, API key, and Model](../../../assets/screenshots/pchronicle/assistant-settings.jpg)
 
 1. Open **Assistant** from the left rail, then select the settings gear.
 2. Enter the OpenAI-compatible **API base**, **API key**, and **Model**.
@@ -144,9 +151,9 @@ untrusted or shared browser profile. Clearing this site's browser data also
 clears the setting. Assistant is labeled **Read-only · selected run data** and
 does not rewrite the Dataset.
 
-When `pchronicle serve --catalog-config` is used, every library in the ACL file
-is already mounted for local browsing. Open **Keys** on the left rail if you
-need Directory user access/secret headers for authenticated Directory flows.
+With `pchronicle serve --catalog-config`, data APIs require authentication and
+show only datasets granted to the user. Open **Keys** on the left rail and
+enter the Directory user access key and secret key before browsing data.
 Those values are stored in `localStorage` and sent to this pchronicle server as
 `x-pchronicle-access-key` and `x-pchronicle-secret-key` on data requests. They
 authorize which Directory paths this browser may open; they are not the

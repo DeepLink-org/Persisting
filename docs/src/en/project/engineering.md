@@ -13,8 +13,8 @@ Run these from the repository root. `just --list` shows the full recipe set.
 | `just test` | Workspace Rust tests through `cargo nextest`, then the Python suite |
 | `just test <package>` | One crate or Cargo package (for example `pvisor` or `persisting-pvisor`) |
 | `just docs-sync` | Install the locked documentation environment |
-| `just docs-serve` | Local Docusaurus preview with automatic reload when files change |
-| `just docs-serve-dirty` | Local Docusaurus preview when automatic reload stalls |
+| `just docs-serve` | Local Zensical preview with automatic reload when files change |
+| `just docs-serve-dirty` | Local Zensical preview when automatic reload stalls |
 | `just docs-build` | Build the static documentation site |
 | `just examples` | pVisor and pChronicle product example suites |
 | `just gate` | Format, lint, and the full Rust test workspace |
@@ -22,8 +22,10 @@ Run these from the repository root. `just --list` shows the full recipe set.
 
 `just test` uses the debug nextest profile for faster iteration. Pass a Cargo
 package name or a short crate alias (`pvisor`, `pchronicle`,
-`pchronicle-cli`, `agentctl`, `capture`). The no-argument form also runs
-`just test-py`.
+`pchronicle-cli`, `agentctl`, `capture`). `just test pchronicle` runs both
+`persisting-pchronicle` and `persisting-pchronicle-cli` (same as the CI
+pchronicle shard); use `just test pchronicle-cli` for the CLI crate alone.
+The no-argument form also runs `just test-py`.
 
 ## Current notes
 

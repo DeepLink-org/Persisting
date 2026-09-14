@@ -4,13 +4,6 @@ use persisting_pchronicle::storage::{
 };
 use proptest::prelude::*;
 
-fn runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("build test runtime")
-}
-
 fn story() -> StorylineDocument {
     let mut story = StorylineDocument::new("session", "agent");
     story.turns.push(StorylineTurn {
@@ -75,7 +68,7 @@ proptest! {
         scan_in_order in any::<bool>(),
         preview in any::<bool>(),
     ) {
-        let runtime = runtime();
+    let runtime = common::runtime();
         let temp = tempfile::tempdir().expect("create temporary Storyline root");
         let store = runtime
             .block_on(StorylineLanceStore::open(temp.path()))
@@ -117,7 +110,7 @@ proptest! {
         ttft_seed in 0i64..60_000,
     ) {
         let ttft = ttft_seed.min(latency);
-        let runtime = runtime();
+        let runtime = common::runtime();
         let temp = tempfile::tempdir().expect("create temporary Storyline root");
         let store = runtime
             .block_on(StorylineLanceStore::open(temp.path()))
@@ -149,3 +142,5 @@ proptest! {
         prop_assert_eq!(ttft_array.value(0), ttft);
     }
 }
+#[path = "../common/mod.rs"]
+mod common;

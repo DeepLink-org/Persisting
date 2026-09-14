@@ -10,6 +10,13 @@ use persisting_pchronicle_cli::{
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(result) = persisting_pchronicle_cli::run_catalog_worker_before_runtime(&cli) {
+        return if result.is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        };
+    }
     let debug_errors = cli.debug_errors();
     // OpenDAL/Lance read AWS_* from the process environment. Applying catalog
     // backend keys after the multi-threaded Tokio runtime starts is racy on
@@ -42,6 +49,7 @@ fn main() -> ExitCode {
 async fn async_main(cli: Cli, debug_errors: bool) -> ExitCode {
     let stdin_is_terminal = io::stdin().is_terminal();
     let stdout_is_terminal = io::stdout().is_terminal();
+    let stderr_is_terminal = io::stderr().is_terminal();
     // Do not hold StdoutLock/StderrLock for the process lifetime. `pchronicle
     // serve` logs from Tokio worker threads via tracing; on macOS those writes
     // take the stdout lock, so a process-wide lock deadlocks the runtime.
@@ -53,6 +61,7 @@ async fn async_main(cli: Cli, debug_errors: bool) -> ExitCode {
         cli,
         stdin_is_terminal,
         stdout_is_terminal,
+        stderr_is_terminal,
         &mut stdin,
         &mut stdout,
         &mut stderr,

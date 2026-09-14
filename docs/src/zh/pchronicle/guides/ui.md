@@ -7,7 +7,9 @@ Lance 存储。下面的截图和示例由这个命令直接生成：
 ./target/release/pchronicle serve tmp/test/ data/ --listen 127.0.0.1:9980
 ```
 
-启动成功后访问 [http://127.0.0.1:9980/](http://127.0.0.1:9980/)。这条命令挂载两个 Dataset；因为没有显式指定名称，
+启动成功后访问 [http://127.0.0.1:9980/](http://127.0.0.1:9980/)。打开后先进入首页；**Warehouse** 和 **Open Warehouse** 进入 Datasets。`/?page=catalog` 这类深链仍会直接打开工作台。可重复的 `--home-link TEXT=PATH` 会出现在 Warehouse 旁边；`PATH` 必须是同源相对路径。
+
+这条命令挂载两个 Dataset；因为没有显式指定名称，
 界面使用路径末段，将它们显示为 `test` 和 `data`。需要让 SQL schema 和界面名称长期稳定时，
 建议明确命名：
 
@@ -22,11 +24,11 @@ Lance 存储。下面的截图和示例由这个命令直接生成：
 
 ## 界面总览
 
-左侧导航把常用工作分成五个入口：
+左侧导航把常用工作分成五个入口。单击 **pC** 标记可回到首页。
 
 | 入口 | 用途 |
 | --- | --- |
-| **Datasets** | 查看已挂载的 Dataset 和 Run 数量，从全局概览进入 Runs。 |
+| **Datasets** | 像 `pchronicle ls` 一样按当前路径一层浏览；Dataset 文件夹显示类型和轨迹数。 |
 | **Runs** | 按路径、Dataset、状态或关键字筛选 Run，并打开单次运行。 |
 | **Analysis** | 查看可用字段，使用自然语言或只读 SQL 分析 Dataset。 |
 | **Storage** | 检查 Lance 表、数据组、列分布和存储大小；主要用于存储诊断。 |
@@ -34,16 +36,20 @@ Lance 存储。下面的截图和示例由这个命令直接生成：
 
 左下角的 **Local** 表示当前连接的是本地 pChronicle 服务。
 
-![Datasets 页面显示 test 和 data 两个 Dataset，以及各自的 Run 数量](/img/screenshots/pchronicle/data-overview.jpg)
+![Datasets 页面显示 test 和 data 两个 Dataset，以及各自的 Run 数量](../../../assets/screenshots/pchronicle/data-overview.jpg)
 
-**Datasets** 是启动后的入口页。卡片显示 Dataset 名称和 Run 数量；单击卡片会进入该 Dataset 的
-数据概览，再用 **Open in Runs** 打开当前范围。入口页右上角的同名按钮会打开全部 Run。
+**Datasets** 是离开首页后的仓库入口。仓库根列出 serve 挂载。进入某个挂载后，每张卡片是
+当前路径的一个 child，与 `pchronicle ls` 同一份列举。Dataset 子项在有 `chronicle.manifest`
+时显示类型和轨迹数。单击目录进入下一层；单击 Dataset 停在该 Dataset（不把 Lance 内部当
+浏览文件夹）。**Open in Runs** 把当前 query 根打开为 Snapshot；纯目录会变成由嵌套 Dataset
+与 JSON 组成的虚拟 dataset。
 
 ## 浏览和筛选 Run
 
-![Runs 页面左侧是路径树，右侧是可筛选的 Run 表格](/img/screenshots/pchronicle/runs-browser.jpg)
+![Runs 页面左侧是路径树，右侧是可筛选的 Run 表格](../../../assets/screenshots/pchronicle/runs-browser.jpg)
 
-Runs 页面由路径树和结果表组成：
+Runs 页面由路径树和结果表组成。**Run paths** 由 run 摘要按 import path 反推，不是
+Datasets 的 `ls` 列举。
 
 1. 在左侧 **Run paths** 中选择 Dataset、目录层级或具体 Session。节点右侧的数字是该层级包含
    的 Run 数量。
@@ -57,7 +63,7 @@ Runs 页面由路径树和结果表组成：
 
 ## 阅读一次 Run
 
-![Run 详情页展示概要指标、覆盖率和按序排列的步骤](/img/screenshots/pchronicle/run-detail.jpg)
+![Run 详情页展示概要指标、覆盖率和按序排列的步骤](../../../assets/screenshots/pchronicle/run-detail.jpg)
 
 Run 详情页从上到下分为三层：
 
@@ -72,7 +78,7 @@ Run 详情页从上到下分为三层：
 
 ## 分析 Dataset
 
-![Analysis 页面执行只读 SQL，并在 Result Explorer 中展示返回行和列分布](/img/screenshots/pchronicle/analysis-sql.jpg)
+![Analysis 页面执行只读 SQL，并在 Result Explorer 中展示返回行和列分布](../../../assets/screenshots/pchronicle/analysis-sql.jpg)
 
 Analysis 左侧列出每个 Dataset 可查询的表和字段。挂载名就是 SQL schema，因此本例使用
 `test.runs`、`data.runs` 等表名。
@@ -99,7 +105,7 @@ ORDER BY runs DESC
 
 ## 检查 Lance 存储
 
-![Storage 页面展示 Lance 数据组、列值分布和存储大小](/img/screenshots/pchronicle/storage-layout.jpg)
+![Storage 页面展示 Lance 数据组、列值分布和存储大小](../../../assets/screenshots/pchronicle/storage-layout.jpg)
 
 Storage 是高级诊断页，不是日常浏览 Run 的必经步骤。左侧按 Dataset 展示 Lance 表及其数据组；
 选择数据组后，右侧按列展示行数、非空数量、编码后的存储大小、值分布和尺寸分布。它适合回答：
@@ -112,7 +118,7 @@ Storage 是高级诊断页，不是日常浏览 Run 的必经步骤。左侧按 
 
 ## 配置 Assistant
 
-![Assistant 的 Browser BYOK 设置包含 API base、API key 和 Model](/img/screenshots/pchronicle/assistant-settings.jpg)
+![Assistant 的 Browser BYOK 设置包含 API base、API key 和 Model](../../../assets/screenshots/pchronicle/assistant-settings.jpg)
 
 1. 单击左侧 **Assistant** 打开侧栏，再单击齿轮按钮。
 2. 填写 OpenAI-compatible 的 **API base**、**API key** 和 **Model**。
@@ -123,8 +129,8 @@ Storage 是高级诊断页，不是日常浏览 Run 的必经步骤。左侧按 
 清除该站点的浏览器数据也会清除这份设置。Assistant 标记为 **Read-only · selected run data**，
 用于解释当前上下文，不会改写 Dataset。
 
-使用 `pchronicle serve --catalog-config` 时，ACL 文件中的全部 library 已挂载供本机浏览。
-若需要 Directory 用户鉴权流程，从左侧 **Keys** 填写 access key 和 secret key。它们保存在
+使用 `pchronicle serve --catalog-config` 时，数据 API 需要认证，仅展示用户获准的数据集。
+从左侧 **Keys** 填写 access key 和 secret key 后访问数据。它们保存在
 `localStorage`，并作为 `x-pchronicle-access-key` / `x-pchronicle-secret-key` 发给当前
 pChronicle 服务端。它们决定浏览器可打开哪些 Directory path，不是对象存储后端密钥。
 

@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -25,6 +25,7 @@ use crate::model::{
     AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch,
     ToolCall,
 };
+use crate::opencode_bridge;
 use crate::process::{ProcessSpec, run_process};
 
 #[derive(Debug, Clone, Copy)]
@@ -231,7 +232,7 @@ pub(super) fn execute(
         });
     }
 
-    let (continued, continued_steps) = continue_native_cli(
+    let (continued, continued_steps, step_limited) = continue_native_cli(
         plan,
         context,
         journal,
@@ -247,6 +248,12 @@ pub(super) fn execute(
         )));
     }
     let mut metadata = json!({"native_cli": agent.label()});
+    if matches!(agent, NativeJsonlAgent::Opencode) && step_limited {
+        metadata["opencode_step_budget"] = json!({
+            "enforced_by": "pvisor_event_watchdog",
+            "reason": "opencode ignores agent steps on resumed sessions",
+        });
+    }
     if matches!(agent, NativeJsonlAgent::Codex) {
         let prompt_mode = if context.request.boundary_user_prompt().is_some() {
             PromptMode::ExplicitUserPrompt
@@ -260,7 +267,11 @@ pub(super) fn execute(
         });
     }
     Ok(ReplayOutcome {
-        status: "completed".into(),
+        status: if step_limited {
+            "max_steps".into()
+        } else {
+            "completed".into()
+        },
         reconstructed_path: None,
         continued_path: Some(continued),
         observations,
@@ -747,6 +758,9 @@ fn execute_tool_value(
         let output = run_process(ProcessSpec {
             command: process,
             stdin: None,
+            idle_timeout: None,
+            step_finish_limit: None,
+            stdout_redirect: None,
             timeout: Duration::from_secs(30 * 60),
             termination_grace: Duration::from_secs(2),
             pipe_grace: Duration::from_millis(250),
@@ -972,7 +986,7 @@ fn continue_native_cli(
     agent: NativeJsonlAgent,
     prefix: &[Value],
     reconstructed: &Path,
-) -> Result<(PathBuf, usize), ReplayError> {
+) -> Result<(PathBuf, usize, bool), ReplayError> {
     let launch = context
         .launch
         .ok_or_else(|| ReplayError::continuation("native CLI replay has no launch spec"))?;
@@ -993,6 +1007,9 @@ fn continue_native_cli(
     let mut codex_bridge = None;
     let mut codex_transport_prompt = None;
     let mut codex_prompt_mode = None;
+    let mut opencode_bridge = None;
+    let mut opencode_transport_prompt = None;
+    let mut remaining_steps: Option<usize> = None;
     command.env("PVISOR_REPLAY_TRAJECTORY", reconstructed);
     command.env("PVISOR_REPLAY_AFTER_STEP", plan.after_step.to_string());
     command.env(
@@ -1007,10 +1024,38 @@ fn continue_native_cli(
     match agent {
         NativeJsonlAgent::Opencode => {
             let session_id = opencode_session_id(&session_id);
-            command.env("PVISOR_REPLAY_SESSION_ID", &session_id);
-            let export_path = context.output_dir.join("native/opencode-session.json");
+            // `opencode run --session` refuses to start without a message.
+            // Pass a unique transport nonce as that message and strip it on
+            // the wire through the local bridge, so the first live request
+            // still ends exactly at the replayed boundary observation.
+            let explicit_prompt = context.request.boundary_user_prompt().map(str::to_owned);
+            let transport_prompt = explicit_prompt
+                .clone()
+                .unwrap_or_else(|| format!("pvisor-opencode-resume-{}", context.nonce));
+            let temperature = env_f64("PVISOR_OPENCODE_TEMPERATURE");
+            let top_p = env_f64("PVISOR_OPENCODE_TOP_P");
+            let bridge = opencode_bridge::OpencodeBridgeHandle::start(
+                context.session_id,
+                explicit_prompt.is_none().then(|| transport_prompt.clone()),
+                temperature,
+                top_p,
+                context.request.disable_thinking,
+            )?;
             let opencode_config = context.state_dir.join("opencode-config");
             let opencode_data = context.state_dir.join("opencode-data");
+            remaining_steps = context
+                .request
+                .max_steps
+                .map(|max_steps| max_steps.saturating_sub(plan.after_step))
+                .filter(|steps| *steps > 0);
+            write_opencode_provider_config(
+                &opencode_config,
+                Some(&bridge.base_url),
+                temperature,
+                top_p,
+                remaining_steps,
+            )?;
+            let export_path = context.output_dir.join("native/opencode-session.json");
             atomic_write_json(
                 &export_path,
                 &opencode_export(plan, prefix, &session_id, &context.request.workspace),
@@ -1029,6 +1074,9 @@ fn continue_native_cli(
             let imported = run_process(ProcessSpec {
                 command: import,
                 stdin: None,
+                idle_timeout: None,
+                step_finish_limit: None,
+                stdout_redirect: None,
                 timeout: Duration::from_secs(5 * 60),
                 termination_grace: Duration::from_secs(2),
                 pipe_grace: Duration::from_millis(250),
@@ -1049,12 +1097,18 @@ fn continue_native_cli(
             command.env("XDG_CONFIG_HOME", &opencode_config);
             command.env("XDG_DATA_HOME", &opencode_data);
             command.env("OPENCODE_DISABLE_AUTOUPDATE", "1");
+            for (name, value) in bridge.child_environment() {
+                command.env(name, value);
+            }
             if let Some(model) = configured_model_from_environment() {
                 command.args(["--model", &model]);
             }
             command.args([
                 "run",
                 "--format=json",
+                // The stderr progress log is the only real-time turn signal;
+                // stdout JSONL is block-buffered by OpenCode's runtime.
+                "--print-logs",
                 "--session",
                 &session_id,
                 "--dangerously-skip-permissions",
@@ -1062,10 +1116,15 @@ fn continue_native_cli(
             if !context.request.disable_thinking {
                 command.arg("--thinking");
             }
-            if let Some(prompt) = context.request.boundary_user_prompt() {
-                command.arg("--");
-                command.arg(prompt);
+            command.arg("--");
+            command.arg(&transport_prompt);
+            // OpenCode awaits stdin EOF whenever it is not a TTY; inheriting
+            // the controller's stdin would hang the continuation forever.
+            command.stdin(Stdio::null());
+            if explicit_prompt.is_none() {
+                opencode_transport_prompt = Some(transport_prompt);
             }
+            opencode_bridge = Some(bridge);
         }
         NativeJsonlAgent::Codex => {
             let explicit_prompt = context.request.boundary_user_prompt().map(str::to_owned);
@@ -1143,6 +1202,20 @@ fn continue_native_cli(
     let output = run_process(ProcessSpec {
         command,
         stdin: None,
+        // A live OpenCode continuation can otherwise wait forever when a
+        // model request or tool subprocess wedges.  Keep the overall
+        // 24-hour ceiling for long tasks, but fail closed after a bounded
+        // silent interval so the caller can retry instead of hanging.
+        idle_timeout: matches!(agent, NativeJsonlAgent::Opencode)
+            .then_some(Duration::from_secs(10 * 60)),
+        // OpenCode ignores its `agent.steps` budget on resumed sessions, so
+        // the remaining live-action budget is enforced on the event stream.
+        step_finish_limit: remaining_steps,
+        // OpenCode's Bun runtime fully buffers stdout on pipes; events only
+        // reach the log at exit. Redirect stdout to a file so the stream is
+        // live and the watchdogs can see it.
+        stdout_redirect: matches!(agent, NativeJsonlAgent::Opencode)
+            .then(|| logs.join("opencode-events.jsonl")),
         timeout: Duration::from_secs(24 * 60 * 60),
         termination_grace: Duration::from_secs(2),
         pipe_grace: Duration::from_millis(250),
@@ -1150,12 +1223,57 @@ fn continue_native_cli(
         log_path: log_path.clone(),
     })
     .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
-    let bridge_result = codex_bridge.take().map(|bridge| {
-        let result = bridge.finish();
-        result
-    });
+    let step_limited = output.step_limited;
+    let bridge_result = codex_bridge
+        .take()
+        .map(|bridge| bridge.finish())
+        .or_else(|| opencode_bridge.take().map(|bridge| bridge.finish()));
     let bridge_error = bridge_result.and_then(|result| result.err());
-    if !output.status.success() {
+    if !output.status.success() && matches!(agent, NativeJsonlAgent::Opencode) {
+        // OpenCode can wedge silently between tool executions; the idle
+        // watchdog then terminates it.  Keep any complete live turns that
+        // were already produced instead of discarding them with the sandbox.
+        let events_path = log_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("opencode-events.jsonl");
+        let db_path = context.state_dir.join("opencode-data/opencode/opencode.db");
+        let mut raw = read_regular_file(&events_path)
+            .or_else(|_| read_regular_file(&log_path))
+            .unwrap_or_default();
+        if !String::from_utf8_lossy(&raw).contains("\"step_finish\"") {
+            let session_id = opencode_session_id(&session_id);
+            if rebuild_opencode_events_from_db(&db_path, &events_path, &session_id)? {
+                raw = read_regular_file(&events_path).unwrap_or_default();
+            }
+        }
+        let rescued = parse_json_lines_from_log(&raw);
+        let complete = rescued
+            .iter()
+            .filter(|event| event.get("type") == Some(&json!("step_finish")))
+            .count();
+        if complete > 0 {
+            journal.append(
+                "continuation_terminated_with_partial_turns",
+                [
+                    ("agent".into(), json!("opencode")),
+                    ("exit".into(), json!(output.status.to_string())),
+                    ("rescued_step_finish".into(), json!(complete)),
+                ],
+            )?;
+        } else {
+            let process_error = ReplayError::classify_continuation(
+                format!(
+                    "{} replay/continuation exited {}; see {}",
+                    agent.label(),
+                    output.status,
+                    log_path.display()
+                ),
+                &String::from_utf8_lossy(&output.stderr_tail),
+            );
+            return Err(process_error);
+        }
+    } else if !output.status.success() {
         let process_error = ReplayError::classify_continuation(
             format!(
                 "{} replay/continuation exited {}; see {}",
@@ -1176,7 +1294,7 @@ fn continue_native_cli(
         return Err(error);
     }
     let output_path = context.output_dir.join("native/continued-trajectory.jsonl");
-    let (continued_events, continued_steps) = match agent {
+    let (continued_events, continued_steps, step_limited) = match agent {
         NativeJsonlAgent::Codex => {
             let codex_home = context.state_dir.join("codex-home");
             let staged_path = codex_session_path(&codex_home, &session_id, &plan.native)?;
@@ -1203,15 +1321,34 @@ fn continue_native_cli(
             )?;
             validate_codex_continuation(&events, plan, &session_id, &session_path)?;
             let steps = count_codex_turns_after(&events, plan);
-            (events, steps)
+            (events, steps, step_limited)
         }
         NativeJsonlAgent::Opencode => {
-            let raw = read_regular_file(&log_path)?;
+            let events_path = log_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("opencode-events.jsonl");
+            let db_path = context.state_dir.join("opencode-data/opencode/opencode.db");
+            let mut raw =
+                read_regular_file(&events_path).or_else(|_| read_regular_file(&log_path))?;
+            if !String::from_utf8_lossy(&raw).contains("\"step_finish\"") {
+                let live_session_id = opencode_session_id(&session_id);
+                if rebuild_opencode_events_from_db(&db_path, &events_path, &live_session_id)? {
+                    raw = read_regular_file(&events_path).unwrap_or_default();
+                }
+            }
             let events = parse_json_lines_from_log(&raw);
+            // The transport nonce was only a CLI wake-up signal; drop it if
+            // the native stream echoed it back as a user or text event.
+            let nonce = opencode_transport_prompt.as_deref().unwrap_or_default();
+            let events: Vec<Value> = events
+                .into_iter()
+                .filter(|event| !opencode_event_is_nonce(event, nonce))
+                .collect();
             let steps = count_opencode_turns(&events);
             let mut combined = prefix.to_vec();
             combined.extend(events);
-            (combined, steps)
+            (combined, steps, step_limited)
         }
     };
     if continued_events.is_empty() {
@@ -1220,7 +1357,7 @@ fn continue_native_cli(
         ));
     }
     write_jsonl(&output_path, &continued_events)?;
-    Ok((output_path, continued_steps))
+    Ok((output_path, continued_steps, step_limited))
 }
 
 fn configured_model_from_environment() -> Option<String> {
@@ -1228,6 +1365,199 @@ fn configured_model_from_environment() -> Option<String> {
         .ok()
         .or_else(|| std::env::var("OPENAI_MODEL").ok())
         .filter(|model| !model.trim().is_empty())
+}
+
+fn env_f64(name: &str) -> Option<f64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+}
+
+/// Provider config for the isolated continuation `XDG_CONFIG_HOME`.
+///
+/// OpenCode reads the endpoint from `OPENAI_BASE_URL`, but sampling options
+/// have no environment channel, so a live continuation would silently fall
+/// back to provider defaults and diverge from the recorded sampling. The
+/// shape mirrors what a SweEval trial writes for the original run.
+/// `effective_base` overrides the environment endpoint (used for the local
+/// sampling-injection proxy).
+fn opencode_provider_config(
+    model: &str,
+    base_url: Option<&str>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    steps: Option<usize>,
+) -> Option<Value> {
+    let (provider, model_id) = model.split_once('/')?;
+    let base_url = base_url.map(str::trim).filter(|value| !value.is_empty());
+    if base_url.is_none() && temperature.is_none() && top_p.is_none() && steps.is_none() {
+        return None;
+    }
+    let mut provider_config = serde_json::Map::new();
+    if let Some(base_url) = base_url {
+        provider_config.insert("options".into(), json!({ "baseURL": base_url }));
+    }
+    // Always register the model id. A model that is absent from OpenCode's
+    // fetched catalog cannot be resolved at all without a `models` entry,
+    // even when only the endpoint or step budget is pinned.
+    let mut model_entry = serde_json::Map::new();
+    if temperature.is_some() || top_p.is_some() {
+        let mut model_options = serde_json::Map::new();
+        if let Some(temperature) = temperature {
+            model_options.insert("temperature".into(), json!(temperature));
+        }
+        if let Some(top_p) = top_p {
+            model_options.insert("topP".into(), json!(top_p));
+        }
+        model_entry.insert("options".into(), Value::Object(model_options));
+    }
+    provider_config.insert(
+        "models".into(),
+        json!({ model_id: Value::Object(model_entry) }),
+    );
+    let mut root = serde_json::Map::new();
+    root.insert(
+        "provider".into(),
+        json!({ provider: Value::Object(provider_config) }),
+    );
+    if let Some(steps) = steps {
+        // OpenCode has no CLI max-step flag. Constrain the live build agent
+        // to the remaining portion of the pVisor total action budget.
+        root.insert("agent".into(), json!({"build": {"steps": steps}}));
+    }
+    Some(Value::Object(root))
+}
+
+fn write_opencode_provider_config(
+    config_root: &Path,
+    effective_base: Option<&str>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    steps: Option<usize>,
+) -> Result<(), ReplayError> {
+    let Some(model) = configured_model_from_environment() else {
+        return Ok(());
+    };
+    let base_url = match effective_base {
+        Some(base) => Some(base.to_owned()),
+        None => std::env::var("OPENAI_BASE_URL")
+            .ok()
+            .or_else(|| std::env::var("OPENAI_API_BASE").ok()),
+    };
+    let config = opencode_provider_config(&model, base_url.as_deref(), temperature, top_p, steps);
+    let Some(config) = config else {
+        return Ok(());
+    };
+    let directory = config_root.join("opencode");
+    fs::create_dir_all(&directory).replay_context(
+        ReplayErrorKind::Executor,
+        "create OpenCode config directory",
+    )?;
+    atomic_write_json(&directory.join("opencode.json"), &config)
+}
+
+/// Rebuild the live continuation events from OpenCode's session database.
+///
+/// OpenCode block-buffers its stdout JSONL, so a watchdog-terminated
+/// continuation can discard everything still in the buffer. The sqlite
+/// session store is written transactionally in real time; `python3` is part
+/// of every task sandbox pVisor replays into, so the rebuild stays
+/// dependency-free.
+fn rebuild_opencode_events_from_db(
+    db_path: &Path,
+    events_path: &Path,
+    session_id: &str,
+) -> Result<bool, ReplayError> {
+    if !db_path.is_file() {
+        return Ok(false);
+    }
+    let script = r#"
+import json, sqlite3, sys
+db, session_id = sys.argv[1], sys.argv[2]
+con = sqlite3.connect("file:" + db + "?mode=ro", uri=True)
+messages = []
+for mid, created, data in con.execute(
+    "SELECT id, time_created, data FROM message ORDER BY time_created"
+):
+    if mid.startswith("msg_pvisor"):
+        continue
+    try:
+        info = json.loads(data)
+    except Exception:
+        continue
+    parts = []
+    for (raw,) in con.execute(
+        "SELECT data FROM part WHERE message_id=? ORDER BY time_created, rowid",
+        (mid,),
+    ):
+        try:
+            parts.append(json.loads(raw))
+        except Exception:
+            continue
+    messages.append((created, info, parts))
+events = []
+for _, info, parts in messages:
+    if info.get("role") != "assistant":
+        continue
+    def rank(part):
+        kind = part.get("type")
+        if kind == "step-start":
+            return (0, (part.get("time") or {}).get("start") or 0)
+        if kind == "step-finish":
+            return (2, 0)
+        return (1, (part.get("time") or {}).get("start") or 0)
+    mapping = {
+        "step-start": "step_start",
+        "text": "text",
+        "reasoning": "reasoning",
+        "tool": "tool_use",
+        "step-finish": "step_finish",
+    }
+    for part in sorted(parts, key=rank):
+        event_type = mapping.get(part.get("type"))
+        if event_type is None:
+            continue
+        events.append(
+            json.dumps(
+                {"type": event_type, "sessionID": session_id, "part": part},
+                separators=(",", ":"),
+            )
+        )
+sys.stdout.write("\n".join(events) + ("\n" if events else ""))
+"#;
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(script)
+        .arg(db_path)
+        .arg(session_id)
+        .output()
+        .replay_context(ReplayErrorKind::Executor, "rebuild OpenCode events")?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return Ok(false);
+    }
+    atomic_write(events_path, &output.stdout)?;
+    Ok(true)
+}
+
+/// True when the native event echoes the transport nonce back as a user or
+/// text part; such events are transport noise, not model input.
+fn opencode_event_is_nonce(event: &Value, nonce: &str) -> bool {
+    if nonce.is_empty() {
+        return false;
+    }
+    match event.get("type").and_then(Value::as_str) {
+        Some("user") => event
+            .get("parts")
+            .and_then(Value::as_array)
+            .map(|parts| {
+                parts
+                    .iter()
+                    .any(|part| part.get("text") == Some(&json!(nonce)))
+            })
+            .unwrap_or(false),
+        Some("text") => event.pointer("/part/text") == Some(&json!(nonce)),
+        _ => false,
+    }
 }
 
 fn continuation_session_id(
@@ -1570,6 +1900,17 @@ fn opencode_export(
         .get("user_prompt")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    // OpenCode resolves a session's default model from the last user message
+    // metadata when a request does not pin one. The synthetic placeholder
+    // must therefore carry the configured model; "pvisor/replay" would poison
+    // that fallback with a provider that does not exist.
+    let (placeholder_provider, placeholder_model) = configured_model_from_environment()
+        .and_then(|model| {
+            model
+                .split_once('/')
+                .map(|(p, m)| (p.to_owned(), m.to_owned()))
+        })
+        .unwrap_or_else(|| ("pvisor".to_owned(), "replay".to_owned()));
     let mut messages = vec![json!({
         "info": {
             "id": user_id,
@@ -1577,7 +1918,7 @@ fn opencode_export(
             "role": "user",
             "time": {"created": 0},
             "agent": "build",
-            "model": {"providerID": "pvisor", "modelID": "replay"},
+            "model": {"providerID": placeholder_provider, "modelID": placeholder_model},
         },
         "parts": [{
             "id": "prt_pvisor_user",
@@ -1705,8 +2046,8 @@ fn opencode_export(
                 "role": "assistant",
                 "time": {"created": batch.ordinal as u64, "completed": batch.ordinal as u64},
                 "parentID": user_id,
-                "modelID": "replay",
-                "providerID": "pvisor",
+                "modelID": placeholder_model,
+                "providerID": placeholder_provider,
                 "mode": "build",
                 "agent": "build",
                 "path": {"cwd": workspace.display().to_string(), "root": workspace.display().to_string()},
@@ -1843,11 +2184,87 @@ mod tests {
 
     use super::{
         CallRecord, NativeJsonlAgent, RunContext, TurnRecord, codex_native_session_id,
-        continuation_session_id, is_actionable_turn, parse_codex, parse_jsonl, parse_opencode,
+        continuation_session_id, is_actionable_turn, opencode_event_is_nonce,
+        opencode_provider_config, parse_codex, parse_jsonl, parse_opencode,
         redact_codex_transport_nonce, validate_codex_continuation,
     };
     use crate::model::{AgentKind, PlaybackRequest, ReplayMode, ReplayPlan, ToolBatch, ToolCall};
     use serde_json::{Value, json};
+
+    #[test]
+    fn opencode_nonce_events_are_filtered_from_the_continued_stream() {
+        let nonce = "pvisor-opencode-resume-nonce";
+        let events = vec![
+            json!({"type": "step_start", "sessionID": "ses"}),
+            json!({"type": "user", "sessionID": "ses", "parts": [{"type": "text", "text": nonce}]}),
+            json!({"type": "text", "sessionID": "ses", "part": {"type": "text", "text": nonce}}),
+            json!({"type": "text", "sessionID": "ses", "part": {"type": "text", "text": "real text"}}),
+            json!({"type": "step_finish", "sessionID": "ses"}),
+        ];
+        let kept: Vec<Value> = events
+            .iter()
+            .filter(|event| !opencode_event_is_nonce(event, nonce))
+            .cloned()
+            .collect();
+        let kinds: Vec<&str> = kept.iter().map(|e| e["type"].as_str().unwrap()).collect();
+        assert_eq!(kinds, vec!["step_start", "text", "step_finish"]);
+        assert_eq!(kept[1]["part"]["text"], "real text");
+        // An empty nonce (explicit boundary prompt mode) filters nothing.
+        for event in &events {
+            assert!(!opencode_event_is_nonce(event, ""));
+        }
+    }
+
+    #[test]
+    fn opencode_provider_config_mirrors_recorded_sampling() {
+        let config = opencode_provider_config(
+            "openai/model-x",
+            Some("http://127.0.0.1:8000/v1"),
+            Some(0.0),
+            Some(1.0),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            config,
+            json!({
+                "provider": {
+                    "openai": {
+                        "options": {"baseURL": "http://127.0.0.1:8000/v1"},
+                        "models": {"model-x": {"options": {"temperature": 0.0, "topP": 1.0}}}
+                    }
+                }
+            })
+        );
+
+        // Without sampling overrides the endpoint still comes from the
+        // environment; the model entry stays registered so OpenCode can
+        // resolve an id that is absent from its fetched catalog.
+        let base_only =
+            opencode_provider_config("openai/model-x", Some("http://m:1/v1"), None, None, None)
+                .unwrap();
+        assert_eq!(
+            base_only,
+            json!({"provider": {"openai": {
+                "options": {"baseURL": "http://m:1/v1"},
+                "models": {"model-x": {}}
+            }}})
+        );
+
+        // Nothing to pin: leave OpenCode on its environment-only defaults.
+        assert!(opencode_provider_config("openai/model-x", None, None, None, None).is_none());
+        // A model without a provider namespace cannot be pinned either.
+        assert!(
+            opencode_provider_config("model-x", Some("http://m:1/v1"), Some(0.0), None, None)
+                .is_none()
+        );
+        // Blank endpoints are ignored rather than written.
+        assert!(opencode_provider_config("openai/model-x", Some("  "), None, None, None).is_none());
+        let with_steps =
+            opencode_provider_config("openai/model-x", Some("http://m:1/v1"), None, None, Some(7))
+                .unwrap();
+        assert_eq!(with_steps["agent"]["build"]["steps"], 7);
+    }
 
     #[test]
     fn opencode_events_group_tool_parts_into_complete_turns() {

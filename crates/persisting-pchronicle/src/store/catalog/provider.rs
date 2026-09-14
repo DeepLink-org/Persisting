@@ -595,6 +595,7 @@ pub(super) fn sources_table_provider(
                 |source| match source.kind {
                     CatalogSourceKind::Store => "store",
                     CatalogSourceKind::File => "file",
+                    CatalogSourceKind::Directory => "directory",
                 },
             ))),
             Arc::new(StringArray::from(

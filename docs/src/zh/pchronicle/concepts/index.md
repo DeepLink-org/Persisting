@@ -2,10 +2,10 @@
 
 pChronicle 围绕 **Dataset** 构建，Dataset 就是 path。查询历史或集成存储前，先理解这些概念。
 
-:::note 什么时候阅读这里
-完成第一次查询后，如果你需要解释结果来自哪里、在调查期间固定 Snapshot，或区分 canonical
-record 与派生视图，就从这里开始。
-:::
+!!! note "什么时候阅读这里"
+
+    完成第一次查询后，如果你需要解释结果来自哪里、在调查期间固定 Snapshot，或区分 canonical
+    record 与派生视图，就从这里开始。
 
 请按以下顺序阅读：
 

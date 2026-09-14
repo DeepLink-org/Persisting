@@ -13,6 +13,7 @@ use persisting_agentctl::{
     ControlController, ControlReason, ControlRequest, ControlTransition, PolicyControlController,
 };
 use persisting_gateway::config::ProxyConfig;
+use persisting_gateway::runtime::in_process::{InProcessCapture, InProcessRuntime};
 use persisting_gateway::sink::SeqOnlySink;
 use persisting_gateway::{serve_with_runtime_control, serve_with_shutdown_and_ready};
 use tokio::sync::oneshot;
@@ -964,6 +965,94 @@ upstream = "http://127.0.0.1:9/v1"
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert!(response.text().await.unwrap().contains("127.0.0.1"));
     let _ = stop.send(());
+    let _ = mock_stop.send(());
+}
+
+#[tokio::test]
+async fn e2e_absolute_uri_llm_keeps_gateway_model_routing() {
+    let (mock_port, captured, mock_stop) = spawn_capturing_llm_http().await;
+    let config = format!(
+        r#"
+listen = "{{{{LISTEN}}}}"
+admin_listen = "{{{{ADMIN}}}}"
+
+[network]
+mode = "allowlist"
+allowed_hosts = ["127.0.0.1"]
+
+[[models]]
+name = "client-model"
+forward = "upstream-model"
+
+[[models]]
+name = "upstream-model"
+upstream = "http://127.0.0.1:{mock_port}/v1"
+"#
+    );
+    let (proxy, _storage, stop) = spawn_proxy(&config).await;
+    let response = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(&proxy).unwrap())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+        // The URI destination differs from the configured model upstream.
+        .post("http://127.0.0.1:9/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(r#"{"model":"client-model","messages":[{"role":"user","content":"hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = response.text().await.unwrap();
+    assert_eq!(
+        captured.lock().unwrap().as_ref().unwrap()["model"],
+        "upstream-model"
+    );
+    let _ = stop.send(());
+    let _ = mock_stop.send(());
+}
+
+#[tokio::test]
+async fn e2e_network_only_allowlist_forwards_absolute_llm_uri() {
+    let (mock_port, mock_stop) = spawn_mock_http().await;
+    let listen = format!("127.0.0.1:{}", free_port());
+    let admin = format!("127.0.0.1:{}", free_port());
+    let config = ProxyConfig::from_toml_str(&format!(
+        r#"listen = "{listen}"
+admin_listen = "{admin}"
+agent_id = "t"
+models = []
+[network]
+mode = "allowlist"
+allowed_hosts = ["127.0.0.1"]
+"#
+    ))
+    .unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let proxy = InProcessCapture::start_with_runtime(
+        config,
+        storage.path().to_path_buf(),
+        Arc::new(SeqOnlySink::new()),
+        false,
+        InProcessRuntime {
+            gateway_enabled: false,
+            ..InProcessRuntime::default()
+        },
+    )
+    .unwrap();
+    let response = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(format!("http://{}", proxy.listen)).unwrap())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+        .post(format!("http://127.0.0.1:{mock_port}/v1/chat/completions"))
+        .body(r#"not JSON; OverlayNet must forward it unchanged"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.text().await.unwrap().contains("chatcmpl-test"));
+    proxy.shutdown().unwrap();
     let _ = mock_stop.send(());
 }
 

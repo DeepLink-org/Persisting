@@ -1381,7 +1381,13 @@ async fn execute_config(
         } else {
             "cooperative network review"
         };
-        eprintln!("pVisor safe profile: staged workspace + {network_boundary}");
+        if overlay_enabled {
+            eprintln!("pVisor safe profile: staged workspace + {network_boundary}");
+        } else {
+            eprintln!(
+                "pVisor safe profile: best-effort isolation + {network_boundary}; workspace writes are not staged (pass --stage for COW/review)"
+            );
+        }
         eprintln!("workspace: {}", workspace.display());
         eprintln!("Run storage: {}", storage.display());
         match config.run.executor {
@@ -1391,9 +1397,15 @@ async fn execute_config(
                     "boundary: rootless user/mount/PID namespaces + PID 1 reaper + synthetic root + Landlock filesystem; network remains cooperative unless explicitly denied"
                 );
                 #[cfg(target_os = "macos")]
-                eprintln!(
-                    "boundary: Seatbelt-enforced staged writes; reads and selective network policies remain ambient/cooperative"
-                );
+                if overlay_enabled {
+                    eprintln!(
+                        "boundary: Seatbelt-enforced staged writes; reads and selective network policies remain ambient/cooperative"
+                    );
+                } else {
+                    eprintln!(
+                        "boundary: Seatbelt best-effort when available; workspace writes are not staged; reads and selective network policies remain ambient/cooperative"
+                    );
+                }
                 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 eprintln!("boundary: review-only host process");
             }

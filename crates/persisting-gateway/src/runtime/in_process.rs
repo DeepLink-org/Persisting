@@ -29,6 +29,8 @@ pub struct InProcessRuntime {
     pub interception_metrics: InterceptionMetrics,
     pub bandwidth_registry: BandwidthRegistry,
     pub attempt_id: Option<String>,
+    /// Disable LLM dispatch for pVisor runs that only need the network proxy.
+    pub gateway_enabled: bool,
 }
 
 impl Default for InProcessRuntime {
@@ -38,6 +40,7 @@ impl Default for InProcessRuntime {
             interception_metrics: InterceptionMetrics::default(),
             bandwidth_registry: BandwidthRegistry::default(),
             attempt_id: None,
+            gateway_enabled: true,
         }
     }
 }
@@ -84,6 +87,7 @@ impl InProcessCapture {
                         interception_metrics: thread_metrics,
                         bandwidth_registry: runtime.bandwidth_registry,
                         attempt_id: runtime.attempt_id,
+                        gateway_enabled: runtime.gateway_enabled,
                     },
                     None,
                     async {

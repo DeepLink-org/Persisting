@@ -119,6 +119,105 @@ mod tests {
     }
 
     #[test]
+    fn does_not_guess_actf_from_steps_alone() {
+        let input = r#"{
+            "task_id":"travel-planning",
+            "attempts":{"1":{
+                "correct":false,
+                "trajectory":{
+                    "steps":[],
+                    "started_at":"2026-06-17T07:26:27Z",
+                    "finished_at":"2026-06-17T07:26:28Z"
+                }
+            }}
+        }"#;
+        assert_eq!(detect_format_from_content(input).unwrap(), None);
+    }
+
+    #[test]
+    fn detects_actf_error_dump_with_empty_or_null_trajectory() {
+        for trajectory in [r#"{}"#, "null"] {
+            let input = format!(
+                r#"{{
+                    "task_id":"frontierscience_research_0053",
+                    "category":"research",
+                    "correct":false,
+                    "attempts_tried":1,
+                    "k":1,
+                    "attempts":{{"1":{{
+                        "correct":false,
+                        "trajectory":{trajectory},
+                        "meta":{{"status":"error","error":"TimeoutError: "}}
+                    }}}}
+                }}"#
+            );
+            assert_eq!(
+                detect_format_from_content(&input).unwrap(),
+                Some(DocumentFormat::Actf),
+                "trajectory={trajectory}"
+            );
+        }
+    }
+
+    #[test]
+    fn detects_actf_with_python_trajectory_repr_string() {
+        let input = r#"{
+            "task_id":"task_15_daily_summary",
+            "category":"synthesis",
+            "correct":false,
+            "attempts_tried":1,
+            "k":1,
+            "attempts":{"1":{
+                "correct":false,
+                "trajectory":"Trajectory(schema_version='ACTF_v1.0', steps=[])"
+            }}
+        }"#;
+        assert_eq!(
+            detect_format_from_content(input).unwrap(),
+            Some(DocumentFormat::Actf)
+        );
+    }
+
+    #[test]
+    fn detects_wireless_channel_actf_with_nan_observation_score() {
+        // Frontier-engineering dumps emit Python NaN and put schema_version
+        // after a large final_answer; full serde_json parse used to fail.
+        let input = r#"{
+            "task_id":"WirelessChannelSimulation/HighReliableSimulation",
+            "category":"WirelessChannelSimulation",
+            "correct":true,
+            "solved_at":1,
+            "attempts_tried":1,
+            "k":1,
+            "attempts":{"1":{
+                "correct":true,
+                "final_answer":"print(1)",
+                "ground_truth":"",
+                "trajectory":{
+                    "schema_version":"ACTF_v1.0",
+                    "steps":[{
+                        "step_id":1,
+                        "assistant_content":{"content":"iteration=0","reasoning_content":"","tool_calls":[]},
+                        "metric":{"prompt_tokens_len":null,"completion_tokens_len":null,"llm_infer_ms":null,"env_action_ms":1.0,"stop_reason":null},
+                        "system_prompt":"",
+                        "user_content":"WirelessChannelSimulation/HighReliableSimulation",
+                        "tools":[],
+                        "observation":[{"combined_score": NaN}],
+                        "started_at":"2026-01-01 00:00:00+00:00",
+                        "finished_at":"2026-01-01 00:00:01+00:00"
+                    }],
+                    "started_at":"2026-01-01 00:00:00+00:00",
+                    "finished_at":"2026-01-01 00:00:01+00:00"
+                }
+            }}
+        }"#;
+        assert_eq!(
+            detect_format_from_content(input).unwrap(),
+            Some(DocumentFormat::Actf)
+        );
+    }
+
+    #[test]
     fn detects_atif_json_by_schema_and_agent_steps() {
         let versioned = r#"{"schema_version":"ATIF-v1.7","trajectory_id":"one","agent":{"name":"a","version":"1"},"steps":[]}"#;
         assert_eq!(

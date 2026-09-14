@@ -7,18 +7,37 @@
 
 mod discovery;
 mod identity;
+pub mod location;
+pub mod manifest;
+mod manifest_cache;
 mod namespace;
 mod provider;
+mod resolver;
 mod source;
 
 pub use identity::{CatalogSourceRevision, DatasetMount, NamespacePath};
+#[allow(unused_imports)]
+pub use location::{
+    DatasetLocation, DatasetLocationKind, ImportableObjectEvent, PathListEntry, PathListKind,
+    ShallowNavEntry,
+};
+#[allow(unused_imports)]
+pub use manifest::{CHRONICLE_MANIFEST_FILE, ChronicleManifest, ManifestKind, ManifestStats};
+#[allow(unused_imports)]
+pub use manifest::{
+    STORYLINE_FORMAT, atomic_write_manifest, compact_jsonl_manifest_matches, load_manifest,
+    load_manifest_at_uri, try_load_manifest, write_compact_jsonl_manifest,
+    write_storyline_manifest, write_storyline_manifest_at_uri,
+};
+pub use manifest_cache::{LocationSummary, ManifestCache, ManifestListing, ManifestReadMode};
 pub use namespace::{CatalogNamespace, CatalogPage, CatalogSourceDescription};
 use provider::*;
+pub use resolver::{CachedDataset, Dataset, DatasetResolver, ResolveMode, ResolveTarget};
 use source::*;
 
 use discovery::{
-    bind_canonical_storyline_projections, discover_candidates, freeze_candidate,
-    normalize_event_storylines,
+    bind_canonical_storyline_projections, discover_cached_candidates, discover_candidate_at,
+    discover_candidates, freeze_candidate, normalize_event_storylines,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -118,6 +137,8 @@ pub enum CatalogErrorPolicy {
 pub enum CatalogSourceKind {
     Store,
     File,
+    /// Navigational Directory child under a non-Dataset mount. Not queryable.
+    Directory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -228,12 +249,28 @@ impl CatalogDataset {
     pub fn ready_source_count(&self) -> usize {
         self.sources
             .iter()
-            .filter(|source| source.status == CatalogSourceStatus::Ready)
+            .filter(|source| {
+                source.status == CatalogSourceStatus::Ready
+                    && source.kind != CatalogSourceKind::Directory
+            })
+            .count()
+    }
+
+    pub fn directory_count(&self) -> usize {
+        self.sources
+            .iter()
+            .filter(|source| source.kind == CatalogSourceKind::Directory)
             .count()
     }
 
     pub fn error_source_count(&self) -> usize {
-        self.sources.len().saturating_sub(self.ready_source_count())
+        self.sources
+            .iter()
+            .filter(|source| {
+                source.status == CatalogSourceStatus::Error
+                    && source.kind != CatalogSourceKind::Directory
+            })
+            .count()
     }
 }
 
@@ -250,6 +287,12 @@ pub struct CatalogSnapshotOptions {
     pub max_event_fallback_rows: usize,
     /// Maximum Arrow bytes retained while normalizing selected canonical rows.
     pub max_event_fallback_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct QueryScope {
+    pub dataset: String,
+    pub source_file: Option<String>,
 }
 
 impl CatalogSnapshotOptions {
@@ -316,6 +359,45 @@ impl DatasetCatalogSnapshot {
         default_dataset: Option<String>,
         options: CatalogSnapshotOptions,
     ) -> Result<Self> {
+        Self::discover_impl(mounts, default_dataset, options, None, None).await
+    }
+
+    pub async fn discover_scoped(
+        mounts: Vec<DatasetMount>,
+        default_dataset: Option<String>,
+        options: CatalogSnapshotOptions,
+        scope: QueryScope,
+    ) -> Result<Self> {
+        Self::discover_impl(mounts, default_dataset, options, Some(scope), None).await
+    }
+
+    /// Build a snapshot from source paths already observed by a UI cache.
+    /// Missing or unsupported cached paths are ignored; callers that require
+    /// exact membership must use [`Self::discover`] instead.
+    pub async fn discover_scoped_from_cached_files(
+        mounts: Vec<DatasetMount>,
+        default_dataset: Option<String>,
+        options: CatalogSnapshotOptions,
+        scope: QueryScope,
+        cached_files: Vec<String>,
+    ) -> Result<Self> {
+        Self::discover_impl(
+            mounts,
+            default_dataset,
+            options,
+            Some(scope),
+            Some(&cached_files),
+        )
+        .await
+    }
+
+    async fn discover_impl(
+        mounts: Vec<DatasetMount>,
+        default_dataset: Option<String>,
+        options: CatalogSnapshotOptions,
+        scope: Option<QueryScope>,
+        cached_files: Option<&[String]>,
+    ) -> Result<Self> {
         anyhow::ensure!(!mounts.is_empty(), "mount at least one Dataset");
         validate_catalog_options(options)?;
 
@@ -347,7 +429,19 @@ impl DatasetCatalogSnapshot {
         let mut datasets = Vec::with_capacity(mounts.len());
         let mut prepared = Vec::with_capacity(mounts.len());
         for mount in mounts {
-            let candidates = discover_candidates(&mount, options.manifest).await?;
+            let candidates = match scope.as_ref() {
+                Some(scope) if scope.dataset != mount.name => Vec::new(),
+                Some(scope) => match scope.source_file.as_deref() {
+                    Some(file) => discover_candidate_at(&mount, file, options.manifest).await?,
+                    None => match cached_files {
+                        Some(files) => {
+                            discover_cached_candidates(&mount, files, options.manifest).await?
+                        }
+                        None => discover_candidates(&mount, options.manifest).await?,
+                    },
+                },
+                None => discover_candidates(&mount, options.manifest).await?,
+            };
             let mut source_rows = Vec::with_capacity(candidates.len());
             let mut prepared_sources = Vec::with_capacity(candidates.len());
             for candidate in candidates {
@@ -368,7 +462,23 @@ impl DatasetCatalogSnapshot {
                 }
             }
             bind_canonical_storyline_projections(&mut source_rows, &mut prepared_sources)?;
-            source_rows.sort_by(|left, right| left.file.cmp(&right.file));
+            if let Some(prefix) = scope
+                .as_ref()
+                .and_then(|scope| scope.source_file.as_deref())
+            {
+                let prefix = prefix.trim().trim_matches('/');
+                let matches =
+                    |file: &str| file == prefix || file.starts_with(&format!("{prefix}/"));
+                // Filter after canonical/projection binding, preserving the same
+                // source identity as full discovery even on fallback paths.
+                source_rows.retain(|source| matches(&source.file));
+                prepared_sources.retain(|source| matches(source.file()));
+            }
+            source_rows.sort_by(|left, right| {
+                directory_sort_key(left.kind)
+                    .cmp(&directory_sort_key(right.kind))
+                    .then_with(|| left.file.cmp(&right.file))
+            });
             prepared_sources.sort_by(|left, right| left.file().cmp(right.file()));
             datasets.push(CatalogDataset {
                 mount: mount.clone(),
@@ -807,6 +917,13 @@ impl DatasetCatalogSnapshot {
     }
 }
 
+fn directory_sort_key(kind: CatalogSourceKind) -> u8 {
+    match kind {
+        CatalogSourceKind::Directory => 0,
+        CatalogSourceKind::Store | CatalogSourceKind::File => 1,
+    }
+}
+
 fn validate_catalog_options(options: CatalogSnapshotOptions) -> Result<()> {
     anyhow::ensure!(
         options.manifest.max_files > 0,
@@ -865,18 +982,6 @@ fn is_lance_directory(path: &Path) -> bool {
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("lance"))
         || path.join("_versions").is_dir()
-}
-
-fn path_is_inside_lance_directory(path: &str) -> bool {
-    Path::new(path)
-        .components()
-        .any(|component| match component {
-            std::path::Component::Normal(name) => Path::new(name)
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("lance")),
-            _ => false,
-        })
 }
 
 fn relative_catalog_path(root: &Path, path: &Path, allow_root: bool) -> Result<String> {
@@ -945,13 +1050,6 @@ fn remote_source_revision(meta: &RemoteObjectMeta) -> CatalogSourceRevision {
     }
 }
 
-fn parent_relative_path(path: &str, leaf: &str) -> String {
-    path.strip_suffix(leaf)
-        .unwrap_or(path)
-        .trim_end_matches('/')
-        .to_string()
-}
-
 fn root_source_path(relative: &str) -> String {
     if relative.is_empty() {
         ".".into()
@@ -966,12 +1064,6 @@ fn child_uri(root: &str, relative: &str) -> String {
     } else {
         format!("{}/{}", root.trim_end_matches('/'), relative)
     }
-}
-
-fn is_nested_in_any<'a>(path: &str, roots: impl Iterator<Item = &'a String>) -> bool {
-    roots
-        .into_iter()
-        .any(|root| root.is_empty() || path == root || path.starts_with(&format!("{root}/")))
 }
 
 fn catalog_snapshot_id(datasets: &[CatalogDataset]) -> String {

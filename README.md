@@ -21,7 +21,7 @@ path from execution to queryable history:
   staged Effects and execution records from one Agent Run;
 - **`pchronicle`** browses, queries, exchanges, and serves trajectory Datasets.
 
-Each command works on its own. Connected, they cover `pvisor run --safe` →
+Each command works on its own. Connected, they cover `pvisor run --stage …` →
 review/apply → configured capture → a queryable Dataset.
 
 ![Current Persisting workflows and the execution-to-history throughline](docs/src/assets/diagrams/persisting/system-products.svg)
@@ -46,14 +46,15 @@ for platform requirements and executor setup.
 ## Run one Agent and review its changes
 
 ```bash
-pvisor run --safe codex
+pvisor run --stage ./runs/task-001 -- codex
 pvisor review last
 pvisor apply last --all   # or: pvisor drop last
 ```
 
-`--safe` stages workspace changes; nothing enters your project tree before you
-accept it. The exact boundary is platform-dependent and recorded with the
-Run—consult the [execution guide](https://deeplink-org.github.io/Persisting/pvisor/guides/execution/)
+`--stage` creates a copy-on-write workspace view for review; without it the
+Agent may write the real project tree. The exact boundary is
+platform-dependent and recorded with the Run—consult the
+[execution guide](https://deeplink-org.github.io/Persisting/pvisor/guides/execution/)
 before treating it as a security boundary.
 
 ## Query Agent trajectory history
@@ -94,29 +95,29 @@ Criterion.rs microbenchmarks and hyperfine lifecycle scenarios are compared
 against `main` in CI; see the [benchmark contract](benchmark/pchronicle/README.md).
 
 <!-- pchronicle-benchmark:start -->
-Latest nightly pChronicle benchmark: `59fe666010a1` on `linux/x86_64` (2026-09-09T03:05:13.495035+00:00).
+Latest nightly pChronicle benchmark: `481d563043ca` on `linux/x86_64` (2026-09-14T05:04:44.227312+00:00).
 
 | Case | Metric | Value |
 |---|---:|---:|
-| `criterion/atif_conversion/parse_corpus` | `latency_median_ns` | 5.882e+06 ns |
-| `criterion/atif_conversion/roundtrip_corpus` | `latency_median_ns` | 7.885e+06 ns |
-| `criterion/projection_cpu/events_to_storyline_corpus` | `latency_median_ns` | 3.377e+05 ns |
-| `system/projection_pipeline/event_append` | `initial_append_ms` | 68.838 ms |
-| `system/projection_pipeline/projection_build` | `build_ms` | 5395.669 ms |
-| `system/projection_pipeline/projection_incremental` | `sync_ms` | 38.575 ms |
-| `system/lance_vs_json/lifecycle` | `cold_query_ms` | 2902.694 ms |
-| `system/lance_vs_json/lifecycle` | `get_storyline_full_ms` | 9.429 ms |
-| `system/lance_vs_json/lifecycle` | `replace_storyline_ms` | 42.372 ms |
-| `system/lance_vs_json/selective` | `lance_qps` | 357.5 ops/s |
-| `system/lance_vs_json/group_by` | `lance_qps` | 454.7 ops/s |
+| `criterion/atif_conversion/parse_corpus` | `latency_median_ns` | 5.144e+06 ns |
+| `criterion/atif_conversion/roundtrip_corpus` | `latency_median_ns` | 6.939e+06 ns |
+| `criterion/projection_cpu/events_to_storyline_corpus` | `latency_median_ns` | 3.374e+05 ns |
+| `system/projection_pipeline/event_append` | `initial_append_ms` | 64.661 ms |
+| `system/projection_pipeline/projection_build` | `build_ms` | 5263.769 ms |
+| `system/projection_pipeline/projection_incremental` | `sync_ms` | 41.043 ms |
+| `system/lance_vs_json/lifecycle` | `cold_query_ms` | 3026.884 ms |
+| `system/lance_vs_json/lifecycle` | `get_storyline_full_ms` | 10.036 ms |
+| `system/lance_vs_json/lifecycle` | `replace_storyline_ms` | 43.456 ms |
+| `system/lance_vs_json/selective` | `lance_qps` | 276.1 ops/s |
+| `system/lance_vs_json/group_by` | `lance_qps` | 420.1 ops/s |
 | `system/lance_vs_json/summary` | `lance_over_json` | 0.244 ratio |
-| `system/json_streaming_ndjson/json_streaming` | `p95_ms` | 14.519 ms |
-| `system/json_streaming_ndjson/json_streaming` | `rows_s` | 2.836e+05 ops/s |
-| `system/json_streaming_ndjson/json_streaming` | `process_peak_rss_mib` | 39.891 MiB |
-| `hyperfine/projection_pipeline` | `wall_median_seconds` | 5.564 s |
-| `hyperfine/lance_vs_json` | `wall_median_seconds` | 39.576 s |
+| `system/json_streaming_ndjson/json_streaming` | `p95_ms` | 13.431 ms |
+| `system/json_streaming_ndjson/json_streaming` | `rows_s` | 3.021e+05 ops/s |
+| `system/json_streaming_ndjson/json_streaming` | `process_peak_rss_mib` | 45.039 MiB |
+| `hyperfine/projection_pipeline` | `wall_median_seconds` | 5.454 s |
+| `hyperfine/lance_vs_json` | `wall_median_seconds` | 40.178 s |
 
-[Open the complete benchmark run](https://github.com/DeepLink-org/Persisting/actions/runs/34305714820).
+[Open the complete benchmark run](https://github.com/DeepLink-org/Persisting/actions/runs/34808276792).
 <!-- pchronicle-benchmark:end -->
 
 ## License

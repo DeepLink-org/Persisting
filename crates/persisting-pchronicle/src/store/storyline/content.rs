@@ -34,6 +34,9 @@ use crate::formats::unknown_fields::{
 pub const STORYLINE_OBJECTS_DATASET: &str = "objects.lance";
 pub const DEFAULT_CONTENT_OFFLOAD_THRESHOLD: usize = 64 * 1024;
 pub const DEFAULT_CONTENT_PREVIEW_BYTES: usize = 256;
+/// Soft ceiling for one stream write chunk. Keeps Arrow UTF8/Binary builders
+/// under the ~2GiB i32 offset limit when many medium-sized cells accumulate.
+pub const DEFAULT_MAX_CHUNK_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const CONTENT_REF_MAGIC: &str = "\u{001e}PCHRONICLE-CONTENT:";
 const CONTENT_INDEX_NAME: &str = "pchronicle_content_id_idx";
 const CONTENT_ID_COLUMN: &str = "content_id";
@@ -93,7 +96,7 @@ impl Default for StorylineContentOptions {
             max_document_rows: None,
             max_document_bytes: None,
             max_chunk_rows: None,
-            max_chunk_bytes: None,
+            max_chunk_bytes: Some(DEFAULT_MAX_CHUNK_BYTES),
             max_import_documents: None,
             max_unknown_fields: DEFAULT_MAX_UNKNOWN_FIELDS,
             max_unknown_bytes: DEFAULT_MAX_UNKNOWN_BYTES,
@@ -422,6 +425,13 @@ fn externalize_batch(
                 continue;
             }
             let value = values.value(row);
+            // Already-published content refs must not be wrapped again. User
+            // payloads that only look like the magic prefix still offload.
+            let already_ref = matches!(ContentRef::parse(value), Ok(Some(_)));
+            if already_ref {
+                encoded.push(Some(value.to_string()));
+                continue;
+            }
             let should_offload =
                 value.len() >= options.offload_threshold || value.starts_with(CONTENT_REF_MAGIC);
             if !should_offload {
@@ -526,6 +536,51 @@ fn build_object(
     })
 }
 
+/// Encode a JSON content cell, offloading to `objects.lance` before Arrow Utf8
+/// materialization so large import batches cannot hit the 2GiB StringArray limit.
+pub(crate) fn encode_json_content_cell<T: serde::Serialize>(
+    value: &T,
+    options: StorylineContentOptions,
+    pending: &mut PendingContent,
+) -> Result<String> {
+    let encoded = serde_json::to_vec(value).context("serialize Storyline content JSON cell")?;
+    let collides = match serde_json::from_slice::<serde_json::Value>(&encoded) {
+        Ok(serde_json::Value::String(text)) => text.starts_with(CONTENT_REF_MAGIC),
+        _ => false,
+    };
+    if encoded.len() < options.offload_threshold && !collides {
+        return String::from_utf8(encoded).context("Storyline JSON cell is not UTF-8");
+    }
+    if let Ok(serde_json::Value::String(text)) =
+        serde_json::from_slice::<serde_json::Value>(&encoded)
+        && matches!(ContentRef::parse(&text), Ok(Some(_)))
+    {
+        return Ok(text);
+    }
+    let object = build_object(&encoded, LogicalType::Json, options)?;
+    let descriptor = object.reference.encode();
+    pending.insert(object)?;
+    Ok(descriptor)
+}
+
+/// Encode a UTF-8 content cell with the same pre-Arrow offload policy.
+pub(crate) fn encode_utf8_content_cell(
+    value: &str,
+    options: StorylineContentOptions,
+    pending: &mut PendingContent,
+) -> Result<String> {
+    if matches!(ContentRef::parse(value), Ok(Some(_))) {
+        return Ok(value.to_owned());
+    }
+    if value.len() < options.offload_threshold && !value.starts_with(CONTENT_REF_MAGIC) {
+        return Ok(value.to_owned());
+    }
+    let object = build_object(value.as_bytes(), LogicalType::Utf8, options)?;
+    let descriptor = object.reference.encode();
+    pending.insert(object)?;
+    Ok(descriptor)
+}
+
 fn utf8_preview(bytes: &[u8], maximum: usize) -> Result<String> {
     let value =
         std::str::from_utf8(bytes).context("UTF-8 content column contains invalid bytes")?;
@@ -609,6 +664,7 @@ pub(crate) async fn commit_pending_content(
     snapshot_version: Option<u64>,
     pending: PendingContent,
     reopen_concurrent_create: bool,
+    build_indexes: bool,
 ) -> Result<u64> {
     let mut objects = pending.objects.into_values().collect::<Vec<_>>();
     objects.sort_by(|left, right| left.reference.content_id.cmp(&right.reference.content_id));
@@ -616,7 +672,7 @@ pub(crate) async fn commit_pending_content(
 
     let mut dataset = if let Some(snapshot_version) = snapshot_version {
         let mut dataset = open_objects(path, snapshot_version).await?;
-        let latest = Dataset::open(&uri).await?.version_id();
+        let latest = super::open_dataset_uri(&uri).await?.version_id();
         if latest != snapshot_version {
             dataset.restore().await.with_context(|| {
                 format!(
@@ -639,11 +695,15 @@ pub(crate) async fn commit_pending_content(
             .await
         {
             Ok(mut dataset) => {
-                ensure_content_index(&mut dataset).await?;
+                // Progressive imports defer indexes until a final maintain();
+                // creating btree here would stall every first-batch commit.
+                if build_indexes {
+                    ensure_content_index(&mut dataset).await?;
+                }
                 return Ok(dataset.version_id());
             }
             Err(lance::Error::DatasetAlreadyExists { .. }) if reopen_concurrent_create => {
-                Dataset::open(&uri).await.with_context(|| {
+                super::open_dataset_uri(&uri).await.with_context(|| {
                     format!(
                         "reopen concurrently created Storyline content store {}",
                         path.display()
@@ -679,6 +739,32 @@ pub(crate) async fn commit_pending_content(
         .execute_stream(reader)
         .await
         .with_context(|| format!("append Storyline content store {}", path.display()))?;
+    if build_indexes {
+        ensure_content_index(&mut dataset).await?;
+        dataset
+            .optimize_indices(&lance_index::optimize::OptimizeOptions::append())
+            .await
+            .with_context(|| format!("extend Storyline content index {}", path.display()))?;
+    }
+    Ok(dataset.version_id())
+}
+
+/// Ensure + extend the objects.lance content_id btree (used by final maintain).
+pub(crate) async fn ensure_optimize_objects_content_index(
+    path: &Path,
+    snapshot_version: u64,
+) -> Result<u64> {
+    let uri = path.to_string_lossy().into_owned();
+    let mut dataset = open_objects(path, snapshot_version).await?;
+    let latest = super::open_dataset_uri(&uri).await?.version_id();
+    if latest != snapshot_version {
+        dataset.restore().await.with_context(|| {
+            format!(
+                "restore Storyline content store {} to version {snapshot_version}",
+                path.display()
+            )
+        })?;
+    }
     ensure_content_index(&mut dataset).await?;
     dataset
         .optimize_indices(&lance_index::optimize::OptimizeOptions::append())
@@ -696,6 +782,11 @@ async fn ensure_content_index(dataset: &mut Dataset) -> Result<()> {
     {
         return Ok(());
     }
+    crate::store::index_build_progress::note(format!(
+        "index {}.{} btree 1/1",
+        crate::store::index_build_progress::table_label(dataset.uri()),
+        CONTENT_ID_COLUMN
+    ));
     let _admission = super::super::index_build_gate::acquire().await;
     dataset
         .create_index(
@@ -746,7 +837,7 @@ fn content_id_predicate<'a>(values: impl IntoIterator<Item = &'a str>) -> String
 }
 
 pub(crate) async fn open_objects(path: &Path, version: u64) -> Result<Dataset> {
-    let dataset = Dataset::open(path.to_string_lossy().as_ref())
+    let dataset = super::open_dataset_uri(path.to_string_lossy().as_ref())
         .await
         .with_context(|| format!("open Storyline content store {}", path.display()))?;
     dataset.checkout_version(version).await.with_context(|| {

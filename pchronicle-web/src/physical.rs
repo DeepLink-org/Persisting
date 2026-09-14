@@ -814,11 +814,11 @@ fn format_bytes(bytes: Option<u64>) -> String {
     match bytes {
         None => "-".into(),
         Some(value) if value < 1024 => format!("{value} B"),
-        Some(value) if value < 1024 * 1024 => format!("{:.1} KB", value as f64 / 1024.0),
+        Some(value) if value < 1024 * 1024 => format!("{:.1} KiB", value as f64 / 1024.0),
         Some(value) if value < 1024 * 1024 * 1024 => {
-            format!("{:.1} MB", value as f64 / (1024.0 * 1024.0))
+            format!("{:.1} MiB", value as f64 / (1024.0 * 1024.0))
         }
-        Some(value) => format!("{:.1} GB", value as f64 / (1024.0 * 1024.0 * 1024.0)),
+        Some(value) => format!("{:.1} GiB", value as f64 / (1024.0 * 1024.0 * 1024.0)),
     }
 }
 
@@ -1012,8 +1012,8 @@ mod tests {
     }
 
     #[test]
-    fn format_bytes_uses_gb_for_large_fragments() {
-        assert_eq!(format_bytes(Some(3 * 1024 * 1024 * 1024)), "3.0 GB");
+    fn format_bytes_uses_gib_for_large_fragments() {
+        assert_eq!(format_bytes(Some(3 * 1024 * 1024 * 1024)), "3.0 GiB");
     }
 
     #[test]

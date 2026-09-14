@@ -408,8 +408,7 @@ fn atif_to_storyline_node(
             timestamp: step
                 .timestamp
                 .as_deref()
-                .map(StorylineTimestamp::from_rfc3339)
-                .transpose()?,
+                .and_then(StorylineTimestamp::from_rfc3339_lenient),
             source: step.source.clone(),
             message: step.message.clone(),
             reasoning_content: step.reasoning_content.clone(),

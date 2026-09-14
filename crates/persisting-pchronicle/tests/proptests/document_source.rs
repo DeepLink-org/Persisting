@@ -2,13 +2,6 @@ use persisting_pchronicle::document::{DocumentFormat, encode_agenticmd, open_doc
 use persisting_pchronicle::model::{StorylineDocument, StorylineTurn};
 use proptest::prelude::*;
 
-fn runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("build test runtime")
-}
-
 proptest! {
     #![proptest_config(proptest::test_runner::Config {
         cases: 8,
@@ -43,7 +36,7 @@ proptest! {
             finished_at: None,
         });
 
-        let runtime = runtime();
+        let runtime = common::runtime();
         let temporary = tempfile::tempdir().expect("create temporary directory");
         let path = temporary.path().join("generated.md");
         std::fs::write(&path, encode_agenticmd(&story).expect("encode AgenticMD"))
@@ -84,7 +77,7 @@ proptest! {
             prompt: None,
             finished_at: None,
         });
-        let runtime = runtime();
+        let runtime = common::runtime();
         let temporary = tempfile::tempdir().expect("create temporary directory");
         let path = temporary.path().join("generated.md");
         std::fs::write(&path, encode_agenticmd(&story).expect("encode AgenticMD"))
@@ -102,3 +95,5 @@ proptest! {
         prop_assert_eq!(streamed, vec![story]);
     }
 }
+#[path = "../common/mod.rs"]
+mod common;

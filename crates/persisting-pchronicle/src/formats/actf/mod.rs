@@ -91,14 +91,31 @@ fn path_has_actf_hint(path: Option<&Path>) -> bool {
 
 fn looks_like_actf_attempt(attempt: &Value) -> bool {
     match attempt.get("trajectory") {
+        // Error dumps: missing / null / empty placeholder trajectory.
+        None => true,
+        Some(trajectory) if trajectory.is_null() => true,
+        Some(trajectory)
+            if trajectory
+                .as_object()
+                .is_some_and(|object| object.is_empty()) =>
+        {
+            true
+        }
+        // Pinchbench / harness dumps sometimes stringify a Python Trajectory repr
+        // instead of emitting a JSON object/array.
+        Some(trajectory) if trajectory.is_string() => trajectory.as_str().is_some_and(|text| {
+            let trimmed = text.trim_start();
+            trimmed.starts_with("Trajectory(") || trimmed.contains("ACTF_")
+        }),
+        // skillsbench / pinchbench OpenClaw event-stream dumps
         Some(trajectory) if trajectory.is_array() => trajectory
             .as_array()
             .is_some_and(|events| events.iter().all(Value::is_object)),
+        // Canonical ACTF steps trajectory requires an ACTF_* schema_version.
         Some(trajectory) => trajectory
             .get("schema_version")
             .and_then(Value::as_str)
             .is_some_and(|version| version.starts_with("ACTF_")),
-        None => false,
     }
 }
 
@@ -117,25 +134,32 @@ fn content_has_actf_fingerprint(content: &[u8]) -> bool {
         return false;
     };
     let trimmed = text.trim_start();
-    if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        if let Ok(value) = serde_json::from_str::<Value>(trimmed)
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return false;
+    }
+    let sanitized = super::common::sanitize_json_nonfinite(trimmed);
+    if let Ok(value) = serde_json::from_str::<Value>(sanitized.as_ref())
+        && looks_like_actf_value(&value)
+    {
+        return true;
+    }
+    for line in sanitized
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .take(32)
+    {
+        if let Ok(value) = serde_json::from_str::<Value>(line)
             && looks_like_actf_value(&value)
         {
             return true;
         }
-        for line in trimmed
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .take(32)
-        {
-            if let Ok(value) = serde_json::from_str::<Value>(line)
-                && looks_like_actf_value(&value)
-            {
-                return true;
-            }
-        }
     }
-    false
+    // Frontier-engineering dumps put a huge `final_answer` before
+    // `trajectory.schema_version`. When non-finite tokens still break parse,
+    // accept the structural markers that uniquely identify ACTF.
+    sanitized.contains("\"task_id\"")
+        && sanitized.contains("\"attempts\"")
+        && (sanitized.contains("\"ACTF_") || sanitized.contains("'ACTF_"))
 }
 
 fn decode_json(
@@ -146,11 +170,14 @@ fn decode_json(
     reader
         .read_to_string(&mut input)
         .map_err(|error| InputIssue::invalid(error.to_string()))?;
-    let mut value: Value =
-        serde_json::from_str(&input).map_err(|error| InputIssue::invalid(error.to_string()))?;
+    let sanitized = super::common::sanitize_json_nonfinite(&input);
+    let mut value: Value = serde_json::from_str(sanitized.as_ref())
+        .map_err(|error| InputIssue::invalid(error.to_string()))?;
     let envelope = take_unknown_fields_envelope(&mut value)?;
-    let document: ActfDocument =
+    let mut document: ActfDocument =
         serde_json::from_value(value).map_err(|error| InputIssue::invalid(error.to_string()))?;
+    normalize_solved_at(&mut document.solved_at);
+    reconcile_document_tool_lists(&mut document);
     document.validate()?;
     let mut stories =
         actf_to_storylines(&document).map_err(|error| InputIssue::invalid(error.to_string()))?;
@@ -190,6 +217,8 @@ fn decode_json(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActfDocument {
     pub task_id: String,
+    /// Some error dumps emit numeric categories (`2`) instead of strings.
+    #[serde(deserialize_with = "stringish")]
     pub category: String,
     pub k: u64,
     pub correct: bool,
@@ -262,6 +291,39 @@ impl ActfTrajectory {
             extra: Map::new(),
         }
     }
+
+    fn normalize_timestamps(&mut self) {
+        const PLACEHOLDER: &str = "1970-01-01T00:00:00Z";
+        if self.started_at.trim().is_empty() {
+            self.started_at = self
+                .steps
+                .iter()
+                .find_map(|step| {
+                    let trimmed = step.started_at.trim();
+                    (!trimmed.is_empty()).then(|| trimmed.to_string())
+                })
+                .unwrap_or_else(|| PLACEHOLDER.into());
+        }
+        if self.finished_at.trim().is_empty() {
+            self.finished_at = self
+                .steps
+                .iter()
+                .rev()
+                .find_map(|step| {
+                    let trimmed = step.finished_at.trim();
+                    (!trimmed.is_empty()).then(|| trimmed.to_string())
+                })
+                .unwrap_or_else(|| self.started_at.clone());
+        }
+        for step in &mut self.steps {
+            if step.started_at.trim().is_empty() {
+                step.started_at = self.started_at.clone();
+            }
+            if step.finished_at.trim().is_empty() {
+                step.finished_at = self.finished_at.clone();
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -273,8 +335,11 @@ enum ActfTrajectoryWire {
     Events(Vec<Value>),
     Canonical {
         schema_version: String,
+        #[serde(default)]
         steps: Vec<ActfStep>,
+        #[serde(default)]
         started_at: String,
+        #[serde(default)]
         finished_at: String,
         #[serde(default)]
         events: Vec<Value>,
@@ -288,7 +353,22 @@ impl<'de> Deserialize<'de> for ActfTrajectory {
     where
         D: Deserializer<'de>,
     {
-        match ActfTrajectoryWire::deserialize(deserializer)? {
+        let value = Value::deserialize(deserializer)?;
+        // Error dumps often ship `trajectory: null`, `trajectory: {}`, or a
+        // Python `Trajectory(...)` repr string instead of canonical JSON.
+        if value.is_null() || value.as_object().is_some_and(|object| object.is_empty()) {
+            return Ok(Self::from_event_log(Vec::new()));
+        }
+        if let Some(text) = value.as_str() {
+            let trimmed = text.trim_start();
+            if trimmed.starts_with("Trajectory(") || trimmed.contains("ACTF_") {
+                return Ok(Self::from_event_log(Vec::new()));
+            }
+            return Err(serde::de::Error::custom(
+                "ACTF trajectory string is not a Trajectory(...) / ACTF dump",
+            ));
+        }
+        match ActfTrajectoryWire::deserialize(value).map_err(serde::de::Error::custom)? {
             ActfTrajectoryWire::Events(events) => Ok(Self::from_event_log(events)),
             ActfTrajectoryWire::Canonical {
                 schema_version,
@@ -297,14 +377,18 @@ impl<'de> Deserialize<'de> for ActfTrajectory {
                 finished_at,
                 events,
                 extra,
-            } => Ok(Self {
-                schema_version,
-                steps,
-                started_at,
-                finished_at,
-                events,
-                extra,
-            }),
+            } => {
+                let mut trajectory = Self {
+                    schema_version,
+                    steps,
+                    started_at,
+                    finished_at,
+                    events,
+                    extra,
+                };
+                trajectory.normalize_timestamps();
+                Ok(trajectory)
+            }
         }
     }
 }
@@ -322,7 +406,9 @@ pub struct ActfStep {
     pub tools: Vec<ActfToolCall>,
     #[serde(default, deserialize_with = "null_as_default")]
     pub observation: Vec<ActfObservation>,
+    #[serde(default, deserialize_with = "null_as_empty_string")]
     pub started_at: String,
+    #[serde(default, deserialize_with = "null_as_empty_string")]
     pub finished_at: String,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -415,6 +501,23 @@ where
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Accept JSON string, number, or bool as a string field (common in error dumps).
+fn stringish<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::Null => Ok(String::new()),
+        Value::String(text) => Ok(text),
+        Value::Number(number) => Ok(number.to_string()),
+        Value::Bool(flag) => Ok(flag.to_string()),
+        other => Err(serde::de::Error::custom(format!(
+            "expected string, number, bool, or null; got {other}"
+        ))),
+    }
+}
+
 fn null_as_default<'de, T, D>(deserializer: D) -> std::result::Result<T, D::Error>
 where
     T: Default + Deserialize<'de>,
@@ -423,11 +526,46 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Corpus exporters sometimes emit unix timestamps or booleans for `solved_at`.
+/// Coerce scalars into the documented string-or-null shape before validate.
+fn normalize_solved_at(value: &mut Value) {
+    match value {
+        Value::Null | Value::String(_) => {}
+        Value::Number(number) => *value = Value::String(number.to_string()),
+        Value::Bool(false) => *value = Value::Null,
+        Value::Bool(true) => *value = Value::String("true".into()),
+        _ => {}
+    }
+}
+
+/// Producers often ship both `tools` and `assistant_content.tool_calls` with
+/// small drift (extra keys, id formatting). Prefer top-level `tools`, matching
+/// [`ActfStep::effective_tools`].
+fn reconcile_step_tool_lists(step: &mut ActfStep) {
+    if step.tools.is_empty() || step.assistant_content.tool_calls.is_empty() {
+        return;
+    }
+    if step.tools != step.assistant_content.tool_calls {
+        step.assistant_content.tool_calls = step.tools.clone();
+    }
+}
+
+fn reconcile_document_tool_lists(document: &mut ActfDocument) {
+    for attempt in document.attempts.values_mut() {
+        for step in &mut attempt.trajectory.steps {
+            reconcile_step_tool_lists(step);
+        }
+    }
+}
+
 impl ActfDocument {
     #[cfg(any(test, feature = "lance-store"))]
     pub fn from_json_str(input: &str) -> InputResult<Self> {
-        let document: Self =
-            serde_json::from_str(input).map_err(|error| InputIssue::invalid(error.to_string()))?;
+        let sanitized = super::common::sanitize_json_nonfinite(input);
+        let mut document: Self = serde_json::from_str(sanitized.as_ref())
+            .map_err(|error| InputIssue::invalid(error.to_string()))?;
+        normalize_solved_at(&mut document.solved_at);
+        reconcile_document_tool_lists(&mut document);
         document.validate()?;
         Ok(document)
     }
@@ -495,17 +633,14 @@ impl ActfTrajectory {
                 "ACTF trajectory started_at and finished_at are required",
             ));
         }
-        if self.steps.is_empty() && self.events.is_empty() {
-            return Err(InputIssue::invalid(
-                "ACTF trajectory steps must not be empty",
-            ));
-        }
+        // Error dumps may ship null/`{}` trajectories (no steps, no events).
+        // Keep timestamps + schema; allow empty content.
 
         let mut previous_step = None;
         for step in &self.steps {
-            if step.step_id < 1 {
+            if step.step_id < 0 {
                 return Err(InputIssue::invalid(format!(
-                    "ACTF step_id must be positive, got {}",
+                    "ACTF step_id must be non-negative, got {}",
                     step.step_id
                 )));
             }
@@ -522,15 +657,9 @@ impl ActfTrajectory {
                     step.step_id
                 )));
             }
-            if !step.tools.is_empty()
-                && !step.assistant_content.tool_calls.is_empty()
-                && step.assistant_content.tool_calls != step.tools
-            {
-                return Err(InputIssue::invalid(format!(
-                    "ACTF step {} assistant_content.tool_calls must equal tools",
-                    step.step_id
-                )));
-            }
+            // Divergent tools vs assistant_content.tool_calls is common in corpus
+            // dumps; import reconciles via reconcile_step_tool_lists, and convert
+            // already prefers top-level tools through effective_tools().
             if !(step.metric.prompt_tokens_len.is_null()
                 || step.metric.prompt_tokens_len.is_number())
                 || !(step.metric.completion_tokens_len.is_null()
@@ -547,12 +676,9 @@ impl ActfTrajectory {
             let mut step_call_ids = HashSet::new();
             for (call_index, call) in step.effective_tools().iter().enumerate() {
                 let call_id = call.effective_id(step.step_id, call_index);
-                if !step_call_ids.insert(call_id) {
-                    return Err(InputIssue::invalid(format!(
-                        "duplicate ACTF tool call id '{}'",
-                        call.effective_id(step.step_id, call_index)
-                    )));
-                }
+                // Duplicate ids within a step are reconciled at Storyline convert
+                // time; keep validating observation refs against the first insert.
+                let _ = step_call_ids.insert(call_id);
             }
             for observation in &step.observation {
                 let referenced_id = observation
@@ -637,6 +763,74 @@ mod tests {
     }
 
     #[test]
+    fn accepts_null_or_empty_object_trajectory_as_empty_event_log() {
+        for trajectory in [json!(null), json!({})] {
+            let value = json!({
+                "task_id": "frontierscience_research_0053",
+                "category": "research",
+                "correct": false,
+                "solved_at": null,
+                "attempts_tried": 1,
+                "k": 1,
+                "attempts": {
+                    "1": {
+                        "correct": false,
+                        "final_answer": null,
+                        "ground_truth": "rubric",
+                        "trajectory": trajectory,
+                        "meta": {
+                            "status": "error",
+                            "error": "TimeoutError: "
+                        }
+                    }
+                }
+            });
+            let document: ActfDocument = serde_json::from_value(value).unwrap();
+            let attempt = &document.attempts["1"];
+            assert!(attempt.trajectory.steps.is_empty());
+            assert!(attempt.trajectory.events.is_empty());
+            document.validate().unwrap();
+            let stories = super::convert::actf_to_storylines(&document).unwrap();
+            assert_eq!(stories.len(), 1);
+            assert!(stories[0].turns.is_empty());
+            assert_eq!(stories[0].session_id, "frontierscience_research_0053");
+        }
+    }
+
+    #[test]
+    fn accepts_python_trajectory_repr_string_as_empty_event_log() {
+        let value = json!({
+            "task_id": "task_15_daily_summary",
+            "category": "synthesis",
+            "correct": false,
+            "solved_at": null,
+            "attempts_tried": 1,
+            "k": 1,
+            "attempts": {
+                "1": {
+                    "correct": false,
+                    "final_answer": "LLM request failed: network connection error.\n",
+                    "trajectory": "Trajectory(schema_version='ACTF_v1.0', steps=[StepInfo(step_id=1)], started_at=datetime.datetime(2026, 6, 26, 7, 35, 16), finished_at=datetime.datetime(2026, 6, 26, 7, 35, 46))",
+                    "status": null,
+                    "score": 0.0
+                }
+            }
+        });
+        assert!(looks_like_actf_value(&value));
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        assert!(document.attempts["1"].trajectory.steps.is_empty());
+        document.validate().unwrap();
+    }
+
+    #[test]
+    fn accepts_numeric_solved_at_by_coercing_to_string() {
+        let mut value = serde_json::to_value(fixture()).unwrap();
+        value["solved_at"] = json!(1_714_000_000);
+        let document = ActfDocument::from_json_str(&value.to_string()).unwrap();
+        assert_eq!(document.solved_at, json!("1714000000"));
+    }
+
+    #[test]
     fn accepts_name_arguments_tool_without_type_or_id() {
         let mut value = serde_json::to_value(fixture()).unwrap();
         let tool = json!({"name": "Glob", "arguments": {"pattern": "**/*"}});
@@ -697,6 +891,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reconciles_divergent_tools_and_assistant_tool_calls_on_import() {
+        let mut value = serde_json::to_value(fixture()).unwrap();
+        value["attempts"]["1"]["trajectory"]["steps"][0]["tools"] = json!([{
+            "type": "tool_use",
+            "id": "call-tools",
+            "name": "Bash",
+            "input": {"command": "pwd"}
+        }]);
+        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]["tool_calls"] = json!([{
+            "type": "function",
+            "id": "call-assistant",
+            "function": {"name": "bash_command", "arguments": {"keystrokes": "pwd\n"}}
+        }]);
+        value["attempts"]["1"]["trajectory"]["steps"][0]["observation"] = json!([{
+            "tool_use_id": "call-tools",
+            "type": "tool_result",
+            "content": "/app",
+            "is_error": false
+        }]);
+        let document = ActfDocument::from_json_str(&value.to_string()).unwrap();
+        let step = &document.attempts["1"].trajectory.steps[0];
+        assert_eq!(step.tools, step.assistant_content.tool_calls);
+        assert_eq!(step.effective_tools()[0].id, "call-tools");
+        let stories = super::convert::actf_to_storylines(&document).unwrap();
+        assert_eq!(stories.len(), 1);
+    }
+
     #[cfg(feature = "proptest")]
     mod proptests {
         use proptest::prelude::*;
@@ -744,8 +966,8 @@ mod tests {
 
             #[test]
             fn trajectory_validation_enforces_strictly_increasing_step_ids(
-                first in 1i64..10_000,
-                second in 1i64..10_000,
+                first in 0i64..10_000,
+                second in 0i64..10_000,
             ) {
                 let mut document = fixture();
                 let trajectory = &mut document.attempts.get_mut("1").unwrap().trajectory;
@@ -782,6 +1004,24 @@ mod tests {
     }
 
     #[test]
+    fn accepts_zero_based_step_ids() {
+        let mut document = fixture();
+        let trajectory = &mut document.attempts.get_mut("1").unwrap().trajectory;
+        trajectory.steps[0].step_id = 0;
+        trajectory.steps[0].tools.clear();
+        trajectory.steps[0].assistant_content.tool_calls.clear();
+        trajectory.steps[0].observation.clear();
+        if trajectory.steps.len() > 1 {
+            trajectory.steps[1].step_id = 1;
+            trajectory.steps[1].tools.clear();
+            trajectory.steps[1].assistant_content.tool_calls.clear();
+            trajectory.steps[1].observation.clear();
+        }
+        trajectory.validate().unwrap();
+        document.validate().unwrap();
+    }
+
+    #[test]
     fn accepts_observation_without_type() {
         let mut value = serde_json::to_value(fixture()).unwrap();
         value["attempts"]["1"]["trajectory"]["steps"][0]["observation"] = json!([{"content":"ok"}]);
@@ -795,6 +1035,48 @@ mod tests {
             "ok"
         );
         document.validate().unwrap();
+    }
+
+    #[test]
+    fn parses_wireless_channel_dump_with_nan_and_numeric_solved_at() {
+        let document = parse_actf_document(
+            r#"{
+              "task_id":"WirelessChannelSimulation/HighReliableSimulation",
+              "category":"WirelessChannelSimulation",
+              "correct":true,
+              "solved_at":1,
+              "attempts_tried":1,
+              "k":1,
+              "attempts":{"1":{
+                "correct":true,
+                "final_answer":"print(1)",
+                "ground_truth":"",
+                "trajectory":{
+                  "schema_version":"ACTF_v1.0",
+                  "steps":[{
+                    "step_id":1,
+                    "assistant_content":{"content":"iteration=0","reasoning_content":"","tool_calls":[]},
+                    "metric":{"prompt_tokens_len":null,"completion_tokens_len":null,"llm_infer_ms":null,"env_action_ms":13653.41,"stop_reason":null},
+                    "system_prompt":"",
+                    "user_content":"WirelessChannelSimulation/HighReliableSimulation",
+                    "tools":[],
+                    "observation":[{"combined_score": NaN}],
+                    "started_at":"2026-01-01 00:00:00+00:00",
+                    "finished_at":"2026-01-01 00:00:01+00:00"
+                  }],
+                  "started_at":"2026-01-01 00:00:00+00:00",
+                  "finished_at":"2026-01-01 00:00:01+00:00"
+                },
+                "status":"completed"
+              }}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(document.solved_at, Value::String("1".into()));
+        assert!(
+            document.attempts["1"].trajectory.steps[0].observation[0].extra["combined_score"]
+                .is_null()
+        );
     }
 
     #[test]
@@ -814,6 +1096,37 @@ mod tests {
             document.attempts["1"].trajectory.started_at,
             "2026-06-17T07:26:27.170Z"
         );
+    }
+
+    #[test]
+    fn accepts_numeric_category_and_empty_trajectory_object() {
+        let value = json!({
+            "task_id": "f2feb6a4-363c-4c09-a804-0db564eafd68",
+            "category": 2,
+            "correct": false,
+            "solved_at": null,
+            "attempts_tried": 1,
+            "k": 1,
+            "attempts": {
+                "1": {
+                    "correct": false,
+                    "final_answer": null,
+                    "ground_truth": "900000",
+                    "trajectory": {},
+                    "meta": {
+                        "status": "error",
+                        "service_metrics": {},
+                        "service_task_id": null,
+                        "error": "ClientConnectorError: Cannot connect to host"
+                    }
+                }
+            }
+        });
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        assert_eq!(document.category, "2");
+        assert!(document.attempts["1"].trajectory.steps.is_empty());
+        assert!(document.attempts["1"].trajectory.events.is_empty());
+        document.validate().unwrap();
     }
 
     #[test]
