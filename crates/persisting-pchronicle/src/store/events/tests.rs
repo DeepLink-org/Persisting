@@ -486,7 +486,7 @@ async fn event_schema_mismatch_is_rejected() {
 
 #[tokio::test]
 async fn one_cached_appender_preserves_physical_append_order() {
-    let storage = remote_storage("cached-single-writer");
+    let storage = remote_storage("cached-appender");
     let session = flat_session(&storage, "agent", "session");
     let mut writer = RawEventLanceAppender::default();
 

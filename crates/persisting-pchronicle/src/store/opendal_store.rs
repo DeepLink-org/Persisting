@@ -155,24 +155,51 @@ impl Store {
         let condition = expected.condition().ok_or_else(|| {
             anyhow!("OpenDAL backend did not return an ETag/version for conditional write")
         })?;
-        self.operator
-            .write_with(path, bytes)
+        let result = self
+            .operator
+            .write_with(path, bytes.clone())
             .if_match(condition)
-            .await
-            .map(|_| ())
-            .map_err(|error| {
-                if is_conflict(&error) {
-                    tracing::debug!(
-                        target: "pchronicle.opendal",
-                        path,
-                        if_match = condition,
-                        error = %error,
-                        kind = ?error.kind(),
-                        "conditional object write conflict (If-Match)"
-                    );
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            // Some S3-compatible gateways compare the If-Match header against
+            // their unquoted ETag, so a correctly quoted condition always
+            // fails with 412. One retry with the unquoted form still proves
+            // the stored ETag matched; real contention fails both attempts.
+            Err(error)
+                if error.kind() == ErrorKind::ConditionNotMatch
+                    && let Some(unquoted) = unquoted_etag(condition) =>
+            {
+                let retry = self
+                    .operator
+                    .write_with(path, bytes)
+                    .if_match(unquoted)
+                    .await;
+                match retry {
+                    Ok(_) => Ok(()),
+                    // Preserve the original conditional conflict when the
+                    // gateway rejects the compatibility form itself.
+                    Err(retry_error) if retry_error.kind() != ErrorKind::ConditionNotMatch => {
+                        Err(error)
+                    }
+                    Err(retry_error) => Err(retry_error),
                 }
-                error.into()
-            })
+            }
+            Err(error) => Err(error),
+        }
+        .map_err(|error| {
+            if is_conflict(&error) {
+                tracing::debug!(
+                    target: "pchronicle.opendal",
+                    path,
+                    if_match = condition,
+                    error = %error,
+                    kind = ?error.kind(),
+                    "conditional object write conflict (If-Match)"
+                );
+            }
+            error.into()
+        })
     }
 
     pub(crate) async fn write_overwrite(&self, path: &str, bytes: Vec<u8>) -> Result<()> {
@@ -263,6 +290,13 @@ pub(crate) fn is_conflict(error: &opendal::Error) -> bool {
     )
 }
 
+/// Strip one pair of surrounding double quotes from a conditional-write ETag.
+/// Returns `None` for unquoted or empty conditions.
+fn unquoted_etag(condition: &str) -> Option<&str> {
+    let inner = condition.strip_prefix('"')?.strip_suffix('"')?;
+    (!inner.is_empty()).then_some(inner)
+}
+
 pub(crate) fn version(metadata: &Metadata) -> Version {
     Version {
         etag: metadata.etag().map(ToOwned::to_owned),
@@ -299,6 +333,14 @@ fn normalize_uri(uri: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unquoted_etag_strips_one_quote_pair() {
+        assert_eq!(unquoted_etag("\"abc\""), Some("abc"));
+        assert_eq!(unquoted_etag("\"\""), None);
+        assert_eq!(unquoted_etag("abc"), None);
+        assert_eq!(unquoted_etag("\"abc"), None);
+    }
 
     #[tokio::test]
     async fn object_store_operator_accepts_retry_layer() -> Result<()> {

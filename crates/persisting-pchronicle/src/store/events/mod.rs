@@ -29,8 +29,8 @@ use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 
 pub use self::datafusion::{DATAFUSION_EVENTS_TABLE, EventFactSnapshot, RawEventDataSource};
 use self::manifest as raw_event_manifest;
+pub use self::manifest::EventWriterFence;
 use self::manifest::{EventManifest, EventSegment, EventWriterConflict, ManifestWriteOutcome};
-pub use self::manifest::{EventWriterFence, ObjectStoreManifestWriteMode};
 pub use self::rows::{
     event_records_from_batch, event_rows_from_batch, event_rows_to_batch, raw_event_arrow_schema,
 };
@@ -101,14 +101,12 @@ pub struct EventLogLayoutStats {
 pub struct RawEventLanceAppender {
     requested_fence: Option<EventWriterFence>,
     auto_writer_id: String,
-    manifest_write_mode: ObjectStoreManifestWriteMode,
     datasets: BTreeMap<String, CachedRawDataset>,
 }
 
 #[derive(Debug)]
 struct CachedRawDataset {
     fence: EventWriterFence,
-    manifest_write_mode: ObjectStoreManifestWriteMode,
     segment_id: String,
     segment_uri: String,
     dataset: Option<Dataset>,
@@ -160,7 +158,6 @@ impl EventAppendBatchReport {
 pub(crate) struct SealedEventSegment {
     root_uri: String,
     fence: EventWriterFence,
-    manifest_write_mode: ObjectStoreManifestWriteMode,
     segment: EventSegment,
 }
 
@@ -169,7 +166,6 @@ impl Default for RawEventLanceAppender {
         Self {
             requested_fence: None,
             auto_writer_id: format!("auto-{}", uuid::Uuid::new_v4()),
-            manifest_write_mode: ObjectStoreManifestWriteMode::Conditional,
             datasets: BTreeMap::new(),
         }
     }
@@ -184,17 +180,8 @@ impl RawEventLanceAppender {
         Self {
             auto_writer_id: fence.writer_id.clone(),
             requested_fence: Some(fence),
-            manifest_write_mode: ObjectStoreManifestWriteMode::Conditional,
             datasets: BTreeMap::new(),
         }
-    }
-
-    pub fn with_object_store_manifest_write_mode(
-        mut self,
-        mode: ObjectStoreManifestWriteMode,
-    ) -> Self {
-        self.manifest_write_mode = mode;
-        self
     }
 
     /// Activate this writer before accepting data. A newer activation fences
@@ -214,19 +201,13 @@ impl RawEventLanceAppender {
 
     async fn new_state(&self, uri: &str) -> Result<CachedRawDataset> {
         let manifest = manifest_write_applied(
-            raw_event_manifest::activate_with_mode(
-                uri,
-                self.requested_fence.as_ref(),
-                &self.auto_writer_id,
-                self.manifest_write_mode,
-            )
-            .await?,
+            raw_event_manifest::activate(uri, self.requested_fence.as_ref(), &self.auto_writer_id)
+                .await?,
         )?;
         let fence = manifest.active_writer.clone();
         let segment_id = format!("e{}-{}", fence.epoch, uuid::Uuid::new_v4());
         Ok(CachedRawDataset {
             fence,
-            manifest_write_mode: self.manifest_write_mode,
             segment_uri: raw_event_manifest::segment_uri(uri, &segment_id),
             segment_id,
             dataset: None,
@@ -359,7 +340,6 @@ impl RawEventLanceAppender {
             sealed.push(SealedEventSegment {
                 root_uri: uri.clone(),
                 fence: state.fence.clone(),
-                manifest_write_mode: state.manifest_write_mode,
                 segment: EventSegment {
                     id: state.segment_id.clone(),
                     version: dataset.version_id(),
@@ -405,7 +385,7 @@ async fn append_event_group(
         .context("event segment row count overflow")?;
     state.pending_fragments = state.pending_fragments.saturating_add(1);
     let manifest = manifest_write_applied(
-        raw_event_manifest::publish_segment_with_mode(
+        raw_event_manifest::publish_segment(
             &uri,
             &state.fence,
             EventSegment {
@@ -415,7 +395,6 @@ async fn append_event_group(
                 level: 0,
                 sealed: false,
             },
-            state.manifest_write_mode,
         )
         .await?,
     )?;
@@ -463,21 +442,10 @@ pub(crate) async fn compact_sealed_event_segment(
     }
     published_segment.sealed = true;
     manifest_write_applied(
-        raw_event_manifest::publish_segment_with_mode(
-            &sealed.root_uri,
-            &sealed.fence,
-            published_segment,
-            sealed.manifest_write_mode,
-        )
-        .await?,
+        raw_event_manifest::publish_segment(&sealed.root_uri, &sealed.fence, published_segment)
+            .await?,
     )?;
-    compact_event_hierarchy_locked(
-        &sealed.root_uri,
-        &sealed.fence,
-        hierarchy_fanout,
-        sealed.manifest_write_mode,
-    )
-    .await?;
+    compact_event_hierarchy_locked(&sealed.root_uri, &sealed.fence, hierarchy_fanout).await?;
     Ok(())
 }
 
@@ -498,7 +466,6 @@ async fn compact_event_hierarchy_locked(
     root_uri: &str,
     fence: &EventWriterFence,
     fanout: usize,
-    manifest_write_mode: ObjectStoreManifestWriteMode,
 ) -> Result<()> {
     loop {
         let manifest = raw_event_manifest::read(root_uri)
@@ -530,14 +497,7 @@ async fn compact_event_hierarchy_locked(
         replacement.level = next_level;
         replacement.sealed = true;
         manifest_write_applied(
-            raw_event_manifest::replace_segment_group_with_mode(
-                root_uri,
-                fence,
-                &group,
-                replacement,
-                manifest_write_mode,
-            )
-            .await?,
+            raw_event_manifest::replace_segment_group(root_uri, fence, &group, replacement).await?,
         )?;
     }
 }

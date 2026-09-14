@@ -5,11 +5,9 @@ use std::sync::Arc;
 use persisting_gateway::record::EventRecord;
 use persisting_gateway::session::storage::CaptureRoute;
 use persisting_gateway::sink::{CallbackSink, CaptureEventSink};
-#[cfg(test)]
-use persisting_pchronicle::storage::raw_event_append_queue;
 use persisting_pchronicle::storage::{
-    ObjectStoreManifestWriteMode, RawEventAppendOutcome, RawEventAppendSender,
-    RawEventAppendWorker, StoryCoords, raw_event_append_queue_with_manifest_write_mode,
+    RawEventAppendOutcome, RawEventAppendSender, RawEventAppendWorker, StoryCoords,
+    raw_event_append_queue,
 };
 
 use crate::gateway_partition::{GatewayPartitionRouter, GatewaySplitTemplate};
@@ -33,15 +31,12 @@ pub(crate) fn gateway_capture_sink(
     gateway_capture_sink_with_factory(dataset_uri, default_agent_id, None, raw_event_append_queue)
 }
 
-pub(crate) fn gateway_capture_sink_with_manifest_write_mode(
+pub(crate) fn gateway_capture_sink_with_split(
     dataset_uri: &str,
     default_agent_id: &str,
     split: Option<GatewaySplitTemplate>,
-    manifest_write_mode: ObjectStoreManifestWriteMode,
 ) -> anyhow::Result<(Arc<dyn CaptureEventSink>, GatewayCaptureWriter)> {
-    gateway_capture_sink_with_factory(dataset_uri, default_agent_id, split, move || {
-        raw_event_append_queue_with_manifest_write_mode(manifest_write_mode)
-    })
+    gateway_capture_sink_with_factory(dataset_uri, default_agent_id, split, raw_event_append_queue)
 }
 
 fn gateway_capture_sink_with_factory<F>(
