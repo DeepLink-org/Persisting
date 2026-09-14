@@ -946,6 +946,9 @@ fn run_claude(
     let output = run_process(ProcessSpec {
         command,
         stdin: Some(context.nonce.as_bytes().to_vec()),
+        idle_timeout: None,
+        step_finish_limit: None,
+        stdout_redirect: None,
         timeout: Duration::from_secs(24 * 60 * 60),
         termination_grace: Duration::from_secs(2),
         pipe_grace: Duration::from_millis(250),
@@ -1355,6 +1358,9 @@ fn run_bash(
     let output = run_process(ProcessSpec {
         command: process,
         stdin: None,
+        idle_timeout: None,
+        step_finish_limit: None,
+        stdout_redirect: None,
         timeout,
         termination_grace: Duration::from_millis(250),
         pipe_grace: Duration::from_millis(100),
