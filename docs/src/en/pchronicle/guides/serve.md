@@ -69,6 +69,7 @@ pchronicle serve --catalog-config catalog.toml --listen 127.0.0.1:8081
 users. `serve catalog dataset add|remove|list` rewrites libraries without
 starting HTTP. `serve catalog issue` writes a user with empty grants and prints
 the secret once on stdout; `grant` / `revoke` change which library names that
+Use `*` as NAME to grant or revoke a dataset for every current user. New users do not inherit past wildcard grants; rerun the command after creating them.
 user may open. Restart serve after editing the file.
 
 `pchronicle serve --catalog-config` mounts **every** library in the file into

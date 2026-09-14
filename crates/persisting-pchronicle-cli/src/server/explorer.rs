@@ -37,6 +37,10 @@ pub(crate) struct CatalogTree {
     pub(crate) prefix: String,
     pub(crate) run_count: usize,
     pub(crate) failed_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) dataset_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) trajectory_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) ready_sources: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,6 +60,10 @@ pub(crate) struct CatalogTreeChild {
     pub(crate) path: String,
     pub(crate) run_count: usize,
     pub(crate) failed_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) dataset_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) trajectory_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) total_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -90,6 +98,8 @@ pub(crate) fn catalog_tree_from_mounts(
                 path: dataset.mount.name.clone(),
                 run_count,
                 failed_count,
+                dataset_count: Some(1),
+                trajectory_count: Some(run_count),
                 total_tokens: None,
                 entries: Vec::new(),
             }
@@ -151,6 +161,8 @@ pub(crate) fn catalog_tree_from_path_list(
                     .failed_count
                     .and_then(|count| usize::try_from(count).ok())
                     .unwrap_or(0),
+                dataset_count: None,
+                trajectory_count: None,
                 total_tokens: None,
                 entries: Vec::new(),
             }

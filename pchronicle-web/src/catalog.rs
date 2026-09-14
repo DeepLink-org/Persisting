@@ -9,6 +9,8 @@ pub fn CatalogExplorer(
     loading: bool,
     on_open: EventHandler<(String, String)>,
     on_runs: EventHandler<(String, String)>,
+    #[props(default = false)] auth_required: bool,
+    on_settings: EventHandler<MouseEvent>,
 ) -> Element {
     let dataset = tree
         .as_ref()
@@ -55,6 +57,12 @@ pub fn CatalogExplorer(
             div { class: "pc-catalog-mosaic",
                 if loading && tree.is_none() {
                     div { class: "pc-catalog-empty", span { class: "spinner" } "Loading datasets…" }
+                } else if auth_required {
+                    div { class: "pc-catalog-empty",
+                        strong { "Catalog identity required" }
+                        span { "Add an access key and secret key to browse this catalog." }
+                        button { class: "button primary", onclick: on_settings, "Open Keys" }
+                    }
                 } else if tree.as_ref().is_none_or(|tree| tree.children.is_empty() && tree.run_count == 0) {
                     div { class: "pc-catalog-empty", strong { "No datasets" } span { "Add a dataset, then refresh this page." } }
                 } else if tree.as_ref().is_some_and(|tree| tree.children.is_empty()) {
@@ -124,8 +132,8 @@ fn CatalogStats(tree: Option<CatalogTree>) -> Element {
     let errors = tree.error_sources.unwrap_or(0);
     rsx! {
         div { class: "pc-catalog-stats",
-            div { WorkspaceIcon { name: "folder" } div { span { "Items" } strong { "{tree.children.len()}" } } }
-            div { WorkspaceIcon { name: "analysis" } div { span { "Trajectories" } strong { "{tree.run_count}" } } }
+            div { WorkspaceIcon { name: "folder" } div { span { "Datasets" } strong { "{tree.dataset_count.unwrap_or_else(|| tree.children.len())}" } } }
+            div { WorkspaceIcon { name: "analysis" } div { span { "Trajectories" } strong { "{tree.trajectory_count.unwrap_or(tree.run_count)}" } } }
             div { WorkspaceIcon { name: "warning" } div { span { "Failed" } strong { "{tree.failed_count}" } } }
         }
         if errors > 0 {
@@ -168,14 +176,15 @@ fn CatalogFolder(
     let name = child.name.clone();
     let data_type = child.data_type.clone();
     let is_dir = kind == "dir";
+    let trajectory_count = child.trajectory_count.unwrap_or(child.run_count);
     let icon = if kind == "file" { "file" } else { "folder" };
     rsx! {
         button {
             class: "pc-catalog-folder type-{data_type} kind-{kind}",
             title: if is_dir {
                 format!("{name} · directory")
-            } else if child.run_count > 0 {
-                format!("{name} · {} trajectories", child.run_count)
+            } else if trajectory_count > 0 {
+                format!("{name} · {trajectory_count} trajectories")
             } else {
                 name.clone()
             },
@@ -194,9 +203,15 @@ fn CatalogFolder(
             span { class: "pc-catalog-folder-type", "{data_type}" }
             div { class: "pc-catalog-folder-meta",
                 if is_dir {
-                    span { "Directory" }
-                } else if child.run_count > 0 {
-                    span { "{child.run_count} trajectories" }
+                    if let Some(dataset_count) = child.dataset_count {
+                        span {
+                            "{dataset_count} datasets · {child.trajectory_count.unwrap_or(0)} trajectories"
+                        }
+                    } else {
+                        span { "Directory" }
+                    }
+                } else if trajectory_count > 0 {
+                    span { "{trajectory_count} trajectories" }
                 } else {
                     span { "Source" }
                 }

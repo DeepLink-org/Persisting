@@ -160,6 +160,15 @@ impl ImportWal {
         self.failed.len()
     }
 
+    /// A completed import no longer needs recovery state.
+    pub(crate) fn remove(&self) -> Result<()> {
+        if self.dir.exists() {
+            fs::remove_dir_all(&self.dir)
+                .with_context(|| format!("remove completed import WAL {}", self.dir.display()))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn skip_paths(&self) -> HashSet<String> {
         self.done
             .iter()
@@ -365,5 +374,8 @@ mod tests {
         .unwrap();
         assert!(!reset.should_skip("a.json"));
         assert_eq!(reset.done_count(), 0);
+        let dir = reset.dir().to_path_buf();
+        reset.remove().unwrap();
+        assert!(!dir.exists());
     }
 }

@@ -26,3 +26,4 @@ each product's Reference and Guides.
 | [0013](0013-pchronicle-warehouse-catalog.md) | pChronicle path Directory | Proposed |
 | [0014](0014-compact-jsonl.md) | Compact JSONL Lance storage format (`compact-jsonl/v1`) | Accepted |
 | [0015](0015-chronicle-manifest.md) | `chronicle.manifest` Dataset sidecar (TOML) | Proposed |
+| [0016](0016-pchronicle-catalog-resolution-and-cache.md) | pChronicle catalog resolution and manifest cache | Accepted |

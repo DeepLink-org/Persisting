@@ -117,29 +117,19 @@ impl Cli {
     }
 }
 
-/// Apply S3 backend keys from `--catalog-config` and local `@name` pin settings
-/// before the multi-threaded Tokio runtime starts. `std::env::set_var` after
-/// worker threads exist is racy on macOS and can leave OpenDAL unable to see
-/// `AWS_REGION`.
-pub fn apply_catalog_backend_env_before_runtime(cli: &Cli) -> Result<()> {
-    apply_serve_catalog_backend_env(cli)?;
-    apply_command_pin_backend_env(cli)?;
-    Ok(())
+/// Run the internal exec worker before constructing a runtime. Ordinary CLI
+/// invocations return None and retain their existing execution path.
+pub fn run_catalog_worker_before_runtime(cli: &Cli) -> Option<Result<()>> {
+    match &cli.command {
+        Command::Serve(args) if args.catalog_query_worker => Some(server::catalog_worker::run()),
+        _ => None,
+    }
 }
 
-fn apply_serve_catalog_backend_env(cli: &Cli) -> Result<()> {
-    let Command::Serve(args) = &cli.command else {
-        return Ok(());
-    };
-    if args.command.is_some() || args.catalog_query_worker {
-        return Ok(());
-    }
-    let Some(path) = args.catalog_config.as_ref() else {
-        return Ok(());
-    };
-    let acl = server::catalog::CatalogAcl::load(path)?;
-    acl.apply_backend_env();
-    Ok(())
+/// Apply local @name pin credentials before creating runtime threads. Catalog
+/// server credentials are passed exclusively to isolated workers through IPC.
+pub fn apply_catalog_backend_env_before_runtime(cli: &Cli) -> Result<()> {
+    apply_command_pin_backend_env(cli)
 }
 
 fn apply_command_pin_backend_env(cli: &Cli) -> Result<()> {
@@ -1030,18 +1020,16 @@ struct ServeArgs {
     #[arg(long = "gateway-debug", alias = "debug", requires = "gateway_config")]
     debug: bool,
 
-    /// Directory ACL file (libraries + users). Mounts every [datasets.*] entry
-    /// into Warehouse and enables catalog:// locators. Mutually exclusive with
-    /// positional Dataset mounts. Apply S3 endpoint/region/keys from the file
-    /// before opening stores.
+    /// Directory ACL file. Authenticate API requests and execute them in
+    /// bounded, user-scoped worker processes with explicit backend credentials.
     #[arg(
         long = "catalog-config",
         value_name = "FILE",
-        conflicts_with_all = ["config", "storage", "positional_storage"]
+        conflicts_with_all = ["config", "storage", "positional_storage", "gateway", "gateway_config", "gateway_dataset", "control"]
     )]
     catalog_config: Option<PathBuf>,
 
-    /// Internal: run one filtered Warehouse request from stdin and exit.
+    /// Internal: serve framed Warehouse requests over private stdin/stdout IPC.
     #[arg(long = "catalog-query-worker", hide = true)]
     catalog_query_worker: bool,
 }
@@ -1644,7 +1632,7 @@ pub async fn run_with_stdio(
         }) => run_echo(args, &mut diagnostics).await,
         Command::Serve(args) => {
             if args.catalog_query_worker {
-                return server::catalog::run_catalog_query_worker().await;
+                bail!("catalog worker must start before the async runtime");
             }
             if let Some(command) = args.command {
                 return run_serve_catalog(command, stdout_is_terminal, stdout, &mut diagnostics);
@@ -2454,9 +2442,12 @@ fn resolve_serve_config_with_settings(
     let storage = serve_storage_uris(args);
     let gateway_dataset = resolve_gateway_dataset_uri(args, settings_override)?;
     let mut config = if let Some(path) = args.catalog_config.as_deref() {
-        let acl = server::catalog::CatalogAcl::load(path)?;
-        acl.apply_backend_env();
-        server::ChronicleServerConfig::mounted(acl.mounts()?)?
+        anyhow::ensure!(
+            gateway_dataset.is_none() && args.control.is_none(),
+            "catalog workers cannot share Gateway or Control listeners"
+        );
+        server::catalog::CatalogAcl::load(path)?;
+        server::ChronicleServerConfig::front_only()
     } else {
         match (args.config.as_deref(), storage.as_slice()) {
             (Some(config), []) => {

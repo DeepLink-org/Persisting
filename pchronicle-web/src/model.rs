@@ -135,6 +135,10 @@ pub struct CatalogTree {
     #[serde(default)]
     pub failed_count: usize,
     #[serde(default)]
+    pub dataset_count: Option<usize>,
+    #[serde(default)]
+    pub trajectory_count: Option<usize>,
+    #[serde(default)]
     pub ready_sources: Option<usize>,
     #[serde(default)]
     pub error_sources: Option<usize>,
@@ -158,6 +162,10 @@ pub struct CatalogTreeChild {
     pub run_count: usize,
     #[serde(default)]
     pub failed_count: usize,
+    #[serde(default)]
+    pub dataset_count: Option<usize>,
+    #[serde(default)]
+    pub trajectory_count: Option<usize>,
     #[serde(default)]
     pub total_tokens: Option<u64>,
     #[serde(default)]

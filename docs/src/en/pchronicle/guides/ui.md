@@ -151,9 +151,9 @@ untrusted or shared browser profile. Clearing this site's browser data also
 clears the setting. Assistant is labeled **Read-only · selected run data** and
 does not rewrite the Dataset.
 
-When `pchronicle serve --catalog-config` is used, every library in the ACL file
-is already mounted for local browsing. Open **Keys** on the left rail if you
-need Directory user access/secret headers for authenticated Directory flows.
+With `pchronicle serve --catalog-config`, data APIs require authentication and
+show only datasets granted to the user. Open **Keys** on the left rail and
+enter the Directory user access key and secret key before browsing data.
 Those values are stored in `localStorage` and sent to this pchronicle server as
 `x-pchronicle-access-key` and `x-pchronicle-secret-key` on data requests. They
 authorize which Directory paths this browser may open; they are not the

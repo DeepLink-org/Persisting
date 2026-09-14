@@ -192,8 +192,15 @@ async fn attach_request_id(
     if let Ok(value) = HeaderValue::from_str(request_id) {
         parts.headers.insert("x-request-id", value);
     }
-    if let Ok(value) = HeaderValue::from_str(&metrics.server_timing(total_ms)) {
-        parts.headers.insert("server-timing", value);
+    let timing = if parts.headers.contains_key("server-timing") {
+        // Preserve stages returned by an isolated worker; parent wall time
+        // includes admission and IPC and must have a distinct metric name.
+        format!("parent_total;dur={total_ms}")
+    } else {
+        metrics.server_timing(total_ms)
+    };
+    if let Ok(value) = HeaderValue::from_str(&timing) {
+        parts.headers.append("server-timing", value);
     }
     let is_json = parts
         .headers

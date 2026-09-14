@@ -587,6 +587,12 @@ pub(crate) async fn run_import(
         progress.notice(&line)?;
     }
     progress.flush_log(stderr)?;
+    if let Some(wal) = &wal
+        && let Ok(guard) = wal.lock()
+        && let Err(error) = guard.remove()
+    {
+        tracing::warn!(target: "pchronicle.import", %error, "failed to remove completed import WAL");
+    }
     Ok(())
 }
 
@@ -1938,9 +1944,20 @@ pub(crate) async fn finalize_storyline_import_indexes(
     store: &StorylineLanceStore,
     progress: &mut CliProgress,
 ) -> Result<()> {
-    progress
-        .stage(StageId::Commit)
-        .set_current("optimize indices (final)");
+    let commit = progress.stage(StageId::Commit);
+    commit.set_current("data committed; building indices");
+    let heartbeat = commit.clone();
+    let started = std::time::Instant::now();
+    let heartbeat_task = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+        loop {
+            tick.tick().await;
+            heartbeat.set_activity_override(&format!(
+                "building indices · elapsed={}s",
+                started.elapsed().as_secs()
+            ));
+        }
+    });
     let _index_progress = progress.attach_index_progress();
     store
         .maintain(&persisting_pchronicle::storage::LanceMaintenanceOptions {
@@ -1951,9 +1968,9 @@ pub(crate) async fn finalize_storyline_import_indexes(
         })
         .await
         .context("finalize Storyline indexes after progressive import")?;
-    progress
-        .stage(StageId::Commit)
-        .set_current("optimize indices done");
+    heartbeat_task.abort();
+    commit.set_activity_override("indices built");
+    commit.set_current("indices built");
     Ok(())
 }
 
@@ -1968,7 +1985,20 @@ pub(crate) async fn commit_storyline_import_batch(
     anyhow::ensure!(!batch.is_empty(), "storyline import commit batch is empty");
     let batch_len = batch.len() as u64;
     commit.set_current(format!("batch={batch_len}"));
-    let report = match append_generation.as_deref() {
+    let heartbeat = commit.clone();
+    let heartbeat_started = std::time::Instant::now();
+    let heartbeat_task = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+        loop {
+            tick.tick().await;
+            heartbeat.set_activity_override(&format!(
+                "writing Lance snapshot · batch={batch_len} · elapsed={}s",
+                heartbeat_started.elapsed().as_secs()
+            ));
+        }
+    });
+    let report_result: Result<_> = async {
+        Ok(match append_generation.as_deref() {
         Some(generation) => {
             tracing::info!(
                 committed_before = committed_storylines,
@@ -2010,7 +2040,11 @@ pub(crate) async fn commit_storyline_import_batch(
                     )
                 })?
         }
-    };
+        })
+    }
+    .await;
+    heartbeat_task.abort();
+    let report = report_result?;
     anyhow::ensure!(
         report.storylines as u64 == batch_len,
         "storyline import batch report does not match batch size"

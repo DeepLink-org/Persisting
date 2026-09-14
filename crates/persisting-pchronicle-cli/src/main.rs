@@ -10,6 +10,13 @@ use persisting_pchronicle_cli::{
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(result) = persisting_pchronicle_cli::run_catalog_worker_before_runtime(&cli) {
+        return if result.is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        };
+    }
     let debug_errors = cli.debug_errors();
     // OpenDAL/Lance read AWS_* from the process environment. Applying catalog
     // backend keys after the multi-threaded Tokio runtime starts is racy on

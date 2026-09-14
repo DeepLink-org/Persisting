@@ -98,6 +98,6 @@ Platform checks:
 - user, dataset, and grant edits are deterministic;
 - backend object-store keys stay in the catalog file / ticket path, not in
   `dataset list` output;
-- Warehouse mounts every registered library when serving `--catalog-config`;
+- `--catalog-config` authenticates each request and mounts only granted datasets in isolated workers;
 - Snapshot refresh does not mutate an in-flight Snapshot;
 - RustFS Warehouse behavior matches local Datasets for the covered paths.

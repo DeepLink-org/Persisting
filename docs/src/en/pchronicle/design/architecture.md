@@ -149,10 +149,12 @@ Snapshot before switching readers. Dataset tables prune by Source before
 opening matching fixed versions; caches and routing indexes are tied to that
 Snapshot generation.
 
-With `--catalog-config`, Warehouse mounts every `[datasets.*]` library from the
-Directory ACL file (same data plane as positional mounts) and also serves
-Directory list/ticket routes for `catalog://` pins. Backend S3 endpoint,
-region, and keys from the file are applied before stores open. After a CLI
+With `--catalog-config`, the listener authenticates each request and dispatches
+it to a bounded exec worker pool. Each worker has immutable user/grant/backend
+credential scope and private caches; the parent never mounts datasets. Backend
+credentials arrive over private IPC before runtime threads start. Workers retain
+the server's OS identity; process separation is not a filesystem sandbox.
+Directory list/ticket routes remain available for `catalog://` pins. After a CLI
 ticket, the client opens the ticket `uri` (a path) with storage credentials.
 That is platform addressing over paths, not a new Dataset kind.
 

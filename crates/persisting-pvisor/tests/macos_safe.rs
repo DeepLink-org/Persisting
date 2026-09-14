@@ -73,6 +73,12 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
         .arg(&outside)
         .arg(&outside_secret);
     let output = command.output().expect("run macOS safe profile");
+    if !output.status.success()
+        && String::from_utf8_lossy(&output.stderr).contains("file system is not available")
+    {
+        eprintln!("skipping macOS safe-profile smoke test: macFUSE is installed but unavailable");
+        return;
+    }
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",
@@ -217,6 +223,12 @@ raise SystemExit(0 if inet_code in denied and loopback_code == 0 and host_code i
         .arg(&outside_socket)
         .output()
         .expect("run macOS deny-all profile");
+    if !output.status.success()
+        && String::from_utf8_lossy(&output.stderr).contains("file system is not available")
+    {
+        eprintln!("skipping macOS deny-all test: macFUSE is installed but unavailable");
+        return;
+    }
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",

@@ -391,7 +391,7 @@ fn command_tree_contains_the_product_commands() {
     serve_help.write_long_help(&mut help).unwrap();
     let help = String::from_utf8(help).unwrap();
     assert!(help.contains("pchronicle serve catalog"), "{help}");
-    assert!(help.contains("Mounts every [datasets.*] entry"), "{help}");
+    assert!(help.contains("Authenticate API requests"), "{help}");
 }
 
 #[test]

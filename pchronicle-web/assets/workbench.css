@@ -149,3 +149,4 @@
 .pc2-shell .rail-secondary{padding-top:12px;border-top:1px solid #ffffff14}
 .pc2-shell .rail-secondary .rail-button{color:#b8cbe4}
 @media(max-width:850px){.pc2-shell .rail-secondary{padding-top:0;border-top:0}}
+.pc2-form select{width:100%;height:42px;padding:0 12px;border:1px solid #cbd5e1;border-radius:9px;background:#fff;color:#344054;font:inherit}.pc2-identity-list{display:flex;flex-direction:column;gap:8px}.pc2-identity-list .button{width:100%;text-align:left}.pc2-settings .button.danger{border-color:#fecaca;color:#b42318;background:#fff}.pc2-settings .button.danger:hover{background:#fff1f0}
