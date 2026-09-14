@@ -17,7 +17,7 @@ use tower::ServiceExt;
 
 use super::{
     catalog::{CatalogLibrary, apply_library_env},
-    problem::ApiError,
+    problem::{ApiError, ExecutionStage},
 };
 
 const MAX_WORKERS: usize = 8;
@@ -78,7 +78,7 @@ impl WorkerPool {
     pub(super) fn admit(&self) -> Result<tokio::sync::SemaphorePermit<'_>, ApiError> {
         self.requests
             .try_acquire()
-            .map_err(|_| ApiError::unavailable())
+            .map_err(|_| ApiError::unavailable().with_stage(ExecutionStage::Admission))
     }
 
     async fn slot(&self, scope: &str) -> Result<Slot, ApiError> {
@@ -94,7 +94,7 @@ impl WorkerPool {
                 .find(|(_, slot)| Arc::strong_count(slot) == 1)
                 .map(|(key, _)| key.clone());
             let Some(idle) = idle else {
-                return Err(ApiError::unavailable());
+                return Err(ApiError::unavailable().with_stage(ExecutionStage::Admission));
             };
             if let Some(slot) = slots.remove(&idle)
                 && let Some(mut worker) = slot.lock().await.take()
@@ -128,13 +128,13 @@ impl WorkerPool {
             Ok(response)
         })
         .await
-        .map_err(|_| ApiError::unavailable())?
+        .map_err(|_| ApiError::unavailable().with_stage(ExecutionStage::Query))?
     }
 }
 
 fn worker_error(error: anyhow::Error) -> ApiError {
     // Protocol/OS diagnostics only; never log bootstrap payloads or child stderr.
-    ApiError::internal("", "catalog_worker", error)
+    ApiError::internal("", "catalog_worker", error).with_stage(ExecutionStage::Worker)
 }
 
 struct Worker {

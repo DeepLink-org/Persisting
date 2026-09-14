@@ -84,14 +84,15 @@ pub use catalog::manifest::{
 };
 #[cfg(feature = "lance-store")]
 pub use catalog::{
-    CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE, CachedDataset, CatalogDataset,
-    CatalogErrorPolicy, CatalogEventProvenance, CatalogEventView, CatalogNamespace, CatalogPage,
-    CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind,
-    CatalogSourceRevision, CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle,
-    DEFAULT_DATASET_NAME, DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS,
-    Dataset, DatasetCatalogSnapshot, DatasetMount, DatasetResolver, DiscoveredSource,
-    LocationSummary, ManifestCache, ManifestListing, ManifestReadMode, NamespacePath, QueryScope,
-    ResolveMode, ResolveTarget,
+    CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE, CachedDataset, CatalogConsistency,
+    CatalogDataset, CatalogErrorPolicy, CatalogEventProvenance, CatalogEventView, CatalogNamespace,
+    CatalogPage, CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceDescription,
+    CatalogSourceKind, CatalogSourceRevision, CatalogSourceStatus, CatalogState, CatalogStatus,
+    CatalogStorylineKey, CatalogTrajectoryBundle, DEFAULT_DATASET_NAME,
+    DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS, Dataset,
+    DatasetCatalogSnapshot, DatasetMount, DatasetResolver, DiscoveredSource, LocationSummary,
+    ManifestCache, ManifestListing, ManifestReadMode, NamespacePath, QueryScope, ResolveMode,
+    ResolveTarget,
 };
 #[cfg(feature = "lance-store")]
 pub use compact_jsonl::{

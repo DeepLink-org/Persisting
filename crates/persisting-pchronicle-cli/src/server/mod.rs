@@ -33,15 +33,16 @@ use persisting_pchronicle::search::storyline_steps_fts_available;
 #[cfg(test)]
 use persisting_pchronicle::storage::StoryCoords;
 use persisting_pchronicle::storage::{
-    CatalogErrorPolicy, CatalogEventProvenance, CatalogSnapshotOptions, CatalogStorylineKey,
-    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount,
+    CatalogConsistency, CatalogErrorPolicy, CatalogEventProvenance, CatalogSnapshotOptions,
+    CatalogStorylineKey, DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use acceleration::{AccelerationStatus, ServerAcceleration};
 use problem::{
-    ApiError, CHAIN_LIMIT, LOG_TARGET, QUERY_LOG_LIMIT, ROOT_CAUSE_LIMIT, truncate_utf8,
+    ApiError, CHAIN_LIMIT, ExecutionStage, LOG_TARGET, QUERY_LOG_LIMIT, ROOT_CAUSE_LIMIT,
+    truncate_utf8,
 };
 use request_log::{FtsDiagnostics, RequestId, RequestMetrics};
 
@@ -556,7 +557,9 @@ async fn current_catalog(
     }
     let runtime = build_catalog_runtime(&state.config)
         .await
-        .map_err(|error| fail(request_id, "current_catalog", error))?;
+        .map_err(|error| {
+            fail(request_id, "current_catalog", error).with_stage(ExecutionStage::Catalog)
+        })?;
     *state.catalog.write().await = Some(Arc::clone(&runtime));
     Ok(runtime)
 }
@@ -628,7 +631,7 @@ async fn rebuild_catalog_for_runs(
 
 #[derive(Debug, Serialize)]
 struct CatalogResponse {
-    consistency: &'static str,
+    consistency: CatalogConsistency,
     snapshot_id: String,
     created_at: String,
     default_dataset: Option<String>,
@@ -639,7 +642,7 @@ struct CatalogResponse {
 
 fn catalog_response(state: &AppState, runtime: &CatalogRuntime) -> CatalogResponse {
     CatalogResponse {
-        consistency: "per_source_pinned",
+        consistency: CatalogConsistency::Pinned,
         snapshot_id: runtime.snapshot.snapshot_id().to_string(),
         created_at: runtime.snapshot.created_at().to_string(),
         default_dataset: runtime.snapshot.default_dataset().map(str::to_owned),
@@ -667,10 +670,9 @@ async fn refresh_catalog(
     let warehouse = PreparedWarehouse {
         state: state.clone(),
     };
-    let runtime = warehouse
-        .refresh_runtime()
-        .await
-        .map_err(|error| fail(&request_id, "refresh_catalog", error))?;
+    let runtime = warehouse.refresh_runtime().await.map_err(|error| {
+        fail(&request_id, "refresh_catalog", error).with_stage(ExecutionStage::Catalog)
+    })?;
     Ok(Json(catalog_response(&state, &runtime)))
 }
 
@@ -1412,7 +1414,9 @@ async fn explorer_tree(
         .await
         .tree(mount, prefix)
         .await
-        .map_err(|error| fail(&request_id, "explorer_tree", error))?;
+        .map_err(|error| {
+            fail(&request_id, "explorer_tree", error).with_stage(ExecutionStage::Manifest)
+        })?;
     metrics.record("browse", started);
     Ok(Json(serde_json::to_value(view).unwrap()))
 }

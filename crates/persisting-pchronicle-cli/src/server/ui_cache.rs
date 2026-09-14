@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::storage::{DatasetLocation, DatasetMount, ManifestCache};
+use persisting_pchronicle::storage::{
+    CatalogConsistency, CatalogState, DatasetLocation, DatasetMount, ManifestCache,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc, oneshot};
 
@@ -87,7 +89,8 @@ pub(crate) struct BrowseSnapshot {
 
 #[derive(Clone, Debug, Serialize)]
 struct BrowseStatus {
-    consistency: &'static str,
+    consistency: CatalogConsistency,
+    state: CatalogState,
     generation: String,
     observed_at: i64,
     stale: bool,
@@ -253,7 +256,14 @@ impl BrowseCoordinator {
             .fold(0usize, |sum, c| sum.saturating_add(c.failed_count));
         BrowseSnapshot {
             browse: BrowseStatus {
-                consistency: "best_effort",
+                consistency: CatalogConsistency::BestEffort,
+                state: if refreshing {
+                    CatalogState::Refreshing
+                } else if !complete || error.is_some() || now() - observed_at >= 30 {
+                    CatalogState::Stale
+                } else {
+                    CatalogState::Ready
+                },
                 generation: blake3::hash(&serde_json::to_vec(&tree).unwrap())
                     .to_hex()
                     .to_string(),
@@ -335,7 +345,16 @@ impl BrowseCoordinator {
         BrowseSnapshot {
             tree: entry.tree,
             browse: BrowseStatus {
-                consistency: "best_effort",
+                consistency: CatalogConsistency::BestEffort,
+                state: if self.pending.lock().unwrap().contains_key(key) {
+                    CatalogState::Refreshing
+                } else if error.is_some()
+                    || now() - entry.observed_at >= REFRESH_INTERVAL.as_secs() as i64
+                {
+                    CatalogState::Stale
+                } else {
+                    CatalogState::Ready
+                },
                 generation: entry.generation,
                 observed_at: entry.observed_at,
                 stale: error.is_some()

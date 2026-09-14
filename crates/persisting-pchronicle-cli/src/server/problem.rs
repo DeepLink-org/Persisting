@@ -21,6 +21,16 @@ pub(crate) enum BoundaryCode {
     Internal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ExecutionStage {
+    Admission,
+    Catalog,
+    Manifest,
+    Worker,
+    Query,
+}
+
 impl BoundaryCode {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
@@ -73,6 +83,8 @@ pub(super) struct ApiError {
     pub(super) code: BoundaryCode,
     message: String,
     request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stage: Option<ExecutionStage>,
     #[serde(skip)]
     root_cause: Option<String>,
 }
@@ -84,12 +96,18 @@ impl ApiError {
             code,
             message: message.into(),
             request_id: String::new(),
+            stage: None,
             root_cause: None,
         }
     }
 
     pub(super) fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
         self.request_id = request_id.into();
+        self
+    }
+
+    pub(super) fn with_stage(mut self, stage: ExecutionStage) -> Self {
+        self.stage = Some(stage);
         self
     }
 

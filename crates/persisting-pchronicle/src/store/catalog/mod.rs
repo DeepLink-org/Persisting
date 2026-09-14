@@ -14,6 +14,7 @@ mod namespace;
 mod provider;
 mod resolver;
 mod source;
+mod status;
 
 pub use identity::{CatalogSourceRevision, DatasetMount, NamespacePath};
 #[allow(unused_imports)]
@@ -34,6 +35,7 @@ pub use namespace::{CatalogNamespace, CatalogPage, CatalogSourceDescription};
 use provider::*;
 pub use resolver::{CachedDataset, Dataset, DatasetResolver, ResolveMode, ResolveTarget};
 use source::*;
+pub use status::{CatalogConsistency, CatalogState, CatalogStatus};
 
 use discovery::{
     bind_canonical_storyline_projections, discover_cached_candidates, discover_candidate_at,
