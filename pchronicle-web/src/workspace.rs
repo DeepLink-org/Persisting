@@ -245,6 +245,7 @@ pub fn App() -> Element {
     let mut page = use_signal(move || initial_page.to_string());
     let runs = use_signal(|| None::<RunPage>);
     let runs_loading = use_signal(|| true);
+    let runs_generation = use_signal(|| 0u64);
     let initial_query = url_param("q").unwrap_or_default();
     let mut query = use_signal({
         let initial_query = initial_query.clone();
@@ -338,6 +339,7 @@ pub fn App() -> Element {
             },
             runs,
             runs_loading,
+            runs_generation,
             error,
         );
     });
@@ -828,7 +830,7 @@ pub fn App() -> Element {
                                     if let Ok(value) = api::query_catalog().await {
                                         catalog.set(Some(value));
                                     }
-                                    load_runs(filters, runs, runs_loading, error);
+                                    load_runs(filters, runs, runs_loading, runs_generation, error);
                                 });
                             },
                             on_page: move |value| offset.set(value),
@@ -929,8 +931,11 @@ fn load_runs(
     filters: RunFilters,
     mut page: Signal<Option<RunPage>>,
     mut loading: Signal<bool>,
+    mut generation: Signal<u64>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
+    let request_generation = generation() + 1;
+    generation.set(request_generation);
     page.set(None);
     loading.set(true);
     error.set(None);
@@ -944,6 +949,9 @@ fn load_runs(
                     .map(|dataset| dataset.name)
                     .collect::<Vec<_>>(),
                 Err(failure) => {
+                    if generation() != request_generation {
+                        return;
+                    }
                     error.set(Some(workspace_notice(&failure)));
                     loading.set(false);
                     return;
@@ -983,7 +991,9 @@ fn load_runs(
             match result {
                 Ok(value) => {
                     partials.push(value);
-                    page.set(Some(merge_run_pages(&partials, &filters)));
+                    if generation() == request_generation {
+                        page.set(Some(merge_run_pages(&partials, &filters)));
+                    }
                 }
                 Err(message) => {
                     first_error.get_or_insert(message);
@@ -993,7 +1003,9 @@ fn load_runs(
         if let Some(failure) = &first_error {
             // Keep successful datasets visible, but never present a partial
             // all-dataset result as complete.
-            error.set(Some(workspace_notice(failure)));
+            if generation() == request_generation {
+                error.set(Some(workspace_notice(failure)));
+            }
         }
         if partials.is_empty() {
             // Keep the selected dataset path usable even when one scoped scan
@@ -1001,7 +1013,9 @@ fn load_runs(
             // surfaced above, so an empty page is preferable to a second
             // unscoped remote scan.
             if all_datasets {
-                loading.set(false);
+                if generation() == request_generation {
+                    loading.set(false);
+                }
                 return;
             }
             match api::explorer_runs(
@@ -1017,11 +1031,16 @@ fn load_runs(
             )
             .await
             {
-                Ok(value) => page.set(Some(value)),
-                Err(failure) => error.set(Some(workspace_notice(&first_error.unwrap_or(failure)))),
+                Ok(value) if generation() == request_generation => page.set(Some(value)),
+                Err(failure) if generation() == request_generation => {
+                    error.set(Some(workspace_notice(&first_error.unwrap_or(failure))))
+                }
+                _ => {}
             }
         }
-        loading.set(false);
+        if generation() == request_generation {
+            loading.set(false);
+        }
     });
 }
 
