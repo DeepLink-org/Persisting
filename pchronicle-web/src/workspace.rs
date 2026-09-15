@@ -28,9 +28,9 @@ use crate::llm_settings::LlmSettings;
 #[cfg(test)]
 use crate::model::RunSearchStatus;
 use crate::model::{
-    CatalogTree, CompactRecordDetail, DimensionAggregate, HistogramBucket, PageSnapshot,
-    QueryCatalog, QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary,
-    ToolAggregate, TurnDetail, TurnSearchStatus, TurnSummary,
+    BrowseStatus, CatalogTree, CompactRecordDetail, DimensionAggregate, HistogramBucket,
+    PageSnapshot, QueryCatalog, QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage,
+    RunSummary, ToolAggregate, TurnDetail, TurnSearchStatus, TurnSummary,
 };
 use crate::notice::{ErrorNotice, WorkspaceNotice, workspace_notice};
 use crate::terminology::{ANALYSIS, ASSISTANT, DATASETS, RUNS, STEPS, STORAGE, TIMELINE};
@@ -281,8 +281,9 @@ pub fn App() -> Element {
     let last_place = use_signal(String::new);
     let history_ready = use_signal(|| false);
     let mut history_seq = use_signal(|| 0i32);
-    let catalog_tree = use_signal(|| None::<CatalogTree>);
-    let catalog_loading = use_signal(|| false);
+    let mut catalog_tree = use_signal(|| None::<CatalogTree>);
+    let mut catalog_loading = use_signal(|| false);
+    let mut catalog_generation = use_signal(|| 0u64);
     let mut offset = use_signal(|| 0usize);
     let mut error = use_signal(|| None::<WorkspaceNotice>);
     let mut catalog_auth_configured = use_signal(|| catalog_auth::load().is_configured());
@@ -356,6 +357,8 @@ pub fn App() -> Element {
             catalog_tree,
             catalog_loading,
             error,
+            catalog_generation,
+            catalog_generation(),
         );
         spawn(async move {
             loop {
@@ -370,6 +373,8 @@ pub fn App() -> Element {
                     catalog_tree,
                     catalog_loading,
                     error,
+                    catalog_generation,
+                    catalog_generation(),
                 );
             }
         });
@@ -493,11 +498,19 @@ pub fn App() -> Element {
             return;
         }
         let initial = catalog().is_none();
-        let waiting = catalog().as_ref().is_some_and(|catalog| catalog.datasets.iter()
-            .any(|dataset| dataset.browse.as_ref().is_some_and(|status| status.observed_at == 0)));
+        let waiting = catalog().as_ref().is_some_and(|catalog| {
+            catalog.datasets.iter().any(|dataset| {
+                dataset
+                    .browse
+                    .as_ref()
+                    .is_some_and(|status| status.observed_at == 0)
+            })
+        });
         if initial || waiting {
             spawn(async move {
-                if !initial { TimeoutFuture::new(CATALOG_REFRESH_MS).await; }
+                if !initial {
+                    TimeoutFuture::new(CATALOG_REFRESH_MS).await;
+                }
                 match api::query_catalog().await {
                     Ok(value) => {
                         if selected_table().is_empty() {
@@ -583,6 +596,22 @@ pub fn App() -> Element {
                             auth_required: !catalog_auth_configured() && catalog_tree().is_none(),
                             on_settings: move |_| settings_open.set(true),
                             on_open: move |(dataset, prefix): (String, String)| {
+                                // Move immediately. The old tree must not remain visible while
+                                // a slow remote prefix is loading.
+                                catalog_tree.set(Some(CatalogTree {
+                                    dataset: (!dataset.is_empty()).then_some(dataset.clone()),
+                                    prefix: prefix.clone(),
+                                    browse: Some(BrowseStatus {
+                                        state: "refreshing".into(),
+                                        refreshing: true,
+                                        observed_at: 0,
+                                        stale: true,
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                }));
+                                catalog_loading.set(true);
+                                catalog_generation.set(catalog_generation().saturating_add(1));
                                 catalog_dataset.set(dataset);
                                 catalog_prefix.set(prefix);
                             },
@@ -1122,24 +1151,34 @@ fn load_catalog_tree(
     mut tree: Signal<Option<CatalogTree>>,
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
+    generation: Signal<u64>,
+    requested_generation: u64,
 ) {
     loading.set(true);
     spawn(async move {
         match api::explorer_tree(&dataset, &prefix).await {
-            Ok(value) => tree.set(Some(value)),
+            Ok(value) if generation() == requested_generation => tree.set(Some(value)),
             Err(failure)
                 if matches!(failure.status, 400 | 401)
                     && dataset.is_empty()
                     && prefix.is_empty() =>
             {
                 match api::explorer_tree_anonymous(&dataset, &prefix).await {
-                    Ok(value) => tree.set(Some(value)),
-                    Err(failure) => error.set(Some(workspace_notice(&failure))),
+                    Ok(value) if generation() == requested_generation => tree.set(Some(value)),
+                    Err(failure) if generation() == requested_generation => {
+                        error.set(Some(workspace_notice(&failure)))
+                    }
+                    _ => {}
                 }
             }
-            Err(failure) => error.set(Some(workspace_notice(&failure))),
+            Err(failure) if generation() == requested_generation => {
+                error.set(Some(workspace_notice(&failure)))
+            }
+            _ => {}
         }
-        loading.set(false);
+        if generation() == requested_generation {
+            loading.set(false);
+        }
     });
 }
 
