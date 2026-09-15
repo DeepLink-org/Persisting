@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -20,14 +20,25 @@ use crate::store::{DatasetLocation, PathListEntry, PersistentCache};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestListing {
+    #[serde(default)]
+    pub partial: bool,
     pub entries: Vec<PathListEntry>,
     pub observed_at: i64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocationSummary {
+    #[serde(default)]
+    pub partial: bool,
     pub datasets: u64,
     pub trajectories: u64,
+}
+
+/// Outcome of one bounded mount walk. A partial walk is usable, but not complete.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestRefreshReport {
+    pub refreshed_directories: usize,
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +105,7 @@ impl ManifestCache {
             crate::store::root_write_lock::for_root(&serde_json::to_string(&(self.path(), &key))?);
         let _guard = refresh_gate.lock().await;
         let listing = ManifestListing {
+            partial: false,
             entries: location.list(prefix).await?,
             observed_at: chrono::Utc::now().timestamp(),
         };
@@ -168,6 +180,7 @@ impl ManifestCache {
                 })
             })
             .fold(LocationSummary::default(), |mut total, (_, listing)| {
+                total.partial |= listing.partial;
                 for entry in &listing.entries {
                     let is_dataset = matches!(entry.kind, crate::store::PathListKind::Dataset)
                         || (matches!(entry.kind, crate::store::PathListKind::File)
@@ -185,15 +198,36 @@ impl ManifestCache {
 
     /// Breadth-first refresh of a mount. Refreshes serialize per observation
     /// key, allowing unrelated foreground directories to load concurrently.
-    pub async fn refresh_mount(&self, key_prefix: &str, location: &DatasetLocation) -> Result<()> {
-        tracing::info!(target: "pchronicle.serve", %key_prefix, "manifest cache refresh started");
+    pub async fn refresh_mount(
+        &self,
+        key_prefix: &str,
+        location: &DatasetLocation,
+    ) -> Result<ManifestRefreshReport> {
+        self.refresh_mount_bounded(
+            key_prefix,
+            location,
+            MAX_REFRESH_DIRECTORIES,
+            REFRESH_MOUNT_DEADLINE,
+        )
+        .await
+    }
+
+    async fn refresh_mount_bounded(
+        &self,
+        key_prefix: &str,
+        location: &DatasetLocation,
+        max_directories: usize,
+        budget: Duration,
+    ) -> Result<ManifestRefreshReport> {
         let mut queue = VecDeque::from([String::new()]);
-        let mut refreshed = 0usize;
-        let deadline = tokio::time::Instant::now() + REFRESH_MOUNT_DEADLINE;
+        let mut seen = HashSet::from([String::new()]);
+        let mut report = ManifestRefreshReport::default();
+        let deadline = tokio::time::Instant::now() + budget;
         while let Some(prefix) = queue.pop_front() {
-            if refreshed >= MAX_REFRESH_DIRECTORIES || tokio::time::Instant::now() >= deadline {
-                tracing::warn!(target: "pchronicle.serve", %key_prefix, refreshed,
-                    queued = queue.len(), "manifest cache refresh reached safety bound; keeping partial view");
+            if report.refreshed_directories >= max_directories
+                || tokio::time::Instant::now() >= deadline
+            {
+                report.partial = true;
                 break;
             }
             let key = if prefix.is_empty() {
@@ -201,24 +235,60 @@ impl ManifestCache {
             } else {
                 format!("{key_prefix}\0{prefix}")
             };
-            let listing = tokio::time::timeout(
-                REFRESH_DIRECTORY_TIMEOUT,
+            let directory_deadline =
+                deadline.min(tokio::time::Instant::now() + REFRESH_DIRECTORY_TIMEOUT);
+            let listing = match tokio::time::timeout_at(
+                directory_deadline,
                 self.refresh(key, location, &prefix),
             )
             .await
-            .context("manifest directory refresh timed out")??;
-            refreshed += 1;
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    report.partial = true;
+                    break;
+                }
+            };
+            report.refreshed_directories += 1;
             for child in listing
                 .entries
                 .iter()
                 .filter(|e| matches!(e.kind, crate::store::PathListKind::Directory))
             {
+                if seen.contains(&child.path) {
+                    continue;
+                }
+                if seen.len() >= max_directories {
+                    report.partial = true;
+                    continue;
+                }
+                seen.insert(child.path.clone());
                 queue.push_back(child.path.clone());
             }
             tokio::task::yield_now().await;
         }
-        tracing::info!(target: "pchronicle.serve", %key_prefix, refreshed, "manifest cache refresh finished");
-        Ok(())
+        // Publish completeness alongside the cached root, including across restarts.
+        // Do not hold the values lock over persistence.
+        let root = {
+            let mut values = self.values.write().await;
+            values.get_mut(key_prefix).map(|root| {
+                root.partial = report.partial;
+                root.clone()
+            })
+        };
+        if let Some(root) = root {
+            if let Err(error) = self
+                .disk
+                .upsert(&key_prefix.to_owned(), &serde_json::to_value(root)?, &[])
+                .await
+            {
+                tracing::warn!(target: "pchronicle.serve", %error, "mount completeness persistence failed");
+            }
+        }
+        tracing::info!(target: "pchronicle.serve", %key_prefix,
+            refreshed = report.refreshed_directories, partial = report.partial,
+            "manifest cache refresh finished");
+        Ok(report)
     }
 
     pub fn spawn_periodic_refresh(
@@ -244,6 +314,40 @@ impl ManifestCache {
 mod tests {
     use super::*;
     use crate::store::{PathListEntry, PathListKind};
+
+    #[tokio::test]
+    async fn bounded_walk_reports_and_persists_partial_then_recovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("source");
+        std::fs::create_dir_all(root.join("child")).unwrap();
+        let location = DatasetLocation::parse(root.to_str().unwrap()).unwrap();
+        let path = dir.path().join("cache.lance");
+        let cache = ManifestCache::open(path.clone()).await;
+        let partial = cache
+            .refresh_mount_bounded("mount", &location, 1, Duration::from_secs(20))
+            .await
+            .unwrap();
+        assert_eq!(
+            partial,
+            ManifestRefreshReport {
+                refreshed_directories: 1,
+                partial: true
+            }
+        );
+        assert!(cache.summary("mount").await.partial);
+        drop(cache);
+        let cache = ManifestCache::open(path).await;
+        assert!(cache.summary("mount").await.partial);
+        let complete = cache.refresh_mount("mount", &location).await.unwrap();
+        assert!(!complete.partial);
+        assert!(!cache.summary("mount").await.partial);
+        let timed_out = cache
+            .refresh_mount_bounded("mount", &location, 10, Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(timed_out.partial);
+        assert_eq!(timed_out.refreshed_directories, 0);
+    }
 
     #[tokio::test]
     async fn refresh_survives_disk_failure_and_unrelated_refresh_lock() {
@@ -295,6 +399,7 @@ mod tests {
         cache.values.write().await.insert(
             "mount".into(),
             ManifestListing {
+                partial: false,
                 entries: vec![PathListEntry {
                     name: "a".into(),
                     path: "a".into(),
@@ -309,6 +414,7 @@ mod tests {
         assert_eq!(
             cache.summary("mount").await,
             LocationSummary {
+                partial: false,
                 datasets: 1,
                 trajectories: 3
             }
@@ -316,6 +422,7 @@ mod tests {
         cache.values.write().await.insert(
             "mount\0nested".into(),
             ManifestListing {
+                partial: false,
                 entries: vec![PathListEntry {
                     name: "b".into(),
                     path: "nested/b".into(),
@@ -369,6 +476,7 @@ mod tests {
             assert_eq!(
                 cache.summary_under(prefix).await,
                 LocationSummary {
+                    partial: false,
                     datasets,
                     trajectories
                 },
@@ -393,6 +501,7 @@ mod tests {
         assert_eq!(
             cache.summary_under("rfs\0fingerprint\0nested").await,
             LocationSummary {
+                partial: false,
                 datasets: 2,
                 trajectories: 708
             }

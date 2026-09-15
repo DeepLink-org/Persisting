@@ -490,8 +490,12 @@ pub fn App() -> Element {
         if page() == "home" {
             return;
         }
-        if catalog().is_none() {
+        let initial = catalog().is_none();
+        let waiting = catalog().as_ref().is_some_and(|catalog| catalog.datasets.iter()
+            .any(|dataset| dataset.browse.as_ref().is_some_and(|status| status.observed_at == 0)));
+        if initial || waiting {
             spawn(async move {
+                if !initial { TimeoutFuture::new(CATALOG_REFRESH_MS).await; }
                 match api::query_catalog().await {
                     Ok(value) => {
                         if selected_table().is_empty() {
@@ -1536,7 +1540,7 @@ fn RunsExplorer(
                 label { class: "pc2-filter-search", span { "⌕" } input { value: "{query}", placeholder: "{search_placeholder}", aria_label: "Search runs and content", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); on_apply_query.call(query.clone()); } } } if !query.is_empty() { button { r#type: "button", class: "pc2-filter-clear", aria_label: "Clear run search", title: "Clear search", onclick: move |event| { event.prevent_default(); on_apply_query.call(String::new()); }, "×" } } }
                 select { value: "{dataset}", aria_label: "Filter by Dataset", onchange: move |event| on_dataset.call(event.value()),
                     option { value: "all", "All Datasets" }
-                    for mounted in datasets { option { value: "{mounted.name}", "{mounted.name}" } }
+                    for mounted in datasets { option { value: "{mounted.name}", "{mounted.label()}" } }
                 }
                 select { value: "{status}", aria_label: "Filter by run status", onchange: move |event| on_status.call(event.value()), option { value: "all", "All statuses" } option { value: "active", "Active" } option { value: "completed", "Completed" } option { value: "failed", "Failed" } }
                 select { value: "{sort}", aria_label: "Sort runs", onchange: move |event| on_sort.call(event.value()), option { value: "session", "Session" } option { value: "events", "Events" } option { value: "status", "Status" } option { value: "agent", "Agent" } }

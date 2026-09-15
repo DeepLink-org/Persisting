@@ -93,8 +93,8 @@ pub use catalog::{
     CatalogStorylineKey, CatalogTrajectoryBundle, DEFAULT_DATASET_NAME,
     DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS, Dataset,
     DatasetCatalogSnapshot, DatasetMount, DatasetResolver, DiscoveredSource, LocationSummary,
-    ManifestCache, ManifestListing, ManifestReadMode, NamespacePath, QueryScope, ResolveMode,
-    ResolveTarget,
+    ManifestCache, ManifestListing, ManifestReadMode, ManifestRefreshReport, NamespacePath,
+    QueryScope, ResolveMode, ResolveTarget,
 };
 #[cfg(feature = "lance-store")]
 pub use compact_jsonl::{

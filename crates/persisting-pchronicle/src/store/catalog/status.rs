@@ -15,6 +15,7 @@ pub enum CatalogConsistency {
 #[serde(rename_all = "snake_case")]
 pub enum CatalogState {
     Ready,
+    Partial,
     Stale,
     Refreshing,
     Unavailable,

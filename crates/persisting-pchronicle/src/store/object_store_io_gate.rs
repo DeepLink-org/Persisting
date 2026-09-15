@@ -158,16 +158,25 @@ struct Gate {
 fn state_for<'a>(states: &'a mut HashMap<String, AimdState>, key: &str) -> &'a mut AimdState {
     let now = Instant::now();
     if !states.contains_key(key) {
-        states.retain(|_, state| state.active_waiters > 0
-            || state.cooldown_until.is_some_and(|until| until > now)
-            || now.duration_since(state.last_used) < SCOPE_IDLE_TTL);
-        if states.len() >= MAX_RETAINED_SCOPES {
-            let oldest = states.iter()
-                .filter(|(_, state)| state.active_waiters == 0
-                    && state.cooldown_until.is_none_or(|until| until <= now))
+        states.retain(|_, state| {
+            state.active_waiters > 0
+                || state.cooldown_until.is_some_and(|until| until > now)
+                || now.duration_since(state.last_used) < SCOPE_IDLE_TTL
+        });
+        while states.len() >= MAX_RETAINED_SCOPES {
+            let oldest = states
+                .iter()
+                .filter(|(_, state)| {
+                    state.active_waiters == 0
+                        && state.cooldown_until.is_none_or(|until| until <= now)
+                })
                 .min_by_key(|(_, state)| state.last_used)
                 .map(|(key, _)| key.clone());
-            if let Some(oldest) = oldest { states.remove(&oldest); }
+            if let Some(oldest) = oldest {
+                states.remove(&oldest);
+            } else {
+                break;
+            }
         }
     }
     // Live waits/cooldowns may temporarily exceed the retention limit. Evicting
@@ -513,7 +522,9 @@ async fn wait_out_degradation(g: &Gate, key: &str, kind: IoKind) {
 /// Publish the current I/O phase for progress UI without taking a permit.
 /// Used around Lance writes that do not go through [`acquire`].
 pub(crate) fn mark_kind(uri: &str, kind: IoKind) {
-    if !is_remote_uri(uri) { return; }
+    if !is_remote_uri(uri) {
+        return;
+    }
     if let Ok(mut states) = gate().states.lock() {
         let state = state_for(&mut states, &scope_key(uri));
         state.last_kind = kind;
@@ -619,7 +630,8 @@ mod tests {
     fn registry_reclaims_idle_scopes_but_preserves_waits_and_cooldowns() {
         let mut states = HashMap::new();
         state_for(&mut states, "waiting").active_waiters = 1;
-        state_for(&mut states, "cooling").cooldown_until = Some(Instant::now() + Duration::from_secs(60));
+        state_for(&mut states, "cooling").cooldown_until =
+            Some(Instant::now() + Duration::from_secs(60));
         for n in 0..MAX_RETAINED_SCOPES * 2 {
             state_for(&mut states, &n.to_string());
         }
@@ -627,7 +639,9 @@ mod tests {
         assert!(states.contains_key("waiting"));
         assert!(states.contains_key("cooling"));
         assert!(!states.contains_key("0"));
-        for state in states.values_mut() { state.last_used = Instant::now() - SCOPE_IDLE_TTL; }
+        for state in states.values_mut() {
+            state.last_used = Instant::now() - SCOPE_IDLE_TTL;
+        }
         state_for(&mut states, "new");
         assert_eq!(states.len(), 3);
     }

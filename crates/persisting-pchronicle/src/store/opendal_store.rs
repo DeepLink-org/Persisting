@@ -85,7 +85,8 @@ struct OperatorRegistry {
 
 impl OperatorRegistry {
     fn get(&mut self, key: &str, now: Instant) -> Option<Operator> {
-        self.entries.retain(|_, (_, used)| now.duration_since(*used) < OPERATOR_IDLE_TTL);
+        self.entries
+            .retain(|_, (_, used)| now.duration_since(*used) < OPERATOR_IDLE_TTL);
         self.entries.get_mut(key).map(|(operator, used)| {
             *used = now;
             operator.clone()
@@ -94,8 +95,12 @@ impl OperatorRegistry {
 
     fn insert(&mut self, key: String, operator: Operator, now: Instant) {
         if !self.entries.contains_key(&key) && self.entries.len() >= MAX_CACHED_OPERATORS {
-            if let Some(oldest) = self.entries.iter().min_by_key(|(_, (_, used))| *used)
-                .map(|(key, _)| key.clone()) {
+            if let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(key, _)| key.clone())
+            {
                 self.entries.remove(&oldest);
             }
         }
@@ -116,8 +121,10 @@ impl Store {
                 .unwrap_or(false);
         // Memory operators own the data itself and must not be evicted like clients.
         let operator = if normalized.starts_with("memory://") {
-            let mut map = SHARED_MEMORY.get_or_init(|| Mutex::new(HashMap::new()))
-                .lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut map = SHARED_MEMORY
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(operator) = map.get(uri) {
                 operator.clone()
             } else {
@@ -127,15 +134,21 @@ impl Store {
             }
         } else {
             let registry = OPERATORS.get_or_init(|| Mutex::new(OperatorRegistry::default()));
-            let cached = registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            let cached = registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(&cache_key, Instant::now());
             if let Some(operator) = cached {
                 operator
             } else {
                 // Construct outside the registry lock so one backend cannot block all others.
-                let operator = with_object_store_retries(Operator::from_uri(normalized.as_str())
-                    .with_context(|| format!("open OpenDAL store {uri}"))?);
-                registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                let operator = with_object_store_retries(
+                    Operator::from_uri(normalized.as_str())
+                        .with_context(|| format!("open OpenDAL store {uri}"))?,
+                );
+                registry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(cache_key, operator.clone(), Instant::now());
                 operator
             }
@@ -475,13 +488,21 @@ mod tests {
         registry.insert("first".into(), store.operator.clone(), now);
         let live = registry.get("first", now).unwrap();
         for n in 0..MAX_CACHED_OPERATORS {
-            registry.insert(n.to_string(), store.operator.clone(), now + Duration::from_millis(1));
+            registry.insert(
+                n.to_string(),
+                store.operator.clone(),
+                now + Duration::from_millis(1),
+            );
         }
         assert_eq!(registry.entries.len(), MAX_CACHED_OPERATORS);
         assert!(!registry.entries.contains_key("first"));
         live.write("probe", "still alive").await?;
         assert_eq!(live.read("probe").await?.to_vec(), b"still alive");
-        assert!(registry.get("0", now + OPERATOR_IDLE_TTL + Duration::from_secs(1)).is_none());
+        assert!(
+            registry
+                .get("0", now + OPERATOR_IDLE_TTL + Duration::from_secs(1))
+                .is_none()
+        );
         assert!(registry.entries.is_empty());
         Ok(())
     }

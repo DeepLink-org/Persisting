@@ -116,6 +116,8 @@ pub struct QueryCatalog {
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct QueryDatasetSummary {
+    #[serde(default)]
+    pub browse: Option<BrowseStatus>,
     pub name: String,
     pub uri: String,
     pub ready_sources: usize,
@@ -773,12 +775,14 @@ mod tests {
             path_column: "_file_".into(),
             datasets: vec![
                 QueryDatasetSummary {
+                    browse: None,
                     name: "atif".into(),
                     uri: "atif".into(),
                     ready_sources: 1,
                     error_sources: 0,
                 },
                 QueryDatasetSummary {
+                    browse: None,
                     name: "actf".into(),
                     uri: "actf".into(),
                     ready_sources: 1,
@@ -844,8 +848,45 @@ mod tests {
 /// Directory observations are independent of the query's pinned revisions.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct BrowseStatus {
+    #[serde(default)]
+    pub partial: bool,
+    #[serde(default)]
+    pub state: String,
     pub observed_at: i64,
     pub stale: bool,
     pub refreshing: bool,
     pub last_error: Option<String>,
+}
+
+impl QueryDatasetSummary {
+    pub fn label(&self) -> String {
+        let suffix = self.browse.as_ref().map(|status| {
+            if status.observed_at == 0 && status.last_error.is_some() { " · Unavailable" }
+            else if status.observed_at == 0 { " · Loading…" }
+            else if status.partial { " · Partial" }
+            else if status.stale { " · Cached" }
+            else { "" }
+        }).unwrap_or("");
+        format!("{}{suffix}", self.name)
+    }
+}
+
+#[cfg(test)]
+mod browse_status_tests {
+    use super::*;
+    #[test]
+    fn distinguish_unknown_counts_from_an_empty_loaded_dataset() {
+        let mut dataset: QueryDatasetSummary = serde_json::from_value(serde_json::json!({
+            "name": "mount", "uri": "s3://bucket", "ready_sources": 0, "error_sources": 0,
+            "browse": {"observed_at": 0, "refreshing": true, "stale": true, "last_error": null}
+        })).unwrap();
+        assert_eq!(dataset.label(), "mount · Loading…");
+        dataset.browse.as_mut().unwrap().observed_at = 1;
+        dataset.browse.as_mut().unwrap().stale = false;
+        assert_eq!(dataset.label(), "mount");
+        dataset.browse.as_mut().unwrap().partial = true;
+        assert_eq!(dataset.label(), "mount · Partial");
+        dataset.browse = None;
+        assert_eq!(dataset.label(), "mount");
+    }
 }

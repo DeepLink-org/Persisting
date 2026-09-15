@@ -2346,6 +2346,8 @@ struct QueryCatalog {
 
 #[derive(Debug, Serialize)]
 struct QueryDatasetSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    browse: Option<ui_cache::BrowseStatus>,
     name: String,
     uri: String,
     ready_sources: usize,
@@ -2703,6 +2705,7 @@ async fn ui_query_catalog(state: &AppState) -> Result<Json<QueryCatalog>, ApiErr
     for mount in &state.config.datasets {
         let tree = browse.cached_dataset(mount).await;
         let (ready_sources, error_sources) = tree
+            .as_ref()
             .map(|tree| {
                 tree.children.iter().fold((0, 0), |(ready, failed), child| {
                     (
@@ -2713,6 +2716,7 @@ async fn ui_query_catalog(state: &AppState) -> Result<Json<QueryCatalog>, ApiErr
             })
             .unwrap_or_default();
         datasets.push(QueryDatasetSummary {
+            browse: None,
             name: mount.name.clone(),
             uri: mount.uri.clone(),
             ready_sources,
@@ -2771,6 +2775,7 @@ async fn query_tables(
             .datasets()
             .iter()
             .map(|dataset| QueryDatasetSummary {
+                browse: None,
                 name: dataset.mount.name.clone(),
                 uri: dataset.mount.uri.clone(),
                 ready_sources: dataset.ready_source_count(),

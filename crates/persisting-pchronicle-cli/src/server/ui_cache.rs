@@ -84,12 +84,13 @@ struct IndexEntry {
 pub(crate) struct BrowseSnapshot {
     // Preserve existing Tree wire fields for old Web clients.
     #[serde(flatten)]
-    tree: CatalogTree,
-    browse: BrowseStatus,
+    pub(super) tree: CatalogTree,
+    pub(super) browse: BrowseStatus,
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct BrowseStatus {
+pub(super) struct BrowseStatus {
+    partial: bool,
     consistency: CatalogConsistency,
     state: CatalogState,
     generation: String,
@@ -182,16 +183,6 @@ impl BrowseCoordinator {
         }
     }
 
-    pub(crate) async fn cached_dataset(&self, mount: &DatasetMount) -> Option<CatalogTree> {
-        let key = TreeKey::new(mount, "").ok()?;
-        self.index
-            .values
-            .read()
-            .await
-            .get(&key)
-            .map(|entry| entry.tree.clone())
-    }
-
     pub(crate) async fn cached_source_paths(&self, mount: &DatasetMount) -> Vec<String> {
         let values = self.index.values.read().await;
         let fingerprint = mount_fingerprint(mount);
@@ -207,11 +198,22 @@ impl BrowseCoordinator {
         paths
     }
 
+    pub(crate) async fn cached_dataset(&self, mount: &DatasetMount) -> Option<CatalogTree> {
+        let key = TreeKey::new(mount, "").ok()?;
+        self.index
+            .values
+            .read()
+            .await
+            .get(&key)
+            .map(|entry| entry.tree.clone())
+    }
+
     pub(crate) async fn roots(&self, mounts: &[DatasetMount]) -> BrowseSnapshot {
         let mut tree = catalog_tree_from_mount_specs(mounts);
         let values = self.index.values.read().await;
         let mut observed_at = now();
         let mut complete = true;
+        let mut partial = false;
         let mut refreshing = false;
         let mut error = None;
         for mount in mounts {
@@ -224,6 +226,7 @@ impl BrowseCoordinator {
             {
                 error = Some(failure);
             }
+            partial |= projection_is_partial(&values, &key);
             if let Some(entry) = values.get(&key) {
                 observed_at = observed_at.min(entry.observed_at);
                 if let Some(child) = tree.children.iter_mut().find(|c| c.name == mount.name) {
@@ -237,6 +240,7 @@ impl BrowseCoordinator {
                 .manifests
                 .summary(&format!("{}\0{}", mount.name, mount_fingerprint(mount)))
                 .await;
+            partial |= summary.partial;
             if let Some(child) = tree.children.iter_mut().find(|c| c.name == mount.name) {
                 child.run_count = summary.trajectories as usize;
                 child.dataset_count = Some(summary.datasets as usize);
@@ -260,9 +264,12 @@ impl BrowseCoordinator {
             .fold(0usize, |sum, c| sum.saturating_add(c.failed_count));
         BrowseSnapshot {
             browse: BrowseStatus {
+                partial,
                 consistency: CatalogConsistency::BestEffort,
                 state: if refreshing {
                     CatalogState::Refreshing
+                } else if partial {
+                    CatalogState::Partial
                 } else if !complete && error.is_some() {
                     CatalogState::Unavailable
                 } else if !complete || error.is_some() || now() - observed_at >= 30 {
@@ -295,20 +302,26 @@ impl BrowseCoordinator {
             let _ = self.enqueue(&key, None);
             return Ok(self.snapshot_with_summary(&key, entry).await);
         }
-        self.enqueue(&key, None)?;
+        let error = self.enqueue(&key, None).err().map(|e| e.to_string());
+        let refreshing = lock_recover(&self.pending).contains_key(&key);
         // Cold browse requests return an empty, explicitly refreshing view;
         // the worker fills the index asynchronously instead of blocking HTTP.
         let tree = catalog_tree_from_path_list(&key.dataset, &key.prefix, &[]);
         Ok(BrowseSnapshot {
             tree,
             browse: BrowseStatus {
+                partial: false,
                 consistency: CatalogConsistency::BestEffort,
-                state: CatalogState::Refreshing,
+                state: if error.is_some() {
+                    CatalogState::Unavailable
+                } else {
+                    CatalogState::Refreshing
+                },
                 generation: String::new(),
                 observed_at: 0,
                 stale: true,
-                refreshing: true,
-                last_error: None,
+                refreshing,
+                last_error: error,
             },
         })
     }
@@ -347,6 +360,7 @@ impl BrowseCoordinator {
         BrowseSnapshot {
             tree: entry.tree,
             browse: BrowseStatus {
+                partial: false,
                 consistency: CatalogConsistency::BestEffort,
                 state: if lock_recover(&self.pending).contains_key(key) {
                     CatalogState::Refreshing
@@ -463,8 +477,42 @@ impl BrowseCoordinator {
         entry.tree.dataset_count = Some((summary.datasets as usize).max(child_summary.0));
         entry.tree.trajectory_count = Some((summary.trajectories as usize).max(child_summary.1));
         entry.tree.run_count = entry.tree.trajectory_count.unwrap_or_default();
-        self.snapshot(key, entry)
+        let partial =
+            summary.partial || projection_is_partial(&*self.index.values.read().await, key);
+        let mut snapshot = self.snapshot(key, entry);
+        snapshot.browse.partial = partial;
+        if partial && !snapshot.browse.refreshing {
+            snapshot.browse.state = CatalogState::Partial;
+        }
+        snapshot
     }
+}
+
+// A root observation is not a complete descendant inventory. This also
+// exposes the worker's traversal limit without treating unseen directories as empty.
+fn projection_is_partial(values: &HashMap<TreeKey, IndexEntry>, key: &TreeKey) -> bool {
+    values
+        .iter()
+        .filter(|(other, _)| {
+            other.dataset == key.dataset
+                && other.uri_fingerprint == key.uri_fingerprint
+                && (key.prefix.is_empty()
+                    || other.prefix == key.prefix
+                    || other.prefix.starts_with(&format!("{}/", key.prefix)))
+        })
+        .any(|(_, entry)| {
+            entry
+                .tree
+                .children
+                .iter()
+                .filter(|child| child.kind == "dir")
+                .any(|child| {
+                    !values.contains_key(&TreeKey {
+                        prefix: child.path.clone(),
+                        ..key.clone()
+                    })
+                })
+        })
 }
 
 fn manifest_key(key: &TreeKey, child_prefix: Option<&str>) -> String {
@@ -631,9 +679,6 @@ async fn refresh_tree(
         None
     };
     let location = DatasetLocation::parse(&mount.uri)?;
-    if location.local_path().is_none() {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
     if let Some(root) = location.local_path() {
         tokio::fs::metadata(root.join(&key.prefix))
             .await
@@ -772,6 +817,50 @@ mod tests {
 
     fn mount(path: &std::path::Path) -> DatasetMount {
         DatasetMount::new("test", path.to_string_lossy()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn cold_tree_returns_loading_and_incomplete_descendants_are_partial() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        std::fs::create_dir_all(source.join("nested")).unwrap();
+        let mount = mount(&source);
+        let coordinator =
+            BrowseCoordinator::start_at(vec![mount.clone()], temp.path().join("cache")).await;
+        let gate = BROWSE_IO.acquire_many(2).await.unwrap();
+        let cold = tokio::time::timeout(Duration::from_secs(1), coordinator.tree(&mount, ""))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cold.tree.dataset.as_deref(), Some("test"));
+        assert_eq!(cold.browse.state, CatalogState::Refreshing);
+        assert_eq!(cold.browse.observed_at, 0);
+        let key = TreeKey::new(&mount, "").unwrap();
+        let mut entry = IndexEntry {
+            tree: CatalogTree::default(),
+            generation: String::new(),
+            observed_at: now(),
+        };
+        entry
+            .tree
+            .children
+            .push(super::super::explorer::CatalogTreeChild {
+                kind: "dir".into(),
+                path: "nested".into(),
+                ..Default::default()
+            });
+        let mut values = HashMap::from([(key.clone(), entry.clone())]);
+        assert!(projection_is_partial(&values, &key));
+        entry.tree.children.clear();
+        values.insert(
+            TreeKey {
+                prefix: "nested".into(),
+                ..key.clone()
+            },
+            entry,
+        );
+        assert!(!projection_is_partial(&values, &key));
+        drop(gate);
     }
 
     #[tokio::test]

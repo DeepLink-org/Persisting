@@ -49,11 +49,16 @@ impl BlockCache {
         }
     }
     pub fn block_path(&self, key: &str, block: u64) -> PathBuf {
-        self.config.root.join(
-            blake3::hash(format!("{key}:{block}").as_bytes())
-                .to_hex()
-                .to_string(),
-        )
+        let hash = blake3::hash(format!("{key}:{block}").as_bytes())
+            .to_hex()
+            .to_string();
+        // Keep directory fan-out bounded; a single flat cache directory becomes
+        // expensive once a service has browsed many datasets and versions.
+        self.config
+            .root
+            .join(&hash[..2])
+            .join(&hash[2..4])
+            .join(hash)
     }
     pub async fn get_or_fetch<F>(
         &self,
@@ -64,6 +69,8 @@ impl BlockCache {
     where
         F: Future<Output = object_store::Result<Bytes>>,
     {
+        // Reclaim stale files after a restart as well as after new downloads.
+        self.schedule_trim();
         match tokio::fs::read(path).await {
             Ok(bytes) if bytes.len() == expected => {
                 self.counters.hits.fetch_add(1, Ordering::Relaxed);
@@ -95,7 +102,10 @@ impl BlockCache {
                     source: format!("block length {}, expected {expected}", bytes.len()).into(),
                 });
             }
-            if tokio::fs::create_dir_all(&self.config.root).await.is_ok() {
+            if tokio::fs::create_dir_all(path.parent().unwrap_or(&self.config.root))
+                .await
+                .is_ok()
+            {
                 let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
                 if tokio::fs::write(&tmp, &bytes).await.is_ok() {
                     let _ = tokio::fs::rename(&tmp, path).await;
@@ -133,16 +143,22 @@ impl BlockCache {
         tokio::spawn(async move { cache.trim().await });
     }
     pub async fn trim(&self) {
-        let Ok(mut entries) = tokio::fs::read_dir(&self.config.root).await else {
-            return;
-        };
         let mut files = Vec::new();
         let mut total = 0;
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            if let Ok(meta) = entry.metadata().await {
-                if meta.is_file() {
-                    total += meta.len();
-                    files.push((meta.modified().ok(), meta.len(), entry.path()));
+        let mut dirs = vec![self.config.root.clone()];
+        while let Some(dir) = dirs.pop() {
+            let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+                continue;
+            };
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if let Ok(meta) = entry.metadata().await {
+                    if meta.is_dir() {
+                        dirs.push(path);
+                    } else if meta.is_file() && path.extension().is_none_or(|ext| ext != "tmp") {
+                        total += meta.len();
+                        files.push((meta.modified().ok(), meta.len(), path));
+                    }
                 }
             }
         }
