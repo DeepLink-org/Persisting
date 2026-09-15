@@ -16,6 +16,7 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use super::explorer::{CatalogTree, catalog_tree_from_mount_specs, catalog_tree_from_path_list};
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const FOREGROUND_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const QUEUE_CAPACITY: usize = 128;
 // Keep browse work bounded while allowing a foreground request to run beside
 // one background walk.
@@ -302,28 +303,40 @@ impl BrowseCoordinator {
             let _ = self.enqueue(&key, None);
             return Ok(self.snapshot_with_summary(&key, entry).await);
         }
-        let error = self.enqueue(&key, None).err().map(|e| e.to_string());
-        let refreshing = lock_recover(&self.pending).contains_key(&key);
-        // Cold browse requests return an empty, explicitly refreshing view;
-        // the worker fills the index asynchronously instead of blocking HTTP.
-        let tree = catalog_tree_from_path_list(&key.dataset, &key.prefix, &[]);
-        Ok(BrowseSnapshot {
-            tree,
-            browse: BrowseStatus {
-                partial: false,
-                consistency: CatalogConsistency::BestEffort,
-                state: if error.is_some() {
-                    CatalogState::Unavailable
-                } else {
-                    CatalogState::Refreshing
-                },
-                generation: String::new(),
-                observed_at: 0,
-                stale: true,
-                refreshing,
-                last_error: error,
-            },
-        })
+        // A cold page is user-visible work: attach to the same single-flight
+        // refresh as the background walker and return once this prefix exists.
+        let (reply, wait) = oneshot::channel();
+        self.enqueue(&key, Some(reply))?;
+        match tokio::time::timeout(FOREGROUND_REFRESH_TIMEOUT, wait).await {
+            Ok(result) => result
+                .context("browse refresh task stopped")?
+                .map_err(anyhow::Error::msg)?,
+            Err(_) => {
+                let tree = catalog_tree_from_path_list(&key.dataset, &key.prefix, &[]);
+                return Ok(BrowseSnapshot {
+                    tree,
+                    browse: BrowseStatus {
+                        partial: true,
+                        consistency: CatalogConsistency::BestEffort,
+                        state: CatalogState::Refreshing,
+                        generation: String::new(),
+                        observed_at: 0,
+                        stale: true,
+                        refreshing: true,
+                        last_error: Some("remote browse is still loading".into()),
+                    },
+                });
+            }
+        }
+        let entry = self
+            .index
+            .values
+            .read()
+            .await
+            .get(&key)
+            .cloned()
+            .context("browse refresh completed without a cached view")?;
+        Ok(self.snapshot_with_summary(&key, entry).await)
     }
 
     fn enqueue(&self, key: &TreeKey, reply: Option<Reply>) -> Result<()> {
@@ -842,14 +855,16 @@ mod tests {
         let mount = mount(&source);
         let coordinator =
             BrowseCoordinator::start_at(vec![mount.clone()], temp.path().join("cache")).await;
-        let gate = BROWSE_IO.acquire_many(2).await.unwrap();
         let cold = tokio::time::timeout(Duration::from_secs(1), coordinator.tree(&mount, ""))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(cold.tree.dataset.as_deref(), Some("test"));
-        assert_eq!(cold.browse.state, CatalogState::Refreshing);
-        assert_eq!(cold.browse.observed_at, 0);
+        assert!(matches!(
+            cold.browse.state,
+            CatalogState::Ready | CatalogState::Partial
+        ));
+        assert!(cold.browse.observed_at > 0);
         let key = TreeKey::new(&mount, "").unwrap();
         let mut entry = IndexEntry {
             tree: CatalogTree::default(),
@@ -875,7 +890,6 @@ mod tests {
             entry,
         );
         assert!(!projection_is_partial(&values, &key));
-        drop(gate);
     }
 
     #[tokio::test]

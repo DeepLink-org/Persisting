@@ -141,6 +141,16 @@ impl CatalogAcl {
         Some(user)
     }
 
+    pub(crate) fn apply_public_backend_env(&self) {
+        if let Some(library) = self.public_datasets.iter().find_map(|name| {
+            self.libraries
+                .get(name)
+                .filter(|library| library.uri.starts_with("s3://"))
+        }) {
+            apply_library_env(library);
+        }
+    }
+
     fn authenticate_headers(
         &self,
         headers: &axum::http::HeaderMap,
@@ -702,7 +712,11 @@ pub(crate) fn apply_library_env(library: &CatalogLibrary) {
             }
         }
     }
-    if let Some(region) = library.region.as_deref() {
+    if let Some(region) = library
+        .region
+        .as_deref()
+        .or_else(|| library.uri.starts_with("s3://").then_some("us-west-2"))
+    {
         unsafe {
             std::env::set_var("AWS_REGION", region);
             std::env::set_var("AWS_DEFAULT_REGION", region);

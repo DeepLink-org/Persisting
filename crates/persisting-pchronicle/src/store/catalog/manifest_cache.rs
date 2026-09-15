@@ -142,10 +142,12 @@ impl ManifestCache {
             .upsert(&key, &serde_json::to_value(&listing)?, &[])
             .await
         {
-            tracing::warn!(target: "pchronicle.serve", %key, %error,
+            tracing::warn!(target: "pchronicle.serve", prefix, %error,
                 "manifest cache persistence failed; using memory");
         }
-        tracing::info!(target: "pchronicle.serve", %key, prefix, entries = listing.entries.len(), "manifest cache updated");
+        // `key` contains NUL separators and is an internal cache identity;
+        // logging it makes journald truncate the record at the dataset name.
+        tracing::debug!(target: "pchronicle.serve", prefix, entries = listing.entries.len(), browse, "manifest cache updated");
         Ok(listing)
     }
 

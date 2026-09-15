@@ -186,21 +186,10 @@ impl Store {
                 Ok(value)
             }
             Err(error) => {
-                let text = error.to_string().to_ascii_lowercase();
-                if [
-                    "timeout",
-                    "connection",
-                    "broken pipe",
-                    "temporarily",
-                    "slowdown",
-                    "throttl",
-                    "503",
-                    "429",
-                    "reset",
-                ]
-                .iter()
-                .any(|needle| text.contains(needle))
-                {
+                if is_transient_error(&error) {
+                    tracing::warn!(target: "pchronicle.opendal",
+                        scope = %self.io_scope, kind = kind.as_str(), error = %error,
+                        "remote operation failed; applying shared cooldown");
                     io_gate::note_failure(&self.io_scope, kind);
                 }
                 Err(error.into())
@@ -450,6 +439,13 @@ pub(crate) fn version(metadata: &Metadata) -> Version {
     }
 }
 
+fn is_transient_error(error: &opendal::Error) -> bool {
+    // RetryLayer marks all returned errors persistent, even 404/403/412.
+    // Never classify by response headers or request IDs in the display text.
+    matches!(error.kind(), ErrorKind::Unexpected | ErrorKind::RateLimited)
+        && (error.is_temporary() || error.is_persistent())
+}
+
 fn normalize_uri(uri: &str) -> Result<String> {
     if !uri.contains("://") {
         let path = std::path::Path::new(uri);
@@ -479,6 +475,54 @@ fn normalize_uri(uri: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temporary_and_exhausted_transport_errors_still_trigger_backoff() {
+        for kind in [ErrorKind::Unexpected, ErrorKind::RateLimited] {
+            assert!(is_transient_error(
+                &opendal::Error::new(kind, "backend failure").set_temporary()
+            ));
+            assert!(is_transient_error(
+                &opendal::Error::new(kind, "backend failure").set_persistent()
+            ));
+        }
+        assert!(!is_transient_error(
+            &opendal::Error::new(ErrorKind::Unexpected, "invalid response").set_permanent()
+        ));
+        assert!(!is_transient_error(
+            &opendal::Error::new(ErrorKind::ConfigInvalid, "connection").set_persistent()
+        ));
+    }
+
+    #[tokio::test]
+    async fn missing_markers_with_connection_headers_do_not_trigger_cooldown() -> Result<()> {
+        // RetryLayer marks even non-retryable errors persistent. S3 includes
+        // response headers in the error context, including `connection`.
+        let mut store = Store::from_uri("shared-memory://missing-marker-gate-test").await?;
+        store.io_scope = io_gate::scope_key("s3://missing-marker-gate-test");
+        for kind in [
+            ErrorKind::NotFound,
+            ErrorKind::PermissionDenied,
+            ErrorKind::ConditionNotMatch,
+        ] {
+            let error = store
+                .remote::<(), _, _>(IoKind::Read, |_| async move {
+                    Err(opendal::Error::new(kind, "S3 response")
+                        .with_context("response", "connection: keep-alive; request-id: 503429")
+                        .set_persistent())
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(error.downcast_ref::<opendal::Error>().unwrap().kind(), kind);
+            tokio::time::timeout(
+                Duration::from_millis(200),
+                store.remote(IoKind::Read, |_| async { Ok(()) }),
+            )
+            .await
+            .context("non-transient response started AIMD cooldown")??;
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn operator_registry_bounds_clients_without_invalidating_live_handles() -> Result<()> {

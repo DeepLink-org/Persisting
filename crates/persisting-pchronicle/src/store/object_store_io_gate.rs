@@ -3,7 +3,7 @@
 //! Lance opens and table writes against flaky S3-compatible gateways amplify
 //! timeouts when several datasets race (list `_versions/`, retries, AIMD inside
 //! object_store). This gate:
-//! 1. caps concurrent remote Lance ops (default 1);
+//! 1. caps concurrent remote ops per endpoint + bucket (default 1);
 //! 2. after a transient failure, forces a shared cooldown + growing delay;
 //! 3. decays the delay after a streak of successes.
 //!
@@ -122,6 +122,7 @@ fn emit_throttle(event: ObjectStoreThrottleEvent) {
 
 #[derive(Debug, Clone)]
 struct AimdState {
+    semaphore: Arc<Semaphore>,
     last_used: Instant,
     /// Extra sleep applied before each remote acquire while degraded.
     delay_ms: u64,
@@ -138,6 +139,7 @@ struct AimdState {
 impl Default for AimdState {
     fn default() -> Self {
         Self {
+            semaphore: Arc::new(Semaphore::new(DEFAULT_REMOTE_CONCURRENCY)),
             last_used: Instant::now(),
             delay_ms: 0,
             cooldown_until: None,
@@ -150,16 +152,20 @@ impl Default for AimdState {
 }
 
 struct Gate {
-    semaphore: Arc<Semaphore>,
     concurrency: usize,
     states: Mutex<HashMap<String, AimdState>>,
 }
 
-fn state_for<'a>(states: &'a mut HashMap<String, AimdState>, key: &str) -> &'a mut AimdState {
+fn state_for<'a>(
+    states: &'a mut HashMap<String, AimdState>,
+    key: &str,
+    concurrency: usize,
+) -> &'a mut AimdState {
     let now = Instant::now();
     if !states.contains_key(key) {
         states.retain(|_, state| {
-            state.active_waiters > 0
+            Arc::strong_count(&state.semaphore) > 1
+                || state.active_waiters > 0
                 || state.cooldown_until.is_some_and(|until| until > now)
                 || now.duration_since(state.last_used) < SCOPE_IDLE_TTL
         });
@@ -167,7 +173,8 @@ fn state_for<'a>(states: &'a mut HashMap<String, AimdState>, key: &str) -> &'a m
             let oldest = states
                 .iter()
                 .filter(|(_, state)| {
-                    state.active_waiters == 0
+                    Arc::strong_count(&state.semaphore) == 1
+                        && state.active_waiters == 0
                         && state.cooldown_until.is_none_or(|until| until <= now)
                 })
                 .min_by_key(|(_, state)| state.last_used)
@@ -181,7 +188,10 @@ fn state_for<'a>(states: &'a mut HashMap<String, AimdState>, key: &str) -> &'a m
     }
     // Live waits/cooldowns may temporarily exceed the retention limit. Evicting
     // them would let backend overload bypass AIMD; reclaim after they finish.
-    let state = states.entry(key.to_owned()).or_default();
+    let state = states.entry(key.to_owned()).or_insert_with(|| AimdState {
+        semaphore: Arc::new(Semaphore::new(concurrency)),
+        ..Default::default()
+    });
     state.last_used = now;
     state
 }
@@ -195,7 +205,6 @@ fn gate() -> &'static Gate {
             .unwrap_or(DEFAULT_REMOTE_CONCURRENCY)
             .clamp(1, MAX_REMOTE_CONCURRENCY);
         Gate {
-            semaphore: Arc::new(Semaphore::new(concurrency)),
             concurrency,
             states: Mutex::new(HashMap::new()),
         }
@@ -283,7 +292,7 @@ pub(crate) fn is_transient_error(error: &object_store::Error) -> bool {
 /// Snapshot AIMD / cooldown state for progress UI.
 pub fn snapshot() -> ObjectStoreGateSnapshot {
     let g = gate();
-    let available_permits = g.semaphore.available_permits();
+    let available_permits = g.concurrency;
     let max_permits = g.concurrency;
     let Ok(states) = g.states.lock() else {
         return ObjectStoreGateSnapshot {
@@ -325,7 +334,7 @@ pub fn snapshot() -> ObjectStoreGateSnapshot {
         success_streak: state.successes_since_backoff,
         success_streak_target: SUCCESS_STREAK_TO_DECAY,
         active_waiters: state.active_waiters,
-        available_permits,
+        available_permits: state.semaphore.available_permits(),
         max_permits,
     }
 }
@@ -374,16 +383,22 @@ pub(crate) async fn acquire(uri: &str, kind: IoKind) -> Permit {
 }
 
 async fn acquire_scoped(g: &Gate, key: &str, kind: IoKind) -> Permit {
-    if let Ok(mut states) = g.states.lock() {
-        state_for(&mut states, key).last_kind = kind;
-    }
+    let semaphore = {
+        let mut states = g
+            .states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = state_for(&mut states, key, g.concurrency);
+        state.last_kind = kind;
+        Arc::clone(&state.semaphore)
+    };
     loop {
         wait_out_degradation(g, key, kind).await;
-        let permit = match g.semaphore.clone().try_acquire_owned() {
+        let permit = match semaphore.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
                 let _wait = WaitGuard::new(g, key, kind, "admit", 0);
-                match g.semaphore.clone().acquire_owned().await {
+                match semaphore.clone().acquire_owned().await {
                     Ok(permit) => permit,
                     Err(error) => {
                         tracing::error!(?error, "object-store I/O semaphore closed unexpectedly");
@@ -436,7 +451,7 @@ fn enter_wait(g: &Gate, key: &str, kind: IoKind, reason: &'static str, wait_ms: 
         let Ok(mut states) = g.states.lock() else {
             return;
         };
-        let state = state_for(&mut states, key);
+        let state = state_for(&mut states, key, g.concurrency);
         state.last_kind = kind;
         state.active_waiters = state.active_waiters.saturating_add(1);
         (state.delay_ms, state.failures)
@@ -452,7 +467,7 @@ fn enter_wait(g: &Gate, key: &str, kind: IoKind, reason: &'static str, wait_ms: 
 
 fn leave_wait(g: &Gate, key: &str, kind: IoKind) {
     if let Ok(mut states) = g.states.lock() {
-        let state = state_for(&mut states, key);
+        let state = state_for(&mut states, key, g.concurrency);
         state.active_waiters = state.active_waiters.saturating_sub(1);
     }
     emit_throttle(ObjectStoreThrottleEvent::Leave { kind });
@@ -499,7 +514,9 @@ async fn wait_out_degradation(g: &Gate, key: &str, kind: IoKind) {
         kind.as_str(),
         sleep_for.as_secs_f32()
     ));
-    tracing::warn!(
+    // A cooldown can have several queued callers; the failure itself is
+    // already logged by `note_failure`, so each waiter need not be WARN noise.
+    tracing::debug!(
         target: "pchronicle.object_store_gate",
         kind = kind.as_str(),
         wait_ms,
@@ -526,7 +543,7 @@ pub(crate) fn mark_kind(uri: &str, kind: IoKind) {
         return;
     }
     if let Ok(mut states) = gate().states.lock() {
-        let state = state_for(&mut states, &scope_key(uri));
+        let state = state_for(&mut states, &scope_key(uri), gate().concurrency);
         state.last_kind = kind;
     }
 }
@@ -541,7 +558,7 @@ pub(crate) fn note_success(uri: &str) {
         let Ok(mut states) = gate().states.lock() else {
             return;
         };
-        let state = state_for(&mut states, &key);
+        let state = state_for(&mut states, &key, gate().concurrency);
         let kind = state.last_kind;
         state.successes_since_backoff = state.successes_since_backoff.saturating_add(1);
         if state.delay_ms == 0 {
@@ -589,7 +606,7 @@ pub(crate) fn note_failure(uri: &str, kind: IoKind) {
         let Ok(mut states) = gate().states.lock() else {
             return;
         };
-        let state = state_for(&mut states, &key);
+        let state = state_for(&mut states, &key, gate().concurrency);
         state.last_kind = kind;
         state.failures = state.failures.saturating_add(1);
         state.successes_since_backoff = 0;
@@ -601,6 +618,7 @@ pub(crate) fn note_failure(uri: &str, kind: IoKind) {
         state.cooldown_until = Some(Instant::now() + Duration::from_millis(state.delay_ms));
         tracing::warn!(
             target: "pchronicle.object_store_gate",
+            scope = %key,
             kind = kind.as_str(),
             delay_ms = state.delay_ms,
             failures = state.failures,
@@ -629,11 +647,11 @@ mod tests {
     #[test]
     fn registry_reclaims_idle_scopes_but_preserves_waits_and_cooldowns() {
         let mut states = HashMap::new();
-        state_for(&mut states, "waiting").active_waiters = 1;
-        state_for(&mut states, "cooling").cooldown_until =
+        state_for(&mut states, "waiting", 1).active_waiters = 1;
+        state_for(&mut states, "cooling", 1).cooldown_until =
             Some(Instant::now() + Duration::from_secs(60));
         for n in 0..MAX_RETAINED_SCOPES * 2 {
-            state_for(&mut states, &n.to_string());
+            state_for(&mut states, &n.to_string(), 1);
         }
         assert_eq!(states.len(), MAX_RETAINED_SCOPES);
         assert!(states.contains_key("waiting"));
@@ -642,7 +660,7 @@ mod tests {
         for state in states.values_mut() {
             state.last_used = Instant::now() - SCOPE_IDLE_TTL;
         }
-        state_for(&mut states, "new");
+        state_for(&mut states, "new", 1);
         assert_eq!(states.len(), 3);
     }
 
@@ -668,15 +686,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn busy_backend_does_not_block_other_endpoints_or_buckets() {
+        let g = Gate {
+            concurrency: 1,
+            states: Mutex::new(HashMap::new()),
+        };
+        let busy = scope_for_endpoint("s3://bucket/a", "http://slow");
+        let held = acquire_scoped(&g, &busy, IoKind::Read).await;
+        for independent in [
+            scope_for_endpoint("s3://bucket/a", "http://healthy"),
+            scope_for_endpoint("s3://other/a", "http://slow"),
+        ] {
+            let permit = tokio::time::timeout(
+                Duration::from_millis(200),
+                acquire_scoped(&g, &independent, IoKind::Read),
+            )
+            .await
+            .unwrap();
+            drop(permit);
+        }
+        // Registry reclamation must not replace a semaphore with a live permit.
+        {
+            let mut states = g.states.lock().unwrap();
+            states.get_mut(&busy).unwrap().last_used = Instant::now() - SCOPE_IDLE_TTL;
+            for n in 0..MAX_RETAINED_SCOPES + 1 {
+                state_for(&mut states, &n.to_string(), g.concurrency);
+            }
+            assert!(states.contains_key(&busy));
+        }
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(50),
+                acquire_scoped(&g, &busy, IoKind::Read)
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(g.states.lock().unwrap()[&busy].active_waiters, 0);
+        drop(held);
+        let _permit = tokio::time::timeout(
+            Duration::from_millis(200),
+            acquire_scoped(&g, &busy, IoKind::Read),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
     async fn cooldown_after_queued_admission_releases_capacity_and_cancellation_clears_waiters() {
         let g = Arc::new(Gate {
-            semaphore: Arc::new(Semaphore::new(1)),
             concurrency: 1,
             states: Mutex::new(HashMap::new()),
         });
-        let held = g.semaphore.clone().acquire_owned().await.unwrap();
         let bad = scope_for_endpoint("s3://bucket/a", "http://slow");
         let healthy = scope_for_endpoint("s3://bucket/a", "http://healthy");
+        let held = acquire_scoped(&g, &bad, IoKind::Read).await;
         let waiter = tokio::spawn({
             let g = g.clone();
             let bad = bad.clone();
@@ -702,8 +766,7 @@ mod tests {
             .unwrap()
             .cooldown_until = Some(Instant::now() + Duration::from_secs(10));
         drop(held);
-        // The queued unhealthy request is first in the semaphore's FIFO. It
-        // must give up its slot on discovering the newly imposed cooldown.
+        // Cooling on one endpoint must not block another endpoint.
         let permit = tokio::time::timeout(
             Duration::from_millis(500),
             acquire_scoped(&g, &healthy, IoKind::Read),
@@ -715,7 +778,12 @@ mod tests {
         assert!(waiter.await.is_err());
         assert_eq!(g.states.lock().unwrap()[&bad].active_waiters, 0);
         drop(permit);
-        assert_eq!(g.semaphore.available_permits(), 1);
+        assert_eq!(
+            g.states.lock().unwrap()[&healthy]
+                .semaphore
+                .available_permits(),
+            1
+        );
     }
 
     #[test]

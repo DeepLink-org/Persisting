@@ -279,6 +279,9 @@ impl PreparedWarehouse {
         acl: catalog::CatalogAcl,
         mut config: ChronicleServerConfig,
     ) -> anyhow::Result<Self> {
+        // The browse worker starts before any HTTP request can select a
+        // dataset. Seed its shared OpenDAL S3 configuration from the catalog.
+        acl.apply_public_backend_env();
         let browse_mounts = acl
             .public_for_all()
             .into_iter()
