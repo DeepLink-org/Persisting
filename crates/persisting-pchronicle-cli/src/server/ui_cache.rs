@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -17,9 +17,10 @@ use super::explorer::{CatalogTree, catalog_tree_from_mount_specs, catalog_tree_f
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const QUEUE_CAPACITY: usize = 128;
-// ponytail: one process-wide browse scan at a time; per-backend budgets if
-// multiple independent stores need more throughput. This does not gate SQL.
-static BROWSE_IO: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+// Keep browse work bounded while allowing a foreground request to run beside
+// one background walk.
+static BROWSE_IO: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static BACKGROUND_IO: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct TreeKey {
@@ -107,6 +108,12 @@ struct RefreshState {
 
 type Reply = oneshot::Sender<std::result::Result<(), String>>;
 type Pending = Arc<Mutex<HashMap<TreeKey, Vec<Reply>>>>;
+
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// One bounded worker per serve instance, shared by timer and HTTP requests.
 /// The task owns the index, not the coordinator; dropping the last AppState
@@ -210,11 +217,8 @@ impl BrowseCoordinator {
         for mount in mounts {
             let key = TreeKey::new(mount, "").expect("root prefix");
             let _ = self.enqueue(&key, None);
-            refreshing |= self.pending.lock().unwrap().contains_key(&key);
-            if let Some(failure) = self
-                .refresh
-                .lock()
-                .unwrap()
+            refreshing |= lock_recover(&self.pending).contains_key(&key);
+            if let Some(failure) = lock_recover(&self.refresh)
                 .get(&key)
                 .and_then(|s| s.error.clone())
             {
@@ -259,6 +263,8 @@ impl BrowseCoordinator {
                 consistency: CatalogConsistency::BestEffort,
                 state: if refreshing {
                     CatalogState::Refreshing
+                } else if !complete && error.is_some() {
+                    CatalogState::Unavailable
                 } else if !complete || error.is_some() || now() - observed_at >= 30 {
                     CatalogState::Stale
                 } else {
@@ -268,7 +274,7 @@ impl BrowseCoordinator {
                     .to_hex()
                     .to_string(),
                 observed_at: if complete { observed_at } else { 0 },
-                stale: !complete || error.is_some() || now() - observed_at >= 30,
+                stale: complete && (error.is_some() || now() - observed_at >= 30),
                 refreshing,
                 last_error: error,
             },
@@ -289,27 +295,26 @@ impl BrowseCoordinator {
             let _ = self.enqueue(&key, None);
             return Ok(self.snapshot_with_summary(&key, entry).await);
         }
-        let (reply, wait) = oneshot::channel();
-        self.enqueue(&key, Some(reply))?;
-        // Bound cold requests even if many prefixes precede them in the queue.
-        tokio::time::timeout(Duration::from_secs(30), wait)
-            .await
-            .context("browse refresh timed out")?
-            .context("browse worker stopped")?
-            .map_err(anyhow::Error::msg)?;
-        let entry = self
-            .index
-            .values
-            .read()
-            .await
-            .get(&key)
-            .cloned()
-            .context("browse refresh produced no view")?;
-        Ok(self.snapshot_with_summary(&key, entry).await)
+        self.enqueue(&key, None)?;
+        // Cold browse requests return an empty, explicitly refreshing view;
+        // the worker fills the index asynchronously instead of blocking HTTP.
+        let tree = catalog_tree_from_path_list(&key.dataset, &key.prefix, &[]);
+        Ok(BrowseSnapshot {
+            tree,
+            browse: BrowseStatus {
+                consistency: CatalogConsistency::BestEffort,
+                state: CatalogState::Refreshing,
+                generation: String::new(),
+                observed_at: 0,
+                stale: true,
+                refreshing: true,
+                last_error: None,
+            },
+        })
     }
 
     fn enqueue(&self, key: &TreeKey, reply: Option<Reply>) -> Result<()> {
-        if let Some(state) = self.refresh.lock().unwrap().get(key)
+        if let Some(state) = lock_recover(&self.refresh).get(key)
             && state
                 .retry_at
                 .is_some_and(|deadline| deadline > Instant::now())
@@ -319,7 +324,7 @@ impl BrowseCoordinator {
             }
             return Ok(());
         }
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = lock_recover(&self.pending);
         if let Some(waiters) = pending.get_mut(key) {
             waiters.retain(|reply| !reply.is_closed());
             if let Some(reply) = reply {
@@ -336,17 +341,14 @@ impl BrowseCoordinator {
     }
 
     fn snapshot(&self, key: &TreeKey, entry: IndexEntry) -> BrowseSnapshot {
-        let error = self
-            .refresh
-            .lock()
-            .unwrap()
+        let error = lock_recover(&self.refresh)
             .get(key)
             .and_then(|s| s.error.clone());
         BrowseSnapshot {
             tree: entry.tree,
             browse: BrowseStatus {
                 consistency: CatalogConsistency::BestEffort,
-                state: if self.pending.lock().unwrap().contains_key(key) {
+                state: if lock_recover(&self.pending).contains_key(key) {
                     CatalogState::Refreshing
                 } else if error.is_some()
                     || now() - entry.observed_at >= REFRESH_INTERVAL.as_secs() as i64
@@ -359,7 +361,7 @@ impl BrowseCoordinator {
                 observed_at: entry.observed_at,
                 stale: error.is_some()
                     || now() - entry.observed_at >= REFRESH_INTERVAL.as_secs() as i64,
-                refreshing: self.pending.lock().unwrap().contains_key(key),
+                refreshing: lock_recover(&self.pending).contains_key(key),
                 last_error: error,
             },
         }
@@ -502,118 +504,159 @@ async fn run_worker(
 ) {
     let mut interval = tokio::time::interval(REFRESH_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Incremental round over roots and previously browsed prefixes. Foreground
-    // requests are checked between each scan, not after the entire mount set.
-    // Breadth-first keeps shallow datasets visible while a deep subtree is
-    // still being indexed.
     let mut background = VecDeque::new();
     let mut visited = HashSet::new();
+    let mut background_budget = 0usize;
+    let mut background_running = false;
+    // JoinSet aborts outstanding work when the coordinator is dropped.
+    let mut jobs = tokio::task::JoinSet::<(TreeKey, bool, Result<CatalogTree>)>::new();
     loop {
-        let key = tokio::select! {
+        let (key, is_background) = tokio::select! {
             biased;
-            _ = std::future::ready(()), if !background.is_empty() => background.pop_front().unwrap(),
-            request = receiver.recv() => match request { Some(key) => key, None => break },
+            completed = jobs.join_next(), if !jobs.is_empty() => {
+                let (key, was_background, result) = match completed.unwrap() {
+                    Ok(completed) => completed,
+                    Err(error) => {
+                        tracing::error!(target: "pchronicle.serve", %error, "browse refresh task stopped");
+                        for (_, waiters) in lock_recover(&pending).drain() {
+                            for waiter in waiters {
+                                let _ = waiter.send(Err(format!("browse refresh task stopped: {error}")));
+                            }
+                        }
+                        return;
+                    }
+                };
+                if was_background { background_running = false; }
+                let outcome = match result {
+                    Ok(tree) => {
+                        visited.insert(key.clone());
+                        for child in &tree.children {
+                            if child.kind == "dir" && visited.len() < 10_000 {
+                                let next = TreeKey { prefix: child.path.clone(), ..key.clone() };
+                                if visited.insert(next.clone()) { background.push_back(next); }
+                            }
+                        }
+                        lock_recover(&states).insert(key.clone(), RefreshState {
+                            retry_at: Some(Instant::now() + Duration::from_secs(2)),
+                            ..Default::default()
+                        });
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let error = format!("{error:#}");
+                        let cached_view = index.values.read().await.contains_key(&key);
+                        let mut states = lock_recover(&states);
+                        let state = states.entry(key.clone()).or_default();
+                        state.failures = state.failures.saturating_add(1);
+                        state.retry_at = Some(Instant::now() + Duration::from_secs(
+                            (30u64 * (1u64 << state.failures.min(4))).min(300)));
+                        state.error = Some(error.clone());
+                        tracing::warn!(target: "pchronicle.serve", dataset = %key.dataset,
+                            prefix = %key.prefix, cached_view, %error, "browse refresh failed");
+                        Err(error)
+                    }
+                };
+                finish(&pending, &key, outcome);
+                continue;
+            }
+            request = receiver.recv(), if jobs.len() < 2 => match request {
+                Some(key) => (key, false), None => break
+            },
+            _ = std::future::ready(()), if !background.is_empty()
+                && background_budget > 0 && !background_running && jobs.len() < 2 => {
+                background_budget -= 1;
+                (background.pop_front().unwrap(), true)
+            },
             _ = interval.tick() => {
-                tracing::info!(target: "pchronicle.serve", mounts = mounts.len(), "browse manifest refresh round started");
-                if background.is_empty() {
+                if background.is_empty() && !background_running {
                     visited.clear();
                     background.extend(mounts.iter().filter_map(|m| TreeKey::new(m, "").ok()));
                     visited.extend(background.iter().cloned());
                 }
+                background_budget = 32;
                 continue;
             }
         };
         let Some(mount) = mounts
             .iter()
             .find(|m| TreeKey::new(m, &key.prefix).ok().as_ref() == Some(&key))
+            .cloned()
         else {
             continue;
         };
-        if states
-            .lock()
-            .unwrap()
+        // A queued foreground request or an active job already owns this key.
+        // Leave its waiters attached; never start a duplicate background scan.
+        if is_background && lock_recover(&pending).contains_key(&key) {
+            continue;
+        }
+        if lock_recover(&states)
             .get(&key)
             .is_some_and(|s| s.retry_at.is_some_and(|deadline| deadline > Instant::now()))
         {
             finish(&pending, &key, Ok(()));
             continue;
         }
-        pending.lock().unwrap().entry(key.clone()).or_default();
-        let result = async {
-            let _permit = BROWSE_IO.acquire().await?;
-            // Bound prefix-list start rate as well as concurrency. One list may
-            // contain several storage requests; backend I/O gates still apply.
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let location = DatasetLocation::parse(&mount.uri)?;
-            if let Some(root) = location.local_path() {
-                // Navigation's list API treats a missing path as empty. For a
-                // cached view that could erase an offline mount's descendants.
-                // Deletions are instead established by a successful parent list.
-                tokio::fs::metadata(root.join(&key.prefix))
-                    .await
-                    .context("browse path unavailable")?;
-            }
-            let manifest_key = if key.prefix.is_empty() {
-                format!("{}\0{}", key.dataset, key.uri_fingerprint)
-            } else {
-                format!("{}\0{}\0{}", key.dataset, key.uri_fingerprint, key.prefix)
-            };
-            let listing = tokio::time::timeout(
-                Duration::from_secs(20),
-                manifests.refresh(manifest_key, &location, &key.prefix),
-            )
-            .await
-            .context("browse list timed out")??;
-            let entries = listing.entries;
-            let tree = catalog_tree_from_path_list(&mount.name, &key.prefix, &entries);
-            // Walk only navigational directories; a Dataset leaf is opaque.
-            // A bounded frontier prevents the background walk growing without limit.
-            visited.insert(key.clone());
-            for child in &tree.children {
-                if child.kind == "dir" && visited.len() < 10_000 {
-                    let next = TreeKey::new(mount, &child.path)?;
-                    if visited.insert(next.clone()) {
-                        background.push_back(next);
-                    }
-                }
-            }
-            index.put(key.clone(), tree).await;
-            Ok::<_, anyhow::Error>(())
+        lock_recover(&pending).entry(key.clone()).or_default();
+        if is_background {
+            background_running = true;
         }
-        .await;
-        let outcome = match result {
-            Ok(()) => {
-                tracing::info!(target: "pchronicle.serve", dataset = %key.dataset, prefix = %key.prefix, "browse manifest level refreshed");
-                states.lock().unwrap().insert(
-                    key.clone(),
-                    RefreshState {
-                        retry_at: Some(Instant::now() + Duration::from_secs(2)),
-                        ..Default::default()
-                    },
-                );
-                Ok(())
-            }
-            Err(error) => {
-                let error = format!("{error:#}");
-                let cached_view = index.values.read().await.contains_key(&key);
-                let mut states = states.lock().unwrap();
-                let state = states.entry(key.clone()).or_default();
-                state.failures = state.failures.saturating_add(1);
-                state.retry_at = Some(
-                    Instant::now()
-                        + Duration::from_secs((30u64 * (1u64 << state.failures.min(4))).min(300)),
-                );
-                state.error = Some(error.clone());
-                tracing::warn!(target: "pchronicle.serve", dataset = %key.dataset, prefix = %key.prefix, cached_view, error = %error, "browse refresh failed");
-                Err(error)
-            }
-        };
-        finish(&pending, &key, outcome);
+        let index = index.clone();
+        let manifests = manifests.clone();
+        jobs.spawn(async move {
+            // Reserve at least one global browse slot for foreground work.
+            let _background = if is_background {
+                BACKGROUND_IO.acquire().await.ok()
+            } else {
+                None
+            };
+            let result = refresh_tree(&mount, &key, &index, &manifests).await;
+            (key, is_background, result)
+        });
     }
 }
 
+async fn refresh_tree(
+    mount: &DatasetMount,
+    key: &TreeKey,
+    index: &BrowseTreeProjection,
+    manifests: &ManifestCache,
+) -> Result<CatalogTree> {
+    let _permit = BROWSE_IO.acquire().await?;
+    #[cfg(test)]
+    let block = lock_recover(&index.refresh_blocks).get(key).cloned();
+    #[cfg(test)]
+    let _block = if let Some(block) = block {
+        Some(block.acquire_owned().await?)
+    } else {
+        None
+    };
+    let location = DatasetLocation::parse(&mount.uri)?;
+    if location.local_path().is_none() {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if let Some(root) = location.local_path() {
+        tokio::fs::metadata(root.join(&key.prefix))
+            .await
+            .context("browse path unavailable")?;
+    }
+    let manifest_key = if key.prefix.is_empty() {
+        format!("{}\0{}", key.dataset, key.uri_fingerprint)
+    } else {
+        format!("{}\0{}\0{}", key.dataset, key.uri_fingerprint, key.prefix)
+    };
+    let listing = tokio::time::timeout(
+        Duration::from_secs(20),
+        manifests.refresh(manifest_key, &location, &key.prefix),
+    )
+    .await
+    .context("browse list timed out")??;
+    let tree = catalog_tree_from_path_list(&mount.name, &key.prefix, &listing.entries);
+    index.put(key.clone(), tree.clone()).await;
+    Ok(tree)
+}
+
 fn finish(pending: &Pending, key: &TreeKey, outcome: std::result::Result<(), String>) {
-    if let Some(waiters) = pending.lock().unwrap().remove(key) {
+    if let Some(waiters) = lock_recover(&pending).remove(key) {
         for waiter in waiters {
             let _ = waiter.send(outcome.clone());
         }
@@ -626,6 +669,8 @@ fn now() -> i64 {
 
 /// UI-only tree projection over the core ManifestCache. It preserves the legacy tree wire format.
 struct BrowseTreeProjection {
+    #[cfg(test)]
+    refresh_blocks: Mutex<HashMap<TreeKey, Arc<tokio::sync::Semaphore>>>,
     disk: Arc<ManifestCache>,
     values: RwLock<HashMap<TreeKey, IndexEntry>>,
 }
@@ -647,6 +692,8 @@ impl BrowseTreeProjection {
         Self {
             disk,
             values: RwLock::new(values),
+            #[cfg(test)]
+            refresh_blocks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -725,6 +772,60 @@ mod tests {
 
     fn mount(path: &std::path::Path) -> DatasetMount {
         DatasetMount::new("test", path.to_string_lossy()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn foreground_finishes_while_background_is_blocked_and_drop_cancels_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        std::fs::create_dir_all(source.join("nested")).unwrap();
+        let mount = mount(&source);
+        // Construct before starting the worker so the root background scan is
+        // deterministically blocked while a child foreground request arrives.
+        let index = Arc::new(BrowseTreeProjection::open(temp.path().join("tree.lance")).await);
+        let root_key = TreeKey::new(&mount, "").unwrap();
+        let blocker = Arc::new(tokio::sync::Semaphore::new(0));
+        lock_recover(&index.refresh_blocks).insert(root_key.clone(), blocker.clone());
+        let manifests = Arc::new(ManifestCache::open(temp.path().join("manifest.lance")).await);
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let states = Arc::new(Mutex::new(HashMap::new()));
+        let (sender, receiver) = mpsc::channel(QUEUE_CAPACITY);
+        let task = tokio::spawn(run_worker(
+            vec![mount.clone()],
+            index,
+            manifests,
+            pending.clone(),
+            states,
+            receiver,
+        ));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !lock_recover(&pending).contains_key(&root_key) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let child = TreeKey::new(&mount, "nested").unwrap();
+        let (reply, wait) = oneshot::channel();
+        lock_recover(&pending).insert(child.clone(), vec![reply]);
+        sender.send(child).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), wait)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            lock_recover(&pending).contains_key(&root_key),
+            "background must still be blocked"
+        );
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        // Aborting the scheduler drops its JoinSet and releases active I/O.
+        let permits = tokio::time::timeout(Duration::from_secs(5), BROWSE_IO.acquire_many(2))
+            .await
+            .unwrap()
+            .unwrap();
+        drop(permits);
     }
 
     #[tokio::test]
@@ -864,21 +965,21 @@ mod tests {
         let coordinator =
             BrowseCoordinator::start_at(vec![mount.clone()], temp.path().join("cache")).await;
         // Hold the global I/O permit to make duplicate cold requests observable.
-        let gate = BROWSE_IO.acquire().await.unwrap();
+        let gate = BROWSE_IO.acquire_many(2).await.unwrap();
         let key = TreeKey::new(&mount, "").unwrap();
         let (a, ar) = oneshot::channel();
         let (b, br) = oneshot::channel();
         coordinator.enqueue(&key, Some(a)).unwrap();
         coordinator.enqueue(&key, Some(b)).unwrap();
-        assert_eq!(coordinator.pending.lock().unwrap().len(), 1);
-        assert_eq!(coordinator.pending.lock().unwrap()[&key].len(), 2);
+        assert_eq!(lock_recover(&coordinator.pending).len(), 1);
+        assert_eq!(lock_recover(&coordinator.pending)[&key].len(), 2);
         drop(gate);
         ar.await.unwrap().unwrap();
         br.await.unwrap().unwrap();
         let old = coordinator.tree(&mount, "").await.unwrap();
         assert_eq!(old.tree.children[0].name, "nested");
         std::fs::remove_dir_all(&source).unwrap();
-        coordinator.refresh.lock().unwrap().remove(&key);
+        lock_recover(&coordinator.refresh).remove(&key);
         let (reply, wait) = oneshot::channel();
         coordinator.enqueue(&key, Some(reply)).unwrap();
         assert!(wait.await.unwrap().is_err());

@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -19,6 +19,12 @@ const MAX_CACHE_ENTRIES: usize = 32;
 const MAX_CACHE_BYTES: usize = 64 * 1024 * 1024;
 // One background summary refresh per process, with no waiting task queue.
 pub(super) static REFRESH_SLOT: Semaphore = Semaphore::const_new(1);
+
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 struct CachedSummaries {
     summaries: Summaries,
@@ -83,16 +89,16 @@ impl Default for ScopedQueries {
 
 impl ScopedQueries {
     pub(super) fn invalidate(&self) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = lock_recover(&self.cache);
         cache.generation += 1;
         cache.entries.clear();
         // Requests started after explicit refresh must not join an older build.
-        self.flights.lock().unwrap().clear();
+        lock_recover(&self.flights).clear();
     }
 
     fn publish(&self, scope: QueryScope, generation: u64, summaries: Summaries) {
         let bytes = summary_bytes(&summaries);
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = lock_recover(&self.cache);
         if cache.generation != generation {
             return;
         }
@@ -140,7 +146,7 @@ impl ScopedQueries {
         Fut: Future<Output = Result<Summaries>> + Send + 'static,
     {
         let (generation, cached) = {
-            let mut cache = self.cache.lock().unwrap();
+            let mut cache = lock_recover(&self.cache);
             let generation = cache.generation;
             let cached = cache.entries.get_mut(&scope).map(|entry| {
                 entry.last_used = Instant::now();
@@ -163,7 +169,7 @@ impl ScopedQueries {
                     match queries.run(scope.clone(), || execute(true)).await {
                         Ok(summaries) => queries.publish(scope, generation, summaries),
                         Err(error) => {
-                            let mut cache = queries.cache.lock().unwrap();
+                            let mut cache = lock_recover(&queries.cache);
                             if cache.generation == generation
                                 && let Some(entry) = cache.entries.get_mut(&scope)
                             {
@@ -195,7 +201,7 @@ impl ScopedQueries {
         Fut: Future<Output = Result<Summaries>>,
     {
         let flight = {
-            let mut flights = self.flights.lock().unwrap();
+            let mut flights = lock_recover(&self.flights);
             flights.retain(|_, entry| entry.strong_count() > 0);
             if let Some(flight) = flights.get(&scope).and_then(Weak::upgrade) {
                 flight
@@ -234,7 +240,7 @@ mod tests {
     }
 
     fn expire(queries: &ScopedQueries, key: &QueryScope) {
-        let mut cache = queries.cache.lock().unwrap();
+        let mut cache = lock_recover(&queries.cache);
         let entry = cache.entries.get_mut(key).unwrap();
         entry.built_at = Instant::now() - REFRESH_INTERVAL;
         entry.refresh_after = Instant::now();

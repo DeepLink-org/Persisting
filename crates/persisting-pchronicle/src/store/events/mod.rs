@@ -421,7 +421,7 @@ pub(crate) async fn compact_sealed_event_segment(
     );
     let _guard = dataset_write_lock::acquire(&sealed.root_uri).await?;
     let segment_uri = raw_event_manifest::segment_uri(&sealed.root_uri, &sealed.segment.id);
-    let mut dataset = Dataset::open(&segment_uri)
+    let mut dataset = crate::storage::open_lance_dataset(&segment_uri)
         .await
         .with_context(|| format!("open sealed event segment {segment_uri}"))?;
     let metrics = compact_files(
@@ -514,7 +514,7 @@ pub(super) fn validate_event_schema(dataset: &Dataset, uri: &str) -> Result<()> 
 
 async fn open_visible_segment(root_uri: &str, segment: &EventSegment) -> Result<Dataset> {
     let uri = raw_event_manifest::segment_uri(root_uri, &segment.id);
-    let latest = Dataset::open(&uri)
+    let latest = crate::storage::open_lance_dataset(&uri)
         .await
         .with_context(|| format!("open event segment {uri}"))?;
     let dataset = if latest.version_id() == segment.version {

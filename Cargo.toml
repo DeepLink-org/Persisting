@@ -60,6 +60,7 @@ lance-core = "11.0.0"
 lance-file = "11.0.0"
 lance-datafusion = "11.0.0"
 lance-index = { version = "11.0.0", features = ["tokenizer-jieba"] }
+lance-io = "11.0.0"
 lance-linalg = "11.0.0"
 lance-table = "11.0.0"
 libc = "0.2"
@@ -75,6 +76,7 @@ opendal = { version = "0.57.0", default-features = true, features = [
     "services-s3",
     "services-tos",
 ] }
+object_store = "0.13.2"
 persisting-agentctl = { path = "crates/persisting-agentctl" }
 persisting-events = { path = "crates/persisting-events" }
 persisting-gateway = { path = "crates/persisting-gateway" }

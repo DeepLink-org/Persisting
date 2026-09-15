@@ -12,6 +12,8 @@ mod agenticmd_datafusion;
 #[cfg(feature = "lance-store")]
 mod attempt_registry;
 #[cfg(feature = "lance-store")]
+pub(crate) mod blockcache;
+#[cfg(feature = "lance-store")]
 mod cas_store;
 #[cfg(feature = "lance-store")]
 mod catalog;

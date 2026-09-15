@@ -15,6 +15,7 @@ pub struct PersistentCache<K, V> {
     path: PathBuf,
     values: RwLock<HashMap<K, V>>,
     disk_lock: Option<std::fs::File>,
+    write_gate: tokio::sync::Mutex<()>,
 }
 impl<K, V> PersistentCache<K, V>
 where
@@ -37,18 +38,40 @@ where
             path,
             values: RwLock::new(HashMap::new()),
             disk_lock: lock.ok(),
+            write_gate: tokio::sync::Mutex::new(()),
         };
-        if cache.disk_lock.is_some() {
+        let writable = cache.writable();
+        let attempts = if writable { 1 } else { 5 };
+        let mut loaded = None;
+        let mut last_error = None;
+        for attempt in 0..attempts {
             match cache.load().await {
-                Ok(values) => *cache.values.get_mut() = values,
-                Err(error) => {
-                    tracing::warn!(target: "pchronicle.serve", error = %error, "persistent cache unreadable; rebuilding");
-                    let _ = if cache.path.is_dir() {
-                        std::fs::remove_dir_all(&cache.path)
-                    } else {
-                        std::fs::remove_file(&cache.path)
-                    };
+                Ok(values) => {
+                    loaded = Some(values);
+                    break;
                 }
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt + 1 < attempts {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            50 * (1u64 << attempt),
+                        ))
+                        .await;
+                    }
+                }
+            }
+        }
+        if let Some(values) = loaded {
+            *cache.values.get_mut() = values;
+        } else if let Some(error) = last_error {
+            tracing::warn!(target: "pchronicle.serve", error = %error, writable, attempts,
+                "persistent cache unreadable");
+            if writable {
+                let _ = if cache.path.is_dir() {
+                    std::fs::remove_dir_all(&cache.path)
+                } else {
+                    std::fs::remove_file(&cache.path)
+                };
             }
         }
         cache
@@ -70,6 +93,7 @@ where
         if !self.writable() {
             return Ok(());
         }
+        let _write = self.write_gate.lock().await;
         let schema = Arc::new(Schema::new(vec![
             Field::new("key", DataType::Utf8, false),
             Field::new("payload", DataType::Utf8, false),

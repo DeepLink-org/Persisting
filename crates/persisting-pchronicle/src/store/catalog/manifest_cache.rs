@@ -8,10 +8,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 use tokio::sync::RwLock;
+
+const MAX_REFRESH_DIRECTORIES: usize = 10_000;
+const REFRESH_MOUNT_DEADLINE: Duration = Duration::from_secs(120);
+const REFRESH_DIRECTORY_TIMEOUT: Duration = Duration::from_secs(20);
 
 use crate::store::{DatasetLocation, PathListEntry, PersistentCache};
 
@@ -40,7 +43,6 @@ pub enum ManifestReadMode {
 pub struct ManifestCache {
     disk: Arc<PersistentCache<String, serde_json::Value>>,
     values: Arc<RwLock<std::collections::HashMap<String, ManifestListing>>>,
-    refresh_gate: Arc<Mutex<()>>,
 }
 
 impl ManifestCache {
@@ -53,11 +55,7 @@ impl ManifestCache {
                 .filter_map(|(key, value)| serde_json::from_value(value).ok().map(|v| (key, v)))
                 .collect(),
         ));
-        Self {
-            disk,
-            values,
-            refresh_gate: Arc::new(Mutex::new(())),
-        }
+        Self { disk, values }
     }
 
     pub async fn get(&self, key: &str) -> Option<ManifestListing> {
@@ -91,8 +89,10 @@ impl ManifestCache {
         location: &DatasetLocation,
         prefix: &str,
     ) -> Result<ManifestListing> {
-        let _guard = self.refresh_gate.lock().await;
         let key = key.into();
+        let refresh_gate =
+            crate::store::root_write_lock::for_root(&serde_json::to_string(&(self.path(), &key))?);
+        let _guard = refresh_gate.lock().await;
         let listing = ManifestListing {
             entries: location.list(prefix).await?,
             observed_at: chrono::Utc::now().timestamp(),
@@ -101,9 +101,14 @@ impl ManifestCache {
             .write()
             .await
             .insert(key.clone(), listing.clone());
-        self.disk
+        if let Err(error) = self
+            .disk
             .upsert(&key, &serde_json::to_value(&listing)?, &[])
-            .await?;
+            .await
+        {
+            tracing::warn!(target: "pchronicle.serve", %key, %error,
+                "manifest cache persistence failed; using memory");
+        }
         tracing::info!(target: "pchronicle.serve", %key, prefix, entries = listing.entries.len(), "manifest cache updated");
         Ok(listing)
     }
@@ -178,30 +183,30 @@ impl ManifestCache {
             })
     }
 
-    /// Breadth-first refresh of a mount. Only one refresh runs at a time;
-    /// shallow paths are published before deeper paths.
+    /// Breadth-first refresh of a mount. Refreshes serialize per observation
+    /// key, allowing unrelated foreground directories to load concurrently.
     pub async fn refresh_mount(&self, key_prefix: &str, location: &DatasetLocation) -> Result<()> {
-        let _guard = self.refresh_gate.lock().await;
         tracing::info!(target: "pchronicle.serve", %key_prefix, "manifest cache refresh started");
         let mut queue = VecDeque::from([String::new()]);
         let mut refreshed = 0usize;
+        let deadline = tokio::time::Instant::now() + REFRESH_MOUNT_DEADLINE;
         while let Some(prefix) = queue.pop_front() {
-            let listing = ManifestListing {
-                entries: location.list(&prefix).await?,
-                observed_at: chrono::Utc::now().timestamp(),
-            };
+            if refreshed >= MAX_REFRESH_DIRECTORIES || tokio::time::Instant::now() >= deadline {
+                tracing::warn!(target: "pchronicle.serve", %key_prefix, refreshed,
+                    queued = queue.len(), "manifest cache refresh reached safety bound; keeping partial view");
+                break;
+            }
             let key = if prefix.is_empty() {
                 key_prefix.to_owned()
             } else {
                 format!("{key_prefix}\0{prefix}")
             };
-            self.values
-                .write()
-                .await
-                .insert(key.clone(), listing.clone());
-            self.disk
-                .upsert(&key, &serde_json::to_value(&listing)?, &[])
-                .await?;
+            let listing = tokio::time::timeout(
+                REFRESH_DIRECTORY_TIMEOUT,
+                self.refresh(key, location, &prefix),
+            )
+            .await
+            .context("manifest directory refresh timed out")??;
             refreshed += 1;
             for child in listing
                 .entries
@@ -239,6 +244,49 @@ impl ManifestCache {
 mod tests {
     use super::*;
     use crate::store::{PathListEntry, PathListKind};
+
+    #[tokio::test]
+    async fn refresh_survives_disk_failure_and_unrelated_refresh_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        std::fs::create_dir_all(source.join("nested")).unwrap();
+        let location = DatasetLocation::parse(source.to_str().unwrap()).unwrap();
+        let path = dir.path().join("manifest.lance");
+        let cache = ManifestCache::open(path.clone()).await;
+        // Inject a persistent disk failure after opening a writable cache.
+        std::fs::write(&path, "not a Lance directory").unwrap();
+        assert!(
+            cache
+                .disk
+                .upsert(&"probe".into(), &serde_json::Value::Null, &[])
+                .await
+                .is_err()
+        );
+        let gate = crate::store::root_write_lock::for_root(
+            &serde_json::to_string(&(cache.path(), "blocked")).unwrap(),
+        );
+        let _guard = gate.lock().await;
+        let listing = tokio::time::timeout(
+            Duration::from_secs(5),
+            cache.refresh("healthy", &location, ""),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!listing.entries.is_empty());
+        assert_eq!(
+            cache.get("healthy").await.unwrap().entries.len(),
+            listing.entries.len()
+        );
+        cache.refresh_mount("mount", &location).await.unwrap();
+        assert!(cache.get("mount").await.is_some());
+        assert!(
+            cache
+                .refresh("missing", &location, "../escape")
+                .await
+                .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn summary_counts_cached_manifest_entries() {

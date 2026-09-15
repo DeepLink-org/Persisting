@@ -359,6 +359,7 @@ async fn write_record_batch_reader(
 ) -> Result<u64> {
     let uri = path.to_string_lossy().into_owned();
     crate::store::object_store_io_gate::mark_kind(
+        &uri,
         crate::store::object_store_io_gate::IoKind::Write,
     );
     let mut dataset = InsertBuilder::new(&uri)

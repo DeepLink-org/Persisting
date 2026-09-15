@@ -931,7 +931,7 @@ async fn is_compact_jsonl_directory(path: &Path) -> Result<bool> {
     if let Some(manifest) = try_load_manifest(path) {
         return Ok(manifest.is_compact_jsonl_leaf());
     }
-    let dataset = match lance::Dataset::open(path.to_string_lossy().as_ref()).await {
+    let dataset = match crate::storage::open_lance_dataset(path.to_string_lossy().as_ref()).await {
         Ok(dataset) => dataset,
         Err(_) => return Ok(false),
     };

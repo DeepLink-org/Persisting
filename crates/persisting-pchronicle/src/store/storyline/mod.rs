@@ -49,7 +49,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use fs2::FileExt;
@@ -1906,25 +1906,13 @@ pub(super) async fn open_dataset_uri(uri: &str) -> Result<Dataset> {
     let mut attempt = 0u32;
     loop {
         attempt += 1;
-        let _permit = crate::store::object_store_io_gate::acquire(
-            uri,
-            crate::store::object_store_io_gate::IoKind::Read,
-        )
-        .await;
-        match Dataset::open(uri).await {
-            Ok(dataset) => {
-                crate::store::object_store_io_gate::note_success(uri);
-                return Ok(dataset);
-            }
+        match crate::storage::open_lance_dataset(uri).await {
+            Ok(dataset) => return Ok(dataset),
             Err(error) => {
                 let error = anyhow::Error::from(error);
                 if !is_transient_storage_error(&error) {
                     return Err(error).with_context(|| format!("open Lance dataset {uri}"));
                 }
-                crate::store::object_store_io_gate::note_failure(
-                    uri,
-                    crate::store::object_store_io_gate::IoKind::Read,
-                );
                 if attempt >= DATASET_OPEN_MAX_ATTEMPTS {
                     return Err(error).with_context(|| format!("open Lance dataset {uri}"));
                 }
@@ -1939,9 +1927,8 @@ pub(super) async fn open_dataset_uri(uri: &str) -> Result<Dataset> {
                     error = %error,
                     "transient object-store error opening Lance dataset; retrying under I/O gate"
                 );
-                // Shared AIMD delay is applied on the next acquire(); keep a
-                // small per-attempt floor so we never spin.
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Individual HEAD/range requests already fed the shared AIMD
+                // gate; do not add a second fixed backoff here.
             }
         }
     }
@@ -2123,6 +2110,7 @@ async fn maintain_table_layout(
     }
     if options.optimize_indices {
         crate::store::object_store_io_gate::mark_kind(
+            path.to_string_lossy().as_ref(),
             crate::store::object_store_io_gate::IoKind::Write,
         );
         crate::store::index_build_progress::note(format!(

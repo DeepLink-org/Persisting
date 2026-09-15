@@ -50,6 +50,12 @@ pub use crate::discovery::{
 };
 
 #[cfg(feature = "lance-store")]
+pub use crate::store::blockcache::{
+    BlockCache, CacheConfig, CacheStats, CachedObjectStore, DEFAULT_BLOCK_SIZE_BYTES,
+    DEFAULT_CAPACITY_BYTES, LanceCacheWrapper, SERVE_CAPACITY_BYTES, capacity_for_serve,
+    configured_capacity_bytes, default_cache_dir, lance_store_params,
+};
+#[cfg(feature = "lance-store")]
 pub use crate::store::index_build_progress::{
     Guard as IndexBuildProgressGuard, install as install_index_build_progress,
 };
@@ -60,6 +66,16 @@ pub use crate::store::object_store_io_gate::{
     install_throttle_hook as install_object_store_throttle_hook,
     snapshot as object_store_gate_snapshot,
 };
+
+#[cfg(feature = "lance-store")]
+pub async fn open_lance_dataset(uri: &str) -> lance::Result<lance::Dataset> {
+    lance::dataset::builder::DatasetBuilder::from_uri(uri)
+        .with_store_params(crate::store::blockcache::lance_store_params(
+            crate::store::blockcache::configured_capacity_bytes(),
+        ))
+        .load()
+        .await
+}
 
 #[cfg(feature = "lance-store")]
 pub use crate::store::{

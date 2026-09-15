@@ -1,7 +1,7 @@
 //! Safe, bounded physical partitioning below one logical Gateway Dataset.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Datelike, Timelike, Utc};
@@ -9,6 +9,12 @@ use chrono::{DateTime, Datelike, Timelike, Utc};
 const MAX_TEMPLATE_BYTES: usize = 256;
 const MAX_TEMPLATE_SEGMENTS: usize = 16;
 const MAX_USER_SEGMENT_BYTES: usize = 80;
+
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Segment {
@@ -149,7 +155,7 @@ impl GatewayPartitionRouter {
         let Some(split) = &self.split else {
             return self.dataset_uri.clone();
         };
-        let mut routes = self.routes.lock().unwrap();
+        let mut routes = lock_recover(&self.routes);
         routes
             .entry(route_key.to_string())
             .or_insert_with(|| {

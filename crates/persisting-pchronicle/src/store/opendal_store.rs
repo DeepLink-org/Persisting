@@ -4,14 +4,15 @@
 //! module keeps pChronicle's own reads, listings and conditional writes on
 //! OpenDAL so backend differences are handled in one place.
 
+use crate::store::object_store_io_gate::{self as io_gate, IoKind};
 use anyhow::{Context, Result, anyhow};
 use futures::TryStreamExt;
 use opendal::layers::RetryLayer;
 use opendal::{EntryMode, ErrorKind, Metadata, Operator};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::Url;
 
 /// Retries for transient object-store failures (DNS blips, connect resets,
@@ -54,6 +55,7 @@ impl Version {
 pub(crate) struct Store {
     operator: Operator,
     fallback_lock: Option<Arc<tokio::sync::Mutex<()>>>,
+    io_scope: String,
 }
 
 #[derive(Clone, Debug)]
@@ -73,34 +75,70 @@ static SHARED_MEMORY: OnceLock<Mutex<HashMap<String, Operator>>> = OnceLock::new
 static SHARED_LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
     OnceLock::new();
 
+const MAX_CACHED_OPERATORS: usize = 128;
+const OPERATOR_IDLE_TTL: Duration = Duration::from_secs(300);
+
+#[derive(Default)]
+struct OperatorRegistry {
+    entries: HashMap<String, (Operator, Instant)>,
+}
+
+impl OperatorRegistry {
+    fn get(&mut self, key: &str, now: Instant) -> Option<Operator> {
+        self.entries.retain(|_, (_, used)| now.duration_since(*used) < OPERATOR_IDLE_TTL);
+        self.entries.get_mut(key).map(|(operator, used)| {
+            *used = now;
+            operator.clone()
+        })
+    }
+
+    fn insert(&mut self, key: String, operator: Operator, now: Instant) {
+        if !self.entries.contains_key(&key) && self.entries.len() >= MAX_CACHED_OPERATORS {
+            if let Some(oldest) = self.entries.iter().min_by_key(|(_, (_, used))| *used)
+                .map(|(key, _)| key.clone()) {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.entries.insert(key, (operator, now));
+    }
+}
+
+static OPERATORS: OnceLock<Mutex<OperatorRegistry>> = OnceLock::new();
+
 impl Store {
     pub(crate) async fn from_uri(uri: &str) -> Result<Self> {
         let uri = uri.trim();
         let normalized = normalize_uri(uri)?;
+        let cache_key = operator_cache_key(uri, &normalized);
         let shared_memory = uri.contains("://")
             && Url::parse(uri)
                 .map(|parsed| parsed.scheme() == "shared-memory")
                 .unwrap_or(false);
-        let operator = if shared_memory {
-            let map = SHARED_MEMORY.get_or_init(|| Mutex::new(HashMap::new()));
-            let mut map = map
-                .lock()
-                .map_err(|_| anyhow!("shared-memory operator registry poisoned"))?;
+        // Memory operators own the data itself and must not be evicted like clients.
+        let operator = if normalized.starts_with("memory://") {
+            let mut map = SHARED_MEMORY.get_or_init(|| Mutex::new(HashMap::new()))
+                .lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(operator) = map.get(uri) {
                 operator.clone()
             } else {
-                let operator = with_object_store_retries(
-                    Operator::from_uri(normalized.as_str())
-                        .with_context(|| format!("open OpenDAL store {uri}"))?,
-                );
-                map.insert(uri.to_string(), operator.clone());
+                let operator = with_object_store_retries(Operator::from_uri(normalized.as_str())?);
+                map.insert(uri.to_owned(), operator.clone());
                 operator
             }
         } else {
-            with_object_store_retries(
-                Operator::from_uri(normalized.as_str())
-                    .with_context(|| format!("open OpenDAL store {uri}"))?,
-            )
+            let registry = OPERATORS.get_or_init(|| Mutex::new(OperatorRegistry::default()));
+            let cached = registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&cache_key, Instant::now());
+            if let Some(operator) = cached {
+                operator
+            } else {
+                // Construct outside the registry lock so one backend cannot block all others.
+                let operator = with_object_store_retries(Operator::from_uri(normalized.as_str())
+                    .with_context(|| format!("open OpenDAL store {uri}"))?);
+                registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(cache_key, operator.clone(), Instant::now());
+                operator
+            }
         };
         let fallback_lock = if shared_memory {
             let locks = SHARED_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -119,26 +157,79 @@ impl Store {
         Ok(Self {
             operator,
             fallback_lock,
+            io_scope: io_gate::scope_key(uri),
         })
     }
 
+    async fn remote<T, F, Fut>(&self, kind: IoKind, request: F) -> Result<T>
+    where
+        F: FnOnce(Operator) -> Fut,
+        Fut: std::future::IntoFuture<Output = opendal::Result<T>>,
+    {
+        let _permit = io_gate::acquire(&self.io_scope, kind).await;
+        match request(self.operator.clone()).into_future().await {
+            Ok(value) => {
+                io_gate::note_success(&self.io_scope);
+                Ok(value)
+            }
+            Err(error) => {
+                let text = error.to_string().to_ascii_lowercase();
+                if [
+                    "timeout",
+                    "connection",
+                    "broken pipe",
+                    "temporarily",
+                    "slowdown",
+                    "throttl",
+                    "503",
+                    "429",
+                    "reset",
+                ]
+                .iter()
+                .any(|needle| text.contains(needle))
+                {
+                    io_gate::note_failure(&self.io_scope, kind);
+                }
+                Err(error.into())
+            }
+        }
+    }
+
     pub(crate) async fn read(&self, path: &str) -> Result<Option<(Vec<u8>, Version)>> {
-        let metadata = match self.operator.stat(path).await {
+        let path_owned = path.to_owned();
+        let metadata = match self
+            .remote(IoKind::Read, |operator| async move {
+                operator.stat(&path_owned).await
+            })
+            .await
+        {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error)
+                if error
+                    .downcast_ref::<opendal::Error>()
+                    .is_some_and(|error| error.kind() == ErrorKind::NotFound) =>
+            {
+                return Ok(None);
+            }
             Err(error) => return Err(error.into()),
         };
-        let bytes = self.operator.read(path).await?.to_vec();
+        let path_owned = path.to_owned();
+        let bytes = self
+            .remote(IoKind::Read, |operator| async move {
+                operator.read(&path_owned).await
+            })
+            .await?
+            .to_vec();
         Ok(Some((bytes, version(&metadata))))
     }
 
     pub(crate) async fn write_create(&self, path: &str, bytes: Vec<u8>) -> Result<()> {
-        self.operator
-            .write_with(path, bytes)
-            .if_not_exists(true)
-            .await
-            .map(|_| ())
-            .map_err(Into::into)
+        let path = path.to_owned();
+        self.remote(IoKind::Write, |operator| async move {
+            operator.write_with(&path, bytes).if_not_exists(true).await
+        })
+        .await
+        .map(|_| ())
     }
 
     pub(crate) async fn write_match(
@@ -155,44 +246,46 @@ impl Store {
         let condition = expected.condition().ok_or_else(|| {
             anyhow!("OpenDAL backend did not return an ETag/version for conditional write")
         })?;
+        let path = path.to_owned();
+        let condition = condition.to_owned();
+        let log_path = path.clone();
+        let log_condition = condition.clone();
         let result = self
-            .operator
-            .write_with(path, bytes.clone())
-            .if_match(condition)
-            .await;
-        match result {
-            Ok(_) => Ok(()),
-            // Some S3-compatible gateways compare the If-Match header against
-            // their unquoted ETag, so a correctly quoted condition always
-            // fails with 412. One retry with the unquoted form still proves
-            // the stored ETag matched; real contention fails both attempts.
-            Err(error)
-                if error.kind() == ErrorKind::ConditionNotMatch
-                    && let Some(unquoted) = unquoted_etag(condition) =>
-            {
-                let retry = self
-                    .operator
-                    .write_with(path, bytes)
-                    .if_match(unquoted)
+            .remote(IoKind::Write, |operator| async move {
+                let result = operator
+                    .write_with(&path, bytes.clone())
+                    .if_match(&condition)
                     .await;
-                match retry {
+                match result {
                     Ok(_) => Ok(()),
-                    // Preserve the original conditional conflict when the
-                    // gateway rejects the compatibility form itself.
-                    Err(retry_error) if retry_error.kind() != ErrorKind::ConditionNotMatch => {
-                        Err(error)
+                    // Some S3-compatible gateways compare the If-Match header against
+                    // their unquoted ETag, so retry once with the compatibility form.
+                    Err(error)
+                        if error.kind() == ErrorKind::ConditionNotMatch
+                            && let Some(unquoted) = unquoted_etag(&condition) =>
+                    {
+                        match operator.write_with(&path, bytes).if_match(unquoted).await {
+                            Ok(_) => Ok(()),
+                            Err(retry_error)
+                                if retry_error.kind() != ErrorKind::ConditionNotMatch =>
+                            {
+                                Err(error)
+                            }
+                            Err(retry_error) => Err(retry_error),
+                        }
                     }
-                    Err(retry_error) => Err(retry_error),
+                    Err(error) => Err(error),
                 }
-            }
-            Err(error) => Err(error),
-        }
-        .map_err(|error| {
-            if is_conflict(&error) {
+            })
+            .await;
+        result.map_err(|error| {
+            if let Some(error) = error.downcast_ref::<opendal::Error>()
+                && is_conflict(error)
+            {
                 tracing::debug!(
                     target: "pchronicle.opendal",
-                    path,
-                    if_match = condition,
+                    path = log_path,
+                    if_match = log_condition,
                     error = %error,
                     kind = ?error.kind(),
                     "conditional object write conflict (If-Match)"
@@ -203,84 +296,124 @@ impl Store {
     }
 
     pub(crate) async fn write_overwrite(&self, path: &str, bytes: Vec<u8>) -> Result<()> {
-        self.operator
-            .write(path, bytes)
-            .await
-            .map(|_| ())
-            .map_err(Into::into)
+        let path = path.to_owned();
+        self.remote(IoKind::Write, |operator| async move {
+            operator.write(&path, bytes).await
+        })
+        .await
+        .map(|_| ())
     }
 
     pub(crate) async fn list(&self, prefix: &str) -> Result<Vec<Entry>> {
-        let mut lister = self.operator.lister_with(prefix).recursive(true).await?;
-        let mut entries = Vec::new();
-        while let Some(entry) = lister.try_next().await? {
-            if entry.metadata().mode() == EntryMode::FILE {
-                entries.push(Entry {
-                    path: entry.path().to_string(),
-                    metadata: entry.metadata().clone(),
-                });
+        let prefix = prefix.to_owned();
+        self.remote(IoKind::Read, |operator| async move {
+            let mut lister = operator.lister_with(&prefix).recursive(true).await?;
+            let mut entries = Vec::new();
+            while let Some(entry) = lister.try_next().await? {
+                if entry.metadata().mode() == EntryMode::FILE {
+                    entries.push(Entry {
+                        path: entry.path().to_string(),
+                        metadata: entry.metadata().clone(),
+                    });
+                }
             }
-        }
-        Ok(entries)
+            Ok(entries)
+        })
+        .await
     }
 
     /// Non-recursive listing of the immediate children under `prefix`.
     /// Returns both files and directories so callers can navigate lazily.
     pub(crate) async fn list_shallow(&self, prefix: &str) -> Result<Vec<ShallowEntry>> {
-        let mut lister = self.operator.lister_with(prefix).recursive(false).await?;
-        let mut entries = Vec::new();
-        while let Some(entry) = lister.try_next().await? {
-            entries.push(ShallowEntry {
-                path: entry.path().to_string(),
-                mode: entry.metadata().mode(),
-                metadata: entry.metadata().clone(),
-            });
-        }
-        Ok(entries)
+        let prefix = prefix.to_owned();
+        self.remote(IoKind::Read, |operator| async move {
+            let mut lister = operator.lister_with(&prefix).recursive(false).await?;
+            let mut entries = Vec::new();
+            while let Some(entry) = lister.try_next().await? {
+                entries.push(ShallowEntry {
+                    path: entry.path().to_string(),
+                    mode: entry.metadata().mode(),
+                    metadata: entry.metadata().clone(),
+                });
+            }
+            Ok(entries)
+        })
+        .await
     }
 
     pub(crate) async fn stat_file(&self, path: &str) -> Result<Option<Entry>> {
-        match self.operator.stat(path).await {
+        let path_owned = path.to_owned();
+        match self
+            .remote(IoKind::Read, |operator| async move {
+                operator.stat(&path_owned).await
+            })
+            .await
+        {
             Ok(metadata) if metadata.mode() == EntryMode::FILE => Ok(Some(Entry {
                 path: path.to_string(),
                 metadata,
             })),
             Ok(_) => Ok(None),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error)
+                if error
+                    .downcast_ref::<opendal::Error>()
+                    .is_some_and(|error| error.kind() == ErrorKind::NotFound) =>
+            {
+                Ok(None)
+            }
             Err(error) => Err(error.into()),
         }
     }
 
     pub(crate) async fn exists(&self) -> Result<bool> {
-        Ok(self
-            .operator
-            .lister_with("")
-            .recursive(true)
-            .await?
-            .try_next()
-            .await?
-            .is_some())
+        self.remote(IoKind::Read, |operator| async move {
+            Ok(operator
+                .lister_with("")
+                .recursive(true)
+                .await?
+                .try_next()
+                .await?
+                .is_some())
+        })
+        .await
     }
 
     pub(crate) async fn remove_all(&self) -> Result<()> {
-        self.operator
-            .delete_with("")
-            .recursive(true)
-            .await
-            .map_err(Into::into)
+        self.remote(IoKind::Write, |operator| async move {
+            operator.delete_with("").recursive(true).await
+        })
+        .await
+        .map(|_| ())
     }
 
     pub(crate) async fn remove(&self, path: &str) -> Result<()> {
-        self.operator
-            .delete_with(path)
-            .recursive(true)
-            .await
-            .map_err(Into::into)
+        let path = path.to_owned();
+        self.remote(IoKind::Write, |operator| async move {
+            operator.delete_with(&path).recursive(true).await
+        })
+        .await
+        .map(|_| ())
     }
 
     pub(crate) fn fallback_lock(&self) -> Option<Arc<tokio::sync::Mutex<()>>> {
         self.fallback_lock.clone()
     }
+}
+
+fn operator_cache_key(uri: &str, normalized: &str) -> String {
+    let config: BTreeMap<_, _> = std::env::vars()
+        .filter(|(key, _)| {
+            key.starts_with("AWS_")
+                || key.starts_with("AZURE_")
+                || key.starts_with("GOOGLE_")
+                || matches!(
+                    key.as_str(),
+                    "HTTP_PROXY" | "HTTPS_PROXY" | "NO_PROXY" | "ALL_PROXY"
+                )
+        })
+        .collect();
+    let fingerprint = blake3::hash(&serde_json::to_vec(&config).unwrap_or_default()).to_hex();
+    format!("{uri}\0{normalized}\0{fingerprint}")
 }
 
 pub(crate) fn is_conflict(error: &opendal::Error) -> bool {
@@ -333,6 +466,25 @@ fn normalize_uri(uri: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn operator_registry_bounds_clients_without_invalidating_live_handles() -> Result<()> {
+        let store = Store::from_uri("shared-memory://registry-test").await?;
+        let mut registry = OperatorRegistry::default();
+        let now = Instant::now();
+        registry.insert("first".into(), store.operator.clone(), now);
+        let live = registry.get("first", now).unwrap();
+        for n in 0..MAX_CACHED_OPERATORS {
+            registry.insert(n.to_string(), store.operator.clone(), now + Duration::from_millis(1));
+        }
+        assert_eq!(registry.entries.len(), MAX_CACHED_OPERATORS);
+        assert!(!registry.entries.contains_key("first"));
+        live.write("probe", "still alive").await?;
+        assert_eq!(live.read("probe").await?.to_vec(), b"still alive");
+        assert!(registry.get("0", now + OPERATOR_IDLE_TTL + Duration::from_secs(1)).is_none());
+        assert!(registry.entries.is_empty());
+        Ok(())
+    }
 
     #[test]
     fn unquoted_etag_strips_one_quote_pair() {

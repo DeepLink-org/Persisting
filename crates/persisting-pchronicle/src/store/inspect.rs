@@ -245,7 +245,7 @@ pub async fn inspect_physical_file(
         })
         .collect::<Vec<_>>();
     if let Ok(uri) = table_uri(snapshot, dataset, file, table).await
-        && let Ok(lance) = Dataset::open(&uri).await
+        && let Ok(lance) = crate::storage::open_lance_dataset(&uri).await
     {
         enrich_column_stats(&lance, fragment_id, &mut columns).await;
     }
@@ -304,7 +304,7 @@ pub async fn inspect_physical_page(
     anyhow::ensure!(!columns.is_empty(), "physical data file has no columns");
     let limit = query.limit.clamp(1, DEFAULT_PHYSICAL_PAGE_LIMIT);
     let uri = table_uri(snapshot, query.dataset, query.file, query.table).await?;
-    let lance = Dataset::open(&uri)
+    let lance = crate::storage::open_lance_dataset(&uri)
         .await
         .with_context(|| format!("open Lance table {uri}"))?;
     preview_rows(&lance, &columns, query.offset, limit).await
@@ -402,7 +402,7 @@ fn storyline_table_path<'a>(paths: &'a StorylineTablePaths, table: &str) -> Opti
 
 async fn open_table_version(path: &Path, version: u64) -> Result<Dataset> {
     let uri = path.to_string_lossy();
-    let dataset = Dataset::open(uri.as_ref())
+    let dataset = crate::storage::open_lance_dataset(uri.as_ref())
         .await
         .with_context(|| format!("open Lance table {uri}"))?;
     dataset
