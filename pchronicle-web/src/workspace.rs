@@ -933,6 +933,7 @@ fn load_runs(
 ) {
     page.set(None);
     loading.set(true);
+    error.set(None);
     spawn(async move {
         let all_datasets = filters.dataset.trim().is_empty() || filters.dataset == "all";
         let dataset_names = if all_datasets {
@@ -989,6 +990,11 @@ fn load_runs(
                 }
             }
         }
+        if let Some(failure) = &first_error {
+            // Keep successful datasets visible, but never present a partial
+            // all-dataset result as complete.
+            error.set(Some(workspace_notice(failure)));
+        }
         if partials.is_empty() {
             // Keep the selected dataset path usable even when one scoped scan
             // fails; for an all-dataset request the catalog error was already
@@ -996,9 +1002,6 @@ fn load_runs(
             // unscoped remote scan.
             if all_datasets {
                 loading.set(false);
-                if let Some(failure) = first_error {
-                    error.set(Some(workspace_notice(&failure)));
-                }
                 return;
             }
             match api::explorer_runs(

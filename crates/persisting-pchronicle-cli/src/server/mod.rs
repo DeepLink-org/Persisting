@@ -73,6 +73,7 @@ struct AppState {
 }
 
 const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const RUNS_SCAN_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HomeLink {
@@ -718,29 +719,34 @@ async fn load_run_summaries(
         };
         let query_metrics = metrics.cloned();
         let execute = move |background: bool| async move {
-            // Background work must not be attributed to the triggering HTTP request.
-            let metrics = query_metrics.filter(|_| !background);
-            let phase = Instant::now();
-            let runtime =
-                build_scoped_query_runtime(&config, query_scope.clone(), cached_files.clone())
+            let summaries = tokio::time::timeout(RUNS_SCAN_TIMEOUT, async {
+                // Background work must not be attributed to the triggering HTTP request.
+                let metrics = query_metrics.filter(|_| !background);
+                let phase = Instant::now();
+                let runtime =
+                    build_scoped_query_runtime(&config, query_scope.clone(), cached_files.clone())
+                        .await?;
+                if let Some(metrics) = &metrics {
+                    metrics.record("summary_catalog", phase);
+                }
+                let phase = Instant::now();
+                let summaries = runtime
+                    .acceleration
+                    .scoped_run_summaries(
+                        &runtime.snapshot,
+                        &runtime.engine,
+                        Some(&query_scope.dataset),
+                        query_scope.source_file.as_deref(),
+                    )
                     .await?;
-            if let Some(metrics) = &metrics {
-                metrics.record("summary_catalog", phase);
-            }
-            let phase = Instant::now();
-            let summaries = runtime
-                .acceleration
-                .scoped_run_summaries(
-                    &runtime.snapshot,
-                    &runtime.engine,
-                    Some(&query_scope.dataset),
-                    query_scope.source_file.as_deref(),
-                )
-                .await;
-            if let Some(metrics) = &metrics {
-                metrics.record("summary_sql", phase);
-            }
-            summaries
+                if let Some(metrics) = &metrics {
+                    metrics.record("summary_sql", phase);
+                }
+                anyhow::Ok(summaries)
+            })
+            .await
+            .context("runs scan timed out")??;
+            Ok(summaries)
         };
         let started = Instant::now();
         let result = if state.live_reads {
@@ -766,21 +772,44 @@ async fn load_run_summaries(
         return result;
     }
     let phase = Instant::now();
-    let runtime = current_catalog_for_runs(state, request_id).await?;
+    let runtime = tokio::time::timeout(
+        RUNS_SCAN_TIMEOUT,
+        current_catalog_for_runs(state, request_id),
+    )
+    .await
+    .map_err(|error| {
+        fail(
+            request_id,
+            "load_run_summaries",
+            anyhow::anyhow!("catalog build timed out: {error}"),
+        )
+    })??;
     if let Some(metrics) = metrics {
         metrics.record("summary_catalog", phase);
     }
     let phase = Instant::now();
-    let summaries = runtime
-        .acceleration
-        .scoped_run_summaries(&runtime.snapshot, &runtime.engine, dataset, file)
-        .await;
+    let summaries = tokio::time::timeout(
+        RUNS_SCAN_TIMEOUT,
+        runtime.acceleration.scoped_run_summaries(
+            &runtime.snapshot,
+            &runtime.engine,
+            dataset,
+            file,
+        ),
+    )
+    .await
+    .map_err(|error| {
+        fail(
+            request_id,
+            "load_run_summaries",
+            anyhow::anyhow!("runs scan timed out: {error}"),
+        )
+    })?
+    .map_err(|error| fail(request_id, "load_run_summaries", error))?;
     if let Some(metrics) = metrics {
         metrics.record("summary_sql", phase);
     }
-    summaries
-        .map(|summaries| summaries.as_ref().clone())
-        .map_err(|error| fail(request_id, "load_run_summaries", error))
+    Ok(summaries.as_ref().clone())
 }
 
 fn api_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
