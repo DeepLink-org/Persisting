@@ -2676,3 +2676,63 @@ async fn browse_tree_does_not_build_query_runtime() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn runs_metadata_does_not_initialize_browse_or_resolve_sources() {
+    let root = tempfile::tempdir().unwrap();
+    let config = ChronicleServerConfig::mounted(vec![
+        DatasetMount::default(root.path().join("missing").to_string_lossy().to_string()).unwrap(),
+    ])
+    .unwrap();
+    let state = app_state(config);
+    let Json(catalog) = ui_query_catalog(&state).await.unwrap();
+    assert_eq!(catalog.datasets.len(), 1);
+    assert_eq!(catalog.datasets[0].name, "dataset");
+    assert!(state.browse.get().is_none());
+    assert!(state.catalog.read().await.is_none());
+}
+
+#[tokio::test]
+async fn runs_unknown_dataset_is_a_structured_error_without_panicking() {
+    let root = tempfile::tempdir().unwrap();
+    let app = router(root.path().to_string_lossy().to_string());
+    let (status, response) = get_json(&app, "/api/explorer/runs?dataset=missing").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{response}");
+    assert_eq!(response["code"], "not_found");
+    let (status, _) = get_json(&app, "/api/query/tables?ui=true").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn runs_deadline_includes_catalog_lock_and_releases_cancelled_work() {
+    let root = tempfile::tempdir().unwrap();
+    write_gateway_fixture(root.path(), "run.json", "session", "job");
+    let config = ChronicleServerConfig::mounted(vec![
+        DatasetMount::default(root.path().to_string_lossy().to_string()).unwrap(),
+    ])
+    .unwrap();
+    let state = app_state(config);
+    let held = state.catalog_refresh.lock().await;
+    let request_id = RequestId("runs-timeout-test".into());
+    let error = with_runs_deadline(
+        Duration::from_millis(20),
+        &request_id,
+        load_run_summaries(&state, None, None, &request_id, None),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.status, StatusCode::GATEWAY_TIMEOUT);
+    let body = serde_json::to_value(error).unwrap();
+    assert_eq!(body["code"], "unavailable");
+    assert_eq!(body["request_id"], "runs-timeout-test");
+    assert_eq!(body["stage"], "query");
+    drop(held);
+    let summaries = with_runs_deadline(
+        Duration::from_secs(5),
+        &request_id,
+        load_run_summaries(&state, None, None, &request_id, None),
+    )
+    .await
+    .unwrap();
+    assert_eq!(summaries.len(), 1);
+}

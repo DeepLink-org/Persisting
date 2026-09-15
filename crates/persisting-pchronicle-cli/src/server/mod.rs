@@ -73,7 +73,22 @@ struct AppState {
 }
 
 const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
-const RUNS_SCAN_TIMEOUT: Duration = Duration::from_secs(60);
+// Return a structured timeout before the catalog worker's 60s transport cutoff.
+const RUNS_SCAN_TIMEOUT: Duration = Duration::from_secs(50);
+
+async fn with_runs_deadline<T>(
+    timeout: Duration,
+    request_id: &RequestId,
+    operation: impl std::future::Future<Output = Result<T, ApiError>>,
+) -> Result<T, ApiError> {
+    tokio::time::timeout(timeout, operation)
+        .await
+        .map_err(|_| {
+            ApiError::runs_timeout()
+                .with_request_id(request_id.as_str())
+                .with_stage(ExecutionStage::Query)
+        })?
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HomeLink {
@@ -683,7 +698,12 @@ async fn runs(
     metrics: RequestMetrics,
 ) -> Result<Json<Vec<RunSummary>>, ApiError> {
     let started = Instant::now();
-    let summaries = load_run_summaries(&state, None, None, &request_id, Some(&metrics)).await?;
+    let summaries = with_runs_deadline(
+        RUNS_SCAN_TIMEOUT,
+        &request_id,
+        load_run_summaries(&state, None, None, &request_id, Some(&metrics)),
+    )
+    .await?;
     metrics.record("summary_total", started);
     Ok(Json(summaries))
 }
@@ -703,17 +723,19 @@ async fn load_run_summaries(
         };
         let config = state.config.clone();
         let query_scope = scope.clone();
+        let mount = config
+            .datasets
+            .iter()
+            .find(|mount| mount.name == dataset)
+            .ok_or_else(|| {
+                ApiError::not_found("dataset was not found").with_request_id(request_id.as_str())
+            })?;
+        // Browse initialization and its disk projection are optional for Runs.
         let cached_files = if file.is_none() && !state.live_reads {
-            browse_coordinator(state)
-                .await
-                .cached_source_paths(
-                    config
-                        .datasets
-                        .iter()
-                        .find(|mount| mount.name == dataset)
-                        .expect("validated dataset mount"),
-                )
-                .await
+            match state.browse.get() {
+                Some(browse) => browse.cached_source_paths(mount).await,
+                None => Vec::new(),
+            }
         } else {
             Vec::new()
         };
@@ -772,40 +794,16 @@ async fn load_run_summaries(
         return result;
     }
     let phase = Instant::now();
-    let runtime = tokio::time::timeout(
-        RUNS_SCAN_TIMEOUT,
-        current_catalog_for_runs(state, request_id),
-    )
-    .await
-    .map_err(|error| {
-        fail(
-            request_id,
-            "load_run_summaries",
-            anyhow::anyhow!("catalog build timed out: {error}"),
-        )
-    })??;
+    let runtime = current_catalog_for_runs(state, request_id).await?;
     if let Some(metrics) = metrics {
         metrics.record("summary_catalog", phase);
     }
     let phase = Instant::now();
-    let summaries = tokio::time::timeout(
-        RUNS_SCAN_TIMEOUT,
-        runtime.acceleration.scoped_run_summaries(
-            &runtime.snapshot,
-            &runtime.engine,
-            dataset,
-            file,
-        ),
-    )
-    .await
-    .map_err(|error| {
-        fail(
-            request_id,
-            "load_run_summaries",
-            anyhow::anyhow!("runs scan timed out: {error}"),
-        )
-    })?
-    .map_err(|error| fail(request_id, "load_run_summaries", error))?;
+    let summaries = runtime
+        .acceleration
+        .scoped_run_summaries(&runtime.snapshot, &runtime.engine, dataset, file)
+        .await
+        .map_err(|error| fail(request_id, "load_run_summaries", error))?;
     if let Some(metrics) = metrics {
         metrics.record("summary_sql", phase);
     }
@@ -1137,6 +1135,21 @@ async fn try_on_demand_storyline_runs_page(
 }
 
 async fn explorer_runs(
+    State(state): State<AppState>,
+    request_id: RequestId,
+    metrics: RequestMetrics,
+    fts: FtsDiagnostics,
+    query: Result<Query<explorer::ExplorerRunsQuery>, QueryRejection>,
+) -> Result<Json<explorer::RunExplorerPage>, ApiError> {
+    with_runs_deadline(
+        RUNS_SCAN_TIMEOUT,
+        &request_id,
+        explorer_runs_inner(State(state), request_id.clone(), metrics, fts, query),
+    )
+    .await
+}
+
+async fn explorer_runs_inner(
     State(state): State<AppState>,
     request_id: RequestId,
     metrics: RequestMetrics,
@@ -2710,7 +2723,7 @@ struct QueryTablesQuery {
 }
 
 async fn ui_query_catalog(state: &AppState) -> Result<Json<QueryCatalog>, ApiError> {
-    let browse = browse_coordinator(state).await;
+    let browse = state.browse.get();
     let default_name = state
         .config
         .default_dataset
@@ -2732,7 +2745,10 @@ async fn ui_query_catalog(state: &AppState) -> Result<Json<QueryCatalog>, ApiErr
         .unwrap_or_default();
     let mut datasets = Vec::with_capacity(state.config.datasets.len());
     for mount in &state.config.datasets {
-        let tree = browse.cached_dataset(mount).await;
+        let tree = match browse {
+            Some(browse) => browse.cached_dataset(mount).await,
+            None => None,
+        };
         let (ready_sources, error_sources) = tree
             .as_ref()
             .map(|tree| {

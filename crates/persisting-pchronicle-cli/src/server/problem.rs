@@ -221,6 +221,14 @@ impl ApiError {
         )
     }
 
+    pub(super) fn runs_timeout() -> Self {
+        Self::public(
+            StatusCode::GATEWAY_TIMEOUT,
+            BoundaryCode::Unavailable,
+            "Runs request timed out; narrow the dataset or file scope and retry",
+        )
+    }
+
     pub(super) fn input(issue: InputIssue) -> Self {
         let message = issue.message().to_owned();
         match issue.kind() {
