@@ -159,7 +159,7 @@ datasets = ["evals"]
 
 ## CLI 签发与授权
 
-签发和改授权是 **写 `catalog.toml` 的 CLI**，不是运行中 Warehouse 的 HTTP API。出现 `catalog` 子命令时 MUST NOT 启动 listener。正在运行的 serve MUST 重启后才读到新用户或新授权。
+签发和改授权是 **写 `catalog.toml` 的 CLI**，不是运行中 Warehouse 的 HTTP API。出现 `catalog` 子命令时 MUST NOT 启动 listener。运行中的 serve 每 3 秒检查配置，用户和授权无需重启即可生效。
 
 ```text
 pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI [--endpoint URL] [--region REGION] [--access-key KEY] [--secret-key KEY]
@@ -198,7 +198,7 @@ pchronicle serve --catalog-config FILE --listen 127.0.0.1:8081
 - `revoke` 从该用户的 `datasets` 里去掉列出的名字。未知用户、或该用户当前并未持有的 library 名 MUST 失败。
 - 两个命令的 stdout 只报 `name` 与更新后的 `datasets`，MUST NOT 打印密钥。
 
-改写配置可以整表重写，不要求保留注释。新用户在重启 serve 之前无法登录。
+改写配置可以整表重写，不要求保留注释。新用户通常在 3 秒内生效。
 
 ## HTTP
 

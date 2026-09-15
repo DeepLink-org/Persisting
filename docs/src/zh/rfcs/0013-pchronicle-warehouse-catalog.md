@@ -62,7 +62,7 @@ pchronicle query @team/prod 'SELECT 1'
 ### 非目标
 
 - STS、临时凭证轮换、或把用户钥映射成短时 AWS session。
-- 热加载 `catalog.toml`；改配置 MUST 重启 serve。
+- 热加载 Dataset 定义和 S3 后端凭证；这类变更仍需重启 serve。
 - 在运行中的 Warehouse 上提供 HTTP 签发接口。
 - 提供独立 `catalog serve` 二进制。
 - 在已运行的 Tokio runtime 上 `fork(2)`（未定义行为）。
