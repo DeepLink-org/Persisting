@@ -963,7 +963,10 @@ fn load_runs(
     mut generation: Signal<u64>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
-    let request_generation = generation() + 1;
+    // This function is called from a reactive effect. Reading the signal here
+    // would subscribe that effect to its own generation writes and create a
+    // request loop.
+    let request_generation = *generation.peek() + 1;
     generation.set(request_generation);
     page.set(None);
     loading.set(true);
