@@ -936,16 +936,18 @@ fn load_runs(
     spawn(async move {
         let all_datasets = filters.dataset.trim().is_empty() || filters.dataset == "all";
         let dataset_names = if all_datasets {
-            api::query_catalog()
-                .await
-                .map(|catalog| {
-                    catalog
-                        .datasets
-                        .into_iter()
-                        .map(|dataset| dataset.name)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
+            match api::query_catalog().await {
+                Ok(catalog) => catalog
+                    .datasets
+                    .into_iter()
+                    .map(|dataset| dataset.name)
+                    .collect::<Vec<_>>(),
+                Err(failure) => {
+                    error.set(Some(workspace_notice(&failure)));
+                    loading.set(false);
+                    return;
+                }
+            }
         } else {
             vec![filters.dataset.clone()]
         };
@@ -988,8 +990,17 @@ fn load_runs(
             }
         }
         if partials.is_empty() {
-            // Preserve the previous all-Dataset behavior if catalog discovery
-            // failed before fan-out could be started.
+            // Keep the selected dataset path usable even when one scoped scan
+            // fails; for an all-dataset request the catalog error was already
+            // surfaced above, so an empty page is preferable to a second
+            // unscoped remote scan.
+            if all_datasets {
+                loading.set(false);
+                if let Some(failure) = first_error {
+                    error.set(Some(workspace_notice(&failure)));
+                }
+                return;
+            }
             match api::explorer_runs(
                 &filters.query,
                 &filters.dataset,
