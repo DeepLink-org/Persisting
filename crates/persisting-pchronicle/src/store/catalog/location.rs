@@ -353,6 +353,16 @@ impl DatasetLocation {
     /// directories, leaf Datasets (with sidecar preview when present), and
     /// JSON / JSONL / NDJSON files.
     pub async fn list(&self, relative: &str) -> Result<Vec<PathListEntry>> {
+        self.list_impl(relative, true).await
+    }
+
+    /// Browse one remote level without probing every child. A child is shown
+    /// as a directory until its own observation identifies it as a Dataset.
+    pub(crate) async fn list_for_browse(&self, relative: &str) -> Result<Vec<PathListEntry>> {
+        self.list_impl(relative, !self.is_object_store()).await
+    }
+
+    async fn list_impl(&self, relative: &str, probe_children: bool) -> Result<Vec<PathListEntry>> {
         let relative = relative.trim().trim_matches('/');
         anyhow::ensure!(
             !relative.split('/').any(|part| part == ".."),
@@ -379,7 +389,7 @@ impl DatasetLocation {
             }]);
         }
 
-        let nav = self.list_nav_children(relative).await?;
+        let nav = self.list_nav_children(relative, probe_children).await?;
         let mut out = Vec::with_capacity(nav.len());
         for entry in nav {
             let path = if relative.is_empty() {
@@ -491,11 +501,15 @@ impl DatasetLocation {
         if self.probe_nav_dataset_kind(relative).await?.is_some() {
             return Ok(Vec::new());
         }
-        self.list_nav_children(relative).await
+        self.list_nav_children(relative, true).await
     }
 
     // Caller has validated the path and established that it is not a Dataset leaf.
-    async fn list_nav_children(&self, relative: &str) -> Result<Vec<ShallowNavEntry>> {
+    async fn list_nav_children(
+        &self,
+        relative: &str,
+        probe_children: bool,
+    ) -> Result<Vec<ShallowNavEntry>> {
         if let Some(root) = &self.local_path {
             let dir = if relative.is_empty() {
                 root.clone()
@@ -599,7 +613,11 @@ impl DatasetLocation {
             } else {
                 format!("{relative}/{name}")
             };
-            let kind = self.probe_nav_dataset_kind(&child_rel).await?;
+            let kind = if probe_children {
+                self.probe_nav_dataset_kind(&child_rel).await?
+            } else {
+                None
+            };
             Ok::<_, anyhow::Error>(ShallowNavEntry {
                 name,
                 is_dir: kind.is_none(),

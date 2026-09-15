@@ -425,10 +425,8 @@ impl BrowseCoordinator {
                 uri_fingerprint: key.uri_fingerprint.clone(),
                 prefix: child_prefix.trim_matches('/').to_owned(),
             };
-            // A directory can be discovered after the background walk started.
-            // Schedule it here so its descendant manifests become available to
-            // the next render without making the request wait on storage I/O.
-            let _ = self.enqueue(&child_key, None);
+            // Child discovery belongs to the bounded background walk. Rendering
+            // a wide directory must not promote every child to foreground work.
             let cached = self.index.values.read().await.get(&child_key).cloned();
             tracing::info!(
                 target: "pchronicle.serve",
@@ -441,6 +439,19 @@ impl BrowseCoordinator {
                 "catalog directory summary"
             );
             if let Some(cached) = cached {
+                // Remote parents initially contain names only. Reuse the child's
+                // own leaf observation without another request to S3.
+                if let Some(leaf) = cached
+                    .tree
+                    .children
+                    .iter()
+                    .find(|leaf| leaf.kind == "file" && leaf.path == child_prefix)
+                {
+                    let name = child.name.clone();
+                    *child = leaf.clone();
+                    child.name = name;
+                    continue;
+                }
                 if let Some(count) = cached.tree.dataset_count.filter(|count| *count > 0) {
                     child.dataset_count = Some(count);
                 }
@@ -556,6 +567,8 @@ async fn run_worker(
     let mut visited = HashSet::new();
     let mut background_budget = 0usize;
     let mut background_running = false;
+    // FIFO is intentional: children are appended only after their parent
+    // completes, so the background walk is breadth-first (shallow to deep).
     // JoinSet aborts outstanding work when the coordinator is dropped.
     let mut jobs = tokio::task::JoinSet::<(TreeKey, bool, Result<CatalogTree>)>::new();
     loop {
@@ -689,9 +702,11 @@ async fn refresh_tree(
     } else {
         format!("{}\0{}\0{}", key.dataset, key.uri_fingerprint, key.prefix)
     };
+    // Only inspect this prefix: child marker probes and statistics are deferred
+    // to the bounded background walk, so a wide directory can be cached promptly.
     let listing = tokio::time::timeout(
-        Duration::from_secs(20),
-        manifests.refresh(manifest_key, &location, &key.prefix),
+        Duration::from_secs(60),
+        manifests.refresh_for_browse(manifest_key, &location, &key.prefix),
     )
     .await
     .context("browse list timed out")??;

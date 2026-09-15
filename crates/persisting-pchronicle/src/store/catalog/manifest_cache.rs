@@ -100,13 +100,37 @@ impl ManifestCache {
         location: &DatasetLocation,
         prefix: &str,
     ) -> Result<ManifestListing> {
-        let key = key.into();
+        self.refresh_impl(key.into(), location, prefix, false).await
+    }
+
+    /// Observe remote child names now; the browse worker resolves each child's
+    /// type and statistics when visiting that prefix, without delaying its parent.
+    pub async fn refresh_for_browse(
+        &self,
+        key: impl Into<String>,
+        location: &DatasetLocation,
+        prefix: &str,
+    ) -> Result<ManifestListing> {
+        self.refresh_impl(key.into(), location, prefix, true).await
+    }
+
+    async fn refresh_impl(
+        &self,
+        key: String,
+        location: &DatasetLocation,
+        prefix: &str,
+        browse: bool,
+    ) -> Result<ManifestListing> {
         let refresh_gate =
             crate::store::root_write_lock::for_root(&serde_json::to_string(&(self.path(), &key))?);
         let _guard = refresh_gate.lock().await;
         let listing = ManifestListing {
             partial: false,
-            entries: location.list(prefix).await?,
+            entries: if browse {
+                location.list_for_browse(prefix).await?
+            } else {
+                location.list(prefix).await?
+            },
             observed_at: chrono::Utc::now().timestamp(),
         };
         self.values
