@@ -1,6 +1,8 @@
 //! pChronicle 的持久化存储入口。
 
 pub type Result<T> = anyhow::Result<T>;
+#[cfg(feature = "lance-store")]
+pub use crate::store::opendal_store::StoreConfig;
 
 /// Parse an integer byte size with binary IEC suffixes.
 pub fn parse_byte_size(value: &str) -> std::result::Result<usize, String> {
@@ -64,7 +66,7 @@ pub use crate::store::object_store_io_gate::{
     IoKind as ObjectStoreIoKind, ObjectStoreGateSnapshot, ObjectStoreThrottleEvent,
     ObjectStoreThrottleHookGuard, format_aimd_flow_label as format_object_store_aimd_flow_label,
     install_throttle_hook as install_object_store_throttle_hook,
-    snapshot as object_store_gate_snapshot,
+    snapshot as object_store_gate_snapshot, with_background_object_store_io,
 };
 
 #[cfg(feature = "lance-store")]

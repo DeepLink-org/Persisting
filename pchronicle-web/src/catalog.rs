@@ -34,12 +34,14 @@ pub fn CatalogExplorer(
                     p { "{catalog_subtitle(tree.as_ref())}" }
                     if let Some(status) = tree.as_ref().and_then(|tree| tree.browse.as_ref()) {
                         p { role: "status",
-                            if status.partial {
-                                "Partial view · Some directories have not been loaded"
-                            } else if status.observed_at == 0 && status.refreshing {
+                            if status.observed_at == 0 && status.refreshing {
                                 "Loading directory contents…"
+                            } else if status.observed_at == 0 && status.state == "unavailable" {
+                                "Directory unavailable · Retrying automatically"
                             } else if status.last_error.is_some() {
                                 "Showing cached view · Refresh failed; retrying automatically"
+                            } else if status.partial {
+                                "Partial view · Some directories have not been loaded"
                             } else if status.refreshing {
                                 "Showing cached view · Refreshing in background"
                             } else if status.stale {
@@ -69,7 +71,7 @@ pub fn CatalogExplorer(
                         button { class: "button primary", onclick: on_settings, "Open Keys" }
                     }
                 } else if tree.as_ref().and_then(|tree| tree.browse.as_ref())
-                    .is_some_and(|status| status.observed_at == 0 && status.last_error.is_some()) {
+                    .is_some_and(|status| status.observed_at == 0 && (status.state == "unavailable" || status.last_error.is_some())) {
                     div { class: "pc-catalog-empty", strong { "Directory unavailable" } span { "Retrying automatically. Check the storage connection if this persists." } }
                 } else if tree.as_ref().is_none_or(|tree| tree.children.is_empty() && tree.run_count == 0) {
                     div { class: "pc-catalog-empty", strong { "No datasets" } span { "Add a dataset, then refresh this page." } }

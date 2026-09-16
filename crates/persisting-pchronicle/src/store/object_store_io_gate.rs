@@ -196,9 +196,25 @@ fn state_for<'a>(
     state
 }
 
+tokio::task_local! {
+    static BACKGROUND_IO: ();
+}
+
+/// Run manifest maintenance with independent admission and AIMD state. Call
+/// inside the spawned task: Tokio task-local state is not inherited by spawn.
+pub async fn with_background_object_store_io<F: std::future::Future>(work: F) -> F::Output {
+    BACKGROUND_IO.scope((), work).await
+}
+
 fn gate() -> &'static Gate {
-    static GATE: OnceLock<Gate> = OnceLock::new();
-    GATE.get_or_init(|| {
+    static FOREGROUND_GATE: OnceLock<Gate> = OnceLock::new();
+    static BACKGROUND_GATE: OnceLock<Gate> = OnceLock::new();
+    let slot = if BACKGROUND_IO.try_with(|_| ()).is_ok() {
+        &BACKGROUND_GATE
+    } else {
+        &FOREGROUND_GATE
+    };
+    slot.get_or_init(|| {
         let concurrency = std::env::var("PCHRONICLE_OBJECT_STORE_CONCURRENCY")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -235,7 +251,7 @@ pub(crate) fn scope_key(uri: &str) -> String {
     scope_for_endpoint(uri, &endpoint)
 }
 
-fn scope_for_endpoint(uri: &str, endpoint: &str) -> String {
+pub(crate) fn scope_for_endpoint(uri: &str, endpoint: &str) -> String {
     let uri = uri.split('#').next().unwrap_or(uri);
     let Some((scheme, rest)) = uri.split_once("://") else {
         return uri.to_owned();
@@ -643,6 +659,34 @@ pub(crate) fn note_failure(uri: &str, kind: IoKind) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn foreground_and_background_have_independent_admission_and_feedback() {
+        let uri = scope_for_endpoint("s3://workload-isolation/path", "http://localhost:18060");
+        let mut foreground_permits = Vec::new();
+        for _ in 0..gate().concurrency {
+            foreground_permits.push(acquire(&uri, IoKind::Read).await);
+        }
+        with_background_object_store_io(async {
+            let _permit =
+                tokio::time::timeout(Duration::from_millis(100), acquire(&uri, IoKind::Read))
+                    .await
+                    .expect("background must not wait on foreground admission");
+            note_failure(&uri, IoKind::Read);
+            assert_eq!(gate().states.lock().unwrap()[&uri].failures, 1);
+        })
+        .await;
+        assert_eq!(gate().states.lock().unwrap()[&uri].failures, 0);
+        drop(foreground_permits);
+        let _permit = tokio::time::timeout(Duration::from_millis(100), acquire(&uri, IoKind::Read))
+            .await
+            .expect("background cooldown must not delay foreground requests");
+        note_success(&uri);
+        with_background_object_store_io(async {
+            assert_eq!(gate().states.lock().unwrap()[&uri].failures, 1);
+        })
+        .await;
+    }
 
     #[test]
     fn registry_reclaims_idle_scopes_but_preserves_waits_and_cooldowns() {

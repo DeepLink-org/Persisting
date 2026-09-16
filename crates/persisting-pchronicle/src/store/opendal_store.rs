@@ -15,6 +15,39 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use url::Url;
 
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct StoreConfig {
+    pub endpoint: Option<String>,
+    pub region: Option<String>,
+    pub access_key: Option<String>,
+    pub secret_key: Option<String>,
+}
+
+impl std::fmt::Debug for StoreConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoreConfig")
+            .field("endpoint", &self.endpoint)
+            .field("region", &self.region)
+            .finish_non_exhaustive()
+    }
+}
+
+impl StoreConfig {
+    pub(crate) fn fingerprint(&self) -> String {
+        blake3::hash(
+            &serde_json::to_vec(&(
+                &self.endpoint,
+                &self.region,
+                &self.access_key,
+                &self.secret_key,
+            ))
+            .expect("serialize S3 configuration"),
+        )
+        .to_hex()
+        .to_string()
+    }
+}
+
 /// Retries for transient object-store failures (DNS blips, connect resets,
 /// 5xx, rate limits). Tuned for long imports over flaky endpoints: up to 8
 /// retries with exponential backoff + jitter, capped at 30s.
@@ -111,6 +144,56 @@ impl OperatorRegistry {
 static OPERATORS: OnceLock<Mutex<OperatorRegistry>> = OnceLock::new();
 
 impl Store {
+    pub(crate) async fn from_uri_with_config(uri: &str, config: StoreConfig) -> Result<Self> {
+        if !uri.starts_with("s3://") || config == StoreConfig::default() {
+            return Self::from_uri(uri).await;
+        }
+        let parsed = Url::parse(uri).context("parse object-store URI")?;
+        let bucket = parsed
+            .host_str()
+            .ok_or_else(|| anyhow!("S3 URI must name a bucket"))?;
+        let root = parsed.path().trim_matches('/');
+        let io_scope = io_gate::scope_for_endpoint(uri, config.endpoint.as_deref().unwrap_or(""));
+        let cache_key = format!(
+            "{}\0{}",
+            operator_cache_key(uri, parsed.as_str()),
+            config.fingerprint()
+        );
+        let registry = OPERATORS.get_or_init(|| Mutex::new(OperatorRegistry::default()));
+        let cached = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&cache_key, Instant::now());
+        let operator = if let Some(operator) = cached {
+            operator
+        } else {
+            let mut builder = opendal::services::S3::default()
+                .bucket(bucket)
+                .root(root)
+                .region(config.region.as_deref().unwrap_or("us-east-1"));
+            if let Some(v) = config.endpoint.as_deref() {
+                builder = builder.endpoint(v);
+            }
+            if let Some(v) = config.access_key.as_deref() {
+                builder = builder.access_key_id(v);
+            }
+            if let Some(v) = config.secret_key.as_deref() {
+                builder = builder.secret_access_key(v);
+            }
+            let operator = with_object_store_retries(Operator::new(builder)?.finish());
+            registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(cache_key, operator.clone(), Instant::now());
+            operator
+        };
+        Ok(Self {
+            operator,
+            fallback_lock: None,
+            io_scope,
+        })
+    }
+
     pub(crate) async fn from_uri(uri: &str) -> Result<Self> {
         let uri = uri.trim();
         let normalized = normalize_uri(uri)?;
@@ -475,6 +558,43 @@ fn normalize_uri(uri: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_backends_scope_gate_by_endpoint_and_bucket_not_credentials() {
+        let config = StoreConfig {
+            endpoint: Some("http://127.0.0.1:18060".into()),
+            region: Some("us-east-1".into()),
+            access_key: Some("scope-test-key".into()),
+            secret_key: Some("scope-test-secret".into()),
+        };
+        let a = Store::from_uri_with_config("s3://scope-test/a", config.clone())
+            .await
+            .unwrap();
+        let mut other = config.clone();
+        other.endpoint = Some("http://127.0.0.1:18061".into());
+        let b = Store::from_uri_with_config("s3://scope-test/a", other.clone())
+            .await
+            .unwrap();
+        assert_ne!(a.io_scope, b.io_scope);
+        assert_ne!(config.fingerprint(), other.fingerprint());
+        other = config.clone();
+        other.secret_key = Some("rotated-secret".into());
+        assert_ne!(config.fingerprint(), other.fingerprint());
+        let c = Store::from_uri_with_config("s3://scope-test/b", other)
+            .await
+            .unwrap();
+        assert_eq!(a.io_scope, c.io_scope);
+        assert!(!format!("{config:?}").contains("scope-test-secret"));
+        assert!(!format!("{config:?}").contains("scope-test-key"));
+        // Saturate A without making a network request: B must retain admission.
+        let _a = io_gate::acquire(&a.io_scope, IoKind::Read).await;
+        let _b = tokio::time::timeout(
+            Duration::from_millis(100),
+            io_gate::acquire(&b.io_scope, IoKind::Read),
+        )
+        .await
+        .unwrap();
+    }
 
     #[test]
     fn temporary_and_exhausted_transport_errors_still_trigger_backoff() {

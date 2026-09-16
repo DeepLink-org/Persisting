@@ -141,16 +141,6 @@ impl CatalogAcl {
         Some(user)
     }
 
-    pub(crate) fn apply_public_backend_env(&self) {
-        if let Some(library) = self.public_datasets.iter().find_map(|name| {
-            self.libraries
-                .get(name)
-                .filter(|library| library.uri.starts_with("s3://"))
-        }) {
-            apply_library_env(library);
-        }
-    }
-
     fn authenticate_headers(
         &self,
         headers: &axum::http::HeaderMap,
@@ -167,6 +157,32 @@ impl CatalogAcl {
             .filter_map(|name| self.libraries.get(name))
             .map(CatalogLibraryPublic::from)
             .collect()
+    }
+
+    pub(crate) fn libraries_for_public(&self) -> Vec<CatalogLibrary> {
+        self.public_datasets
+            .iter()
+            .filter_map(|name| self.libraries.get(name))
+            .cloned()
+            .collect()
+    }
+
+    fn visible_for_headers(
+        &self,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<Vec<CatalogLibraryPublic>, ApiError> {
+        match credentials_from_headers(headers) {
+            Some((access, secret)) => self
+                .authenticate(&access, &secret)
+                .map(|user| self.list_for(user))
+                .ok_or_else(catalog_unauthorized),
+            None if !headers.contains_key(ACCESS_KEY_HEADER)
+                && !headers.contains_key(SECRET_KEY_HEADER) =>
+            {
+                Ok(self.public_for_all())
+            }
+            None => Err(catalog_unauthorized()),
+        }
     }
 
     fn credentials_for_public(&self, dataset: &str) -> Option<(&str, &str)> {
@@ -829,16 +845,7 @@ pub(super) async fn list_datasets(
         .catalog_acl
         .as_ref()
         .ok_or_else(|| ApiError::not_found("catalog is not enabled"))?;
-    let has_credential_headers =
-        headers.contains_key(ACCESS_KEY_HEADER) || headers.contains_key(SECRET_KEY_HEADER);
-    let libraries = match credentials_from_headers(&headers) {
-        Some((access, secret)) => acl
-            .authenticate(&access, &secret)
-            .map(|user| acl.list_for(user))
-            .ok_or_else(catalog_unauthorized)?,
-        None if !has_credential_headers => acl.public_for_all(),
-        None => return Err(catalog_unauthorized()),
-    };
+    let libraries = acl.visible_for_headers(&headers)?;
     Ok(axum::Json(libraries))
 }
 
@@ -872,20 +879,35 @@ pub(super) async fn catalog_data_plane_layer(
     if !path.starts_with("/api/") || parent_handles_path(&path) {
         return next.run(request).await;
     }
-    // Anonymous browsing is limited to wildcard-granted datasets.
-    if credentials_from_headers(request.headers()).is_none()
-        && path.ends_with("/query/tables")
+    // UI metadata is ACL-derived, not an all-dataset storage query. In
+    // particular, authenticated callers may have incompatible S3 backends.
+    let api_path = path
+        .strip_prefix("/api/v1")
+        .or_else(|| path.strip_prefix("/api"))
+        .unwrap_or(&path);
+    let ui_tables = api_path == "/query/tables"
         && url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
-            .any(|(key, value)| key == "ui" && (value == "true" || value == "1"))
-    {
-        if let Some(library) = state.catalog_acl.as_ref().and_then(|acl| {
-            acl.libraries.values().find(|library| {
-                acl.public_for_all()
-                    .iter()
-                    .any(|public| public.name == library.name)
-            })
-        }) {
-            apply_library_env(library);
+            .any(|(key, value)| key == "ui" && (value == "true" || value == "1"));
+    let root_tree = api_path == "/explorer/tree"
+        && !url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
+            .any(|(key, value)| (key == "dataset" || key == "prefix") && !value.is_empty());
+    if request.method() == axum::http::Method::GET && (ui_tables || root_tree) {
+        let libraries = match state
+            .catalog_acl
+            .as_ref()
+            .unwrap()
+            .visible_for_headers(request.headers())
+        {
+            Ok(libraries) => libraries,
+            Err(error) => return error.into_response(),
+        };
+        if root_tree {
+            let mounts = libraries
+                .iter()
+                .filter_map(|library| DatasetMount::new(&library.name, &library.uri).ok())
+                .collect::<Vec<_>>();
+            return axum::Json(super::explorer::catalog_tree_from_mount_specs(&mounts))
+                .into_response();
         }
         let catalog = super::QueryCatalog {
             snapshot_id: String::new(),
@@ -893,7 +915,16 @@ pub(super) async fn catalog_data_plane_layer(
             database: String::new(),
             storage_path: String::new(),
             path_column: "_file_",
-            datasets: Vec::new(),
+            datasets: libraries
+                .into_iter()
+                .map(|library| super::QueryDatasetSummary {
+                    browse: None,
+                    name: library.name,
+                    uri: library.uri,
+                    ready_sources: 0,
+                    error_sources: 0,
+                })
+                .collect(),
             tables: super::query_table_summaries(),
         };
         return axum::Json(catalog).into_response();
@@ -926,13 +957,6 @@ pub(super) async fn catalog_data_plane_layer(
                 .unwrap_or_else(|error| error.into_response());
         }
         if !dataset.is_empty() {
-            if let Some(library) = state.catalog_acl.as_ref().and_then(|acl| {
-                acl.libraries
-                    .values()
-                    .find(|library| library.name == dataset)
-            }) {
-                apply_library_env(library);
-            }
             if let Some((access_key, secret_key)) = state
                 .catalog_acl
                 .as_ref()
@@ -1486,6 +1510,69 @@ uri = "{}"
             builder = builder.header(SECRET_KEY_HEADER, secret_key);
         }
         builder.body(axum::body::Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn ui_metadata_handles_mixed_backends_without_mounting_workers() {
+        use tower::ServiceExt;
+        let acl =
+            CatalogAcl::parse(&SAMPLE.replacen("127.0.0.1:9000", "127.0.0.1:9001", 1)).unwrap();
+        assert!(
+            super::super::catalog_worker::validate_backends(
+                &acl.libraries.values().cloned().collect::<Vec<_>>()
+            )
+            .is_err()
+        );
+        let mut state = super::super::app_state(super::super::ChronicleServerConfig::front_only());
+        state.catalog_acl = Some(std::sync::Arc::new(acl));
+        let warehouse = super::super::PreparedWarehouse { state };
+        let app = warehouse.router();
+        for path in [
+            "/api/query/tables?ui=true",
+            "/api/v1/query/tables?ui=1",
+            "/api/explorer/tree?dataset=&prefix=",
+            "/api/v1/explorer/tree",
+        ] {
+            for (access, secret, expected) in [
+                (Some("USER_AK"), Some("USER_SK"), 2),
+                (Some("BOB_AK"), Some("BOB_SK"), 1),
+                (None, None, 0),
+            ] {
+                let (status, body) = catalog_body(
+                    app.clone()
+                        .oneshot(catalog_request(path, access, secret))
+                        .await
+                        .unwrap(),
+                )
+                .await;
+                assert_eq!(status, axum::http::StatusCode::OK, "{path}: {body}");
+                let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+                let entries = json[if path.contains("query/tables") {
+                    "datasets"
+                } else {
+                    "children"
+                }]
+                .as_array()
+                .unwrap();
+                assert_eq!(entries.len(), expected, "{body}");
+                if expected == 1 {
+                    assert_eq!(entries[0]["name"], "evals");
+                }
+                assert!(!body.contains("BACKEND_AK") && !body.contains("BACKEND_SK"));
+            }
+            for secret in [Some("wrong"), None] {
+                let (status, _) = catalog_body(
+                    app.clone()
+                        .oneshot(catalog_request(path, Some("USER_AK"), secret))
+                        .await
+                        .unwrap(),
+                )
+                .await;
+                assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+            }
+        }
+        assert!(warehouse.state.browse.get().is_none());
+        assert!(warehouse.state.catalog.read().await.is_none());
     }
 
     #[tokio::test]

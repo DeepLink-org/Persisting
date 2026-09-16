@@ -279,13 +279,21 @@ impl PreparedWarehouse {
         acl: catalog::CatalogAcl,
         mut config: ChronicleServerConfig,
     ) -> anyhow::Result<Self> {
-        // The browse worker starts before any HTTP request can select a
-        // dataset. Seed its shared OpenDAL S3 configuration from the catalog.
-        acl.apply_public_backend_env();
         let browse_mounts = acl
-            .public_for_all()
+            .libraries_for_public()
             .into_iter()
-            .filter_map(|library| DatasetMount::new(&library.name, &library.uri).ok())
+            .filter_map(|library| {
+                DatasetMount::new(&library.name, &library.uri)
+                    .ok()
+                    .map(|m| {
+                        m.with_backend(persisting_pchronicle::storage::StoreConfig {
+                            endpoint: library.endpoint.clone(),
+                            region: library.region.clone(),
+                            access_key: library.access_key.clone(),
+                            secret_key: library.secret_key.clone(),
+                        })
+                    })
+            })
             .collect::<Vec<_>>();
         config.datasets.clear();
         config.default_dataset = None;
@@ -581,6 +589,28 @@ async fn current_catalog(
         })?;
     *state.catalog.write().await = Some(Arc::clone(&runtime));
     Ok(runtime)
+}
+
+// An exact file request must not wait for discovery of unrelated sources.
+async fn catalog_for_source(
+    state: &AppState,
+    dataset: Option<&str>,
+    file: &str,
+    request_id: &RequestId,
+) -> Result<Arc<CatalogRuntime>, ApiError> {
+    let Some(dataset) = dataset else {
+        return current_catalog(state, request_id).await;
+    };
+    build_scoped_query_runtime(
+        &state.config,
+        persisting_pchronicle::storage::QueryScope {
+            dataset: dataset.to_owned(),
+            source_file: Some(file.to_owned()),
+        },
+        Vec::new(),
+    )
+    .await
+    .map_err(|error| fail(request_id, "catalog_for_source", error))
 }
 
 async fn current_catalog_for_runs(
@@ -886,7 +916,7 @@ async fn try_compact_jsonl_runs_page(
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "all");
 
-    let runtime = current_catalog(state, request_id).await?;
+    let runtime = catalog_for_source(state, dataset_filter, file_filter, request_id).await?;
     let mut matched: Option<(String, String, Option<u64>)> = None;
     for dataset in runtime.snapshot.datasets() {
         if dataset_filter.is_some_and(|filter| dataset.mount.name != filter) {
@@ -989,6 +1019,44 @@ async fn try_compact_jsonl_runs_page(
     }))
 }
 
+async fn open_storyline_source(
+    state: &AppState,
+    dataset: &str,
+    file: &str,
+    request_id: &RequestId,
+) -> Result<Option<persisting_pchronicle::storage::StorylineLanceStore>, ApiError> {
+    let Some(mount) = state
+        .config
+        .datasets
+        .iter()
+        .find(|mount| mount.name == dataset)
+    else {
+        return Ok(None);
+    };
+    let location = persisting_pchronicle::storage::DatasetLocation::parse_with_backend(
+        &mount.uri,
+        mount.backend().cloned(),
+    )
+    .map_err(|error| fail(request_id, "storyline_source", error))?;
+    if location
+        .probe_nav_dataset_kind(file)
+        .await
+        .map_err(|error| fail(request_id, "storyline_source", error))?
+        != Some("storyline")
+    {
+        return Ok(None);
+    }
+    let uri = format!(
+        "{}/{}",
+        mount.uri.trim_end_matches('/'),
+        file.trim_matches('/')
+    );
+    persisting_pchronicle::storage::StorylineLanceStore::open_uri(&uri)
+        .await
+        .map(Some)
+        .map_err(|error| fail(request_id, "storyline_source", error))
+}
+
 /// Directory mounts only expose immediate children in the catalog. Nested
 /// Storyline leaves reached via explorer navigation are therefore absent from
 /// SQL acceleration. When the client asks for an exact `file=` that is a
@@ -1022,42 +1090,9 @@ async fn try_on_demand_storyline_runs_page(
         return Ok(None);
     };
 
-    let runtime = current_catalog(state, request_id).await?;
-    let Some(dataset) = runtime.snapshot.dataset(dataset_name) else {
+    let Some(store) = open_storyline_source(state, dataset_name, file, request_id).await? else {
         return Ok(None);
     };
-    // Prefer catalog-backed sources; only fall through for nested Directory paths.
-    if dataset.sources.iter().any(|source| {
-        source.kind != persisting_pchronicle::storage::CatalogSourceKind::Directory
-            && (source.file == file || source.file.starts_with(&format!("{file}/")))
-    }) {
-        return Ok(None);
-    }
-    let under_directory = dataset.sources.iter().any(|source| {
-        source.kind == persisting_pchronicle::storage::CatalogSourceKind::Directory
-            && (file == source.file || file.starts_with(&format!("{}/", source.file)))
-    });
-    if !under_directory && !dataset.sources.is_empty() {
-        return Ok(None);
-    }
-
-    let location = persisting_pchronicle::storage::DatasetLocation::parse(&dataset.mount.uri)
-        .map_err(|error| fail(request_id, "explorer_runs", error))?;
-    let kind = location
-        .probe_nav_dataset_kind(file)
-        .await
-        .map_err(|error| fail(request_id, "explorer_runs", error))?;
-    if kind != Some("storyline") {
-        return Ok(None);
-    }
-    let uri = format!(
-        "{}/{}",
-        dataset.mount.uri.trim_end_matches('/'),
-        file.trim_matches('/')
-    );
-    let store = persisting_pchronicle::storage::StorylineLanceStore::open_uri(&uri)
-        .await
-        .map_err(|error| fail(request_id, "explorer_runs", error))?;
     let Some((_generation, ids)) = store
         .document_ids_snapshot()
         .await
@@ -1160,10 +1195,10 @@ async fn explorer_runs_inner(
     query: Result<Query<explorer::ExplorerRunsQuery>, QueryRejection>,
 ) -> Result<Json<explorer::RunExplorerPage>, ApiError> {
     let query = api_query(query)?;
-    if let Some(page) = try_compact_jsonl_runs_page(&state, &query, &request_id).await? {
+    if let Some(page) = try_on_demand_storyline_runs_page(&state, &query, &request_id).await? {
         return Ok(Json(page));
     }
-    if let Some(page) = try_on_demand_storyline_runs_page(&state, &query, &request_id).await? {
+    if let Some(page) = try_compact_jsonl_runs_page(&state, &query, &request_id).await? {
         return Ok(Json(page));
     }
     let dataset_filter = query
@@ -1577,46 +1612,9 @@ async fn try_resolve_on_demand_storyline_run(
         return Ok(None);
     }
 
-    let runtime = current_catalog(state, request_id).await?;
-    let Some(dataset) = runtime.snapshot.dataset(dataset_name) else {
+    let Some(store) = open_storyline_source(state, dataset_name, file, request_id).await? else {
         return Ok(None);
     };
-    let exact_source = dataset.sources.iter().any(|source| {
-        source.kind != persisting_pchronicle::storage::CatalogSourceKind::Directory
-            && source.file == file
-    });
-    if dataset.sources.iter().any(|source| {
-        source.kind != persisting_pchronicle::storage::CatalogSourceKind::Directory
-            && source.file.starts_with(&format!("{file}/"))
-    }) {
-        return Ok(None);
-    }
-    let under_directory = dataset.sources.iter().any(|source| {
-        source.kind == persisting_pchronicle::storage::CatalogSourceKind::Directory
-            && (file == source.file || file.starts_with(&format!("{}/", source.file)))
-    });
-    if !under_directory && !exact_source && !dataset.sources.is_empty() {
-        return Ok(None);
-    }
-
-    let location = persisting_pchronicle::storage::DatasetLocation::parse(&dataset.mount.uri)
-        .map_err(|error| fail(request_id, "resolve_run", error))?;
-    if location
-        .probe_nav_dataset_kind(file)
-        .await
-        .map_err(|error| fail(request_id, "resolve_run", error))?
-        != Some("storyline")
-    {
-        return Ok(None);
-    }
-    let uri = format!(
-        "{}/{}",
-        dataset.mount.uri.trim_end_matches('/'),
-        file.trim_matches('/')
-    );
-    let store = persisting_pchronicle::storage::StorylineLanceStore::open_uri(&uri)
-        .await
-        .map_err(|error| fail(request_id, "resolve_run", error))?;
     let Some((_generation, ids)) = store
         .document_ids_snapshot()
         .await
@@ -1655,7 +1653,7 @@ async fn load_on_demand_storyline_bundle(
     request_id: &RequestId,
     op: &'static str,
 ) -> Result<Option<persisting_pchronicle::storage::CatalogTrajectoryBundle>, ApiError> {
-    let runtime = current_catalog(state, request_id).await?;
+    let runtime = catalog_for_source(state, Some(&run.dataset), &run.file, request_id).await?;
     let Some(dataset) = runtime.snapshot.dataset(&run.dataset) else {
         return Ok(None);
     };
@@ -1712,7 +1710,7 @@ async fn catalog_or_on_demand_trajectory_bundle(
     request_id: &RequestId,
     op: &'static str,
 ) -> Result<persisting_pchronicle::storage::CatalogTrajectoryBundle, ApiError> {
-    let runtime = current_catalog(state, request_id).await?;
+    let runtime = catalog_for_source(state, Some(&run.dataset), &run.file, request_id).await?;
     let key = catalog_storyline_key(run);
     let catalog_result = if state.live_reads {
         runtime.snapshot.load_live_trajectory_bundle(&key).await

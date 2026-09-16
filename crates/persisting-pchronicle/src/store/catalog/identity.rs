@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::DocumentFormat;
+use crate::store::opendal_store::StoreConfig;
 
 use super::DEFAULT_DATASET_NAME;
 
@@ -48,6 +49,8 @@ pub struct DatasetMount {
     pub namespace: NamespacePath,
     #[serde(skip)]
     pub(super) format_hint: Option<DocumentFormat>,
+    #[serde(skip)]
+    pub(crate) backend: Option<StoreConfig>,
 }
 
 impl DatasetMount {
@@ -73,7 +76,17 @@ impl DatasetMount {
             uri,
             namespace,
             format_hint: None,
+            backend: None,
         })
+    }
+
+    pub fn with_backend(mut self, backend: StoreConfig) -> Self {
+        self.backend = Some(backend);
+        self
+    }
+
+    pub fn backend(&self) -> Option<&StoreConfig> {
+        self.backend.as_ref()
     }
 
     pub fn default(uri: impl Into<String>) -> Result<Self> {

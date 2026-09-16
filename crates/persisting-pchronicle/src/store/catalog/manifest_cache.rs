@@ -133,13 +133,43 @@ impl ManifestCache {
             },
             observed_at: chrono::Utc::now().timestamp(),
         };
-        self.values
-            .write()
-            .await
-            .insert(key.clone(), listing.clone());
+        let removed = {
+            let mut values = self.values.write().await;
+            // Only a successful observation can retire vanished descendants.
+            // Otherwise their old manifests would keep inflating UI counts.
+            let removed = values
+                .keys()
+                .filter(|other| {
+                    other
+                        .strip_prefix(&key)
+                        .is_some_and(|suffix| suffix.starts_with('\0') || suffix.starts_with('/'))
+                        && !listing.entries.iter().any(|entry| {
+                            let relative = entry
+                                .path
+                                .strip_prefix(&format!("{prefix}/"))
+                                .unwrap_or(&entry.path);
+                            let child_key = format!(
+                                "{key}{}{relative}",
+                                if prefix.is_empty() { "\0" } else { "/" }
+                            );
+                            (entry.kind == crate::store::PathListKind::Directory
+                                && (other.as_str() == child_key
+                                    || other.starts_with(&format!("{child_key}/"))))
+                                || (entry.kind == crate::store::PathListKind::Dataset
+                                    && other.as_str() == child_key)
+                        })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            for key in &removed {
+                values.remove(key);
+            }
+            values.insert(key.clone(), listing.clone());
+            removed
+        };
         if let Err(error) = self
             .disk
-            .upsert(&key, &serde_json::to_value(&listing)?, &[])
+            .upsert(&key, &serde_json::to_value(&listing)?, &removed)
             .await
         {
             tracing::warn!(target: "pchronicle.serve", prefix, %error,
@@ -219,6 +249,43 @@ impl ManifestCache {
                     }
                 }
                 total
+            })
+    }
+
+    /// Whether every directory below a mount-relative prefix has an observed
+    /// manifest listing. Uses the same keys as refresh_mount; no remote I/O.
+    pub async fn is_complete_under(&self, mount_key: &str, prefix: &str) -> bool {
+        let values = self.values.read().await;
+        let key = |path: &str| {
+            if path.is_empty() {
+                mount_key.to_owned()
+            } else {
+                format!("{mount_key}\0{path}")
+            }
+        };
+        if !values.contains_key(&key(prefix)) {
+            return false;
+        }
+        let descendant_key = format!("{mount_key}\0");
+        values
+            .iter()
+            .filter(|(key, _)| {
+                let path = if key.as_str() == mount_key {
+                    Some("")
+                } else {
+                    key.strip_prefix(&descendant_key)
+                };
+                path.is_some_and(|path| {
+                    prefix.is_empty() || path == prefix || path.starts_with(&format!("{prefix}/"))
+                })
+            })
+            .all(|(_, listing)| {
+                !listing.partial
+                    && listing
+                        .entries
+                        .iter()
+                        .filter(|entry| entry.kind == crate::store::PathListKind::Directory)
+                        .all(|entry| values.contains_key(&key(&entry.path)))
             })
     }
 
@@ -340,6 +407,37 @@ impl ManifestCache {
 mod tests {
     use super::*;
     use crate::store::{PathListEntry, PathListKind};
+
+    #[tokio::test]
+    async fn successful_parent_observation_retires_deleted_manifest_counts() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let leaf = source.join("nested/leaf");
+        std::fs::create_dir_all(&leaf).unwrap();
+        crate::storage::write_compact_jsonl_manifest(&leaf, 1, 42).unwrap();
+        let path = temp.path().join("cache.lance");
+        let cache = ManifestCache::open(path.clone()).await;
+        let location = DatasetLocation::parse(source.to_str().unwrap()).unwrap();
+        cache.refresh_mount("mount", &location).await.unwrap();
+        assert_eq!(cache.summary("mount").await.trajectories, 42);
+        assert!(cache.is_complete_under("mount", "").await);
+        std::fs::remove_dir_all(source.join("nested")).unwrap();
+        cache
+            .refresh_for_browse("mount", &location, "")
+            .await
+            .unwrap();
+        assert_eq!(cache.summary("mount").await.datasets, 0);
+        assert!(cache.get("mount\0nested").await.is_none());
+        drop(cache);
+        assert_eq!(
+            ManifestCache::open(path)
+                .await
+                .summary("mount")
+                .await
+                .trajectories,
+            0
+        );
+    }
 
     #[tokio::test]
     async fn bounded_walk_reports_and_persists_partial_then_recovers() {

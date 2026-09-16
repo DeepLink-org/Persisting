@@ -284,6 +284,7 @@ pub fn App() -> Element {
     let mut catalog_tree = use_signal(|| None::<CatalogTree>);
     let mut catalog_loading = use_signal(|| false);
     let mut catalog_generation = use_signal(|| 0u64);
+    let mut catalog_task = use_signal(|| None::<dioxus::core::Task>);
     let mut offset = use_signal(|| 0usize);
     let mut error = use_signal(|| None::<WorkspaceNotice>);
     let mut catalog_auth_configured = use_signal(|| catalog_auth::load().is_configured());
@@ -346,27 +347,20 @@ pub fn App() -> Element {
     });
 
     use_effect(move || {
+        // One task per navigation. Cancel even on A -> B -> A, so old pollers
+        // cannot resume or overwrite the current page.
+        if let Some(task) = *catalog_task.peek() {
+            task.cancel();
+        }
+        let requested_generation = (*catalog_generation.peek()).saturating_add(1);
+        catalog_generation.set(requested_generation);
         if page() != "catalog" {
             return;
         }
         let dataset = catalog_dataset();
         let prefix = catalog_prefix();
-        load_catalog_tree(
-            dataset.clone(),
-            prefix.clone(),
-            catalog_tree,
-            catalog_loading,
-            error,
-            catalog_generation,
-            catalog_generation(),
-        );
-        spawn(async move {
+        catalog_task.set(Some(spawn(async move {
             loop {
-                TimeoutFuture::new(CATALOG_REFRESH_MS).await;
-                if page() != "catalog" || catalog_dataset() != dataset || catalog_prefix() != prefix
-                {
-                    break;
-                }
                 load_catalog_tree(
                     dataset.clone(),
                     prefix.clone(),
@@ -374,10 +368,14 @@ pub fn App() -> Element {
                     catalog_loading,
                     error,
                     catalog_generation,
-                    catalog_generation(),
-                );
+                    requested_generation,
+                )
+                .await;
+                // Wait after completion. Slow requests must never overlap the
+                // next poll, and failures must not cause a tight retry loop.
+                TimeoutFuture::new(CATALOG_REFRESH_MS).await;
             }
-        });
+        })));
     });
 
     use_effect(move || {
@@ -1148,7 +1146,7 @@ fn merge_run_pages(pages: &[RunPage], filters: &RunFilters) -> RunPage {
     }
 }
 
-fn load_catalog_tree(
+async fn load_catalog_tree(
     dataset: String,
     prefix: String,
     mut tree: Signal<Option<CatalogTree>>,
@@ -1158,31 +1156,27 @@ fn load_catalog_tree(
     requested_generation: u64,
 ) {
     loading.set(true);
-    spawn(async move {
-        match api::explorer_tree(&dataset, &prefix).await {
-            Ok(value) if generation() == requested_generation => tree.set(Some(value)),
-            Err(failure)
-                if matches!(failure.status, 400 | 401)
-                    && dataset.is_empty()
-                    && prefix.is_empty() =>
-            {
-                match api::explorer_tree_anonymous(&dataset, &prefix).await {
-                    Ok(value) if generation() == requested_generation => tree.set(Some(value)),
-                    Err(failure) if generation() == requested_generation => {
-                        error.set(Some(workspace_notice(&failure)))
-                    }
-                    _ => {}
+    match api::explorer_tree(&dataset, &prefix).await {
+        Ok(value) if *generation.peek() == requested_generation => tree.set(Some(value)),
+        Err(failure)
+            if matches!(failure.status, 400 | 401) && dataset.is_empty() && prefix.is_empty() =>
+        {
+            match api::explorer_tree_anonymous(&dataset, &prefix).await {
+                Ok(value) if *generation.peek() == requested_generation => tree.set(Some(value)),
+                Err(failure) if *generation.peek() == requested_generation => {
+                    error.set(Some(workspace_notice(&failure)))
                 }
+                _ => {}
             }
-            Err(failure) if generation() == requested_generation => {
-                error.set(Some(workspace_notice(&failure)))
-            }
-            _ => {}
         }
-        if generation() == requested_generation {
-            loading.set(false);
+        Err(failure) if *generation.peek() == requested_generation => {
+            error.set(Some(workspace_notice(&failure)))
         }
-    });
+        _ => {}
+    }
+    if *generation.peek() == requested_generation {
+        loading.set(false);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

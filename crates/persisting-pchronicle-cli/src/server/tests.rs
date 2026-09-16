@@ -2641,6 +2641,36 @@ async fn physical_api_inspects_storyline_lance_layout_file_and_page() {
 }
 
 #[tokio::test]
+async fn exact_runs_request_does_not_wait_for_global_catalog() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let store =
+        persisting_pchronicle::storage::StorylineLanceStore::open(root.path().join("nested/story"))
+            .await?;
+    store
+        .replace_storyline(&storyline_document("session-a", "run-a"))
+        .await?;
+    let state = app_state(ChronicleServerConfig::mounted(vec![DatasetMount::new(
+        "prod2",
+        root.path().to_string_lossy(),
+    )?])?);
+    // A slow unrelated catalog refresh must not block an exact source request.
+    let _refresh = state.catalog_refresh.lock().await;
+    let app = finish_routes(state.clone());
+    let (status, page) = tokio::time::timeout(
+        Duration::from_secs(5),
+        get_json(
+            &app,
+            "/api/explorer/runs?dataset=prod2&file=nested/story&limit=50",
+        ),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["snapshot"]["total"], 1, "{page}");
+    assert!(state.catalog.read().await.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn browse_tree_does_not_build_query_runtime() -> anyhow::Result<()> {
     use http_body_util::BodyExt;
     use tower::ServiceExt;

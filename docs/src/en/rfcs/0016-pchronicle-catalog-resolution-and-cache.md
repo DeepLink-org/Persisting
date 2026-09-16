@@ -71,20 +71,30 @@ unreadable cache MUST rebuild it and continue with an empty cache. Cache
 errors MUST NOT make `serve` fail when the authoritative location is still
 available.
 
-The cache exposes three refresh paths:
+The Warehouse separates interactive directory browsing from manifest maintenance:
 
-1. A foreground tree request refreshes only the requested level when its
-   cached view is missing or explicitly stale.
-2. A periodic catalog refresh runs every 30 seconds and performs a breadth
-   first walk of each mount. This publishes shallow levels before deeper
-   levels and bounds the frontier.
-3. A successful refresh updates memory and persistent storage atomically from
-   the caller's point of view. A failed refresh leaves the previous view
-   available and records the error for the UI.
+| Work | Remote I/O | Local result | Admission and backoff |
+|---|---|---|---|
+| `GET /api/explorer/tree` | One-level LIST on a directory cache miss or refresh; no remote manifest probes | Names enriched from `ManifestCache` with Dataset types and trajectory counts | Foreground AIMD, scoped by endpoint + bucket |
+| Background manifest worker | Probe the current prefix and list immediate children, then walk breadth first | Update persistent manifest observations and the browse projection | Independent background AIMD, also scoped by endpoint + bucket |
 
-At most one manifest refresh is active per cache instance. This prevents
-duplicate timers and concurrent scans from multiplying local or object-store
-I/O. The UI browse worker also has a bounded process-level I/O gate.
+Foreground requests use an existing directory projection or manifest observation
+immediately. A cold request starts a shallow LIST and waits up to 250 ms before
+returning an explicit loading view. Metadata that has not been observed is
+partial, not a certified zero count. Background work is bounded to 32 prefixes
+per 30-second round and a 10,000-directory frontier; unfinished observations
+remain partial. Each refresh job has a 10-second deadline.
+
+The two workloads do not share in-flight deduplication or failure cooldowns.
+A foreground LIST of a prefix can run while that same prefix's background
+manifest request is stalled. They may reuse an OpenDAL client, but their AIMD
+semaphores, failure counters and cooldowns are independent. Each workload
+continues to share admission across paths on the same endpoint and bucket.
+
+A successful observation updates memory and attempts persistent storage. A
+failed observation retains the previous cache. The directory projection stores
+navigation data; Dataset identity and aggregate counts come only from the
+local manifest observations, scoped to the selected mount and prefix.
 
 ## Aggregation semantics
 
