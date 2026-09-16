@@ -329,7 +329,12 @@ pub fn App() -> Element {
     let mut llm_config = use_signal(llm::load_config);
 
     use_effect(move || {
-        if !matches!(page().as_str(), "runs" | "detail") {
+        // Selecting a run navigates to `detail` while retaining the already
+        // loaded run page. Do not refetch the list just because the detail
+        // pane changed; only bootstrap it for a direct detail URL with no
+        // existing page.
+        let on_detail_without_runs = page() == "detail" && runs.peek().is_none();
+        if page() != "runs" && !on_detail_without_runs {
             return;
         }
         load_runs(
