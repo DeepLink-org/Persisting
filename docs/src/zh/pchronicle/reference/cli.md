@@ -443,8 +443,12 @@ pchronicle serve \
 独立 exec worker 读取；不能与位置参数 Dataset、Gateway 或 Control 同时使用。配合 `dataset pin NAME catalog://127.0.0.1:PORT --ak --sk`。
 `pchronicle serve catalog dataset add|remove|list` 与 `issue|grant|revoke` 只改该文件、
 不启动 HTTP；`issue` 把用户 sk 只打印一次。改 library、用户或授权后必须重启 serve。
-worker 池最多 8 个进程、32 个正在处理或排队的请求；每个 worker 串行处理请求，
-计算等待上限为 60 秒，请求体读取上限为 10 秒。过载返回 503，超时或 IPC 失败会淘汰进程。
+worker 池按并发压力创建进程：优先复用同一权限范围的空闲 worker，全部忙碌时按需扩容，
+每个范围最多 4 个、整个服务最多 8 个进程。达到上限后等待任意可用容量，
+最多接纳 32 个正在处理或排队的请求。每个 worker 内部仍串行处理，IPC 不交叉。
+空闲超过 120 秒的进程由每 30 秒执行一次的清理任务回收；全局容量不足时可提前回收
+其他范围的空闲进程。排队、启动和执行合计上限为 60 秒，请求体读取上限为 10 秒。
+过载返回 503；执行期间超时或 IPC 失败会淘汰对应进程，排队取消不会中断其他请求。
 同一用户、授权范围和后端凭证版本复用 worker 及独立磁盘缓存；修改授权后重启生效。
 缓存位于 `PCHRONICLE_CACHE_DIR/workers/`，未设置时使用系统 pchronicle 缓存目录。
 子进程不继承父进程的 AWS 环境、profile 或用户主目录配置；登录 AK/SK 用于认证，

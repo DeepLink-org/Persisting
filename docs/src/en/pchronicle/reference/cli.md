@@ -341,9 +341,16 @@ an isolated exec worker containing only authorized mounts. It also enables
 `pchronicle serve catalog dataset add|remove|list` and
 `issue|grant|revoke` rewrite that file and do not start HTTP; `issue` prints
 the user secret once. Restart serve after changing libraries, users, or grants.
-The pool allows at most 8 workers and 32 admitted requests, with serial execution
-per worker, a 60-second execution/queue timeout and a 10-second body-read timeout.
-Overload returns 503; timeout or IPC failure discards the worker. Worker and disk
+The pool reuses idle workers in the same authenticated scope and grows on demand
+when they are busy, up to 4 workers per scope and 8 workers server-wide. At capacity,
+requests wait for available capacity rather than a particular busy worker; at most
+32 requests are admitted. Each worker still executes serially to keep IPC isolated.
+A cleanup task runs every 30 seconds and reclaims workers idle for 120 seconds;
+idle workers from other scopes may be reclaimed sooner when global capacity is full.
+Queueing, startup and execution share a 60-second timeout; body reads have a
+10-second timeout. Overload returns 503. Cancellation during execution or IPC
+failure discards that worker; cancelling a queued request does not interrupt
+other requests. Worker and disk
 cache identity includes the user, grants and backend credential version. Caches
 live under `PCHRONICLE_CACHE_DIR/workers/` or the system pchronicle cache directory.
 Workers receive backend keys over private IPC before starting runtime threads;

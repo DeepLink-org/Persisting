@@ -165,7 +165,12 @@ pub async fn explorer_runs(
         urlencoding::encode(path),
         urlencoding::encode(file),
     );
-    json_checked(with_catalog_headers(Request::get(&url)).send_tracked().await).await
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
 }
 
 pub async fn explorer_tree(dataset: &str, prefix: &str) -> Result<CatalogTree, ApiFailure> {
@@ -174,7 +179,12 @@ pub async fn explorer_tree(dataset: &str, prefix: &str) -> Result<CatalogTree, A
         urlencoding::encode(dataset),
         urlencoding::encode(prefix),
     );
-    json_checked(with_catalog_headers(Request::get(&url)).send_tracked().await).await
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
 }
 
 pub async fn explorer_tree_anonymous(
@@ -217,7 +227,12 @@ pub async fn turns(run: &RunSummary, q: &str, source: &str) -> Result<TurnPage, 
         urlencoding::encode(q),
         urlencoding::encode(source),
     );
-    json_checked(with_catalog_headers(Request::get(&url)).send_tracked().await).await
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
 }
 
 pub async fn turn_detail(run: &RunSummary, turn_id: i64) -> Result<TurnDetail, ApiFailure> {
@@ -316,7 +331,12 @@ pub async fn physical_layout(dataset: &str, file: &str) -> Result<PhysicalLayout
         urlencoding::encode(dataset),
         urlencoding::encode(file),
     );
-    json_checked(with_catalog_headers(Request::get(&url)).send_tracked().await).await
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
 }
 
 pub async fn physical_file(
@@ -333,7 +353,12 @@ pub async fn physical_file(
         urlencoding::encode(table),
         urlencoding::encode(data_file),
     );
-    json_checked(with_catalog_headers(Request::get(&url)).send_tracked().await).await
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -358,7 +383,12 @@ pub async fn physical_page(
         url.push_str("&column=");
         url.push_str(&urlencoding::encode(column));
     }
-    json_checked(with_catalog_headers(Request::get(&url)).send_tracked().await).await
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -191,7 +191,12 @@ fn label(name: &str) -> &str {
 #[component]
 pub fn RequestIndicator(on_open: EventHandler<()>) -> Element {
     let entries = REQUESTS.read();
-    let running = entries.iter().filter(|e| e.transport == "running" || e.snapshot.as_ref().is_some_and(|s|s.state=="running")).count();
+    let running = entries
+        .iter()
+        .filter(|e| {
+            e.transport == "running" || e.snapshot.as_ref().is_some_and(|s| s.state == "running")
+        })
+        .count();
     let failed = entries
         .iter()
         .filter(|e| {
@@ -201,7 +206,9 @@ pub fn RequestIndicator(on_open: EventHandler<()>) -> Element {
     let current = entries
         .iter()
         .rev()
-        .find(|e| e.transport == "running" || e.snapshot.as_ref().is_some_and(|s|s.state=="running"))
+        .find(|e| {
+            e.transport == "running" || e.snapshot.as_ref().is_some_and(|s| s.state == "running")
+        })
         .and_then(|e| e.snapshot.as_ref())
         .and_then(|s| {
             let s = s.worker.as_deref().unwrap_or(s);

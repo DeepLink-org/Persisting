@@ -96,7 +96,6 @@ permissions = ["read"]
             .map(|v| v.to_str().unwrap_or(""))
             .collect::<Vec<_>>()
             .join(",");
-        assert!(timings.contains("parent_total"), "{timings}");
         assert!(timings.contains("total;"), "{timings}");
         let body: Value = response.json().await?;
         assert_eq!(body["children"].as_array().map(Vec::len), Some(1));
@@ -109,12 +108,50 @@ permissions = ["read"]
             .send()
             .await?;
         assert_eq!(query.status(), 200);
+        let timings = query
+            .headers()
+            .get_all("server-timing")
+            .iter()
+            .map(|v| v.to_str().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(timings.contains("parent_total"), "{timings}");
         let query: Value = query.json().await?;
         assert_eq!(
             query["rows"],
             json!([{"session_id":format!("{dataset}-session")}]),
             "{query}"
         );
+    }
+    // Concurrent requests in one scope may now use different exec workers.
+    // Each process must retain the same grants and storage identity.
+    let mut concurrent = tokio::task::JoinSet::new();
+    for user in ["alice", "bob", "alice", "bob"] {
+        let client = client.clone();
+        let endpoint = endpoint.to_owned();
+        concurrent.spawn(async move {
+            let response = client
+                .post(format!("http://{endpoint}/api/query/evidence"))
+                .header("x-pchronicle-access-key", format!("{user}-ak"))
+                .header("x-pchronicle-secret-key", format!("{user}-sk"))
+                .json(
+                    &json!({"sql":"SELECT session_id FROM runs", "max_rows":10, "max_bytes":4096}),
+                )
+                .send()
+                .await?;
+            assert_eq!(response.status(), 200);
+            let body: Value = response.json().await?;
+            let expected = if user == "alice" {
+                "left-session"
+            } else {
+                "right-session"
+            };
+            assert_eq!(body["rows"], json!([{"session_id":expected}]));
+            Ok::<_, anyhow::Error>(())
+        });
+    }
+    while let Some(result) = concurrent.join_next().await {
+        result??;
     }
     let response = client
         .get(format!("{url}?dataset=right"))
@@ -214,7 +251,17 @@ async fn exec_worker_handles_multiple_frames_and_exits_on_eof() -> Result<()> {
             json!({"method":"GET", "uri":"/api/health", "headers":[], "body":[]}),
         )
         .await?;
-        assert_eq!(read_frame(&mut output).await?["status"], 200);
+        loop {
+            let event = read_frame(&mut output).await?;
+            match event["type"].as_str() {
+                Some("Progress") => continue,
+                Some("Response") => {
+                    assert_eq!(event["value"]["status"], 200);
+                    break;
+                }
+                _ => anyhow::bail!("unexpected worker frame: {event}"),
+            }
+        }
         assert_eq!(child.id(), pid);
         assert!(child.try_wait()?.is_none());
     }
