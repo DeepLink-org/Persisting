@@ -35,7 +35,7 @@ use crate::model::{
 use crate::notice::{ErrorNotice, WorkspaceNotice, workspace_notice};
 use crate::terminology::{ANALYSIS, ASSISTANT, DATASETS, RUNS, STEPS, STORAGE, TIMELINE};
 
-const SEARCH_DEBOUNCE_MS: u32 = 1_000;
+const STEP_SEARCH_DEBOUNCE_MS: u32 = 1_000;
 const CATALOG_REFRESH_MS: u32 = 5_000;
 
 fn evidence_notice(turn_id: i64, detail: &str) -> WorkspaceNotice {
@@ -248,15 +248,8 @@ pub fn App() -> Element {
     let runs = use_signal(|| None::<RunPage>);
     let runs_loading = use_signal(|| true);
     let runs_generation = use_signal(|| 0u64);
-    let initial_query = url_param("q").unwrap_or_default();
-    let mut query = use_signal({
-        let initial_query = initial_query.clone();
-        move || initial_query
-    });
-    // Keep the input text separate from the query that drives the network
-    // request so typing can be debounced without making the input lag.
-    let mut applied_query = use_signal(move || initial_query);
-    let mut query_debounce_id = use_signal(|| 0u64);
+    let mut last_runs_key = use_signal(|| None::<String>);
+    let mut query = use_signal(|| url_param("q").unwrap_or_default());
     let mut dataset_filter =
         use_signal(|| url_param("dataset_filter").unwrap_or_else(|| "all".into()));
     let mut status = use_signal(|| url_param("status").unwrap_or_else(|| "all".into()));
@@ -337,22 +330,33 @@ pub fn App() -> Element {
         if page() != "runs" && !on_detail_without_runs {
             return;
         }
-        load_runs(
-            RunFilters {
-                query: applied_query(),
-                dataset: dataset_filter(),
-                status: status(),
-                sort: sort(),
-                direction: direction(),
-                path: run_path(),
-                file: file_prefix(),
-                offset: offset(),
-            },
-            runs,
-            runs_loading,
-            runs_generation,
-            error,
+        let filters = RunFilters {
+            query: query(),
+            dataset: dataset_filter(),
+            status: status(),
+            sort: sort(),
+            direction: direction(),
+            path: run_path(),
+            file: file_prefix(),
+            offset: offset(),
+        };
+        let key = format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            filters.query,
+            filters.dataset,
+            filters.status,
+            filters.sort,
+            filters.direction,
+            filters.path,
+            filters.file,
+            filters.offset,
+            page(),
         );
+        if last_runs_key.peek().as_deref() == Some(key.as_str()) && runs.peek().is_some() {
+            return;
+        }
+        last_runs_key.set(Some(key));
+        load_runs(filters, runs, runs_loading, runs_generation, error);
     });
 
     use_effect(move || {
@@ -426,6 +430,31 @@ pub fn App() -> Element {
         }
     });
 
+    // A filtered result should be useful immediately. Pick the first real
+    // match and open its parent conversation instead of leaving the hit hidden
+    // behind a collapsed summary row.
+    use_effect(move || {
+        let query = turn_query();
+        if query.trim().is_empty() || expanded_turn_id().is_some() {
+            return;
+        }
+        let Some(turn) = turns().into_iter().find(|turn| turn.id >= 0) else {
+            return;
+        };
+        expanded_turn_id.set(Some(turn.id));
+        selected_turn.set(None);
+        if let Some(run) = selected_run() {
+            load_turn(
+                run,
+                turn.id,
+                expanded_turn_id,
+                selected_turn,
+                turn_loading,
+                error,
+            );
+        }
+    });
+
     // Route signals are the only tracked inputs. last_place / history_ready are
     // written inside the helper with peek() + change-only set so this effect
     // cannot reschedule itself (Dioxus Signal::set always notifies).
@@ -483,7 +512,6 @@ pub fn App() -> Element {
                 file_prefix,
                 run_path,
                 query,
-                applied_query,
                 status,
                 sort,
                 direction,
@@ -653,7 +681,7 @@ pub fn App() -> Element {
                         let path_runs = runs().map(|page| page.path_index).unwrap_or_default();
                         let selected_path = analysis().map(|value| value.run.path).or_else(|| selected_run().map(|run| run.path)).unwrap_or_default();
                         rsx! { div { class: "pc2-detail-layout",
-                            PathExplorer { runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path, loading: runs_loading(),
+                            PathExplorer { paged: !query().trim().is_empty(), runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path, loading: runs_loading(),
                                 on_path: move |value| { run_path.set(value); offset.set(0); page.set("runs".into()); },
                                 on_view_mode: move |mode| path_list_mode.set(mode),
                                 on_select: move |run: RunSummary| { turn_query.set(query()); selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); turn_search.set(TurnSearchStatus::default()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); },
@@ -705,7 +733,7 @@ pub fn App() -> Element {
                                         let request_id = turn_query_debounce_id() + 1;
                                         turn_query_debounce_id.set(request_id);
                                         spawn(async move {
-                                            TimeoutFuture::new(SEARCH_DEBOUNCE_MS).await;
+                                            TimeoutFuture::new(STEP_SEARCH_DEBOUNCE_MS).await;
                                             if turn_query_debounce_id() == request_id
                                                 && let Some(run) = selected_run()
                                             {
@@ -724,6 +752,8 @@ pub fn App() -> Element {
                                     on_apply_query: move |value: String| {
                                         turn_query_debounce_id.set(turn_query_debounce_id() + 1);
                                         turn_query.set(value.clone());
+                                        expanded_turn_id.set(None);
+                                        selected_turn.set(None);
                                         if let Some(run) = selected_run() {
                                             load_turns(
                                                 run,
@@ -808,7 +838,7 @@ pub fn App() -> Element {
                     _ => {
                         let path_runs = runs().map(|value| value.path_index).unwrap_or_default();
                         rsx! { div { class: "pc2-runs-layout",
-                        PathExplorer { runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path: run_path(), loading: runs_loading(),
+                        PathExplorer { paged: !query().trim().is_empty(), runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path: run_path(), loading: runs_loading(),
                             on_path: move |value| { run_path.set(value); offset.set(0); },
                             on_view_mode: move |mode| path_list_mode.set(mode),
                             on_select: move |run: RunSummary| { turn_query.set(query()); selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); turn_search.set(TurnSearchStatus::default()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); detail_mode.set("trace".into()); page.set("detail".into()); },
@@ -837,24 +867,8 @@ pub fn App() -> Element {
                             datasets: catalog().map(|value| value.datasets).unwrap_or_default(),
                             dataset: dataset_filter(),
                             chat_sessions: assistant_index().sessions.clone(),
-                            on_query: move |value: String| {
-                                query.set(value.clone());
-                                // A new search starts from the first page; retaining a
-                                // previous offset can make valid matches look absent.
-                                offset.set(0);
-                                let request_id = query_debounce_id() + 1;
-                                query_debounce_id.set(request_id);
-                                spawn(async move {
-                                    TimeoutFuture::new(SEARCH_DEBOUNCE_MS).await;
-                                    if query_debounce_id() == request_id {
-                                        applied_query.set(value);
-                                    }
-                                });
-                            },
                             on_apply_query: move |value: String| {
-                                query_debounce_id.set(query_debounce_id() + 1);
-                                query.set(value.clone());
-                                applied_query.set(value);
+                                query.set(value);
                                 offset.set(0);
                             },
                             on_dataset: move |value| { dataset_filter.set(value); run_path.set(String::new()); file_prefix.set(String::new()); offset.set(0); },
@@ -1019,13 +1033,13 @@ fn load_runs(
         // A separate request per mounted Dataset lets a fast Lance source
         // paint immediately while a slower JSON source is still scanning.
         // Each response is merged into the same page as it arrives.
-        let request_limit = if all_datasets { 200 } else { 50 };
+        let request_limit = 50;
         let mut pending = FuturesUnordered::new();
         for dataset in dataset_names {
             let mut scoped = filters.clone();
             scoped.dataset = dataset;
             pending.push(async move {
-                api::explorer_runs(
+                let mut value = api::explorer_runs(
                     &scoped.query,
                     &scoped.dataset,
                     &scoped.status,
@@ -1036,7 +1050,34 @@ fn load_runs(
                     if all_datasets { 0 } else { scoped.offset },
                     request_limit,
                 )
-                .await
+                .await?;
+                // Merge only the sorted prefix needed for this global page.
+                // A fixed first-200 cap silently hid later matches.
+                while all_datasets
+                    && value.snapshot.has_more
+                    && value.records.len() < scoped.offset.saturating_add(request_limit)
+                    && generation() == request_generation
+                {
+                    let next = api::explorer_runs(
+                        &scoped.query,
+                        &scoped.dataset,
+                        &scoped.status,
+                        &scoped.sort,
+                        &scoped.direction,
+                        &scoped.path,
+                        &scoped.file,
+                        value.snapshot.next_offset,
+                        request_limit,
+                    )
+                    .await?;
+                    if next.snapshot.next_offset <= value.snapshot.next_offset {
+                        break;
+                    }
+                    value.snapshot = next.snapshot;
+                    value.records.extend(next.records);
+                    value.path_index.extend(next.path_index);
+                }
+                Ok::<_, crate::api::ApiFailure>(value)
             });
         }
 
@@ -1116,11 +1157,11 @@ fn merge_run_pages(pages: &[RunPage], filters: &RunFilters) -> RunPage {
 
     let all_datasets = filters.dataset.is_empty() || filters.dataset == "all";
     let snapshot = if all_datasets {
-        let total = records.len();
+        let total = pages.iter().map(|page| page.snapshot.total).sum();
         let limit = 50;
         let offset = filters.offset.min(total);
-        let next_offset = (offset + limit).min(total);
         records = records.into_iter().skip(offset).take(limit).collect();
+        let next_offset = offset + records.len();
         PageSnapshot {
             offset,
             next_offset,
@@ -1143,10 +1184,14 @@ fn merge_run_pages(pages: &[RunPage], filters: &RunFilters) -> RunPage {
             })
     };
 
-    let mut path_index = pages
-        .iter()
-        .flat_map(|page| page.path_index.iter().cloned())
-        .collect::<Vec<_>>();
+    let mut path_index = if filters.query.trim().is_empty() {
+        pages
+            .iter()
+            .flat_map(|page| page.path_index.iter().cloned())
+            .collect::<Vec<_>>()
+    } else {
+        records.iter().map(|item| item.run.clone()).collect()
+    };
     path_index.sort_by(|left, right| left.path.cmp(&right.path));
     path_index.dedup_by(|left, right| left.query() == right.query());
 
@@ -1528,6 +1573,7 @@ fn PathExplorer(
     view_mode: PathListMode,
     selected_path: String,
     loading: bool,
+    paged: bool,
     on_path: EventHandler<String>,
     on_view_mode: EventHandler<PathListMode>,
     on_select: EventHandler<RunSummary>,
@@ -1536,7 +1582,7 @@ fn PathExplorer(
     let import_path_tree = build_import_path_tree(&runs);
     rsx! { aside { class: "pc2-path-explorer",
         header {
-            div { strong { "Run paths" } span { if view_mode == PathListMode::Flat { "All runs in this dataset" } else { "Tree by import path" } } }
+            div { strong { "Run paths" } span { if paged { "Search results on this page" } else if view_mode == PathListMode::Flat { "All runs in this dataset" } else { "Tree by import path" } } }
             div { class: "pc2-path-view-toggle", role: "radiogroup", aria_label: "Run list view",
                 button { class: if view_mode == PathListMode::Flat { "active" } else { "" }, role: "radio", aria_checked: view_mode == PathListMode::Flat, onclick: move |_| on_view_mode.call(PathListMode::Flat), "Flat" }
                 button { class: if view_mode == PathListMode::Tree { "active" } else { "" }, role: "radio", aria_checked: view_mode == PathListMode::Tree, onclick: move |_| on_view_mode.call(PathListMode::Tree), "Tree" }
@@ -1544,7 +1590,7 @@ fn PathExplorer(
             span { "{runs.len()}" }
         }
         div { class: "pc2-path-tree",
-            button { class: if selected_path.is_empty() { "pc2-path-all active" } else { "pc2-path-all" }, onclick: move |_| on_path.call(String::new()), span { class: "pc2-path-icon root", "⌂" } strong { "All runs" } code { "{runs.len()}" } }
+            button { class: if selected_path.is_empty() { "pc2-path-all active" } else { "pc2-path-all" }, onclick: move |_| on_path.call(String::new()), span { class: "pc2-path-icon root", "⌂" } strong { if paged { "Search results" } else { "All runs" } } code { "{runs.len()}" } }
             if loading && runs.is_empty() { div { class: "pc2-path-loading", span { class: "spinner" } "Loading paths…" } }
             else if runs.is_empty() { div { class: "pc2-path-empty", "No captured run paths." } }
             else if view_mode == PathListMode::Flat {
@@ -1557,7 +1603,7 @@ fn PathExplorer(
                 }
             }
         }
-        footer { if view_mode == PathListMode::Flat { "Showing all runs in this dataset." } else { "Tree follows the imported path." } }
+        footer { if paged { "Showing the current search page." } else if view_mode == PathListMode::Flat { "Showing all runs in this dataset." } else { "Tree follows the imported path." } }
     } }
 }
 
@@ -1611,7 +1657,6 @@ fn RunsExplorer(
     direction: String,
     path: String,
     file: String,
-    on_query: EventHandler<String>,
     on_apply_query: EventHandler<String>,
     on_dataset: EventHandler<String>,
     on_status: EventHandler<String>,
@@ -1624,6 +1669,11 @@ fn RunsExplorer(
     on_open_chat: EventHandler<RunSummary>,
     on_select: EventHandler<RunSummary>,
 ) -> Element {
+    // Typing stays local; only submitted queries reach the page's request effect.
+    let mut draft_query = use_signal(|| query.clone());
+    use_effect(use_reactive((&query,), move |(query,)| {
+        draft_query.set(query)
+    }));
     let total = page.as_ref().map_or(0, |page| page.snapshot.total);
     let page_offset = page.as_ref().map_or(0, |page| page.snapshot.offset);
     let page_limit = page.as_ref().map_or(50, |page| page.snapshot.limit);
@@ -1643,7 +1693,7 @@ fn RunsExplorer(
         _ => "FTS unavailable",
     };
     let search_placeholder = if search.fts_available {
-        "Search runs/content or JSONB (find syntax)"
+        "Search message body · Enter to search"
     } else {
         "Search unavailable for this Dataset"
     };
@@ -1654,7 +1704,7 @@ fn RunsExplorer(
                 button { class: "button", onclick: on_refresh, "↻ Refresh" }
             }
             div { class: "pc2-filterbar",
-                label { class: "pc2-filter-search", span { "⌕" } input { value: "{query}", placeholder: "{search_placeholder}", aria_label: "Search runs and content", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); on_apply_query.call(query.clone()); } } } if !query.is_empty() { button { r#type: "button", class: "pc2-filter-clear", aria_label: "Clear run search", title: "Clear search", onclick: move |event| { event.prevent_default(); on_apply_query.call(String::new()); }, "×" } } }
+                label { class: "pc2-filter-search", span { "⌕" } input { value: "{draft_query}", placeholder: "{search_placeholder}", aria_label: "Search runs and content", title: "Search message body. Use #all(...) for all fields or an explicit field/JSON filter. Press Enter to search", oninput: move |event| draft_query.set(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); on_apply_query.call(draft_query()); } } } if !draft_query().is_empty() { button { r#type: "button", class: "pc2-filter-clear", aria_label: "Clear run search", title: "Clear search", onclick: move |event| { event.prevent_default(); draft_query.set(String::new()); on_apply_query.call(String::new()); }, "×" } } }
                 select { value: "{dataset}", aria_label: "Filter by Dataset", onchange: move |event| on_dataset.call(event.value()),
                     option { value: "all", "All Datasets" }
                     for mounted in datasets { option { value: "{mounted.name}", "{mounted.label()}" } }
@@ -1666,6 +1716,13 @@ fn RunsExplorer(
                 if !file.is_empty() { button { class: "pc2-path-filter", title: "{file}", onclick: move |_| on_file.call(String::new()), "_file_ {short(&file, 24)} ×" } }
                 span { class: if search.fts_available { "pc2-search-mode available" } else { "pc2-search-mode unavailable" }, title: "{search_label}", "{search_label}" }
                 span { class: "pc2-result-count", "{total} runs" }
+            }
+            if page.is_some() {
+                footer { class: "pc2-pagination",
+                    button { disabled: page_offset == 0, onclick: move |_| on_page.call(page_offset.saturating_sub(page_limit)), "← Previous" }
+                    span { "{page_offset + usize::from(total > 0)}–{page_next} of {total}" }
+                    button { disabled: !page_has_more, onclick: move |_| on_page.call(page_next), "Next →" }
+                }
             }
             div { class: "pc2-table-wrap",
                 table { class: "pc2-run-table",
@@ -1685,13 +1742,7 @@ fn RunsExplorer(
                     }
                 }
             }
-            if page.is_some() {
-                footer { class: "pc2-pagination",
-                    button { disabled: page_offset == 0, onclick: move |_| on_page.call(page_offset.saturating_sub(page_limit)), "← Previous" }
-                    span { "{page_offset + usize::from(total > 0)}–{page_next} of {total}" }
-                    button { disabled: !page_has_more, onclick: move |_| on_page.call(page_next), "Next →" }
-                }
-            }
+
         }
     }
 }
@@ -1716,7 +1767,7 @@ fn RunTableRow(
         .map(|value| search_preview_excerpt(value, &highlight_query));
     rsx! {
         tr { tabindex: "0", onclick: move |_| on_select.call(run.clone()), onkeydown: move |event| if event.key() == Key::Enter { on_select.call(keyboard_run.clone()) },
-            td { div { class: "pc2-session-cell", div { class: "pc2-session-heading", strong { if compact { "Record · " } HighlightedText { text: item.run.session_id.clone(), query: query.clone() } } if has_chat && !compact { ChatMarker { run: run.clone(), on_open_chat } } } span { if compact { "1 JSON record · {item.run.file}" } else { "{item.run.row_count} captured rows" } } if let Some(preview) = preview { div { class: "pc2-run-search-preview", title: "Matched content preview", HighlightedText { text: preview, query: highlight_query.clone() } } } } }
+            td { div { class: "pc2-session-cell", div { class: "pc2-session-heading", strong { if compact { "Record · " } HighlightedText { text: item.run.session_id.clone(), query: query.clone() } } if has_chat && !compact { ChatMarker { run: run.clone(), on_open_chat } } } span { if compact { "1 JSON record · {item.run.file}" } else { "{item.run.row_count} captured rows" } } if let Some(preview) = preview { div { class: "pc2-run-search-preview", title: "{preview}", span { "Match: " } HighlightedText { text: preview.clone(), query: highlight_query.clone() } } } } }
             td { div { class: "pc2-session-cell", strong { if compact { "Compact JSONL" } else { HighlightedText { text: item.run.agent_id.clone(), query: query.clone() } } } span { if !compact { HighlightedText { text: model_text.clone(), query: query.clone() } } } } }
             td { StatusBadge { value: item.run.status.clone() } }
             td { class: "pc2-number", "{item.run.row_count}" }
@@ -3067,7 +3118,6 @@ fn apply_workspace_search(
     mut file_prefix: Signal<String>,
     mut run_path: Signal<String>,
     mut query: Signal<String>,
-    mut applied_query: Signal<String>,
     mut status: Signal<String>,
     mut sort: Signal<String>,
     mut direction: Signal<String>,
@@ -3092,8 +3142,7 @@ fn apply_workspace_search(
         file_prefix.set(query_value(search, "file_prefix").unwrap_or_default());
         run_path.set(query_value(search, "path").unwrap_or_default());
         let next_query = query_value(search, "q").unwrap_or_default();
-        query.set(next_query.clone());
-        applied_query.set(next_query);
+        query.set(next_query);
         status.set(query_value(search, "status").unwrap_or_else(|| "all".into()));
         sort.set(query_value(search, "sort").unwrap_or_else(|| "session".into()));
         direction.set(query_value(search, "direction").unwrap_or_else(|| "asc".into()));
@@ -3480,6 +3529,18 @@ mod tests {
         assert_eq!(merged.snapshot.total, 4);
         assert_eq!(merged.snapshot.offset, 2);
         assert!(!merged.snapshot.has_more);
+    }
+
+    #[test]
+    fn merged_search_keeps_remote_totals_and_only_visible_paths() {
+        let first = server_page(0, 300, &["a", "b"]);
+        let second = server_page(0, 400, &["c", "d"]);
+        let mut filters = run_filters("all", 0);
+        filters.query = "rust".into();
+        let merged = merge_run_pages(&[first, second], &filters);
+        assert_eq!(merged.snapshot.total, 700);
+        assert!(merged.snapshot.has_more);
+        assert_eq!(merged.path_index.len(), merged.records.len());
     }
 
     #[test]

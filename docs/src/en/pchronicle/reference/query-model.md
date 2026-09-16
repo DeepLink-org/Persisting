@@ -79,7 +79,7 @@ uses `#field(term)`:
 
 | Selector | Meaning |
 | --- | --- |
-| `#content` | `message_value`, `observation`, and `prompt` |
+| `#content` | `message_value` (message body; the default for plain text) |
 | `#message` | `message_value` |
 | `#user` | `message_value` where `source = 'user'` |
 | `#assistant` | `message_value` where `source = 'agent'` (`#agent` is an alias) |

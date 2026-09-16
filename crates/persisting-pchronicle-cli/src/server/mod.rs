@@ -860,7 +860,6 @@ fn api_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> 
 }
 
 const EXPLORER_RUN_MATCH_IDENTITY_MAX_ROWS: u64 = 50_000;
-const EXPLORER_RUN_MATCH_PREVIEW_LIMIT: u64 = 512;
 
 fn explorer_run_identity_sql(dataset: &str, table: &str, predicate: &str) -> String {
     format!(
@@ -871,11 +870,54 @@ fn explorer_run_identity_sql(dataset: &str, table: &str, predicate: &str) -> Str
 fn explorer_run_preview_sql(
     dataset: &str,
     table: &str,
-    select: &str,
+    columns: &[&str],
     predicate: &str,
-    limit: u64,
+    runs: &[&RunSummary],
 ) -> String {
-    format!("SELECT {select} FROM {dataset}.{table} WHERE ({predicate}) LIMIT {limit}")
+    let scope = runs
+        .iter()
+        .map(|run| {
+            format!(
+                "(_file_ = {} AND document_id = {})",
+                crate::sql_string(&run.file),
+                crate::sql_string(&run.document_id),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let columns = columns.join(", ");
+    let order = if table == "steps" {
+        "step_id"
+    } else {
+        "document_id"
+    };
+    // One matching row per visible run. A global step LIMIT lets one long run
+    // consume every preview and leaves the rest of the page without evidence.
+    format!(
+        "SELECT source_path, document_id, {columns} FROM (SELECT _file_ AS source_path, document_id, {columns}, ROW_NUMBER() OVER (PARTITION BY _file_, document_id ORDER BY {order}) AS match_rank FROM {dataset}.{table} WHERE ({predicate}) AND ({scope})) AS matched WHERE match_rank = 1 LIMIT {}",
+        runs.len(),
+    )
+}
+
+fn explorer_preview_columns(
+    expression: &persisting_pchronicle::search::FindExpr,
+) -> Vec<&'static str> {
+    let mut predicates = Vec::new();
+    crate::collect_text_predicates(expression, &mut predicates);
+    let mut columns = predicates
+        .iter()
+        .flat_map(|item| item.field.columns().iter().copied())
+        .collect::<Vec<_>>();
+    if columns.is_empty() {
+        columns.extend(if expression.has_step_json() {
+            &["message_value", "metrics"][..]
+        } else {
+            &["task", "prompt", "notes", "agent_name", "agent_model_name"][..]
+        });
+    }
+    columns.sort_unstable();
+    columns.dedup();
+    columns
 }
 
 async fn explorer_query_jsonl(
@@ -1229,6 +1271,7 @@ async fn explorer_runs_inner(
     )
     .await?;
     metrics.record("summary_total", started);
+    let mut preview_plan = None;
     let (fts_matches, fts_available, search_mode) = if query
         .q
         .as_deref()
@@ -1265,14 +1308,6 @@ async fn explorer_runs_inner(
             if dataset_filter.is_some_and(|filter| dataset.mount.name != filter) {
                 continue;
             }
-            let select = if table == "steps" {
-                // Keep all searchable step fields available to the preview
-                // selector.  A COALESCE expression would hide a hit in (for
-                // example) reasoning_content behind a non-empty message.
-                "_file_ AS source_path, document_id, message_value, reasoning_content, observation, prompt, model_name"
-            } else {
-                "_file_ AS source_path, document_id, task, prompt, notes, agent_name, agent_model_name"
-            };
             let identity_sql = explorer_run_identity_sql(&dataset.mount.name, table, &predicate);
             let identity_jsonl = explorer_query_jsonl(
                 &runtime.engine,
@@ -1301,46 +1336,14 @@ async fn explorer_runs_inner(
                 let identity = format!("{}\u{1f}{}\u{1f}{}", dataset.mount.name, file, document_id);
                 matches.entry(identity).or_insert_with(String::new);
             }
-            let preview_sql = explorer_run_preview_sql(
-                &dataset.mount.name,
-                table,
-                select,
-                &predicate,
-                EXPLORER_RUN_MATCH_PREVIEW_LIMIT,
-            );
-            let preview_jsonl = explorer_query_jsonl(
-                &runtime.engine,
-                &preview_sql,
-                EXPLORER_RUN_MATCH_PREVIEW_LIMIT,
-                &request_id,
-            )
-            .await?;
-            for line in preview_jsonl.lines().filter(|line| !line.trim().is_empty()) {
-                let row: Value = serde_json::from_str(line).map_err(|error| {
-                    fail(
-                        &request_id,
-                        "explorer_runs",
-                        anyhow::anyhow!("decode run search preview: {error}"),
-                    )
-                })?;
-                let Some(file) = row.get("source_path").and_then(Value::as_str) else {
-                    continue;
-                };
-                let Some(document_id) = row.get("document_id").and_then(Value::as_str) else {
-                    continue;
-                };
-                let identity = format!("{}\u{1f}{}\u{1f}{}", dataset.mount.name, file, document_id);
-                if !matches.contains_key(&identity) {
-                    continue;
-                }
-                let preview = search_preview_from_row(&row, raw, table);
-                if let Some(existing) = matches.get_mut(&identity)
-                    && existing.is_empty()
-                {
-                    *existing = preview;
-                }
-            }
         }
+        preview_plan = Some((
+            runtime,
+            table,
+            explorer_preview_columns(&expression),
+            predicate,
+            raw.to_owned(),
+        ));
         let mode = if expression.has_text() && expression.has_json() {
             "fts+json"
         } else if expression.has_text() {
@@ -1375,7 +1378,7 @@ async fn explorer_runs_inner(
         }
         (BTreeMap::new(), fts_available, "none")
     };
-    Ok(Json(explorer::run_page_with_fts(
+    let mut page = explorer::run_page_with_fts(
         summaries,
         &query,
         &fts_matches,
@@ -1384,14 +1387,60 @@ async fn explorer_runs_inner(
             mode: search_mode,
             tokenizer: fts_available.then_some("jieba"),
         },
-    )))
+    );
+    if let Some((runtime, table, columns, predicate, raw)) = preview_plan {
+        for dataset in runtime.snapshot.datasets() {
+            let runs = page
+                .records
+                .iter()
+                .filter(|item| item.run.dataset == dataset.mount.name)
+                .map(|item| &item.run)
+                .collect::<Vec<_>>();
+            if runs.is_empty() {
+                continue;
+            }
+            let sql =
+                explorer_run_preview_sql(&dataset.mount.name, table, &columns, &predicate, &runs);
+            let jsonl =
+                explorer_query_jsonl(&runtime.engine, &sql, runs.len() as u64, &request_id).await?;
+            for line in jsonl.lines().filter(|line| !line.trim().is_empty()) {
+                let row: Value = serde_json::from_str(line)
+                    .map_err(|error| fail(&request_id, "explorer_runs_preview", error.into()))?;
+                let file = row.get("source_path").and_then(Value::as_str);
+                let document = row.get("document_id").and_then(Value::as_str);
+                if let Some(item) = page.records.iter_mut().find(|item| {
+                    item.run.dataset == dataset.mount.name
+                        && Some(item.run.file.as_str()) == file
+                        && Some(item.run.document_id.as_str()) == document
+                }) {
+                    item.search_preview = Some(search_preview_from_row(&row, &raw, table));
+                }
+            }
+        }
+    }
+    Ok(Json(page))
 }
 
-fn search_preview_text(raw: &str) -> String {
-    // The API deliberately returns the complete normalized field. The Web
-    // client owns the viewport-sized excerpt so it can guarantee that the
-    // matched term remains visible and highlighted.
-    crate::find_preview_text(raw)
+fn search_preview_text(raw: &str, query: &str) -> String {
+    const MAX_CHARS: usize = 320;
+    let text = crate::find_preview_text(raw);
+    let needle = preview_needle(query).to_ascii_lowercase();
+    let hit = if needle.is_empty() {
+        None
+    } else {
+        text.to_ascii_lowercase().find(&needle)
+    };
+    let start = hit
+        .map(|offset| text[..offset].chars().count().saturating_sub(MAX_CHARS / 3))
+        .unwrap_or(0);
+    let mut excerpt: String = text.chars().skip(start).take(MAX_CHARS).collect();
+    if start + excerpt.chars().count() < text.chars().count() {
+        excerpt.push('…');
+    }
+    if start > 0 {
+        excerpt.insert(0, '…');
+    }
+    excerpt
 }
 
 fn search_preview_from_row(row: &Value, query: &str, table: &str) -> String {
@@ -1402,6 +1451,8 @@ fn search_preview_from_row(row: &Value, query: &str, table: &str) -> String {
             "observation",
             "prompt",
             "model_name",
+            "env",
+            "metrics",
         ]
     } else {
         &["task", "prompt", "notes", "agent_name", "agent_model_name"]
@@ -1412,7 +1463,7 @@ fn search_preview_from_row(row: &Value, query: &str, table: &str) -> String {
         let Some(value) = row.get(*column).and_then(search_preview_raw_value) else {
             continue;
         };
-        let preview = search_preview_text(&value);
+        let preview = search_preview_text(&value, query);
         if fallback.is_none() && !preview.is_empty() {
             fallback = Some(preview.clone());
         }

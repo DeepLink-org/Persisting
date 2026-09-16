@@ -423,7 +423,9 @@ pub(crate) fn run_page_with_fts(
         })
         .collect::<Vec<_>>();
     let path_index_limit = 2_000usize;
-    let path_index = if records.len() > path_index_limit {
+    let path_index = if !needle.is_empty() {
+        Vec::new()
+    } else if records.len() > path_index_limit {
         // Huge compact-jsonl sources must not ship every identity into the
         // browser path explorer. Keep one representative per file plus a
         // bounded sample so WASM stays responsive.
@@ -482,8 +484,12 @@ pub(crate) fn run_page_with_fts(
     );
     RunExplorerPage {
         snapshot: page.snapshot,
+        path_index: if needle.is_empty() {
+            path_index
+        } else {
+            page.records.iter().map(|item| item.run.clone()).collect()
+        },
         records: page.records,
-        path_index,
         search,
     }
 }

@@ -51,26 +51,24 @@ fn explorer_run_identity_sql_does_not_project_step_payloads() {
 }
 
 #[test]
-fn explorer_run_preview_sql_is_row_bounded() {
-    let sql = explorer_run_preview_sql(
-        "dataset",
-        "steps",
-        "_file_ AS source_path, document_id, message_value",
-        "step_id = 1",
-        512,
-    );
-    let lowered = sql.to_ascii_lowercase();
-    assert!(lowered.contains("limit 512"), "{sql}");
-    assert!(lowered.contains("message_value"), "{sql}");
+fn search_preview_is_bounded_around_the_hit() {
+    let raw = format!("{} ipython {}", "前缀 ".repeat(400), "suffix ".repeat(400));
+    let preview = search_preview_text(&raw, "IPYTHON");
+    assert!(preview.contains("ipython"));
+    assert!(preview.chars().count() <= 322);
+    assert!(preview.starts_with('…') && preview.ends_with('…'));
 }
 
 #[test]
-fn search_preview_returns_the_complete_normalized_field() {
-    let raw = format!("{} ipython {}", "prefix ".repeat(80), "suffix ".repeat(80));
-    let preview = search_preview_text(&raw);
-    assert!(preview.contains("ipython"));
-    assert!(preview.starts_with("prefix prefix"));
-    assert!(preview.ends_with("suffix suffix "));
+fn default_search_projects_only_message_body() {
+    let expression = crate::combine_match_expressions(&["rust".into()])
+        .unwrap()
+        .unwrap();
+    assert_eq!(explorer_preview_columns(&expression), ["message_value"]);
+    let expression = crate::combine_match_expressions(&["#observation(rust)".into()])
+        .unwrap()
+        .unwrap();
+    assert_eq!(explorer_preview_columns(&expression), ["observation"]);
 }
 
 #[test]
@@ -2460,6 +2458,68 @@ async fn physical_api_lists_empty_sources_for_json_catalog_and_rejects_non_lance
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["code"], "not_found");
+}
+
+#[tokio::test]
+async fn search_pages_have_body_previews_for_every_visible_run() {
+    use persisting_pchronicle::storage::StorylineLanceStore;
+    let root = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open(root.path().join("story"))
+        .await
+        .unwrap();
+    // More than the old 512-row global preview budget in the first run.
+    for (session, count) in [("a", 513), ("b", 1), ("c", 1), ("metadata", 1)] {
+        let mut document = storyline_document(session, session);
+        let template = document.turns[0].clone();
+        document.turns = (0..count)
+            .map(|id| {
+                let mut turn = template.clone();
+                turn.id = id;
+                turn.message = json!(if session == "metadata" {
+                    "unrelated text".to_owned()
+                } else {
+                    format!("{} rust {session}", "padding ".repeat(60))
+                });
+                turn.observation = Some(json!("rust metadata"));
+                turn.prompt =
+                    persisting_pchronicle::model::StorylinePrompt::from_pair("rust prompt", "");
+                turn
+            })
+            .collect();
+        store.replace_storyline(&document).await.unwrap();
+    }
+    let app = router(root.path().to_string_lossy().to_string());
+    let dataset = encode_query(DEFAULT_DATASET_NAME);
+    for (offset, expected) in [(0, vec!["a", "b"]), (2, vec!["c"])] {
+        let (status, body) = get_json(
+            &app,
+            &format!("/api/explorer/runs?dataset={dataset}&q=rust&offset={offset}&limit=2"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["snapshot"]["total"], 3, "{body}");
+        assert_eq!(body["snapshot"]["has_more"], offset == 0);
+        let records = body["records"].as_array().unwrap();
+        assert_eq!(records.len(), expected.len(), "{body}");
+        assert_eq!(body["path_index"].as_array().unwrap().len(), expected.len());
+        for (record, session) in records.iter().zip(expected) {
+            assert_eq!(record["session_id"], session);
+            let preview = record["search_preview"].as_str().unwrap();
+            assert!(preview.contains(&format!("rust {session}")), "{record}");
+            assert!(preview.chars().count() <= 322);
+        }
+    }
+    let (status, body) = get_json(
+        &app,
+        &format!(
+            "/api/explorer/runs?dataset={dataset}&q={}&limit=2",
+            encode_query("#observation(rust)")
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["snapshot"]["total"], 4, "{body}");
+    assert_eq!(body["records"][0]["search_preview"], "rust metadata");
 }
 
 #[tokio::test]
