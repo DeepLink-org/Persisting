@@ -3588,6 +3588,7 @@ pub(crate) async fn find_expression_predicate_for_dataset(
     for predicate in text_predicates {
         let mut matches = Vec::<String>::new();
         let mut searched = false;
+        let mut jobs = Vec::new();
         for dataset in snapshot.datasets() {
             if dataset_filter.is_some_and(|filter| dataset.mount.name != filter) {
                 continue;
@@ -3599,40 +3600,49 @@ pub(crate) async fn find_expression_predicate_for_dataset(
                 {
                     continue;
                 }
-                let Some(paths) =
+                if let Some(paths) =
                     snapshot.storyline_table_paths(&dataset.mount.name, &source.file)?
-                else {
-                    continue;
-                };
-                match search_storyline_step_matches_fts_in_columns(
-                    &paths,
-                    &predicate.query,
-                    predicate.field.columns(),
-                )
-                .await
                 {
-                    Ok(step_matches) => {
-                        available = true;
-                        searched = true;
-                        let source_predicate = predicate
-                            .field
-                            .source_predicate()
-                            .map(|value| format!(" AND ({value})"))
-                            .unwrap_or_default();
-                        matches.extend(step_matches.into_iter().map(|(document_id, step_id)| {
-                            format!(
-                                "(_file_ = {} AND document_id = {} AND step_id = {}{})",
-                                sql_string(&source.file),
-                                sql_string(&document_id),
-                                step_id,
-                                source_predicate,
-                            )
-                        }));
-                    }
-                    Err(error) => errors.push(format!(
-                        "FTS unavailable for {} / {}: {error:#}",
-                        dataset.mount.name, source.file
-                    )),
+                    jobs.push((dataset.mount.name.clone(), source.file.clone(), paths));
+                }
+            }
+        }
+        let query = predicate.query.clone();
+        let columns = predicate.field.columns();
+        let results = stream::iter(jobs)
+            .map(|(dataset, file, paths)| {
+                let query = query.clone();
+                async move {
+                    let result =
+                        search_storyline_step_matches_fts_in_columns(&paths, &query, columns).await;
+                    (dataset, file, result)
+                }
+            })
+            .buffer_unordered(4)
+            .collect::<Vec<_>>()
+            .await;
+        for (dataset, file, result) in results {
+            match result {
+                Ok(step_matches) => {
+                    available = true;
+                    searched = true;
+                    let source_predicate = predicate
+                        .field
+                        .source_predicate()
+                        .map(|value| format!(" AND ({value})"))
+                        .unwrap_or_default();
+                    matches.extend(step_matches.into_iter().map(|(document_id, step_id)| {
+                        format!(
+                            "(_file_ = {} AND document_id = {} AND step_id = {}{})",
+                            sql_string(&file),
+                            sql_string(&document_id),
+                            step_id,
+                            source_predicate,
+                        )
+                    }));
+                }
+                Err(error) => {
+                    errors.push(format!("FTS unavailable for {dataset} / {file}: {error:#}"))
                 }
             }
         }

@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-const DEFAULT_REMOTE_CONCURRENCY: usize = 1;
-const MAX_REMOTE_CONCURRENCY: usize = 2;
+const DEFAULT_REMOTE_CONCURRENCY: usize = 4;
+const MAX_REMOTE_CONCURRENCY: usize = 8;
 const MAX_RETAINED_SCOPES: usize = 1024;
 const SCOPE_IDLE_TTL: Duration = Duration::from_secs(300);
 const MAX_DELAY_MS: u64 = 30_000;

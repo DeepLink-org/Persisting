@@ -290,34 +290,40 @@ impl ObjectStore for CachedObjectStore {
         let this = self.clone();
         let path = p.clone();
         let meta = head.meta.clone();
-        let end = range.end;
-        let stream = futures::stream::try_unfold(range.start, move |start| {
-            let (this, path, meta, key, mut options) = (
-                this.clone(),
-                path.clone(),
-                meta.clone(),
-                key.clone(),
-                options.clone(),
-            );
-            async move {
-                if start >= end {
-                    return Ok(None);
-                }
-                let block_start = (start / this.block_size_bytes) * this.block_size_bytes;
-                let block_end = block_start
-                    .saturating_add(this.block_size_bytes)
-                    .min(meta.size);
-                options.range = Some((block_start..block_end).into());
-                let bytes = this
-                    .read_block(&path, &meta, options, &key, block_start..block_end)
-                    .await?;
-                let next = block_end.min(end);
-                Ok(Some((
-                    bytes.slice((start - block_start) as usize..(next - block_start) as usize),
-                    next,
-                )))
-            }
-        });
+        let block_size = self.block_size_bytes;
+        let blocks = (range.start / block_size
+            ..range.end.saturating_add(block_size - 1) / block_size)
+            .map(|block| {
+                let block_start = block * block_size;
+                let block_end = block_start.saturating_add(block_size).min(meta.size);
+                let visible_start = range.start.max(block_start);
+                let visible_end = range.end.min(block_end);
+                (block_start, block_end, visible_start, visible_end)
+            })
+            .collect::<Vec<_>>();
+        // Keep at most four misses in flight. The stream remains lazy, while
+        // adjacent uncached blocks overlap their S3 requests.
+        let stream = futures::stream::iter(blocks)
+            .map(
+                move |(block_start, block_end, visible_start, visible_end)| {
+                    let this = this.clone();
+                    let path = path.clone();
+                    let meta = meta.clone();
+                    let key = key.clone();
+                    let mut options = options.clone();
+                    async move {
+                        options.range = Some((block_start..block_end).into());
+                        let bytes = this
+                            .read_block(&path, &meta, options, &key, block_start..block_end)
+                            .await?;
+                        Ok::<_, object_store::Error>(bytes.slice(
+                            (visible_start - block_start) as usize
+                                ..(visible_end - block_start) as usize,
+                        ))
+                    }
+                },
+            )
+            .buffered(4);
         Ok(GetResult {
             payload: GetResultPayload::Stream(stream.boxed()),
             meta: head.meta,

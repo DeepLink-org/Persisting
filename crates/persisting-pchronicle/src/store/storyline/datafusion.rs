@@ -435,24 +435,15 @@ impl StorylineDataSource {
         paths: StorylineTablePaths,
         options: StorylineDataSourceOptions,
     ) -> Result<Self> {
-        let remote = paths.runs.to_string_lossy().contains("://")
-            && !paths.runs.to_string_lossy().starts_with("file:");
-        let (runs, steps, tool_calls, objects) = if remote {
-            // Avoid four concurrent Lance opens against flaky S3 gateways.
-            (
-                open_dataset(&paths.runs, paths.runs_version).await?,
-                open_dataset(&paths.steps, paths.steps_version).await?,
-                open_dataset(&paths.tool_calls, paths.tool_calls_version).await?,
-                open_objects(&paths.objects, paths.objects_version).await?,
-            )
-        } else {
-            tokio::try_join!(
-                open_dataset(&paths.runs, paths.runs_version),
-                open_dataset(&paths.steps, paths.steps_version),
-                open_dataset(&paths.tool_calls, paths.tool_calls_version),
-                open_objects(&paths.objects, paths.objects_version),
-            )?
-        };
+        // Each open is independently gated by endpoint/bucket AIMD. Running
+        // them together lets metadata HEADs overlap without bypassing the S3
+        // safety limits.
+        let (runs, steps, tool_calls, objects) = tokio::try_join!(
+            open_dataset(&paths.runs, paths.runs_version),
+            open_dataset(&paths.steps, paths.steps_version),
+            open_dataset(&paths.tool_calls, paths.tool_calls_version),
+            open_objects(&paths.objects, paths.objects_version),
+        )?;
         let objects = Arc::new(objects);
         Ok(Self {
             paths,
