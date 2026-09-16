@@ -309,6 +309,7 @@ impl BrowseCoordinator {
     }
 
     pub(crate) async fn tree(&self, mount: &DatasetMount, prefix: &str) -> Result<BrowseSnapshot> {
+        super::request_progress::phase("browse_cache");
         let key = TreeKey::new(mount, prefix)?;
         tracing::info!(
             target: "pchronicle.serve",
@@ -343,6 +344,7 @@ impl BrowseCoordinator {
         }
         // A cold page is user-visible work: attach to the same single-flight
         // refresh as the background walker and return once this prefix exists.
+        super::request_progress::phase("directory_wait");
         let (reply, wait) = oneshot::channel();
         self.enqueue(&key, Some(reply))?;
         // enqueue may decline during cooldown; it drops the sender in that
@@ -353,6 +355,9 @@ impl BrowseCoordinator {
             return Ok(self.snapshot_with_summary(&key, entry).await);
         }
         let refreshing = lock_recover(&self.pending).contains_key(&key);
+        if let Some(progress) = super::request_progress::current() {
+            progress.note(if refreshing { "Directory listing is still refreshing in the background; this response contains a partial view." } else { "Directory listing is unavailable. Check storage connectivity and the server log for this request." });
+        }
         let last_error = lock_recover(&self.refresh)
             .get(&key)
             .and_then(|s| s.error.clone());
@@ -428,6 +433,7 @@ impl BrowseCoordinator {
     }
 
     async fn snapshot_with_summary(&self, key: &TreeKey, mut entry: IndexEntry) -> BrowseSnapshot {
+        super::request_progress::phase("manifest_summary");
         let current_manifest_key = manifest_key(key, None);
         let observation = self.manifests.get(&current_manifest_key).await;
         // The directory projection supplies names; only local manifest

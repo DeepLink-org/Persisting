@@ -212,12 +212,14 @@ impl ScopedQueries {
                 flight
             }
         };
+        super::request_progress::phase("query_queue");
         // OnceCell transfers initialization to a waiter if the initializing
         // request is cancelled. No detached tasks or permanently owned pins.
         flight
             .result
             .get_or_init(|| async {
                 let _slot = self.slots.acquire().await.expect("admission never closes");
+                super::request_progress::phase("query");
                 execute().await.map_err(SharedAccelerationFailure::new)
             })
             .await

@@ -88,6 +88,7 @@ fn page_from_query(page: Option<&str>, has_run: bool) -> &'static str {
         Some("runs") => "runs",
         Some("physical") => "physical",
         Some("catalog") => "catalog",
+        Some("requests") => "requests",
         Some("detail") => "detail",
         _ => "home",
     }
@@ -207,6 +208,7 @@ fn navigate_app_back(app_history_depth: i32) -> bool {
 }
 
 pub fn App() -> Element {
+    crate::requests::use_request_polling();
     let initial_agent = url_param("agent_id");
     let initial_session = url_param("session_id");
     let initial_root = url_param("root_session_id");
@@ -304,6 +306,8 @@ pub fn App() -> Element {
     let mut expanded_turn_id =
         use_signal(|| url_param("turn").and_then(|value| value.parse::<i64>().ok()));
     let detail_loading = use_signal(|| false);
+    let detail_failed = use_signal(|| false);
+    let detail_generation = use_signal(|| 0u64);
     let turn_loading = use_signal(|| false);
     let mut detail_mode = use_signal(|| url_param("workspace").unwrap_or_else(|| "trace".into()));
     let mut trace_mode = use_signal(|| {
@@ -391,6 +395,8 @@ pub fn App() -> Element {
                 turn_search,
                 compact_record,
                 detail_loading,
+                detail_failed,
+                detail_generation,
                 error,
             );
         }
@@ -557,11 +563,13 @@ pub fn App() -> Element {
                     RailButton { active: page() == "tools", icon: "analysis", label: ANALYSIS, onclick: move |_| page.set("tools".into()) }
                     RailButton { active: page() == "physical", icon: "storage", label: STORAGE, onclick: move |_| page.set("physical".into()) }
                 }
+                RailButton { active: page() == "requests", icon: "analysis", label: "Requests", onclick: move |_| page.set("requests".into()) }
                 div { class: "rail-spacer" }
                 div { class: "rail-secondary", aria_label: "Assistant and settings",
                     button { class: if copilot_open() { "rail-button active" } else { "rail-button" }, aria_label: "Toggle Assistant", aria_expanded: copilot_open(), onclick: move |_| copilot_open.set(!copilot_open()), WorkspaceIcon { name: "assistant" } span { {ASSISTANT} } }
                     button { class: if settings_open() { "rail-button active" } else { "rail-button" }, aria_label: "Settings", onclick: move |_| settings_open.set(true), WorkspaceIcon { name: "keys" } span { "Keys" } }
                 }
+                crate::requests::RequestIndicator { on_open: move |_| page.set("requests".into()) }
                 {
                     let identity = catalog_auth::load();
                     let configured = identity.is_configured();
@@ -587,6 +595,7 @@ pub fn App() -> Element {
                     }
                 }
                 match page().as_str() {
+                    "requests" => rsx! { crate::requests::RequestsPanel {} },
                     "catalog" => rsx! {
                         CatalogExplorer {
                             tree: catalog_tree(),
@@ -776,6 +785,17 @@ pub fn App() -> Element {
                                         analysis_seed_scope.set(Some(run_analysis_scope(&active_catalog, run)));
                                         page.set("tools".into());
                                     },
+                                }
+                            } else if detail_failed() && !detail_loading() {
+                                div { class: "pc2-loading", role: "alert",
+                                    strong { "Could not load run details" }
+                                    p { "Open Requests to inspect the failed stage, or retry this run." }
+                                    button { class: "button", onclick: move |_| {
+                                        if let Some(run)=selected_run.peek().clone() {
+                                            load_workspace(run,turn_query(),source(),analysis,turns,turn_search,compact_record,detail_loading,detail_failed,detail_generation,error);
+                                        }
+                                    }, "Retry" }
+                                    button { class: "button", onclick: move |_| page.set("requests".into()), "View requests" }
                                 }
                             } else { LoadingWorkspace { label: "Loading run details…" } }
                         } }
@@ -1189,33 +1209,56 @@ fn load_workspace(
     mut turn_search: Signal<TurnSearchStatus>,
     mut compact_record: Signal<Option<CompactRecordDetail>>,
     mut loading: Signal<bool>,
+    mut failed: Signal<bool>,
+    mut generation: Signal<u64>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
+    // Untracked reads avoid subscribing the caller's effect to its own writes.
+    let requested = *generation.peek() + 1;
+    generation.set(requested);
     compact_record.set(None);
+    failed.set(false);
     loading.set(true);
-    spawn({
-        let run = run.clone();
-        async move {
-            let (next_analysis, next_turns) =
-                futures_util::join!(api::run_analysis(&run), api::turns(&run, &query, &source),);
-            match (next_analysis, next_turns) {
-                (Ok(next_analysis), Ok(next_turns)) => {
-                    if next_analysis.run.is_compact_jsonl() {
-                        match api::compact_record(&next_analysis.run).await {
-                            Ok(value) => compact_record.set(Some(value)),
-                            Err(failure) => error.set(Some(workspace_notice(&failure))),
-                        }
-                    }
-                    analysis.set(Some(next_analysis));
-                    turns.set(next_turns.records);
-                    turn_search.set(next_turns.search);
-                }
-                (Err(failure), _) | (_, Err(failure)) => {
-                    error.set(Some(workspace_notice(&failure)));
-                }
-            }
-            loading.set(false);
+    spawn(async move {
+        let work = async {
+            let (next_analysis, next_turns) = futures_util::try_join!(
+                api::run_analysis(&run),
+                api::turns(&run, &query, &source)
+            )?;
+            let record = if next_analysis.run.is_compact_jsonl() {
+                Some(api::compact_record(&next_analysis.run).await?)
+            } else {
+                None
+            };
+            Ok::<_, api::ApiFailure>((next_analysis, next_turns, record))
+        };
+        let result = match futures_util::future::select(
+            Box::pin(work),
+            Box::pin(TimeoutFuture::new(65_000)),
+        )
+        .await
+        {
+            futures_util::future::Either::Left((result, _)) => result,
+            _ => Err(api::ApiFailure::network(
+                "Run details timed out. Open Requests to inspect server progress, then retry.",
+            )),
+        };
+        if *generation.peek() != requested {
+            return;
         }
+        match result {
+            Ok((next_analysis, next_turns, record)) => {
+                analysis.set(Some(next_analysis));
+                turns.set(next_turns.records);
+                turn_search.set(next_turns.search);
+                compact_record.set(record);
+            }
+            Err(failure) => {
+                failed.set(true);
+                error.set(Some(workspace_notice(&failure)));
+            }
+        }
+        loading.set(false);
     });
 }
 

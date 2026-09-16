@@ -9,6 +9,7 @@ mod physical;
 pub(crate) mod problem;
 mod query_admission;
 pub(crate) mod request_log;
+mod request_progress;
 mod ui_cache;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -68,6 +69,7 @@ struct AppState {
     catalog_query_worker: bool,
     catalog_workers: Arc<catalog_worker::WorkerPool>,
     browse_mounts: Arc<Vec<DatasetMount>>,
+    request_progress: Arc<request_progress::Registry>,
     browse: Arc<tokio::sync::OnceCell<ui_cache::BrowseCoordinator>>,
     scoped_queries: Arc<query_admission::ScopedQueries>,
 }
@@ -239,6 +241,7 @@ fn app_state_with_catalog_refresh_interval(
         catalog_query_worker: false,
         catalog_workers: Arc::new(catalog_worker::WorkerPool::default()),
         browse_mounts: Arc::new(browse_mounts),
+        request_progress: Arc::new(request_progress::Registry::default()),
         browse: Arc::new(tokio::sync::OnceCell::new()),
         scoped_queries: Arc::new(query_admission::ScopedQueries::default()),
     }
@@ -379,6 +382,7 @@ async fn browse_coordinator(state: &AppState) -> &ui_cache::BrowseCoordinator {
 fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(warehouse_health))
+        .route("/requests/{id}", get(request_progress::get))
         .route("/ui", get(ui_config))
         .route("/runs", get(runs))
         .route("/explorer/runs", get(explorer_runs))
@@ -417,7 +421,8 @@ fn finish_routes(state: AppState) -> Router {
             state.clone(),
             catalog::catalog_data_plane_layer,
         ))
-        .layer(axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
             request_log::warehouse_request_layer,
         ))
         .with_state(state)
@@ -503,6 +508,7 @@ async fn ui_config(State(state): State<AppState>) -> Json<Value> {
 async fn build_catalog_runtime(
     config: &ChronicleServerConfig,
 ) -> anyhow::Result<Arc<CatalogRuntime>> {
+    request_progress::phase("source_metadata");
     let snapshot = Arc::new(
         DatasetCatalogSnapshot::discover(
             config.datasets.clone(),
@@ -511,6 +517,7 @@ async fn build_catalog_runtime(
         )
         .await?,
     );
+    request_progress::phase("query");
     let engine = Arc::new(
         snapshot
             .clone()
@@ -530,6 +537,7 @@ async fn build_scoped_query_runtime(
     scope: persisting_pchronicle::storage::QueryScope,
     cached_files: Vec<String>,
 ) -> anyhow::Result<Arc<CatalogRuntime>> {
+    request_progress::phase("source_metadata");
     let target = match scope.source_file.clone() {
         Some(file) => persisting_pchronicle::storage::ResolveTarget::Dataset {
             mount: scope.dataset.clone(),
@@ -557,6 +565,7 @@ async fn build_scoped_query_runtime(
         config.catalog_options,
     );
     let snapshot = Arc::new(resolver.resolve(target, mode, &cached_datasets).await?);
+    request_progress::phase("query");
     let engine = Arc::new(
         snapshot
             .clone()
@@ -578,6 +587,7 @@ async fn current_catalog(
     if let Some(runtime) = state.catalog.read().await.as_ref() {
         return Ok(Arc::clone(runtime));
     }
+    request_progress::phase("catalog_wait");
     let _refresh = state.catalog_refresh.lock().await;
     if let Some(runtime) = state.catalog.read().await.as_ref() {
         return Ok(Arc::clone(runtime));
@@ -1025,6 +1035,7 @@ async fn open_storyline_source(
     file: &str,
     request_id: &RequestId,
 ) -> Result<Option<persisting_pchronicle::storage::StorylineLanceStore>, ApiError> {
+    request_progress::phase("source_metadata");
     let Some(mount) = state
         .config
         .datasets
@@ -1093,6 +1104,7 @@ async fn try_on_demand_storyline_runs_page(
     let Some(store) = open_storyline_source(state, dataset_name, file, request_id).await? else {
         return Ok(None);
     };
+    request_progress::phase("storage_read");
     let Some((_generation, ids)) = store
         .document_ids_snapshot()
         .await
@@ -1194,6 +1206,7 @@ async fn explorer_runs_inner(
     fts: FtsDiagnostics,
     query: Result<Query<explorer::ExplorerRunsQuery>, QueryRejection>,
 ) -> Result<Json<explorer::RunExplorerPage>, ApiError> {
+    request_progress::phase("query");
     let query = api_query(query)?;
     if let Some(page) = try_on_demand_storyline_runs_page(&state, &query, &request_id).await? {
         return Ok(Json(page));
@@ -1466,6 +1479,7 @@ async fn explorer_tree(
     );
     let Some(name) = dataset else {
         let started = Instant::now();
+        request_progress::phase("browse_cache");
         let view = browse_coordinator(&state)
             .await
             .roots(&state.browse_mounts)
@@ -1648,12 +1662,11 @@ async fn try_resolve_on_demand_storyline_run(
 }
 
 async fn load_on_demand_storyline_bundle(
-    state: &AppState,
+    runtime: &CatalogRuntime,
     run: &RunSummary,
     request_id: &RequestId,
     op: &'static str,
 ) -> Result<Option<persisting_pchronicle::storage::CatalogTrajectoryBundle>, ApiError> {
-    let runtime = catalog_for_source(state, Some(&run.dataset), &run.file, request_id).await?;
     let Some(dataset) = runtime.snapshot.dataset(&run.dataset) else {
         return Ok(None);
     };
@@ -1706,11 +1719,12 @@ async fn load_on_demand_storyline_bundle(
 
 async fn catalog_or_on_demand_trajectory_bundle(
     state: &AppState,
+    runtime: &CatalogRuntime,
     run: &RunSummary,
     request_id: &RequestId,
     op: &'static str,
 ) -> Result<persisting_pchronicle::storage::CatalogTrajectoryBundle, ApiError> {
-    let runtime = catalog_for_source(state, Some(&run.dataset), &run.file, request_id).await?;
+    request_progress::phase("storage_read");
     let key = catalog_storyline_key(run);
     let catalog_result = if state.live_reads {
         runtime.snapshot.load_live_trajectory_bundle(&key).await
@@ -1719,12 +1733,12 @@ async fn catalog_or_on_demand_trajectory_bundle(
     };
     match catalog_result {
         Ok(Some(bundle)) => Ok(bundle),
-        Ok(None) => load_on_demand_storyline_bundle(state, run, request_id, op)
+        Ok(None) => load_on_demand_storyline_bundle(runtime, run, request_id, op)
             .await?
             .ok_or_else(|| ApiError::not_found("run was not found")),
         Err(error) => {
             if let Some(bundle) =
-                load_on_demand_storyline_bundle(state, run, request_id, op).await?
+                load_on_demand_storyline_bundle(runtime, run, request_id, op).await?
             {
                 Ok(bundle)
             } else {
@@ -1780,8 +1794,10 @@ async fn load_events(
     request_id: &RequestId,
 ) -> Result<LoadedEventView, ApiError> {
     let run = resolve_run_summary(state, query, request_id, None).await?;
+    let runtime = catalog_for_source(state, Some(&run.dataset), &run.file, request_id).await?;
     let bundle =
-        catalog_or_on_demand_trajectory_bundle(state, &run, request_id, "load_events").await?;
+        catalog_or_on_demand_trajectory_bundle(state, &runtime, &run, request_id, "load_events")
+            .await?;
     let document = bundle.event_view;
     let offset = query
         .offset
@@ -1843,8 +1859,10 @@ async fn storyline(
 ) -> Result<Json<Value>, ApiError> {
     let query = api_query(query)?;
     let run = resolve_run_summary(&state, &query, &request_id, None).await?;
+    let runtime = catalog_for_source(&state, Some(&run.dataset), &run.file, &request_id).await?;
     let bundle =
-        catalog_or_on_demand_trajectory_bundle(&state, &run, &request_id, "storyline").await?;
+        catalog_or_on_demand_trajectory_bundle(&state, &runtime, &run, &request_id, "storyline")
+            .await?;
     Ok(Json(
         serde_json::to_value(bundle.storyline)
             .map_err(anyhow::Error::from)
@@ -1971,6 +1989,7 @@ fn event_seqs_for_turn(turn: &StorylineTurn, by_call: &BTreeMap<String, Vec<u64>
 
 #[derive(Clone)]
 struct LoadedTrajectory {
+    runtime: Arc<CatalogRuntime>,
     run: RunSummary,
     event_provenance: CatalogEventProvenance,
     records: Vec<EventRecord>,
@@ -1987,7 +2006,7 @@ async fn load_trajectory(
     let run = resolve_run_summary(state, query, request_id, Some(metrics)).await?;
     metrics.record("resolve", phase);
     let phase = Instant::now();
-    let runtime = current_catalog(state, request_id).await?;
+    let runtime = catalog_for_source(state, Some(&run.dataset), &run.file, request_id).await?;
     metrics.record("catalog", phase);
     let cache_key = format!(
         "{}\u{1f}{}\u{1f}{}\u{1f}{}",
@@ -2009,6 +2028,7 @@ async fn load_trajectory(
     }
     if run.format.as_deref() == Some("compact-jsonl/v1") {
         return Ok(LoadedTrajectory {
+            runtime,
             run,
             event_provenance: CatalogEventProvenance::SyntheticFromStoryline,
             records: Vec::new(),
@@ -2016,8 +2036,14 @@ async fn load_trajectory(
         });
     }
     let phase = Instant::now();
-    let bundle =
-        catalog_or_on_demand_trajectory_bundle(state, &run, request_id, "load_trajectory").await?;
+    let bundle = catalog_or_on_demand_trajectory_bundle(
+        state,
+        &runtime,
+        &run,
+        request_id,
+        "load_trajectory",
+    )
+    .await?;
     metrics.record("trajectory_read", phase);
     let event_provenance = bundle.event_view.provenance;
     let records = bundle.event_view.document.events;
@@ -2083,6 +2109,7 @@ async fn load_trajectory(
         })
         .collect();
     let loaded = LoadedTrajectory {
+        runtime,
         run,
         event_provenance,
         records,
@@ -2154,7 +2181,7 @@ async fn explorer_record(
         return Err(ApiError::not_found("run is not a compact JSONL record"));
     }
     let key = catalog_storyline_key(&run);
-    let record = current_catalog(&state, &request_id)
+    let record = catalog_for_source(&state, Some(&run.dataset), &run.file, &request_id)
         .await?
         .snapshot
         .compact_record(&key)
@@ -2204,7 +2231,7 @@ async fn explorer_turns(
     let session = query.session();
     let loaded = load_trajectory(&state, &session, &request_id, &metrics).await?;
     let phase = Instant::now();
-    let runtime = current_catalog(&state, &request_id).await?;
+    let runtime = &loaded.runtime;
     metrics.record("turn_catalog", phase);
     // Nested Directory Storylines are opened on-demand and are absent from the
     // prepared catalog; skip FTS path probing and keep in-memory turn pages.
@@ -2250,7 +2277,6 @@ async fn explorer_turns(
             let expression = crate::combine_match_expressions(&[needle.to_owned()])
                 .map_err(|error| ApiError::invalid_request(error.to_string()))?
                 .ok_or_else(|| ApiError::invalid_request("search query must not be empty"))?;
-            let runtime = current_catalog(&state, &request_id).await?;
             let phase = Instant::now();
             let (predicate, available, fts_errors) = crate::find_expression_predicate_for_dataset(
                 &runtime.snapshot,

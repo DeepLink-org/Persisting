@@ -400,3 +400,32 @@ pchronicle serve catalog dataset list --catalog-config FILE
 registers the URI and optional backend storage credentials without creating or
 deleting object-store data. `grant` / `revoke` add or remove library names on
 that user (v1 grants are library membership, not fine-grained permission flags).
+
+
+### Request execution diagnostics
+
+The **Requests** tab shows the current browser tab session's recent API requests, their request IDs,
+HTTP outcomes, execution phases and elapsed time. The indicator above Local / profile
+opens the same tab. Select a request or enter its ID to inspect it while it is running.
+Worker admission, worker startup and worker execution are separate stages; directory
+browsing and scoped Runs queries report their own stages. `pending` stages have not
+started; `skipped` stages were not used. Stages describe application operations, not
+individual DNS, TCP or S3 requests. A successful partial directory response can still
+report a background refresh in its note.
+
+`GET /api/requests/{request_id}` (also under `/api/v1`) returns the live snapshot:
+`request_id`, `method`, `path`, `state`, `elapsed_ms`, `status`, `error`, `note`,
+`phases` (`name`, `state`, `elapsed_ms`) and an optional nested `worker` snapshot.
+This endpoint runs in the front server, independently of busy query workers.
+
+Tracking is opt-in: send a cryptographically random 32-character hexadecimal
+`x-pchronicle-observer` token with the original request and the diagnostic lookup.
+Set `x-request-id` on the original request to look it up before it completes.
+The UI supplies both headers automatically. The observer token is a private capability,
+not a replacement for catalog credentials; a different token cannot read the record.
+The server retains at most 512 records for up to 10 minutes, in memory only; restarting
+the server clears them. Unknown, expired or inaccessible IDs return 404. The UI keeps
+40 recent entries and polls unfinished requests once per second. Diagnostic connection
+failures are shown separately and can be retried. Query strings, bodies and credentials
+are not included in the diagnostic record. Internal error details remain in server logs,
+correlated by request ID.

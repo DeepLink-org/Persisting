@@ -343,7 +343,8 @@ async fn middleware_echoes_request_id_on_json_errors() {
     }
     let app = axum::Router::new()
         .route("/api/boom", axum::routing::get(boom))
-        .layer(axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn_with_state(
+            app_state(ChronicleServerConfig::front_only()),
             crate::server::request_log::warehouse_request_layer,
         ));
     let response = app
@@ -387,7 +388,8 @@ async fn four_xx_warn_includes_root_cause_when_chain_is_deeper() {
     }
     let app = axum::Router::new()
         .route("/api/boom", axum::routing::get(boom))
-        .layer(axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn_with_state(
+            app_state(ChronicleServerConfig::front_only()),
             crate::server::request_log::warehouse_request_layer,
         ));
     let response = app
@@ -451,7 +453,8 @@ async fn middleware_rejects_illegal_incoming_id() {
     }
     let app = axum::Router::new()
         .route("/api/boom", axum::routing::get(boom))
-        .layer(axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn_with_state(
+            app_state(ChronicleServerConfig::front_only()),
             crate::server::request_log::warehouse_request_layer,
         ));
     let response = app
@@ -489,7 +492,8 @@ async fn middleware_info_logs_static_assets() {
     }
     let app = axum::Router::new()
         .route("/assets/app.css", axum::routing::get(missing))
-        .layer(axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn_with_state(
+            app_state(ChronicleServerConfig::front_only()),
             crate::server::request_log::warehouse_request_layer,
         ));
     let _ = app
@@ -2666,6 +2670,45 @@ async fn exact_runs_request_does_not_wait_for_global_catalog() -> anyhow::Result
     .await?;
     assert_eq!(status, StatusCode::OK, "{page}");
     assert_eq!(page["snapshot"]["total"], 1, "{page}");
+    assert!(state.catalog.read().await.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn exact_trajectory_endpoints_do_not_wait_for_global_catalog() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let store =
+        persisting_pchronicle::storage::StorylineLanceStore::open(root.path().join("nested/story"))
+            .await?;
+    store
+        .replace_storyline(&storyline_document("session-a", "run-a"))
+        .await?;
+    let state = app_state(ChronicleServerConfig::mounted(vec![DatasetMount::new(
+        "prod2",
+        root.path().to_string_lossy(),
+    )?])?);
+    let _refresh = state.catalog_refresh.lock().await;
+    let app = finish_routes(state.clone());
+    let coords = "dataset=prod2&file=nested/story&agent_id=storyline&session_id=session-a";
+    for endpoint in [
+        "explorer/run",
+        "explorer/turns",
+        "explorer/turn",
+        "trajectory-view",
+        "events",
+        "storyline",
+    ] {
+        let (status, body) = tokio::time::timeout(
+            Duration::from_secs(5),
+            get_json(&app, &format!("/api/{endpoint}?{coords}&turn_id=1")),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{endpoint}: {body}");
+        if endpoint == "explorer/run" {
+            assert_eq!(body["event_provenance"], "synthetic_from_storyline");
+            assert!(body["turn_count"].as_u64().unwrap() > 0);
+        }
+    }
     assert!(state.catalog.read().await.is_none());
     Ok(())
 }

@@ -54,6 +54,13 @@ impl WorkerResponse {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
+enum WorkerEvent {
+    Progress(super::request_progress::Snapshot),
+    Response(WorkerResponse),
+}
+
+#[derive(Serialize, Deserialize)]
 struct Bootstrap {
     mounts: Vec<CatalogLibrary>,
 }
@@ -114,14 +121,17 @@ impl WorkerPool {
         request: WorkerRequest,
     ) -> Result<axum::response::Response, ApiError> {
         tokio::time::timeout(REQUEST_TIMEOUT, async {
+            super::request_progress::phase("worker_queue");
             let slot = self.slot(&scope).await?;
             let mut guard = slot.lock().await;
             // Ownership stays in this future during IPC: cancellation, timeout
             // or a partial frame drops/kills it rather than reusing dirty pipes.
+            super::request_progress::phase("worker_start");
             let mut worker = match guard.take() {
                 Some(worker) => worker,
                 None => Worker::start(&scope, mounts).await.map_err(worker_error)?,
             };
+            super::request_progress::phase("worker_execution");
             let response = worker.exchange(&request).await.map_err(worker_error)?;
             let response = response.into_response().map_err(worker_error)?;
             *guard = Some(worker);
@@ -238,7 +248,16 @@ impl Worker {
 
     async fn exchange(&mut self, request: &WorkerRequest) -> Result<WorkerResponse> {
         self.send(request).await?;
-        self.receive().await
+        loop {
+            match self.receive::<WorkerEvent>().await? {
+                WorkerEvent::Progress(snapshot) => {
+                    if let Some(p) = super::request_progress::current() {
+                        p.worker(snapshot);
+                    }
+                }
+                WorkerEvent::Response(response) => return Ok(response),
+            }
+        }
     }
 }
 
@@ -318,7 +337,20 @@ pub(crate) fn run() -> Result<()> {
             job.body.len() <= 1024 * 1024,
             "worker request body too large"
         );
+        let id = job
+            .headers
+            .iter()
+            .find(|(name, _)| name == "x-request-id")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        let progress = super::request_progress::Progress::new(
+            id,
+            job.method.clone(),
+            job.uri.split('?').next().unwrap_or_default().to_owned(),
+            true,
+        );
         let result = runtime.block_on(async {
+            let operation = async {
             let mut builder = axum::http::Request::builder()
                 .method(job.method.as_str())
                 .uri(job.uri);
@@ -327,7 +359,8 @@ pub(crate) fn run() -> Result<()> {
             }
             let response = warehouse
                 .router()
-                .oneshot(builder.body(axum::body::Body::from(job.body))?)
+                .oneshot({ let mut request=builder.body(axum::body::Body::from(job.body))?;
+                    request.extensions_mut().insert(progress.clone()); request })
                 .await?;
             let status = response.status().as_u16();
             let headers = response
@@ -359,8 +392,18 @@ pub(crate) fn run() -> Result<()> {
                 headers,
                 body,
             })
+            };
+            tokio::pin!(operation);
+            let mut tick = tokio::time::interval(Duration::from_millis(250));
+            loop {
+                tokio::select! {
+                    result = &mut operation => break result,
+                    _ = tick.tick() => { output.write_all(&encode(&WorkerEvent::Progress(progress.snapshot()))?)?; output.flush()?; }
+                }
+            }
         })?;
-        output.write_all(&encode(&result)?)?;
+        output.write_all(&encode(&WorkerEvent::Progress(progress.snapshot()))?)?;
+        output.write_all(&encode(&WorkerEvent::Response(result))?)?;
         output.flush()?;
     }
     Ok(())

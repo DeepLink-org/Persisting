@@ -576,3 +576,25 @@ pchronicle \
 定位后再写 SQL 见 [发现并查询](../guides/discover-and-query.md)，交换见
 [导入与导出](../guides/exchange.md)，只读服务见 [本地服务 Dataset](../guides/serve.md)。
 Snapshot 构造见 [Snapshot 设计](../design/catalog.md)。
+
+
+### 请求执行诊断
+
+**Requests** 标签页展示当前浏览器标签页会话中的近期 API 请求的 request ID、HTTP 结果、执行阶段和耗时。
+左下角 Local / profile 上方的状态提示可打开该页。选择请求或输入 request ID，即可在请求
+尚未结束时查看进度。Worker 排队、启动和执行分别计时；目录浏览与 Runs 查询报告各自的
+执行阶段。`pending` 表示尚未开始，`skipped` 表示未使用该阶段。阶段描述应用操作，并非
+逐条 DNS、TCP 或 S3 请求。目录返回 200 但仍在后台刷新时，会显示相应提示。
+
+`GET /api/requests/{request_id}`（也支持 `/api/v1`）返回实时快照：
+`request_id`、`method`、`path`、`state`、`elapsed_ms`、`status`、`error`、`note`、
+`phases`（`name`、`state`、`elapsed_ms`），以及可选的嵌套 `worker` 快照。
+该接口由前置服务直接处理，不等待业务 worker。
+
+追踪需要显式开启：原请求和诊断查询必须携带同一个随机生成的 32 位十六进制
+`x-pchronicle-observer` 请求头；原请求可通过 `x-request-id` 指定 ID，以便完成前查询。
+UI 自动生成这两个请求头。Observer token 是私有查询凭证，不替代 catalog 身份认证，
+其他 token 无法访问该记录。服务端最多保留 512 条记录、最长 10 分钟，仅保存在内存中，
+重启即清空。记录不存在、过期或无权访问时均返回 404。UI 保留最近 40 条，每秒查询未完成
+请求；诊断连接失败会单独提示，可手动重试。记录不包含查询参数、请求体或凭据；内部错误
+详情仍需通过 request ID 在服务端日志中定位。

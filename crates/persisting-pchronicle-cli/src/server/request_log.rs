@@ -113,10 +113,17 @@ where
     }
 }
 
-pub(crate) async fn warehouse_request_layer(
+pub(super) async fn warehouse_request_layer(
+    axum::extract::State(state): axum::extract::State<super::AppState>,
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
+    // Progress polling must stay cheap and must not generate more request records.
+    if request.uri().path().starts_with("/api/requests/")
+        || request.uri().path().starts_with("/api/v1/requests/")
+    {
+        return next.run(request).await;
+    }
     let incoming = request
         .headers()
         .get("x-request-id")
@@ -143,8 +150,36 @@ pub(crate) async fn warehouse_request_layer(
         query = %truncate_utf8(&query, QUERY_LOG_LIMIT),
         "warehouse request start"
     );
-    let response = next.run(request).await;
+    // Worker requests carry their trace over private IPC; public observers
+    // never acquire a worker slot just to inspect a stalled request.
+    let progress = request
+        .extensions()
+        .get::<super::request_progress::Progress>()
+        .cloned()
+        .unwrap_or_else(|| {
+            super::request_progress::Progress::new(
+                request_id.clone(),
+                method.clone(),
+                path.clone(),
+                false,
+            )
+        });
+    if !path.contains("/requests/") && path.starts_with("/api/") {
+        state
+            .request_progress
+            .insert(request.headers(), progress.clone());
+    }
+    let _cancel = super::request_progress::CancelOnDrop(progress.clone());
+    progress.phase(if state.catalog_query_worker {
+        "execution"
+    } else {
+        "authentication"
+    });
+    let response = super::request_progress::scope(progress.clone(), next.run(request)).await;
     let status = response.status();
+    if status.is_success() {
+        progress.phase("response");
+    }
     let root_cause = response
         .extensions()
         .get::<FourXxRootCause>()
@@ -165,6 +200,8 @@ pub(crate) async fn warehouse_request_layer(
         query = %truncate_utf8(&query, QUERY_LOG_LIMIT),
         "warehouse request"
     );
+    let diagnostic_error = error_fields.as_ref().map(|(_, message)| message.clone());
+    progress.finish(Some(status.as_u16()), diagnostic_error);
     if (400..500).contains(&status.as_u16()) {
         let (code, message) = error_fields.unwrap_or_default();
         let fts_errors = fts.joined();

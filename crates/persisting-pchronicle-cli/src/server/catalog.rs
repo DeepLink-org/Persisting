@@ -831,7 +831,8 @@ fn parent_handles_path(path: &str) -> bool {
         .strip_prefix("/api/v1")
         .or_else(|| path.strip_prefix("/api"))
         .unwrap_or(path);
-    rest == "/health"
+    rest.starts_with("/requests/")
+        || rest == "/health"
         || rest == "/ui"
         || rest == "/catalog/datasets"
         || rest.starts_with("/catalog/datasets/")
@@ -1359,6 +1360,8 @@ dataset = "prod"
     #[test]
     fn parent_keeps_health_and_catalog_ticket_routes() {
         assert!(parent_handles_path("/api/health"));
+        assert!(parent_handles_path("/api/requests/example"));
+        assert!(parent_handles_path("/api/v1/requests/example"));
         assert!(parent_handles_path("/api/v1/catalog/datasets"));
         assert!(parent_handles_path("/api/v1/catalog/datasets/prod"));
         assert!(!parent_handles_path("/api/catalog"));
