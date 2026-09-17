@@ -48,6 +48,23 @@ def _debug_state_from_stats(stats, coverage) -> dict:
     }
 
 
+HEARTBEAT_INTERVAL_UNSET = object()
+DEFAULT_DEBUG_HEARTBEAT_INTERVAL_S = 15.0
+
+
+def _resolve_heartbeat_interval_s(model: Optional[str], raw) -> Optional[float]:
+    if model != "debug":
+        return None
+    if raw is HEARTBEAT_INTERVAL_UNSET:
+        return DEFAULT_DEBUG_HEARTBEAT_INTERVAL_S
+    if raw is None:
+        return None
+    interval = float(raw)
+    if interval <= 0:
+        return None
+    return interval
+
+
 @dataclass
 class Config:
     use_memory_queue: bool
@@ -55,6 +72,7 @@ class Config:
     storage_options: dict
     model: Optional[str]
     last_calls_maxlen: int
+    heartbeat_interval_s: Optional[float]
 
     @staticmethod
     def from_args(
@@ -63,15 +81,20 @@ class Config:
         storage_options: dict = None,
         model: Optional[str] = None,
         last_calls_maxlen: int = 100,
+        heartbeat_interval_s=HEARTBEAT_INTERVAL_UNSET,
         **kwargs,
     ):
         _ = kwargs
+        resolved_model = model if model != "" else None
         return Config(
             use_memory_queue=use_memory_queue,
             flush_every=flush_every,
             storage_options=storage_options,
-            model=model if model != "" else None,
+            model=resolved_model,
             last_calls_maxlen=int(last_calls_maxlen),
+            heartbeat_interval_s=_resolve_heartbeat_interval_s(
+                resolved_model, heartbeat_interval_s
+            ),
         )
 
 

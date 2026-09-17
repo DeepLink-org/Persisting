@@ -1,5 +1,7 @@
 from typing import TYPE_CHECKING
 
+from dldb.session import HEARTBEAT_INTERVAL_UNSET
+
 if TYPE_CHECKING:
     from dldb.session import LanceSession
 
@@ -10,6 +12,7 @@ def connect(
     flush_every: int = 1000,
     storage_options: dict = None,
     model=None,
+    heartbeat_interval_s=HEARTBEAT_INTERVAL_UNSET,
     **kwargs,
 ) -> "LanceSession":
     import atexit
@@ -21,6 +24,9 @@ def connect(
 
     if model is not None and model != "" and model not in {"metrics", "debug"}:
         raise ValueError(f"Invalid model={model!r}. Allowed: None, '', 'metrics', 'debug'")
+
+    if heartbeat_interval_s is not HEARTBEAT_INTERVAL_UNSET:
+        kwargs["heartbeat_interval_s"] = heartbeat_interval_s
 
     session = LanceSession(
         db_name=db_name,

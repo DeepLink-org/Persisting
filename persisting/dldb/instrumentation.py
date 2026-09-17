@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
@@ -13,6 +14,118 @@ from loguru import logger
 _maintain_debug: ContextVar[Optional[dict]] = ContextVar(
     "dldb_maintain_debug", default=None
 )
+
+
+def _ensure_debug_runtime(session: Any) -> None:
+    if getattr(session, "_dldb_debug_spans", None) is not None:
+        return
+    session._dldb_debug_spans = []
+    session._dldb_debug_span_lock = threading.Lock()
+    session._dldb_heartbeat_stop = threading.Event()
+    session._dldb_heartbeat_thread = None
+
+
+def _start_heartbeat_if_needed(session: Any) -> None:
+    interval = getattr(getattr(session, "config", None), "heartbeat_interval_s", None)
+    if not interval:
+        return
+    with session._dldb_debug_span_lock:
+        if session._dldb_heartbeat_thread is not None:
+            return
+        session._dldb_heartbeat_stop.clear()
+        thread = threading.Thread(
+            target=_heartbeat_loop,
+            args=(session, float(interval)),
+            name="dldb-debug-heartbeat",
+            daemon=True,
+        )
+        session._dldb_heartbeat_thread = thread
+        thread.start()
+
+
+def _stop_heartbeat_if_idle(session: Any) -> None:
+    with session._dldb_debug_span_lock:
+        if session._dldb_debug_spans:
+            return
+        thread = session._dldb_heartbeat_thread
+        session._dldb_heartbeat_thread = None
+        stop = session._dldb_heartbeat_stop
+    stop.set()
+    if thread is not None:
+        thread.join(timeout=1.0)
+
+
+def _heartbeat_loop(session: Any, interval: float) -> None:
+    stop = session._dldb_heartbeat_stop
+    while not stop.wait(interval):
+        with session._dldb_debug_span_lock:
+            if not session._dldb_debug_spans:
+                continue
+            span = session._dldb_debug_spans[-1]
+        elapsed_ms = (perf_counter() - span["start"]) * 1000.0
+        logger.info(
+            _debug_log(
+                span["kind"],
+                span["name"],
+                elapsed_ms,
+                True,
+                span["ctx"],
+                parent=span.get("parent"),
+                event="heartbeat",
+            )
+        )
+
+
+class _DebugSpan:
+    def __init__(
+        self,
+        session: Any,
+        kind: str,
+        name: str,
+        ctx: dict,
+        parent: Optional[str] = None,
+    ) -> None:
+        self.session = session
+        self.kind = kind
+        self.name = name
+        self.ctx = ctx
+        self.parent = parent
+        self.start = 0.0
+
+    def __enter__(self) -> "_DebugSpan":
+        _ensure_debug_runtime(self.session)
+        self.start = perf_counter()
+        rec = {
+            "kind": self.kind,
+            "name": self.name,
+            "parent": self.parent,
+            "ctx": self.ctx,
+            "start": self.start,
+        }
+        with self.session._dldb_debug_span_lock:
+            self.session._dldb_debug_spans.append(rec)
+            outermost = len(self.session._dldb_debug_spans) == 1
+        logger.info(
+            _debug_log(
+                self.kind,
+                self.name,
+                0.0,
+                True,
+                self.ctx,
+                parent=self.parent,
+                event="started",
+            )
+        )
+        if outermost:
+            _start_heartbeat_if_needed(self.session)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        with self.session._dldb_debug_span_lock:
+            if self.session._dldb_debug_spans:
+                self.session._dldb_debug_spans.pop()
+        _stop_heartbeat_if_idle(self.session)
+        return False
 
 
 @dataclass(frozen=True)
@@ -67,19 +180,38 @@ def run_debug_step(api: str, fn):
     ctx = _maintain_debug.get()
     if ctx is None:
         return fn()
-    start = perf_counter()
-    ok, error = True, None
-    try:
-        return fn()
-    except Exception as exc:
-        ok, error = False, str(exc)
-        raise
-    finally:
-        step = {"api": api, "elapsed_ms": (perf_counter() - start) * 1000.0, "ok": ok}
-        if error:
-            step["error"] = error
-        ctx["steps"].append(step)
-        logger.info(_debug_log("step", api, step["elapsed_ms"], ok, ctx, parent=ctx["api"], error=error))
+
+    def _invoke():
+        start = perf_counter()
+        ok, error = True, None
+        try:
+            return fn()
+        except Exception as exc:
+            ok, error = False, str(exc)
+            raise
+        finally:
+            step = {"api": api, "elapsed_ms": (perf_counter() - start) * 1000.0, "ok": ok}
+            if error:
+                step["error"] = error
+            ctx["steps"].append(step)
+            logger.info(
+                _debug_log(
+                    "step",
+                    api,
+                    step["elapsed_ms"],
+                    ok,
+                    ctx,
+                    parent=ctx["api"],
+                    error=error,
+                    event="completed",
+                )
+            )
+
+    session = ctx.get("session")
+    if session is None:
+        return _invoke()
+    with _DebugSpan(session, "step", api, ctx, parent=ctx["api"]):
+        return _invoke()
 
 
 def _safe_meta(spec: _ApiSpec, session: Any, args: tuple, kwargs: dict) -> Optional[dict]:
@@ -103,16 +235,21 @@ def _debug_log(
     version_after=None,
     state: Optional[dict] = None,
     error: Optional[str] = None,
+    event: Optional[str] = None,
 ) -> str:
     parts = ["dldb_debug"]
+    if event:
+        parts.append(f"event={event}")
     if kind == "step":
         parts.append(f"step={name}")
         if parent:
             parts.append(f"parent={parent}")
     else:
         parts.append(f"api={name}")
-    parts.append(f"ok={'true' if ok else 'false'}")
-    parts.append(f"elapsed_ms={int(round(elapsed_ms))}")
+    if event != "started":
+        if event != "heartbeat":
+            parts.append(f"ok={'true' if ok else 'false'}")
+        parts.append(f"elapsed_ms={int(round(elapsed_ms))}")
     if ctx.get("table_name"):
         parts.append(f"table={ctx['table_name']}")
     if ctx.get("partition") is not None:
@@ -165,6 +302,7 @@ def _attach_maintain_debug(session, timing, ctx, elapsed_ms, ok, error) -> None:
             version_after=version_after,
             state=state,
             error=error if not ok else None,
+            event="completed",
         )
     )
 
@@ -372,6 +510,7 @@ def instrument_session(session: Any, *, specs: Tuple[_ApiSpec, ...] | None = Non
             if model == "debug" and __spec.maintain_debug:
                 ctx = {
                     "api": __spec.api,
+                    "session": self,
                     "table_name": (meta or {}).get("table_name"),
                     "partition": (meta or {}).get("partition"),
                     "column": (meta or {}).get("column"),
@@ -387,42 +526,52 @@ def instrument_session(session: Any, *, specs: Tuple[_ApiSpec, ...] | None = Non
                     pass
                 token = _maintain_debug.set(ctx)
 
-            start = perf_counter()
-            ok = True
-            result = None
-            error = None
+            def _invoke():
+                start = perf_counter()
+                ok = True
+                result = None
+                error = None
+                try:
+                    result = __orig(*args, **kwargs)
+                    return result
+                except Exception as exc:
+                    ok = False
+                    error = str(exc)
+                    raise
+                finally:
+                    elapsed_ms = (perf_counter() - start) * 1000.0
+                    datas = None
+                    if __spec.datas_arg is not None:
+                        datas = kwargs.get(__spec.datas_arg)
+                        if datas is None and len(args) > 0:
+                            if __spec.api == "add" and len(args) >= 2:
+                                datas = args[1]
+                            elif __spec.api == "upsert" and len(args) >= 3:
+                                datas = args[2]
+                    rows, bytes_ = self._rows_bytes_from_result(
+                        __spec.api, result, datas=datas
+                    )
+                    timing = _build_timing(
+                        api=__spec.api,
+                        elapsed_ms=elapsed_ms,
+                        ok=ok,
+                        rows=rows,
+                        bytes_=bytes_,
+                        model=model,
+                        meta=meta,
+                    )
+                    if ctx is not None:
+                        _attach_maintain_debug(self, timing, ctx, elapsed_ms, ok, error)
+                    if model == "debug" and __spec.df_attr and isinstance(result, pd.DataFrame):
+                        _safe_df_attr_set(result, timing)
+                    self._record_call(timing)
+
             try:
-                result = __orig(*args, **kwargs)
-                return result
-            except Exception as exc:
-                ok = False
-                error = str(exc)
-                raise
-            finally:
-                elapsed_ms = (perf_counter() - start) * 1000.0
-                datas = None
-                if __spec.datas_arg is not None:
-                    datas = kwargs.get(__spec.datas_arg)
-                    if datas is None and len(args) > 0:
-                        if __spec.api == "add" and len(args) >= 2:
-                            datas = args[1]
-                        elif __spec.api == "upsert" and len(args) >= 3:
-                            datas = args[2]
-                rows, bytes_ = self._rows_bytes_from_result(__spec.api, result, datas=datas)
-                timing = _build_timing(
-                    api=__spec.api,
-                    elapsed_ms=elapsed_ms,
-                    ok=ok,
-                    rows=rows,
-                    bytes_=bytes_,
-                    model=model,
-                    meta=meta,
-                )
                 if ctx is not None:
-                    _attach_maintain_debug(self, timing, ctx, elapsed_ms, ok, error)
-                if model == "debug" and __spec.df_attr and isinstance(result, pd.DataFrame):
-                    _safe_df_attr_set(result, timing)
-                self._record_call(timing)
+                    with _DebugSpan(self, "api", __spec.api, ctx):
+                        return _invoke()
+                return _invoke()
+            finally:
                 if token is not None:
                     _maintain_debug.reset(token)
 
