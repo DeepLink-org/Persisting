@@ -137,6 +137,15 @@ impl ApiError {
         let request_id = request_id.as_ref();
         let deeper = error.source().is_some();
         let root_cause = truncate_utf8(&error.root_cause().to_string(), ROOT_CAUSE_LIMIT);
+        // An elapsed internal budget is a timeout, not a defect. Reporting it
+        // as `internal` hid both the retry advice and the fact that the read
+        // was merely too slow for the request's time budget.
+        if error
+            .chain()
+            .any(|cause| cause.is::<tokio::time::error::Elapsed>())
+        {
+            return Self::deadline_exceeded(request_id, handler, error);
+        }
         let api = if let Some(boundary) = error.downcast_ref::<CliBoundaryError>() {
             Self::from_boundary(request_id, boundary.code, boundary.message.clone())
         } else {
@@ -226,6 +235,35 @@ impl ApiError {
             StatusCode::GATEWAY_TIMEOUT,
             BoundaryCode::Unavailable,
             "Runs request timed out; narrow the dataset or file scope and retry",
+        )
+    }
+
+    /// A budget inside the handler elapsed. Operators still need the chain, so
+    /// log it like an internal failure but answer with the retryable status.
+    fn deadline_exceeded(request_id: &str, handler: &'static str, error: anyhow::Error) -> Self {
+        tracing::warn!(
+            target: LOG_TARGET,
+            request_id = %request_id,
+            code = "unavailable",
+            handler = %handler,
+            root_cause = %truncate_utf8(&error.root_cause().to_string(), ROOT_CAUSE_LIMIT),
+            chain = %truncate_utf8(&format!("{error:#}"), CHAIN_LIMIT),
+            "warehouse request exceeded its deadline"
+        );
+        Self::public(
+            StatusCode::GATEWAY_TIMEOUT,
+            BoundaryCode::Unavailable,
+            "Request exceeded its time budget; narrow the dataset or file scope and retry",
+        )
+        .with_request_id(request_id)
+        .with_stage(ExecutionStage::Query)
+    }
+
+    pub(super) fn trajectory_timeout() -> Self {
+        Self::public(
+            StatusCode::GATEWAY_TIMEOUT,
+            BoundaryCode::Unavailable,
+            "Trajectory request timed out; retry this run",
         )
     }
 

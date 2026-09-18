@@ -711,6 +711,33 @@ impl StorylineLanceStore {
         Ok(Some((paths.generation, ids)))
     }
 
+    /// Report whether one document is present, without materializing every
+    /// identity in the source.
+    ///
+    /// A source can hold tens of thousands of runs, so reading the whole
+    /// `document_id` column to answer "does this run live here" dominated
+    /// Explorer navigation. `document_id` carries a scalar index, so the
+    /// filtered read is a point lookup.
+    pub async fn contains_document(&self, document_id: &str) -> Result<Option<(String, bool)>> {
+        let Some(paths) = self.current_table_paths().await? else {
+            return Ok(None);
+        };
+        let predicate = format!("document_id = '{}'", document_id.replace('\'', "''"));
+        let batches = read_projected_batches(
+            &paths.runs,
+            paths.runs_version,
+            &["document_id"],
+            Some(&predicate),
+        )
+        .await?;
+        let matched = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+        anyhow::ensure!(
+            matched <= 1,
+            "duplicate document_id in committed Storyline snapshot"
+        );
+        Ok(Some((paths.generation, matched == 1)))
+    }
+
     pub(crate) async fn resolve_current_table_paths(&self) -> Result<Option<StorylineTablePaths>> {
         let current = self.read_current_control().await?;
         let Some(pointer) = current.control.committed else {

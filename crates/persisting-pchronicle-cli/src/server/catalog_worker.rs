@@ -273,9 +273,12 @@ fn command(
     exe: PathBuf,
     home: &std::path::Path,
     cache: &std::path::Path,
+    blocks: &std::path::Path,
 ) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(exe);
     command
+        .arg("--log-level")
+        .arg(super::request_log::initialized_log_level().as_arg())
         .arg("serve")
         .arg("--catalog-query-worker")
         .env_clear()
@@ -285,6 +288,10 @@ fn command(
         .env("XDG_CONFIG_HOME", home)
         .env("XDG_CACHE_HOME", home)
         .env("PCHRONICLE_CACHE_DIR", cache)
+        // `env_clear` plus a throwaway HOME makes the Lance block cache resolve
+        // under a directory that dies with the worker, so every worker refetched
+        // the same index pages from the object store. Name it explicitly.
+        .env("PCHRONICLE_LANCE_CACHE_DIR", blocks)
         .env("AWS_EC2_METADATA_DISABLED", "true")
         .env("RAYON_NUM_THREADS", "2")
         .env("AWS_CONFIG_FILE", home.join("no-aws-config"))
@@ -306,6 +313,10 @@ fn command(
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "PCHRONICLE_QUERY_MEMORY_LIMIT",
+        "PCHRONICLE_LANCE_CACHE_CAPACITY_BYTES",
+        // Workers issue the reads, so admission tuning that never reaches them
+        // tunes nothing.
+        "PCHRONICLE_OBJECT_STORE_CONCURRENCY",
         "RUST_LOG",
     ] {
         if let Some(value) = std::env::var_os(key) {
@@ -322,7 +333,13 @@ impl Worker {
             .map(PathBuf::from)
             .or_else(|| dirs::cache_dir().map(|p| p.join("pchronicle")))
             .context("no catalog worker cache directory")?;
-        let cache = std::path::absolute(root)?.join("workers").join(scope);
+        let root = std::path::absolute(root)?;
+        let cache = root.join("workers").join(scope);
+        // Blocks are keyed by store, object version and size, so every worker
+        // and every scope can share them. Keeping them beside the per-scope
+        // caches rather than inside one means a reader does not refetch what
+        // another worker already paid for.
+        let blocks = root.join("blocks");
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
         #[cfg(unix)]
@@ -331,7 +348,9 @@ impl Worker {
             builder.mode(0o700);
         }
         builder.create(&cache)?;
-        let mut child = command(std::env::current_exe()?, home.path(), &cache).spawn()?;
+        builder.create(&blocks)?;
+        let mut child =
+            command(std::env::current_exe()?, home.path(), &cache, &blocks).spawn()?;
         let input = child.stdin.take().context("worker stdin missing")?;
         let output = child.stdout.take().context("worker stdout missing")?;
         let mut worker = Self {
@@ -424,7 +443,11 @@ pub(super) fn validate_backends(mounts: &[CatalogLibrary]) -> Result<()> {
 
 /// Called before main constructs any runtime or threads. Credentials arrive
 /// only over stdin, and remain fixed for the lifetime of this process.
-pub(crate) fn run() -> Result<()> {
+pub(crate) fn run(level: crate::LogLevel) -> Result<()> {
+    // Handlers execute here, so `ApiError::internal` emits its `root_cause`
+    // line in this process. Without a subscriber the inherited stderr stayed
+    // empty and every worker-side failure reached the browser as a bare 500.
+    super::request_log::init_warehouse_tracing(level);
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     let bootstrap: Bootstrap = read_frame(&mut input)?.context("missing worker bootstrap")?;
@@ -661,7 +684,12 @@ mod tests {
     #[test]
     fn exec_environment_excludes_ambient_credentials() {
         let home = tempfile::tempdir().unwrap();
-        let cmd = command(PathBuf::from("pchronicle"), home.path(), home.path());
+        let cmd = command(
+            PathBuf::from("pchronicle"),
+            home.path(),
+            home.path(),
+            home.path(),
+        );
         let env: HashMap<_, _> = cmd.as_std().get_envs().collect();
         for key in [
             "AWS_ACCESS_KEY_ID",
@@ -680,6 +708,82 @@ mod tests {
         assert_eq!(
             env[std::ffi::OsStr::new("AWS_EC2_METADATA_DISABLED")],
             Some(std::ffi::OsStr::new("true"))
+        );
+    }
+
+    #[test]
+    fn exec_environment_names_a_surviving_block_cache() {
+        let home = tempfile::tempdir().unwrap();
+        let blocks = tempfile::tempdir().unwrap();
+        let cmd = command(
+            PathBuf::from("pchronicle"),
+            home.path(),
+            home.path(),
+            blocks.path(),
+        );
+        let env: HashMap<_, _> = cmd.as_std().get_envs().collect();
+        // Without this the cache resolves under the worker's throwaway HOME, so
+        // each worker refetches every index page the last one already read.
+        assert_eq!(
+            env[std::ffi::OsStr::new("PCHRONICLE_LANCE_CACHE_DIR")],
+            Some(blocks.path().as_os_str())
+        );
+        assert_ne!(
+            env[std::ffi::OsStr::new("PCHRONICLE_LANCE_CACHE_DIR")],
+            Some(home.path().as_os_str())
+        );
+    }
+
+    #[test]
+    fn exec_environment_forwards_object_store_admission_tuning() {
+        let home = tempfile::tempdir().unwrap();
+        // Workers issue the object-store reads, and `command` clears the
+        // environment. A knob missing from the allowlist silently tunes only
+        // the parent, which reads almost nothing.
+        // SAFETY: single-threaded test asserting how `command` forwards it.
+        unsafe { std::env::set_var("PCHRONICLE_OBJECT_STORE_CONCURRENCY", "8") };
+        let cmd = command(
+            PathBuf::from("pchronicle"),
+            home.path(),
+            home.path(),
+            home.path(),
+        );
+        let env: HashMap<_, _> = cmd.as_std().get_envs().collect();
+        assert_eq!(
+            env[std::ffi::OsStr::new("PCHRONICLE_OBJECT_STORE_CONCURRENCY")],
+            Some(std::ffi::OsStr::new("8"))
+        );
+        unsafe { std::env::remove_var("PCHRONICLE_OBJECT_STORE_CONCURRENCY") };
+    }
+
+    #[test]
+    fn exec_arguments_carry_the_serve_log_level() {
+        let home = tempfile::tempdir().unwrap();
+        let cmd = command(
+            PathBuf::from("pchronicle"),
+            home.path(),
+            home.path(),
+            home.path(),
+        );
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        // Handlers run in the child, so it must install a subscriber at the
+        // serve level; otherwise `root_cause` diagnostics are dropped there.
+        let level = args
+            .iter()
+            .position(|arg| arg == "--log-level")
+            .map(|index| args[index + 1].clone());
+        assert_eq!(
+            level.as_deref(),
+            Some(super::super::request_log::initialized_log_level().as_arg()),
+            "{args:?}"
+        );
+        assert!(
+            args.contains(&"--catalog-query-worker".to_owned()),
+            "{args:?}"
         );
     }
 

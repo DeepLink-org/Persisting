@@ -199,15 +199,6 @@ pub async fn explorer_tree_anonymous(
     json_checked(Request::get(&url).send_tracked().await).await
 }
 
-pub async fn run_analysis(run: &RunSummary) -> Result<RunAnalysis, ApiFailure> {
-    json_checked(
-        with_catalog_headers(Request::get(&format!("/api/explorer/run?{}", run.query())))
-            .send_tracked()
-            .await,
-    )
-    .await
-}
-
 pub async fn compact_record(run: &RunSummary) -> Result<CompactRecordDetail, ApiFailure> {
     json_checked(
         with_catalog_headers(Request::get(&format!(
@@ -220,13 +211,28 @@ pub async fn compact_record(run: &RunSummary) -> Result<CompactRecordDetail, Api
     .await
 }
 
-pub async fn turns(run: &RunSummary, q: &str, source: &str) -> Result<TurnPage, ApiFailure> {
+pub async fn turns(
+    run: &RunSummary,
+    q: &str,
+    source: &str,
+    include_analysis: bool,
+) -> Result<TurnPage, ApiFailure> {
     let url = format!(
-        "/api/explorer/turns?{}&q={}&source={}&offset=0&limit=500",
+        "/api/explorer/turns?{}&q={}&source={}&include_analysis={include_analysis}",
         run.query(),
         urlencoding::encode(q),
         urlencoding::encode(source),
     );
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
+}
+
+pub async fn run_analysis(run: &RunSummary) -> Result<RunAnalysis, ApiFailure> {
+    let url = format!("/api/explorer/run?{}", run.query());
     json_checked(
         with_catalog_headers(Request::get(&url))
             .send_tracked()

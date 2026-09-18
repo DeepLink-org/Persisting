@@ -304,7 +304,19 @@ pub(crate) fn tracing_filter(level: crate::LogLevel) -> String {
     }
 }
 
+/// Level the process initialized tracing with, so spawned catalog workers can
+/// be started at the same verbosity instead of defaulting to their own.
+static INITIALIZED_LEVEL: std::sync::OnceLock<crate::LogLevel> = std::sync::OnceLock::new();
+
+pub(crate) fn initialized_log_level() -> crate::LogLevel {
+    INITIALIZED_LEVEL
+        .get()
+        .copied()
+        .unwrap_or(crate::LogLevel::Info)
+}
+
 pub(crate) fn init_warehouse_tracing(level: crate::LogLevel) {
+    let _ = INITIALIZED_LEVEL.set(level);
     // Synchronous stderr is enough: lines are short. Do not wrap this in an
     // async logger while `main` holds `stdout.lock()` — on macOS `Stderr`
     // writes take that same lock and deadlock Tokio workers.

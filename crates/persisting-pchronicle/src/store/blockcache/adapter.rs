@@ -7,11 +7,19 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{StreamExt, stream::BoxStream};
 use object_store::{
-    CopyOptions, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta,
-    ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as ObjectResult,
-    UploadPart, path::Path,
+    Attributes, CopyOptions, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload,
+    ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult,
+    Result as ObjectResult, UploadPart, path::Path,
 };
-use std::{ops::Range, sync::Arc};
+use std::{
+    ops::Range,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+/// A round trip slower than this is worth naming next to the request that
+/// caused it; the enclosing span already carries the path and byte range.
+const SLOW_REQUEST: Duration = Duration::from_millis(200);
 
 /// Admission and feedback live at the object-request boundary. The backend
 /// already retries transport errors; do not replay an entire Lance open here.
@@ -20,7 +28,18 @@ async fn remote_request<T>(
     request: impl std::future::Future<Output = ObjectResult<T>>,
 ) -> ObjectResult<T> {
     let _permit = io_gate::acquire(uri, IoKind::Read).await;
+    // Time the transfer alone. Admission queueing is reported by the gate, so
+    // separating the two keeps a slow backend from reading as contention.
+    let started = Instant::now();
     let result = request.await;
+    let elapsed = started.elapsed();
+    if elapsed >= SLOW_REQUEST {
+        tracing::debug!(
+            target: "pchronicle.object_store_gate",
+            elapsed_ms = elapsed.as_millis() as u64,
+            "remote object read"
+        );
+    }
     match &result {
         Ok(_) => io_gate::note_success(uri),
         Err(error) if io_gate::is_transient_error(error) => {
@@ -140,6 +159,53 @@ pub fn lance_store_params(capacity_bytes: u64) -> lance_io::object_store::Object
     }
 }
 
+/// How long a ranged read may reuse metadata it already fetched.
+///
+/// A ranged read cannot name its cache block until it knows the object's
+/// version, etag and size, so it HEADs the backend first. Asking every time
+/// means a cache hit still pays a full round trip and the block cache buys no
+/// latency at all. Lance never reuses a path for different bytes -- data files,
+/// index pages and manifests are all named per commit -- so the answer is
+/// stable for far longer than this. Keep the window short anyway so a backend
+/// that does rewrite a path recovers on its own.
+const HEAD_TTL: Duration = Duration::from_secs(60);
+
+/// Objects to remember at once. A reader touches the fragments and index pages
+/// of a handful of datasets, so this holds a whole working set.
+const HEAD_CAPACITY: usize = 8192;
+
+/// Metadata for objects this store has already looked up.
+#[derive(Debug, Default)]
+struct HeadMemo {
+    entries: std::collections::HashMap<HeadKey, (ObjectMeta, Attributes, Instant)>,
+}
+
+/// A path plus the version asked for, which is all that changes the answer;
+/// remaining conditions are checked against the metadata by the caller.
+type HeadKey = (String, Option<String>);
+
+impl HeadMemo {
+    fn get(&self, key: &HeadKey) -> Option<(ObjectMeta, Attributes)> {
+        let (meta, attributes, fetched) = self.entries.get(key)?;
+        (fetched.elapsed() < HEAD_TTL).then(|| (meta.clone(), attributes.clone()))
+    }
+
+    fn forget(&mut self, path: &str) {
+        self.entries.retain(|(known, _), _| known != path);
+    }
+
+    fn insert(&mut self, key: HeadKey, meta: ObjectMeta, attributes: Attributes) {
+        if self.entries.len() >= HEAD_CAPACITY {
+            self.entries
+                .retain(|_, (_, _, fetched)| fetched.elapsed() < HEAD_TTL);
+            if self.entries.len() >= HEAD_CAPACITY {
+                self.entries.clear();
+            }
+        }
+        self.entries.insert(key, (meta, attributes, Instant::now()));
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CachedObjectStore {
     inner: Arc<dyn ObjectStore>,
@@ -147,6 +213,7 @@ pub struct CachedObjectStore {
     block_size_bytes: u64,
     store_uri: String,
     io_scope: String,
+    heads: Arc<Mutex<HeadMemo>>,
 }
 
 impl CachedObjectStore {
@@ -160,6 +227,7 @@ impl CachedObjectStore {
             block_size_bytes,
             io_scope: io_gate::scope_key(&store_uri),
             store_uri,
+            heads: Arc::new(Mutex::new(HeadMemo::default())),
         }
     }
 
@@ -190,6 +258,12 @@ impl CachedObjectStore {
                             .as_ref()
                             .is_some_and(|tag| result.meta.e_tag.as_ref() != Some(tag))
                     {
+                        // Remembered metadata describes bytes the backend no
+                        // longer serves; the next read must ask again.
+                        self.heads
+                            .lock()
+                            .expect("head memo")
+                            .forget(path.as_ref());
                         return Err(object_store::Error::Precondition {
                             path: path.to_string(),
                             source: "object changed while reading cached block".into(),
@@ -230,27 +304,40 @@ impl ObjectStore for CachedObjectStore {
         if o.head || o.range.is_none() {
             return remote_request(&self.io_scope, self.inner.get_opts(p, o)).await;
         }
-        // Fetch metadata for the requested version with all caller conditions.
-        let head = remote_request(
-            &self.io_scope,
-            self.inner.get_opts(
-                p,
-                GetOptions {
-                    head: true,
-                    range: None,
-                    ..o.clone()
-                },
-            ),
-        )
-        .await?;
-        o.check_preconditions(&head.meta)?;
-        let version = head
-            .meta
+        // Metadata for the requested version. Conditions beyond the version are
+        // checked locally below, so remembered metadata reaches the same verdict
+        // a conditional round trip would have returned.
+        let head_key = (p.to_string(), o.version.clone());
+        let remembered = self.heads.lock().expect("head memo").get(&head_key);
+        let (head_meta, head_attributes) = match remembered {
+            Some(head) => head,
+            None => {
+                let head = remote_request(
+                    &self.io_scope,
+                    self.inner.get_opts(
+                        p,
+                        GetOptions {
+                            head: true,
+                            range: None,
+                            ..o.clone()
+                        },
+                    ),
+                )
+                .await?;
+                let head = (head.meta, head.attributes);
+                self.heads
+                    .lock()
+                    .expect("head memo")
+                    .insert(head_key.clone(), head.0.clone(), head.1.clone());
+                head
+            }
+        };
+        o.check_preconditions(&head_meta)?;
+        let version = head_meta
             .version
             .clone()
             .filter(|v| !v.is_empty() && v != "null");
-        let etag = head
-            .meta
+        let etag = head_meta
             .e_tag
             .clone()
             .filter(|v| !v.is_empty() && !v.starts_with("W/"));
@@ -259,14 +346,14 @@ impl ObjectStore for CachedObjectStore {
         }
         // A backend that did not identify the requested version cannot safely
         // populate a version-keyed cache. Preserve its native GET semantics.
-        if o.version.is_some() && o.version != head.meta.version {
+        if o.version.is_some() && o.version != head_meta.version {
             return remote_request(&self.io_scope, self.inner.get_opts(p, o)).await;
         }
         let range = o
             .range
             .as_ref()
             .unwrap()
-            .as_range(head.meta.size)
+            .as_range(head_meta.size)
             .map_err(|source| object_store::Error::Generic {
                 store: "pchronicle-cache",
                 source: Box::new(source),
@@ -278,7 +365,7 @@ impl ObjectStore for CachedObjectStore {
             p.as_ref(),
             &version,
             &etag,
-            head.meta.size,
+            head_meta.size,
             self.block_size_bytes,
         ))
         .unwrap();
@@ -289,7 +376,7 @@ impl ObjectStore for CachedObjectStore {
         };
         let this = self.clone();
         let path = p.clone();
-        let meta = head.meta.clone();
+        let meta = head_meta.clone();
         let block_size = self.block_size_bytes;
         let blocks = (range.start / block_size
             ..range.end.saturating_add(block_size - 1) / block_size)
@@ -326,9 +413,9 @@ impl ObjectStore for CachedObjectStore {
             .buffered(4);
         Ok(GetResult {
             payload: GetResultPayload::Stream(stream.boxed()),
-            meta: head.meta,
+            meta: head_meta,
             range,
-            attributes: head.attributes,
+            attributes: head_attributes,
         })
     }
     fn delete_stream(
@@ -423,6 +510,99 @@ mod tests {
         assert_eq!(
             cached.get(&path).await.unwrap().bytes().await.unwrap(),
             Bytes::from_static(b"0123456789")
+        );
+    }
+
+    /// Counts what actually leaves for the backend.
+    #[derive(Debug)]
+    struct Counted {
+        inner: Arc<InMemory>,
+        gets: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl std::fmt::Display for Counted {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "counted")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for Counted {
+        async fn put_opts(
+            &self,
+            p: &Path,
+            b: PutPayload,
+            o: PutOptions,
+        ) -> ObjectResult<PutResult> {
+            self.inner.put_opts(p, b, o).await
+        }
+        async fn put_multipart_opts(
+            &self,
+            p: &Path,
+            o: PutMultipartOptions,
+        ) -> ObjectResult<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(p, o).await
+        }
+        async fn get_opts(&self, p: &Path, o: GetOptions) -> ObjectResult<GetResult> {
+            self.gets
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.inner.get_opts(p, o).await
+        }
+        fn delete_stream(
+            &self,
+            p: BoxStream<'static, ObjectResult<Path>>,
+        ) -> BoxStream<'static, ObjectResult<Path>> {
+            self.inner.delete_stream(p)
+        }
+        fn list(&self, p: Option<&Path>) -> BoxStream<'static, ObjectResult<ObjectMeta>> {
+            self.inner.list(p)
+        }
+        async fn list_with_delimiter(&self, p: Option<&Path>) -> ObjectResult<ListResult> {
+            self.inner.list_with_delimiter(p).await
+        }
+        async fn copy_opts(&self, a: &Path, b: &Path, o: CopyOptions) -> ObjectResult<()> {
+            self.inner.copy_opts(a, b, o).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cached_range_read_reaches_the_backend_no_more() {
+        let root = tempfile::tempdir().unwrap();
+        let memory = Arc::new(InMemory::new());
+        let path = Path::from("dataset/data.lance");
+        memory
+            .put(&path, Bytes::from_static(b"0123456789").into())
+            .await
+            .unwrap();
+        let gets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cached = CachedObjectStore::new(
+            Arc::new(Counted {
+                inner: memory,
+                gets: Arc::clone(&gets),
+            }),
+            CacheConfig::new(root.path().into(), 1024, 4),
+            "s3://test-bucket".into(),
+        );
+
+        assert_eq!(
+            cached.get_range(&path, 3..8).await.unwrap(),
+            Bytes::from_static(b"34567")
+        );
+        let after_miss = gets.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(after_miss > 0, "the first read must fill the cache");
+
+        // Re-reading served blocks used to re-HEAD the object, so a hit still
+        // cost a round trip and the cache bought no latency.
+        for _ in 0..5 {
+            assert_eq!(
+                cached.get_range(&path, 3..8).await.unwrap(),
+                Bytes::from_static(b"34567")
+            );
+        }
+        assert_eq!(
+            gets.load(std::sync::atomic::Ordering::Relaxed),
+            after_miss,
+            "a fully cached range must not reach the backend"
         );
     }
 }

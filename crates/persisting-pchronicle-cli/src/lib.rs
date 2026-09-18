@@ -121,7 +121,9 @@ impl Cli {
 /// invocations return None and retain their existing execution path.
 pub fn run_catalog_worker_before_runtime(cli: &Cli) -> Option<Result<()>> {
     match &cli.command {
-        Command::Serve(args) if args.catalog_query_worker => Some(server::catalog_worker::run()),
+        Command::Serve(args) if args.catalog_query_worker => {
+            Some(server::catalog_worker::run(cli.log_level))
+        }
         _ => None,
     }
 }
@@ -170,6 +172,18 @@ pub enum LogLevel {
     Warn,
     Info,
     Debug,
+}
+
+impl LogLevel {
+    /// The `--log-level` value that parses back to this variant.
+    pub(crate) fn as_arg(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+        }
+    }
 }
 
 struct DiagnosticWriter<'a> {
@@ -3596,7 +3610,9 @@ pub(crate) async fn find_expression_predicate_for_dataset(
             for source in &dataset.sources {
                 if source.status != CatalogSourceStatus::Ready
                     || source.kind != CatalogSourceKind::Store
-                    || source_filter.is_some_and(|filter| filter != source.file)
+                    || source_filter.is_some_and(|filter| {
+                        filter != source.file && !source.file.starts_with(&format!("{filter}/"))
+                    })
                 {
                     continue;
                 }

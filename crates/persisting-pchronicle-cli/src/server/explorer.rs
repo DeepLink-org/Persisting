@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use persisting_pchronicle::model::EventRecord;
 use persisting_pchronicle::storage::{
@@ -217,6 +217,8 @@ pub(crate) struct TurnSearchStatus {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct TurnExplorerPage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) analysis: Option<RunAnalysis>,
     pub(crate) snapshot: PageSnapshot,
     pub(crate) records: Vec<TurnSummary>,
     pub(crate) search: TurnSearchStatus,
@@ -519,15 +521,13 @@ pub(crate) fn analyze(
     let mut kinds = BTreeMap::<String, DimensionAccumulator>::new();
     let mut model_groups = BTreeMap::<String, DimensionAccumulator>::new();
     let mut error_count = 0usize;
+    let index = EventIndex::new(events);
 
     for item in turns {
         if let Some(timestamp) = item.turn.timestamp.as_ref() {
             timestamps.push(timestamp.clone());
         }
-        let linked = events
-            .iter()
-            .filter(|event| item.event_seqs.contains(&event.seq))
-            .collect::<Vec<_>>();
+        let linked = index.linked(&item.event_seqs, events);
         let mut values = Vec::new();
         if let Some(value) = &item.turn.metrics {
             values.push(value);
@@ -681,38 +681,73 @@ pub(crate) fn analyze(
     }
 }
 
-pub(crate) fn turn_page(
+pub(crate) fn turn_list_with_search(
     turns: &[TrajectoryTurnView],
     events: &[EventRecord],
     q: Option<&str>,
     source: Option<&str>,
-    offset: usize,
-    limit: usize,
-) -> ExplorerPage<TurnSummary> {
-    let needle = q.unwrap_or_default().trim().to_ascii_lowercase();
-    let records = turns
-        .iter()
-        .filter(|item| source.is_none_or(|source| source == "all" || item.turn.source == source))
-        .filter(|item| needle.is_empty() || searchable_turn(item).contains(&needle))
-        .map(|item| turn_summary(item, events))
-        .collect();
-    paginate(records, offset, limit.clamp(1, 500))
-}
-
-pub(crate) fn turn_page_with_search(
-    turns: &[TrajectoryTurnView],
-    events: &[EventRecord],
-    q: Option<&str>,
-    source: Option<&str>,
-    offset: usize,
-    limit: usize,
     search: TurnSearchStatus,
 ) -> TurnExplorerPage {
-    let page = turn_page(turns, events, q, source, offset, limit);
+    let needle = q.unwrap_or_default().trim().to_ascii_lowercase();
+    let index = EventIndex::new(events);
+    let records = turns
+        .iter()
+        .filter(|item| {
+            source.is_none_or(|source| {
+                source.is_empty() || source == "all" || item.turn.source == source
+            }) && (needle.is_empty() || searchable_turn(item).contains(&needle))
+        })
+        .map(|item| turn_summary(item, events, &index))
+        .collect::<Vec<_>>();
+    let total = records.len();
     TurnExplorerPage {
-        snapshot: page.snapshot,
-        records: page.records,
+        analysis: None,
+        // Preserve the response envelope for existing clients; turns are
+        // returned in full, with no offset or per-request row cap.
+        snapshot: PageSnapshot {
+            offset: 0,
+            next_offset: total,
+            total,
+            has_more: false,
+            limit: total,
+        },
+        records,
         search,
+    }
+}
+
+/// Positions of every event sequence inside a trajectory's event list.
+///
+/// Turns reference their events by sequence, so resolving them by scanning the
+/// whole list once per turn costs `turns × events` and dominates long
+/// trajectories. Repeated sequences are all kept: a source may emit an id more
+/// than once, and collapsing them would change token and tool aggregates.
+struct EventIndex(HashMap<u64, Vec<usize>>);
+
+impl EventIndex {
+    fn new(events: &[EventRecord]) -> Self {
+        let mut positions = HashMap::<u64, Vec<usize>>::with_capacity(events.len());
+        for (position, event) in events.iter().enumerate() {
+            positions.entry(event.seq).or_default().push(position);
+        }
+        Self(positions)
+    }
+
+    fn linked<'a>(&self, seqs: &[u64], events: &'a [EventRecord]) -> Vec<&'a EventRecord> {
+        let mut positions = seqs
+            .iter()
+            .filter_map(|seq| self.0.get(seq))
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        // A turn may list its sequences out of order or repeat one; callers
+        // expect each event once, in event-list order, as a scan produced them.
+        positions.sort_unstable();
+        positions.dedup();
+        positions
+            .into_iter()
+            .map(|position| &events[position])
+            .collect()
     }
 }
 
@@ -721,13 +756,14 @@ pub(crate) fn turn_detail(
     events: &[EventRecord],
     event_provenance: CatalogEventProvenance,
 ) -> TurnDetail {
-    let linked = events
-        .iter()
-        .filter(|event| item.event_seqs.contains(&event.seq))
+    let index = EventIndex::new(events);
+    let linked = index
+        .linked(&item.event_seqs, events)
+        .into_iter()
         .cloned()
         .collect::<Vec<_>>();
     TurnDetail {
-        summary: turn_summary(item, events),
+        summary: turn_summary(item, events, &index),
         turn: item.turn.clone(),
         wire_tool_calls: item.wire_tool_calls.clone(),
         event_provenance,
@@ -735,11 +771,12 @@ pub(crate) fn turn_detail(
     }
 }
 
-fn turn_summary(item: &TrajectoryTurnView, events: &[EventRecord]) -> TurnSummary {
-    let linked = events
-        .iter()
-        .filter(|event| item.event_seqs.contains(&event.seq))
-        .collect::<Vec<_>>();
+fn turn_summary(
+    item: &TrajectoryTurnView,
+    events: &[EventRecord],
+    index: &EventIndex,
+) -> TurnSummary {
+    let linked = index.linked(&item.event_seqs, events);
     let mut values = Vec::new();
     if let Some(value) = &item.turn.metrics {
         values.push(value);
@@ -1241,6 +1278,44 @@ mod tests {
             ),
             "dataset/gateway.json/json-job/json-session"
         );
+    }
+
+    #[test]
+    fn event_index_matches_a_full_scan_for_duplicate_and_unordered_sequences() {
+        let events = [7u64, 3, 7, 5, 3, 9]
+            .into_iter()
+            .map(|seq| EventRecord {
+                identity: Default::default(),
+                seq,
+                source: "test".into(),
+                kind: "note".into(),
+                timestamp: None,
+                session_id: None,
+                agent_id: None,
+                parent_uuid: None,
+                trace_id: None,
+                call_id: None,
+                subagent_id: None,
+                parent_agent_id: None,
+                branch: None,
+                parent_call_id: None,
+                payload: serde_json::json!({ "seq": seq }),
+            })
+            .collect::<Vec<_>>();
+        let index = EventIndex::new(&events);
+        for seqs in [
+            vec![],
+            vec![3],
+            vec![9, 3, 7],
+            vec![5, 5],
+            vec![3, 4, 7, 11],
+        ] {
+            let scanned = events
+                .iter()
+                .filter(|event| seqs.contains(&event.seq))
+                .collect::<Vec<_>>();
+            assert_eq!(index.linked(&seqs, &events), scanned, "{seqs:?}");
+        }
     }
 
     #[test]

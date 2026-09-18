@@ -208,7 +208,6 @@ fn navigate_app_back(app_history_depth: i32) -> bool {
 }
 
 pub fn App() -> Element {
-    crate::requests::use_request_polling();
     let initial_agent = url_param("agent_id");
     let initial_session = url_param("session_id");
     let initial_root = url_param("root_session_id");
@@ -248,6 +247,7 @@ pub fn App() -> Element {
     let runs = use_signal(|| None::<RunPage>);
     let runs_loading = use_signal(|| true);
     let runs_generation = use_signal(|| 0u64);
+    let turn_generation = use_signal(|| 0_u64);
     let mut last_runs_key = use_signal(|| None::<String>);
     let mut query = use_signal(|| url_param("q").unwrap_or_default());
     let mut dataset_filter =
@@ -391,24 +391,36 @@ pub fn App() -> Element {
         })));
     });
 
+    let mut detail_request_key = use_signal(|| None::<String>);
     use_effect(move || {
-        if analysis().is_none()
-            && let Some(run) = selected_run()
+        let Some(run) = selected_run() else {
+            detail_request_key.set(None);
+            return;
+        };
+        let key = run.query();
+        if detail_request_key.peek().as_deref() == Some(key.as_str())
+            && (analysis().is_some() || *detail_loading.peek() || *detail_failed.peek())
         {
-            load_workspace(
-                run,
-                turn_query(),
-                source(),
-                analysis,
-                turns,
-                turn_search,
-                compact_record,
-                detail_loading,
-                detail_failed,
-                detail_generation,
-                error,
-            );
+            return;
         }
+        detail_request_key.set(Some(key));
+        let debounce = *turn_query_debounce_id.peek() + 1;
+        turn_query_debounce_id.set(debounce);
+        load_workspace(
+            run,
+            turn_query.peek().clone(),
+            source.peek().clone(),
+            analysis,
+            turns,
+            turn_search,
+            turn_loading,
+            turn_generation,
+            compact_record,
+            detail_loading,
+            detail_failed,
+            detail_generation,
+            error,
+        );
     });
 
     use_effect(move || {
@@ -682,8 +694,12 @@ pub fn App() -> Element {
                         let selected_path = analysis().map(|value| value.run.path).or_else(|| selected_run().map(|run| run.path)).unwrap_or_default();
                         rsx! { div { class: "pc2-detail-layout",
                             PathExplorer { paged: !query().trim().is_empty(), runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path, loading: runs_loading(),
+                                page_total: runs().map(|page| page.snapshot.total).unwrap_or_default(),
+                                page_offset: runs().map(|page| page.snapshot.offset).unwrap_or_default(),
+                                page_limit: runs().map(|page| page.snapshot.limit).unwrap_or(50),
                                 on_path: move |value| { run_path.set(value); offset.set(0); page.set("runs".into()); },
                                 on_view_mode: move |mode| path_list_mode.set(mode),
+                                on_page: move |value| offset.set(value),
                                 on_select: move |run: RunSummary| { turn_query.set(query()); selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); turn_search.set(TurnSearchStatus::default()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); },
                                 on_open_chat: move |run: RunSummary| {
                                     turn_query.set(query());
@@ -698,10 +714,16 @@ pub fn App() -> Element {
                                     copilot_open.set(true);
                                 },
                             }
-                            if let (Some(_run), Some(value)) = (selected_run(), analysis()) {
+                            if let Some(run) = selected_run() {
                                 RunDetailWorkspace {
-                                    run: value.run.clone(),
-                                    analysis: value,
+                                    failed: detail_failed(),
+                                    on_retry: move |_| {
+                                        if let Some(run) = selected_run.peek().clone() {
+                                            load_workspace(run,turn_query(),source(),analysis,turns,turn_search,turn_loading,turn_generation,compact_record,detail_loading,detail_failed,detail_generation,error);
+                                        }
+                                    },
+                                    run,
+                                    analysis: analysis(),
                                     compact_record: compact_record(),
                                     turns: turns(),
                                     search: turn_search(),
@@ -727,7 +749,12 @@ pub fn App() -> Element {
                                     on_view: move |value: String| {
                                         trace_mode.set(normalize_trace_view(&value).to_string());
                                     },
-                                    on_source: move |value| source.set(value),
+                                    on_source: move |value: String| {
+                                        source.set(value.clone());
+                                        if let Some(run) = selected_run() {
+                                            load_turns(run, turn_query(), value, turns, turn_search, turn_loading, error, turn_generation);
+                                        }
+                                    },
                                     on_query: move |value: String| {
                                         turn_query.set(value.clone());
                                         let request_id = turn_query_debounce_id() + 1;
@@ -745,6 +772,7 @@ pub fn App() -> Element {
                                                     turn_search,
                                                     turn_loading,
                                                     error,
+                                                    turn_generation,
                                                 );
                                             }
                                         });
@@ -763,6 +791,7 @@ pub fn App() -> Element {
                                                 turn_search,
                                                 turn_loading,
                                                 error,
+                                                turn_generation,
                                             );
                                         }
                                     },
@@ -821,17 +850,6 @@ pub fn App() -> Element {
                                         page.set("tools".into());
                                     },
                                 }
-                            } else if detail_failed() && !detail_loading() {
-                                div { class: "pc2-loading", role: "alert",
-                                    strong { "Could not load run details" }
-                                    p { "Open Requests to inspect the failed stage, or retry this run." }
-                                    button { class: "button", onclick: move |_| {
-                                        if let Some(run)=selected_run.peek().clone() {
-                                            load_workspace(run,turn_query(),source(),analysis,turns,turn_search,compact_record,detail_loading,detail_failed,detail_generation,error);
-                                        }
-                                    }, "Retry" }
-                                    button { class: "button", onclick: move |_| page.set("requests".into()), "View requests" }
-                                }
                             } else { LoadingWorkspace { label: "Loading run details…" } }
                         } }
                     }
@@ -839,8 +857,12 @@ pub fn App() -> Element {
                         let path_runs = runs().map(|value| value.path_index).unwrap_or_default();
                         rsx! { div { class: "pc2-runs-layout",
                         PathExplorer { paged: !query().trim().is_empty(), runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path: run_path(), loading: runs_loading(),
+                            page_total: runs().map(|value| value.snapshot.total).unwrap_or_default(),
+                            page_offset: runs().map(|value| value.snapshot.offset).unwrap_or_default(),
+                            page_limit: runs().map(|value| value.snapshot.limit).unwrap_or(50),
                             on_path: move |value| { run_path.set(value); offset.set(0); },
                             on_view_mode: move |mode| path_list_mode.set(mode),
+                            on_page: move |value| offset.set(value),
                             on_select: move |run: RunSummary| { turn_query.set(query()); selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); turn_search.set(TurnSearchStatus::default()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); detail_mode.set("trace".into()); page.set("detail".into()); },
                             on_open_chat: move |run: RunSummary| {
                                 turn_query.set(query());
@@ -1257,6 +1279,8 @@ fn load_workspace(
     mut analysis: Signal<Option<RunAnalysis>>,
     mut turns: Signal<Vec<TurnSummary>>,
     mut turn_search: Signal<TurnSearchStatus>,
+    mut turn_loading: Signal<bool>,
+    mut turn_generation: Signal<u64>,
     mut compact_record: Signal<Option<CompactRecordDetail>>,
     mut loading: Signal<bool>,
     mut failed: Signal<bool>,
@@ -1267,41 +1291,83 @@ fn load_workspace(
     let requested = *generation.peek() + 1;
     generation.set(requested);
     compact_record.set(None);
+    analysis.set(None);
     failed.set(false);
     loading.set(true);
+    turn_loading.set(true);
+    turns.set(Vec::new());
+    let step_requested = *turn_generation.peek() + 1;
+    turn_generation.set(step_requested);
     spawn(async move {
-        let work = async {
-            let (next_analysis, next_turns) = futures_util::try_join!(
-                api::run_analysis(&run),
-                api::turns(&run, &query, &source)
-            )?;
-            let record = if next_analysis.run.is_compact_jsonl() {
-                Some(api::compact_record(&next_analysis.run).await?)
-            } else {
-                None
-            };
-            Ok::<_, api::ApiFailure>((next_analysis, next_turns, record))
-        };
-        let result = match futures_util::future::select(
-            Box::pin(work),
+        // Steps first (no embedded analysis), paint the timeline, then load
+        // statistics. The follow-up /run hits the worker trajectory memo when
+        // the pool reuses the same child, so aggregates are usually cheap.
+        let turns_result = match futures_util::future::select(
+            Box::pin(api::turns(&run, &query, &source, false)),
             Box::pin(TimeoutFuture::new(65_000)),
         )
         .await
         {
             futures_util::future::Either::Left((result, _)) => result,
             _ => Err(api::ApiFailure::network(
-                "Run details timed out. Open Requests to inspect server progress, then retry.",
+                "Loading steps timed out. Open Requests to inspect server progress, then retry.",
             )),
         };
         if *generation.peek() != requested {
             return;
         }
-        match result {
-            Ok((next_analysis, next_turns, record)) => {
+        match turns_result {
+            Ok(page) => {
+                if *turn_generation.peek() == step_requested {
+                    turns.set(page.records);
+                    turn_search.set(page.search);
+                    turn_loading.set(false);
+                }
+            }
+            Err(failure) => {
+                if *turn_generation.peek() == step_requested {
+                    turn_loading.set(false);
+                }
+                error.set(Some(workspace_notice(&failure)));
+                loading.set(false);
+                return;
+            }
+        }
+
+        if run.is_compact_jsonl() {
+            match api::compact_record(&run).await {
+                Ok(record) if *generation.peek() == requested => {
+                    compact_record.set(Some(record));
+                }
+                Err(failure) if *generation.peek() == requested => {
+                    error.set(Some(workspace_notice(&failure)));
+                }
+                _ => {}
+            }
+            if *generation.peek() == requested {
+                loading.set(false);
+            }
+            return;
+        }
+
+        let analysis_result = match futures_util::future::select(
+            Box::pin(api::run_analysis(&run)),
+            Box::pin(TimeoutFuture::new(65_000)),
+        )
+        .await
+        {
+            futures_util::future::Either::Left((result, _)) => result,
+            _ => Err(api::ApiFailure::network(
+                "Run statistics timed out. Steps remain available; open Requests to inspect progress.",
+            )),
+        };
+        if *generation.peek() != requested {
+            return;
+        }
+        match analysis_result {
+            Ok(next_analysis) => {
                 analysis.set(Some(next_analysis));
-                turns.set(next_turns.records);
-                turn_search.set(next_turns.search);
-                compact_record.set(record);
+                failed.set(false);
             }
             Err(failure) => {
                 failed.set(true);
@@ -1320,10 +1386,17 @@ fn load_turns(
     mut turn_search: Signal<TurnSearchStatus>,
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
+    mut generation: Signal<u64>,
 ) {
+    let requested = *generation.peek() + 1;
+    generation.set(requested);
     loading.set(true);
     spawn(async move {
-        match api::turns(&run, &query, &source).await {
+        let result = api::turns(&run, &query, &source, false).await;
+        if *generation.peek() != requested {
+            return;
+        }
+        match result {
             Ok(value) => {
                 turns.set(value.records);
                 turn_search.set(value.search);
@@ -1574,12 +1647,31 @@ fn PathExplorer(
     selected_path: String,
     loading: bool,
     paged: bool,
+    #[props(default)] page_total: usize,
+    #[props(default)] page_offset: usize,
+    #[props(default)] page_limit: usize,
     on_path: EventHandler<String>,
     on_view_mode: EventHandler<PathListMode>,
     on_select: EventHandler<RunSummary>,
     on_open_chat: EventHandler<RunSummary>,
+    on_page: EventHandler<usize>,
 ) -> Element {
     let import_path_tree = build_import_path_tree(&runs);
+    let limit = page_limit.max(1);
+    let total = if page_total > 0 {
+        page_total
+    } else {
+        runs.len()
+    };
+    let page_count = total.div_ceil(limit).max(1);
+    let current_page = (page_offset / limit).min(page_count.saturating_sub(1));
+    let page_start = if total == 0 {
+        0
+    } else {
+        page_offset.saturating_add(1)
+    };
+    let page_end = page_offset.saturating_add(runs.len()).min(total);
+    let show_pager = !paged && total > limit;
     rsx! { aside { class: "pc2-path-explorer",
         header {
             div { strong { "Run paths" } span { if paged { "Search results on this page" } else if view_mode == PathListMode::Flat { "All runs in this dataset" } else { "Tree by import path" } } }
@@ -1590,7 +1682,7 @@ fn PathExplorer(
             span { "{runs.len()}" }
         }
         div { class: "pc2-path-tree",
-            button { class: if selected_path.is_empty() { "pc2-path-all active" } else { "pc2-path-all" }, onclick: move |_| on_path.call(String::new()), span { class: "pc2-path-icon root", "⌂" } strong { if paged { "Search results" } else { "All runs" } } code { "{runs.len()}" } }
+            button { class: if selected_path.is_empty() { "pc2-path-all active" } else { "pc2-path-all" }, onclick: move |_| on_path.call(String::new()), span { class: "pc2-path-icon root", "⌂" } strong { if paged { "Search results" } else { "All runs" } } code { "{total}" } }
             if loading && runs.is_empty() { div { class: "pc2-path-loading", span { class: "spinner" } "Loading paths…" } }
             else if runs.is_empty() { div { class: "pc2-path-empty", "No captured run paths." } }
             else if view_mode == PathListMode::Flat {
@@ -1603,7 +1695,38 @@ fn PathExplorer(
                 }
             }
         }
-        footer { if paged { "Showing the current search page." } else if view_mode == PathListMode::Flat { "Showing all runs in this dataset." } else { "Tree follows the imported path." } }
+        footer { class: if show_pager { "pc2-path-footer paged" } else { "pc2-path-footer" },
+            if show_pager {
+                label { class: "pc2-path-page",
+                    span { "Page" }
+                    select {
+                        value: "{current_page}",
+                        aria_label: "Jump to run path page",
+                        onchange: move |event| {
+                            if let Ok(index) = event.value().parse::<usize>() {
+                                on_page.call(index.saturating_mul(limit));
+                            }
+                        },
+                        for index in 0..page_count {
+                            option { value: "{index}", selected: index == current_page,
+                                {
+                                    let start = index.saturating_mul(limit).saturating_add(1);
+                                    let end = index.saturating_mul(limit).saturating_add(limit).min(total);
+                                    format!("{}/{} · {start}–{end}", index + 1, page_count)
+                                }
+                            }
+                        }
+                    }
+                }
+                span { "{page_start}–{page_end} of {total}" }
+            } else if paged {
+                "Showing the current search page."
+            } else if view_mode == PathListMode::Flat {
+                "Showing all runs in this dataset."
+            } else {
+                "Tree follows the imported path."
+            }
+        }
     } }
 }
 
@@ -1848,8 +1971,10 @@ fn StatusBadge(value: String) -> Element {
 #[component]
 #[allow(clippy::too_many_arguments)]
 fn RunDetailWorkspace(
+    failed: bool,
+    on_retry: EventHandler<MouseEvent>,
     run: RunSummary,
-    analysis: RunAnalysis,
+    analysis: Option<RunAnalysis>,
     compact_record: Option<CompactRecordDetail>,
     turns: Vec<TurnSummary>,
     search: TurnSearchStatus,
@@ -1909,6 +2034,11 @@ fn RunDetailWorkspace(
     };
     rsx! {
         section { class: if compact_header() { "pc2-detail is-condensed" } else { "pc2-detail" },
+            if failed {
+                div { role: "alert", "Run statistics could not be loaded. Steps remain available."
+                    button { class: "button", onclick: on_retry, "Retry" }
+                }
+            }
             header { class: "pc2-detail-head",
                 div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, "← Runs" } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
                 div { class: "pc2-head-actions",
@@ -1934,22 +2064,29 @@ fn RunDetailWorkspace(
                     }
                 }
             } else {
-            MetricsStrip { analysis: analysis.clone() }
+            if let Some(value) = analysis.clone() {
+            MetricsStrip { analysis: value.clone() }
             if detail_mode == "trace" {
                 CompactOverviewStrip {
-                    analysis: analysis.clone(),
+                    analysis: value,
                     turns: turns.clone(),
                     on_open_analysis: move |_| on_detail_mode.call("analysis".into()),
                 }
             }
+            } else if loading {
+                div { class: "pc2-inline-loading", role: "status", "Loading run statistics…" }
+            }
             nav { class: "pc2-detail-tabs", aria_label: "Run detail view",
                 button { class: if detail_mode == "trace" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("trace".into()), {TIMELINE} }
                 button { class: if detail_mode == "analysis" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("analysis".into()), "Analysis" }
-                span { "{turns.len()} of {analysis.turn_count} steps loaded for interactive charts" }
+                if let Some(value) = &analysis {
+                    span { "{turns.len()} of {value.turn_count} steps loaded for interactive charts" }
+                } else { span { "{turns.len()} steps loaded" } }
             }
             if detail_mode == "analysis" {
+                if let Some(value) = analysis {
                 AnalysisWorkspace {
-                    analysis: analysis.clone(),
+                    analysis: value,
                     turns: turns.clone(),
                     on_turn: move |id| {
                         on_turn.call(id);
@@ -1957,6 +2094,7 @@ fn RunDetailWorkspace(
                     },
                     on_scroll: on_detail_scroll,
                 }
+                } else { div { role: "status", "Run statistics are not available yet." } }
             } else {
                 section { class: "pc2-trace-surface pc2-inline-trace",
                     div { class: "pc2-trace-toolbar",
@@ -1972,8 +2110,8 @@ fn RunDetailWorkspace(
                         }
                     }
                     div { id: RUN_DETAIL_SCROLL_ID, class: "pc2-turn-list pc2-span-scroll", onscroll: on_detail_scroll,
-                        if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing run details…" } }
-                        if turns.is_empty() { div { class: "pc2-empty", strong { "No visible steps" } span { "No loaded steps match this filter." } } }
+                        if turn_loading { div { class: "pc2-inline-loading", role: "status", span { class: "spinner" } "Loading steps…" } }
+                        if turns.is_empty() && !turn_loading { div { class: "pc2-empty", strong { "No visible steps" } span { "No loaded steps match this filter." } } }
                         else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, view: view_for_list, source: source_for_list, query: query_for_list, on_turn, on_open_drawer } }
                     }
                 }
@@ -3292,6 +3430,38 @@ mod tests {
         assert_eq!(
             catalog_href("live", "nested/child"),
             "/?page=catalog&dataset=live&prefix=nested%2Fchild"
+        );
+    }
+
+    #[test]
+    fn detail_renders_steps_while_statistics_are_pending() {
+        let mut dom = VirtualDom::new(|| {
+            let turn: TurnSummary = serde_json::from_value(serde_json::json!({
+                "id": 7, "source": "user", "kind": null, "timestamp": null,
+                "call_id": null, "preview": "ready-step-before-statistics", "model_name": null,
+                "latency_ms": null, "ttft_ms": null, "prompt_tokens": null,
+                "completion_tokens": null, "total_tokens": null, "tool_names": [],
+                "event_seqs": [], "has_error": false
+            }))
+            .unwrap();
+            rsx! { RunDetailWorkspace {
+                failed: false, on_retry: |_| {},
+                run: run_at("a/run"), analysis: None, compact_record: None,
+                turns: vec![turn], search: TurnSearchStatus::default(),
+                selected: None, drawer: None, drawer_details: vec![], drawer_ids: vec![],
+                drawer_title: String::new(), drawer_loading: false, expanded_turn_id: None,
+                loading: true, turn_loading: false, detail_mode: "trace".to_string(),
+                view: "steps".to_string(), source: "all".to_string(), query: String::new(),
+                on_back: |_| {}, on_detail_mode: |_| {}, on_view: |_| {}, on_source: |_| {},
+                on_query: |_| {}, on_apply_query: |_| {}, on_turn: |_| {},
+                on_open_drawer: |_| {}, on_close_drawer: |_| {}, on_open_copilot: |_| {},
+                on_analyze: |_| {},
+            } }
+        });
+        let mutations = format!("{:?}", dom.rebuild_to_vec());
+        assert!(
+            mutations.contains("ready-step-before-statistics"),
+            "{mutations}"
         );
     }
 

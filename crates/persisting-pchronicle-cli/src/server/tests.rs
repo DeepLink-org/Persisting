@@ -333,6 +333,59 @@ async fn internal_error_logs_root_cause_and_redacts_json() {
 }
 
 #[tokio::test]
+async fn elapsed_internal_budget_reports_a_retryable_timeout() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CapturedLogEvent>::new()));
+    let _guard = tracing::subscriber::set_default(CapturingSubscriber::new(events.clone()));
+    let elapsed = tokio::time::timeout(Duration::from_millis(1), std::future::pending::<()>())
+        .await
+        .expect_err("pending future must time out");
+    let error = anyhow::Error::new(elapsed)
+        .context("runs scan timed out")
+        .context("cached acceleration build failure");
+    let response = super::fail(
+        &RequestId("rid-deadline".into()),
+        "load_run_summaries",
+        error,
+    )
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "unavailable");
+    assert_eq!(body["stage"], "query");
+    assert_eq!(body["request_id"], "rid-deadline");
+    assert!(
+        body["message"].as_str().unwrap().contains("time budget"),
+        "{body}"
+    );
+
+    let logged = events.lock().unwrap().clone();
+    assert!(
+        logged
+            .iter()
+            .all(|event| event.level != tracing::Level::ERROR),
+        "a timeout must not be logged as an internal defect: {logged:?}"
+    );
+    let warning = logged
+        .iter()
+        .find(|event| event.message.contains("exceeded its deadline"))
+        .unwrap_or_else(|| panic!("{logged:?}"));
+    assert!(
+        warning
+            .fields
+            .get("chain")
+            .unwrap()
+            .contains("runs scan timed out"),
+        "{:?}",
+        warning.fields
+    );
+    assert_eq!(
+        warning.fields.get("handler").map(String::as_str),
+        Some("load_run_summaries")
+    );
+}
+
+#[tokio::test]
 async fn middleware_echoes_request_id_on_json_errors() {
     use tower::ServiceExt;
 
@@ -2847,9 +2900,10 @@ async fn runs_deadline_includes_catalog_lock_and_releases_cancelled_work() {
     let state = app_state(config);
     let held = state.catalog_refresh.lock().await;
     let request_id = RequestId("runs-timeout-test".into());
-    let error = with_runs_deadline(
+    let error = with_deadline(
         Duration::from_millis(20),
         &request_id,
+        ApiError::runs_timeout,
         load_run_summaries(&state, None, None, &request_id, None),
     )
     .await
@@ -2860,12 +2914,204 @@ async fn runs_deadline_includes_catalog_lock_and_releases_cancelled_work() {
     assert_eq!(body["request_id"], "runs-timeout-test");
     assert_eq!(body["stage"], "query");
     drop(held);
-    let summaries = with_runs_deadline(
+    let summaries = with_deadline(
         Duration::from_secs(5),
         &request_id,
+        ApiError::runs_timeout,
         load_run_summaries(&state, None, None, &request_id, None),
     )
     .await
     .unwrap();
     assert_eq!(summaries.len(), 1);
+}
+
+#[tokio::test]
+async fn full_turn_lists_and_scoped_search_keep_source_boundaries() {
+    use persisting_pchronicle::storage::StorylineLanceStore;
+    let root = tempfile::tempdir().unwrap();
+    for (file, session) in [
+        ("group/one", "one"),
+        ("group/two", "two"),
+        ("group-other", "other"),
+    ] {
+        let store = StorylineLanceStore::open(root.path().join(file))
+            .await
+            .unwrap();
+        let mut story = storyline_document(session, session);
+        let template = story.turns[0].clone();
+        story.turns = (0..5)
+            .map(|index| {
+                let mut turn = template.clone();
+                turn.id = 10 + index * 3;
+                turn.source = if index % 2 == 0 { "user" } else { "agent" }.into();
+                turn.message = json!(format!("hello {session} step {index}"));
+                turn
+            })
+            .collect();
+        store.replace_storyline(&story).await.unwrap();
+    }
+    let state = app_state(
+        ChronicleServerConfig::mounted(vec![
+            DatasetMount::default(root.path().to_string_lossy()).unwrap(),
+        ])
+        .unwrap(),
+    );
+    let request = RequestId("search-scope-test".into());
+    let runtime = current_catalog(&state, &request).await.unwrap();
+    let app = finish_routes(state);
+    for (file, expected) in [("", 3), ("group", 2), ("group/one", 1)] {
+        let (status, body) = get_json(
+            &app,
+            &format!("/api/explorer/runs?dataset={DEFAULT_DATASET_NAME}&file={file}&q=hello"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["snapshot"]["total"], expected, "{body}");
+    }
+    let coords = format!(
+        "dataset={DEFAULT_DATASET_NAME}&file=group/one&agent_id=agent&session_id=one&run_id=one"
+    );
+    for (suffix, total, id) in [
+        ("offset=1&limit=2", 5, 10),
+        ("source=agent&offset=1&limit=1", 2, 13),
+        ("q=hello&offset=2&limit=1", 5, 10),
+    ] {
+        let (status, body) =
+            get_json(&app, &format!("/api/explorer/turns?{coords}&{suffix}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["snapshot"]["total"], total, "{body}");
+        assert_eq!(body["records"][0]["id"], id, "{body}");
+    }
+    let (status, body) = get_json(
+        &app,
+        &format!("/api/explorer/turns?{coords}&offset=99&limit=2"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["snapshot"]["total"], 5);
+    assert_eq!(body["snapshot"]["has_more"], false);
+    assert_eq!(body["records"].as_array().unwrap().len(), 5);
+    let (status, body) = get_json(&app, &format!("/api/explorer/turn?{coords}&turn_id=19")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["turn"]["id"], 19, "{body}");
+    // An unreadable sibling must never be opened by scoped FTS.
+    let sibling = runtime
+        .snapshot
+        .storyline_table_paths(DEFAULT_DATASET_NAME, "group-other")
+        .unwrap()
+        .unwrap();
+    std::fs::remove_dir_all(&sibling.steps).unwrap();
+    let expression = crate::combine_match_expressions(&["hello".into()])
+        .unwrap()
+        .unwrap();
+    let (_, available, errors) = crate::find_expression_predicate_for_dataset(
+        &runtime.snapshot,
+        &expression,
+        Some("group"),
+        Some(DEFAULT_DATASET_NAME),
+    )
+    .await
+    .unwrap();
+    assert!(available);
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[tokio::test]
+async fn overlapping_trajectory_loads_share_immutable_result() {
+    let root = json_dataset_root();
+    let state = app_state(
+        ChronicleServerConfig::mounted(vec![
+            DatasetMount::default(root.to_string_lossy()).unwrap(),
+        ])
+        .unwrap(),
+    );
+    let request = RequestId("coalesced-trajectory".into());
+    let metrics = RequestMetrics::default();
+    let summaries = load_run_summaries(&state, None, None, &request, None)
+        .await
+        .unwrap();
+    let run = &summaries[0];
+    let query = SessionQuery {
+        dataset: Some(run.dataset.clone()),
+        file: Some(run.file.clone()),
+        run_id: run.run_id.clone(),
+        agent_id: run.agent_id.clone(),
+        session_id: run.session_id.clone(),
+        root_session_id: run.root_session_id.clone(),
+        offset: None,
+        limit: None,
+    };
+    let (left, right) = tokio::join!(
+        load_trajectory(&state, &query, &request, &metrics),
+        load_trajectory(&state, &query, &request, &metrics)
+    );
+    assert!(Arc::ptr_eq(&left.unwrap(), &right.unwrap()));
+}
+
+#[tokio::test]
+async fn explorer_loads_all_turns_with_offloaded_unknown_fields() {
+    use persisting_pchronicle::storage::StorylineLanceStore;
+    let root = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open(root.path().join("story"))
+        .await
+        .unwrap();
+    let mut story = storyline_document("all-turns", "all-turns");
+    for index in 0..16 {
+        story
+            .unknown_fields
+            .insert(
+                "codex",
+                "source",
+                format!("/events/{index}"),
+                json!({"text": "x".repeat(8192)}),
+            )
+            .unwrap();
+    }
+    story.refresh_unknown_key_counts().unwrap();
+    let template = story.turns[0].clone();
+    story.turns = (0..501)
+        .map(|index| {
+            let mut turn = template.clone();
+            turn.id = index;
+            turn
+        })
+        .collect();
+    store.replace_storyline(&story).await.unwrap();
+    let app = router(root.path().to_string_lossy().into_owned());
+    let coords = "dataset=dataset&file=story&agent_id=agent&session_id=all-turns&run_id=all-turns";
+    // Even legacy pagination parameters must not truncate the result.
+    let (status, body) = get_json(
+        &app,
+        &format!("/api/explorer/turns?{coords}&offset=100&limit=1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let records = body["records"].as_array().unwrap();
+    assert_eq!(records.len(), 501);
+    assert_eq!(records[0]["id"], 0);
+    assert_eq!(records[500]["id"], 500);
+    assert_eq!(body["snapshot"]["has_more"], false);
+    assert!(body.get("analysis").is_none());
+    let (status, combined) = get_json(
+        &app,
+        &format!("/api/explorer/turns?{coords}&include_analysis=true"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{combined}");
+    assert_eq!(combined["records"], body["records"]);
+    let (status, body) = get_json(&app, &format!("/api/explorer/run?{coords}")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["turn_count"], 501);
+    assert_eq!(combined["analysis"], body);
+    let (status, filtered) = get_json(
+        &app,
+        &format!("/api/explorer/turns?{coords}&include_analysis=true&source=nonexistent"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{filtered}");
+    assert!(filtered["records"].as_array().unwrap().is_empty());
+    assert_eq!(
+        filtered["analysis"], body,
+        "statistics must cover the entire run"
+    );
 }

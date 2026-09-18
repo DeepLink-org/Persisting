@@ -12,9 +12,9 @@ pub(crate) mod request_log;
 mod request_progress;
 mod ui_cache;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -36,6 +36,7 @@ use persisting_pchronicle::storage::StoryCoords;
 use persisting_pchronicle::storage::{
     CatalogConsistency, CatalogErrorPolicy, CatalogEventProvenance, CatalogSnapshotOptions,
     CatalogStorylineKey, DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount,
+    with_background_object_store_io,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -61,7 +62,8 @@ struct AppState {
     /// Serializes global refreshes and stores the next automatic retry time.
     catalog_refresh: Arc<tokio::sync::Mutex<Instant>>,
     catalog_refresh_interval: Duration,
-    trajectory_cache: Arc<tokio::sync::RwLock<Option<(String, LoadedTrajectory)>>>,
+    trajectory_cache: Arc<tokio::sync::RwLock<Option<(String, Arc<LoadedTrajectory>)>>>,
+    trajectory_flights: Arc<Mutex<HashMap<String, Weak<TrajectoryFlight>>>>,
     /// Gateway-backed Warehouses read canonical events from the latest
     /// manifest for single-trace observation, independent of projection idle.
     live_reads: bool,
@@ -77,16 +79,22 @@ struct AppState {
 const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 // Return a structured timeout before the catalog worker's 60s transport cutoff.
 const RUNS_SCAN_TIMEOUT: Duration = Duration::from_secs(50);
+const TRAJECTORY_READ_TIMEOUT: Duration = Duration::from_secs(50);
+// Backstop for the cached scan, which also runs as a background refresh with no
+// request deadline. Kept above `RUNS_SCAN_TIMEOUT` so a foreground request
+// reports the endpoint's own timeout instead of this inner one.
+const RUNS_SCAN_BACKSTOP: Duration = Duration::from_secs(55);
 
-async fn with_runs_deadline<T>(
+async fn with_deadline<T>(
     timeout: Duration,
     request_id: &RequestId,
+    timeout_error: fn() -> ApiError,
     operation: impl std::future::Future<Output = Result<T, ApiError>>,
 ) -> Result<T, ApiError> {
     tokio::time::timeout(timeout, operation)
         .await
         .map_err(|_| {
-            ApiError::runs_timeout()
+            timeout_error()
                 .with_request_id(request_id.as_str())
                 .with_stage(ExecutionStage::Query)
         })?
@@ -236,6 +244,7 @@ fn app_state_with_catalog_refresh_interval(
         catalog_refresh: Arc::new(tokio::sync::Mutex::new(Instant::now())),
         catalog_refresh_interval,
         trajectory_cache: Arc::new(tokio::sync::RwLock::new(None)),
+        trajectory_flights: Arc::new(Mutex::new(HashMap::new())),
         live_reads: false,
         catalog_acl: None,
         catalog_query_worker: false,
@@ -741,9 +750,10 @@ async fn runs(
     metrics: RequestMetrics,
 ) -> Result<Json<Vec<RunSummary>>, ApiError> {
     let started = Instant::now();
-    let summaries = with_runs_deadline(
+    let summaries = with_deadline(
         RUNS_SCAN_TIMEOUT,
         &request_id,
+        ApiError::runs_timeout,
         load_run_summaries(&state, None, None, &request_id, Some(&metrics)),
     )
     .await?;
@@ -784,7 +794,7 @@ async fn load_run_summaries(
         };
         let query_metrics = metrics.cloned();
         let execute = move |background: bool| async move {
-            let summaries = tokio::time::timeout(RUNS_SCAN_TIMEOUT, async {
+            let summaries = tokio::time::timeout(RUNS_SCAN_BACKSTOP, async {
                 // Background work must not be attributed to the triggering HTTP request.
                 let metrics = query_metrics.filter(|_| !background);
                 let phase = Instant::now();
@@ -1233,9 +1243,10 @@ async fn explorer_runs(
     fts: FtsDiagnostics,
     query: Result<Query<explorer::ExplorerRunsQuery>, QueryRejection>,
 ) -> Result<Json<explorer::RunExplorerPage>, ApiError> {
-    with_runs_deadline(
+    with_deadline(
         RUNS_SCAN_TIMEOUT,
         &request_id,
+        ApiError::runs_timeout,
         explorer_runs_inner(State(state), request_id.clone(), metrics, fts, query),
     )
     .await
@@ -1277,7 +1288,17 @@ async fn explorer_runs_inner(
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty())
     {
-        let runtime = current_catalog(&state, &request_id).await?;
+        let file_filter = query
+            .file
+            .as_deref()
+            .map(str::trim)
+            .filter(|file| !file.is_empty());
+        let runtime = match (dataset_filter, file_filter) {
+            (Some(dataset), Some(file)) => {
+                catalog_for_source(&state, Some(dataset), file, &request_id).await?
+            }
+            _ => current_catalog(&state, &request_id).await?,
+        };
         let raw = query.q.as_deref().unwrap_or_default().trim();
         let expression = crate::combine_match_expressions(&[raw.to_owned()])
             .map_err(|error| ApiError::invalid_request(error.to_string()))?
@@ -1285,7 +1306,11 @@ async fn explorer_runs_inner(
         let (predicate, fts_available, fts_errors) = crate::find_expression_predicate_for_dataset(
             &runtime.snapshot,
             &expression,
-            None,
+            query
+                .file
+                .as_deref()
+                .map(str::trim)
+                .filter(|file| !file.is_empty()),
             dataset_filter,
         )
         .await
@@ -1680,14 +1705,14 @@ async fn try_resolve_on_demand_storyline_run(
     let Some(store) = open_storyline_source(state, dataset_name, file, request_id).await? else {
         return Ok(None);
     };
-    let Some((_generation, ids)) = store
-        .document_ids_snapshot()
+    let Some((_generation, present)) = store
+        .contains_document(session_id)
         .await
         .map_err(|error| fail(request_id, "resolve_run", error))?
     else {
         return Ok(None);
     };
-    if !ids.iter().any(|id| id == session_id) {
+    if !present {
         return Ok(None);
     }
     let path = explorer::explorer_run_path(dataset_name, file, session_id, session_id, None, None);
@@ -2047,12 +2072,14 @@ struct LoadedTrajectory {
     turns: Vec<TrajectoryTurnView>,
 }
 
+type TrajectoryFlight = tokio::sync::OnceCell<Arc<LoadedTrajectory>>;
+
 async fn load_trajectory(
     state: &AppState,
     query: &SessionQuery,
     request_id: &RequestId,
     metrics: &RequestMetrics,
-) -> Result<LoadedTrajectory, ApiError> {
+) -> Result<Arc<LoadedTrajectory>, ApiError> {
     let phase = Instant::now();
     let run = resolve_run_summary(state, query, request_id, Some(metrics)).await?;
     metrics.record("resolve", phase);
@@ -2060,115 +2087,149 @@ async fn load_trajectory(
     let runtime = catalog_for_source(state, Some(&run.dataset), &run.file, request_id).await?;
     metrics.record("catalog", phase);
     let cache_key = format!(
-        "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
         runtime.snapshot.snapshot_id(),
         run.dataset,
         run.file,
-        run.session_id
+        run.session_id,
+        run.document_id
     );
-    if !state.live_reads
-        && let Some((_, loaded)) = state
-            .trajectory_cache
-            .read()
-            .await
-            .as_ref()
-            .filter(|(key, _)| key == &cache_key)
+    if let Some((_, loaded)) = state
+        .trajectory_cache
+        .read()
+        .await
+        .as_ref()
+        .filter(|(key, _)| key == &cache_key)
     {
         metrics.record("trajectory_cache", Instant::now());
         return Ok(loaded.clone());
     }
-    if run.format.as_deref() == Some("compact-jsonl/v1") {
-        return Ok(LoadedTrajectory {
-            runtime,
-            run,
-            event_provenance: CatalogEventProvenance::SyntheticFromStoryline,
-            records: Vec::new(),
-            turns: Vec::new(),
-        });
-    }
-    let phase = Instant::now();
-    let bundle = catalog_or_on_demand_trajectory_bundle(
-        state,
-        &runtime,
-        &run,
-        request_id,
-        "load_trajectory",
-    )
-    .await?;
-    metrics.record("trajectory_read", phase);
-    let event_provenance = bundle.event_view.provenance;
-    let records = bundle.event_view.document.events;
-    let document = bundle.storyline;
-    // ACTF step records carry the first user input at document level when it
-    // is the baseline prompt. Preserve it on the first turn so Explorer can
-    // render the user side of the conversation without changing storage.
-    let document_prompt = document.prompt.clone();
-    let mut by_call = BTreeMap::<String, Vec<u64>>::new();
-    for event in &records {
-        if let Some(call_id) = event.call_id.as_ref().filter(|id| !id.is_empty()) {
-            by_call.entry(call_id.clone()).or_default().push(event.seq);
+    let flight = {
+        let mut flights = state
+            .trajectory_flights
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        flights.retain(|_, entry| entry.strong_count() > 0);
+        if let Some(flight) = flights.get(&cache_key).and_then(Weak::upgrade) {
+            flight
+        } else {
+            let flight = Arc::new(tokio::sync::OnceCell::new());
+            if flights.len() < 64 {
+                flights.insert(cache_key.clone(), Arc::downgrade(&flight));
+            }
+            flight
         }
-    }
-    let turns = document
-        .turns
-        .into_iter()
-        .enumerate()
-        .map(|(turn_index, mut turn)| {
-            if turn_index == 0 && turn.source == "agent" && turn.prompt.is_none() {
-                turn.prompt = document_prompt.clone();
-            }
-            let call_id = turn_call_id(&turn);
-            let event_seqs = event_seqs_for_turn(&turn, &by_call);
-            let mut wire_tool_calls = Vec::new();
-            for event in records
-                .iter()
-                .filter(|event| event_seqs.contains(&event.seq))
-            {
-                collect_wire_tool_calls(&event.payload, &mut wire_tool_calls);
-            }
-            let mut seen = BTreeSet::new();
-            wire_tool_calls.retain(|call| {
-                seen.insert((
-                    call.id.clone(),
-                    call.name.clone(),
-                    serde_json::to_string(&call.arguments).unwrap_or_default(),
-                ))
-            });
-            // Tool outputs are canonicalized on the Storyline tool call, not
-            // necessarily on the event payload that supplied the call. Carry
-            // that result onto the wire call so AgenticMD can render it next
-            // to the matching command even when no observation envelope
-            // exists.
-            if let Some(native_calls) = turn.tool_calls.as_ref() {
-                for wire_call in &mut wire_tool_calls {
-                    if wire_call.result.is_none() {
-                        wire_call.result = wire_call.id.as_deref().and_then(|id| {
-                            native_calls
-                                .iter()
-                                .find(|call| call.tool_call_id == id)
-                                .and_then(|call| call.result.clone())
-                        });
-                    }
-                }
-            }
-            TrajectoryTurnView {
-                turn,
-                call_id,
-                event_seqs,
-                wire_tool_calls,
-            }
-        })
-        .collect();
-    let loaded = LoadedTrajectory {
-        runtime,
-        run,
-        event_provenance,
-        records,
-        turns,
     };
-    if !state.live_reads {
-        *state.trajectory_cache.write().await = Some((cache_key, loaded.clone()));
-    }
+    // Cancelled initialization can be taken over by a waiter. Failures are not cached.
+    let loaded = flight
+        .get_or_try_init(|| async {
+            if run.format.as_deref() == Some("compact-jsonl/v1") {
+                return Ok(Arc::new(LoadedTrajectory {
+                    runtime,
+                    run,
+                    event_provenance: CatalogEventProvenance::SyntheticFromStoryline,
+                    records: Vec::new(),
+                    turns: Vec::new(),
+                }));
+            }
+            let phase = Instant::now();
+            let bundle = catalog_or_on_demand_trajectory_bundle(
+                state,
+                &runtime,
+                &run,
+                request_id,
+                "load_trajectory",
+            )
+            .await?;
+            metrics.record("trajectory_read", phase);
+            let event_provenance = bundle.event_view.provenance;
+            let records = bundle.event_view.document.events;
+            let document = bundle.storyline;
+            // ACTF step records carry the first user input at document level when it
+            // is the baseline prompt. Preserve it on the first turn so Explorer can
+            // render the user side of the conversation without changing storage.
+            let document_prompt = document.prompt.clone();
+            let mut by_call = BTreeMap::<String, Vec<u64>>::new();
+            let mut by_seq = HashMap::<u64, Vec<usize>>::with_capacity(records.len());
+            for (position, event) in records.iter().enumerate() {
+                if let Some(call_id) = event.call_id.as_ref().filter(|id| !id.is_empty()) {
+                    by_call.entry(call_id.clone()).or_default().push(event.seq);
+                }
+                by_seq.entry(event.seq).or_default().push(position);
+            }
+            let turns = document
+                .turns
+                .into_iter()
+                .enumerate()
+                .map(|(turn_index, mut turn)| {
+                    if turn_index == 0 && turn.source == "agent" && turn.prompt.is_none() {
+                        turn.prompt = document_prompt.clone();
+                    }
+                    let call_id = turn_call_id(&turn);
+                    let event_seqs = event_seqs_for_turn(&turn, &by_call);
+                    // Resolve this turn's events through the sequence index.
+                    // Scanning every record per turn is quadratic and dominates
+                    // long trajectories.
+                    let mut positions = event_seqs
+                        .iter()
+                        .filter_map(|seq| by_seq.get(seq))
+                        .flatten()
+                        .copied()
+                        .collect::<Vec<_>>();
+                    positions.sort_unstable();
+                    positions.dedup();
+                    let mut wire_tool_calls = Vec::new();
+                    for position in positions {
+                        collect_wire_tool_calls(&records[position].payload, &mut wire_tool_calls);
+                    }
+                    let mut seen = BTreeSet::new();
+                    wire_tool_calls.retain(|call| {
+                        seen.insert((
+                            call.id.clone(),
+                            call.name.clone(),
+                            serde_json::to_string(&call.arguments).unwrap_or_default(),
+                        ))
+                    });
+                    // Tool outputs are canonicalized on the Storyline tool call, not
+                    // necessarily on the event payload that supplied the call. Carry
+                    // that result onto the wire call so AgenticMD can render it next
+                    // to the matching command even when no observation envelope
+                    // exists.
+                    if let Some(native_calls) = turn.tool_calls.as_ref() {
+                        for wire_call in &mut wire_tool_calls {
+                            if wire_call.result.is_none() {
+                                wire_call.result = wire_call.id.as_deref().and_then(|id| {
+                                    native_calls
+                                        .iter()
+                                        .find(|call| call.tool_call_id == id)
+                                        .and_then(|call| call.result.clone())
+                                });
+                            }
+                        }
+                    }
+                    TrajectoryTurnView {
+                        turn,
+                        call_id,
+                        event_seqs,
+                        wire_tool_calls,
+                    }
+                })
+                .collect();
+            let loaded = Arc::new(LoadedTrajectory {
+                runtime,
+                run,
+                event_provenance,
+                records,
+                turns,
+            });
+            Ok::<_, ApiError>(loaded)
+        })
+        .await?
+        .clone();
+    // Memoize even under live catalog reads. The turns request and the follow-up
+    // /run statistics request share a worker when the pool is idle; without this
+    // memo the second request re-scans the same document.
+    *state.trajectory_cache.write().await = Some((cache_key, loaded.clone()));
     Ok(loaded)
 }
 
@@ -2191,11 +2252,11 @@ async fn trajectory_view(
         .map(|calls| calls.len())
         .sum();
     Ok(Json(TrajectoryView {
-        run: loaded.run,
+        run: loaded.run.clone(),
         event_provenance: loaded.event_provenance,
         event_kind_counts,
         tool_call_count,
-        turns: loaded.turns,
+        turns: loaded.turns.clone(),
     }))
 }
 
@@ -2206,13 +2267,31 @@ async fn explorer_run(
     query: Result<Query<SessionQuery>, QueryRejection>,
 ) -> Result<Json<explorer::RunAnalysis>, ApiError> {
     let query = api_query(query)?;
-    let loaded = load_trajectory(&state, &query, &request_id, &metrics).await?;
-    Ok(Json(explorer::analyze(
-        loaded.run,
-        &loaded.turns,
-        &loaded.records,
-        loaded.event_provenance,
-    )))
+    with_deadline(
+        TRAJECTORY_READ_TIMEOUT,
+        &request_id,
+        ApiError::trajectory_timeout,
+        async {
+            // Statistics read the whole run, so they admit through the
+            // background gate. Sharing the foreground gate lets this scan
+            // occupy every slot and starve the step page the reader is
+            // actually looking at, which both requests then time out behind.
+            let loaded = with_background_object_store_io(load_trajectory(
+                &state,
+                &query,
+                &request_id,
+                &metrics,
+            ))
+            .await?;
+            Ok(Json(explorer::analyze(
+                loaded.run.clone(),
+                &loaded.turns,
+                &loaded.records,
+                loaded.event_provenance,
+            )))
+        },
+    )
+    .await
 }
 
 #[derive(Debug, Serialize)]
@@ -2244,6 +2323,8 @@ async fn explorer_record(
 
 #[derive(Debug, Deserialize)]
 struct TurnsQuery {
+    #[serde(default)]
+    include_analysis: bool,
     dataset: Option<String>,
     file: Option<String>,
     run_id: Option<String>,
@@ -2252,8 +2333,6 @@ struct TurnsQuery {
     root_session_id: Option<String>,
     q: Option<String>,
     source: Option<String>,
-    offset: Option<usize>,
-    limit: Option<usize>,
 }
 
 impl TurnsQuery {
@@ -2278,7 +2357,25 @@ async fn explorer_turns(
     fts: FtsDiagnostics,
     query: Result<Query<TurnsQuery>, QueryRejection>,
 ) -> Result<Json<explorer::TurnExplorerPage>, ApiError> {
+    with_deadline(
+        TRAJECTORY_READ_TIMEOUT,
+        &request_id,
+        ApiError::trajectory_timeout,
+        explorer_turns_inner(State(state), request_id.clone(), metrics, fts, query),
+    )
+    .await
+}
+
+async fn explorer_turns_inner(
+    State(state): State<AppState>,
+    request_id: RequestId,
+    metrics: RequestMetrics,
+    fts: FtsDiagnostics,
+    query: Result<Query<TurnsQuery>, QueryRejection>,
+) -> Result<Json<explorer::TurnExplorerPage>, ApiError> {
     let query = api_query(query)?;
+    // Timeline and statistics are separate HTTP requests. Embedding analysis
+    // here forces the step list to wait on the same full-run scan.
     let session = query.session();
     let loaded = load_trajectory(&state, &session, &request_id, &metrics).await?;
     let phase = Instant::now();
@@ -2395,19 +2492,25 @@ async fn explorer_turns(
         (loaded.turns.clone(), query.q.as_deref())
     };
     let phase = Instant::now();
-    let page = explorer::turn_page_with_search(
+    let mut page = explorer::turn_list_with_search(
         &turns,
         &loaded.records,
         search_query,
         query.source.as_deref(),
-        query.offset.unwrap_or(0),
-        query.limit.unwrap_or(100),
         explorer::TurnSearchStatus {
             fts_available,
             mode: search_mode,
             tokenizer: fts_available.then_some("jieba"),
         },
     );
+    if query.include_analysis {
+        page.analysis = Some(explorer::analyze(
+            loaded.run.clone(),
+            &loaded.turns,
+            &loaded.records,
+            loaded.event_provenance,
+        ));
+    }
     metrics.record("turn_projection", phase);
     Ok(Json(page))
 }

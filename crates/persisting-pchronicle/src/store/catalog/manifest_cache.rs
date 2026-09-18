@@ -13,6 +13,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 const MAX_REFRESH_DIRECTORIES: usize = 10_000;
+/// Observations per disk commit during a mount walk. Bounded so a long walk
+/// still publishes progress, and so a crash forfeits at most this many reads.
+const PERSIST_BATCH_DIRECTORIES: usize = 256;
+/// How long a browse observation may wait for neighbours to join its commit.
+const PERSIST_MAX_DELAY: Duration = Duration::from_secs(5);
 const REFRESH_MOUNT_DEADLINE: Duration = Duration::from_secs(120);
 const REFRESH_DIRECTORY_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -48,12 +53,27 @@ pub enum ManifestReadMode {
     Fresh,
 }
 
+/// One directory observation that is live in memory but not yet on disk.
+struct ObservedDirectory {
+    key: String,
+    listing: ManifestListing,
+    removed: Vec<String>,
+}
+
+/// Observations published in memory and still owed to disk.
+#[derive(Default)]
+struct PendingWrites {
+    observed: Vec<ObservedDirectory>,
+    since: Option<tokio::time::Instant>,
+}
+
 /// Persistent manifest cache. Keys are caller-owned stable identities, e.g.
 /// `mount-uri\0relative-prefix`; this keeps the cache independent of UI types.
 #[derive(Clone)]
 pub struct ManifestCache {
     disk: Arc<PersistentCache<String, serde_json::Value>>,
     values: Arc<RwLock<std::collections::HashMap<String, ManifestListing>>>,
+    pending: Arc<tokio::sync::Mutex<PendingWrites>>,
 }
 
 impl ManifestCache {
@@ -66,7 +86,11 @@ impl ManifestCache {
                 .filter_map(|(key, value)| serde_json::from_value(value).ok().map(|v| (key, v)))
                 .collect(),
         ));
-        Self { disk, values }
+        Self {
+            disk,
+            values,
+            pending: Arc::new(tokio::sync::Mutex::new(PendingWrites::default())),
+        }
     }
 
     pub async fn get(&self, key: &str) -> Option<ManifestListing> {
@@ -100,27 +124,70 @@ impl ManifestCache {
         location: &DatasetLocation,
         prefix: &str,
     ) -> Result<ManifestListing> {
-        self.refresh_impl(key.into(), location, prefix, false).await
+        // A foreground miss is rare and its caller is waiting on the answer, so
+        // it writes through rather than joining the browse walk's batch.
+        let observed = self.observe(key.into(), location, prefix, false).await?;
+        let listing = observed.listing.clone();
+        self.persist(std::slice::from_ref(&observed), prefix).await;
+        Ok(listing)
     }
 
     /// Observe remote child names now; the browse worker resolves each child's
     /// type and statistics when visiting that prefix, without delaying its parent.
+    ///
+    /// The observation is live in memory when this returns, but its disk write
+    /// rides with its neighbours: a browse walk visits thousands of prefixes,
+    /// and a Lance commit per prefix costs more than the listing it records.
     pub async fn refresh_for_browse(
         &self,
         key: impl Into<String>,
         location: &DatasetLocation,
         prefix: &str,
     ) -> Result<ManifestListing> {
-        self.refresh_impl(key.into(), location, prefix, true).await
+        let observed = self.observe(key.into(), location, prefix, true).await?;
+        let listing = observed.listing.clone();
+        self.enqueue(observed).await;
+        Ok(listing)
     }
 
-    async fn refresh_impl(
+    /// Commit every observation that is only in memory.
+    ///
+    /// A browse walk publishes as it goes, so callers that need the disk copy
+    /// to agree with memory — a shutdown, a test, a read-after-write — must ask.
+    pub async fn flush(&self) {
+        let batch = std::mem::take(&mut *self.pending.lock().await);
+        self.persist(&batch.observed, "").await;
+    }
+
+    async fn enqueue(&self, observed: ObservedDirectory) {
+        let due = {
+            let mut pending = self.pending.lock().await;
+            pending.since.get_or_insert_with(tokio::time::Instant::now);
+            pending.observed.push(observed);
+            let elapsed = pending
+                .since
+                .is_some_and(|since| since.elapsed() >= PERSIST_MAX_DELAY);
+            if pending.observed.len() >= PERSIST_BATCH_DIRECTORIES || elapsed {
+                Some(std::mem::take(&mut *pending))
+            } else {
+                None
+            }
+        };
+        if let Some(batch) = due {
+            self.persist(&batch.observed, "").await;
+        }
+    }
+
+    /// Read one level and publish it in memory, returning what the disk cache
+    /// still owes. Split from persistence so a mount walk can commit its
+    /// observations together instead of once per directory.
+    async fn observe(
         &self,
         key: String,
         location: &DatasetLocation,
         prefix: &str,
         browse: bool,
-    ) -> Result<ManifestListing> {
+    ) -> Result<ObservedDirectory> {
         let refresh_gate =
             crate::store::root_write_lock::for_root(&serde_json::to_string(&(self.path(), &key))?);
         let _guard = refresh_gate.lock().await;
@@ -167,18 +234,43 @@ impl ManifestCache {
             values.insert(key.clone(), listing.clone());
             removed
         };
+        // `key` contains NUL separators and is an internal cache identity;
+        // logging it makes journald truncate the record at the dataset name.
+        tracing::debug!(target: "pchronicle.serve", prefix, entries = listing.entries.len(), browse, "manifest cache updated");
+        Ok(ObservedDirectory {
+            key,
+            listing,
+            removed,
+        })
+    }
+
+    /// Commit observations to disk. The cache is rebuildable, so a failure or
+    /// a crash mid-walk only costs the unwritten observations.
+    async fn persist(&self, observed: &[ObservedDirectory], prefix: &str) {
+        let payloads = observed
+            .iter()
+            .map(|item| serde_json::to_value(&item.listing).map(|value| (item.key.clone(), value)))
+            .collect::<Result<Vec<_>, _>>();
+        let payloads = match payloads {
+            Ok(payloads) => payloads,
+            Err(error) => {
+                tracing::warn!(target: "pchronicle.serve", prefix, %error,
+                    "manifest cache encoding failed; using memory");
+                return;
+            }
+        };
+        let removed = observed
+            .iter()
+            .flat_map(|item| item.removed.iter().cloned())
+            .collect::<Vec<_>>();
         if let Err(error) = self
             .disk
-            .upsert(&key, &serde_json::to_value(&listing)?, &removed)
+            .upsert_many(payloads.iter().map(|(key, value)| (key, value)), &removed)
             .await
         {
             tracing::warn!(target: "pchronicle.serve", prefix, %error,
                 "manifest cache persistence failed; using memory");
         }
-        // `key` contains NUL separators and is an internal cache identity;
-        // logging it makes journald truncate the record at the dataset name.
-        tracing::debug!(target: "pchronicle.serve", prefix, entries = listing.entries.len(), browse, "manifest cache updated");
-        Ok(listing)
     }
 
     pub fn writable(&self) -> bool {
@@ -315,6 +407,7 @@ impl ManifestCache {
         let mut queue = VecDeque::from([String::new()]);
         let mut seen = HashSet::from([String::new()]);
         let mut report = ManifestRefreshReport::default();
+        let mut pending = Vec::<ObservedDirectory>::new();
         let deadline = tokio::time::Instant::now() + budget;
         while let Some(prefix) = queue.pop_front() {
             if report.refreshed_directories >= max_directories
@@ -330,9 +423,9 @@ impl ManifestCache {
             };
             let directory_deadline =
                 deadline.min(tokio::time::Instant::now() + REFRESH_DIRECTORY_TIMEOUT);
-            let listing = match tokio::time::timeout_at(
+            let observed = match tokio::time::timeout_at(
                 directory_deadline,
-                self.refresh(key, location, &prefix),
+                self.observe(key, location, &prefix, false),
             )
             .await
             {
@@ -342,6 +435,12 @@ impl ManifestCache {
                     break;
                 }
             };
+            let listing = observed.listing.clone();
+            pending.push(observed);
+            if pending.len() >= PERSIST_BATCH_DIRECTORIES {
+                self.persist(&pending, &prefix).await;
+                pending.clear();
+            }
             report.refreshed_directories += 1;
             for child in listing
                 .entries
@@ -360,6 +459,7 @@ impl ManifestCache {
             }
             tokio::task::yield_now().await;
         }
+        self.persist(&pending, key_prefix).await;
         // Publish completeness alongside the cached root, including across restarts.
         // Do not hold the values lock over persistence.
         let root = {
@@ -428,6 +528,9 @@ mod tests {
             .unwrap();
         assert_eq!(cache.summary("mount").await.datasets, 0);
         assert!(cache.get("mount\0nested").await.is_none());
+        // A browse observation is published in memory first; the disk copy only
+        // has to agree once the pending writes are asked for.
+        cache.flush().await;
         drop(cache);
         assert_eq!(
             ManifestCache::open(path)
@@ -436,6 +539,97 @@ mod tests {
                 .await
                 .trajectories,
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn mount_walk_commits_its_observations_together() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let directories = 40;
+        for index in 0..directories {
+            let leaf = source.join(format!("dir-{index:03}/leaf"));
+            std::fs::create_dir_all(&leaf).unwrap();
+            crate::storage::write_compact_jsonl_manifest(&leaf, 1, 1).unwrap();
+        }
+        let path = temp.path().join("cache.lance");
+        let cache = ManifestCache::open(path.clone()).await;
+        let location = DatasetLocation::parse(source.to_str().unwrap()).unwrap();
+        let report = cache.refresh_mount("mount", &location).await.unwrap();
+        // The root and every `dir-*`; a manifest makes `leaf` a dataset entry.
+        assert_eq!(report.refreshed_directories, directories + 1);
+        drop(cache);
+
+        // Each Lance commit re-reads the cache to find matches, so a commit per
+        // directory makes a mount walk quadratic in the directory count.
+        let versions = lance::Dataset::open(path.to_str().unwrap())
+            .await
+            .unwrap()
+            .version()
+            .version;
+        assert!(
+            versions <= 4,
+            "a {directories}-directory walk took {versions} commits"
+        );
+        assert_eq!(
+            ManifestCache::open(path).await.summary_under("mount").await,
+            LocationSummary {
+                partial: false,
+                datasets: directories as u64,
+                trajectories: directories as u64,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn browse_observations_share_one_commit_and_stay_readable() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let prefixes = 40;
+        for index in 0..prefixes {
+            let leaf = source.join(format!("dir-{index:03}/leaf"));
+            std::fs::create_dir_all(&leaf).unwrap();
+            crate::storage::write_compact_jsonl_manifest(&leaf, 1, 1).unwrap();
+        }
+        let path = temp.path().join("cache.lance");
+        let cache = ManifestCache::open(path.clone()).await;
+        let location = DatasetLocation::parse(source.to_str().unwrap()).unwrap();
+        // The browse coordinator visits one prefix per call, exactly like this.
+        cache
+            .refresh_for_browse("mount", &location, "")
+            .await
+            .unwrap();
+        for index in 0..prefixes {
+            let prefix = format!("dir-{index:03}");
+            cache
+                .refresh_for_browse(format!("mount\0{prefix}"), &location, &prefix)
+                .await
+                .unwrap();
+        }
+        // Every observation must answer from memory before it reaches disk.
+        assert_eq!(cache.summary_under("mount").await.datasets, prefixes as u64);
+        assert!(cache.get("mount\0dir-017").await.is_some());
+
+        cache.flush().await;
+        drop(cache);
+        // Each commit builds a DataFusion context and re-reads the target, so a
+        // commit per visited prefix costs far more than the listings it records.
+        let versions = lance::Dataset::open(path.to_str().unwrap())
+            .await
+            .unwrap()
+            .version()
+            .version;
+        assert!(
+            versions <= 3,
+            "{prefixes} browse observations took {versions} commits"
+        );
+        assert_eq!(
+            ManifestCache::open(path).await.summary_under("mount").await,
+            LocationSummary {
+                partial: false,
+                datasets: prefixes as u64,
+                trajectories: prefixes as u64,
+            }
         );
     }
 

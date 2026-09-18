@@ -48,10 +48,39 @@ impl StoreConfig {
     }
 }
 
+/// How long object-store retries may run before the caller gives up.
+///
+/// A long import can wait out a multi-minute outage and should. A request
+/// serving a browser cannot: retries that outlast its deadline turn every
+/// unreachable endpoint into a timeout, so the operator sees "too slow"
+/// where the truth is "cannot connect". The two workloads run in separate
+/// processes, so each declares its own patience at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryPatience {
+    /// Bounded well inside an interactive request budget.
+    Interactive,
+    /// Waits out long outages; the default.
+    Batch,
+}
+
+static PATIENCE: OnceLock<RetryPatience> = OnceLock::new();
+
+/// Declare this process's retry patience. Only the first call takes effect,
+/// and it must happen before any object store is opened.
+pub fn set_retry_patience(patience: RetryPatience) {
+    let _ = PATIENCE.set(patience);
+}
+
 /// Retries for transient object-store failures (DNS blips, connect resets,
-/// 5xx, rate limits). Tuned for long imports over flaky endpoints: up to 8
-/// retries with exponential backoff + jitter, capped at 30s.
+/// 5xx, rate limits): exponential backoff with jitter, bounded by the
+/// process's declared patience.
 fn with_object_store_retries(operator: Operator) -> Operator {
+    let (max_delay, max_times) = match PATIENCE.get().copied().unwrap_or(RetryPatience::Batch) {
+        // 0.5s + 1s + 2s + 4s, so a failing operation still reports its own
+        // error well inside the request budget that wraps it.
+        RetryPatience::Interactive => (Duration::from_secs(4), 4),
+        RetryPatience::Batch => (Duration::from_secs(30), 8),
+    };
     operator.layer(
         RetryLayer::new()
             .with_notify(|event: opendal::layers::RetryEvent<'_>| {
@@ -67,8 +96,8 @@ fn with_object_store_retries(operator: Operator) -> Operator {
             .with_jitter()
             .with_factor(2.0)
             .with_min_delay(Duration::from_millis(500))
-            .with_max_delay(Duration::from_secs(30))
-            .with_max_times(8),
+            .with_max_delay(max_delay)
+            .with_max_times(max_times),
     )
 }
 

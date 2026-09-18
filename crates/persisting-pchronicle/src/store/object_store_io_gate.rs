@@ -3,9 +3,12 @@
 //! Lance opens and table writes against flaky S3-compatible gateways amplify
 //! timeouts when several datasets race (list `_versions/`, retries, AIMD inside
 //! object_store). This gate:
-//! 1. caps concurrent remote ops per endpoint + bucket (default 1);
+//! 1. caps concurrent remote ops per endpoint + bucket (default 4);
 //! 2. after a transient failure, forces a shared cooldown + growing delay;
-//! 3. decays the delay after a streak of successes.
+//! 3. decays the delay after a streak of successes;
+//! 4. keeps interactive (foreground) work ahead of browse/maintenance
+//!    (background): background acquires yield while the same scope has
+//!    foreground demand, so shared S3 bandwidth is not split evenly.
 //!
 //! Local `file://` paths bypass the gate entirely.
 
@@ -16,11 +19,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const DEFAULT_REMOTE_CONCURRENCY: usize = 4;
+const DEFAULT_BACKGROUND_CONCURRENCY: usize = 1;
 const MAX_REMOTE_CONCURRENCY: usize = 8;
 const MAX_RETAINED_SCOPES: usize = 1024;
 const SCOPE_IDLE_TTL: Duration = Duration::from_secs(300);
 const MAX_DELAY_MS: u64 = 30_000;
 const SUCCESS_STREAK_TO_DECAY: u32 = 4;
+const BACKGROUND_YIELD_POLL: Duration = Duration::from_millis(25);
 
 /// Whether the gated op is primarily reading metadata/objects or writing them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,9 +157,14 @@ impl Default for AimdState {
 }
 
 struct Gate {
+    /// `foreground` or `background`, so a log line says which lane queued.
+    lane: &'static str,
     concurrency: usize,
     states: Mutex<HashMap<String, AimdState>>,
 }
+
+/// Admission waits shorter than this are noise next to a remote round trip.
+const WAIT_LOG_THRESHOLD: Duration = Duration::from_millis(100);
 
 fn state_for<'a>(
     states: &'a mut HashMap<String, AimdState>,
@@ -206,21 +216,122 @@ pub async fn with_background_object_store_io<F: std::future::Future>(work: F) ->
     BACKGROUND_IO.scope((), work).await
 }
 
+/// Process-wide interactive demand per admission scope (holders + in-flight
+/// acquires). Background work polls this so browse refresh does not share the
+/// pipe with turns/run while a user request is active.
+fn foreground_demand_map() -> &'static Mutex<HashMap<String, u32>> {
+    static FOREGROUND_DEMAND: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
+    FOREGROUND_DEMAND.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn enter_foreground_demand(key: &str) {
+    let Ok(mut map) = foreground_demand_map().lock() else {
+        return;
+    };
+    *map.entry(key.to_owned()).or_insert(0) += 1;
+}
+
+fn leave_foreground_demand(key: &str) {
+    let Ok(mut map) = foreground_demand_map().lock() else {
+        return;
+    };
+    let Some(count) = map.get_mut(key) else {
+        return;
+    };
+    *count = count.saturating_sub(1);
+    if *count == 0 {
+        map.remove(key);
+    }
+}
+
+fn scope_foreground_demand(key: &str) -> u32 {
+    foreground_demand_map()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(key).copied())
+        .unwrap_or(0)
+}
+
+/// Total interactive object-store acquires currently in flight (any scope).
+pub fn foreground_object_store_demand() -> u32 {
+    foreground_demand_map()
+        .lock()
+        .ok()
+        .map(|map| map.values().copied().sum())
+        .unwrap_or(0)
+}
+
+/// Block until no interactive object-store work is admitted. Browse refresh
+/// calls this before starting a background walk so user requests go first.
+pub async fn wait_for_foreground_object_store_idle() {
+    let mut logged = false;
+    let started = Instant::now();
+    loop {
+        if foreground_object_store_demand() == 0 {
+            if logged {
+                tracing::debug!(
+                    target: "pchronicle.object_store_gate",
+                    yielded_ms = started.elapsed().as_millis() as u64,
+                    "background resumed after interactive object-store idle"
+                );
+            }
+            return;
+        }
+        if !logged {
+            tracing::debug!(
+                target: "pchronicle.object_store_gate",
+                demand = foreground_object_store_demand(),
+                "background yielding to interactive object-store demand"
+            );
+            logged = true;
+        }
+        tokio::time::sleep(BACKGROUND_YIELD_POLL).await;
+    }
+}
+
+struct ForegroundDemandGuard {
+    key: String,
+}
+
+impl ForegroundDemandGuard {
+    fn enter(key: &str) -> Self {
+        enter_foreground_demand(key);
+        Self {
+            key: key.to_owned(),
+        }
+    }
+}
+
+impl Drop for ForegroundDemandGuard {
+    fn drop(&mut self) {
+        leave_foreground_demand(&self.key);
+    }
+}
+
 fn gate() -> &'static Gate {
     static FOREGROUND_GATE: OnceLock<Gate> = OnceLock::new();
     static BACKGROUND_GATE: OnceLock<Gate> = OnceLock::new();
-    let slot = if BACKGROUND_IO.try_with(|_| ()).is_ok() {
+    let background = BACKGROUND_IO.try_with(|_| ()).is_ok();
+    let slot = if background {
         &BACKGROUND_GATE
     } else {
         &FOREGROUND_GATE
     };
     slot.get_or_init(|| {
-        let concurrency = std::env::var("PCHRONICLE_OBJECT_STORE_CONCURRENCY")
+        let configured = std::env::var("PCHRONICLE_OBJECT_STORE_CONCURRENCY")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(DEFAULT_REMOTE_CONCURRENCY)
             .clamp(1, MAX_REMOTE_CONCURRENCY);
+        // Background stays single-flight: even when interactive is idle, browse
+        // should not open a second S3 pipeline beside itself.
+        let concurrency = if background {
+            DEFAULT_BACKGROUND_CONCURRENCY.min(configured)
+        } else {
+            configured
+        };
         Gate {
+            lane: if background { "background" } else { "foreground" },
             concurrency,
             states: Mutex::new(HashMap::new()),
         }
@@ -388,17 +499,60 @@ pub fn format_aimd_flow_label(snap: &ObjectStoreGateSnapshot, event: Option<&str
 
 pub(crate) struct Permit {
     _permit: Option<OwnedSemaphorePermit>,
+    /// Held for the full foreground acquire+hold window so background yields.
+    _demand: Option<ForegroundDemandGuard>,
 }
 
 /// Acquire admission for a Lance/object-store operation on `uri`.
 pub(crate) async fn acquire(uri: &str, kind: IoKind) -> Permit {
     if !is_remote_uri(uri) {
-        return Permit { _permit: None };
+        return Permit {
+            _permit: None,
+            _demand: None,
+        };
     }
     acquire_scoped(gate(), &scope_key(uri), kind).await
 }
 
+async fn yield_to_foreground(key: &str, kind: IoKind) {
+    let mut logged = false;
+    let started = Instant::now();
+    loop {
+        if scope_foreground_demand(key) == 0 {
+            if logged {
+                tracing::debug!(
+                    target: "pchronicle.object_store_gate",
+                    scope = key,
+                    kind = kind.as_str(),
+                    yielded_ms = started.elapsed().as_millis() as u64,
+                    "background admission resumed after interactive demand cleared"
+                );
+            }
+            return;
+        }
+        if !logged {
+            tracing::debug!(
+                target: "pchronicle.object_store_gate",
+                scope = key,
+                kind = kind.as_str(),
+                demand = scope_foreground_demand(key),
+                "background admission yielding to interactive object-store demand"
+            );
+            logged = true;
+        }
+        tokio::time::sleep(BACKGROUND_YIELD_POLL).await;
+    }
+}
+
 async fn acquire_scoped(g: &Gate, key: &str, kind: IoKind) -> Permit {
+    let background = g.lane == "background";
+    // Interactive demand covers the whole wait+hold window so browse cannot
+    // race into the same S3 endpoint between admit and first byte.
+    let demand = if background {
+        None
+    } else {
+        Some(ForegroundDemandGuard::enter(key))
+    };
     let semaphore = {
         let mut states = g
             .states
@@ -409,18 +563,40 @@ async fn acquire_scoped(g: &Gate, key: &str, kind: IoKind) -> Permit {
         Arc::clone(&state.semaphore)
     };
     loop {
+        if background {
+            yield_to_foreground(key, kind).await;
+        }
         wait_out_degradation(g, key, kind).await;
         let permit = match semaphore.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
+                // A stall here is admission queueing, not the backend. Without
+                // a log line the two are indistinguishable in a trace, and
+                // every remote read looks like a slow round trip.
+                let queued = Instant::now();
                 let _wait = WaitGuard::new(g, key, kind, "admit", 0);
-                match semaphore.clone().acquire_owned().await {
+                let permit = match semaphore.clone().acquire_owned().await {
                     Ok(permit) => permit,
                     Err(error) => {
                         tracing::error!(?error, "object-store I/O semaphore closed unexpectedly");
-                        return Permit { _permit: None };
+                        return Permit {
+                            _permit: None,
+                            _demand: demand,
+                        };
                     }
+                };
+                let waited = queued.elapsed();
+                if waited >= WAIT_LOG_THRESHOLD {
+                    tracing::debug!(
+                        lane = g.lane,
+                        scope = key,
+                        kind = kind.as_str(),
+                        waited_ms = waited.as_millis() as u64,
+                        concurrency = g.concurrency,
+                        "object-store admission queued"
+                    );
                 }
+                permit
             }
         };
         // A failure may have started a new cooldown while admission was
@@ -429,8 +605,15 @@ async fn acquire_scoped(g: &Gate, key: &str, kind: IoKind) -> Permit {
             drop(permit);
             continue;
         }
+        // Interactive arrived while we waited for a background slot: give the
+        // permit back and yield instead of holding endpoint bandwidth.
+        if background && scope_foreground_demand(key) > 0 {
+            drop(permit);
+            continue;
+        }
         return Permit {
             _permit: Some(permit),
+            _demand: demand,
         };
     }
 }
@@ -534,6 +717,7 @@ async fn wait_out_degradation(g: &Gate, key: &str, kind: IoKind) {
     // already logged by `note_failure`, so each waiter need not be WARN noise.
     tracing::debug!(
         target: "pchronicle.object_store_gate",
+        lane = g.lane,
         kind = kind.as_str(),
         wait_ms,
         delay_ms,
@@ -661,23 +845,71 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn foreground_and_background_have_independent_admission_and_feedback() {
+    async fn background_yields_while_foreground_holds_admission() {
         let uri = scope_for_endpoint("s3://workload-isolation/path", "http://localhost:18060");
         let mut foreground_permits = Vec::new();
         for _ in 0..gate().concurrency {
             foreground_permits.push(acquire(&uri, IoKind::Read).await);
         }
+        assert!(foreground_object_store_demand() > 0);
+        with_background_object_store_io(async {
+            let raced =
+                tokio::time::timeout(Duration::from_millis(80), acquire(&uri, IoKind::Read)).await;
+            assert!(
+                raced.is_err(),
+                "background must yield while interactive holds the endpoint"
+            );
+        })
+        .await;
+        drop(foreground_permits);
+        assert_eq!(foreground_object_store_demand(), 0);
         with_background_object_store_io(async {
             let _permit =
-                tokio::time::timeout(Duration::from_millis(100), acquire(&uri, IoKind::Read))
+                tokio::time::timeout(Duration::from_millis(200), acquire(&uri, IoKind::Read))
                     .await
-                    .expect("background must not wait on foreground admission");
+                    .expect("background proceeds once interactive is idle");
             note_failure(&uri, IoKind::Read);
             assert_eq!(gate().states.lock().unwrap()[&uri].failures, 1);
         })
         .await;
-        assert_eq!(gate().states.lock().unwrap()[&uri].failures, 0);
-        drop(foreground_permits);
+        // Foreground AIMD is independent of the background failure above.
+        assert_eq!(
+            gate()
+                .states
+                .lock()
+                .unwrap()
+                .get(&uri)
+                .map(|s| s.failures)
+                .unwrap_or(0),
+            0
+        );
+        let _permit = tokio::time::timeout(Duration::from_millis(100), acquire(&uri, IoKind::Read))
+            .await
+            .expect("background cooldown must not delay foreground requests");
+        note_success(&uri);
+        with_background_object_store_io(async {
+            assert_eq!(gate().states.lock().unwrap()[&uri].failures, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn foreground_and_background_have_independent_admission_and_feedback() {
+        let uri = scope_for_endpoint("s3://aimd-isolation/path", "http://localhost:18061");
+        // Idle interactive: background may admit on its own lane immediately.
+        with_background_object_store_io(async {
+            let _permit =
+                tokio::time::timeout(Duration::from_millis(100), acquire(&uri, IoKind::Read))
+                    .await
+                    .expect("background must not wait when interactive is idle");
+            note_failure(&uri, IoKind::Read);
+            assert_eq!(gate().states.lock().unwrap()[&uri].failures, 1);
+        })
+        .await;
+        assert_eq!(
+            gate().states.lock().unwrap().get(&uri).map(|s| s.failures),
+            None
+        );
         let _permit = tokio::time::timeout(Duration::from_millis(100), acquire(&uri, IoKind::Read))
             .await
             .expect("background cooldown must not delay foreground requests");
@@ -732,6 +964,7 @@ mod tests {
     #[tokio::test]
     async fn busy_backend_does_not_block_other_endpoints_or_buckets() {
         let g = Gate {
+            lane: "foreground",
             concurrency: 1,
             states: Mutex::new(HashMap::new()),
         };
@@ -779,6 +1012,7 @@ mod tests {
     #[tokio::test]
     async fn cooldown_after_queued_admission_releases_capacity_and_cancellation_clears_waiters() {
         let g = Arc::new(Gate {
+            lane: "foreground",
             concurrency: 1,
             states: Mutex::new(HashMap::new()),
         });

@@ -51,7 +51,6 @@ pub(crate) mod opendal_store;
 pub mod persistent_cache;
 #[cfg(feature = "lance-store")]
 mod query_engine;
-#[cfg(feature = "lance-store")]
 pub use persistent_cache::PersistentCache;
 #[cfg(feature = "lance-store")]
 mod root_write_lock;

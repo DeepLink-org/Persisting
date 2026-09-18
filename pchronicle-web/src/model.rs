@@ -590,6 +590,8 @@ pub struct TurnSummary {
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct TurnPage {
+    #[serde(default)]
+    pub analysis: Option<RunAnalysis>,
     pub snapshot: PageSnapshot,
     pub records: Vec<TurnSummary>,
     #[serde(default)]

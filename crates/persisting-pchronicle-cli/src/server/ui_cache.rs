@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use persisting_pchronicle::storage::{
     CatalogConsistency, CatalogState, DatasetLocation, DatasetMount, ManifestCache, PathListKind,
-    with_background_object_store_io,
+    wait_for_foreground_object_store_idle, with_background_object_store_io,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc, oneshot};
@@ -659,6 +659,11 @@ async fn run_worker(
             } else {
                 None
             };
+            // Interactive turns/run hold foreground object-store demand; pause
+            // browse refresh so it does not share the S3 pipe with the user.
+            if is_background {
+                wait_for_foreground_object_store_idle().await;
+            }
             let work = async {
                 tokio::time::timeout(
                     Duration::from_secs(10),
