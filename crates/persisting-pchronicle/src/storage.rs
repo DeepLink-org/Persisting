@@ -65,8 +65,9 @@ pub use crate::store::index_build_progress::{
 #[cfg(feature = "lance-store")]
 pub use crate::store::object_store_io_gate::{
     IoKind as ObjectStoreIoKind, ObjectStoreGateSnapshot, ObjectStoreThrottleEvent,
-    ObjectStoreThrottleHookGuard, format_aimd_flow_label as format_object_store_aimd_flow_label,
-    foreground_object_store_demand, install_throttle_hook as install_object_store_throttle_hook,
+    ObjectStoreThrottleHookGuard, foreground_object_store_demand,
+    format_aimd_flow_label as format_object_store_aimd_flow_label,
+    install_throttle_hook as install_object_store_throttle_hook,
     snapshot as object_store_gate_snapshot, wait_for_foreground_object_store_idle,
     with_background_object_store_io,
 };

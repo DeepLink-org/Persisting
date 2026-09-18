@@ -349,8 +349,7 @@ impl Worker {
         }
         builder.create(&cache)?;
         builder.create(&blocks)?;
-        let mut child =
-            command(std::env::current_exe()?, home.path(), &cache, &blocks).spawn()?;
+        let mut child = command(std::env::current_exe()?, home.path(), &cache, &blocks).spawn()?;
         let input = child.stdin.take().context("worker stdin missing")?;
         let output = child.stdout.take().context("worker stdout missing")?;
         let mut worker = Self {

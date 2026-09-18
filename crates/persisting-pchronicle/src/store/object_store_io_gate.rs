@@ -331,7 +331,11 @@ fn gate() -> &'static Gate {
             configured
         };
         Gate {
-            lane: if background { "background" } else { "foreground" },
+            lane: if background {
+                "background"
+            } else {
+                "foreground"
+            },
             concurrency,
             states: Mutex::new(HashMap::new()),
         }

@@ -260,10 +260,7 @@ impl CachedObjectStore {
                     {
                         // Remembered metadata describes bytes the backend no
                         // longer serves; the next read must ask again.
-                        self.heads
-                            .lock()
-                            .expect("head memo")
-                            .forget(path.as_ref());
+                        self.heads.lock().expect("head memo").forget(path.as_ref());
                         return Err(object_store::Error::Precondition {
                             path: path.to_string(),
                             source: "object changed while reading cached block".into(),
@@ -325,10 +322,11 @@ impl ObjectStore for CachedObjectStore {
                 )
                 .await?;
                 let head = (head.meta, head.attributes);
-                self.heads
-                    .lock()
-                    .expect("head memo")
-                    .insert(head_key.clone(), head.0.clone(), head.1.clone());
+                self.heads.lock().expect("head memo").insert(
+                    head_key.clone(),
+                    head.0.clone(),
+                    head.1.clone(),
+                );
                 head
             }
         };
@@ -544,8 +542,7 @@ mod tests {
             self.inner.put_multipart_opts(p, o).await
         }
         async fn get_opts(&self, p: &Path, o: GetOptions) -> ObjectResult<GetResult> {
-            self.gets
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.gets.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.inner.get_opts(p, o).await
         }
         fn delete_stream(

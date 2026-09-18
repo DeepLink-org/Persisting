@@ -287,13 +287,18 @@ mod tests {
         assert!(fragments <= MAX_FRAGMENTS, "{fragments} fragments");
 
         // Compaction rewrites fragments, so every entry must survive it.
-        cache.upsert(&"key-007".into(), &"rewritten".into(), &[]).await?;
+        cache
+            .upsert(&"key-007".into(), &"rewritten".into(), &[])
+            .await?;
         cache.upsert(&"gone".into(), &String::new(), &[]).await?;
         cache
             .upsert(&"key-000".into(), &"kept".into(), &["gone".into()])
             .await?;
         drop(cache);
-        let values = PersistentCache::<String, String>::open(path).await.values().await;
+        let values = PersistentCache::<String, String>::open(path)
+            .await
+            .values()
+            .await;
         assert_eq!(values.len(), 80);
         assert_eq!(values["key-007"], "rewritten");
         assert_eq!(values["key-000"], "kept");
@@ -372,7 +377,10 @@ mod tests {
             )
             .await?;
         drop(cache);
-        let values = PersistentCache::<String, String>::open(path).await.values().await;
+        let values = PersistentCache::<String, String>::open(path)
+            .await
+            .values()
+            .await;
         assert_eq!(values["a"], "last");
         // A key this batch writes was just observed; its earlier retirement
         // inside the same batch must not delete it.
