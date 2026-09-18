@@ -457,9 +457,10 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
             method="upsert",
             api="upsert",
             datas_arg="datas",
-            meta_fn=lambda self, table_name, columns, datas, partition=None: {
+            meta_fn=lambda self, table_name, columns, datas, partition=None, *, insert_missing=True: {
                 "table_name": table_name,
                 "partition": partition,
+                "insert_missing": insert_missing,
             },
         ),
         _ApiSpec(

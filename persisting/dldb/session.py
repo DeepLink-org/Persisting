@@ -279,7 +279,15 @@ class SessionBase:
     def update(self, table_name: str, where: str, values: dict, partition=None):
         raise NotImplementedError
 
-    def upsert(self, table_name: str, columns: List[str], datas: pd.DataFrame, partition=None):
+    def upsert(
+        self,
+        table_name: str,
+        columns: List[str],
+        datas: pd.DataFrame,
+        partition=None,
+        *,
+        insert_missing: bool = True,
+    ):
         """When data not exist in table, insert data, otherwise update data.
 
         Parameters
@@ -288,6 +296,10 @@ class SessionBase:
         columns: List[str]
         columns to join on.  This is how records from the
         source table and target table are matched.
+
+        insert_missing: bool
+        If True (default), unmatched join keys are inserted. If False,
+        unmatched keys are ignored and HASH/VALUE buckets are not created.
 
         Examples
         --------
@@ -751,12 +763,20 @@ class LanceSession(SessionBase):
         table = self._get_table(table_name, partition)
         return table.update(where, values, partition)
 
-    def upsert(self, table_name: str, columns: List[str], datas: pd.DataFrame, partition=None):
+    def upsert(
+        self,
+        table_name: str,
+        columns: List[str],
+        datas: pd.DataFrame,
+        partition=None,
+        *,
+        insert_missing: bool = True,
+    ):
         assert table_name, "table_name is required"
         assert columns and len(columns) > 0, "columns is required"
         assert datas is not None and len(datas) > 0, "datas is required"
         table = self._get_table(table_name, partition)
-        return table.upsert(columns, datas, partition)
+        return table.upsert(columns, datas, partition, insert_missing=insert_missing)
 
     def add_columns(
         self,

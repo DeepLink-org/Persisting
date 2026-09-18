@@ -376,6 +376,19 @@ def _run_debug_step(api: str, fn):
     return run_debug_step(api, fn)
 
 
+def _execute_merge_insert(lance_table, columns, datas, *, insert_missing: bool) -> None:
+    builder = lance_table.merge_insert(columns).when_matched_update_all()
+    if insert_missing:
+        builder = builder.when_not_matched_insert_all()
+    builder.execute(datas)
+
+
+def _materialized_upsert_partitions(table, wanted):
+    materialized, catalog_names = table._partition_catalog()
+    materialized_set = set(materialized)
+    return [partition for partition in wanted if partition in materialized_set], catalog_names
+
+
 def _optimize_indices_on_lance_table(
     lance_table,
     *,
@@ -621,7 +634,9 @@ class BaseTable:
     def update(self, where: str, values: dict, partition=None):
         raise NotImplementedError
 
-    def upsert(self, columns: List[str], datas: pd.DataFrame, partition=None):
+    def upsert(
+        self, columns: List[str], datas: pd.DataFrame, partition=None, *, insert_missing: bool = True
+    ):
         raise NotImplementedError
 
     def add_columns(self, transforms: Union[Dict[str, str], pa.field, List[pa.field], pa.Schema]):
@@ -882,14 +897,13 @@ class SimpleTable(BaseTable):
             self.open_table()
         self.table.update(where, values)
 
-    def upsert(self, columns: List[str], datas: pd.DataFrame, partition=None):
+    def upsert(
+        self, columns: List[str], datas: pd.DataFrame, partition=None, *, insert_missing: bool = True
+    ):
         assert partition is None, "Partitioning not supported for SimpleTable"
         if self.table is None:
             self.open_table()
-
-        self.table.merge_insert(
-            columns
-        ).when_matched_update_all().when_not_matched_insert_all().execute(datas)
+        _execute_merge_insert(self.table, columns, datas, insert_missing=insert_missing)
 
     def add_columns(self, transforms: Union[Dict[str, str], pa.field, List[pa.field], pa.Schema]):
         if self.table is None:
@@ -1242,18 +1256,30 @@ class ValuePartitionTable(BaseTable):
         for partition in partitions:
             self.tables[partition].update(where, values)
 
-    def upsert(self, columns: List[str], datas: pd.DataFrame, partition=None):
+    def upsert(
+        self, columns: List[str], datas: pd.DataFrame, partition=None, *, insert_missing: bool = True
+    ):
         dfs = {
             d: g.reset_index(drop=True) for d, g in datas.groupby(self.partition_column, sort=False)
         }
         if partition is not None:
             assert len(dfs) == 1 and partition in dfs, f"datas must belong partition='{partition}'"
 
-        self.open_table(list(dfs.keys()), create_when_missing=True)
-        for partition, value in dfs.items():
-            self.tables[partition].merge_insert(
-                columns
-            ).when_matched_update_all().when_not_matched_insert_all().execute(value)
+        wanted = list(dfs.keys())
+        if insert_missing:
+            self.open_table(wanted, create_when_missing=True)
+        else:
+            wanted, catalog_names = _materialized_upsert_partitions(self, wanted)
+            if not wanted:
+                return
+            self.open_table(wanted, create_when_missing=False, table_names=catalog_names)
+        for partition_key in wanted:
+            _execute_merge_insert(
+                self.tables[partition_key],
+                columns,
+                dfs[partition_key],
+                insert_missing=insert_missing,
+            )
 
     @classmethod
     def from_table_name(
@@ -1714,7 +1740,9 @@ class HashPartitionTable(BaseTable):
         for partition in partitions:
             self.tables[partition].update(where, values)
 
-    def upsert(self, columns: List[str], datas: pd.DataFrame, partition=None):
+    def upsert(
+        self, columns: List[str], datas: pd.DataFrame, partition=None, *, insert_missing: bool = True
+    ):
         # Group data by hash partition
         datas = datas.copy()
         datas["_hash_partition"] = datas[self.partition_column].apply(self._hash_partition)
@@ -1726,11 +1754,21 @@ class HashPartitionTable(BaseTable):
         if partition is not None:
             assert len(dfs) == 1 and partition in dfs, f"datas must belong partition={partition}"
 
-        self.open_table(list(dfs.keys()), create_when_missing=True)
-        for partition_idx, value in dfs.items():
-            self.tables[partition_idx].merge_insert(
-                columns
-            ).when_matched_update_all().when_not_matched_insert_all().execute(value)
+        wanted = list(dfs.keys())
+        if insert_missing:
+            self.open_table(wanted, create_when_missing=True)
+        else:
+            wanted, catalog_names = _materialized_upsert_partitions(self, wanted)
+            if not wanted:
+                return
+            self.open_table(wanted, create_when_missing=False, table_names=catalog_names)
+        for partition_idx in wanted:
+            _execute_merge_insert(
+                self.tables[partition_idx],
+                columns,
+                dfs[partition_idx],
+                insert_missing=insert_missing,
+            )
 
     @classmethod
     def from_table_name(
