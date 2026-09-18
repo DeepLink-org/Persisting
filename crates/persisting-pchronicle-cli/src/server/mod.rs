@@ -70,7 +70,7 @@ struct AppState {
     /// Gateway-backed Warehouses read canonical events from the latest
     /// manifest for single-trace observation, independent of projection idle.
     live_reads: bool,
-    catalog_acl: Option<Arc<catalog::CatalogAcl>>,
+    catalog_acl: Option<Arc<catalog::CatalogState>>,
     catalog_query_worker: bool,
     catalog_workers: Arc<catalog_worker::WorkerPool>,
     browse_mounts: Arc<Vec<DatasetMount>>,
@@ -285,7 +285,7 @@ impl PreparedWarehouse {
 
     #[cfg(test)]
     pub(crate) async fn prepare_catalog_front(acl: catalog::CatalogAcl) -> anyhow::Result<Self> {
-        Self::prepare_catalog(acl, ChronicleServerConfig::front_only()).await
+        Self::prepare_catalog(acl, ChronicleServerConfig::front_only(), None).await
     }
 
     /// The listener authenticates and brokers credentials; only workers mount
@@ -293,6 +293,7 @@ impl PreparedWarehouse {
     pub(crate) async fn prepare_catalog(
         acl: catalog::CatalogAcl,
         mut config: ChronicleServerConfig,
+        catalog_config: Option<std::path::PathBuf>,
     ) -> anyhow::Result<Self> {
         let browse_mounts = acl
             .libraries_for_public()
@@ -313,12 +314,9 @@ impl PreparedWarehouse {
         config.datasets.clear();
         config.default_dataset = None;
         let mut state = app_state(config);
-        state.browse_mounts = Arc::new(browse_mounts);
-        state.catalog_acl = Some(Arc::new(acl));
-        // The front process owns the public browse cache. Query workers remain
-        // isolated, but UI navigation must be available without mounting data
-        // in the front process.
-        browse_coordinator(&state).await;
+        let catalog = Arc::new(catalog::CatalogState::new(acl, catalog_config));
+        catalog.snapshot().browse().await;
+        state.catalog_acl = Some(catalog);
         Ok(Self { state })
     }
 
@@ -1538,6 +1536,7 @@ fn preview_needle(query: &str) -> String {
 
 async fn explorer_tree(
     State(state): State<AppState>,
+    snapshot: Option<axum::Extension<Arc<catalog::CatalogSnapshot>>>,
     request_id: RequestId,
     metrics: RequestMetrics,
     query: Result<Query<explorer::ExplorerTreeQuery>, QueryRejection>,
@@ -1566,18 +1565,24 @@ async fn explorer_tree(
         metrics.record("browse", started);
         return Ok(Json(serde_json::to_value(view).unwrap()));
     };
-    let owned_mount;
-    let mount = if let Some(mount) = state.browse_mounts.iter().find(|mount| mount.name == name) {
-        mount
-    } else if let Some(library) = state.catalog_acl.as_ref().and_then(|acl| {
-        acl.public_for_all()
+    if let Some(axum::Extension(snapshot)) = snapshot {
+        let mount = snapshot
+            .acl
+            .public_mounts()
             .into_iter()
-            .find(|library| library.name == name)
-    }) {
-        owned_mount = DatasetMount::new(&library.name, &library.uri)
+            .find(|mount| mount.name == name)
+            .ok_or_else(|| ApiError::not_found("dataset not found"))?;
+        let started = Instant::now();
+        let view = snapshot
+            .browse()
+            .await
+            .tree(&mount, prefix)
+            .await
             .map_err(|error| fail(&request_id, "explorer_tree", error))?;
-        &owned_mount
-    } else {
+        metrics.record("browse", started);
+        return Ok(Json(serde_json::to_value(view).unwrap()));
+    }
+    let Some(mount) = state.browse_mounts.iter().find(|mount| mount.name == name) else {
         return Ok(Json(
             serde_json::to_value(explorer::catalog_tree_from_path_list(name, prefix, &[])).unwrap(),
         ));

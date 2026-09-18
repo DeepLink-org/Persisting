@@ -2258,7 +2258,8 @@ async fn run_serve(
                 .with_context(|| format!("bind pChronicle Warehouse to {listen}"))?;
             let warehouse = if let Some(path) = args.catalog_config.as_ref() {
                 let acl = server::catalog::CatalogAcl::load(path)?;
-                server::PreparedWarehouse::prepare_catalog(acl, config.clone()).await?
+                server::PreparedWarehouse::prepare_catalog(acl, config.clone(), Some(path.clone()))
+                    .await?
             } else if args.gateway.is_some() {
                 server::PreparedWarehouse::prepare_live(config.clone()).await?
             } else {

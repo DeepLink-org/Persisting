@@ -64,7 +64,7 @@ pchronicle serve --catalog-config catalog.toml --listen 127.0.0.1:8081
 `catalog.toml` 列出 libraries（`[datasets.*]`，本地 path 或 `s3://`）和 users。
 `serve catalog dataset add|remove|list` 改写 libraries，不启动 HTTP。
 `serve catalog issue` 写入一个无授权用户，并把 sk 只打印到这次 stdout；
-`grant` / `revoke` 改该用户可打开的 library 名称。改文件后必须重启 serve。
+`grant` / `revoke` 改该用户可打开的 library 名称。运行中的 serve 每 3 秒检查配置，无需重启。
 NAME 使用 `*` 可以为当前所有用户授予或撤销数据集。新建用户不会自动继承过去的通配授权，创建后请重新执行命令。
 
 `pchronicle serve --catalog-config` 会把文件中的 **全部** library 挂进 Warehouse

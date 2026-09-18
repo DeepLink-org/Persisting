@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use persisting_pchronicle::storage::{DatasetLocation, DatasetMount};
@@ -7,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::problem::ApiError;
+
+#[path = "catalog_reload.rs"]
+mod reload;
+pub(crate) use reload::{CatalogSnapshot, CatalogState};
 
 pub(crate) const ACCESS_KEY_HEADER: &str = "x-pchronicle-access-key";
 pub(crate) const SECRET_KEY_HEADER: &str = "x-pchronicle-secret-key";
@@ -26,14 +31,14 @@ pub(crate) struct CatalogLibrary {
     pub secret_key: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CatalogUser {
     pub name: String,
     secret_key: String,
     datasets: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CatalogAcl {
     libraries: BTreeMap<String, CatalogLibrary>,
     users_by_access_key: HashMap<String, CatalogUser>,
@@ -149,6 +154,13 @@ impl CatalogAcl {
             credentials_from_headers(headers).ok_or_else(catalog_unauthorized)?;
         self.authenticate(&access_key, &secret_key)
             .ok_or_else(catalog_unauthorized)
+    }
+
+    pub(crate) fn public_mounts(&self) -> Vec<DatasetMount> {
+        self.public_for_all()
+            .into_iter()
+            .filter_map(|library| DatasetMount::new(&library.name, &library.uri).ok())
+            .collect()
     }
 
     pub(crate) fn public_for_all(&self) -> Vec<CatalogLibraryPublic> {
@@ -839,7 +851,7 @@ fn parent_handles_path(path: &str) -> bool {
 }
 
 pub(super) async fn list_datasets(
-    axum::extract::State(state): axum::extract::State<super::AppState>,
+    snapshot: Option<axum::Extension<Arc<CatalogSnapshot>>>,
     headers: axum::http::HeaderMap,
 ) -> Result<axum::Json<Vec<CatalogLibraryPublic>>, ApiError> {
     let acl = state
@@ -851,14 +863,13 @@ pub(super) async fn list_datasets(
 }
 
 pub(super) async fn get_dataset(
-    axum::extract::State(state): axum::extract::State<super::AppState>,
+    snapshot: Option<axum::Extension<Arc<CatalogSnapshot>>>,
     axum::extract::Path(name): axum::extract::Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Result<axum::Json<CatalogLibrary>, ApiError> {
-    let acl = state
-        .catalog_acl
-        .as_ref()
-        .ok_or_else(|| ApiError::not_found("catalog is not enabled"))?;
+    let axum::Extension(snapshot) =
+        snapshot.ok_or_else(|| ApiError::not_found("catalog is not enabled"))?;
+    let acl = &snapshot.acl;
     let user = acl.authenticate_headers(&headers)?;
     let ticket = acl
         .ticket_for(user, &name)
@@ -873,11 +884,20 @@ pub(super) async fn catalog_data_plane_layer(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
 
-    if state.catalog_query_worker || state.catalog_acl.is_none() {
+    if state.catalog_query_worker {
         return next.run(request).await;
     }
+    let Some(catalog) = &state.catalog_acl else {
+        return next.run(request).await;
+    };
     let path = request.uri().path().to_owned();
-    if !path.starts_with("/api/") || parent_handles_path(&path) {
+    if !path.starts_with("/api/") {
+        return next.run(request).await;
+    }
+    let snapshot = catalog.snapshot();
+    let acl = &snapshot.acl;
+    request.extensions_mut().insert(snapshot.clone());
+    if parent_handles_path(&path) {
         return next.run(request).await;
     }
     // UI metadata is ACL-derived, not an all-dataset storage query. In
@@ -945,15 +965,15 @@ pub(super) async fn catalog_data_plane_layer(
             path,
             "catalog explorer request entering data-plane router"
         );
-        let public = state.catalog_acl.as_ref().is_some_and(|acl| {
+        let public = {
             dataset.is_empty()
                 || acl
                     .public_for_all()
                     .iter()
                     .any(|library| library.name == dataset)
-        });
+        };
         if !public {
-            return dispatch_query_worker(&state, request)
+            return dispatch_query_worker(&state, acl, request)
                 .await
                 .unwrap_or_else(|error| error.into_response());
         }
@@ -976,17 +996,14 @@ pub(super) async fn catalog_data_plane_layer(
             );
             return next.run(request).await;
         }
-        let mounts = state
-            .catalog_acl
-            .as_ref()
-            .unwrap()
+        let mounts = acl
             .public_for_all()
             .into_iter()
             .filter_map(|library| DatasetMount::new(&library.name, &library.uri).ok())
             .collect::<Vec<_>>();
         return axum::Json(super::explorer::catalog_tree_from_mount_specs(&mounts)).into_response();
     }
-    match dispatch_query_worker(&state, request).await {
+    match dispatch_query_worker(&state, acl, request).await {
         Ok(response) => response,
         Err(error) => error.into_response(),
     }
@@ -994,13 +1011,10 @@ pub(super) async fn catalog_data_plane_layer(
 
 async fn dispatch_query_worker(
     state: &super::AppState,
+    acl: &CatalogAcl,
     request: axum::http::Request<axum::body::Body>,
 ) -> Result<axum::response::Response, ApiError> {
     use super::catalog_worker::{WorkerRequest, validate_backends};
-    let acl = state
-        .catalog_acl
-        .as_ref()
-        .ok_or_else(|| ApiError::not_found("catalog is not enabled"))?;
     let (access_key, secret_key) =
         credentials_from_headers(request.headers()).ok_or_else(catalog_unauthorized)?;
     let user = acl
@@ -1103,7 +1117,7 @@ async fn dispatch_query_worker(
 mod tests {
     use super::*;
 
-    const SAMPLE: &str = r#"
+    pub(super) const SAMPLE: &str = r#"
 [datasets.prod]
 uri = "s3://bucket/prod"
 endpoint = "http://127.0.0.1:9000"
@@ -1403,9 +1417,10 @@ uri = "{}"
 
         let acl = CatalogAcl::load(&catalog).unwrap();
         let config = crate::server::ChronicleServerConfig::mounted(acl.mounts().unwrap()).unwrap();
-        let warehouse = crate::server::PreparedWarehouse::prepare_catalog(acl, config)
-            .await
-            .unwrap();
+        let warehouse =
+            crate::server::PreparedWarehouse::prepare_catalog(acl, config, Some(catalog.clone()))
+                .await
+                .unwrap();
         assert!(warehouse.dataset_names().is_empty());
         assert!(warehouse.state.catalog.read().await.is_none());
         use tower::ServiceExt;
@@ -1434,12 +1449,14 @@ uri = "{}"
 
         let acl = CatalogAcl::load(&catalog).unwrap();
         let config = crate::server::ChronicleServerConfig::front_only();
-        let warehouse = crate::server::PreparedWarehouse::prepare_catalog(acl, config)
-            .await
-            .unwrap();
+        let warehouse =
+            crate::server::PreparedWarehouse::prepare_catalog(acl, config, Some(catalog.clone()))
+                .await
+                .unwrap();
         assert!(warehouse.state.config.datasets.is_empty());
-        assert_eq!(warehouse.state.browse_mounts.len(), 1);
-        assert_eq!(warehouse.state.browse_mounts[0].name, "shared");
+        let snapshot = warehouse.state.catalog_acl.as_ref().unwrap().snapshot();
+        assert_eq!(snapshot.acl.public_mounts().len(), 1);
+        assert_eq!(snapshot.acl.public_mounts()[0].name, "shared");
     }
 
     #[tokio::test]
@@ -1467,9 +1484,10 @@ uri = "{}"
         let mut config =
             crate::server::ChronicleServerConfig::mounted(acl.mounts().unwrap()).unwrap();
         config.home_links = vec![crate::server::parse_home_link("Realtime=/litefuse").unwrap()];
-        let warehouse = crate::server::PreparedWarehouse::prepare_catalog(acl, config)
-            .await
-            .unwrap();
+        let warehouse =
+            crate::server::PreparedWarehouse::prepare_catalog(acl, config, Some(catalog.clone()))
+                .await
+                .unwrap();
         let response = warehouse
             .router()
             .oneshot(
@@ -1669,6 +1687,270 @@ uri = "{}"
         )
         .await;
         assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+    }
+
+    async fn reload_warehouse(path: &Path) -> crate::server::PreparedWarehouse {
+        crate::server::PreparedWarehouse::prepare_catalog(
+            CatalogAcl::load(path).unwrap(),
+            crate::server::ChronicleServerConfig::front_only(),
+            Some(path.to_path_buf()),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn wait_for_acl(
+        warehouse: &crate::server::PreparedWarehouse,
+        predicate: impl Fn(&CatalogAcl) -> bool,
+    ) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let snapshot = warehouse.state.catalog_acl.as_ref().unwrap().snapshot();
+                if predicate(&snapshot.acl) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("catalog reload did not become visible");
+    }
+
+    async fn ticket_status(
+        warehouse: &crate::server::PreparedWarehouse,
+        access: &str,
+        secret: &str,
+    ) -> axum::http::StatusCode {
+        use tower::ServiceExt;
+        warehouse
+            .router()
+            .oneshot(catalog_request(
+                "/api/v1/catalog/datasets/prod",
+                Some(access),
+                Some(secret),
+            ))
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn catalog_acl_reload_picks_up_new_user_without_restarting() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("catalog.toml");
+        std::fs::write(&path, SAMPLE).unwrap();
+        let warehouse = reload_warehouse(&path).await;
+        let user = issue_user(&path, "new_user").unwrap();
+        grant_datasets(&path, "new_user", &["prod".into()]).unwrap();
+        wait_for_acl(&warehouse, |acl| {
+            acl.authenticate(&user.access_key, &user.secret_key)
+                .is_some_and(|user| acl.ticket_for(user, "prod").is_some())
+        })
+        .await;
+        assert_eq!(
+            ticket_status(&warehouse, &user.access_key, &user.secret_key).await,
+            axum::http::StatusCode::OK
+        );
+        assert_eq!(
+            ticket_status(&warehouse, "USER_AK", "USER_SK").await,
+            axum::http::StatusCode::OK
+        );
+
+        // A request that already acquired a snapshot can finish with its old grant.
+        let before_revoke = warehouse.state.catalog_acl.as_ref().unwrap().snapshot();
+        revoke_datasets(&path, "new_user", &["prod".into()]).unwrap();
+        wait_for_acl(&warehouse, |acl| {
+            acl.authenticate(&user.access_key, &user.secret_key)
+                .is_some_and(|user| acl.ticket_for(user, "prod").is_none())
+        })
+        .await;
+        assert_eq!(
+            ticket_status(&warehouse, &user.access_key, &user.secret_key).await,
+            axum::http::StatusCode::NOT_FOUND
+        );
+        let old_user = before_revoke
+            .acl
+            .authenticate(&user.access_key, &user.secret_key)
+            .unwrap();
+        assert!(before_revoke.acl.ticket_for(old_user, "prod").is_some());
+    }
+
+    #[tokio::test]
+    async fn catalog_acl_reload_keeps_inflight_request_snapshot() {
+        use tower::ServiceExt;
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("catalog.toml");
+        std::fs::write(&path, SAMPLE).unwrap();
+        let warehouse = reload_warehouse(&path).await;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let app = axum::Router::new()
+            .route(
+                "/api/v1/catalog/datasets/prod",
+                axum::routing::get({
+                    let entered = entered.clone();
+                    let resume = resume.clone();
+                    move |axum::Extension(snapshot): axum::Extension<Arc<CatalogSnapshot>>| {
+                        let entered = entered.clone();
+                        let resume = resume.clone();
+                        async move {
+                            entered.notify_one();
+                            resume.notified().await;
+                            let user = snapshot.acl.authenticate("USER_AK", "USER_SK").unwrap();
+                            assert!(snapshot.acl.ticket_for(user, "prod").is_some());
+                            axum::http::StatusCode::OK
+                        }
+                    }
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                warehouse.state.clone(),
+                catalog_data_plane_layer,
+            ));
+        let inflight = tokio::spawn(app.oneshot(catalog_request(
+            "/api/v1/catalog/datasets/prod",
+            Some("USER_AK"),
+            Some("USER_SK"),
+        )));
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        revoke_datasets(&path, "alice", &["prod".into()]).unwrap();
+        wait_for_acl(&warehouse, |acl| {
+            acl.ticket_for(acl.authenticate("USER_AK", "USER_SK").unwrap(), "prod")
+                .is_none()
+        })
+        .await;
+        assert_eq!(
+            ticket_status(&warehouse, "USER_AK", "USER_SK").await,
+            axum::http::StatusCode::NOT_FOUND
+        );
+        resume.notify_one();
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), inflight)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn catalog_acl_reload_preserves_service_on_failure_and_recovers() {
+        use tower::ServiceExt;
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("catalog.toml");
+        std::fs::write(&path, SAMPLE).unwrap();
+        let warehouse = reload_warehouse(&path).await;
+        // Exercise both invalid contents and a missing file across polling ticks.
+        for missing in [false, true] {
+            if missing {
+                std::fs::remove_file(&path).unwrap();
+            } else {
+                std::fs::write(&path, "secret_key = \"SENSITIVE\" invalid").unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            assert_eq!(
+                ticket_status(&warehouse, "USER_AK", "USER_SK").await,
+                axum::http::StatusCode::OK
+            );
+            for uri in ["/", "/api/health", "/api/ui"] {
+                assert_eq!(
+                    warehouse
+                        .router()
+                        .oneshot(catalog_request(uri, None, None))
+                        .await
+                        .unwrap()
+                        .status(),
+                    axum::http::StatusCode::OK
+                );
+            }
+        }
+        std::fs::write(&path, SAMPLE.replace("USER_SK", "ROTATED_SK")).unwrap();
+        wait_for_acl(&warehouse, |acl| {
+            acl.authenticate("USER_AK", "ROTATED_SK").is_some()
+        })
+        .await;
+        assert_eq!(
+            ticket_status(&warehouse, "USER_AK", "USER_SK").await,
+            axum::http::StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            ticket_status(&warehouse, "USER_AK", "ROTATED_SK").await,
+            axum::http::StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn catalog_acl_reload_rejects_backend_changes_as_a_whole() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("catalog.toml");
+        std::fs::write(&path, SAMPLE).unwrap();
+        let warehouse = reload_warehouse(&path).await;
+        std::fs::write(
+            &path,
+            SAMPLE
+                .replace("USER_SK", "ROTATED_SK")
+                .replace("s3://bucket/prod", "s3://bucket/other"),
+        )
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        assert_eq!(
+            ticket_status(&warehouse, "USER_AK", "USER_SK").await,
+            axum::http::StatusCode::OK
+        );
+        assert_eq!(
+            ticket_status(&warehouse, "USER_AK", "ROTATED_SK").await,
+            axum::http::StatusCode::UNAUTHORIZED
+        );
+        std::fs::write(&path, SAMPLE.replace("USER_SK", "ROTATED_SK")).unwrap();
+        wait_for_acl(&warehouse, |acl| {
+            acl.authenticate("USER_AK", "ROTATED_SK").is_some()
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn catalog_acl_reload_updates_public_browse_snapshot() {
+        use tower::ServiceExt;
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("catalog.toml");
+        let dataset = temporary.path().join("data");
+        std::fs::create_dir_all(dataset.join("visible_child")).unwrap();
+        let private = format!("[datasets.prod]\nuri = \"{}\"\n", dataset.display());
+        std::fs::write(&path, &private).unwrap();
+        let warehouse = reload_warehouse(&path).await;
+        std::fs::write(
+            &path,
+            format!("{private}\n[[grants]]\nuser = \"*\"\ndataset = \"prod\"\n"),
+        )
+        .unwrap();
+        wait_for_acl(&warehouse, |acl| !acl.public_for_all().is_empty()).await;
+        let (status, body) = catalog_body(
+            warehouse
+                .router()
+                .oneshot(catalog_request(
+                    "/api/explorer/tree?dataset=prod",
+                    None,
+                    None,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(body.contains("visible_child"), "{body}");
+        std::fs::write(&path, &private).unwrap();
+        wait_for_acl(&warehouse, |acl| acl.public_for_all().is_empty()).await;
+        let response = warehouse
+            .router()
+            .oneshot(catalog_request(
+                "/api/explorer/tree?dataset=prod",
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
