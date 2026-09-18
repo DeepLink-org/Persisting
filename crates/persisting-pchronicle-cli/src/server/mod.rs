@@ -295,22 +295,6 @@ impl PreparedWarehouse {
         mut config: ChronicleServerConfig,
         catalog_config: Option<std::path::PathBuf>,
     ) -> anyhow::Result<Self> {
-        let browse_mounts = acl
-            .libraries_for_public()
-            .into_iter()
-            .filter_map(|library| {
-                DatasetMount::new(&library.name, &library.uri)
-                    .ok()
-                    .map(|m| {
-                        m.with_backend(persisting_pchronicle::storage::StoreConfig {
-                            endpoint: library.endpoint.clone(),
-                            region: library.region.clone(),
-                            access_key: library.access_key.clone(),
-                            secret_key: library.secret_key.clone(),
-                        })
-                    })
-            })
-            .collect::<Vec<_>>();
         config.datasets.clear();
         config.default_dataset = None;
         let mut state = app_state(config);

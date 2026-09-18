@@ -3,334 +3,328 @@
 | Field | Value |
 |---|---|
 | **Status** | Proposed |
-| **Date** | 2026-08-30 |
-| **Component** | pChronicle CLI、`pchronicle serve`、pChronicle Web |
-| **Related** | [RFC-0003 Ownership](0003-pchronicle-ownership.md) · [Warehouse 指南](../pchronicle/guides/serve.md) · [CLI 参考](../pchronicle/reference/cli.md) · [架构](../pchronicle/design/architecture.md) |
+| **Date** | 2026-09-18 |
+| **Component** | pChronicle CLI, `pchronicle serve`, pChronicle Web |
+| **Related** | [RFC-0003 Ownership](0003-pchronicle-ownership.md) · [Warehouse guide](../pchronicle/guides/serve.md) · [CLI reference](../pchronicle/reference/cli.md) · [Architecture](../pchronicle/design/architecture.md) |
 
 ---
 
-## 摘要
+## Summary
 
-本 RFC 定义 pChronicle 平台部署时打开 **path** 的一种方式：**Directory**（名字 → path + ACL + 换票）。
+This RFC defines one way to open a **path** in a pChronicle platform deployment: a **Directory** (name → path + ACL + ticket exchange).
 
-Dataset 身份始终是 path（本机路径或 `s3://` / `az://` / `gs://` URI）。Directory 不是第三种 Dataset，也不替代 Snapshot。它只决定调用方可以解析到哪些 path；换票后的 `uri` 才是引擎打开的 Dataset。
+Dataset identity is always a path (local path or `s3://` / `az://` / `gs://` URI). Directory is not a third Dataset kind and does not replace Snapshot. It only decides which paths a caller may resolve; the ticket `uri` is what the engine opens.
 
-CLI 标志、配置文件和 HTTP 路径为兼容性仍使用 `catalog` 一词（`--catalog-config`、`catalog.toml`、`catalog://`、`/api/v1/catalog/datasets`）。产品与 RFC 口径称 Directory。
+CLI flags, config files, and HTTP paths keep the word `catalog` for compatibility (`--catalog-config`, `catalog.toml`, `catalog://`, `/api/v1/catalog/datasets`). Product and RFC language use Directory. The config is TOML (extension may be `.toml` / `.yml`, etc.; content is still parsed as TOML).
 
-规范实现挂在现有 `pchronicle serve --catalog-config` 上，不引入独立 `catalog serve` 进程。
-Listener 默认可为 loopback；也允许绑定非环回地址，但部署方 MUST 自行保证网络边界。
+The normative implementation hangs off `pchronicle serve --catalog-config`. There is no separate `catalog serve` process.
+The listener defaults to loopback and MAY bind non-loopback addresses; deployers MUST own the network boundary.
 
-- **Serve 挂载**：`pchronicle serve --catalog-config FILE` MUST 把 `catalog.toml` 中的 **全部**
-  `[datasets.*]` 挂进 Warehouse（与位置参数挂载等价）。本机 Web / 无用户钥的数据面请求在
-  **父进程内**打开这些 mount，不再 front-only。
-- **CLI 配置**：`pchronicle serve catalog dataset add|remove|list` 改写 libraries；
-  `issue|grant|revoke` 改写用户与授权。
-- **Directory 换票**：`@team` 解析为 `catalog://…`；`@team/prod` 换票后客户端打开票里的 path。
-  `/api/v1/catalog/datasets` 仍按用户钥过滤可见 library。
+- **Serve**: the parent only authenticates, serves the directory/tickets, and spawns workers (front-only). It MUST NOT open `[datasets.*]` in-process. Authorized data-plane requests open mounts in a one-shot `--catalog-query-worker`.
+- **Public browse**: datasets granted with `user = "*"` are visible anonymously; the parent MAY cache browse projections for them without backend keys.
+- **CLI config**: `pchronicle serve catalog dataset add|remove|list` rewrites datasets; `issue|grant|revoke` rewrites users and grants. Users/grants hot-reload; Dataset URI and backend credential changes REQUIRE a restart.
+- **Directory tickets**: `@team` resolves as `catalog://…`; `@team/prod` opens the ticket path after exchange. `/api/v1/catalog/datasets` filters by user keys (no headers → public libraries only).
 
 ```text
 pchronicle serve catalog dataset add --catalog-config catalog.toml prod --uri s3://bucket/prod \
   --access-key BACKEND_AK --secret-key BACKEND_SK
 pchronicle serve catalog issue --catalog-config catalog.toml alice
-pchronicle serve catalog grant --catalog-config catalog.toml alice prod evals
+pchronicle serve catalog grant --catalog-config catalog.toml alice prod
 pchronicle serve --catalog-config catalog.toml --listen 127.0.0.1:8081
 pchronicle dataset pin team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 pchronicle query @team/prod 'SELECT 1'
 ```
 
-## 动机
+## Motivation
 
-本机路径和静态 Warehouse mount 假设操作者已经能看见全部 Dataset。把对象存储上的多个评测库交给一组人使用时，出现三个缺口：
+Local paths and static Warehouse mounts assume the operator can already see every Dataset. Sharing several object-store evaluation libraries with a group leaves three gaps:
 
-1. **发现与授权混在一起**。用户需要一份目录，列出自己可以打开的 library 名，而不是把所有 bucket URI 写进每人的 `config.toml`。
-2. **后端密钥不能进用户配置**。对象存储 ak/sk 属于存储账户；用户钥只用于 Directory 鉴权。把后端钥写入本机 dataset pin 会扩散到每台笔记本，也无法按人裁剪可见库。
-3. **Web 与 CLI 的数据面不同**。CLI 可以在换票后自己打开 `s3://`。Web 的查询跑在 serve 进程里；若父进程加载全部 library 的后端密钥并执行 SQL，一次鉴权绕过就会看到未授权库。
+1. **Discovery and authorization are mixed**. Users need a directory of library names they may open, not every bucket URI in each laptop `config.toml`.
+2. **Backend keys must not live in user config**. Object-store ak/sk belong to the storage account; user keys only authenticate to Directory. Writing backend keys into local dataset pins spreads them and cannot trim visibility per person.
+3. **Web and CLI data planes differ**. After a ticket exchange, the CLI can open `s3://` itself. Web queries run inside serve; if the parent loads every library's backend keys and runs SQL, one auth bypass sees unauthorized libraries.
 
-本 RFC 把 Directory 定义为 **目录 + ACL + 换票**，把存储访问留给已有 `open(path)`，并把 Web 数据面隔离到一次性 worker。
+This RFC defines Directory as **directory + ACL + ticket exchange**, leaves storage access to existing `open(path)`, and isolates the Web data plane in a one-shot worker.
 
-## 目标与非目标
+## Goals and non-goals
 
-### 目标
+### Goals
 
-- 用一份 `catalog.toml` 同时描述 libraries 和 users。
-- 用 CLI 签发用户钥并改写 ACL：`pchronicle serve catalog issue|grant|revoke` 不启动 HTTP。
-- 让 `@name/library` 解析为一条 path（换票后的 `uri`）；引擎随后只打开该 path。
-- 换票后 CLI 自己访问存储；后端密钥只出现在票和 worker stdin 中，不写入用户 `config.toml`。
-- Web 用用户钥换授权范围，查询只看到该用户的 mounts。
-- 允许 Warehouse 绑定任意 listen 地址；默认示例仍用 loopback。Catalog 头不是公网认证边界，不可信网络上的暴露由部署方负责。
+- Describe `meta`, `users`, `datasets`, and `[[grants]]` in one Directory config.
+- Issue user keys and rewrite ACL via CLI: `pchronicle serve catalog issue|grant|revoke` without starting HTTP.
+- Resolve `@name/library` to one path (the ticket `uri`); the engine then opens only that path.
+- After exchange, the CLI talks to storage itself; backend keys appear only in tickets and worker stdin, never in the user's `config.toml`.
+- Web exchanges user keys for an authorized mount set; datasets with `user = "*"` MAY be listed/browsed anonymously.
+- Hot-reload users and grants about every 3 seconds; reject hot-reload of Dataset definitions and backend credentials (restart required).
+- Allow Warehouse to bind any listen address; examples stay on loopback. Catalog headers are not a public auth boundary; exposure on untrusted networks is the deployer's responsibility.
 
-### 非目标
+### Non-goals
 
-- STS、临时凭证轮换、或把用户钥映射成短时 AWS session。
-- 热加载 `catalog.toml`；改配置 MUST 重启 serve。
-- 在运行中的 Warehouse 上提供 HTTP 签发接口。
-- 提供独立 `catalog serve` 二进制。
-- 在已运行的 Tokio runtime 上 `fork(2)`（未定义行为）。
-- 把后端对象存储密钥写入本机 dataset pin 配置。
-- 改变 Snapshot 协议、SQL schema 或 Gateway/Control 协议。
+- STS, short-lived credential rotation, or mapping user keys to AWS sessions.
+- Hot-reloading Dataset URI / endpoint / region / backend ak/sk (restart serve).
+- HTTP mint APIs on a running Warehouse.
+- A separate `catalog serve` binary.
+- `fork(2)` of a running Tokio runtime (undefined behavior).
+- Writing backend object-store keys into local dataset pin config.
+- Enforcing fine-grained `permissions` in v1 (the field is writable; semantics remain library membership).
+- Changing Snapshot protocol, SQL schema, or Gateway/Control protocols.
 
-本 RFC 的 Directory 与打开 path 之后的 **Snapshot**（见 [Snapshot 设计](../pchronicle/design/catalog.md)）不是同一对象。Directory 列出授权 path；Snapshot 钉住一条已打开 path 上的 Source 成员与版本。
+Directory in this RFC is not the same object as **Snapshot** after a path is opened (see [Snapshot design](../pchronicle/design/catalog.md)). Directory lists authorized paths; Snapshot pins Source membership and versions on an opened path.
 
-## 角色与信任边界
+## Roles and trust boundary
 
-| 角色 | 持有 | 用途 |
+| Role | Holds | Use |
 |---|---|---|
-| 存储账户 | 后端 `access_key` / `secret_key`，以及可选 endpoint、region | 打开 `s3://` library |
-| Directory 用户 | 用户 `access_key` / `secret_key` | 列出/领取被授权 library 的票 |
-| 本机 CLI | 用户钥（存在 dataset pin 配置） | 换票后把后端钥注入进程环境并打开票中的 path |
-| 浏览器 | 用户钥（`localStorage`） | 作为请求头发给 loopback serve |
-| serve 父进程 | 完整 `catalog.toml` | 鉴权、返回票、spawn worker；不把后端钥写入 AWS 环境 |
-| query worker | 该用户被授权 library 的票 | 一次性执行 Warehouse 数据面请求 |
+| Storage account | Backend `access_key` / `secret_key`, optional endpoint, region | Open `s3://` libraries |
+| Directory user | User `access_key` / `secret_key` | List/fetch tickets for granted libraries |
+| Local CLI | User keys (in dataset pin config) | After exchange, inject backend keys into process env and open the ticket path |
+| Browser | User keys (`localStorage`) | Send as request headers to loopback serve |
+| serve parent | Full Directory config | Authenticate, return tickets, spawn worker; do not write backend keys into AWS env |
+| query worker | Tickets for that user's libraries | One-shot Warehouse data-plane request |
 
-ACL 是 **发现与授权** 边界，不是对象存储的强制隔离。持有后端密钥或能猜测 URI 的调用方，仍可能绕过 Directory 直接访问存储。Directory 不替代 bucket policy。
+ACL is a **discovery and authorization** boundary, not mandatory object-store isolation. Callers who hold backend keys or can guess URIs may still bypass Directory. Directory does not replace bucket policy.
 
-## 进程模型
+## Process model
 
-Directory 挂在现有 Warehouse listener 上。未传 `--catalog-config` 时，`pchronicle serve` 行为不变：静态 mount、无用户鉴权。
+Directory hangs on the existing Warehouse listener. Without `--catalog-config`, `pchronicle serve` is unchanged: static mounts, no user auth.
 
 ```text
-浏览器 / CLI
+browser / CLI
   → Warehouse listener
        ├─ GET /health
-       ├─ GET /api/v1/catalog/datasets[/{name}]   父进程：鉴权 + 目录/票
-       ├─ 静态 UI
-       └─ 其余 /api/*                             父进程内挂载 / 或 spawn worker
+       ├─ GET /api/v1/catalog/datasets[/{name}]   parent: auth + directory/ticket
+       ├─ static UI
+       └─ other /api/*                            parent mounts / or spawn worker
               → pchronicle serve --catalog-query-worker
-                    stdin:  mounts + HTTP 请求
+                    stdin:  mounts + HTTP request
                     stdout: status / content-type / body
-                    退出
+                    exit
 ```
 
-约束：
+Constraints:
 
-1. Listener MAY 绑定非 loopback 地址。本 RFC 不把 catalog 头当作公网认证边界；部署方 MUST 在不可信网络上自行加边界。
-2. 父进程 MUST NOT 打开 `catalog.toml` 中的 libraries。父进程使用空 mount 的 front-only Warehouse。
-3. Worker MUST 由 `Command` 启动新进程，MUST NOT `fork(2)` 已运行的 Tokio runtime。
-4. Worker MUST NOT 监听端口、MUST NOT 读取 `catalog.toml`、MUST NOT 读取用户钥。它只消费 stdin 中过滤后的 mounts 和原始请求。
-5. Worker 继承父进程环境（证书、`PATH` 等），但父进程 MUST NOT 预先把 catalog 后端密钥写入 `AWS_*`。Worker 在打开存储前为自己设置该用户票中的后端环境。
-6. 同一 `catalog.toml` 内所有 `s3://` library MUST 共用同一组 endpoint、region 和后端 ak/sk。进程级 AWS 环境一次只能持有一套凭据。
-7. 隐藏 flag `--catalog-query-worker` MUST NOT 出现在用户可见的 `serve --help` 中。
+1. The listener MAY bind non-loopback. This RFC does not treat catalog headers as a public auth boundary; deployers MUST add a boundary on untrusted networks.
+2. The parent MUST NOT open datasets from the config. It uses a front-only Warehouse with empty mounts; public browse caches hold paths only and MUST NOT write backend keys into parent `AWS_*`.
+3. Workers MUST be started with `Command`, MUST NOT `fork(2)` a running Tokio runtime.
+4. Workers MUST NOT listen, MUST NOT read the Directory config, MUST NOT read user keys. They only consume filtered mounts and the raw request from stdin.
+5. Workers inherit parent env (certs, `PATH`, …), but the parent MUST NOT pre-write catalog backend keys into `AWS_*`. The worker sets backend env from the user's tickets before opening storage.
+6. Each `[datasets.*]` MAY carry its own endpoint, region, and backend ak/sk. One worker process can hold only one process-global AWS env; if a user is granted incompatible `s3://` backends, the request MUST include `dataset=` to select one, or MUST fail.
+7. The hidden flag `--catalog-query-worker` MUST NOT appear in user-facing `serve --help`.
 
-Worker 超时后父进程 MUST 返回 `unavailable`，不得把 stdin 中的密钥写进日志。
+On worker timeout the parent MUST return `unavailable` and MUST NOT log keys from stdin.
 
-## 配置
+## Configuration
 
-`catalog.toml` 是唯一配置面：
+The Directory config only manages users, datasets, and grants. It is the single source of truth; runtime serve options still come from `pchronicle serve` flags. When the file is missing, catalog management commands create an empty catalog (with `[meta]`).
+
+Authoritative schema (matches current implementation / deployment samples):
 
 ```toml
-[libraries.prod]
-uri = "s3://bucket/prod"
-endpoint = "http://127.0.0.1:9000"
-region = "us-west-2"
-access_key = "BACKEND_AK"
-secret_key = "BACKEND_SK"
-
-[libraries.evals]
-uri = "s3://bucket/evals"
-endpoint = "http://127.0.0.1:9000"
-region = "us-west-2"
-access_key = "BACKEND_AK"
-secret_key = "BACKEND_SK"
+[meta]
+version = 1
+revision = 1
+name = "default"
 
 [users.alice]
-access_key = "USER_AK"
-secret_key = "USER_SK"
-datasets = ["prod", "evals"]
+access_key = "pcak_…"
+secret_key = "…"
 
-[users.bob]
-access_key = "BOB_AK"
-secret_key = "BOB_SK"
-datasets = ["evals"]
+[datasets.default]
+uri = "/data/warehouse"
+
+[datasets.prod]
+uri = "s3://prod/"
+endpoint = "http://s3-a.example:8060"
+region = "us-east-1"
+access_key = "BACKEND_AK_A"
+secret_key = "BACKEND_SK_A"
+
+[datasets.prod2]
+uri = "s3://prod"
+endpoint = "http://s3-b.example:8060"
+region = "us-east-1"
+access_key = "BACKEND_AK_B"
+secret_key = "BACKEND_SK_B"
+
+[[grants]]
+user = "*"
+dataset = "prod"
+
+[[grants]]
+user = "*"
+dataset = "prod2"
+
+[[grants]]
+user = "alice"
+dataset = "default"
+# permissions optional; v1 ignores fine-grained semantics (membership only)
+# permissions = ["read", "query", "analyze"]
 ```
 
-规则：
+Rules:
 
-- 启动 `pchronicle serve --catalog-config` MUST 至少有一个 library 和一个 user。
-- `pchronicle serve catalog issue` MAY 在只有 `[libraries.*]`、尚无 `[users]` 的文件上签发第一个用户。
-- library 名与用户段名 MUST 是合法 Dataset mount 名（小写 `[A-Za-z_][A-Za-z0-9_]*`）。
-- `s3://` library MUST 同时设置后端 `access_key` 和 `secret_key`。
-- 非 `s3://` library MUST NOT 设置后端密钥。
-- 所有 `s3://` library 的 endpoint、region、后端密钥 MUST 完全一致。
-- `users.*.datasets` 引用的名字 MUST 存在于 `libraries`。
-- 用户 `access_key` MUST 全局唯一。
-- 配置文件 MUST 是普通文件，大小有上界；解析失败则 serve 拒绝启动。
+- `meta.version` MUST be a supported config version; successful CLI writes SHOULD maintain `meta.revision` / `meta.name` (optional).
+- User and Dataset names MUST be lowercase `[A-Za-z_][A-Za-z0-9_]*`.
+- `[users.*]` contains only `access_key` / `secret_key`; `access_key` MUST be globally unique; v1 allows plaintext `secret_key`.
+- `[datasets.*]` MUST include `uri`; local paths MUST NOT set backend keys; `s3://` MUST set both `access_key` and `secret_key`, and MAY set `endpoint` / `region`.
+- Different datasets MAY use different endpoint / region / backend keys (see process model item 6).
+- `[[grants]]` MUST include `user` and `dataset`; `permissions` is optional and not enforced in v1.
+- `grants.user = "*"` marks the dataset public (anonymous list/browse) and expands to **all current** users at parse time; newly issued users inherit it after hot-reload.
+- Named `grants.user` MUST reference an existing user; `grants.dataset` MUST reference an existing dataset.
+- Duplicate grants for the same user and dataset MUST be rejected (including after `*` expansion).
+- Config size MUST be bounded; parse/validation failure refuses serve start; hot-reload failure MUST keep the last valid ACL.
+- TOML is authoritative; future SQLite/Postgres may only be indexes or derived projections.
 
-本地路径 library 允许不设后端密钥，便于同机目录通过 catalog 做授权发现。客户端换票后仍按票中的 URI 打开。
+## CLI management
 
-## CLI 签发与授权
-
-签发和改授权是 **写 `catalog.toml` 的 CLI**，不是运行中 Warehouse 的 HTTP API。出现 `catalog` 子命令时 MUST NOT 启动 listener。运行中的 serve 每 3 秒检查配置，用户和授权无需重启即可生效。
+Catalog management commands only edit the config file and do not start an HTTP listener. Missing files create the parent directory and an empty config.
 
 ```text
-pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI [--endpoint URL] [--region REGION] [--access-key KEY] [--secret-key KEY]
+pchronicle serve catalog dataset add    --catalog-config FILE NAME --uri URI [OPTIONS]
 pchronicle serve catalog dataset remove --catalog-config FILE NAME...
 pchronicle serve catalog dataset list   --catalog-config FILE
+
 pchronicle serve catalog issue  --catalog-config FILE NAME
 pchronicle serve catalog grant  --catalog-config FILE NAME DATASET...
 pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
-pchronicle serve --catalog-config FILE --listen 127.0.0.1:8081
 ```
 
-`catalog` 是 `serve` 的保留子命令。要挂载名为 `catalog` 的路径，使用 `./catalog` 或 `NAME=./catalog`。
-`--catalog-config` MUST NOT 与位置参数 Dataset 同时使用。
-
-### `dataset add` / `remove` / `list`
-
-- MUST NOT 启动 Warehouse。只改 `FILE` 后退出。
-- `add` 写入 `[datasets.NAME]`。已存在的名字 MUST 拒绝。`s3://` MUST 设置后端钥，且 MUST 与文件中已有 s3 library 的 endpoint/region/ak/sk 完全一致；非 `s3://` MUST NOT 设置后端钥。
-- `remove` 删除列出的 library。若仍有 grant 引用该 library，MUST 失败且 MUST NOT 改文件。
-- `list` 打印 `name` / `uri`（及可选 endpoint/region），MUST NOT 打印后端密钥。
-
-### `issue`
-
-- MUST NOT 启动 Warehouse。只改 `FILE` 后退出。
-- 已存在的用户名 MUST 拒绝，MUST NOT 覆盖或轮换密钥。本 RFC 不引入 `issue --rotate`。
-- 生成的用户钥：
-  - `access_key`：`pcak_` 前缀 + 24 字节小写 hex（48 个 hex 字符）
-  - `secret_key`：32 字节小写 hex（无前缀）
-- 写入 `[users.NAME]`：`access_key`、`secret_key`、`datasets = []`。签发 MUST NOT 授予任何 library。
-- stdout 打印该用户的 `name` / `access_key` / `secret_key`（表或 JSON）。secret MUST 只在这次 stdout 出现；stderr 只报 `config=<path> updated=true`，MUST NOT 打印 sk。`dataset list` 等其它命令 MUST NOT 回显 catalog 用户 sk。
-- `access_key` 碰撞时 MUST 重试生成，MUST NOT 写入半截配置。
-
-### `grant` / `revoke`
-
-- `grant` 是累加：已授权的 library 保持不变，新名字追加。未知用户或未知 library MUST 失败，且 MUST NOT 改文件。
-- `revoke` 从该用户的 `datasets` 里去掉列出的名字。未知用户、或该用户当前并未持有的 library 名 MUST 失败。
-- 两个命令的 stdout 只报 `name` 与更新后的 `datasets`，MUST NOT 打印密钥。
-
-改写配置可以整表重写，不要求保留注释。新用户通常在 3 秒内生效。
+`dataset add` only registers a Dataset; it does not create or delete backend data. When appending `s3://` via CLI, if other `s3://` entries already exist, the new endpoint / region / backend keys MUST match them exactly (hand-written multi-backend configs remain valid, but workers must select per item 6). `issue` generates user AK/SK (secret printed once on stdout) and MUST NOT write any grant. `grant` / `revoke` edit `[[grants]]`; NAME `*` writes/removes **named** grants for every **current** user (it does not write a `user = "*"` public row). All writes MUST replace the file atomically and keep the previous file on failure.
 
 ## HTTP
 
-Directory 路由与 Warehouse 共用 `/api` 与 `/api/v1` 前缀。鉴权头：
+Directory routes share Warehouse `/api` and `/api/v1` prefixes. Auth headers:
 
-| Header | 含义 |
+| Header | Meaning |
 |---|---|
-| `x-pchronicle-access-key` | 用户 access key |
-| `x-pchronicle-secret-key` | 用户 secret key |
+| `x-pchronicle-access-key` | User access key |
+| `x-pchronicle-secret-key` | User secret key |
 
-缺失、空白或密钥不匹配 MUST 返回 `401`，且 MUST NOT 区分“用户不存在”与“密钥错误”。
+Missing, blank, or mismatched keys MUST return `401`, and MUST NOT distinguish “unknown user” from “bad secret”.
+With no catalog headers at all, list MAY return only datasets granted to `user = "*"`; partial headers still MUST `401`.
 
-未授权的 library 名与不存在的 library 名 MUST 都返回 `404`。
+Unauthorized and unknown library names MUST both return `404`.
 
-| 路由 | 父进程 | 响应 |
+| Route | Parent | Response |
 |---|---|---|
-| `GET /api/v1/catalog/datasets` | 是 | 该用户可见 library 的 `name`、`uri`、可选 `endpoint`/`region`；**不含**后端密钥 |
-| `GET /api/v1/catalog/datasets/{name}` | 是 | 授权时返回完整票，含后端 `access_key` / `secret_key` |
-| `GET /api/health` | 是 | 无鉴权 |
-| 静态 UI | 是 | 无鉴权 |
-| 其余 `/api/*`（含 `GET /api/catalog`，返回当前 Snapshot） | 否，转发 worker | 先鉴权，再按用户 mounts 执行 |
+| `GET /api/v1/catalog/datasets` | yes | Libraries visible to the auth user, or public libraries when anonymous: `name`, `uri`, optional `endpoint`/`region`; **no** backend keys |
+| `GET /api/v1/catalog/datasets/{name}` | yes | Full ticket with backend `access_key` / `secret_key` when authenticated and authorized; anonymous MUST `401` (public libraries allow key-free list/browse only) |
+| `GET /api/health` | yes | No auth |
+| Static UI | yes | No auth |
+| Other `/api/*` (including `GET /api/catalog` Snapshot) | no, forward to worker | Authenticate, then run with the user's mounts; multi-backend requires `dataset=` |
 
-错误 JSON 沿用 Warehouse 的 `code`、`message`、`request_id`。日志可以包含用户段名、library 名和 `request_id`，MUST NOT 打印用户钥或后端钥。
+Error JSON keeps Warehouse `code`, `message`, `request_id`. Logs MAY include user segment, library name, and `request_id`; MUST NOT print user or backend keys.
 
-`GET /api/v1/catalog/datasets/{name}` 是 CLI 换票接口。拿到票的客户端随后直接打开 `uri`（Dataset path），不再把查询代理回 Directory。
+`GET /api/v1/catalog/datasets/{name}` is the CLI ticket exchange. Clients then open `uri` (the Dataset path) directly and do not proxy queries back through Directory.
 
 ## CLI dataset pin
 
-`catalog://` 是 pin **类型**，不是 DatasetLocation 可解析的存储 URI。换票成功后 Dataset 身份是票里的 path，不是 `catalog://…` 本身。
+`catalog://` is a pin **type**, not a storage URI `DatasetLocation` can open. After a successful exchange, Dataset identity is the ticket path, not `catalog://…` itself.
 
 ```bash
 pchronicle dataset pin team catalog://127.0.0.1:8081 --ak USER_AK --sk USER_SK
 ```
 
-规范化规则：
+Normalization:
 
-- scheme MUST 为 `catalog`；
-- host MUST 是环回 IP（如 `127.0.0.1`），MUST 带端口；
-- MUST NOT 包含 userinfo、path、query 或 fragment；
-- MUST NOT 接受 `--endpoint` / `--region`（那是对象存储参数，来自票而不是 pin）。
+- scheme MUST be `catalog`;
+- host MUST be a loopback IP (e.g. `127.0.0.1`) with a port;
+- MUST NOT include userinfo, path, query, or fragment;
+- MUST NOT accept `--endpoint` / `--region` (those come from the ticket, not the pin).
 
-解析按 pin **类型** 分派，而不是把所有 `@name/suffix` 都做路径拼接：
+Resolution dispatches on pin **type**, not path join for every `@name/suffix`:
 
-| 引用 | catalog pin | 普通 URI pin |
+| Reference | catalog pin | ordinary URI pin |
 |---|---|---|
-| `@team` / `@team/` | `ls` 列出该用户可访问的 Datasets | 解析为 pin 根 URI |
-| `@team/prod` | 向 Directory 领取 library `prod` 的票，打开票中 path | 根 URI 再拼接路径 `prod` |
-| `@team/prod/more` | 先领 `prod`，再把 `more` 拼到票的 path 上 | 根 URI 拼接 `prod/more` |
+| `@team` / `@team/` | `ls` libraries the user may access | resolve to pin root URI |
+| `@team/prod` | fetch ticket for library `prod`, open ticket path | join `prod` onto root URI |
+| `@team/prod/more` | fetch `prod`, then join `more` onto ticket path | join `prod/more` onto root URI |
 
-用户 `--ak/--sk` 存入本机 dataset pin 凭据表，与 S3 pin 相同的隔离方式：不出现在 `dataset list` / `dataset show` 的 URI 里。后端密钥 MUST NOT 写入该文件。
+User `--ak/--sk` live in the local dataset pin credential table, isolated like S3 pins: not shown in `dataset list` / `dataset show` URIs. Backend keys MUST NOT be written there.
 
-换到的票缓存在 CLI 进程内（`thread_local`），按 catalog URL、用户 access key 和 library 名索引。长生命周期的 `serve` 进程不使用这份 CLI 缓存；Web 每次请求重新鉴权。进程退出即丢弃缓存。
+Tickets cache in the CLI process (`thread_local`), keyed by catalog URL, user access key, and library name. Long-lived `serve` does not use this CLI cache; Web re-authenticates each request. Cache is dropped on process exit.
 
 ## Web
 
-Settings（左侧 **Keys**）保存 catalog 用户钥到 `localStorage`：
+Settings (left **Keys**) store catalog user keys in `localStorage`:
 
 - `pchronicle.catalog.access_key`
 - `pchronicle.catalog.secret_key`
 
-浏览器把这两项作为上述 HTTP 头附加到 **发往当前 pChronicle serve 的** `/api/` 请求。这与 Assistant 的 Browser BYOK 相反：Assistant 钥只发给模型端点，catalog 钥必须到达 serve 才能鉴权。
+The browser attaches these as the HTTP headers above on `/api/` requests **to the current pChronicle serve**. This is the opposite of Assistant Browser BYOK: Assistant keys go only to model endpoints; catalog keys must reach serve for auth.
 
-未配置用户钥时，Web MUST NOT 假装本地 Warehouse 已授权；catalog 模式下无头请求在数据面得到 `401`。无 `--catalog-config` 的普通 serve 不要求这些头。
+Without user keys, Web MAY still browse `user = "*"` public libraries; authenticated data-plane requests MUST `401`. Ordinary serve without `--catalog-config` does not require these headers.
 
-查询在 worker 中执行。浏览器不直接持有后端对象存储密钥。
+Queries run in the worker. The browser does not hold backend object-store keys.
 
-## 数据面隔离
+## Data-plane isolation
 
-父进程在数据面中间件中：
+In the data-plane middleware the parent:
 
-1. 校验用户钥；
-2. 过滤该用户的 library 票；
-3. 把 HTTP method、path、query、body 和 mounts 写成 JSON job；
-4. spawn 同源二进制 `serve --catalog-query-worker`；
-5. 把 stdout 信封还原为 HTTP 响应。
+1. Validates user keys;
+2. Filters that user's library tickets;
+3. Writes HTTP method, path, query, body, and mounts as a JSON job;
+4. Spawns the same binary as `serve --catalog-query-worker`;
+5. Reconstructs the HTTP response from the stdout envelope.
 
-Worker 用票构造 `ChronicleServerConfig` mounts，执行与普通 Warehouse 相同的只读路由，然后退出。
+The worker builds `ChronicleServerConfig` mounts from tickets, runs the same read-only Warehouse routes, then exits.
 
-不得把未授权 library 的票放进 job。空授权集合 MUST 表现为 `404`，而不是启动一个空 Warehouse。
+Unauthorized library tickets MUST NOT enter the job. An empty grant set MUST surface as `404`, not an empty Warehouse.
 
-## 被拒绝的方案
+## Rejected alternatives
 
-### 把签发做成 Warehouse HTTP mint
+### Warehouse HTTP mint
 
-拒绝。Catalog 头不是公网认证边界；loopback 上无认证的 mint 会把用户钥发给任何能打到端口的本机进程。签发入口是改写 `catalog.toml` 的 CLI。
+Rejected. Catalog headers are not a public auth boundary; unauthenticated mint on loopback would hand user keys to any local process that can hit the port. Issuance is CLI rewriting of the Directory config.
 
-### 独立 `catalog serve` 进程
+### Separate `catalog serve` process
 
-拒绝。第二套 listener、端口和生命周期会与 Warehouse 文档分叉。Catalog 目录流量很小，适合挂在现有 `pchronicle serve` 上。
+Rejected. A second listener, port, and lifecycle would fork Warehouse docs. Directory traffic is small and belongs on existing `pchronicle serve`.
 
-### 父进程打开全部 libraries 再按用户过滤 SQL
+### Parent opens every dataset then filters SQL per user
 
-拒绝。DataFusion 与对象存储客户端一旦持有全量后端密钥和 mount，过滤错误就会越权。Web 查询必须在只含授权 mounts 的进程里执行。
+Rejected. Once DataFusion and object-store clients hold all backend keys and mounts, a filter bug is a privilege escalation. Web queries MUST run in a process that only has authorized mounts.
 
-### `fork(2)` 已运行的 Tokio 以“降权”
+### `fork(2)` a running Tokio “to drop privilege”
 
-拒绝。在多线程 runtime 上 fork 是未定义行为。使用 `Command` 新进程。
+Rejected. Fork on a multi-threaded runtime is undefined behavior. Use a new `Command` process.
 
-### STS / 短时会话券
+### STS / short-lived session tickets
 
-拒绝。当前目标是本机协作目录，不是云上身份联邦。透传后端密钥给已授权客户端，配置更简单，也与现有 S3 pin 注入 `AWS_*` 的方式一致。
+Rejected. The target is a local collaboration directory, not cloud identity federation. Passing backend keys to authorized clients is simpler and matches existing S3 pin injection into `AWS_*`.
 
-### 把 catalog 做成普通路径拼接 pin
+### Treat catalog as ordinary path-join pins
 
-拒绝。`@prod/evals` 对 `s3://bucket` 是路径拼接；对 Directory locator 则是“名字 + library 名”，换票后打开票中 path。混用会让 `@team/prod` 被拼成非法 URI `catalog://127.0.0.1:8081/prod`。
+Rejected. `@prod/evals` on `s3://bucket` is path join; on a Directory locator it is “name + library name”, then open the ticket path. Mixing would produce the illegal URI `catalog://127.0.0.1:8081/prod`.
 
-### 非环回 bind + 把 catalog 头当公网认证
+### Non-loopback bind + catalog headers as public auth
 
-拒绝。Warehouse 仍是本机检查面。打开 `0.0.0.0` 需要独立的认证、TLS 与多租户威胁模型，超出本 RFC。
+Rejected. Warehouse remains a local inspection surface. Binding `0.0.0.0` needs separate auth, TLS, and multi-tenant threat modeling beyond this RFC.
 
-## 兼容性与演进
+## Compatibility and evolution
 
-- 无 `--catalog-config` 时，现有 Dataset 引用、普通 pin 的 `@name/suffix` 路径拼接、以及无鉴权 loopback Warehouse MUST 保持不变。
-- `catalog://` MUST NOT 成为 `DatasetLocation` 可打开的存储 scheme；只有 dataset pin 解析器认识它。
-- 新增 library 字段、鉴权头或 worker 协议属于破坏性变更，需要修订本 RFC。
-- 未来的 STS 或热加载可以作为后续 RFC，不得 silently 改变“透传后端密钥 / 重启生效”的语义。
+- Without `--catalog-config`, existing Dataset references, ordinary pin `@name/suffix` path joins, and unauthenticated loopback Warehouse MUST stay unchanged.
+- `catalog://` MUST NOT become an openable `DatasetLocation` storage scheme; only the dataset pin resolver understands it.
+- Authoritative config keys are `meta` / `users` / `datasets` / `grants`; legacy `[libraries.*]` or grants embedded in `users.*.datasets` MUST NOT remain normative.
+- New Dataset fields, auth headers, or worker protocols are breaking and require revising this RFC.
+- Future STS or Dataset hot-reload may be follow-on RFCs and MUST NOT silently change “pass through backend keys / Dataset changes require restart”.
 
-本 RFC 修正架构文档中“loopback Warehouse 完全没有 authentication”的表述：在 `--catalog-config` 下，数据面和 Directory 路由使用用户钥请求头；它仍不是公网多租户服务。
+This RFC corrects architecture language that said loopback Warehouse had no authentication at all: with `--catalog-config`, the data plane and Directory routes use user-key headers, except for public libraries. It is still not a public multi-tenant service.
 
-## 实施状态
+## Implementation status
 
-当前实现覆盖本 RFC 的核心范围：
+Current implementation covers the core of this RFC:
 
-- `catalog.toml` 解析与启动期校验；
-- `pchronicle serve catalog issue|grant|revoke` 改写 ACL（签发不授权，sk 只打一次 stdout）；
-- `GET /api/v1/catalog/datasets` 与 `/{name}`；
-- `--catalog-config` front-only 父进程与 `--catalog-query-worker`；
-- `catalog://` pin、`@team/prod` 换票与进程内票缓存；
-- Web `localStorage` 用户钥与数据面请求头。
+- TOML Directory parse and startup validation (`meta` / `users` / `datasets` / `[[grants]]`, including `user = "*"`);
+- `pchronicle serve catalog issue|grant|revoke|dataset …` config editors (issue grants nothing; sk printed once on stdout);
+- ~3s hot-reload of users/grants; Dataset / backend credential changes rejected with the previous ACL kept;
+- `GET /api/v1/catalog/datasets` and `/{name}` (including anonymous public list);
+- `--catalog-config` front-only parent and `--catalog-query-worker`; multi-backend narrowed by `dataset=`;
+- `catalog://` pins, `@team/prod` ticket exchange, in-process ticket cache;
+- Web `localStorage` user keys and data-plane headers.
 
-后续工作：
+Follow-ups:
 
-1. 覆盖真实 worker 子进程的集成测试（环境中不得出现未授权 library 的密钥）；
-2. 评估是否为本地路径 library 提供与 S3 相同的显式审计日志字段；
-3. `issue --rotate`：轮换已有用户密钥（当前重名签发直接拒绝）。
+1. Integration tests that cover real worker subprocesses (unauthorized library keys must not appear in the environment);
+2. Evaluate explicit audit fields for local-path libraries comparable to S3;
+3. `issue --rotate` for existing user keys (duplicate-name issue currently rejects);
+4. Whether CLI `dataset add` should formally write multiple S3 backends (hand-written multi-backend is valid today; CLI append still requires matching existing s3 backend identity).

@@ -157,9 +157,20 @@ impl CatalogAcl {
     }
 
     pub(crate) fn public_mounts(&self) -> Vec<DatasetMount> {
-        self.public_for_all()
+        self.libraries_for_public()
             .into_iter()
-            .filter_map(|library| DatasetMount::new(&library.name, &library.uri).ok())
+            .filter_map(|library| {
+                DatasetMount::new(&library.name, &library.uri)
+                    .ok()
+                    .map(|mount| {
+                        mount.with_backend(persisting_pchronicle::storage::StoreConfig {
+                            endpoint: library.endpoint.clone(),
+                            region: library.region.clone(),
+                            access_key: library.access_key.clone(),
+                            secret_key: library.secret_key.clone(),
+                        })
+                    })
+            })
             .collect()
     }
 
@@ -854,11 +865,9 @@ pub(super) async fn list_datasets(
     snapshot: Option<axum::Extension<Arc<CatalogSnapshot>>>,
     headers: axum::http::HeaderMap,
 ) -> Result<axum::Json<Vec<CatalogLibraryPublic>>, ApiError> {
-    let acl = state
-        .catalog_acl
-        .as_ref()
-        .ok_or_else(|| ApiError::not_found("catalog is not enabled"))?;
-    let libraries = acl.visible_for_headers(&headers)?;
+    let axum::Extension(snapshot) =
+        snapshot.ok_or_else(|| ApiError::not_found("catalog is not enabled"))?;
+    let libraries = snapshot.acl.visible_for_headers(&headers)?;
     Ok(axum::Json(libraries))
 }
 
@@ -913,12 +922,7 @@ pub(super) async fn catalog_data_plane_layer(
         && !url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
             .any(|(key, value)| (key == "dataset" || key == "prefix") && !value.is_empty());
     if request.method() == axum::http::Method::GET && (ui_tables || root_tree) {
-        let libraries = match state
-            .catalog_acl
-            .as_ref()
-            .unwrap()
-            .visible_for_headers(request.headers())
-        {
+        let libraries = match acl.visible_for_headers(request.headers()) {
             Ok(libraries) => libraries,
             Err(error) => return error.into_response(),
         };
@@ -978,11 +982,7 @@ pub(super) async fn catalog_data_plane_layer(
                 .unwrap_or_else(|error| error.into_response());
         }
         if !dataset.is_empty() {
-            if let Some((access_key, secret_key)) = state
-                .catalog_acl
-                .as_ref()
-                .and_then(|acl| acl.credentials_for_public(dataset))
-            {
+            if let Some((access_key, secret_key)) = acl.credentials_for_public(dataset) {
                 let headers = request.headers_mut();
                 if let (Ok(access_key), Ok(secret_key)) = (access_key.parse(), secret_key.parse()) {
                     headers.insert(ACCESS_KEY_HEADER, access_key);
@@ -1545,7 +1545,7 @@ uri = "{}"
             .is_err()
         );
         let mut state = super::super::app_state(super::super::ChronicleServerConfig::front_only());
-        state.catalog_acl = Some(std::sync::Arc::new(acl));
+        state.catalog_acl = Some(std::sync::Arc::new(CatalogState::new(acl, None)));
         let warehouse = super::super::PreparedWarehouse { state };
         let app = warehouse.router();
         for path in [
