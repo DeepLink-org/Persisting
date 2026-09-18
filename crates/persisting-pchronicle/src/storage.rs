@@ -3,6 +3,7 @@
 pub type Result<T> = anyhow::Result<T>;
 #[cfg(feature = "lance-store")]
 pub use crate::store::opendal_store::StoreConfig;
+#[cfg(feature = "lance-store")]
 pub use crate::store::opendal_store::{RetryPatience, set_retry_patience};
 
 /// Parse an integer byte size with binary IEC suffixes.

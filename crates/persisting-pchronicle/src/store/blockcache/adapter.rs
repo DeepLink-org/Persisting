@@ -117,7 +117,7 @@ fn backend_identity_from_env() -> String {
             key.starts_with("AWS_") || key.starts_with("AZURE_") || key.starts_with("GOOGLE_")
         })
         .collect();
-    blake3::hash(serde_json::to_string(&backend).unwrap().as_bytes())
+    blake3::hash(&serde_json::to_vec(&backend).unwrap_or_default())
         .to_hex()
         .to_string()
 }
@@ -231,6 +231,12 @@ impl CachedObjectStore {
         }
     }
 
+    fn heads(&self) -> std::sync::MutexGuard<'_, HeadMemo> {
+        self.heads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     async fn read_block(
         &self,
         path: &Path,
@@ -260,7 +266,7 @@ impl CachedObjectStore {
                     {
                         // Remembered metadata describes bytes the backend no
                         // longer serves; the next read must ask again.
-                        self.heads.lock().expect("head memo").forget(path.as_ref());
+                        self.heads().forget(path.as_ref());
                         return Err(object_store::Error::Precondition {
                             path: path.to_string(),
                             source: "object changed while reading cached block".into(),
@@ -305,7 +311,7 @@ impl ObjectStore for CachedObjectStore {
         // checked locally below, so remembered metadata reaches the same verdict
         // a conditional round trip would have returned.
         let head_key = (p.to_string(), o.version.clone());
-        let remembered = self.heads.lock().expect("head memo").get(&head_key);
+        let remembered = self.heads().get(&head_key);
         let (head_meta, head_attributes) = match remembered {
             Some(head) => head,
             None => {
@@ -322,11 +328,8 @@ impl ObjectStore for CachedObjectStore {
                 )
                 .await?;
                 let head = (head.meta, head.attributes);
-                self.heads.lock().expect("head memo").insert(
-                    head_key.clone(),
-                    head.0.clone(),
-                    head.1.clone(),
-                );
+                self.heads()
+                    .insert(head_key.clone(), head.0.clone(), head.1.clone());
                 head
             }
         };
@@ -347,15 +350,16 @@ impl ObjectStore for CachedObjectStore {
         if o.version.is_some() && o.version != head_meta.version {
             return remote_request(&self.io_scope, self.inner.get_opts(p, o)).await;
         }
-        let range = o
-            .range
-            .as_ref()
-            .unwrap()
-            .as_range(head_meta.size)
-            .map_err(|source| object_store::Error::Generic {
-                store: "pchronicle-cache",
-                source: Box::new(source),
-            })?;
+        let Some(range) = o.range.as_ref() else {
+            return remote_request(&self.io_scope, self.inner.get_opts(p, o)).await;
+        };
+        let range =
+            range
+                .as_range(head_meta.size)
+                .map_err(|source| object_store::Error::Generic {
+                    store: "pchronicle-cache",
+                    source: Box::new(source),
+                })?;
         // v2 deliberately never reads the previous unnamespaced cache entries.
         let key = serde_json::to_string(&(
             "v2",
@@ -366,7 +370,17 @@ impl ObjectStore for CachedObjectStore {
             head_meta.size,
             self.block_size_bytes,
         ))
-        .unwrap();
+        .unwrap_or_else(|_| {
+            format!(
+                "v2:{}:{}:{:?}:{:?}:{}:{}",
+                self.store_uri,
+                p.as_ref(),
+                version,
+                etag,
+                head_meta.size,
+                self.block_size_bytes
+            )
+        });
         let options = GetOptions {
             version: version.or(o.version),
             if_match: etag.or(o.if_match),

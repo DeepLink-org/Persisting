@@ -41,7 +41,7 @@ impl StoreConfig {
                 &self.access_key,
                 &self.secret_key,
             ))
-            .expect("serialize S3 configuration"),
+            .unwrap_or_default(),
         )
         .to_hex()
         .to_string()
