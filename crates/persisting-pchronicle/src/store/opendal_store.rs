@@ -156,15 +156,15 @@ impl OperatorRegistry {
     }
 
     fn insert(&mut self, key: String, operator: Operator, now: Instant) {
-        if !self.entries.contains_key(&key) && self.entries.len() >= MAX_CACHED_OPERATORS {
-            if let Some(oldest) = self
+        if !self.entries.contains_key(&key)
+            && self.entries.len() >= MAX_CACHED_OPERATORS
+            && let Some(oldest) = self
                 .entries
                 .iter()
                 .min_by_key(|(_, (_, used))| *used)
                 .map(|(key, _)| key.clone())
-            {
-                self.entries.remove(&oldest);
-            }
+        {
+            self.entries.remove(&oldest);
         }
         self.entries.insert(key, (operator, now));
     }
@@ -325,7 +325,7 @@ impl Store {
             {
                 return Ok(None);
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         };
         let path_owned = path.to_owned();
         let bytes = self
@@ -392,7 +392,7 @@ impl Store {
                 }
             })
             .await;
-        result.map_err(|error| {
+        result.inspect_err(|error| {
             if let Some(error) = error.downcast_ref::<opendal::Error>()
                 && is_conflict(error)
             {
@@ -405,7 +405,6 @@ impl Store {
                     "conditional object write conflict (If-Match)"
                 );
             }
-            error.into()
         })
     }
 
@@ -475,7 +474,7 @@ impl Store {
             {
                 Ok(None)
             }
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         }
     }
 

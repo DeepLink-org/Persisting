@@ -55,6 +55,9 @@ fn fail(request_id: &RequestId, handler: &'static str, error: anyhow::Error) -> 
 #[cfg(test)]
 use problem::BoundaryCode;
 
+type CachedTrajectory = (String, Arc<LoadedTrajectory>);
+type TrajectoryCache = Arc<tokio::sync::RwLock<Option<CachedTrajectory>>>;
+
 #[derive(Clone)]
 struct AppState {
     config: Arc<ChronicleServerConfig>,
@@ -62,7 +65,7 @@ struct AppState {
     /// Serializes global refreshes and stores the next automatic retry time.
     catalog_refresh: Arc<tokio::sync::Mutex<Instant>>,
     catalog_refresh_interval: Duration,
-    trajectory_cache: Arc<tokio::sync::RwLock<Option<(String, Arc<LoadedTrajectory>)>>>,
+    trajectory_cache: TrajectoryCache,
     trajectory_flights: Arc<Mutex<HashMap<String, Weak<TrajectoryFlight>>>>,
     /// Gateway-backed Warehouses read canonical events from the latest
     /// manifest for single-trace observation, independent of projection idle.

@@ -1378,6 +1378,7 @@ fn load_workspace(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn load_turns(
     run: RunSummary,
     query: String,

@@ -974,15 +974,16 @@ async fn discover_object_candidate_at(
     let mut parts = file.split('/');
     loop {
         budget.observe_entry()?;
-        if current == file && is_json_candidate(Path::new(file)) {
-            if let Some(entry) = store.stat_file(file).await? {
-                budget.observe_source()?;
-                return Ok(vec![Candidate::RemoteFile {
-                    file: file.into(),
-                    store: store.clone(),
-                    meta: RemoteObjectMeta::from(entry),
-                }]);
-            }
+        if current == file
+            && is_json_candidate(Path::new(file))
+            && let Some(entry) = store.stat_file(file).await?
+        {
+            budget.observe_source()?;
+            return Ok(vec![Candidate::RemoteFile {
+                file: file.into(),
+                store: store.clone(),
+                meta: RemoteObjectMeta::from(entry),
+            }]);
         }
         match probe_object_prefix(&store, uri, &current, root_source_path(&current)).await? {
             Some(ObjectProbe::Source(candidate)) => {

@@ -721,7 +721,7 @@ async fn refresh_tree(
 }
 
 fn finish(pending: &Pending, key: &TreeKey, outcome: std::result::Result<(), String>) {
-    if let Some(waiters) = lock_recover(&pending).remove(key) {
+    if let Some(waiters) = lock_recover(pending).remove(key) {
         for waiter in waiters {
             let _ = waiter.send(outcome.clone());
         }

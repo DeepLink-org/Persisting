@@ -89,11 +89,11 @@ impl BlockCache {
         };
         let flight_guard = flight.lock().await;
         let result = async {
-            if let Ok(bytes) = tokio::fs::read(path).await {
-                if bytes.len() == expected {
-                    self.counters.hits.fetch_add(1, Ordering::Relaxed);
-                    return Ok(Bytes::from(bytes));
-                }
+            if let Ok(bytes) = tokio::fs::read(path).await
+                && bytes.len() == expected
+            {
+                self.counters.hits.fetch_add(1, Ordering::Relaxed);
+                return Ok(Bytes::from(bytes));
             }
             let bytes = fetch.await?;
             if bytes.len() != expected {

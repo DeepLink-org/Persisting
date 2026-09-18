@@ -169,10 +169,10 @@ impl PoolState {
             if guard.idle_since.elapsed() < WORKER_IDLE_TIMEOUT {
                 continue;
             }
-            if let Some(worker) = guard.worker.as_mut() {
-                if worker.child.kill().await.is_err() {
-                    continue;
-                }
+            if let Some(worker) = guard.worker.as_mut()
+                && worker.child.kill().await.is_err()
+            {
+                continue;
             }
             slots.remove(index);
         }

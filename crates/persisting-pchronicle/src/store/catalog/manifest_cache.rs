@@ -469,14 +469,13 @@ impl ManifestCache {
                 root.clone()
             })
         };
-        if let Some(root) = root {
-            if let Err(error) = self
+        if let Some(root) = root
+            && let Err(error) = self
                 .disk
                 .upsert(&key_prefix.to_owned(), &serde_json::to_value(root)?, &[])
                 .await
-            {
-                tracing::warn!(target: "pchronicle.serve", %error, "mount completeness persistence failed");
-            }
+        {
+            tracing::warn!(target: "pchronicle.serve", %error, "mount completeness persistence failed");
         }
         tracing::info!(target: "pchronicle.serve", %key_prefix,
             refreshed = report.refreshed_directories, partial = report.partial,

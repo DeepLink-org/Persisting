@@ -155,14 +155,14 @@ impl Progress {
                     p.elapsed_ms += ms(v.phase_started.elapsed());
                 }
             }
-            if let Some(w) = s.worker.as_mut() {
-                if w.state == "running" {
-                    let elapsed = ms(v.worker_updated.elapsed());
-                    w.elapsed_ms += elapsed;
-                    for p in &mut w.phases {
-                        if p.state == "running" {
-                            p.elapsed_ms += elapsed;
-                        }
+            if let Some(w) = s.worker.as_mut()
+                && w.state == "running"
+            {
+                let elapsed = ms(v.worker_updated.elapsed());
+                w.elapsed_ms += elapsed;
+                for p in &mut w.phases {
+                    if p.state == "running" {
+                        p.elapsed_ms += elapsed;
                     }
                 }
             }
@@ -179,12 +179,10 @@ impl Progress {
         if v.snapshot.state != "running" {
             return;
         }
-        let state = if status.is_none() {
-            "cancelled"
-        } else if status.unwrap() >= 400 || error.is_some() {
-            "failed"
-        } else {
-            "completed"
+        let state = match status {
+            None => "cancelled",
+            Some(code) if code >= 400 || error.is_some() => "failed",
+            Some(_) => "completed",
         };
         let elapsed = ms(v.phase_started.elapsed());
         for p in &mut v.snapshot.phases {
@@ -195,13 +193,14 @@ impl Progress {
                 p.state = "skipped".into();
             }
         }
-        if let Some(w) = v.snapshot.worker.as_mut() {
-            if w.state == "running" && state != "completed" {
-                w.state = state.into();
-                for p in &mut w.phases {
-                    if p.state == "running" {
-                        p.state = state.into();
-                    }
+        if let Some(w) = v.snapshot.worker.as_mut()
+            && w.state == "running"
+            && state != "completed"
+        {
+            w.state = state.into();
+            for p in &mut w.phases {
+                if p.state == "running" {
+                    p.state = state.into();
                 }
             }
         }
@@ -239,8 +238,8 @@ impl Registry {
                 .elapsed()
                 < TTL
         });
-        if entries.len() >= LIMIT {
-            if let Some(oldest) = entries
+        if entries.len() >= LIMIT
+            && let Some(oldest) = entries
                 .iter()
                 .max_by_key(|(_, p)| {
                     p.0.lock()
@@ -249,9 +248,8 @@ impl Registry {
                         .elapsed()
                 })
                 .map(|(k, _)| k.clone())
-            {
-                entries.remove(&oldest);
-            }
+        {
+            entries.remove(&oldest);
         }
         let id = progress.snapshot().request_id;
         entries.insert((owner, id), progress);

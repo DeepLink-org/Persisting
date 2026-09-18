@@ -265,6 +265,36 @@ where
         Ok(values)
     }
 }
+
+fn cache_batch(keys: Vec<String>, payloads: Vec<String>) -> Result<RecordBatch> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Utf8, false),
+        Field::new("payload", DataType::Utf8, false),
+        Field::new("schema_version", DataType::Utf8, false),
+    ]));
+    let versions = vec![SCHEMA_VERSION; keys.len()];
+    Ok(RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(keys)) as _,
+            Arc::new(StringArray::from(payloads)) as _,
+            Arc::new(StringArray::from(versions)) as _,
+        ],
+    )?)
+}
+
+fn text_column(batch: &RecordBatch, name: &str) -> Result<Vec<String>> {
+    let array = batch
+        .column(batch.schema().index_of(name)?)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .with_context(|| format!("persistent cache column {name} must be Utf8"))?;
+    anyhow::ensure!(array.null_count() == 0, "null persistent cache field");
+    Ok((0..array.len())
+        .map(|index| array.value(index).to_owned())
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,33 +417,4 @@ mod tests {
         assert_eq!(values["stale"], "revived");
         Ok(())
     }
-}
-
-fn cache_batch(keys: Vec<String>, payloads: Vec<String>) -> Result<RecordBatch> {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Utf8, false),
-        Field::new("payload", DataType::Utf8, false),
-        Field::new("schema_version", DataType::Utf8, false),
-    ]));
-    let versions = vec![SCHEMA_VERSION; keys.len()];
-    Ok(RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(StringArray::from(keys)) as _,
-            Arc::new(StringArray::from(payloads)) as _,
-            Arc::new(StringArray::from(versions)) as _,
-        ],
-    )?)
-}
-
-fn text_column(batch: &RecordBatch, name: &str) -> Result<Vec<String>> {
-    let array = batch
-        .column(batch.schema().index_of(name)?)
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .with_context(|| format!("persistent cache column {name} must be Utf8"))?;
-    anyhow::ensure!(array.null_count() == 0, "null persistent cache field");
-    Ok((0..array.len())
-        .map(|index| array.value(index).to_owned())
-        .collect())
 }
