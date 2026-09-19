@@ -49,7 +49,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use fs2::FileExt;
@@ -709,6 +709,33 @@ impl StorylineLanceStore {
             "duplicate document_id in committed Storyline snapshot"
         );
         Ok(Some((paths.generation, ids)))
+    }
+
+    /// Report whether one document is present, without materializing every
+    /// identity in the source.
+    ///
+    /// A source can hold tens of thousands of runs, so reading the whole
+    /// `document_id` column to answer "does this run live here" dominated
+    /// Explorer navigation. `document_id` carries a scalar index, so the
+    /// filtered read is a point lookup.
+    pub async fn contains_document(&self, document_id: &str) -> Result<Option<(String, bool)>> {
+        let Some(paths) = self.current_table_paths().await? else {
+            return Ok(None);
+        };
+        let predicate = format!("document_id = '{}'", document_id.replace('\'', "''"));
+        let batches = read_projected_batches(
+            &paths.runs,
+            paths.runs_version,
+            &["document_id"],
+            Some(&predicate),
+        )
+        .await?;
+        let matched = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+        anyhow::ensure!(
+            matched <= 1,
+            "duplicate document_id in committed Storyline snapshot"
+        );
+        Ok(Some((paths.generation, matched == 1)))
     }
 
     pub(crate) async fn resolve_current_table_paths(&self) -> Result<Option<StorylineTablePaths>> {
@@ -1906,25 +1933,13 @@ pub(super) async fn open_dataset_uri(uri: &str) -> Result<Dataset> {
     let mut attempt = 0u32;
     loop {
         attempt += 1;
-        let _permit = crate::store::object_store_io_gate::acquire(
-            uri,
-            crate::store::object_store_io_gate::IoKind::Read,
-        )
-        .await;
-        match Dataset::open(uri).await {
-            Ok(dataset) => {
-                crate::store::object_store_io_gate::note_success(uri);
-                return Ok(dataset);
-            }
+        match crate::storage::open_lance_dataset(uri).await {
+            Ok(dataset) => return Ok(dataset),
             Err(error) => {
                 let error = anyhow::Error::from(error);
                 if !is_transient_storage_error(&error) {
                     return Err(error).with_context(|| format!("open Lance dataset {uri}"));
                 }
-                crate::store::object_store_io_gate::note_failure(
-                    uri,
-                    crate::store::object_store_io_gate::IoKind::Read,
-                );
                 if attempt >= DATASET_OPEN_MAX_ATTEMPTS {
                     return Err(error).with_context(|| format!("open Lance dataset {uri}"));
                 }
@@ -1939,9 +1954,8 @@ pub(super) async fn open_dataset_uri(uri: &str) -> Result<Dataset> {
                     error = %error,
                     "transient object-store error opening Lance dataset; retrying under I/O gate"
                 );
-                // Shared AIMD delay is applied on the next acquire(); keep a
-                // small per-attempt floor so we never spin.
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Individual HEAD/range requests already fed the shared AIMD
+                // gate; do not add a second fixed backoff here.
             }
         }
     }
@@ -2123,6 +2137,7 @@ async fn maintain_table_layout(
     }
     if options.optimize_indices {
         crate::store::object_store_io_gate::mark_kind(
+            path.to_string_lossy().as_ref(),
             crate::store::object_store_io_gate::IoKind::Write,
         );
         crate::store::index_build_progress::note(format!(

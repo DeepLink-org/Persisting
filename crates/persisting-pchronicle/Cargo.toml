@@ -18,7 +18,9 @@ lance-store = [
     "dep:lance-datafusion",
     "dep:lance-file",
     "dep:lance-index",
+    "dep:lance-io",
     "dep:opendal",
+    "dep:object_store",
 ]
 # Remote object stores are separated from the local Lance engine so pPilot and
 # other local-only consumers do not compile cloud SDKs. `s3-store` remains a
@@ -40,6 +42,7 @@ proptest = ["lance-store"]
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+bytes.workspace = true
 base64.workspace = true
 blake3.workspace = true
 chrono.workspace = true
@@ -53,9 +56,11 @@ lance-core = { workspace = true, optional = true }
 lance-file = { workspace = true, optional = true }
 lance-datafusion = { workspace = true, optional = true }
 lance-index = { workspace = true, optional = true }
+lance-io = { workspace = true, optional = true }
 lance-linalg = { workspace = true, optional = true }
 lance-table = { workspace = true, optional = true }
 opendal = { workspace = true, optional = true }
+object_store = { workspace = true, optional = true }
 persisting-agentctl.workspace = true
 persisting-events.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -375,3 +380,7 @@ required-features = ["proptest"]
 name = "proptest_unknown_fields_roundtrip"
 path = "tests/proptests/unknown_fields_roundtrip.rs"
 required-features = ["proptest"]
+
+[[bench]]
+name = "lance_cache"
+harness = false

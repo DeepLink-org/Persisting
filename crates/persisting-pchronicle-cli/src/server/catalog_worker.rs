@@ -1,27 +1,30 @@
 //! Exec workers have an immutable authenticated scope. No storage client or
 //! runtime is inherited from the listening process.
 use std::{
-    collections::HashMap,
     io::{Read, Write},
     path::PathBuf,
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, Once},
     time::Duration,
 };
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, Notify, OwnedMutexGuard, Semaphore};
+use tokio::time::Instant;
 use tower::ServiceExt;
 
 use super::{
     catalog::{CatalogLibrary, apply_library_env},
-    problem::ApiError,
+    problem::{ApiError, ExecutionStage},
 };
 
 const MAX_WORKERS: usize = 8;
 const MAX_REQUESTS: usize = 32;
+const MAX_WORKERS_PER_SCOPE: usize = 4;
+const WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const REAP_INTERVAL: Duration = Duration::from_secs(30);
 const FRAME_LIMIT: usize = 40 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -54,22 +57,141 @@ impl WorkerResponse {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
+enum WorkerEvent {
+    Progress(super::request_progress::Snapshot),
+    Response(WorkerResponse),
+}
+
+#[derive(Serialize, Deserialize)]
 struct Bootstrap {
     mounts: Vec<CatalogLibrary>,
 }
 
-type Slot = Arc<Mutex<Option<Worker>>>;
+struct SlotState {
+    worker: Option<Worker>,
+    idle_since: Instant,
+}
+
+struct Slot {
+    scope: String,
+    state: Arc<Mutex<SlotState>>,
+}
+
+#[derive(Default)]
+struct PoolState {
+    slots: Mutex<Vec<Slot>>,
+    available: Arc<Notify>,
+}
+
+// A reserved slot is never visible as idle, including while its child starts.
+// Drop wakes all scopes: a released slot can satisfy a different scope by
+// eviction even if the first waiter has reached its per-scope limit.
+struct Lease {
+    guard: Option<OwnedMutexGuard<SlotState>>,
+    available: Arc<Notify>,
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        if let Some(mut guard) = self.guard.take() {
+            guard.idle_since = Instant::now();
+            drop(guard);
+        }
+        self.available.notify_waiters();
+    }
+}
+
+impl PoolState {
+    async fn try_lease(&self, scope: &str) -> Result<Option<Lease>, ApiError> {
+        let mut slots = self.slots.lock().await;
+        for slot in slots.iter().filter(|slot| slot.scope == scope) {
+            if let Ok(guard) = slot.state.clone().try_lock_owned() {
+                return Ok(Some(Lease {
+                    guard: Some(guard),
+                    available: self.available.clone(),
+                }));
+            }
+        }
+        if slots.iter().filter(|slot| slot.scope == scope).count() >= MAX_WORKERS_PER_SCOPE {
+            return Ok(None);
+        }
+        if slots.len() >= MAX_WORKERS {
+            // Never enqueue on a busy slot. Reclaim only an idle child from
+            // another scope, and wait for its exit before reusing its capacity.
+            let idle = slots
+                .iter()
+                .enumerate()
+                .filter_map(|(index, slot)| {
+                    slot.state
+                        .clone()
+                        .try_lock_owned()
+                        .ok()
+                        .map(|guard| (index, guard))
+                })
+                .min_by_key(|(_, guard)| guard.idle_since);
+            let Some((index, mut guard)) = idle else {
+                return Ok(None);
+            };
+            if let Some(worker) = guard.worker.as_mut() {
+                worker
+                    .child
+                    .kill()
+                    .await
+                    .map_err(|error| worker_error(error.into()))?;
+            }
+            slots.remove(index);
+        }
+        let state = Arc::new(Mutex::new(SlotState {
+            worker: None,
+            idle_since: Instant::now(),
+        }));
+        let guard = state
+            .clone()
+            .try_lock_owned()
+            .expect("new worker slot is idle");
+        slots.push(Slot {
+            scope: scope.to_owned(),
+            state,
+        });
+        Ok(Some(Lease {
+            guard: Some(guard),
+            available: self.available.clone(),
+        }))
+    }
+
+    async fn reap_idle(&self) {
+        let mut slots = self.slots.lock().await;
+        for index in (0..slots.len()).rev() {
+            let Ok(mut guard) = slots[index].state.clone().try_lock_owned() else {
+                continue;
+            };
+            if guard.idle_since.elapsed() < WORKER_IDLE_TIMEOUT {
+                continue;
+            }
+            if let Some(worker) = guard.worker.as_mut()
+                && worker.child.kill().await.is_err()
+            {
+                continue;
+            }
+            slots.remove(index);
+        }
+        self.available.notify_waiters();
+    }
+}
 
 pub(super) struct WorkerPool {
-    slots: Mutex<HashMap<String, Slot>>,
+    state: Arc<PoolState>,
     requests: Semaphore,
+    reaper: Once,
 }
 
 impl Default for WorkerPool {
     fn default() -> Self {
         Self {
-            slots: Mutex::new(HashMap::new()),
+            state: Arc::new(PoolState::default()),
             requests: Semaphore::new(MAX_REQUESTS),
+            reaper: Once::new(),
         }
     }
 }
@@ -78,33 +200,33 @@ impl WorkerPool {
     pub(super) fn admit(&self) -> Result<tokio::sync::SemaphorePermit<'_>, ApiError> {
         self.requests
             .try_acquire()
-            .map_err(|_| ApiError::unavailable())
+            .map_err(|_| ApiError::unavailable().with_stage(ExecutionStage::Admission))
     }
 
-    async fn slot(&self, scope: &str) -> Result<Slot, ApiError> {
-        let mut slots = self.slots.lock().await;
-        if let Some(slot) = slots.get(scope) {
-            return Ok(slot.clone());
-        }
-        if slots.len() >= MAX_WORKERS {
-            // Only evict a worker with no in-flight or queued request. Wait for
-            // its exit before spawning a replacement, keeping the process cap.
-            let idle = slots
-                .iter()
-                .find(|(_, slot)| Arc::strong_count(slot) == 1)
-                .map(|(key, _)| key.clone());
-            let Some(idle) = idle else {
-                return Err(ApiError::unavailable());
-            };
-            if let Some(slot) = slots.remove(&idle)
-                && let Some(mut worker) = slot.lock().await.take()
-            {
-                let _ = worker.child.kill().await;
+    async fn lease(&self, scope: &str) -> Result<Lease, ApiError> {
+        self.reaper.call_once(|| {
+            let state = Arc::downgrade(&self.state);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(REAP_INTERVAL).await;
+                    let Some(state) = state.upgrade() else {
+                        break;
+                    };
+                    state.reap_idle().await;
+                }
+            });
+        });
+        loop {
+            // Register before checking capacity so completion cannot be missed
+            // between a failed checkout and going to sleep.
+            let ready = self.state.available.notified();
+            tokio::pin!(ready);
+            ready.as_mut().enable();
+            if let Some(lease) = self.state.try_lease(scope).await? {
+                return Ok(lease);
             }
+            ready.await;
         }
-        let slot = Arc::new(Mutex::new(None));
-        slots.insert(scope.to_owned(), slot.clone());
-        Ok(slot)
     }
 
     pub(super) async fn execute(
@@ -114,27 +236,30 @@ impl WorkerPool {
         request: WorkerRequest,
     ) -> Result<axum::response::Response, ApiError> {
         tokio::time::timeout(REQUEST_TIMEOUT, async {
-            let slot = self.slot(&scope).await?;
-            let mut guard = slot.lock().await;
+            super::request_progress::phase("worker_queue");
+            let mut lease = self.lease(&scope).await?;
+            let guard = lease.guard.as_mut().expect("reserved worker slot");
             // Ownership stays in this future during IPC: cancellation, timeout
             // or a partial frame drops/kills it rather than reusing dirty pipes.
-            let mut worker = match guard.take() {
+            super::request_progress::phase("worker_start");
+            let mut worker = match guard.worker.take() {
                 Some(worker) => worker,
                 None => Worker::start(&scope, mounts).await.map_err(worker_error)?,
             };
+            super::request_progress::phase("worker_execution");
             let response = worker.exchange(&request).await.map_err(worker_error)?;
             let response = response.into_response().map_err(worker_error)?;
-            *guard = Some(worker);
+            guard.worker = Some(worker);
             Ok(response)
         })
         .await
-        .map_err(|_| ApiError::unavailable())?
+        .map_err(|_| ApiError::unavailable().with_stage(ExecutionStage::Query))?
     }
 }
 
 fn worker_error(error: anyhow::Error) -> ApiError {
     // Protocol/OS diagnostics only; never log bootstrap payloads or child stderr.
-    ApiError::internal("", "catalog_worker", error)
+    ApiError::internal("", "catalog_worker", error).with_stage(ExecutionStage::Worker)
 }
 
 struct Worker {
@@ -148,9 +273,12 @@ fn command(
     exe: PathBuf,
     home: &std::path::Path,
     cache: &std::path::Path,
+    blocks: &std::path::Path,
 ) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(exe);
     command
+        .arg("--log-level")
+        .arg(super::request_log::initialized_log_level().as_arg())
         .arg("serve")
         .arg("--catalog-query-worker")
         .env_clear()
@@ -160,6 +288,10 @@ fn command(
         .env("XDG_CONFIG_HOME", home)
         .env("XDG_CACHE_HOME", home)
         .env("PCHRONICLE_CACHE_DIR", cache)
+        // `env_clear` plus a throwaway HOME makes the Lance block cache resolve
+        // under a directory that dies with the worker, so every worker refetched
+        // the same index pages from the object store. Name it explicitly.
+        .env("PCHRONICLE_LANCE_CACHE_DIR", blocks)
         .env("AWS_EC2_METADATA_DISABLED", "true")
         .env("RAYON_NUM_THREADS", "2")
         .env("AWS_CONFIG_FILE", home.join("no-aws-config"))
@@ -181,6 +313,10 @@ fn command(
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "PCHRONICLE_QUERY_MEMORY_LIMIT",
+        "PCHRONICLE_LANCE_CACHE_CAPACITY_BYTES",
+        // Workers issue the reads, so admission tuning that never reaches them
+        // tunes nothing.
+        "PCHRONICLE_OBJECT_STORE_CONCURRENCY",
         "RUST_LOG",
     ] {
         if let Some(value) = std::env::var_os(key) {
@@ -197,7 +333,13 @@ impl Worker {
             .map(PathBuf::from)
             .or_else(|| dirs::cache_dir().map(|p| p.join("pchronicle")))
             .context("no catalog worker cache directory")?;
-        let cache = std::path::absolute(root)?.join("workers").join(scope);
+        let root = std::path::absolute(root)?;
+        let cache = root.join("workers").join(scope);
+        // Blocks are keyed by store, object version and size, so every worker
+        // and every scope can share them. Keeping them beside the per-scope
+        // caches rather than inside one means a reader does not refetch what
+        // another worker already paid for.
+        let blocks = root.join("blocks");
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
         #[cfg(unix)]
@@ -206,7 +348,8 @@ impl Worker {
             builder.mode(0o700);
         }
         builder.create(&cache)?;
-        let mut child = command(std::env::current_exe()?, home.path(), &cache).spawn()?;
+        builder.create(&blocks)?;
+        let mut child = command(std::env::current_exe()?, home.path(), &cache, &blocks).spawn()?;
         let input = child.stdin.take().context("worker stdin missing")?;
         let output = child.stdout.take().context("worker stdout missing")?;
         let mut worker = Self {
@@ -238,7 +381,16 @@ impl Worker {
 
     async fn exchange(&mut self, request: &WorkerRequest) -> Result<WorkerResponse> {
         self.send(request).await?;
-        self.receive().await
+        loop {
+            match self.receive::<WorkerEvent>().await? {
+                WorkerEvent::Progress(snapshot) => {
+                    if let Some(p) = super::request_progress::current() {
+                        p.worker(snapshot);
+                    }
+                }
+                WorkerEvent::Response(response) => return Ok(response),
+            }
+        }
     }
 }
 
@@ -290,7 +442,11 @@ pub(super) fn validate_backends(mounts: &[CatalogLibrary]) -> Result<()> {
 
 /// Called before main constructs any runtime or threads. Credentials arrive
 /// only over stdin, and remain fixed for the lifetime of this process.
-pub(crate) fn run() -> Result<()> {
+pub(crate) fn run(level: crate::LogLevel) -> Result<()> {
+    // Handlers execute here, so `ApiError::internal` emits its `root_cause`
+    // line in this process. Without a subscriber the inherited stderr stayed
+    // empty and every worker-side failure reached the browser as a bare 500.
+    super::request_log::init_warehouse_tracing(level);
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     let bootstrap: Bootstrap = read_frame(&mut input)?.context("missing worker bootstrap")?;
@@ -318,7 +474,20 @@ pub(crate) fn run() -> Result<()> {
             job.body.len() <= 1024 * 1024,
             "worker request body too large"
         );
+        let id = job
+            .headers
+            .iter()
+            .find(|(name, _)| name == "x-request-id")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        let progress = super::request_progress::Progress::new(
+            id,
+            job.method.clone(),
+            job.uri.split('?').next().unwrap_or_default().to_owned(),
+            true,
+        );
         let result = runtime.block_on(async {
+            let operation = async {
             let mut builder = axum::http::Request::builder()
                 .method(job.method.as_str())
                 .uri(job.uri);
@@ -327,7 +496,8 @@ pub(crate) fn run() -> Result<()> {
             }
             let response = warehouse
                 .router()
-                .oneshot(builder.body(axum::body::Body::from(job.body))?)
+                .oneshot({ let mut request=builder.body(axum::body::Body::from(job.body))?;
+                    request.extensions_mut().insert(progress.clone()); request })
                 .await?;
             let status = response.status().as_u16();
             let headers = response
@@ -359,8 +529,18 @@ pub(crate) fn run() -> Result<()> {
                 headers,
                 body,
             })
+            };
+            tokio::pin!(operation);
+            let mut tick = tokio::time::interval(Duration::from_millis(250));
+            loop {
+                tokio::select! {
+                    result = &mut operation => break result,
+                    _ = tick.tick() => { output.write_all(&encode(&WorkerEvent::Progress(progress.snapshot()))?)?; output.flush()?; }
+                }
+            }
         })?;
-        output.write_all(&encode(&result)?)?;
+        output.write_all(&encode(&WorkerEvent::Progress(progress.snapshot()))?)?;
+        output.write_all(&encode(&WorkerEvent::Response(result))?)?;
         output.flush()?;
     }
     Ok(())
@@ -369,6 +549,7 @@ pub(crate) fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn frames_reject_truncation_and_oversize_and_preserve_boundaries() {
@@ -383,21 +564,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pool_bounds_admission_and_never_evicts_queued_scopes() {
+    async fn pool_scales_reuses_bounds_and_wakes_waiters() {
         let pool = WorkerPool::default();
         let permits: Vec<_> = (0..MAX_REQUESTS).map(|_| pool.admit().unwrap()).collect();
         assert!(pool.admit().is_err());
         drop(permits);
         assert!(pool.admit().is_ok());
-        let mut slots = Vec::new();
-        for index in 0..MAX_WORKERS {
-            slots.push(pool.slot(&index.to_string()).await.unwrap());
+
+        let first = pool.lease("same").await.unwrap();
+        let second = pool.lease("same").await.unwrap();
+        assert_eq!(pool.state.slots.lock().await.len(), 2);
+        let first_slot = OwnedMutexGuard::mutex(first.guard.as_ref().unwrap()).clone();
+        drop(first);
+        let reused = pool.lease("same").await.unwrap();
+        assert!(Arc::ptr_eq(
+            &first_slot,
+            OwnedMutexGuard::mutex(reused.guard.as_ref().unwrap())
+        ));
+        let mut busy = vec![second, reused];
+        for _ in busy.len()..MAX_WORKERS_PER_SCOPE {
+            busy.push(pool.lease("same").await.unwrap());
         }
-        assert!(Arc::ptr_eq(&slots[0], &pool.slot("0").await.unwrap()));
-        assert!(pool.slot("overflow").await.is_err());
-        slots.remove(0);
-        assert!(pool.slot("replacement").await.is_ok());
-        assert_eq!(pool.slots.lock().await.len(), MAX_WORKERS);
+        assert!(pool.state.try_lease("same").await.unwrap().is_none());
+        for index in MAX_WORKERS_PER_SCOPE..MAX_WORKERS {
+            busy.push(pool.lease(&format!("other-{index}")).await.unwrap());
+        }
+        assert!(pool.state.try_lease("overflow").await.unwrap().is_none());
+        let waiting = pool.lease("same");
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut waiting)
+                .await
+                .is_err()
+        );
+        busy.remove(0);
+        let lease = tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pool.state.slots.lock().await.len(), MAX_WORKERS);
+        drop(lease);
+        let replacement = pool.lease("replacement").await.unwrap();
+        assert_eq!(pool.state.slots.lock().await.len(), MAX_WORKERS);
+        drop(replacement);
+    }
+
+    #[tokio::test]
+    async fn reaper_removes_only_idle_expired_slots() {
+        let pool = WorkerPool::default();
+        let mut busy = pool.lease("scope").await.unwrap();
+        busy.guard.as_mut().unwrap().idle_since = Instant::now() - WORKER_IDLE_TIMEOUT;
+        let idle = pool.lease("scope").await.unwrap();
+        drop(idle);
+        {
+            let slots = pool.state.slots.lock().await;
+            slots[1].state.lock().await.idle_since = Instant::now() - WORKER_IDLE_TIMEOUT;
+        }
+        pool.state.reap_idle().await;
+        assert_eq!(pool.state.slots.lock().await.len(), 1);
+        drop(busy);
+        pool.state.reap_idle().await;
+        assert_eq!(pool.state.slots.lock().await.len(), 1);
     }
 
     #[cfg(unix)]
@@ -415,13 +642,14 @@ mod tests {
         let input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
         let pool = WorkerPool::default();
-        let slot = pool.slot("test").await.unwrap();
-        *slot.lock().await = Some(Worker {
+        let mut lease = pool.lease("test").await.unwrap();
+        lease.guard.as_mut().unwrap().worker = Some(Worker {
             child,
             input,
             output,
             _home: home,
         });
+        drop(lease);
         let result = tokio::time::timeout(
             Duration::from_millis(30),
             pool.execute(
@@ -437,7 +665,8 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
-        assert!(slot.lock().await.is_none());
+        let lease = pool.lease("test").await.unwrap();
+        assert!(lease.guard.as_ref().unwrap().worker.is_none());
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 // Signal zero observes process existence without sending a signal.
@@ -454,7 +683,12 @@ mod tests {
     #[test]
     fn exec_environment_excludes_ambient_credentials() {
         let home = tempfile::tempdir().unwrap();
-        let cmd = command(PathBuf::from("pchronicle"), home.path(), home.path());
+        let cmd = command(
+            PathBuf::from("pchronicle"),
+            home.path(),
+            home.path(),
+            home.path(),
+        );
         let env: HashMap<_, _> = cmd.as_std().get_envs().collect();
         for key in [
             "AWS_ACCESS_KEY_ID",
@@ -473,6 +707,82 @@ mod tests {
         assert_eq!(
             env[std::ffi::OsStr::new("AWS_EC2_METADATA_DISABLED")],
             Some(std::ffi::OsStr::new("true"))
+        );
+    }
+
+    #[test]
+    fn exec_environment_names_a_surviving_block_cache() {
+        let home = tempfile::tempdir().unwrap();
+        let blocks = tempfile::tempdir().unwrap();
+        let cmd = command(
+            PathBuf::from("pchronicle"),
+            home.path(),
+            home.path(),
+            blocks.path(),
+        );
+        let env: HashMap<_, _> = cmd.as_std().get_envs().collect();
+        // Without this the cache resolves under the worker's throwaway HOME, so
+        // each worker refetches every index page the last one already read.
+        assert_eq!(
+            env[std::ffi::OsStr::new("PCHRONICLE_LANCE_CACHE_DIR")],
+            Some(blocks.path().as_os_str())
+        );
+        assert_ne!(
+            env[std::ffi::OsStr::new("PCHRONICLE_LANCE_CACHE_DIR")],
+            Some(home.path().as_os_str())
+        );
+    }
+
+    #[test]
+    fn exec_environment_forwards_object_store_admission_tuning() {
+        let home = tempfile::tempdir().unwrap();
+        // Workers issue the object-store reads, and `command` clears the
+        // environment. A knob missing from the allowlist silently tunes only
+        // the parent, which reads almost nothing.
+        // SAFETY: single-threaded test asserting how `command` forwards it.
+        unsafe { std::env::set_var("PCHRONICLE_OBJECT_STORE_CONCURRENCY", "8") };
+        let cmd = command(
+            PathBuf::from("pchronicle"),
+            home.path(),
+            home.path(),
+            home.path(),
+        );
+        let env: HashMap<_, _> = cmd.as_std().get_envs().collect();
+        assert_eq!(
+            env[std::ffi::OsStr::new("PCHRONICLE_OBJECT_STORE_CONCURRENCY")],
+            Some(std::ffi::OsStr::new("8"))
+        );
+        unsafe { std::env::remove_var("PCHRONICLE_OBJECT_STORE_CONCURRENCY") };
+    }
+
+    #[test]
+    fn exec_arguments_carry_the_serve_log_level() {
+        let home = tempfile::tempdir().unwrap();
+        let cmd = command(
+            PathBuf::from("pchronicle"),
+            home.path(),
+            home.path(),
+            home.path(),
+        );
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        // Handlers run in the child, so it must install a subscriber at the
+        // serve level; otherwise `root_cause` diagnostics are dropped there.
+        let level = args
+            .iter()
+            .position(|arg| arg == "--log-level")
+            .map(|index| args[index + 1].clone());
+        assert_eq!(
+            level.as_deref(),
+            Some(super::super::request_log::initialized_log_level().as_arg()),
+            "{args:?}"
+        );
+        assert!(
+            args.contains(&"--catalog-query-worker".to_owned()),
+            "{args:?}"
         );
     }
 

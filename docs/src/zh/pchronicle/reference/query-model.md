@@ -70,7 +70,7 @@ JOIN dataset.steps s
 
 | 选择器 | 含义 |
 | --- | --- |
-| `#content` | `message_value`、`observation` 和 `prompt` |
+| `#content` | `message_value`（消息正文；普通文本默认范围） |
 | `#message` | `message_value` |
 | `#user` | `source = 'user'` 的 `message_value` |
 | `#assistant` | `source = 'agent'` 的 `message_value`（`#agent` 是别名） |

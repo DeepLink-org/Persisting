@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures::TryStreamExt;
-use lance::Dataset;
 use lance::dataset::{InsertBuilder, MergeInsertBuilder, WhenMatched, WhenNotMatched};
 use lance::deps::arrow_array::{Array, RecordBatch, RecordBatchIterator, StringArray};
 use lance::deps::arrow_schema::{DataType, Field, Schema};
@@ -94,7 +93,7 @@ fn text(batch: &RecordBatch, column: &str, row: usize) -> Result<String> {
 
 pub async fn read_revisions(session: &StoryCoords) -> Result<Vec<RevisionRow>> {
     let uri = revision_dataset_path(session)?;
-    let dataset = match Dataset::open(&uri).await {
+    let dataset = match crate::storage::open_lance_dataset(&uri).await {
         Ok(dataset) => dataset,
         Err(lance::Error::DatasetNotFound { .. }) => return Ok(Vec::new()),
         Err(error) => return Err(anyhow::anyhow!(error)).context("open revisions.lance"),
@@ -139,7 +138,7 @@ pub async fn write_revisions(session: &StoryCoords, rows: &[RevisionRow]) -> Res
     }
     let _guard = crate::store::dataset_write_lock::acquire(&uri).await?;
     let batch = batch(rows)?;
-    match Dataset::open(&uri).await {
+    match crate::storage::open_lance_dataset(&uri).await {
         Ok(dataset) => {
             let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema()));
             MergeInsertBuilder::try_new(Arc::new(dataset), vec!["revision_id".into()])?

@@ -1402,6 +1402,10 @@ async fn scoped_remote_discovery_includes_json_and_new_prefix_members() -> Resul
     store
         .write_overwrite("nested2/other.json", b"[]".to_vec())
         .await?;
+    // A sibling that cannot be parsed must never be visited by scoped reads.
+    store
+        .write_overwrite("nested2/chronicle.manifest", b"invalid = [".to_vec())
+        .await?;
     let discover = |file: &str| {
         DatasetCatalogSnapshot::discover_scoped(
             vec![DatasetMount::default(uri.clone()).unwrap()],
@@ -1426,6 +1430,37 @@ async fn scoped_remote_discovery_includes_json_and_new_prefix_members() -> Resul
         .map(|s| s.file.as_str())
         .collect();
     assert_eq!(files, ["nested/new.json", "nested/one.json"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn scoped_remote_candidates_preserve_event_binding_and_opaque_ancestors() -> Result<()> {
+    let uri = format!(
+        "shared-memory://scoped-bundle-{}/root",
+        uuid::Uuid::new_v4().simple()
+    );
+    let store = OpendalStore::from_uri(&uri).await?;
+    for path in [
+        "agent/run/events.lance/_manifest.json",
+        "agent/run/storyline/CURRENT",
+        "opaque/CURRENT",
+        "opaque/interior.json",
+    ] {
+        store.write_overwrite(path, b"{}".to_vec()).await?;
+    }
+    let mount = DatasetMount::default(uri)?;
+    let options = CatalogSnapshotOptions::default().manifest;
+    for file in ["agent/run/events.lance", "agent/run/storyline"] {
+        let candidates = super::discovery::discover_candidate_at(&mount, file, options).await?;
+        let files: Vec<_> = candidates.iter().map(|c| c.source_stub().file).collect();
+        assert_eq!(files, ["agent/run/events.lance", "agent/run/storyline"]);
+    }
+    let candidates =
+        super::discovery::discover_candidate_at(&mount, "opaque/interior.json", options).await?;
+    assert!(
+        candidates.is_empty(),
+        "opaque dataset contents are not separate sources"
+    );
     Ok(())
 }
 

@@ -168,7 +168,7 @@ impl CompactJsonlStore {
     /// here so catalog/CLI paths cannot skip `chronicle.manifest`.
     pub async fn publish_manifest(root: impl AsRef<Path>) -> Result<ChronicleManifest> {
         let root = root.as_ref();
-        let dataset = Dataset::open(root.to_string_lossy().as_ref())
+        let dataset = crate::storage::open_lance_dataset(root.to_string_lossy().as_ref())
             .await
             .with_context(|| {
                 format!(
@@ -188,10 +188,11 @@ impl CompactJsonlStore {
     /// manifests are rewritten; compatible old datasets are upgraded in place.
     pub async fn ensure_manifest(root: impl AsRef<Path>) -> Result<Option<ChronicleManifest>> {
         let root = root.as_ref();
-        let dataset = match Dataset::open(root.to_string_lossy().as_ref()).await {
-            Ok(dataset) => dataset,
-            Err(_) => return Ok(None),
-        };
+        let dataset =
+            match crate::storage::open_lance_dataset(root.to_string_lossy().as_ref()).await {
+                Ok(dataset) => dataset,
+                Err(_) => return Ok(None),
+            };
         if validate_dataset_schema(&dataset).is_err() {
             return Ok(None);
         }
@@ -229,7 +230,7 @@ impl CompactJsonlStore {
         let input = input.as_ref();
         let limit = limit.max(1);
         let manifest = Self::ensure_manifest(input).await?;
-        let dataset = Dataset::open(input.to_string_lossy().as_ref()).await?;
+        let dataset = crate::storage::open_lance_dataset(input.to_string_lossy().as_ref()).await?;
         validate_dataset_schema(&dataset)?;
         let total = if let Some(count) = manifest
             .as_ref()
@@ -283,7 +284,7 @@ impl CompactJsonlStore {
     pub async fn records(input: impl AsRef<Path>) -> Result<Vec<CompactJsonlRecord>> {
         let input = input.as_ref();
         let _ = Self::ensure_manifest(input).await?;
-        let dataset = Dataset::open(input.to_string_lossy().as_ref()).await?;
+        let dataset = crate::storage::open_lance_dataset(input.to_string_lossy().as_ref()).await?;
         validate_dataset_schema(&dataset)?;
         let stream = dataset.scan().scan_in_order(true).try_into_stream().await?;
         let mut stream = stream;
@@ -320,7 +321,7 @@ impl CompactJsonlStore {
     pub async fn read_record(input: impl AsRef<Path>, id: &str) -> Result<Option<Value>> {
         let input = input.as_ref();
         let _ = Self::ensure_manifest(input).await?;
-        let dataset = Dataset::open(input.to_string_lossy().as_ref()).await?;
+        let dataset = crate::storage::open_lance_dataset(input.to_string_lossy().as_ref()).await?;
         let (_, offload_idx) = validate_dataset_schema(&dataset)?;
         let stream = dataset.scan().scan_in_order(true).try_into_stream().await?;
         let mut stream = stream;
@@ -670,7 +671,7 @@ impl CompactJsonlStore {
             output_root != input_root && !output_root.starts_with(&input_root),
             "compact JSONL export output must be outside the input dataset"
         );
-        let dataset = Dataset::open(input.to_string_lossy().as_ref()).await?;
+        let dataset = crate::storage::open_lance_dataset(input.to_string_lossy().as_ref()).await?;
         let (raw_idx, offload_idx) = validate_dataset_schema(&dataset)?;
         if output.exists() {
             fs::remove_dir_all(output)

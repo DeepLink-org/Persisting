@@ -9,6 +9,7 @@ use crate::model::{
     PhysicalSource, QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, TurnDetail,
     TurnPage,
 };
+use crate::requests::TrackedSend;
 use gloo_net::http::{Request, RequestBuilder, Response};
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -164,7 +165,12 @@ pub async fn explorer_runs(
         urlencoding::encode(path),
         urlencoding::encode(file),
     );
-    json_checked(with_catalog_headers(Request::get(&url)).send().await).await
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
 }
 
 pub async fn explorer_tree(dataset: &str, prefix: &str) -> Result<CatalogTree, ApiFailure> {
@@ -173,7 +179,12 @@ pub async fn explorer_tree(dataset: &str, prefix: &str) -> Result<CatalogTree, A
         urlencoding::encode(dataset),
         urlencoding::encode(prefix),
     );
-    json_checked(with_catalog_headers(Request::get(&url)).send().await).await
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
 }
 
 pub async fn explorer_tree_anonymous(
@@ -185,16 +196,7 @@ pub async fn explorer_tree_anonymous(
         urlencoding::encode(dataset),
         urlencoding::encode(prefix),
     );
-    json_checked(Request::get(&url).send().await).await
-}
-
-pub async fn run_analysis(run: &RunSummary) -> Result<RunAnalysis, ApiFailure> {
-    json_checked(
-        with_catalog_headers(Request::get(&format!("/api/explorer/run?{}", run.query())))
-            .send()
-            .await,
-    )
-    .await
+    json_checked(Request::get(&url).send_tracked().await).await
 }
 
 pub async fn compact_record(run: &RunSummary) -> Result<CompactRecordDetail, ApiFailure> {
@@ -203,20 +205,40 @@ pub async fn compact_record(run: &RunSummary) -> Result<CompactRecordDetail, Api
             "/api/explorer/record?{}",
             run.query()
         )))
-        .send()
+        .send_tracked()
         .await,
     )
     .await
 }
 
-pub async fn turns(run: &RunSummary, q: &str, source: &str) -> Result<TurnPage, ApiFailure> {
+pub async fn turns(
+    run: &RunSummary,
+    q: &str,
+    source: &str,
+    include_analysis: bool,
+) -> Result<TurnPage, ApiFailure> {
     let url = format!(
-        "/api/explorer/turns?{}&q={}&source={}&offset=0&limit=500",
+        "/api/explorer/turns?{}&q={}&source={}&include_analysis={include_analysis}",
         run.query(),
         urlencoding::encode(q),
         urlencoding::encode(source),
     );
-    json_checked(with_catalog_headers(Request::get(&url)).send().await).await
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
+}
+
+pub async fn run_analysis(run: &RunSummary) -> Result<RunAnalysis, ApiFailure> {
+    let url = format!("/api/explorer/run?{}", run.query());
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
 }
 
 pub async fn turn_detail(run: &RunSummary, turn_id: i64) -> Result<TurnDetail, ApiFailure> {
@@ -225,7 +247,7 @@ pub async fn turn_detail(run: &RunSummary, turn_id: i64) -> Result<TurnDetail, A
             "/api/explorer/turn?{}&turn_id={turn_id}",
             run.query()
         )))
-        .send()
+        .send_tracked()
         .await,
     )
     .await
@@ -247,7 +269,7 @@ async fn query_evidence_with_budget(
     let request = with_catalog_headers(Request::post("/api/query/evidence"))
         .json(&json!({ "sql": sql, "max_rows": max_rows, "max_bytes": max_bytes }))
         .map_err(|error| ApiFailure::network(error.to_string()))?;
-    json_checked(request.send().await).await
+    json_checked(request.send_tracked().await).await
 }
 
 pub async fn compile_analysis(
@@ -263,7 +285,7 @@ pub async fn compile_analysis(
         }))
         .map_err(|error| CompileFailure::from(ApiFailure::network(error.to_string())))?;
     let response = request
-        .send()
+        .send_tracked()
         .await
         .map_err(|error| CompileFailure::from(ApiFailure::network(error.to_string())))?;
     if response.ok() {
@@ -280,20 +302,20 @@ pub async fn compile_analysis(
 pub async fn query_catalog() -> Result<QueryCatalog, ApiFailure> {
     json_checked(
         with_catalog_headers(Request::get("/api/query/tables?ui=true"))
-            .send()
+            .send_tracked()
             .await,
     )
     .await
 }
 
 pub async fn ui_config() -> Result<crate::model::UiConfig, ApiFailure> {
-    json_checked(Request::get("/api/ui").send().await).await
+    json_checked(Request::get("/api/ui").send_tracked().await).await
 }
 
 pub async fn refresh_catalog() -> Result<(), ApiFailure> {
     send_checked(
         with_catalog_headers(Request::post("/api/catalog"))
-            .send()
+            .send_tracked()
             .await,
     )
     .await?;
@@ -303,7 +325,7 @@ pub async fn refresh_catalog() -> Result<(), ApiFailure> {
 pub async fn physical_sources() -> Result<Vec<PhysicalSource>, ApiFailure> {
     json_checked(
         with_catalog_headers(Request::get("/api/physical/sources"))
-            .send()
+            .send_tracked()
             .await,
     )
     .await
@@ -315,7 +337,12 @@ pub async fn physical_layout(dataset: &str, file: &str) -> Result<PhysicalLayout
         urlencoding::encode(dataset),
         urlencoding::encode(file),
     );
-    json_checked(with_catalog_headers(Request::get(&url)).send().await).await
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
 }
 
 pub async fn physical_file(
@@ -332,7 +359,12 @@ pub async fn physical_file(
         urlencoding::encode(table),
         urlencoding::encode(data_file),
     );
-    json_checked(with_catalog_headers(Request::get(&url)).send().await).await
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -357,7 +389,12 @@ pub async fn physical_page(
         url.push_str("&column=");
         url.push_str(&urlencoding::encode(column));
     }
-    json_checked(with_catalog_headers(Request::get(&url)).send().await).await
+    json_checked(
+        with_catalog_headers(Request::get(&url))
+            .send_tracked()
+            .await,
+    )
+    .await
 }
 
 #[cfg(test)]

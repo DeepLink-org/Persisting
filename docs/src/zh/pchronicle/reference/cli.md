@@ -443,8 +443,12 @@ pchronicle serve \
 独立 exec worker 读取；不能与位置参数 Dataset、Gateway 或 Control 同时使用。配合 `dataset pin NAME catalog://127.0.0.1:PORT --ak --sk`。
 `pchronicle serve catalog dataset add|remove|list` 与 `issue|grant|revoke` 只改该文件、
 不启动 HTTP；`issue` 把用户 sk 只打印一次。改 library、用户或授权后必须重启 serve。
-worker 池最多 8 个进程、32 个正在处理或排队的请求；每个 worker 串行处理请求，
-计算等待上限为 60 秒，请求体读取上限为 10 秒。过载返回 503，超时或 IPC 失败会淘汰进程。
+worker 池按并发压力创建进程：优先复用同一权限范围的空闲 worker，全部忙碌时按需扩容，
+每个范围最多 4 个、整个服务最多 8 个进程。达到上限后等待任意可用容量，
+最多接纳 32 个正在处理或排队的请求。每个 worker 内部仍串行处理，IPC 不交叉。
+空闲超过 120 秒的进程由每 30 秒执行一次的清理任务回收；全局容量不足时可提前回收
+其他范围的空闲进程。排队、启动和执行合计上限为 60 秒，请求体读取上限为 10 秒。
+过载返回 503；执行期间超时或 IPC 失败会淘汰对应进程，排队取消不会中断其他请求。
 同一用户、授权范围和后端凭证版本复用 worker 及独立磁盘缓存；修改授权后重启生效。
 缓存位于 `PCHRONICLE_CACHE_DIR/workers/`，未设置时使用系统 pchronicle 缓存目录。
 子进程不继承父进程的 AWS 环境、profile 或用户主目录配置；登录 AK/SK 用于认证，
@@ -576,3 +580,25 @@ pchronicle \
 定位后再写 SQL 见 [发现并查询](../guides/discover-and-query.md)，交换见
 [导入与导出](../guides/exchange.md)，只读服务见 [本地服务 Dataset](../guides/serve.md)。
 Snapshot 构造见 [Snapshot 设计](../design/catalog.md)。
+
+
+### 请求执行诊断
+
+**Requests** 标签页展示当前浏览器标签页会话中的近期 API 请求的 request ID、HTTP 结果、执行阶段和耗时。
+左下角 Local / profile 上方的状态提示可打开该页。选择请求或输入 request ID，即可在请求
+尚未结束时查看进度。Worker 排队、启动和执行分别计时；目录浏览与 Runs 查询报告各自的
+执行阶段。`pending` 表示尚未开始，`skipped` 表示未使用该阶段。阶段描述应用操作，并非
+逐条 DNS、TCP 或 S3 请求。目录返回 200 但仍在后台刷新时，会显示相应提示。
+
+`GET /api/requests/{request_id}`（也支持 `/api/v1`）返回实时快照：
+`request_id`、`method`、`path`、`state`、`elapsed_ms`、`status`、`error`、`note`、
+`phases`（`name`、`state`、`elapsed_ms`），以及可选的嵌套 `worker` 快照。
+该接口由前置服务直接处理，不等待业务 worker。
+
+追踪需要显式开启：原请求和诊断查询必须携带同一个随机生成的 32 位十六进制
+`x-pchronicle-observer` 请求头；原请求可通过 `x-request-id` 指定 ID，以便完成前查询。
+UI 自动生成这两个请求头。Observer token 是私有查询凭证，不替代 catalog 身份认证，
+其他 token 无法访问该记录。服务端最多保留 512 条记录、最长 10 分钟，仅保存在内存中，
+重启即清空。记录不存在、过期或无权访问时均返回 404。UI 保留最近 40 条，每秒查询未完成
+请求；诊断连接失败会单独提示，可手动重试。记录不包含查询参数、请求体或凭据；内部错误
+详情仍需通过 request ID 在服务端日志中定位。

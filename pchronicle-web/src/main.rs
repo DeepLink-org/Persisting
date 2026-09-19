@@ -18,6 +18,7 @@ mod llm_settings;
 mod model;
 mod notice;
 mod physical;
+mod requests;
 mod result_explorer;
 mod result_profile;
 mod terminology;

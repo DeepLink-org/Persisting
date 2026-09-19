@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow};
 use futures::{StreamExt, TryStreamExt};
 use url::Url;
 
-use crate::store::opendal_store::Store as OpendalStore;
+use crate::store::opendal_store::{Store as OpendalStore, StoreConfig};
 
 /// One discovery event while walking importable JSON objects.
 #[derive(Debug, Clone)]
@@ -74,10 +74,15 @@ pub struct DatasetLocation {
     uri: String,
     kind: DatasetLocationKind,
     local_path: Option<PathBuf>,
+    backend: Option<StoreConfig>,
 }
 
 impl DatasetLocation {
     pub fn parse(input: &str) -> Result<Self> {
+        Self::parse_with_backend(input, None)
+    }
+
+    pub fn parse_with_backend(input: &str, backend: Option<StoreConfig>) -> Result<Self> {
         let input = input.trim();
         anyhow::ensure!(!input.is_empty(), "Dataset URI must not be empty");
         if !input.contains("://") {
@@ -121,6 +126,7 @@ impl DatasetLocation {
                     uri: trim_trailing_slashes(input),
                     kind: DatasetLocationKind::ObjectStore,
                     local_path: None,
+                    backend,
                 })
             }
             "file" => {
@@ -135,6 +141,7 @@ impl DatasetLocation {
                     uri: trim_trailing_slashes(input),
                     kind: DatasetLocationKind::Local,
                     local_path: Some(path),
+                    backend: None,
                 })
             }
             "local" => {
@@ -146,6 +153,7 @@ impl DatasetLocation {
                     uri: trim_trailing_slashes(input),
                     kind: DatasetLocationKind::Local,
                     local_path: Some(PathBuf::from(url.path())),
+                    backend: None,
                 })
             }
             other => Err(anyhow!("unsupported Dataset URI scheme '{other}'")),
@@ -157,6 +165,7 @@ impl DatasetLocation {
             uri,
             kind: DatasetLocationKind::Local,
             local_path: Some(path),
+            backend: None,
         }
     }
 
@@ -217,7 +226,9 @@ impl DatasetLocation {
         if let Some(path) = &self.local_path {
             return Ok(path.exists());
         }
-        let store = OpendalStore::from_uri(&self.uri).await?;
+        let store =
+            OpendalStore::from_uri_with_config(&self.uri, self.backend.clone().unwrap_or_default())
+                .await?;
         store.exists().await
     }
 
@@ -240,7 +251,9 @@ impl DatasetLocation {
             }
             return put_local_bytes(&path, bytes, true);
         }
-        let store = OpendalStore::from_uri(&self.uri).await?;
+        let store =
+            OpendalStore::from_uri_with_config(&self.uri, self.backend.clone().unwrap_or_default())
+                .await?;
         store
             .write_overwrite(relative, bytes.to_vec())
             .await
@@ -258,7 +271,9 @@ impl DatasetLocation {
             let path = root.join(relative);
             return std::fs::read(&path).with_context(|| format!("read {}", path.display()));
         }
-        let store = OpendalStore::from_uri(&self.uri).await?;
+        let store =
+            OpendalStore::from_uri_with_config(&self.uri, self.backend.clone().unwrap_or_default())
+                .await?;
         let Some((bytes, _)) = store.read(relative).await? else {
             return Err(anyhow!("object not found: {relative} under {}", self.uri));
         };
@@ -305,7 +320,9 @@ impl DatasetLocation {
             return Ok(None);
         }
 
-        let store = OpendalStore::from_uri(&self.uri).await?;
+        let store =
+            OpendalStore::from_uri_with_config(&self.uri, self.backend.clone().unwrap_or_default())
+                .await?;
         let join = |name: &str| {
             if relative.is_empty() {
                 name.to_string()
@@ -353,12 +370,35 @@ impl DatasetLocation {
     /// directories, leaf Datasets (with sidecar preview when present), and
     /// JSON / JSONL / NDJSON files.
     pub async fn list(&self, relative: &str) -> Result<Vec<PathListEntry>> {
+        self.list_impl(relative, true, true).await
+    }
+
+    /// Browse one remote level without probing every child. A child is shown
+    /// as a directory until its own observation identifies it as a Dataset.
+    pub(crate) async fn list_for_browse(&self, relative: &str) -> Result<Vec<PathListEntry>> {
+        self.list_impl(relative, true, !self.is_object_store())
+            .await
+    }
+
+    /// List names for interactive browsing. Remote dataset identity and counts
+    /// come from the local manifest cache, never HEAD/GET probes on this path.
+    pub async fn list_directory(&self, relative: &str) -> Result<Vec<PathListEntry>> {
+        let local = !self.is_object_store();
+        self.list_impl(relative, local, local).await
+    }
+
+    async fn list_impl(
+        &self,
+        relative: &str,
+        probe_self: bool,
+        probe_children: bool,
+    ) -> Result<Vec<PathListEntry>> {
         let relative = relative.trim().trim_matches('/');
         anyhow::ensure!(
             !relative.split('/').any(|part| part == ".."),
             "relative object path must not contain '..'"
         );
-        if let Some(kind) = self.probe_nav_dataset_kind(relative).await? {
+        if probe_self && let Some(kind) = self.probe_nav_dataset_kind(relative).await? {
             let preview = self.list_dataset_preview(relative, kind).await?;
             let name = if relative.is_empty() {
                 ".".to_string()
@@ -379,7 +419,7 @@ impl DatasetLocation {
             }]);
         }
 
-        let nav = self.list_nav_children(relative).await?;
+        let nav = self.list_nav_children(relative, probe_children).await?;
         let mut out = Vec::with_capacity(nav.len());
         for entry in nav {
             let path = if relative.is_empty() {
@@ -449,7 +489,9 @@ impl DatasetLocation {
             }
             return Ok(preview);
         }
-        let store = OpendalStore::from_uri(&self.uri).await?;
+        let store =
+            OpendalStore::from_uri_with_config(&self.uri, self.backend.clone().unwrap_or_default())
+                .await?;
         let key = if relative.is_empty() {
             crate::store::CHRONICLE_MANIFEST_FILE.to_string()
         } else {
@@ -491,11 +533,15 @@ impl DatasetLocation {
         if self.probe_nav_dataset_kind(relative).await?.is_some() {
             return Ok(Vec::new());
         }
-        self.list_nav_children(relative).await
+        self.list_nav_children(relative, true).await
     }
 
     // Caller has validated the path and established that it is not a Dataset leaf.
-    async fn list_nav_children(&self, relative: &str) -> Result<Vec<ShallowNavEntry>> {
+    async fn list_nav_children(
+        &self,
+        relative: &str,
+        probe_children: bool,
+    ) -> Result<Vec<ShallowNavEntry>> {
         if let Some(root) = &self.local_path {
             let dir = if relative.is_empty() {
                 root.clone()
@@ -555,7 +601,9 @@ impl DatasetLocation {
             return Ok(out);
         }
 
-        let store = OpendalStore::from_uri(&self.uri).await?;
+        let store =
+            OpendalStore::from_uri_with_config(&self.uri, self.backend.clone().unwrap_or_default())
+                .await?;
         let prefix = if relative.is_empty() {
             String::new()
         } else {
@@ -599,7 +647,11 @@ impl DatasetLocation {
             } else {
                 format!("{relative}/{name}")
             };
-            let kind = self.probe_nav_dataset_kind(&child_rel).await?;
+            let kind = if probe_children {
+                self.probe_nav_dataset_kind(&child_rel).await?
+            } else {
+                None
+            };
             Ok::<_, anyhow::Error>(ShallowNavEntry {
                 name,
                 is_dir: kind.is_none(),
@@ -703,7 +755,9 @@ impl DatasetLocation {
             return Ok(());
         }
 
-        let store = OpendalStore::from_uri(&self.uri).await?;
+        let store =
+            OpendalStore::from_uri_with_config(&self.uri, self.backend.clone().unwrap_or_default())
+                .await?;
         let mut pending = vec![String::new()];
         let mut found = 0usize;
         while let Some(prefix) = pending.pop() {
@@ -819,7 +873,9 @@ impl DatasetLocation {
         if let Some(path) = &self.local_path {
             return put_local_bytes(path, bytes, overwrite);
         }
-        let store = OpendalStore::from_uri(&self.uri).await?;
+        let store =
+            OpendalStore::from_uri_with_config(&self.uri, self.backend.clone().unwrap_or_default())
+                .await?;
         // DatasetLocation represents a prefix; use a stable marker inside it.
         let path = ".dataset-marker";
         if overwrite {
@@ -861,7 +917,9 @@ impl DatasetLocation {
             !url.path().trim_matches('/').is_empty(),
             "refusing to drop an entire object-store bucket; name a Dataset prefix"
         );
-        let store = OpendalStore::from_uri(&self.uri).await?;
+        let store =
+            OpendalStore::from_uri_with_config(&self.uri, self.backend.clone().unwrap_or_default())
+                .await?;
         let entries = store
             .list("")
             .await

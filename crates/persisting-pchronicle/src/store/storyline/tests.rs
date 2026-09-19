@@ -380,6 +380,86 @@ async fn unknown_content_ref_magic_string_round_trips_as_literal() {
 }
 
 #[tokio::test]
+async fn datafusion_hydrates_offloaded_native_json_columns() {
+    let temporary = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open(temporary.path()).await.unwrap();
+    let large = serde_json::json!({"payload": "x".repeat(128 * 1024)});
+    let mut expected = story("native-json-content");
+    expected
+        .unknown_fields
+        .insert("codex", "source", "/events/10", large.clone())
+        .unwrap();
+    expected.refresh_unknown_key_counts().unwrap();
+    expected.turns[0].extra = Some(large.clone());
+    let mut envelope = story("native-json-envelope");
+    for index in 0..16 {
+        envelope
+            .unknown_fields
+            .insert(
+                "codex",
+                "source",
+                format!("/events/{index}"),
+                serde_json::json!({"text": "y".repeat(8192)}),
+            )
+            .unwrap();
+    }
+    envelope.refresh_unknown_key_counts().unwrap();
+    store
+        .replace_storylines(&[expected.clone(), envelope.clone()])
+        .await
+        .unwrap();
+
+    let source = super::datafusion::StorylineDataSource::from_store(&store)
+        .await
+        .unwrap();
+    let context = source.session_context().unwrap();
+    // Project only native JSON: hydration must not depend on also selecting
+    // an ordinary content column such as notes or message_value.
+    let batches = context
+        .sql("SELECT unknown_fields FROM runs WHERE session_id = 'native-json-content'")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let actual = lance_arrow::json::decode_json(
+        batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<lance::deps::arrow_array::LargeBinaryArray>()
+            .unwrap()
+            .value(0),
+    );
+    let actual: crate::formats::unknown_fields::StorylineUnknownFields =
+        serde_json::from_str(&actual).unwrap();
+    assert!(
+        actual == expected.unknown_fields,
+        "unknown field payload was not hydrated"
+    );
+    let batches = context
+        .sql("SELECT * FROM runs WHERE session_id = 'native-json-envelope'")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let runs = story_runs_from_batch(&batches[0]).unwrap();
+    assert!(
+        runs[0].unknown_fields == envelope.unknown_fields,
+        "unknown field envelope was not hydrated"
+    );
+    let batches = context
+        .sql("SELECT * FROM steps WHERE session_id = 'native-json-content' ORDER BY turn_ordinal")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let steps = story_steps_from_batch(&batches[0]).unwrap();
+    assert!(steps[0].extra == Some(large), "step extra was not hydrated");
+}
+
+#[tokio::test]
 async fn default_store_accepts_large_compressible_unknown_value() {
     let mut expected = story("large-logical-unknown");
     expected

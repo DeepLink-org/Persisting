@@ -174,13 +174,7 @@ pub(crate) async fn run(
         let mut pending = BTreeSet::new();
         let mut failures = 0u32;
         loop {
-            tokio::time::sleep(interval).await;
-            while let Ok(path) = changes_rx.try_recv() {
-                pending.insert(path);
-            }
-            if pending.is_empty() {
-                continue;
-            }
+            collect_pending_changes(&mut changes_rx, &mut pending).await?;
 
             match super::exchange::sync_snapshot(
                 &source_uri,
@@ -237,6 +231,21 @@ pub(crate) async fn run(
             }
         }
     }
+}
+
+// A failed batch remains pending. Only idle syncs wait for a new change;
+// retries also absorb any changes received during backoff.
+async fn collect_pending_changes(
+    changes: &mut tokio::sync::mpsc::Receiver<PathBuf>,
+    pending: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    if pending.is_empty() {
+        pending.insert(changes.recv().await.context("sync watcher stopped")?);
+    }
+    while let Ok(path) = changes.try_recv() {
+        pending.insert(path);
+    }
+    Ok(())
 }
 
 fn prepare_destination(uri: &str, name: &str) -> Result<String> {
@@ -347,6 +356,41 @@ fn changed_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_sync_retries_without_new_changes_and_coalesces_backoff_changes() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        sender.send(PathBuf::from("a.json")).await.unwrap();
+        let mut pending = BTreeSet::new();
+        collect_pending_changes(&mut receiver, &mut pending)
+            .await
+            .unwrap();
+        // Simulate a failed attempt: retain the batch, with no new file event.
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            collect_pending_changes(&mut receiver, &mut pending),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        sender.send(PathBuf::from("b.json")).await.unwrap();
+        collect_pending_changes(&mut receiver, &mut pending)
+            .await
+            .unwrap();
+        assert_eq!(
+            pending,
+            BTreeSet::from([PathBuf::from("a.json"), PathBuf::from("b.json")])
+        );
+        pending.clear();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(20),
+                collect_pending_changes(&mut receiver, &mut pending)
+            )
+            .await
+            .is_err()
+        );
+    }
 
     #[test]
     fn prepare_destination_preserves_object_store_uri() {

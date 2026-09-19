@@ -1287,6 +1287,7 @@ mod tests {
     fn plan_prompt_sends_only_approved_catalog_and_scope_context() {
         let mut catalog = catalog();
         catalog.datasets = vec![QueryDatasetSummary {
+            browse: None,
             name: "private-dataset".into(),
             uri: "s3://secret-bucket/?token=private".into(),
             ready_sources: 17,

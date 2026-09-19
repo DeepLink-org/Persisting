@@ -1,6 +1,10 @@
 //! pChronicle 的持久化存储入口。
 
 pub type Result<T> = anyhow::Result<T>;
+#[cfg(feature = "lance-store")]
+pub use crate::store::opendal_store::StoreConfig;
+#[cfg(feature = "lance-store")]
+pub use crate::store::opendal_store::{RetryPatience, set_retry_patience};
 
 /// Parse an integer byte size with binary IEC suffixes.
 pub fn parse_byte_size(value: &str) -> std::result::Result<usize, String> {
@@ -50,35 +54,54 @@ pub use crate::discovery::{
 };
 
 #[cfg(feature = "lance-store")]
+pub use crate::store::blockcache::{
+    BlockCache, CacheConfig, CacheStats, CachedObjectStore, DEFAULT_BLOCK_SIZE_BYTES,
+    DEFAULT_CAPACITY_BYTES, LanceCacheWrapper, SERVE_CAPACITY_BYTES, capacity_for_serve,
+    configured_capacity_bytes, default_cache_dir, lance_store_params,
+};
+#[cfg(feature = "lance-store")]
 pub use crate::store::index_build_progress::{
     Guard as IndexBuildProgressGuard, install as install_index_build_progress,
 };
 #[cfg(feature = "lance-store")]
 pub use crate::store::object_store_io_gate::{
     IoKind as ObjectStoreIoKind, ObjectStoreGateSnapshot, ObjectStoreThrottleEvent,
-    ObjectStoreThrottleHookGuard, format_aimd_flow_label as format_object_store_aimd_flow_label,
+    ObjectStoreThrottleHookGuard, foreground_object_store_demand,
+    format_aimd_flow_label as format_object_store_aimd_flow_label,
     install_throttle_hook as install_object_store_throttle_hook,
-    snapshot as object_store_gate_snapshot,
+    snapshot as object_store_gate_snapshot, wait_for_foreground_object_store_idle,
+    with_background_object_store_io,
 };
+
+#[cfg(feature = "lance-store")]
+pub async fn open_lance_dataset(uri: &str) -> lance::Result<lance::Dataset> {
+    lance::dataset::builder::DatasetBuilder::from_uri(uri)
+        .with_store_params(crate::store::blockcache::lance_store_params(
+            crate::store::blockcache::configured_capacity_bytes(),
+        ))
+        .load()
+        .await
+}
 
 #[cfg(feature = "lance-store")]
 pub use crate::store::{
     AppendOutcome, AttemptRecord, AttemptRecordState, AttemptRegistry, CachedDataset,
-    CatalogDataset, CatalogErrorPolicy, CatalogEventProvenance, CatalogEventView, CatalogNamespace,
-    CatalogPage, CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceDescription,
-    CatalogSourceKind, CatalogSourceRevision, CatalogSourceStatus, CatalogStorylineKey,
-    CatalogTrajectoryBundle, ChronicleManifest, CommitRunOutcome, CompactJsonlBuildPhase,
-    CompactJsonlColumn, CompactJsonlImportEvent, CompactJsonlOffload, CompactJsonlOptions,
-    CompactJsonlRecord, CompactJsonlStore, DEFAULT_CONTENT_OFFLOAD_THRESHOLD,
-    DEFAULT_CONTENT_PREVIEW_BYTES, DEFAULT_DATASET_NAME, DEFAULT_MAX_CHUNK_BYTES,
-    DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS, DEFAULT_PHYSICAL_PAGE_LIMIT,
-    Dataset, DatasetCatalogSnapshot, DatasetLocation, DatasetLocationKind, DatasetMount,
-    DatasetResolver, DiscoveredSource, EventFactSnapshot, EventLogLayoutStats, EventWriterFence,
-    ExportOutcome, ImportableObjectEvent, LanceMaintenanceOptions, LanceMaintenanceReport,
-    LeaseAcquireOutcome, LocationSummary, ManifestCache, ManifestKind, ManifestListing,
-    ManifestReadMode, ManifestStats, NamespacePath, PathListEntry, PathListKind, PersistentCache,
-    PhysicalColumn, PhysicalDataFile, PhysicalFileLayout, PhysicalFragment, PhysicalLayout,
-    PhysicalPage, PhysicalPagePreview, PhysicalPageQuery, PhysicalSource, PhysicalTable,
+    CatalogConsistency, CatalogDataset, CatalogErrorPolicy, CatalogEventProvenance,
+    CatalogEventView, CatalogNamespace, CatalogPage, CatalogProjectionStatus,
+    CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind, CatalogSourceRevision,
+    CatalogSourceStatus, CatalogState, CatalogStatus, CatalogStorylineKey, CatalogTrajectoryBundle,
+    ChronicleManifest, CommitRunOutcome, CompactJsonlBuildPhase, CompactJsonlColumn,
+    CompactJsonlImportEvent, CompactJsonlOffload, CompactJsonlOptions, CompactJsonlRecord,
+    CompactJsonlStore, DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES,
+    DEFAULT_DATASET_NAME, DEFAULT_MAX_CHUNK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
+    DEFAULT_MAX_EVENT_FALLBACK_ROWS, DEFAULT_PHYSICAL_PAGE_LIMIT, Dataset, DatasetCatalogSnapshot,
+    DatasetLocation, DatasetLocationKind, DatasetMount, DatasetResolver, DiscoveredSource,
+    EventFactSnapshot, EventLogLayoutStats, EventWriterFence, ExportOutcome, ImportableObjectEvent,
+    LanceMaintenanceOptions, LanceMaintenanceReport, LeaseAcquireOutcome, LocationSummary,
+    ManifestCache, ManifestKind, ManifestListing, ManifestReadMode, ManifestRefreshReport,
+    ManifestStats, NamespacePath, PathListEntry, PathListKind, PersistentCache, PhysicalColumn,
+    PhysicalDataFile, PhysicalFileLayout, PhysicalFragment, PhysicalLayout, PhysicalPage,
+    PhysicalPagePreview, PhysicalPageQuery, PhysicalSource, PhysicalTable,
     ProjectionSourceSnapshot, QueryScope, RawEventLanceAppender, RawEventLanceStore, ReplayOutcome,
     ResolveMode, ResolveTarget, RunControlStore, ShallowNavEntry, StorylineContentOptions,
     StorylineContentReadMode, StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,

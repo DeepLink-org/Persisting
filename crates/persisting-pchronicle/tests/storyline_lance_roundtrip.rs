@@ -176,6 +176,46 @@ async fn atif_singleton_array_shape_is_lossless_through_storyline_lance() -> Res
 }
 
 #[tokio::test]
+async fn single_document_lookup_answers_without_listing_the_source() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let store = StorylineLanceStore::open(temporary.path()).await?;
+    let documents = (0..64)
+        .map(|index| {
+            let id = format!("run-{index:03}");
+            let mut document = StorylineDocument::new(&id, "agent");
+            document.trajectory_id = Some(id);
+            document
+        })
+        .collect::<Vec<_>>();
+    store.replace_storylines(&documents).await?;
+
+    let (generation, ids) = store
+        .document_ids_snapshot()
+        .await?
+        .expect("committed snapshot");
+    assert_eq!(ids.len(), documents.len());
+
+    // Resolving one run must not depend on the source's document count: the
+    // Explorer path used to read every identity to answer this question.
+    let (lookup_generation, present) = store
+        .contains_document("run-017")
+        .await?
+        .expect("committed snapshot");
+    assert_eq!(lookup_generation, generation);
+    assert!(present);
+    assert_eq!(
+        store.contains_document("run-999").await?,
+        Some((generation.clone(), false))
+    );
+    // A quoted identity must stay a value, never become SQL.
+    assert_eq!(
+        store.contains_document("run-017' OR '1'='1").await?,
+        Some((generation, false))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn incremental_storyline_replace_preserves_global_collection_order() -> Result<()> {
     let temporary = tempfile::tempdir()?;
     let store = StorylineLanceStore::open(temporary.path()).await?;

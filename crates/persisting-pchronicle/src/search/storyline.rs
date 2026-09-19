@@ -45,14 +45,7 @@ const STORYLINE_FTS_COLUMNS: &[&str] = &[
 ];
 
 /// Default Storyline step columns searched by an unqualified text query.
-pub const STORYLINE_STEP_SEARCH_COLUMNS: &[&str] = &[
-    "message_value",
-    "reasoning_content",
-    "model_name",
-    "observation",
-    "env",
-    "prompt",
-];
+pub const STORYLINE_STEP_SEARCH_COLUMNS: &[&str] = &["message_value"];
 
 /// Ensure all FTS and JSON search indexes supported by a Storyline table.
 pub(crate) async fn ensure_storyline_search_indexes(dataset: &mut Dataset) -> Result<()> {

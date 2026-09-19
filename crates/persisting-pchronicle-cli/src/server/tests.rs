@@ -51,26 +51,24 @@ fn explorer_run_identity_sql_does_not_project_step_payloads() {
 }
 
 #[test]
-fn explorer_run_preview_sql_is_row_bounded() {
-    let sql = explorer_run_preview_sql(
-        "dataset",
-        "steps",
-        "_file_ AS source_path, document_id, message_value",
-        "step_id = 1",
-        512,
-    );
-    let lowered = sql.to_ascii_lowercase();
-    assert!(lowered.contains("limit 512"), "{sql}");
-    assert!(lowered.contains("message_value"), "{sql}");
+fn search_preview_is_bounded_around_the_hit() {
+    let raw = format!("{} ipython {}", "前缀 ".repeat(400), "suffix ".repeat(400));
+    let preview = search_preview_text(&raw, "IPYTHON");
+    assert!(preview.contains("ipython"));
+    assert!(preview.chars().count() <= 322);
+    assert!(preview.starts_with('…') && preview.ends_with('…'));
 }
 
 #[test]
-fn search_preview_returns_the_complete_normalized_field() {
-    let raw = format!("{} ipython {}", "prefix ".repeat(80), "suffix ".repeat(80));
-    let preview = search_preview_text(&raw);
-    assert!(preview.contains("ipython"));
-    assert!(preview.starts_with("prefix prefix"));
-    assert!(preview.ends_with("suffix suffix "));
+fn default_search_projects_only_message_body() {
+    let expression = crate::combine_match_expressions(&["rust".into()])
+        .unwrap()
+        .unwrap();
+    assert_eq!(explorer_preview_columns(&expression), ["message_value"]);
+    let expression = crate::combine_match_expressions(&["#observation(rust)".into()])
+        .unwrap()
+        .unwrap();
+    assert_eq!(explorer_preview_columns(&expression), ["observation"]);
 }
 
 #[test]
@@ -335,6 +333,59 @@ async fn internal_error_logs_root_cause_and_redacts_json() {
 }
 
 #[tokio::test]
+async fn elapsed_internal_budget_reports_a_retryable_timeout() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CapturedLogEvent>::new()));
+    let _guard = tracing::subscriber::set_default(CapturingSubscriber::new(events.clone()));
+    let elapsed = tokio::time::timeout(Duration::from_millis(1), std::future::pending::<()>())
+        .await
+        .expect_err("pending future must time out");
+    let error = anyhow::Error::new(elapsed)
+        .context("runs scan timed out")
+        .context("cached acceleration build failure");
+    let response = super::fail(
+        &RequestId("rid-deadline".into()),
+        "load_run_summaries",
+        error,
+    )
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "unavailable");
+    assert_eq!(body["stage"], "query");
+    assert_eq!(body["request_id"], "rid-deadline");
+    assert!(
+        body["message"].as_str().unwrap().contains("time budget"),
+        "{body}"
+    );
+
+    let logged = events.lock().unwrap().clone();
+    assert!(
+        logged
+            .iter()
+            .all(|event| event.level != tracing::Level::ERROR),
+        "a timeout must not be logged as an internal defect: {logged:?}"
+    );
+    let warning = logged
+        .iter()
+        .find(|event| event.message.contains("exceeded its deadline"))
+        .unwrap_or_else(|| panic!("{logged:?}"));
+    assert!(
+        warning
+            .fields
+            .get("chain")
+            .unwrap()
+            .contains("runs scan timed out"),
+        "{:?}",
+        warning.fields
+    );
+    assert_eq!(
+        warning.fields.get("handler").map(String::as_str),
+        Some("load_run_summaries")
+    );
+}
+
+#[tokio::test]
 async fn middleware_echoes_request_id_on_json_errors() {
     use tower::ServiceExt;
 
@@ -343,7 +394,8 @@ async fn middleware_echoes_request_id_on_json_errors() {
     }
     let app = axum::Router::new()
         .route("/api/boom", axum::routing::get(boom))
-        .layer(axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn_with_state(
+            app_state(ChronicleServerConfig::front_only()),
             crate::server::request_log::warehouse_request_layer,
         ));
     let response = app
@@ -387,7 +439,8 @@ async fn four_xx_warn_includes_root_cause_when_chain_is_deeper() {
     }
     let app = axum::Router::new()
         .route("/api/boom", axum::routing::get(boom))
-        .layer(axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn_with_state(
+            app_state(ChronicleServerConfig::front_only()),
             crate::server::request_log::warehouse_request_layer,
         ));
     let response = app
@@ -451,7 +504,8 @@ async fn middleware_rejects_illegal_incoming_id() {
     }
     let app = axum::Router::new()
         .route("/api/boom", axum::routing::get(boom))
-        .layer(axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn_with_state(
+            app_state(ChronicleServerConfig::front_only()),
             crate::server::request_log::warehouse_request_layer,
         ));
     let response = app
@@ -489,7 +543,8 @@ async fn middleware_info_logs_static_assets() {
     }
     let app = axum::Router::new()
         .route("/assets/app.css", axum::routing::get(missing))
-        .layer(axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn_with_state(
+            app_state(ChronicleServerConfig::front_only()),
             crate::server::request_log::warehouse_request_layer,
         ));
     let _ = app
@@ -2459,6 +2514,68 @@ async fn physical_api_lists_empty_sources_for_json_catalog_and_rejects_non_lance
 }
 
 #[tokio::test]
+async fn search_pages_have_body_previews_for_every_visible_run() {
+    use persisting_pchronicle::storage::StorylineLanceStore;
+    let root = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open(root.path().join("story"))
+        .await
+        .unwrap();
+    // More than the old 512-row global preview budget in the first run.
+    for (session, count) in [("a", 513), ("b", 1), ("c", 1), ("metadata", 1)] {
+        let mut document = storyline_document(session, session);
+        let template = document.turns[0].clone();
+        document.turns = (0..count)
+            .map(|id| {
+                let mut turn = template.clone();
+                turn.id = id;
+                turn.message = json!(if session == "metadata" {
+                    "unrelated text".to_owned()
+                } else {
+                    format!("{} rust {session}", "padding ".repeat(60))
+                });
+                turn.observation = Some(json!("rust metadata"));
+                turn.prompt =
+                    persisting_pchronicle::model::StorylinePrompt::from_pair("rust prompt", "");
+                turn
+            })
+            .collect();
+        store.replace_storyline(&document).await.unwrap();
+    }
+    let app = router(root.path().to_string_lossy().to_string());
+    let dataset = encode_query(DEFAULT_DATASET_NAME);
+    for (offset, expected) in [(0, vec!["a", "b"]), (2, vec!["c"])] {
+        let (status, body) = get_json(
+            &app,
+            &format!("/api/explorer/runs?dataset={dataset}&q=rust&offset={offset}&limit=2"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["snapshot"]["total"], 3, "{body}");
+        assert_eq!(body["snapshot"]["has_more"], offset == 0);
+        let records = body["records"].as_array().unwrap();
+        assert_eq!(records.len(), expected.len(), "{body}");
+        assert_eq!(body["path_index"].as_array().unwrap().len(), expected.len());
+        for (record, session) in records.iter().zip(expected) {
+            assert_eq!(record["session_id"], session);
+            let preview = record["search_preview"].as_str().unwrap();
+            assert!(preview.contains(&format!("rust {session}")), "{record}");
+            assert!(preview.chars().count() <= 322);
+        }
+    }
+    let (status, body) = get_json(
+        &app,
+        &format!(
+            "/api/explorer/runs?dataset={dataset}&q={}&limit=2",
+            encode_query("#observation(rust)")
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["snapshot"]["total"], 4, "{body}");
+    assert_eq!(body["records"][0]["search_preview"], "rust metadata");
+}
+
+#[tokio::test]
 async fn physical_api_inspects_storyline_lance_layout_file_and_page() {
     use persisting_pchronicle::storage::StorylineLanceStore;
 
@@ -2641,6 +2758,75 @@ async fn physical_api_inspects_storyline_lance_layout_file_and_page() {
 }
 
 #[tokio::test]
+async fn exact_runs_request_does_not_wait_for_global_catalog() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let store =
+        persisting_pchronicle::storage::StorylineLanceStore::open(root.path().join("nested/story"))
+            .await?;
+    store
+        .replace_storyline(&storyline_document("session-a", "run-a"))
+        .await?;
+    let state = app_state(ChronicleServerConfig::mounted(vec![DatasetMount::new(
+        "prod2",
+        root.path().to_string_lossy(),
+    )?])?);
+    // A slow unrelated catalog refresh must not block an exact source request.
+    let _refresh = state.catalog_refresh.lock().await;
+    let app = finish_routes(state.clone());
+    let (status, page) = tokio::time::timeout(
+        Duration::from_secs(5),
+        get_json(
+            &app,
+            "/api/explorer/runs?dataset=prod2&file=nested/story&limit=50",
+        ),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["snapshot"]["total"], 1, "{page}");
+    assert!(state.catalog.read().await.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn exact_trajectory_endpoints_do_not_wait_for_global_catalog() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let store =
+        persisting_pchronicle::storage::StorylineLanceStore::open(root.path().join("nested/story"))
+            .await?;
+    store
+        .replace_storyline(&storyline_document("session-a", "run-a"))
+        .await?;
+    let state = app_state(ChronicleServerConfig::mounted(vec![DatasetMount::new(
+        "prod2",
+        root.path().to_string_lossy(),
+    )?])?);
+    let _refresh = state.catalog_refresh.lock().await;
+    let app = finish_routes(state.clone());
+    let coords = "dataset=prod2&file=nested/story&agent_id=storyline&session_id=session-a";
+    for endpoint in [
+        "explorer/run",
+        "explorer/turns",
+        "explorer/turn",
+        "trajectory-view",
+        "events",
+        "storyline",
+    ] {
+        let (status, body) = tokio::time::timeout(
+            Duration::from_secs(5),
+            get_json(&app, &format!("/api/{endpoint}?{coords}&turn_id=1")),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{endpoint}: {body}");
+        if endpoint == "explorer/run" {
+            assert_eq!(body["event_provenance"], "synthetic_from_storyline");
+            assert!(body["turn_count"].as_u64().unwrap() > 0);
+        }
+    }
+    assert!(state.catalog.read().await.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn browse_tree_does_not_build_query_runtime() -> anyhow::Result<()> {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -2675,4 +2861,257 @@ async fn browse_tree_does_not_build_query_runtime() -> anyhow::Result<()> {
         "browsing must not initialize the query engine"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn runs_metadata_does_not_initialize_browse_or_resolve_sources() {
+    let root = tempfile::tempdir().unwrap();
+    let config = ChronicleServerConfig::mounted(vec![
+        DatasetMount::default(root.path().join("missing").to_string_lossy().to_string()).unwrap(),
+    ])
+    .unwrap();
+    let state = app_state(config);
+    let Json(catalog) = ui_query_catalog(&state).await.unwrap();
+    assert_eq!(catalog.datasets.len(), 1);
+    assert_eq!(catalog.datasets[0].name, "dataset");
+    assert!(state.browse.get().is_none());
+    assert!(state.catalog.read().await.is_none());
+}
+
+#[tokio::test]
+async fn runs_unknown_dataset_is_a_structured_error_without_panicking() {
+    let root = tempfile::tempdir().unwrap();
+    let app = router(root.path().to_string_lossy().to_string());
+    let (status, response) = get_json(&app, "/api/explorer/runs?dataset=missing").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{response}");
+    assert_eq!(response["code"], "not_found");
+    let (status, _) = get_json(&app, "/api/query/tables?ui=true").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn runs_deadline_includes_catalog_lock_and_releases_cancelled_work() {
+    let root = tempfile::tempdir().unwrap();
+    write_gateway_fixture(root.path(), "run.json", "session", "job");
+    let config = ChronicleServerConfig::mounted(vec![
+        DatasetMount::default(root.path().to_string_lossy().to_string()).unwrap(),
+    ])
+    .unwrap();
+    let state = app_state(config);
+    let held = state.catalog_refresh.lock().await;
+    let request_id = RequestId("runs-timeout-test".into());
+    let error = with_deadline(
+        Duration::from_millis(20),
+        &request_id,
+        ApiError::runs_timeout,
+        load_run_summaries(&state, None, None, &request_id, None),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.status, StatusCode::GATEWAY_TIMEOUT);
+    let body = serde_json::to_value(error).unwrap();
+    assert_eq!(body["code"], "unavailable");
+    assert_eq!(body["request_id"], "runs-timeout-test");
+    assert_eq!(body["stage"], "query");
+    drop(held);
+    let summaries = with_deadline(
+        Duration::from_secs(5),
+        &request_id,
+        ApiError::runs_timeout,
+        load_run_summaries(&state, None, None, &request_id, None),
+    )
+    .await
+    .unwrap();
+    assert_eq!(summaries.len(), 1);
+}
+
+#[tokio::test]
+async fn full_turn_lists_and_scoped_search_keep_source_boundaries() {
+    use persisting_pchronicle::storage::StorylineLanceStore;
+    let root = tempfile::tempdir().unwrap();
+    for (file, session) in [
+        ("group/one", "one"),
+        ("group/two", "two"),
+        ("group-other", "other"),
+    ] {
+        let store = StorylineLanceStore::open(root.path().join(file))
+            .await
+            .unwrap();
+        let mut story = storyline_document(session, session);
+        let template = story.turns[0].clone();
+        story.turns = (0..5)
+            .map(|index| {
+                let mut turn = template.clone();
+                turn.id = 10 + index * 3;
+                turn.source = if index % 2 == 0 { "user" } else { "agent" }.into();
+                turn.message = json!(format!("hello {session} step {index}"));
+                turn
+            })
+            .collect();
+        store.replace_storyline(&story).await.unwrap();
+    }
+    let state = app_state(
+        ChronicleServerConfig::mounted(vec![
+            DatasetMount::default(root.path().to_string_lossy()).unwrap(),
+        ])
+        .unwrap(),
+    );
+    let request = RequestId("search-scope-test".into());
+    let runtime = current_catalog(&state, &request).await.unwrap();
+    let app = finish_routes(state);
+    for (file, expected) in [("", 3), ("group", 2), ("group/one", 1)] {
+        let (status, body) = get_json(
+            &app,
+            &format!("/api/explorer/runs?dataset={DEFAULT_DATASET_NAME}&file={file}&q=hello"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["snapshot"]["total"], expected, "{body}");
+    }
+    let coords = format!(
+        "dataset={DEFAULT_DATASET_NAME}&file=group/one&agent_id=agent&session_id=one&run_id=one"
+    );
+    for (suffix, total, id) in [
+        ("offset=1&limit=2", 5, 10),
+        ("source=agent&offset=1&limit=1", 2, 13),
+        ("q=hello&offset=2&limit=1", 5, 10),
+    ] {
+        let (status, body) =
+            get_json(&app, &format!("/api/explorer/turns?{coords}&{suffix}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["snapshot"]["total"], total, "{body}");
+        assert_eq!(body["records"][0]["id"], id, "{body}");
+    }
+    let (status, body) = get_json(
+        &app,
+        &format!("/api/explorer/turns?{coords}&offset=99&limit=2"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["snapshot"]["total"], 5);
+    assert_eq!(body["snapshot"]["has_more"], false);
+    assert_eq!(body["records"].as_array().unwrap().len(), 5);
+    let (status, body) = get_json(&app, &format!("/api/explorer/turn?{coords}&turn_id=19")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["turn"]["id"], 19, "{body}");
+    // An unreadable sibling must never be opened by scoped FTS.
+    let sibling = runtime
+        .snapshot
+        .storyline_table_paths(DEFAULT_DATASET_NAME, "group-other")
+        .unwrap()
+        .unwrap();
+    std::fs::remove_dir_all(&sibling.steps).unwrap();
+    let expression = crate::combine_match_expressions(&["hello".into()])
+        .unwrap()
+        .unwrap();
+    let (_, available, errors) = crate::find_expression_predicate_for_dataset(
+        &runtime.snapshot,
+        &expression,
+        Some("group"),
+        Some(DEFAULT_DATASET_NAME),
+    )
+    .await
+    .unwrap();
+    assert!(available);
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[tokio::test]
+async fn overlapping_trajectory_loads_share_immutable_result() {
+    let root = json_dataset_root();
+    let state = app_state(
+        ChronicleServerConfig::mounted(vec![
+            DatasetMount::default(root.to_string_lossy()).unwrap(),
+        ])
+        .unwrap(),
+    );
+    let request = RequestId("coalesced-trajectory".into());
+    let metrics = RequestMetrics::default();
+    let summaries = load_run_summaries(&state, None, None, &request, None)
+        .await
+        .unwrap();
+    let run = &summaries[0];
+    let query = SessionQuery {
+        dataset: Some(run.dataset.clone()),
+        file: Some(run.file.clone()),
+        run_id: run.run_id.clone(),
+        agent_id: run.agent_id.clone(),
+        session_id: run.session_id.clone(),
+        root_session_id: run.root_session_id.clone(),
+        offset: None,
+        limit: None,
+    };
+    let (left, right) = tokio::join!(
+        load_trajectory(&state, &query, &request, &metrics),
+        load_trajectory(&state, &query, &request, &metrics)
+    );
+    assert!(Arc::ptr_eq(&left.unwrap(), &right.unwrap()));
+}
+
+#[tokio::test]
+async fn explorer_loads_all_turns_with_offloaded_unknown_fields() {
+    use persisting_pchronicle::storage::StorylineLanceStore;
+    let root = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open(root.path().join("story"))
+        .await
+        .unwrap();
+    let mut story = storyline_document("all-turns", "all-turns");
+    for index in 0..16 {
+        story
+            .unknown_fields
+            .insert(
+                "codex",
+                "source",
+                format!("/events/{index}"),
+                json!({"text": "x".repeat(8192)}),
+            )
+            .unwrap();
+    }
+    story.refresh_unknown_key_counts().unwrap();
+    let template = story.turns[0].clone();
+    story.turns = (0..501)
+        .map(|index| {
+            let mut turn = template.clone();
+            turn.id = index;
+            turn
+        })
+        .collect();
+    store.replace_storyline(&story).await.unwrap();
+    let app = router(root.path().to_string_lossy().into_owned());
+    let coords = "dataset=dataset&file=story&agent_id=agent&session_id=all-turns&run_id=all-turns";
+    // Even legacy pagination parameters must not truncate the result.
+    let (status, body) = get_json(
+        &app,
+        &format!("/api/explorer/turns?{coords}&offset=100&limit=1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let records = body["records"].as_array().unwrap();
+    assert_eq!(records.len(), 501);
+    assert_eq!(records[0]["id"], 0);
+    assert_eq!(records[500]["id"], 500);
+    assert_eq!(body["snapshot"]["has_more"], false);
+    assert!(body.get("analysis").is_none());
+    let (status, combined) = get_json(
+        &app,
+        &format!("/api/explorer/turns?{coords}&include_analysis=true"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{combined}");
+    assert_eq!(combined["records"], body["records"]);
+    let (status, body) = get_json(&app, &format!("/api/explorer/run?{coords}")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["turn_count"], 501);
+    assert_eq!(combined["analysis"], body);
+    let (status, filtered) = get_json(
+        &app,
+        &format!("/api/explorer/turns?{coords}&include_analysis=true&source=nonexistent"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{filtered}");
+    assert!(filtered["records"].as_array().unwrap().is_empty());
+    assert_eq!(
+        filtered["analysis"], body,
+        "statistics must cover the entire run"
+    );
 }

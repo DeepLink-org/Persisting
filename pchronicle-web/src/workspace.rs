@@ -28,14 +28,14 @@ use crate::llm_settings::LlmSettings;
 #[cfg(test)]
 use crate::model::RunSearchStatus;
 use crate::model::{
-    CatalogTree, CompactRecordDetail, DimensionAggregate, HistogramBucket, PageSnapshot,
-    QueryCatalog, QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary,
-    ToolAggregate, TurnDetail, TurnSearchStatus, TurnSummary,
+    BrowseStatus, CatalogTree, CompactRecordDetail, DimensionAggregate, HistogramBucket,
+    PageSnapshot, QueryCatalog, QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage,
+    RunSummary, ToolAggregate, TurnDetail, TurnSearchStatus, TurnSummary,
 };
 use crate::notice::{ErrorNotice, WorkspaceNotice, workspace_notice};
 use crate::terminology::{ANALYSIS, ASSISTANT, DATASETS, RUNS, STEPS, STORAGE, TIMELINE};
 
-const SEARCH_DEBOUNCE_MS: u32 = 1_000;
+const STEP_SEARCH_DEBOUNCE_MS: u32 = 1_000;
 const CATALOG_REFRESH_MS: u32 = 5_000;
 
 fn evidence_notice(turn_id: i64, detail: &str) -> WorkspaceNotice {
@@ -88,6 +88,7 @@ fn page_from_query(page: Option<&str>, has_run: bool) -> &'static str {
         Some("runs") => "runs",
         Some("physical") => "physical",
         Some("catalog") => "catalog",
+        Some("requests") => "requests",
         Some("detail") => "detail",
         _ => "home",
     }
@@ -245,15 +246,10 @@ pub fn App() -> Element {
     let mut page = use_signal(move || initial_page.to_string());
     let runs = use_signal(|| None::<RunPage>);
     let runs_loading = use_signal(|| true);
-    let initial_query = url_param("q").unwrap_or_default();
-    let mut query = use_signal({
-        let initial_query = initial_query.clone();
-        move || initial_query
-    });
-    // Keep the input text separate from the query that drives the network
-    // request so typing can be debounced without making the input lag.
-    let mut applied_query = use_signal(move || initial_query);
-    let mut query_debounce_id = use_signal(|| 0u64);
+    let runs_generation = use_signal(|| 0u64);
+    let turn_generation = use_signal(|| 0_u64);
+    let mut last_runs_key = use_signal(|| None::<String>);
+    let mut query = use_signal(|| url_param("q").unwrap_or_default());
     let mut dataset_filter =
         use_signal(|| url_param("dataset_filter").unwrap_or_else(|| "all".into()));
     let mut status = use_signal(|| url_param("status").unwrap_or_else(|| "all".into()));
@@ -280,8 +276,10 @@ pub fn App() -> Element {
     let last_place = use_signal(String::new);
     let history_ready = use_signal(|| false);
     let mut history_seq = use_signal(|| 0i32);
-    let catalog_tree = use_signal(|| None::<CatalogTree>);
-    let catalog_loading = use_signal(|| false);
+    let mut catalog_tree = use_signal(|| None::<CatalogTree>);
+    let mut catalog_loading = use_signal(|| false);
+    let mut catalog_generation = use_signal(|| 0u64);
+    let mut catalog_task = use_signal(|| None::<dioxus::core::Task>);
     let mut offset = use_signal(|| 0usize);
     let mut error = use_signal(|| None::<WorkspaceNotice>);
     let mut catalog_auth_configured = use_signal(|| catalog_auth::load().is_configured());
@@ -301,6 +299,8 @@ pub fn App() -> Element {
     let mut expanded_turn_id =
         use_signal(|| url_param("turn").and_then(|value| value.parse::<i64>().ok()));
     let detail_loading = use_signal(|| false);
+    let detail_failed = use_signal(|| false);
+    let detail_generation = use_signal(|| 0u64);
     let turn_loading = use_signal(|| false);
     let mut detail_mode = use_signal(|| url_param("workspace").unwrap_or_else(|| "trace".into()));
     let mut trace_mode = use_signal(|| {
@@ -322,73 +322,105 @@ pub fn App() -> Element {
     let mut llm_config = use_signal(llm::load_config);
 
     use_effect(move || {
-        if !matches!(page().as_str(), "runs" | "detail") {
+        // Selecting a run navigates to `detail` while retaining the already
+        // loaded run page. Do not refetch the list just because the detail
+        // pane changed; only bootstrap it for a direct detail URL with no
+        // existing page.
+        let on_detail_without_runs = page() == "detail" && runs.peek().is_none();
+        if page() != "runs" && !on_detail_without_runs {
             return;
         }
-        load_runs(
-            RunFilters {
-                query: applied_query(),
-                dataset: dataset_filter(),
-                status: status(),
-                sort: sort(),
-                direction: direction(),
-                path: run_path(),
-                file: file_prefix(),
-                offset: offset(),
-            },
-            runs,
-            runs_loading,
-            error,
+        let filters = RunFilters {
+            query: query(),
+            dataset: dataset_filter(),
+            status: status(),
+            sort: sort(),
+            direction: direction(),
+            path: run_path(),
+            file: file_prefix(),
+            offset: offset(),
+        };
+        let key = format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            filters.query,
+            filters.dataset,
+            filters.status,
+            filters.sort,
+            filters.direction,
+            filters.path,
+            filters.file,
+            filters.offset,
+            page(),
         );
+        if last_runs_key.peek().as_deref() == Some(key.as_str()) && runs.peek().is_some() {
+            return;
+        }
+        last_runs_key.set(Some(key));
+        load_runs(filters, runs, runs_loading, runs_generation, error);
     });
 
     use_effect(move || {
+        // One task per navigation. Cancel even on A -> B -> A, so old pollers
+        // cannot resume or overwrite the current page.
+        if let Some(task) = *catalog_task.peek() {
+            task.cancel();
+        }
+        let requested_generation = (*catalog_generation.peek()).saturating_add(1);
+        catalog_generation.set(requested_generation);
         if page() != "catalog" {
             return;
         }
         let dataset = catalog_dataset();
         let prefix = catalog_prefix();
-        load_catalog_tree(
-            dataset.clone(),
-            prefix.clone(),
-            catalog_tree,
-            catalog_loading,
-            error,
-        );
-        spawn(async move {
+        catalog_task.set(Some(spawn(async move {
             loop {
-                TimeoutFuture::new(CATALOG_REFRESH_MS).await;
-                if page() != "catalog" || catalog_dataset() != dataset || catalog_prefix() != prefix
-                {
-                    break;
-                }
                 load_catalog_tree(
                     dataset.clone(),
                     prefix.clone(),
                     catalog_tree,
                     catalog_loading,
                     error,
-                );
+                    catalog_generation,
+                    requested_generation,
+                )
+                .await;
+                // Wait after completion. Slow requests must never overlap the
+                // next poll, and failures must not cause a tight retry loop.
+                TimeoutFuture::new(CATALOG_REFRESH_MS).await;
             }
-        });
+        })));
     });
 
+    let mut detail_request_key = use_signal(|| None::<String>);
     use_effect(move || {
-        if analysis().is_none()
-            && let Some(run) = selected_run()
+        let Some(run) = selected_run() else {
+            detail_request_key.set(None);
+            return;
+        };
+        let key = run.query();
+        if detail_request_key.peek().as_deref() == Some(key.as_str())
+            && (analysis().is_some() || *detail_loading.peek() || *detail_failed.peek())
         {
-            load_workspace(
-                run,
-                turn_query(),
-                source(),
-                analysis,
-                turns,
-                turn_search,
-                compact_record,
-                detail_loading,
-                error,
-            );
+            return;
         }
+        detail_request_key.set(Some(key));
+        let debounce = *turn_query_debounce_id.peek() + 1;
+        turn_query_debounce_id.set(debounce);
+        load_workspace(
+            run,
+            turn_query.peek().clone(),
+            source.peek().clone(),
+            analysis,
+            turns,
+            turn_search,
+            turn_loading,
+            turn_generation,
+            compact_record,
+            detail_loading,
+            detail_failed,
+            detail_generation,
+            error,
+        );
     });
 
     use_effect(move || {
@@ -402,6 +434,31 @@ pub fn App() -> Element {
             load_turn(
                 run,
                 turn_id,
+                expanded_turn_id,
+                selected_turn,
+                turn_loading,
+                error,
+            );
+        }
+    });
+
+    // A filtered result should be useful immediately. Pick the first real
+    // match and open its parent conversation instead of leaving the hit hidden
+    // behind a collapsed summary row.
+    use_effect(move || {
+        let query = turn_query();
+        if query.trim().is_empty() || expanded_turn_id().is_some() {
+            return;
+        }
+        let Some(turn) = turns().into_iter().find(|turn| turn.id >= 0) else {
+            return;
+        };
+        expanded_turn_id.set(Some(turn.id));
+        selected_turn.set(None);
+        if let Some(run) = selected_run() {
+            load_turn(
+                run,
+                turn.id,
                 expanded_turn_id,
                 selected_turn,
                 turn_loading,
@@ -467,7 +524,6 @@ pub fn App() -> Element {
                 file_prefix,
                 run_path,
                 query,
-                applied_query,
                 status,
                 sort,
                 direction,
@@ -490,8 +546,20 @@ pub fn App() -> Element {
         if page() == "home" {
             return;
         }
-        if catalog().is_none() {
+        let initial = catalog().is_none();
+        let waiting = catalog().as_ref().is_some_and(|catalog| {
+            catalog.datasets.iter().any(|dataset| {
+                dataset
+                    .browse
+                    .as_ref()
+                    .is_some_and(|status| status.observed_at == 0)
+            })
+        });
+        if initial || waiting {
             spawn(async move {
+                if !initial {
+                    TimeoutFuture::new(CATALOG_REFRESH_MS).await;
+                }
                 match api::query_catalog().await {
                     Ok(value) => {
                         if selected_table().is_empty() {
@@ -540,11 +608,13 @@ pub fn App() -> Element {
                     RailButton { active: page() == "tools", icon: "analysis", label: ANALYSIS, onclick: move |_| page.set("tools".into()) }
                     RailButton { active: page() == "physical", icon: "storage", label: STORAGE, onclick: move |_| page.set("physical".into()) }
                 }
+                RailButton { active: page() == "requests", icon: "analysis", label: "Requests", onclick: move |_| page.set("requests".into()) }
                 div { class: "rail-spacer" }
                 div { class: "rail-secondary", aria_label: "Assistant and settings",
                     button { class: if copilot_open() { "rail-button active" } else { "rail-button" }, aria_label: "Toggle Assistant", aria_expanded: copilot_open(), onclick: move |_| copilot_open.set(!copilot_open()), WorkspaceIcon { name: "assistant" } span { {ASSISTANT} } }
                     button { class: if settings_open() { "rail-button active" } else { "rail-button" }, aria_label: "Settings", onclick: move |_| settings_open.set(true), WorkspaceIcon { name: "keys" } span { "Keys" } }
                 }
+                crate::requests::RequestIndicator { on_open: move |_| page.set("requests".into()) }
                 {
                     let identity = catalog_auth::load();
                     let configured = identity.is_configured();
@@ -570,6 +640,7 @@ pub fn App() -> Element {
                     }
                 }
                 match page().as_str() {
+                    "requests" => rsx! { crate::requests::RequestsPanel {} },
                     "catalog" => rsx! {
                         CatalogExplorer {
                             tree: catalog_tree(),
@@ -577,6 +648,22 @@ pub fn App() -> Element {
                             auth_required: !catalog_auth_configured() && catalog_tree().is_none(),
                             on_settings: move |_| settings_open.set(true),
                             on_open: move |(dataset, prefix): (String, String)| {
+                                // Move immediately. The old tree must not remain visible while
+                                // a slow remote prefix is loading.
+                                catalog_tree.set(Some(CatalogTree {
+                                    dataset: (!dataset.is_empty()).then_some(dataset.clone()),
+                                    prefix: prefix.clone(),
+                                    browse: Some(BrowseStatus {
+                                        state: "refreshing".into(),
+                                        refreshing: true,
+                                        observed_at: 0,
+                                        stale: true,
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                }));
+                                catalog_loading.set(true);
+                                catalog_generation.set(catalog_generation().saturating_add(1));
                                 catalog_dataset.set(dataset);
                                 catalog_prefix.set(prefix);
                             },
@@ -606,9 +693,13 @@ pub fn App() -> Element {
                         let path_runs = runs().map(|page| page.path_index).unwrap_or_default();
                         let selected_path = analysis().map(|value| value.run.path).or_else(|| selected_run().map(|run| run.path)).unwrap_or_default();
                         rsx! { div { class: "pc2-detail-layout",
-                            PathExplorer { runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path, loading: runs_loading(),
+                            PathExplorer { paged: !query().trim().is_empty(), runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path, loading: runs_loading(),
+                                page_total: runs().map(|page| page.snapshot.total).unwrap_or_default(),
+                                page_offset: runs().map(|page| page.snapshot.offset).unwrap_or_default(),
+                                page_limit: runs().map(|page| page.snapshot.limit).unwrap_or(50),
                                 on_path: move |value| { run_path.set(value); offset.set(0); page.set("runs".into()); },
                                 on_view_mode: move |mode| path_list_mode.set(mode),
+                                on_page: move |value| offset.set(value),
                                 on_select: move |run: RunSummary| { turn_query.set(query()); selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); turn_search.set(TurnSearchStatus::default()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); },
                                 on_open_chat: move |run: RunSummary| {
                                     turn_query.set(query());
@@ -623,10 +714,16 @@ pub fn App() -> Element {
                                     copilot_open.set(true);
                                 },
                             }
-                            if let (Some(_run), Some(value)) = (selected_run(), analysis()) {
+                            if let Some(run) = selected_run() {
                                 RunDetailWorkspace {
-                                    run: value.run.clone(),
-                                    analysis: value,
+                                    failed: detail_failed(),
+                                    on_retry: move |_| {
+                                        if let Some(run) = selected_run.peek().clone() {
+                                            load_workspace(run,turn_query(),source(),analysis,turns,turn_search,turn_loading,turn_generation,compact_record,detail_loading,detail_failed,detail_generation,error);
+                                        }
+                                    },
+                                    run,
+                                    analysis: analysis(),
                                     compact_record: compact_record(),
                                     turns: turns(),
                                     search: turn_search(),
@@ -652,13 +749,18 @@ pub fn App() -> Element {
                                     on_view: move |value: String| {
                                         trace_mode.set(normalize_trace_view(&value).to_string());
                                     },
-                                    on_source: move |value| source.set(value),
+                                    on_source: move |value: String| {
+                                        source.set(value.clone());
+                                        if let Some(run) = selected_run() {
+                                            load_turns(run, turn_query(), value, turns, turn_search, turn_loading, error, turn_generation);
+                                        }
+                                    },
                                     on_query: move |value: String| {
                                         turn_query.set(value.clone());
                                         let request_id = turn_query_debounce_id() + 1;
                                         turn_query_debounce_id.set(request_id);
                                         spawn(async move {
-                                            TimeoutFuture::new(SEARCH_DEBOUNCE_MS).await;
+                                            TimeoutFuture::new(STEP_SEARCH_DEBOUNCE_MS).await;
                                             if turn_query_debounce_id() == request_id
                                                 && let Some(run) = selected_run()
                                             {
@@ -670,6 +772,7 @@ pub fn App() -> Element {
                                                     turn_search,
                                                     turn_loading,
                                                     error,
+                                                    turn_generation,
                                                 );
                                             }
                                         });
@@ -677,6 +780,8 @@ pub fn App() -> Element {
                                     on_apply_query: move |value: String| {
                                         turn_query_debounce_id.set(turn_query_debounce_id() + 1);
                                         turn_query.set(value.clone());
+                                        expanded_turn_id.set(None);
+                                        selected_turn.set(None);
                                         if let Some(run) = selected_run() {
                                             load_turns(
                                                 run,
@@ -686,6 +791,7 @@ pub fn App() -> Element {
                                                 turn_search,
                                                 turn_loading,
                                                 error,
+                                                turn_generation,
                                             );
                                         }
                                     },
@@ -750,9 +856,13 @@ pub fn App() -> Element {
                     _ => {
                         let path_runs = runs().map(|value| value.path_index).unwrap_or_default();
                         rsx! { div { class: "pc2-runs-layout",
-                        PathExplorer { runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path: run_path(), loading: runs_loading(),
+                        PathExplorer { paged: !query().trim().is_empty(), runs: path_runs, chat_sessions: assistant_index().sessions.clone(), view_mode: path_list_mode(), selected_path: run_path(), loading: runs_loading(),
+                            page_total: runs().map(|value| value.snapshot.total).unwrap_or_default(),
+                            page_offset: runs().map(|value| value.snapshot.offset).unwrap_or_default(),
+                            page_limit: runs().map(|value| value.snapshot.limit).unwrap_or(50),
                             on_path: move |value| { run_path.set(value); offset.set(0); },
                             on_view_mode: move |mode| path_list_mode.set(mode),
+                            on_page: move |value| offset.set(value),
                             on_select: move |run: RunSummary| { turn_query.set(query()); selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); turn_search.set(TurnSearchStatus::default()); selected_turn.set(None); drawer_turn.set(None); drawer_details.set(Vec::new()); drawer_turn_id.set(None); drawer_turn_ids.set(Vec::new()); drawer_title.set(String::new()); drawer_loading.set(false); expanded_turn_id.set(None); detail_mode.set("trace".into()); page.set("detail".into()); },
                             on_open_chat: move |run: RunSummary| {
                                 turn_query.set(query());
@@ -779,24 +889,8 @@ pub fn App() -> Element {
                             datasets: catalog().map(|value| value.datasets).unwrap_or_default(),
                             dataset: dataset_filter(),
                             chat_sessions: assistant_index().sessions.clone(),
-                            on_query: move |value: String| {
-                                query.set(value.clone());
-                                // A new search starts from the first page; retaining a
-                                // previous offset can make valid matches look absent.
-                                offset.set(0);
-                                let request_id = query_debounce_id() + 1;
-                                query_debounce_id.set(request_id);
-                                spawn(async move {
-                                    TimeoutFuture::new(SEARCH_DEBOUNCE_MS).await;
-                                    if query_debounce_id() == request_id {
-                                        applied_query.set(value);
-                                    }
-                                });
-                            },
                             on_apply_query: move |value: String| {
-                                query_debounce_id.set(query_debounce_id() + 1);
-                                query.set(value.clone());
-                                applied_query.set(value);
+                                query.set(value);
                                 offset.set(0);
                             },
                             on_dataset: move |value| { dataset_filter.set(value); run_path.set(String::new()); file_prefix.set(String::new()); offset.set(0); },
@@ -824,7 +918,7 @@ pub fn App() -> Element {
                                     if let Ok(value) = api::query_catalog().await {
                                         catalog.set(Some(value));
                                     }
-                                    load_runs(filters, runs, runs_loading, error);
+                                    load_runs(filters, runs, runs_loading, runs_generation, error);
                                 });
                             },
                             on_page: move |value| offset.set(value),
@@ -925,23 +1019,35 @@ fn load_runs(
     filters: RunFilters,
     mut page: Signal<Option<RunPage>>,
     mut loading: Signal<bool>,
+    mut generation: Signal<u64>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
+    // This function is called from a reactive effect. Reading the signal here
+    // would subscribe that effect to its own generation writes and create a
+    // request loop.
+    let request_generation = *generation.peek() + 1;
+    generation.set(request_generation);
     page.set(None);
     loading.set(true);
+    error.set(None);
     spawn(async move {
         let all_datasets = filters.dataset.trim().is_empty() || filters.dataset == "all";
         let dataset_names = if all_datasets {
-            api::query_catalog()
-                .await
-                .map(|catalog| {
-                    catalog
-                        .datasets
-                        .into_iter()
-                        .map(|dataset| dataset.name)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
+            match api::query_catalog().await {
+                Ok(catalog) => catalog
+                    .datasets
+                    .into_iter()
+                    .map(|dataset| dataset.name)
+                    .collect::<Vec<_>>(),
+                Err(failure) => {
+                    if generation() != request_generation {
+                        return;
+                    }
+                    error.set(Some(workspace_notice(&failure)));
+                    loading.set(false);
+                    return;
+                }
+            }
         } else {
             vec![filters.dataset.clone()]
         };
@@ -949,13 +1055,13 @@ fn load_runs(
         // A separate request per mounted Dataset lets a fast Lance source
         // paint immediately while a slower JSON source is still scanning.
         // Each response is merged into the same page as it arrives.
-        let request_limit = if all_datasets { 200 } else { 50 };
+        let request_limit = 50;
         let mut pending = FuturesUnordered::new();
         for dataset in dataset_names {
             let mut scoped = filters.clone();
             scoped.dataset = dataset;
             pending.push(async move {
-                api::explorer_runs(
+                let mut value = api::explorer_runs(
                     &scoped.query,
                     &scoped.dataset,
                     &scoped.status,
@@ -966,7 +1072,34 @@ fn load_runs(
                     if all_datasets { 0 } else { scoped.offset },
                     request_limit,
                 )
-                .await
+                .await?;
+                // Merge only the sorted prefix needed for this global page.
+                // A fixed first-200 cap silently hid later matches.
+                while all_datasets
+                    && value.snapshot.has_more
+                    && value.records.len() < scoped.offset.saturating_add(request_limit)
+                    && generation() == request_generation
+                {
+                    let next = api::explorer_runs(
+                        &scoped.query,
+                        &scoped.dataset,
+                        &scoped.status,
+                        &scoped.sort,
+                        &scoped.direction,
+                        &scoped.path,
+                        &scoped.file,
+                        value.snapshot.next_offset,
+                        request_limit,
+                    )
+                    .await?;
+                    if next.snapshot.next_offset <= value.snapshot.next_offset {
+                        break;
+                    }
+                    value.snapshot = next.snapshot;
+                    value.records.extend(next.records);
+                    value.path_index.extend(next.path_index);
+                }
+                Ok::<_, crate::api::ApiFailure>(value)
             });
         }
 
@@ -976,16 +1109,33 @@ fn load_runs(
             match result {
                 Ok(value) => {
                     partials.push(value);
-                    page.set(Some(merge_run_pages(&partials, &filters)));
+                    if generation() == request_generation {
+                        page.set(Some(merge_run_pages(&partials, &filters)));
+                    }
                 }
                 Err(message) => {
                     first_error.get_or_insert(message);
                 }
             }
         }
+        if let Some(failure) = &first_error {
+            // Keep successful datasets visible, but never present a partial
+            // all-dataset result as complete.
+            if generation() == request_generation {
+                error.set(Some(workspace_notice(failure)));
+            }
+        }
         if partials.is_empty() {
-            // Preserve the previous all-Dataset behavior if catalog discovery
-            // failed before fan-out could be started.
+            // Keep the selected dataset path usable even when one scoped scan
+            // fails; for an all-dataset request the catalog error was already
+            // surfaced above, so an empty page is preferable to a second
+            // unscoped remote scan.
+            if all_datasets {
+                if generation() == request_generation {
+                    loading.set(false);
+                }
+                return;
+            }
             match api::explorer_runs(
                 &filters.query,
                 &filters.dataset,
@@ -999,11 +1149,16 @@ fn load_runs(
             )
             .await
             {
-                Ok(value) => page.set(Some(value)),
-                Err(failure) => error.set(Some(workspace_notice(&first_error.unwrap_or(failure)))),
+                Ok(value) if generation() == request_generation => page.set(Some(value)),
+                Err(failure) if generation() == request_generation => {
+                    error.set(Some(workspace_notice(&first_error.unwrap_or(failure))))
+                }
+                _ => {}
             }
         }
-        loading.set(false);
+        if generation() == request_generation {
+            loading.set(false);
+        }
     });
 }
 
@@ -1024,11 +1179,11 @@ fn merge_run_pages(pages: &[RunPage], filters: &RunFilters) -> RunPage {
 
     let all_datasets = filters.dataset.is_empty() || filters.dataset == "all";
     let snapshot = if all_datasets {
-        let total = records.len();
+        let total = pages.iter().map(|page| page.snapshot.total).sum();
         let limit = 50;
         let offset = filters.offset.min(total);
-        let next_offset = (offset + limit).min(total);
         records = records.into_iter().skip(offset).take(limit).collect();
+        let next_offset = offset + records.len();
         PageSnapshot {
             offset,
             next_offset,
@@ -1051,10 +1206,14 @@ fn merge_run_pages(pages: &[RunPage], filters: &RunFilters) -> RunPage {
             })
     };
 
-    let mut path_index = pages
-        .iter()
-        .flat_map(|page| page.path_index.iter().cloned())
-        .collect::<Vec<_>>();
+    let mut path_index = if filters.query.trim().is_empty() {
+        pages
+            .iter()
+            .flat_map(|page| page.path_index.iter().cloned())
+            .collect::<Vec<_>>()
+    } else {
+        records.iter().map(|item| item.run.clone()).collect()
+    };
     path_index.sort_by(|left, right| left.path.cmp(&right.path));
     path_index.dedup_by(|left, right| left.query() == right.query());
 
@@ -1079,31 +1238,37 @@ fn merge_run_pages(pages: &[RunPage], filters: &RunFilters) -> RunPage {
     }
 }
 
-fn load_catalog_tree(
+async fn load_catalog_tree(
     dataset: String,
     prefix: String,
     mut tree: Signal<Option<CatalogTree>>,
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
+    generation: Signal<u64>,
+    requested_generation: u64,
 ) {
     loading.set(true);
-    spawn(async move {
-        match api::explorer_tree(&dataset, &prefix).await {
-            Ok(value) => tree.set(Some(value)),
-            Err(failure)
-                if matches!(failure.status, 400 | 401)
-                    && dataset.is_empty()
-                    && prefix.is_empty() =>
-            {
-                match api::explorer_tree_anonymous(&dataset, &prefix).await {
-                    Ok(value) => tree.set(Some(value)),
-                    Err(failure) => error.set(Some(workspace_notice(&failure))),
+    match api::explorer_tree(&dataset, &prefix).await {
+        Ok(value) if *generation.peek() == requested_generation => tree.set(Some(value)),
+        Err(failure)
+            if matches!(failure.status, 400 | 401) && dataset.is_empty() && prefix.is_empty() =>
+        {
+            match api::explorer_tree_anonymous(&dataset, &prefix).await {
+                Ok(value) if *generation.peek() == requested_generation => tree.set(Some(value)),
+                Err(failure) if *generation.peek() == requested_generation => {
+                    error.set(Some(workspace_notice(&failure)))
                 }
+                _ => {}
             }
-            Err(failure) => error.set(Some(workspace_notice(&failure))),
         }
+        Err(failure) if *generation.peek() == requested_generation => {
+            error.set(Some(workspace_notice(&failure)))
+        }
+        _ => {}
+    }
+    if *generation.peek() == requested_generation {
         loading.set(false);
-    });
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1114,38 +1279,106 @@ fn load_workspace(
     mut analysis: Signal<Option<RunAnalysis>>,
     mut turns: Signal<Vec<TurnSummary>>,
     mut turn_search: Signal<TurnSearchStatus>,
+    mut turn_loading: Signal<bool>,
+    mut turn_generation: Signal<u64>,
     mut compact_record: Signal<Option<CompactRecordDetail>>,
     mut loading: Signal<bool>,
+    mut failed: Signal<bool>,
+    mut generation: Signal<u64>,
     mut error: Signal<Option<WorkspaceNotice>>,
 ) {
+    // Untracked reads avoid subscribing the caller's effect to its own writes.
+    let requested = *generation.peek() + 1;
+    generation.set(requested);
     compact_record.set(None);
+    analysis.set(None);
+    failed.set(false);
     loading.set(true);
-    spawn({
-        let run = run.clone();
-        async move {
-            let (next_analysis, next_turns) =
-                futures_util::join!(api::run_analysis(&run), api::turns(&run, &query, &source),);
-            match (next_analysis, next_turns) {
-                (Ok(next_analysis), Ok(next_turns)) => {
-                    if next_analysis.run.is_compact_jsonl() {
-                        match api::compact_record(&next_analysis.run).await {
-                            Ok(value) => compact_record.set(Some(value)),
-                            Err(failure) => error.set(Some(workspace_notice(&failure))),
-                        }
-                    }
-                    analysis.set(Some(next_analysis));
-                    turns.set(next_turns.records);
-                    turn_search.set(next_turns.search);
-                }
-                (Err(failure), _) | (_, Err(failure)) => {
-                    error.set(Some(workspace_notice(&failure)));
+    turn_loading.set(true);
+    turns.set(Vec::new());
+    let step_requested = *turn_generation.peek() + 1;
+    turn_generation.set(step_requested);
+    spawn(async move {
+        // Steps first (no embedded analysis), paint the timeline, then load
+        // statistics. The follow-up /run hits the worker trajectory memo when
+        // the pool reuses the same child, so aggregates are usually cheap.
+        let turns_result = match futures_util::future::select(
+            Box::pin(api::turns(&run, &query, &source, false)),
+            Box::pin(TimeoutFuture::new(65_000)),
+        )
+        .await
+        {
+            futures_util::future::Either::Left((result, _)) => result,
+            _ => Err(api::ApiFailure::network(
+                "Loading steps timed out. Open Requests to inspect server progress, then retry.",
+            )),
+        };
+        if *generation.peek() != requested {
+            return;
+        }
+        match turns_result {
+            Ok(page) => {
+                if *turn_generation.peek() == step_requested {
+                    turns.set(page.records);
+                    turn_search.set(page.search);
+                    turn_loading.set(false);
                 }
             }
-            loading.set(false);
+            Err(failure) => {
+                if *turn_generation.peek() == step_requested {
+                    turn_loading.set(false);
+                }
+                error.set(Some(workspace_notice(&failure)));
+                loading.set(false);
+                return;
+            }
         }
+
+        if run.is_compact_jsonl() {
+            match api::compact_record(&run).await {
+                Ok(record) if *generation.peek() == requested => {
+                    compact_record.set(Some(record));
+                }
+                Err(failure) if *generation.peek() == requested => {
+                    error.set(Some(workspace_notice(&failure)));
+                }
+                _ => {}
+            }
+            if *generation.peek() == requested {
+                loading.set(false);
+            }
+            return;
+        }
+
+        let analysis_result = match futures_util::future::select(
+            Box::pin(api::run_analysis(&run)),
+            Box::pin(TimeoutFuture::new(65_000)),
+        )
+        .await
+        {
+            futures_util::future::Either::Left((result, _)) => result,
+            _ => Err(api::ApiFailure::network(
+                "Run statistics timed out. Steps remain available; open Requests to inspect progress.",
+            )),
+        };
+        if *generation.peek() != requested {
+            return;
+        }
+        match analysis_result {
+            Ok(next_analysis) => {
+                analysis.set(Some(next_analysis));
+                failed.set(false);
+            }
+            Err(failure) => {
+                failed.set(true);
+                error.set(Some(workspace_notice(&failure)));
+            }
+        }
+        loading.set(false);
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn load_turns(
     run: RunSummary,
     query: String,
@@ -1154,10 +1387,17 @@ fn load_turns(
     mut turn_search: Signal<TurnSearchStatus>,
     mut loading: Signal<bool>,
     mut error: Signal<Option<WorkspaceNotice>>,
+    mut generation: Signal<u64>,
 ) {
+    let requested = *generation.peek() + 1;
+    generation.set(requested);
     loading.set(true);
     spawn(async move {
-        match api::turns(&run, &query, &source).await {
+        let result = api::turns(&run, &query, &source, false).await;
+        if *generation.peek() != requested {
+            return;
+        }
+        match result {
             Ok(value) => {
                 turns.set(value.records);
                 turn_search.set(value.search);
@@ -1407,15 +1647,35 @@ fn PathExplorer(
     view_mode: PathListMode,
     selected_path: String,
     loading: bool,
+    paged: bool,
+    #[props(default)] page_total: usize,
+    #[props(default)] page_offset: usize,
+    #[props(default)] page_limit: usize,
     on_path: EventHandler<String>,
     on_view_mode: EventHandler<PathListMode>,
     on_select: EventHandler<RunSummary>,
     on_open_chat: EventHandler<RunSummary>,
+    on_page: EventHandler<usize>,
 ) -> Element {
     let import_path_tree = build_import_path_tree(&runs);
+    let limit = page_limit.max(1);
+    let total = if page_total > 0 {
+        page_total
+    } else {
+        runs.len()
+    };
+    let page_count = total.div_ceil(limit).max(1);
+    let current_page = (page_offset / limit).min(page_count.saturating_sub(1));
+    let page_start = if total == 0 {
+        0
+    } else {
+        page_offset.saturating_add(1)
+    };
+    let page_end = page_offset.saturating_add(runs.len()).min(total);
+    let show_pager = !paged && total > limit;
     rsx! { aside { class: "pc2-path-explorer",
         header {
-            div { strong { "Run paths" } span { if view_mode == PathListMode::Flat { "All runs in this dataset" } else { "Tree by import path" } } }
+            div { strong { "Run paths" } span { if paged { "Search results on this page" } else if view_mode == PathListMode::Flat { "All runs in this dataset" } else { "Tree by import path" } } }
             div { class: "pc2-path-view-toggle", role: "radiogroup", aria_label: "Run list view",
                 button { class: if view_mode == PathListMode::Flat { "active" } else { "" }, role: "radio", aria_checked: view_mode == PathListMode::Flat, onclick: move |_| on_view_mode.call(PathListMode::Flat), "Flat" }
                 button { class: if view_mode == PathListMode::Tree { "active" } else { "" }, role: "radio", aria_checked: view_mode == PathListMode::Tree, onclick: move |_| on_view_mode.call(PathListMode::Tree), "Tree" }
@@ -1423,7 +1683,7 @@ fn PathExplorer(
             span { "{runs.len()}" }
         }
         div { class: "pc2-path-tree",
-            button { class: if selected_path.is_empty() { "pc2-path-all active" } else { "pc2-path-all" }, onclick: move |_| on_path.call(String::new()), span { class: "pc2-path-icon root", "⌂" } strong { "All runs" } code { "{runs.len()}" } }
+            button { class: if selected_path.is_empty() { "pc2-path-all active" } else { "pc2-path-all" }, onclick: move |_| on_path.call(String::new()), span { class: "pc2-path-icon root", "⌂" } strong { if paged { "Search results" } else { "All runs" } } code { "{total}" } }
             if loading && runs.is_empty() { div { class: "pc2-path-loading", span { class: "spinner" } "Loading paths…" } }
             else if runs.is_empty() { div { class: "pc2-path-empty", "No captured run paths." } }
             else if view_mode == PathListMode::Flat {
@@ -1436,7 +1696,38 @@ fn PathExplorer(
                 }
             }
         }
-        footer { if view_mode == PathListMode::Flat { "Showing all runs in this dataset." } else { "Tree follows the imported path." } }
+        footer { class: if show_pager { "pc2-path-footer paged" } else { "pc2-path-footer" },
+            if show_pager {
+                label { class: "pc2-path-page",
+                    span { "Page" }
+                    select {
+                        value: "{current_page}",
+                        aria_label: "Jump to run path page",
+                        onchange: move |event| {
+                            if let Ok(index) = event.value().parse::<usize>() {
+                                on_page.call(index.saturating_mul(limit));
+                            }
+                        },
+                        for index in 0..page_count {
+                            option { value: "{index}", selected: index == current_page,
+                                {
+                                    let start = index.saturating_mul(limit).saturating_add(1);
+                                    let end = index.saturating_mul(limit).saturating_add(limit).min(total);
+                                    format!("{}/{} · {start}–{end}", index + 1, page_count)
+                                }
+                            }
+                        }
+                    }
+                }
+                span { "{page_start}–{page_end} of {total}" }
+            } else if paged {
+                "Showing the current search page."
+            } else if view_mode == PathListMode::Flat {
+                "Showing all runs in this dataset."
+            } else {
+                "Tree follows the imported path."
+            }
+        }
     } }
 }
 
@@ -1490,7 +1781,6 @@ fn RunsExplorer(
     direction: String,
     path: String,
     file: String,
-    on_query: EventHandler<String>,
     on_apply_query: EventHandler<String>,
     on_dataset: EventHandler<String>,
     on_status: EventHandler<String>,
@@ -1503,6 +1793,11 @@ fn RunsExplorer(
     on_open_chat: EventHandler<RunSummary>,
     on_select: EventHandler<RunSummary>,
 ) -> Element {
+    // Typing stays local; only submitted queries reach the page's request effect.
+    let mut draft_query = use_signal(|| query.clone());
+    use_effect(use_reactive((&query,), move |(query,)| {
+        draft_query.set(query)
+    }));
     let total = page.as_ref().map_or(0, |page| page.snapshot.total);
     let page_offset = page.as_ref().map_or(0, |page| page.snapshot.offset);
     let page_limit = page.as_ref().map_or(50, |page| page.snapshot.limit);
@@ -1522,7 +1817,7 @@ fn RunsExplorer(
         _ => "FTS unavailable",
     };
     let search_placeholder = if search.fts_available {
-        "Search runs/content or JSONB (find syntax)"
+        "Search message body · Enter to search"
     } else {
         "Search unavailable for this Dataset"
     };
@@ -1533,10 +1828,10 @@ fn RunsExplorer(
                 button { class: "button", onclick: on_refresh, "↻ Refresh" }
             }
             div { class: "pc2-filterbar",
-                label { class: "pc2-filter-search", span { "⌕" } input { value: "{query}", placeholder: "{search_placeholder}", aria_label: "Search runs and content", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); on_apply_query.call(query.clone()); } } } if !query.is_empty() { button { r#type: "button", class: "pc2-filter-clear", aria_label: "Clear run search", title: "Clear search", onclick: move |event| { event.prevent_default(); on_apply_query.call(String::new()); }, "×" } } }
+                label { class: "pc2-filter-search", span { "⌕" } input { value: "{draft_query}", placeholder: "{search_placeholder}", aria_label: "Search runs and content", title: "Search message body. Use #all(...) for all fields or an explicit field/JSON filter. Press Enter to search", oninput: move |event| draft_query.set(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); on_apply_query.call(draft_query()); } } } if !draft_query().is_empty() { button { r#type: "button", class: "pc2-filter-clear", aria_label: "Clear run search", title: "Clear search", onclick: move |event| { event.prevent_default(); draft_query.set(String::new()); on_apply_query.call(String::new()); }, "×" } } }
                 select { value: "{dataset}", aria_label: "Filter by Dataset", onchange: move |event| on_dataset.call(event.value()),
                     option { value: "all", "All Datasets" }
-                    for mounted in datasets { option { value: "{mounted.name}", "{mounted.name}" } }
+                    for mounted in datasets { option { value: "{mounted.name}", "{mounted.label()}" } }
                 }
                 select { value: "{status}", aria_label: "Filter by run status", onchange: move |event| on_status.call(event.value()), option { value: "all", "All statuses" } option { value: "active", "Active" } option { value: "completed", "Completed" } option { value: "failed", "Failed" } }
                 select { value: "{sort}", aria_label: "Sort runs", onchange: move |event| on_sort.call(event.value()), option { value: "session", "Session" } option { value: "events", "Events" } option { value: "status", "Status" } option { value: "agent", "Agent" } }
@@ -1545,6 +1840,13 @@ fn RunsExplorer(
                 if !file.is_empty() { button { class: "pc2-path-filter", title: "{file}", onclick: move |_| on_file.call(String::new()), "_file_ {short(&file, 24)} ×" } }
                 span { class: if search.fts_available { "pc2-search-mode available" } else { "pc2-search-mode unavailable" }, title: "{search_label}", "{search_label}" }
                 span { class: "pc2-result-count", "{total} runs" }
+            }
+            if page.is_some() {
+                footer { class: "pc2-pagination",
+                    button { disabled: page_offset == 0, onclick: move |_| on_page.call(page_offset.saturating_sub(page_limit)), "← Previous" }
+                    span { "{page_offset + usize::from(total > 0)}–{page_next} of {total}" }
+                    button { disabled: !page_has_more, onclick: move |_| on_page.call(page_next), "Next →" }
+                }
             }
             div { class: "pc2-table-wrap",
                 table { class: "pc2-run-table",
@@ -1564,13 +1866,7 @@ fn RunsExplorer(
                     }
                 }
             }
-            if page.is_some() {
-                footer { class: "pc2-pagination",
-                    button { disabled: page_offset == 0, onclick: move |_| on_page.call(page_offset.saturating_sub(page_limit)), "← Previous" }
-                    span { "{page_offset + usize::from(total > 0)}–{page_next} of {total}" }
-                    button { disabled: !page_has_more, onclick: move |_| on_page.call(page_next), "Next →" }
-                }
-            }
+
         }
     }
 }
@@ -1595,7 +1891,7 @@ fn RunTableRow(
         .map(|value| search_preview_excerpt(value, &highlight_query));
     rsx! {
         tr { tabindex: "0", onclick: move |_| on_select.call(run.clone()), onkeydown: move |event| if event.key() == Key::Enter { on_select.call(keyboard_run.clone()) },
-            td { div { class: "pc2-session-cell", div { class: "pc2-session-heading", strong { if compact { "Record · " } HighlightedText { text: item.run.session_id.clone(), query: query.clone() } } if has_chat && !compact { ChatMarker { run: run.clone(), on_open_chat } } } span { if compact { "1 JSON record · {item.run.file}" } else { "{item.run.row_count} captured rows" } } if let Some(preview) = preview { div { class: "pc2-run-search-preview", title: "Matched content preview", HighlightedText { text: preview, query: highlight_query.clone() } } } } }
+            td { div { class: "pc2-session-cell", div { class: "pc2-session-heading", strong { if compact { "Record · " } HighlightedText { text: item.run.session_id.clone(), query: query.clone() } } if has_chat && !compact { ChatMarker { run: run.clone(), on_open_chat } } } span { if compact { "1 JSON record · {item.run.file}" } else { "{item.run.row_count} captured rows" } } if let Some(preview) = preview { div { class: "pc2-run-search-preview", title: "{preview}", span { "Match: " } HighlightedText { text: preview.clone(), query: highlight_query.clone() } } } } }
             td { div { class: "pc2-session-cell", strong { if compact { "Compact JSONL" } else { HighlightedText { text: item.run.agent_id.clone(), query: query.clone() } } } span { if !compact { HighlightedText { text: model_text.clone(), query: query.clone() } } } } }
             td { StatusBadge { value: item.run.status.clone() } }
             td { class: "pc2-number", "{item.run.row_count}" }
@@ -1676,8 +1972,10 @@ fn StatusBadge(value: String) -> Element {
 #[component]
 #[allow(clippy::too_many_arguments)]
 fn RunDetailWorkspace(
+    failed: bool,
+    on_retry: EventHandler<MouseEvent>,
     run: RunSummary,
-    analysis: RunAnalysis,
+    analysis: Option<RunAnalysis>,
     compact_record: Option<CompactRecordDetail>,
     turns: Vec<TurnSummary>,
     search: TurnSearchStatus,
@@ -1737,6 +2035,11 @@ fn RunDetailWorkspace(
     };
     rsx! {
         section { class: if compact_header() { "pc2-detail is-condensed" } else { "pc2-detail" },
+            if failed {
+                div { role: "alert", "Run statistics could not be loaded. Steps remain available."
+                    button { class: "button", onclick: on_retry, "Retry" }
+                }
+            }
             header { class: "pc2-detail-head",
                 div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, "← Runs" } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
                 div { class: "pc2-head-actions",
@@ -1762,22 +2065,29 @@ fn RunDetailWorkspace(
                     }
                 }
             } else {
-            MetricsStrip { analysis: analysis.clone() }
+            if let Some(value) = analysis.clone() {
+            MetricsStrip { analysis: value.clone() }
             if detail_mode == "trace" {
                 CompactOverviewStrip {
-                    analysis: analysis.clone(),
+                    analysis: value,
                     turns: turns.clone(),
                     on_open_analysis: move |_| on_detail_mode.call("analysis".into()),
                 }
             }
+            } else if loading {
+                div { class: "pc2-inline-loading", role: "status", "Loading run statistics…" }
+            }
             nav { class: "pc2-detail-tabs", aria_label: "Run detail view",
                 button { class: if detail_mode == "trace" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("trace".into()), {TIMELINE} }
                 button { class: if detail_mode == "analysis" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("analysis".into()), "Analysis" }
-                span { "{turns.len()} of {analysis.turn_count} steps loaded for interactive charts" }
+                if let Some(value) = &analysis {
+                    span { "{turns.len()} of {value.turn_count} steps loaded for interactive charts" }
+                } else { span { "{turns.len()} steps loaded" } }
             }
             if detail_mode == "analysis" {
+                if let Some(value) = analysis {
                 AnalysisWorkspace {
-                    analysis: analysis.clone(),
+                    analysis: value,
                     turns: turns.clone(),
                     on_turn: move |id| {
                         on_turn.call(id);
@@ -1785,6 +2095,7 @@ fn RunDetailWorkspace(
                     },
                     on_scroll: on_detail_scroll,
                 }
+                } else { div { role: "status", "Run statistics are not available yet." } }
             } else {
                 section { class: "pc2-trace-surface pc2-inline-trace",
                     div { class: "pc2-trace-toolbar",
@@ -1800,8 +2111,8 @@ fn RunDetailWorkspace(
                         }
                     }
                     div { id: RUN_DETAIL_SCROLL_ID, class: "pc2-turn-list pc2-span-scroll", onscroll: on_detail_scroll,
-                        if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing run details…" } }
-                        if turns.is_empty() { div { class: "pc2-empty", strong { "No visible steps" } span { "No loaded steps match this filter." } } }
+                        if turn_loading { div { class: "pc2-inline-loading", role: "status", span { class: "spinner" } "Loading steps…" } }
+                        if turns.is_empty() && !turn_loading { div { class: "pc2-empty", strong { "No visible steps" } span { "No loaded steps match this filter." } } }
                         else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, view: view_for_list, source: source_for_list, query: query_for_list, on_turn, on_open_drawer } }
                     }
                 }
@@ -2946,7 +3257,6 @@ fn apply_workspace_search(
     mut file_prefix: Signal<String>,
     mut run_path: Signal<String>,
     mut query: Signal<String>,
-    mut applied_query: Signal<String>,
     mut status: Signal<String>,
     mut sort: Signal<String>,
     mut direction: Signal<String>,
@@ -2971,8 +3281,7 @@ fn apply_workspace_search(
         file_prefix.set(query_value(search, "file_prefix").unwrap_or_default());
         run_path.set(query_value(search, "path").unwrap_or_default());
         let next_query = query_value(search, "q").unwrap_or_default();
-        query.set(next_query.clone());
-        applied_query.set(next_query);
+        query.set(next_query);
         status.set(query_value(search, "status").unwrap_or_else(|| "all".into()));
         sort.set(query_value(search, "sort").unwrap_or_else(|| "session".into()));
         direction.set(query_value(search, "direction").unwrap_or_else(|| "asc".into()));
@@ -3122,6 +3431,38 @@ mod tests {
         assert_eq!(
             catalog_href("live", "nested/child"),
             "/?page=catalog&dataset=live&prefix=nested%2Fchild"
+        );
+    }
+
+    #[test]
+    fn detail_renders_steps_while_statistics_are_pending() {
+        let mut dom = VirtualDom::new(|| {
+            let turn: TurnSummary = serde_json::from_value(serde_json::json!({
+                "id": 7, "source": "user", "kind": null, "timestamp": null,
+                "call_id": null, "preview": "ready-step-before-statistics", "model_name": null,
+                "latency_ms": null, "ttft_ms": null, "prompt_tokens": null,
+                "completion_tokens": null, "total_tokens": null, "tool_names": [],
+                "event_seqs": [], "has_error": false
+            }))
+            .unwrap();
+            rsx! { RunDetailWorkspace {
+                failed: false, on_retry: |_| {},
+                run: run_at("a/run"), analysis: None, compact_record: None,
+                turns: vec![turn], search: TurnSearchStatus::default(),
+                selected: None, drawer: None, drawer_details: vec![], drawer_ids: vec![],
+                drawer_title: String::new(), drawer_loading: false, expanded_turn_id: None,
+                loading: true, turn_loading: false, detail_mode: "trace".to_string(),
+                view: "steps".to_string(), source: "all".to_string(), query: String::new(),
+                on_back: |_| {}, on_detail_mode: |_| {}, on_view: |_| {}, on_source: |_| {},
+                on_query: |_| {}, on_apply_query: |_| {}, on_turn: |_| {},
+                on_open_drawer: |_| {}, on_close_drawer: |_| {}, on_open_copilot: |_| {},
+                on_analyze: |_| {},
+            } }
+        });
+        let mutations = format!("{:?}", dom.rebuild_to_vec());
+        assert!(
+            mutations.contains("ready-step-before-statistics"),
+            "{mutations}"
         );
     }
 
@@ -3359,6 +3700,18 @@ mod tests {
         assert_eq!(merged.snapshot.total, 4);
         assert_eq!(merged.snapshot.offset, 2);
         assert!(!merged.snapshot.has_more);
+    }
+
+    #[test]
+    fn merged_search_keeps_remote_totals_and_only_visible_paths() {
+        let first = server_page(0, 300, &["a", "b"]);
+        let second = server_page(0, 400, &["c", "d"]);
+        let mut filters = run_filters("all", 0);
+        filters.query = "rust".into();
+        let merged = merge_run_pages(&[first, second], &filters);
+        assert_eq!(merged.snapshot.total, 700);
+        assert!(merged.snapshot.has_more);
+        assert_eq!(merged.path_index.len(), merged.records.len());
     }
 
     #[test]

@@ -603,10 +603,7 @@ pub(super) async fn discover_candidate_at(
         "invalid source scope"
     );
     let Some(root) = local_mount_path(&mount.uri) else {
-        // A missing remote manifest is not proof that a prefix or JSON object
-        // is absent. Preserve full membership and projection binding here until
-        // object-store discovery supports a bounded ancestor-aware traversal.
-        return discover_candidates(mount, options).await;
+        return discover_object_candidate_at(&mount.uri, file, options).await;
     };
     let root_metadata = fs::metadata(&root).context("inspect scoped Dataset root")?;
     if file == "." || root_metadata.is_file() {
@@ -931,7 +928,7 @@ async fn is_compact_jsonl_directory(path: &Path) -> Result<bool> {
     if let Some(manifest) = try_load_manifest(path) {
         return Ok(manifest.is_compact_jsonl_leaf());
     }
-    let dataset = match lance::Dataset::open(path.to_string_lossy().as_ref()).await {
+    let dataset = match crate::storage::open_lance_dataset(path.to_string_lossy().as_ref()).await {
         Ok(dataset) => dataset,
         Err(_) => return Ok(false),
     };
@@ -958,6 +955,65 @@ async fn discover_object_candidates(
     match probe_object_prefix(&store, uri, "", ".").await? {
         Some(ObjectProbe::Source(candidate)) => Ok(vec![candidate]),
         Some(ObjectProbe::Branch) | None => collect_object_virtual(&store, uri, "", options).await,
+    }
+}
+
+// Follow only the requested ancestry. Opaque leaves and canonical event bundles
+// keep their namespace semantics; unrelated siblings must never gate an exact read.
+async fn discover_object_candidate_at(
+    uri: &str,
+    file: &str,
+    mut options: LocalQueryManifestOptions,
+) -> Result<Vec<Candidate>> {
+    if file == "." {
+        return discover_object_candidates(uri, options).await;
+    }
+    let store = OpendalStore::from_uri(uri).await?;
+    let mut budget = DiscoveryBudget::new(options);
+    let mut current = String::new();
+    let mut parts = file.split('/');
+    loop {
+        budget.observe_entry()?;
+        if current == file
+            && is_json_candidate(Path::new(file))
+            && let Some(entry) = store.stat_file(file).await?
+        {
+            budget.observe_source()?;
+            return Ok(vec![Candidate::RemoteFile {
+                file: file.into(),
+                store: store.clone(),
+                meta: RemoteObjectMeta::from(entry),
+            }]);
+        }
+        match probe_object_prefix(&store, uri, &current, root_source_path(&current)).await? {
+            Some(ObjectProbe::Source(candidate)) => {
+                let sidecar = object_storyline_sidecar(&store, uri, &candidate).await?;
+                let mut candidates = vec![candidate];
+                candidates.extend(sidecar);
+                // Both sides are needed for canonical projection binding before
+                // discover_impl filters to the requested source namespace.
+                for _ in &candidates {
+                    budget.observe_source()?;
+                }
+                if !candidates.iter().any(|candidate| {
+                    let source = candidate.source_stub().file;
+                    source == file || source.starts_with(&format!("{file}/"))
+                }) {
+                    return Ok(Vec::new());
+                }
+                return Ok(candidates);
+            }
+            None if current.ends_with(".lance") => return Ok(Vec::new()),
+            Some(ObjectProbe::Branch) | None => {}
+        }
+        let Some(part) = parts.next() else {
+            options.max_entries = options.max_entries.saturating_sub(budget.entries);
+            return collect_object_virtual(&store, uri, file, options).await;
+        };
+        if !current.is_empty() {
+            current.push('/');
+        }
+        current.push_str(part);
     }
 }
 

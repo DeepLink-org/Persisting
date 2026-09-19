@@ -66,12 +66,11 @@ impl FindTextField {
     pub fn columns(&self) -> &'static [&'static str] {
         match self {
             Self::Reasoning => &["reasoning_content"],
-            Self::Message | Self::User | Self::Assistant => &["message_value"],
+            Self::Content | Self::Message | Self::User | Self::Assistant => &["message_value"],
             Self::Observation => &["observation"],
             Self::Prompt | Self::System => &["prompt", "message_value"],
             Self::Model => &["model_name"],
             Self::Env => &["env"],
-            Self::Content => &["message_value", "observation", "prompt"],
             Self::All => &[
                 "message_value",
                 "reasoning_content",

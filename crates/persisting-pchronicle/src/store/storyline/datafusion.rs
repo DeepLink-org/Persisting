@@ -27,7 +27,7 @@ use lance::Dataset;
 use lance::deps::arrow_schema::{Schema as ArrowSchema, SchemaRef};
 
 use super::content::{
-    content_columns, hydrate_selected_batches, open_objects, preview_selected_batches,
+    content_columns, hydrate_batches, native_json_columns, open_objects, preview_selected_batches,
 };
 use super::{StorylineLanceStore, StorylineTablePaths};
 use crate::store::datafusion_bridge::{from_datafusion, into_datafusion};
@@ -184,7 +184,12 @@ impl TableProvider for StorylineTableProvider {
             .create_plan()
             .await
             .map_err(|error| into_datafusion(error.into()))?;
-        let selected = selected_content_columns(self.kind, projection, &self.schema);
+        let selected = selected_content_columns(
+            self.kind,
+            projection,
+            &self.schema,
+            self.options.content_read_mode == StorylineContentReadMode::Full,
+        );
         if selected.is_empty() {
             Ok(plan)
         } else {
@@ -193,7 +198,7 @@ impl TableProvider for StorylineTableProvider {
                 selected,
                 match self.options.content_read_mode {
                     StorylineContentReadMode::Full => {
-                        ContentMaterializationMode::Full(self.objects.clone())
+                        ContentMaterializationMode::Full(self.objects.clone(), self.kind)
                     }
                     StorylineContentReadMode::Preview => ContentMaterializationMode::Preview,
                 },
@@ -239,6 +244,7 @@ fn selected_content_columns(
     kind: StorylineTableKind,
     projection: Option<&Vec<usize>>,
     schema: &SchemaRef,
+    include_native_json: bool,
 ) -> HashSet<&'static str> {
     let projected = projection.map(|projection| {
         projection
@@ -248,11 +254,17 @@ fn selected_content_columns(
     });
     content_columns(kind)
         .iter()
-        .filter_map(|(name, _)| {
+        .map(|(name, _)| *name)
+        .chain(
+            native_json_columns(kind)
+                .iter()
+                .copied()
+                .filter(|_| include_native_json),
+        )
+        .filter(|name| {
             projected
                 .as_ref()
                 .is_none_or(|projected| projected.contains(name))
-                .then_some(*name)
         })
         .collect()
 }
@@ -267,7 +279,7 @@ struct ContentHydrationExec {
 
 #[derive(Debug, Clone)]
 enum ContentMaterializationMode {
-    Full(Arc<Dataset>),
+    Full(Arc<Dataset>, StorylineTableKind),
     Preview,
 }
 
@@ -296,7 +308,7 @@ impl DisplayAs for ContentHydrationExec {
         let mut selected = self.selected.iter().copied().collect::<Vec<_>>();
         selected.sort_unstable();
         let mode = match self.mode {
-            ContentMaterializationMode::Full(_) => "full",
+            ContentMaterializationMode::Full(..) => "full",
             ContentMaterializationMode::Preview => "preview",
         };
         write!(
@@ -351,8 +363,10 @@ impl ExecutionPlan for ContentHydrationExec {
             async move {
                 let batch = batch?;
                 let mut batches = match mode {
-                    ContentMaterializationMode::Full(objects) => {
-                        hydrate_selected_batches(&objects, vec![batch], &selected).await
+                    ContentMaterializationMode::Full(objects, kind) => {
+                        // Match point reads: native JSON envelopes can contain
+                        // offloaded values too, including unknown_fields.
+                        hydrate_batches(&objects, vec![batch], kind).await
                     }
                     ContentMaterializationMode::Preview => {
                         preview_selected_batches(vec![batch], &selected)
@@ -435,24 +449,15 @@ impl StorylineDataSource {
         paths: StorylineTablePaths,
         options: StorylineDataSourceOptions,
     ) -> Result<Self> {
-        let remote = paths.runs.to_string_lossy().contains("://")
-            && !paths.runs.to_string_lossy().starts_with("file:");
-        let (runs, steps, tool_calls, objects) = if remote {
-            // Avoid four concurrent Lance opens against flaky S3 gateways.
-            (
-                open_dataset(&paths.runs, paths.runs_version).await?,
-                open_dataset(&paths.steps, paths.steps_version).await?,
-                open_dataset(&paths.tool_calls, paths.tool_calls_version).await?,
-                open_objects(&paths.objects, paths.objects_version).await?,
-            )
-        } else {
-            tokio::try_join!(
-                open_dataset(&paths.runs, paths.runs_version),
-                open_dataset(&paths.steps, paths.steps_version),
-                open_dataset(&paths.tool_calls, paths.tool_calls_version),
-                open_objects(&paths.objects, paths.objects_version),
-            )?
-        };
+        // Each open is independently gated by endpoint/bucket AIMD. Running
+        // them together lets metadata HEADs overlap without bypassing the S3
+        // safety limits.
+        let (runs, steps, tool_calls, objects) = tokio::try_join!(
+            open_dataset(&paths.runs, paths.runs_version),
+            open_dataset(&paths.steps, paths.steps_version),
+            open_dataset(&paths.tool_calls, paths.tool_calls_version),
+            open_objects(&paths.objects, paths.objects_version),
+        )?;
         let objects = Arc::new(objects);
         Ok(Self {
             paths,
