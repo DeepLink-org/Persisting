@@ -10,9 +10,12 @@ import pyarrow as pa
 from dldb.metrics import MetricsCollector
 from dldb.table import (
     DEFAULT_COMPACT_BATCH_SIZE,
+    HashPartitionTable,
     IndexCoverage,
     InformationSchemaTable,
     PartitionStatus,
+    SimpleTable,
+    _assert_arrow_belongs_to_hash_partition,
     _coerce_table_statistics,
     create_table,
     open_table_by_partition_type,
@@ -146,7 +149,10 @@ class SessionBase:
         """
         raise NotImplementedError
 
-    def add(self, table_name: str, datas: pd.DataFrame, partition=None):
+    def add(self, table_name: str, datas: Union[pd.DataFrame, pa.Table], partition=None):
+        raise NotImplementedError
+
+    def add_from_table(self, table_name: str, source_table_name: str, partition):
         raise NotImplementedError
 
     def count_rows(self, table_name: str, partition=None):
@@ -498,12 +504,16 @@ class LanceSession(SessionBase):
         )
         return lance.version, _debug_state_from_stats(stats, coverage)
 
-    def _add_to_disk(self, table_name: str, datas: pd.DataFrame, partition=None):
+    def _add_to_disk(
+        self, table_name: str, datas: Union[pd.DataFrame, pa.Table], partition=None
+    ):
         table = self._get_table(table_name, partition)
         table.add(datas, partition)
         logger.debug(f"add {len(datas)} rows to {table_name}")
 
-    def _add_to_memory(self, table_name: str, datas: pd.DataFrame, partition=None):
+    def _add_to_memory(
+        self, table_name: str, datas: Union[pd.DataFrame, pa.Table], partition=None
+    ):
         table = self.memory_tables(table_name, None)
         if len(datas) >= self.config.flush_every or (
             table is not None
@@ -522,10 +532,42 @@ class LanceSession(SessionBase):
             table.add(datas, partition)
         logger.debug(f"add {len(datas)} rows to {table_name}")
 
-    def add(self, table_name: str, datas: pd.DataFrame, partition=None):
+    def add(self, table_name: str, datas: Union[pd.DataFrame, pa.Table], partition=None):
         if not self.config.use_memory_queue:
             return self._add_to_disk(table_name, datas, partition)
         return self._add_to_memory(table_name, datas, partition)
+
+    def add_from_table(self, table_name: str, source_table_name: str, partition):
+        assert table_name, "table_name is required"
+        assert source_table_name, "source_table_name is required"
+        assert partition is not None, "partition is required"
+        source = self._get_table(source_table_name)
+        dest = self._get_table(table_name)
+        if not isinstance(source, SimpleTable):
+            raise ValueError("source table must be a Simple table")
+        if not isinstance(dest, HashPartitionTable):
+            raise ValueError("destination table must be a HASH table")
+        if source.table is None:
+            source.open_table()
+
+        source.table.checkout_latest()
+        version = source.table.version
+        try:
+            source.table.checkout(version)
+            dataset = source.table.to_lance()
+            keys = dataset.to_table(columns=[dest.partition_column])
+            _assert_arrow_belongs_to_hash_partition(
+                keys, dest.partition_column, partition, dest.partitions
+            )
+            if keys.num_rows == 0:
+                return
+            for batch in dataset.to_batches():
+                dest.add_arrow(pa.Table.from_batches([batch]), partition)
+        finally:
+            try:
+                source.table.checkout_latest()
+            except Exception:
+                pass
 
     def count_rows(self, table_name: str, partition=None):
         table = self._get_table(table_name, partition)

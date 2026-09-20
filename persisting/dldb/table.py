@@ -376,6 +376,18 @@ def _run_debug_step(api: str, fn):
     return run_debug_step(api, fn)
 
 
+def _assert_arrow_belongs_to_hash_partition(
+    table: pa.Table, column: str, partition: int, partitions: int
+) -> None:
+    if column not in table.column_names:
+        raise ValueError(f"partition column {column!r} not in source table")
+    buckets = {stable_hash(value) % partitions for value in table.column(column).to_pylist()}
+    if buckets and buckets != {partition}:
+        raise ValueError(
+            f"source rows must belong to HASH partition={partition}, got {sorted(buckets)}"
+        )
+
+
 def _execute_merge_insert(lance_table, columns, datas, *, insert_missing: bool) -> None:
     builder = lance_table.merge_insert(columns).when_matched_update_all()
     if insert_missing:
@@ -529,7 +541,7 @@ class BaseTable:
     def drop_table(self, partition=None):
         raise NotImplementedError
 
-    def add(self, datas: pd.DataFrame, partition=None):
+    def add(self, datas: Union[pd.DataFrame, pa.Table], partition=None):
         raise NotImplementedError
 
     def count_rows(self, partition=None) -> int:
@@ -679,7 +691,7 @@ class SimpleTable(BaseTable):
         assert partition is None, "Partitioning not supported for SimpleTable"
         self.db_conn.drop_table(self.table_name)
 
-    def add(self, datas: pd.DataFrame, partition=None):
+    def add(self, datas: Union[pd.DataFrame, pa.Table], partition=None):
         assert partition is None, "Partitioning not supported for SimpleTable"
         if self.table is None:
             self.open_table()
@@ -1412,6 +1424,17 @@ class HashPartitionTable(BaseTable):
     def list_partitions(self) -> List[int]:
         partitions, _ = self._partition_catalog()
         return partitions
+
+    def add_arrow(self, datas: pa.Table, partition: int):
+        assert isinstance(partition, int), "partition must be an integer"
+        _assert_arrow_belongs_to_hash_partition(
+            datas, self.partition_column, partition, self.partitions
+        )
+        if datas.num_rows == 0:
+            return
+        with self._lock:
+            self.open_table([partition], create_when_missing=True)
+        self.tables[partition].add(datas)
 
     def add(self, datas: pd.DataFrame, partition=None):
         # Group data by hash partition

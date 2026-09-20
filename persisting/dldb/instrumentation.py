@@ -329,6 +329,15 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
             },
         ),
         _ApiSpec(
+            method="add_from_table",
+            api="add_from_table",
+            meta_fn=lambda self, table_name, source_table_name, partition: {
+                "table_name": table_name,
+                "source_table_name": source_table_name,
+                "partition": partition,
+            },
+        ),
+        _ApiSpec(
             method="count_rows",
             api="count_rows",
             meta_fn=lambda self, table_name, partition=None: {
