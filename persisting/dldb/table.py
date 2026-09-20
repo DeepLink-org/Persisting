@@ -376,16 +376,53 @@ def _run_debug_step(api: str, fn):
     return run_debug_step(api, fn)
 
 
+def _hash_buckets_for_values(values, partitions: int) -> List[int]:
+    return [stable_hash(value) % partitions for value in values]
+
+
 def _assert_arrow_belongs_to_hash_partition(
     table: pa.Table, column: str, partition: int, partitions: int
 ) -> None:
     if column not in table.column_names:
         raise ValueError(f"partition column {column!r} not in source table")
-    buckets = {stable_hash(value) % partitions for value in table.column(column).to_pylist()}
+    buckets = set(_hash_buckets_for_values(table.column(column).to_pylist(), partitions))
     if buckets and buckets != {partition}:
         raise ValueError(
             f"source rows must belong to HASH partition={partition}, got {sorted(buckets)}"
         )
+
+
+def _split_arrow_by_hash(table: pa.Table, column: str, partitions: int) -> dict[int, pa.Table]:
+    if column not in table.column_names:
+        raise ValueError(f"partition column {column!r} not in source table")
+    if table.num_rows == 0:
+        return {}
+    unique_vals = table.column(column).unique().to_pylist()
+    buckets = set(_hash_buckets_for_values(unique_vals, partitions))
+    if len(buckets) == 1:
+        return {next(iter(buckets)): table}
+    row_buckets = _hash_buckets_for_values(table.column(column).to_pylist(), partitions)
+    groups: dict[int, List[int]] = {}
+    for i, bucket in enumerate(row_buckets):
+        groups.setdefault(bucket, []).append(i)
+    return {bucket: table.take(indices) for bucket, indices in groups.items()}
+
+
+def _split_pandas_by_hash(datas: pd.DataFrame, column: str, partitions: int) -> dict[int, pd.DataFrame]:
+    if column not in datas.columns:
+        raise ValueError(f"partition column {column!r} not in source table")
+    if len(datas) == 0:
+        return {}
+    unique_vals = datas[column].unique().tolist()
+    buckets = set(_hash_buckets_for_values(unique_vals, partitions))
+    if len(buckets) == 1:
+        return {next(iter(buckets)): datas}
+    copied = datas.copy()
+    copied["_hash_partition"] = copied[column].map(lambda value: stable_hash(value) % partitions)
+    return {
+        int(key): group.drop(columns=["_hash_partition"]).reset_index(drop=True)
+        for key, group in copied.groupby("_hash_partition", sort=False)
+    }
 
 
 def _execute_merge_insert(lance_table, columns, datas, *, insert_missing: bool) -> None:
@@ -647,7 +684,12 @@ class BaseTable:
         raise NotImplementedError
 
     def upsert(
-        self, columns: List[str], datas: pd.DataFrame, partition=None, *, insert_missing: bool = True
+        self,
+        columns: List[str],
+        datas: Union[pd.DataFrame, pa.Table],
+        partition=None,
+        *,
+        insert_missing: bool = True,
     ):
         raise NotImplementedError
 
@@ -910,7 +952,12 @@ class SimpleTable(BaseTable):
         self.table.update(where, values)
 
     def upsert(
-        self, columns: List[str], datas: pd.DataFrame, partition=None, *, insert_missing: bool = True
+        self,
+        columns: List[str],
+        datas: Union[pd.DataFrame, pa.Table],
+        partition=None,
+        *,
+        insert_missing: bool = True,
     ):
         assert partition is None, "Partitioning not supported for SimpleTable"
         if self.table is None:
@@ -1436,21 +1483,25 @@ class HashPartitionTable(BaseTable):
             self.open_table([partition], create_when_missing=True)
         self.tables[partition].add(datas)
 
-    def add(self, datas: pd.DataFrame, partition=None):
-        # Group data by hash partition
-        datas = datas.copy()
-        datas["_hash_partition"] = datas[self.partition_column].apply(self._hash_partition)
-        dfs = {
-            d: g.drop(columns=["_hash_partition"]).reset_index(drop=True)
-            for d, g in datas.groupby("_hash_partition", sort=False)
-        }
-
+    def _groups_for_write(self, datas, partition) -> dict:
+        groups = (
+            _split_arrow_by_hash(datas, self.partition_column, self.partitions)
+            if isinstance(datas, pa.Table)
+            else _split_pandas_by_hash(datas, self.partition_column, self.partitions)
+        )
         if partition is not None:
-            assert len(dfs) == 1 and partition in dfs, f"datas must belong partition={partition}"
+            assert (
+                len(groups) == 1 and partition in groups
+            ), f"datas must belong partition={partition}"
+        return groups
 
+    def add(self, datas: Union[pd.DataFrame, pa.Table], partition=None):
+        groups = self._groups_for_write(datas, partition)
+        if not groups:
+            return
         with self._lock:
-            self.open_table(list(dfs.keys()), create_when_missing=True)
-        for partition_idx, value in dfs.items():
+            self.open_table(list(groups.keys()), create_when_missing=True)
+        for partition_idx, value in groups.items():
             self.tables[partition_idx].add(value)
 
     def count_rows(self, partition=None) -> int:
@@ -1764,20 +1815,17 @@ class HashPartitionTable(BaseTable):
             self.tables[partition].update(where, values)
 
     def upsert(
-        self, columns: List[str], datas: pd.DataFrame, partition=None, *, insert_missing: bool = True
+        self,
+        columns: List[str],
+        datas: Union[pd.DataFrame, pa.Table],
+        partition=None,
+        *,
+        insert_missing: bool = True,
     ):
-        # Group data by hash partition
-        datas = datas.copy()
-        datas["_hash_partition"] = datas[self.partition_column].apply(self._hash_partition)
-        dfs = {
-            d: g.drop(columns=["_hash_partition"]).reset_index(drop=True)
-            for d, g in datas.groupby("_hash_partition", sort=False)
-        }
-
-        if partition is not None:
-            assert len(dfs) == 1 and partition in dfs, f"datas must belong partition={partition}"
-
-        wanted = list(dfs.keys())
+        groups = self._groups_for_write(datas, partition)
+        wanted = list(groups.keys())
+        if not wanted:
+            return
         if insert_missing:
             self.open_table(wanted, create_when_missing=True)
         else:
@@ -1789,7 +1837,7 @@ class HashPartitionTable(BaseTable):
             _execute_merge_insert(
                 self.tables[partition_idx],
                 columns,
-                dfs[partition_idx],
+                groups[partition_idx],
                 insert_missing=insert_missing,
             )
 
