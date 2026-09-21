@@ -11,6 +11,33 @@
   background: #0b192c;
   color-scheme: light;
 }
+/* Embed fills the iframe; 100vh would use the outer browser viewport and clip. */
+html:has(.pc2-shell.embed),
+html:has(.pc2-shell.embed) body,
+html:has(.pc2-shell.embed) #main {
+  height: 100% !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+  background: #f5f7fa !important;
+}
+.pc2-shell.embed {
+  --rail-width: 0px;
+  grid-template-columns: minmax(0, 1fr);
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+  background: #f5f7fa !important;
+}
+.pc2-shell.embed > .rail,
+.pc2-shell.embed > .skip-link {
+  display: none !important;
+}
+.pc2-shell.embed .pc2-copilot {
+  height: 100% !important;
+}
+.pc2-shell.embed .requests-grid aside {
+  max-height: none;
+}
 .pc2-shell > .rail {
   min-height: 0;
   align-items: stretch;

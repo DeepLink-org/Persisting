@@ -587,6 +587,8 @@ pub fn App() -> Element {
         }
     };
 
+    let embedded = embed_enabled();
+
     rsx! {
         if page() == "home" {
             crate::home::HomeLanding {
@@ -595,8 +597,12 @@ pub fn App() -> Element {
                 },
             }
         } else {
-        div { class: "pc2-shell", tabindex: "-1", onkeydown: root_keydown,
+        div {
+            class: if embedded { "pc2-shell embed" } else { "pc2-shell" },
+            tabindex: "-1",
+            onkeydown: root_keydown,
             a { class: "skip-link", href: "#pc2-main", "Skip to main content" }
+            if !embedded {
             nav { class: "rail", aria_label: "pChronicle navigation",
                 button { class: "brand-mark", title: "Persisting Chronicle", aria_label: "Persisting Chronicle home", onclick: move |_| page.set("home".into()),
                     span { class: "rail-logo", aria_hidden: "true", "P" }
@@ -630,6 +636,7 @@ pub fn App() -> Element {
                         }
                     }
                 }
+            }
             }
 
             main { id: "pc2-main", class: "pc2-main", tabindex: "-1",
@@ -3144,6 +3151,23 @@ fn url_param(name: &str) -> Option<String> {
     query_value(&search, name)
 }
 
+fn embed_enabled() -> bool {
+    matches!(url_param("embed").as_deref(), Some("1") | Some("true"))
+}
+
+fn with_embed_param(url: String) -> String {
+    if !embed_enabled() || url.contains("embed=") {
+        return url;
+    }
+    if url.contains('?') {
+        format!("{url}&embed=1")
+    } else if url == "/" {
+        "/?embed=1".into()
+    } else {
+        format!("{url}?embed=1")
+    }
+}
+
 fn analyze_workspace_url(session_id: &str) -> String {
     if session_id.is_empty() {
         "/?page=tools".into()
@@ -3328,16 +3352,13 @@ fn workspace_href(
     turn_query: &str,
     turn_id: Option<i64>,
 ) -> Option<String> {
-    if page == "home" {
-        return Some(home_sync_url().into());
-    }
-    if page == "tools" {
-        return analysis_url_sync_target(analysis_session_id, analysis_seed_scope_pending);
-    }
-    if page == "physical" {
-        return Some("/?page=physical".into());
-    }
-    if page == "catalog" {
+    let href = if page == "home" {
+        Some(home_sync_url().into())
+    } else if page == "tools" {
+        analysis_url_sync_target(analysis_session_id, analysis_seed_scope_pending)
+    } else if page == "physical" {
+        Some("/?page=physical".into())
+    } else if page == "catalog" {
         let mut params = vec!["page=catalog".to_string()];
         if !catalog_dataset.is_empty() {
             params.push(format!("dataset={}", urlencoding::encode(catalog_dataset)));
@@ -3345,53 +3366,55 @@ fn workspace_href(
         if !catalog_prefix.is_empty() {
             params.push(format!("prefix={}", urlencoding::encode(catalog_prefix)));
         }
-        return Some(format!("/?{}", params.join("&")));
-    }
-    let mut params = vec![format!("page={}", urlencoding::encode(page))];
-    if let Some(run) = run.filter(|_| page == "detail") {
-        params.push(format!("dataset={}", urlencoding::encode(&run.dataset)));
-        params.push(format!("file={}", urlencoding::encode(&run.file)));
-        if let Some(run_id) = run.run_id.as_deref().filter(|value| !value.is_empty()) {
-            params.push(format!("run_id={}", urlencoding::encode(run_id)));
-        }
-        params.push(format!("agent_id={}", urlencoding::encode(&run.agent_id)));
-        params.push(format!(
-            "session_id={}",
-            urlencoding::encode(&run.session_id)
-        ));
-        if let Some(root) = &run.root_session_id {
-            params.push(format!("root_session_id={}", urlencoding::encode(root)));
-        }
-        params.push(format!("workspace={}", urlencoding::encode(workspace)));
-        params.push(format!("view={}", urlencoding::encode(view)));
-        params.push(format!("source={}", urlencoding::encode(source)));
-        if !turn_query.is_empty() {
-            params.push(format!("turn_q={}", urlencoding::encode(turn_query)));
-        }
-        if let Some(turn_id) = turn_id {
-            params.push(format!("turn={turn_id}"));
-        }
-    } else if page == "runs" {
-        if !query.is_empty() {
-            params.push(format!("q={}", urlencoding::encode(query)));
-        }
-        params.push(format!("status={}", urlencoding::encode(status)));
-        if dataset_filter != "all" {
+        Some(format!("/?{}", params.join("&")))
+    } else {
+        let mut params = vec![format!("page={}", urlencoding::encode(page))];
+        if let Some(run) = run.filter(|_| page == "detail") {
+            params.push(format!("dataset={}", urlencoding::encode(&run.dataset)));
+            params.push(format!("file={}", urlencoding::encode(&run.file)));
+            if let Some(run_id) = run.run_id.as_deref().filter(|value| !value.is_empty()) {
+                params.push(format!("run_id={}", urlencoding::encode(run_id)));
+            }
+            params.push(format!("agent_id={}", urlencoding::encode(&run.agent_id)));
             params.push(format!(
-                "dataset_filter={}",
-                urlencoding::encode(dataset_filter)
+                "session_id={}",
+                urlencoding::encode(&run.session_id)
             ));
+            if let Some(root) = &run.root_session_id {
+                params.push(format!("root_session_id={}", urlencoding::encode(root)));
+            }
+            params.push(format!("workspace={}", urlencoding::encode(workspace)));
+            params.push(format!("view={}", urlencoding::encode(view)));
+            params.push(format!("source={}", urlencoding::encode(source)));
+            if !turn_query.is_empty() {
+                params.push(format!("turn_q={}", urlencoding::encode(turn_query)));
+            }
+            if let Some(turn_id) = turn_id {
+                params.push(format!("turn={turn_id}"));
+            }
+        } else if page == "runs" {
+            if !query.is_empty() {
+                params.push(format!("q={}", urlencoding::encode(query)));
+            }
+            params.push(format!("status={}", urlencoding::encode(status)));
+            if dataset_filter != "all" {
+                params.push(format!(
+                    "dataset_filter={}",
+                    urlencoding::encode(dataset_filter)
+                ));
+            }
+            params.push(format!("sort={}", urlencoding::encode(sort)));
+            params.push(format!("direction={}", urlencoding::encode(direction)));
+            if !path.is_empty() {
+                params.push(format!("path={}", urlencoding::encode(path)));
+            }
+            if !file_prefix.is_empty() {
+                params.push(format!("file_prefix={}", urlencoding::encode(file_prefix)));
+            }
         }
-        params.push(format!("sort={}", urlencoding::encode(sort)));
-        params.push(format!("direction={}", urlencoding::encode(direction)));
-        if !path.is_empty() {
-            params.push(format!("path={}", urlencoding::encode(path)));
-        }
-        if !file_prefix.is_empty() {
-            params.push(format!("file_prefix={}", urlencoding::encode(file_prefix)));
-        }
-    }
-    Some(format!("/?{}", params.join("&")))
+        Some(format!("/?{}", params.join("&")))
+    };
+    href.map(with_embed_param)
 }
 
 #[cfg(test)]

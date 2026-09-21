@@ -1,0 +1,9 @@
+{
+  "host": "0.0.0.0",
+  "url": "ldaps://10.1.7.6:636",
+  "base_dn": "OU=Users,OU=PJLAB,DC=pjlab,DC=org",
+  "bind_dn": "persisting",
+  "account": "persisting",
+  "insecure_tls": true,
+  "size_limit": 20
+}
