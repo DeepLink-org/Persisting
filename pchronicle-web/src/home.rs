@@ -8,9 +8,9 @@ fn assign_location(href: &str) {
     }
 }
 
-/// Same as production Realtime entry: always same-origin `/litefuse`.
+/// Skip Litefuse sign-in UI; kick off custom SSO (竹云/飞书) immediately.
 fn litefuse_login_url() -> &'static str {
-    "/litefuse"
+    "/litefuse/auth/sso-initiate?provider=custom"
 }
 
 fn go_litefuse() {
