@@ -1,0 +1,19 @@
+  0.62s  INFO -----------------------------------------------------------------
+                Serving your app: pchronicle-web! 🚀
+                • Press [33m`ctrl+c`[0m to exit the server
+                • Press [33m`r`[0m to rebuild the app
+                • Press [33m`p`[0m to toggle automatic rebuilds
+                • Press [33m`v`[0m to toggle verbose logging
+                • Press [33m`/`[0m for more commands and shortcuts
+                Learn more at [34mhttps://dioxuslabs.com/learn/0.7/getting_started[0m
+               ----------------------------------------------------------------
+ 12.80s  INFO Build completed successfully in [33m12.21s[0m, launching app! 💫
+1414.36s  INFO Build completed in [33m4.22s[0m
+1622.72s  INFO Build completed in [33m4.18s[0m
+1628.04s  INFO Build completed in [33m4.05s[0m
+2014.18s  INFO Hotreloading: [32m/src/home.rs[0m 
+2014.21s  INFO Hotreloading: [32m/src/home.rs[0m 
+2250.64s  INFO Build completed in [33m11.23s[0m
+2255.98s  INFO Build completed in [33m4.07s[0m
+2430.83s  INFO Build completed in [33m10.96s[0m
+2436.19s  INFO Build completed in [33m4.02s[0m
