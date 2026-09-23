@@ -6,7 +6,7 @@ out_dir = "../crates/persisting-pchronicle-cli/web-assets"
 pre_compress = true
 
 [web.app]
-title = "pChronicle · Trajectory Workbench"
+title = "DeepTrace"
 base_path = "/"
 
 [web.dev]
