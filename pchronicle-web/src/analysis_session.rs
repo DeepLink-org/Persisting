@@ -296,11 +296,11 @@ pub enum AnalyzeTraceKind {
 impl AnalyzeTraceKind {
     pub fn title(self) -> &'static str {
         match self {
-            Self::GenerateSpec => "Create plan",
-            Self::Compile => "Compile SQL",
-            Self::RepairSpec => "Repair plan",
-            Self::Execute => "Run query",
-            Self::Interpret => "Interpret results",
+            Self::GenerateSpec => crate::strings::analysis::TRACE_KIND_CREATE_PLAN,
+            Self::Compile => crate::strings::analysis::TRACE_KIND_COMPILE_SQL,
+            Self::RepairSpec => crate::strings::analysis::TRACE_KIND_REPAIR_PLAN,
+            Self::Execute => crate::strings::analysis::TRACE_KIND_RUN_QUERY,
+            Self::Interpret => crate::strings::analysis::TRACE_KIND_INTERPRET,
         }
     }
 

@@ -35,36 +35,36 @@ pub fn LlmSettings(
         div { class: "pc2-modal-backdrop high",
             section { class: "pc2-settings", role: "dialog", aria_modal: "true",
                 header {
-                    div { p { class: "eyebrow", "Browser settings" } h2 { "Keys" } }
+                    div { p { class: "eyebrow", {crate::strings::llm::BROWSER_SETTINGS} } h2 { "Keys" } }
                     button { onclick: on_close, "×" }
                 }
                 p { class: "pc2-settings-note",
-                    "Catalog keys are sent to this pChronicle server as request headers so it can authorize queries. Assistant keys stay in this browser and are sent only to the OpenAI-compatible endpoint."
+                    {crate::strings::llm::SETTINGS_NOTE}
                 }
                 div { class: "pc2-form",
-                    p { class: "eyebrow", "Catalog identity" }
-                    label { span { "Profile" }
+                    p { class: "eyebrow", {crate::strings::llm::CATALOG_IDENTITY} }
+                    label { span { {crate::strings::llm::PROFILE} }
                         select { value: "{selected_profile}", onchange: move |event| {
                             let value = event.value();
                             if value == "__new__" { editing.set(None); catalog_label.set(String::new()); catalog_access_key.set(String::new()); catalog_secret_key.set(String::new()); }
                             else if let Ok(index) = value.parse::<usize>() { catalog_auth::select(index); let values = catalog_auth::accounts(); if let Some(auth) = values.get(index) { editing.set(Some(index)); catalog_label.set(auth.label.clone()); catalog_access_key.set(auth.access_key.clone()); catalog_secret_key.set(auth.secret_key.clone()); } }
                         },
-                            option { value: "__new__", "＋ New profile" }
+                            option { value: "__new__", {crate::strings::llm::NEW_PROFILE} }
                             for (index, auth) in accounts.iter().enumerate() { option { value: "{index}", "{auth.label}" } }
                         }
                     }
-                    label { span { "Profile name" } input { placeholder: "e.g. Production", value: "{catalog_label}", oninput: move |event| catalog_label.set(event.value()) } }
-                    label { span { "Access key" } input { value: "{catalog_access_key}", oninput: move |event| catalog_access_key.set(event.value()) } }
-                    label { span { "Secret key" } input { r#type: "password", value: "{catalog_secret_key}", oninput: move |event| catalog_secret_key.set(event.value()) } }
-                    p { class: "eyebrow", "Assistant model" }
-                    label { span { "API base" } input { value: "{api_base}", oninput: move |event| api_base.set(event.value()) } }
-                    label { span { "API key" } input { r#type: "password", value: "{api_key}", oninput: move |event| api_key.set(event.value()) } }
-                    label { span { "Model" } input { value: "{model}", oninput: move |event| model.set(event.value()) } }
+                    label { span { "Profile name" } input { placeholder: {crate::strings::llm::PROFILE_PLACEHOLDER}, value: "{catalog_label}", oninput: move |event| catalog_label.set(event.value()) } }
+                    label { span { {crate::strings::llm::ACCESS_KEY} } input { value: "{catalog_access_key}", oninput: move |event| catalog_access_key.set(event.value()) } }
+                    label { span { {crate::strings::llm::SECRET_KEY} } input { r#type: "password", value: "{catalog_secret_key}", oninput: move |event| catalog_secret_key.set(event.value()) } }
+                    p { class: "eyebrow", {crate::strings::llm::ASSISTANT_MODEL} }
+                    label { span { {crate::strings::llm::API_BASE} } input { value: "{api_base}", oninput: move |event| api_base.set(event.value()) } }
+                    label { span { {crate::strings::llm::API_KEY} } input { r#type: "password", value: "{api_key}", oninput: move |event| api_key.set(event.value()) } }
+                    label { span { {crate::strings::llm::MODEL} } input { value: "{model}", oninput: move |event| model.set(event.value()) } }
                 }
                 footer {
-                    button { class: "button", onclick: on_close, "Cancel" }
+                    button { class: "button", onclick: on_close, {crate::strings::common::CANCEL} }
                     if editing().is_some() {
-                        button { class: "button danger", onclick: move |_| { if let Some(index) = editing() { catalog_auth::remove(index); let values = catalog_auth::accounts(); catalog_accounts.set(values.clone()); if let Some(auth) = values.first() { editing.set(Some(0)); catalog_label.set(auth.label.clone()); catalog_access_key.set(auth.access_key.clone()); catalog_secret_key.set(auth.secret_key.clone()); } else { editing.set(None); catalog_label.set(String::new()); catalog_access_key.set(String::new()); catalog_secret_key.set(String::new()); } } }, "Delete profile" }
+                        button { class: "button danger", onclick: move |_| { if let Some(index) = editing() { catalog_auth::remove(index); let values = catalog_auth::accounts(); catalog_accounts.set(values.clone()); if let Some(auth) = values.first() { editing.set(Some(0)); catalog_label.set(auth.label.clone()); catalog_access_key.set(auth.access_key.clone()); catalog_secret_key.set(auth.secret_key.clone()); } else { editing.set(None); catalog_label.set(String::new()); catalog_access_key.set(String::new()); catalog_secret_key.set(String::new()); } } }, {crate::strings::llm::DELETE_PROFILE} }
                     }
                     button {
                         class: "button primary",
@@ -82,7 +82,7 @@ pub fn LlmSettings(
                                 model: model(),
                             });
                         },
-                        "Save locally"
+                        {crate::strings::llm::SAVE_LOCALLY}
                     }
                 }
             }

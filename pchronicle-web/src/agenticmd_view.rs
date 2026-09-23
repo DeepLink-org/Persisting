@@ -433,7 +433,7 @@ fn CommentBlock(raw: String, chips: Vec<(String, String)>) -> Element {
 /// default so the drawer is immediately useful.
 #[component]
 pub fn AgenticMdRenderer(
-    #[props(default = "Conversation".to_string())] title: String,
+    #[props(default = {crate::strings::components::CONVERSATION}.to_string())] title: String,
     #[props(default)] turns: Vec<StorylineTurn>,
     #[props(default)] wire_tool_calls: Vec<Vec<WireToolCall>>,
 ) -> Element {
@@ -466,7 +466,7 @@ pub fn AgenticMdRenderer(
         metadata.push(("system".to_string(), systems.to_string()));
     }
     if tools > 0 {
-        metadata.push(("tools".to_string(), tools.to_string()));
+        metadata.push(({crate::strings::components::TOOLS}.to_string(), tools.to_string()));
     }
     let steps = conversation_steps(turns, wire_tool_calls);
     let has_metadata = !metadata.is_empty();
@@ -525,7 +525,7 @@ fn conversation_steps(
 
 fn message_nodes(turn: &StorylineTurn) -> Vec<BodyNode> {
     let body = agenticmd_message(turn);
-    if body.trim().is_empty() || body.trim() == "No text" {
+    if body.trim().is_empty() || body.trim() == {crate::strings::components::NO_TEXT} {
         Vec::new()
     } else if matches!(turn.message, Value::String(_)) {
         parse_body_nodes(&body)
@@ -579,7 +579,7 @@ fn AgenticMdStep(
         timeline_calls = parsed_calls;
     }
     nodes.retain(|node| !matches!(node, BodyNode::ToolCall { .. }));
-    let has_message = !body.trim().is_empty() && body.trim() != "No text";
+    let has_message = !body.trim().is_empty() && body.trim() != {crate::strings::components::NO_TEXT};
     let renderable_metrics = turn.metrics.as_ref().and_then(compact_metric_value);
     let has_metrics = renderable_metrics
         .as_ref()
@@ -593,7 +593,7 @@ fn AgenticMdStep(
         .reasoning_content
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty());
-    let has_user_message = !user_body.trim().is_empty() && user_body.trim() != "No text";
+    let has_user_message = !user_body.trim().is_empty() && user_body.trim() != {crate::strings::components::NO_TEXT};
     let has_agent_content = turn.source != "user"
         && (has_message || has_tools || has_metrics || has_reasoning || has_observation);
     let step_id = if turn.source == "user" {
@@ -605,12 +605,12 @@ fn AgenticMdStep(
         section { class: "pc2-agenticmd-step",
             h1 { class: "pc2-agenticmd-step-heading", "Step {step_id}" }
             if has_user_message {
-                h2 { class: "pc2-agenticmd-section-heading", "User" }
+                h2 { class: "pc2-agenticmd-section-heading", {crate::strings::detail::ROLE_USER} }
                 AgenticMdBody { nodes: user_nodes }
             }
             if turn.source == "user" {
                 if has_message && !has_user_message {
-                    h2 { class: "pc2-agenticmd-section-heading", "User" }
+                    h2 { class: "pc2-agenticmd-section-heading", {crate::strings::detail::ROLE_USER} }
                     AgenticMdBody { nodes: nodes.clone() }
                 }
             } else if has_agent_content {
@@ -618,7 +618,7 @@ fn AgenticMdStep(
                 if has_message { AgenticMdBody { nodes: nodes.clone() } }
                 if has_reasoning {
                     section { class: "pc2-agenticmd-content-block pc2-agenticmd-reasoning",
-                        header { "Reasoning" }
+                        header { {crate::strings::components::REASONING} }
                         pre { "{turn.reasoning_content.clone().unwrap_or_default()}" }
                     }
                 }
@@ -627,13 +627,13 @@ fn AgenticMdStep(
                 }
                 if has_observation && !has_tools {
                     section { class: "pc2-agenticmd-content-block pc2-agenticmd-observation",
-                        header { "Observation" }
+                        header { {crate::strings::components::OBSERVATION} }
                         JsonValue { value: turn.observation.clone().unwrap_or(Value::Null), default_open: true }
                     }
                 }
                 if has_metrics {
                     section { class: "pc2-agenticmd-content-block pc2-agenticmd-metrics",
-                        header { "Metrics" }
+                        header { {crate::strings::components::METRICS} }
                         JsonValue { value: renderable_metrics.clone().unwrap_or(Value::Null), default_open: true }
                     }
                 }
@@ -644,9 +644,9 @@ fn AgenticMdStep(
 
 fn role_heading(source: &str) -> &'static str {
     if source == "system" {
-        "System"
+        {crate::strings::detail::ROLE_SYSTEM}
     } else {
-        "Agent"
+        {crate::strings::runs::SORT_AGENT}
     }
 }
 
@@ -975,7 +975,7 @@ mod tests {
 
     #[test]
     fn structured_message_is_rendered_as_highlightable_json() {
-        let value = turn(serde_json::json!({"ok": true}));
+        let value = turn(serde_json::json!({{crate::strings::analysis::TRACE_OK}: true}));
         let body = agenticmd_message(&value);
         let nodes = if matches!(value.message, Value::String(_)) {
             parse_body_nodes(&body)

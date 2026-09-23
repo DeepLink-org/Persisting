@@ -21,6 +21,7 @@ mod physical;
 mod requests;
 mod result_explorer;
 mod result_profile;
+mod strings;
 mod terminology;
 mod workspace;
 

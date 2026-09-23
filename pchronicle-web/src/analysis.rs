@@ -19,9 +19,9 @@ use crate::result_explorer::{ResultExplorer, ResultIdentity, identity_href};
 use crate::result_profile::{AnalysisRefinement, ColumnProfile, profile_rows};
 
 const QUESTION_STARTERS: [&str; 3] = [
-    "Compare step counts per run by agent model",
-    "Show the distribution of step latency and the slowest 20 steps",
-    "Count tool calls by function name and drill into the busiest runs",
+    {crate::strings::analysis::STARTER_1},
+    {crate::strings::analysis::STARTER_2},
+    {crate::strings::analysis::STARTER_3},
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,7 +58,7 @@ impl ComposerModel {
             revision.is_some_and(|revision| revision.spec.is_some() && !revision.manually_edited);
         match tab {
             ComposerTab::Ask => Self {
-                primary_label: "Analyze",
+                primary_label: {crate::strings::analysis::ANALYZE},
                 primary_enabled: catalog_ready
                     && scope_ready
                     && model_ready
@@ -68,7 +68,7 @@ impl ComposerModel {
                 show_spec_summary,
             },
             ComposerTab::Sql => Self {
-                primary_label: "Run",
+                primary_label: {crate::strings::analysis::RUN},
                 primary_enabled: !generating
                     && revision.is_some_and(|revision| revision.executable_sql().is_some()),
                 submits_sql: true,
@@ -123,7 +123,7 @@ impl AnalysisViewModel {
                     | RevisionState::Interpreting
             ),
             manually_edited: revision.manually_edited,
-            sql_disclosure_label: "Compiled SQL",
+            sql_disclosure_label: {crate::strings::analysis::COMPILED_SQL},
             trace_open: matches!(
                 revision.state,
                 RevisionState::GeneratingPlan
@@ -151,7 +151,7 @@ fn apply_inserted_token(
         revision.state,
         RevisionState::GeneratingPlan | RevisionState::Executing | RevisionState::Interpreting
     ) {
-        return Err("SQL cannot be edited while an operation is running.".into());
+        return Err({crate::strings::analysis::SQL_EDIT_WHILE_RUNNING}.into());
     }
     let sql = revision
         .plan
@@ -171,7 +171,7 @@ fn apply_manual_sql(revision: &mut AnalysisRevision, sql: String) -> Result<(), 
         revision.state,
         RevisionState::GeneratingPlan | RevisionState::Executing | RevisionState::Interpreting
     ) {
-        return Err("SQL cannot be edited while an operation is running.".into());
+        return Err({crate::strings::analysis::SQL_EDIT_WHILE_RUNNING}.into());
     }
     if !matches!(
         revision.state,
@@ -183,7 +183,7 @@ fn apply_manual_sql(revision: &mut AnalysisRevision, sql: String) -> Result<(), 
             | RevisionState::Complete
             | RevisionState::InterpretationError
     ) {
-        return Err("SQL can only be edited in a draft or reviewed version.".into());
+        return Err({crate::strings::analysis::SQL_EDIT_DRAFT_ONLY}.into());
     }
     if let Some(plan) = revision.plan.as_mut() {
         plan.sql = sql;
@@ -191,7 +191,7 @@ fn apply_manual_sql(revision: &mut AnalysisRevision, sql: String) -> Result<(), 
         revision.plan = Some(AnalysisPlan {
             id: revision.id,
             question: revision.question.clone(),
-            intent_summary: "Manual SQL".into(),
+            intent_summary: {crate::strings::analysis::MANUAL_SQL}.into(),
             scope_summary: revision
                 .scope
                 .items
@@ -283,12 +283,12 @@ fn finish_query_for_interpretation(
         return Ok(None);
     };
     let plan = revision.plan.as_ref().ok_or_else(|| {
-        "An analysis plan is required before summarizing query results.".to_string()
+        {crate::strings::analysis::PLAN_REQUIRED}.to_string()
     })?;
     let evidence = revision
         .evidence
         .as_ref()
-        .ok_or_else(|| "Query results are required before creating a summary.".to_string())?;
+        .ok_or_else(|| {crate::strings::analysis::QUERY_RESULTS_REQUIRED}.to_string())?;
     let profiles = revision
         .execution
         .as_ref()
@@ -312,16 +312,16 @@ fn retry_interpretation_from_evidence(
         operation_id,
     } = effect
     else {
-        return Err("Retry did not prepare an interpretation operation.".into());
+        return Err({crate::strings::analysis::RETRY_NO_INTERPRETATION}.into());
     };
     let plan = revision
         .plan
         .as_ref()
-        .ok_or_else(|| "The reviewed plan is unavailable for interpretation.".to_string())?;
+        .ok_or_else(|| {crate::strings::analysis::PLAN_UNAVAILABLE}.to_string())?;
     let evidence = revision
         .evidence
         .as_ref()
-        .ok_or_else(|| "Query results are unavailable; rerun the analysis first.".to_string())?;
+        .ok_or_else(|| {crate::strings::analysis::QUERY_UNAVAILABLE_RERUN}.to_string())?;
     let profiles = revision
         .execution
         .as_ref()
@@ -1013,7 +1013,7 @@ pub fn AnalysisWorkspace(
                 session.set(None);
                 question.set(String::new());
                 clear_confirmation.set(false);
-                storage_notice.set(Some("Analysis history cleared for these datasets.".into()));
+                storage_notice.set(Some({crate::strings::analysis::HISTORY_CLEARED}.into()));
                 on_session_change.call(String::new());
             }
             Err(message) => storage_notice.set(Some(message)),
@@ -1065,18 +1065,18 @@ pub fn AnalysisWorkspace(
     let page_title = session()
         .as_ref()
         .map(session_label)
-        .unwrap_or_else(|| "New analysis".into());
+        .unwrap_or_else(|| {crate::strings::analysis::NEW_ANALYSIS}.into());
     let table_count = schema_tables.len();
 
     rsx! {
         section { class: "analyze-workspace", aria_label: "Question-driven analysis workspace",
             nav { class: "analyze-schema", aria_label: "Dataset fields",
                 header {
-                    strong { "SQL tables" }
+                    strong { {crate::strings::analysis::SQL_TABLES} }
                     span { "{table_count}" }
                 }
                 if schema_tables.is_empty() {
-                    p { class: "analyze-schema-empty", "Datasets are still loading." }
+                    p { class: "analyze-schema-empty", {crate::strings::analysis::DATASETS_LOADING} }
                 } else {
                     div { class: "analyze-schema-list",
                         ul { class: "analyze-schema-tables",
@@ -1163,20 +1163,20 @@ pub fn AnalysisWorkspace(
             div { class: "analyze-detail",
                 header { class: "analyze-detail-head",
                     div {
-                        p { class: "eyebrow", "Analysis" }
+                        p { class: "eyebrow", {crate::strings::detail::TAB_ANALYSIS} }
                         h1 { "{page_title}" }
                         p {
                             if composer_tab() == ComposerTab::Ask {
-                                "Ask in plain language, or write SQL. Analysis creates a plan, generates a read-only query, and returns limited results."
+                                {crate::strings::analysis::ASK_PLAIN_OR_SQL}
                             } else {
-                                "Run executes this query. Manual SQL is not repaired automatically."
+                                {crate::strings::analysis::RUN_EXECUTES_QUERY}
                             }
                         }
                     }
                     div { class: "analyze-header-actions",
                         if !recent_sessions().is_empty() {
                             label { class: "analyze-recent-select",
-                                span { "Recent" }
+                                span { {crate::strings::analysis::RECENT} }
                                 select {
                                     value: "{current_session_id}",
                                     onchange: move |event| select_recent_session.call(event.value()),
@@ -1188,16 +1188,16 @@ pub fn AnalysisWorkspace(
                         }
                         if clear_confirmation() {
                             div { class: "analyze-clear-confirmation", role: "group", aria_label: "Confirm clearing analysis history",
-                                span { "Clear analysis history for these datasets?" }
-                                button { class: "button", r#type: "button", onclick: clear_history, "Clear" }
-                                button { class: "analyze-link-button", r#type: "button", onclick: move |_| clear_confirmation.set(false), "Cancel" }
+                                span { {crate::strings::analysis::CLEAR_HISTORY_CONFIRM} }
+                                button { class: "button", r#type: "button", onclick: clear_history, {crate::strings::common::CLEAR} }
+                                button { class: "analyze-link-button", r#type: "button", onclick: move |_| clear_confirmation.set(false), {crate::strings::common::CANCEL} }
                             }
                         } else {
-                            button { class: "analyze-link-button", r#type: "button", onclick: move |_| clear_confirmation.set(true), "Clear history" }
+                            button { class: "analyze-link-button", r#type: "button", onclick: move |_| clear_confirmation.set(true), {crate::strings::analysis::CLEAR_HISTORY} }
                         }
                         button { class: "button analyze-settings-button", r#type: "button", onclick: move |_| settings_open.set(true),
                             span { aria_hidden: "true", "⚙" }
-                            "Model settings"
+                            {crate::strings::analysis::MODEL_SETTINGS}
                         }
                     }
                 }
@@ -1213,7 +1213,7 @@ pub fn AnalysisWorkspace(
                                 role: "tab",
                                 aria_selected: composer_tab() == ComposerTab::Ask,
                                 onclick: move |_| composer_tab.set(ComposerTab::Ask),
-                                "Ask"
+                                {crate::strings::analysis::ASK}
                             }
                             button {
                                 class: if composer_tab() == ComposerTab::Sql { "active" } else { "" },
@@ -1221,20 +1221,20 @@ pub fn AnalysisWorkspace(
                                 role: "tab",
                                 aria_selected: composer_tab() == ComposerTab::Sql,
                                 onclick: move |_| composer_tab.set(ComposerTab::Sql),
-                                "Write SQL"
+                                {crate::strings::analysis::WRITE_SQL}
                             }
                         }
                         span { class: "analyze-step-state",
                             if generating { { analyze_progress_label(active_revision.as_ref()) } }
-                            else if !composer.show_spec_summary && active_revision.as_ref().is_some_and(|revision| revision.manually_edited) { "Manually edited" }
-                            else { "Draft" }
+                            else if !composer.show_spec_summary && active_revision.as_ref().is_some_and(|revision| revision.manually_edited) { {crate::strings::analysis::MANUALLY_EDITED} }
+                            else { {crate::strings::analysis::DRAFT} }
                         }
                         div { class: "analyze-context-row", aria_label: "Analysis context",
                             span { class: if catalog.is_some() { "analyze-status ready" } else { "analyze-status" },
                                 span { aria_hidden: "true" }
-                                if catalog.is_some() { "Datasets ready" } else { "Loading datasets…" }
+                                if catalog.is_some() { "Datasets ready" } else { {crate::strings::analysis::LOADING_DATASETS} }
                             }
-                            span { class: "analyze-chip lock", "Read-only" }
+                            span { class: "analyze-chip lock", {crate::strings::analysis::READ_ONLY} }
                             if let Some(scope) = scope() {
                                 for (index, item) in scope.items.iter().enumerate() {
                                     {
@@ -1261,7 +1261,7 @@ pub fn AnalysisWorkspace(
                                                     r#type: "button",
                                                     disabled: !removal_enabled,
                                                     aria_label: if removal_enabled { "Remove {label} from analysis scope" } else if blocked_by_operation { "Analysis scope cannot change while an operation is running" } else if single_dataset { "The dataset analysis scope cannot be removed" } else { "The datasets must load before this scope can be removed" },
-                                                    title: if removal_enabled { "Remove scope" } else if blocked_by_operation { "Wait for the current plan or query operation to finish" } else if single_dataset { "At least one explicit scope is required" } else { "Wait for the datasets to load" },
+                                                    title: if removal_enabled { "Remove scope" } else if blocked_by_operation { {crate::strings::analysis::WAIT_OPERATION} } else if single_dataset { {crate::strings::analysis::SCOPE_REQUIRED} } else { {crate::strings::analysis::WAIT_DATASETS} },
                                                     onclick: move |_| remove_scope_item.call(index),
                                                     "×"
                                                 }
@@ -1272,18 +1272,18 @@ pub fn AnalysisWorkspace(
                             }
                         }
                         if composer_tab() == ComposerTab::Ask {
-                            label { class: "analyze-question-label", r#for: "analysis-question", "Question" }
+                            label { class: "analyze-question-label", r#for: "analysis-question", {crate::strings::analysis::QUESTION} }
                             textarea {
                                 id: "analysis-question",
                                 class: "analyze-question-input",
                                 rows: "4",
                                 value: "{question}",
-                                placeholder: "Ask about runs, errors, latency, tool use, or model behavior…",
+                                placeholder: {crate::strings::analysis::QUESTION_PLACEHOLDER},
                                 disabled: generating,
                                 oninput: move |event| question.set(event.value()),
                             }
                             div { class: "analyze-starters", aria_label: "Question starters",
-                                span { "Try a starting point" }
+                                span { {crate::strings::analysis::TRY_STARTING_POINT} }
                                 div {
                                     for starter in QUESTION_STARTERS {
                                         button { r#type: "button", disabled: generating, onclick: move |_| question.set(starter.into()), "{starter}" }
@@ -1292,8 +1292,8 @@ pub fn AnalysisWorkspace(
                             }
                             if !config().is_configured() {
                                 div { class: "analyze-config-callout", role: "status",
-                                    div { strong { "Connect a model for Analysis" } p { "Your draft stays here while you configure the endpoint." } }
-                                    button { class: "button", r#type: "button", onclick: move |_| settings_open.set(true), "Open model settings" }
+                                    div { strong { "Connect a model for Analysis" } p { {crate::strings::analysis::DRAFT_STAYS} } }
+                                    button { class: "button", r#type: "button", onclick: move |_| settings_open.set(true), {crate::strings::analysis::OPEN_MODEL_SETTINGS} }
                                 }
                             }
                             if let Some(revision) = active_revision.as_ref() {
@@ -1301,14 +1301,14 @@ pub fn AnalysisWorkspace(
                                     if let Some(notice) = notice_from_revision(revision) {
                                         div { class: "analyze-error-host",
                                             ErrorNotice { notice, on_dismiss: None }
-                                            p { "Your question is unchanged. Adjust it or Analyze again." }
+                                            p { {crate::strings::analysis::QUESTION_UNCHANGED} }
                                         }
                                     } else {
                                         div { class: "analyze-error", role: "alert",
-                                            strong { "The analysis plan could not be created" }
+                                            strong { {crate::strings::analysis::PLAN_CREATE_FAILED} }
                                             if let Some(message) = revision.error.as_ref() { p { "{message}" } }
-                                            else { p { "The model did not return a valid analysis plan." } }
-                                            p { "Your question is unchanged. Adjust it or Analyze again." }
+                                            else { p { {crate::strings::analysis::PLAN_INVALID} } }
+                                            p { {crate::strings::analysis::QUESTION_UNCHANGED} }
                                         }
                                     }
                                 }
@@ -1316,13 +1316,13 @@ pub fn AnalysisWorkspace(
                             if view_model.as_ref().is_some_and(|model| model.question_out_of_date) {
                                 div { class: "analyze-config-callout", role: "status",
                                     div {
-                                        strong { "This plan is for the previous question" }
-                                        p { "Analyze again for the current question, or restore the reviewed question." }
+                                        strong { {crate::strings::analysis::PLAN_FOR_PREVIOUS} }
+                                        p { {crate::strings::analysis::ANALYZE_AGAIN_OR_RESTORE} }
                                     }
                                 }
                             }
                             div { class: "analyze-question-actions",
-                                p { "Analysis creates a plan, generates a read-only query, and returns limited results." }
+                                p { {crate::strings::analysis::PLAN_FLOW_HINT} }
                                 button { class: "button primary", r#type: "button", disabled: !composer.primary_enabled, onclick: generate_plan,
                                     if generating {
                                         span { class: "analyze-spinner", aria_hidden: "true" }
@@ -1361,20 +1361,20 @@ pub fn AnalysisWorkspace(
                                     if let Some(notice) = notice_from_revision(revision) {
                                         div { class: "analyze-error-host",
                                             ErrorNotice { notice, on_dismiss: None }
-                                            p { "Fix the SQL and Run. Analyze will not repair a handwritten query." }
+                                            p { {crate::strings::analysis::FIX_SQL_AND_RUN} }
                                         }
                                     } else if let Some(error) = revision.error.as_ref() {
-                                        div { class: "analyze-error", role: "alert", strong { "Analysis could not run" } p { "{error}" } p { "Fix the SQL and Run. Analyze will not repair a handwritten query." } }
+                                        div { class: "analyze-error", role: "alert", strong { "Analysis could not run" } p { "{error}" } p { {crate::strings::analysis::FIX_SQL_AND_RUN} } }
                                     }
                                 }
                                 if revision.needs_rerun {
                                     div { class: "analyze-config-callout", role: "status",
-                                        div { strong { "Rerun to restore rows" } p { "Saved summaries remain visible, but result rows are never stored in browser history." } }
+                                        div { strong { "Rerun to restore rows" } p { {crate::strings::analysis::ROWS_NOT_STORED} } }
                                     }
                                 }
                             }
                             div { class: "analyze-question-actions",
-                                p { "Run executes this query. Manual SQL is not repaired automatically." }
+                                p { {crate::strings::analysis::RUN_EXECUTES_QUERY} }
                                 button { class: "button primary", r#type: "button", disabled: !composer.primary_enabled, onclick: run_sql,
                                     if generating {
                                         span { class: "analyze-spinner", aria_hidden: "true" }
@@ -1398,17 +1398,17 @@ pub fn AnalysisWorkspace(
                                 }
                             },
                             div { class: "analyze-section-heading",
-                                div { h2 { "Analysis process" } p { "Plan, generated SQL, query execution, and summary." } }
+                                div { h2 { "Analysis process" } p { {crate::strings::analysis::PROCESS_SUB} } }
                             }
                         }
                         if let Some(revision) = active_revision.as_ref() {
                             if revision.trace.is_empty() {
-                                p { class: "analyze-trace-empty", "Analyze or Run to view each processing step." }
+                                p { class: "analyze-trace-empty", {crate::strings::analysis::PROCESS_EMPTY} }
                             } else {
                                 AnalyzeTraceView { steps: revision.trace.clone() }
                             }
                         } else {
-                            p { class: "analyze-trace-empty", "Analyze or Run to view each processing step." }
+                            p { class: "analyze-trace-empty", {crate::strings::analysis::PROCESS_EMPTY} }
                         }
                     }
 
@@ -1434,19 +1434,19 @@ pub fn AnalysisWorkspace(
                             if let Some(spec) = revision.spec.as_ref() {
                             section { class: "analyze-plan-card", aria_label: "Analysis plan",
                                 div { class: "analyze-section-heading",
-                                    div { h2 { "Analysis plan" } p { "The generated SQL comes from this plan. Analyze repairs the plan when needed." } }
+                                    div { h2 { "Analysis plan" } p { {crate::strings::analysis::PLAN_SUB} } }
                                 }
                                 dl { class: "analyze-plan-summary",
-                                    div { dt { "Intent" } dd { "{spec.intent}" } }
-                                    div { dt { "One row per" } dd { "{spec.grain}" } }
-                                    div { dt { "Measure" } dd { "{spec.measure}" } }
+                                    div { dt { {crate::strings::analysis::INTENT} } dd { "{spec.intent}" } }
+                                    div { dt { {crate::strings::analysis::ONE_ROW_PER} } dd { "{spec.grain}" } }
+                                    div { dt { {crate::strings::analysis::MEASURE} } dd { "{spec.measure}" } }
                                     if let Some(dimension) = spec.dimension.as_ref() {
-                                        div { dt { "Group by" } dd { "{dimension}" } }
+                                        div { dt { {crate::strings::analysis::GROUP_BY} } dd { "{dimension}" } }
                                     }
-                                    div { dt { "Output" } dd { "{spec.output}" } }
+                                    div { dt { {crate::strings::analysis::OUTPUT} } dd { "{spec.output}" } }
                                 }
                                 if !spec.assumptions.is_empty() {
-                                    div { class: "analyze-warnings", role: "note", strong { "Assumptions" } ul { for assumption in &spec.assumptions { li { "{assumption}" } } } }
+                                    div { class: "analyze-warnings", role: "note", strong { {crate::strings::analysis::ASSUMPTIONS} } ul { for assumption in &spec.assumptions { li { "{assumption}" } } } }
                                 }
                             }
                             }
@@ -1454,14 +1454,14 @@ pub fn AnalysisWorkspace(
                             if !revision.manually_edited && shows_plan_summary(plan) {
                             section { class: "analyze-plan-card", aria_label: "Proposed analysis plan",
                                 div { class: "analyze-section-heading",
-                                    div { h2 { "Review the analysis plan" } p { "This saved SQL is out of date. Analyze again to create a new plan." } }
+                                    div { h2 { "Review the analysis plan" } p { {crate::strings::analysis::PLAN_OUT_OF_DATE} } }
                                 }
                                 dl { class: "analyze-plan-summary",
-                                    div { dt { "Intent" } dd { "{plan.intent_summary}" } }
-                                    div { dt { "Scope" } dd { "{plan.scope_summary}" } }
-                                    PlanListRow { label: "Filters", values: plan.filters.clone() }
-                                    PlanListRow { label: "Grouping", values: plan.groupings.clone() }
-                                    PlanListRow { label: "Measures", values: plan.measures.clone() }
+                                    div { dt { {crate::strings::analysis::INTENT} } dd { "{plan.intent_summary}" } }
+                                    div { dt { {crate::strings::analysis::SCOPE} } dd { "{plan.scope_summary}" } }
+                                    PlanListRow { label: {crate::strings::analysis::FILTERS}, values: plan.filters.clone() }
+                                    PlanListRow { label: {crate::strings::analysis::GROUPING}, values: plan.groupings.clone() }
+                                    PlanListRow { label: {crate::strings::analysis::MEASURES}, values: plan.measures.clone() }
                                 }
                             }
                             }
@@ -1469,14 +1469,14 @@ pub fn AnalysisWorkspace(
 
                         if let Some(evidence) = revision.evidence.clone() {
                             section { class: "analyze-result-card", aria_label: "Analysis result",
-                                div { class: "analyze-section-heading", div { h2 { "Analysis results" } p { "Limited results returned by the confirmed query." } } }
+                                div { class: "analyze-section-heading", div { h2 { "Analysis results" } p { {crate::strings::analysis::RESULTS_SUB} } } }
                                 if evidence.rows.is_empty() {
                                     div { class: "analyze-empty-result",
                                         div {
-                                            strong { "No rows matched this plan" }
-                                            p { "Rewrite the question or broaden the plan before trying again." }
+                                            strong { {crate::strings::analysis::NO_ROWS_MATCHED} }
+                                            p { {crate::strings::analysis::REWRITE_OR_BROADEN} }
                                         }
-                                        button { class: "button", r#type: "button", onclick: rewrite_problem, "Rewrite question" }
+                                        button { class: "button", r#type: "button", onclick: rewrite_problem, {crate::strings::analysis::REWRITE_QUESTION} }
                                     }
                                 } else {
                                     ResultExplorer {
@@ -1495,17 +1495,17 @@ pub fn AnalysisWorkspace(
                                     if revision.state == RevisionState::Interpreting {
                                         div { class: "analyze-interpretation-status", role: "status",
                                             span { class: "analyze-spinner", aria_hidden: "true" }
-                                            div { strong { "Summarizing the returned results…" } p { "Results remain available while the model prepares a summary tied to the returned rows." } }
+                                            div { strong { "Summarizing the returned results…" } p { {crate::strings::analysis::SUMMARIZING_HINT} } }
                                         }
                                     }
                                     if revision.state == RevisionState::InterpretationError {
                                         div { class: "analyze-interpretation-error", role: "alert",
                                             div {
-                                                strong { "The results could not be summarized" }
+                                                strong { {crate::strings::analysis::RESULTS_NOT_SUMMARIZED} }
                                                 if let Some(message) = revision.error.as_ref() { p { "{message}" } }
-                                                p { "Returned rows and profiles are preserved. Retrying does not rerun SQL." }
+                                                p { {crate::strings::analysis::RETRY_PRESERVES_ROWS} }
                                             }
-                                            button { class: "button", r#type: "button", onclick: retry_interpretation, "Retry interpretation" }
+                                            button { class: "button", r#type: "button", onclick: retry_interpretation, {crate::strings::analysis::RETRY_INTERPRETATION} }
                                         }
                                     }
                                     if let Some(interpretation) = revision.interpretation.clone() {
@@ -1525,10 +1525,10 @@ pub fn AnalysisWorkspace(
                             }
                         } else if let Some(interpretation) = revision.interpretation.clone() {
                             section { class: "analyze-result-card", aria_label: "Saved analysis interpretation",
-                                div { class: "analyze-section-heading", div { h2 { "Saved interpretation" } p { "The summary was restored from this analysis session." } } }
+                                div { class: "analyze-section-heading", div { h2 { "Saved interpretation" } p { {crate::strings::analysis::SAVED_INTERPRETATION_SUB} } } }
                                 div { class: "analyze-saved-interpretation-note", role: "note",
-                                    strong { "Returned rows are not stored in the browser" }
-                                    p { "This saved interpretation remains available. Rerun to restore rows in Result Explorer." }
+                                    strong { {crate::strings::analysis::ROWS_NOT_IN_BROWSER} }
+                                    p { {crate::strings::analysis::INTERPRETATION_REMAINS} }
                                 }
                                 InterpretationPanel {
                                     interpretation,
@@ -1801,7 +1801,7 @@ fn revision_heading(revision: &AnalysisRevision) -> String {
         .plan
         .as_ref()
         .and_then(|plan| first_sql_line(&plan.sql))
-        .unwrap_or("Draft")
+        .unwrap_or({crate::strings::analysis::DRAFT})
         .into()
 }
 
@@ -1811,7 +1811,7 @@ fn session_label(session: &AnalysisSession) -> String {
         return title.into();
     }
     let Some(revision) = session.active_revision() else {
-        return "New analysis".into();
+        return {crate::strings::analysis::NEW_ANALYSIS}.into();
     };
     let question = revision.question.trim();
     if !question.is_empty() {
@@ -1821,11 +1821,11 @@ fn session_label(session: &AnalysisSession) -> String {
         .plan
         .as_ref()
         .and_then(|plan| first_sql_line(&plan.sql).map(str::to_string))
-        .unwrap_or_else(|| "New analysis".into())
+        .unwrap_or_else(|| {crate::strings::analysis::NEW_ANALYSIS}.into())
 }
 
 fn shows_plan_summary(plan: &AnalysisPlan) -> bool {
-    plan.intent_summary != "Manual SQL"
+    plan.intent_summary != {crate::strings::analysis::MANUAL_SQL}
         || !plan.filters.is_empty()
         || !plan.groupings.is_empty()
         || !plan.measures.is_empty()
@@ -1880,16 +1880,16 @@ fn set_sql_textarea_cursor(index: usize) {
 
 fn revision_state_label(state: &RevisionState) -> &'static str {
     match state {
-        RevisionState::Draft => "Draft",
-        RevisionState::GeneratingPlan => "Creating plan",
-        RevisionState::PlanReady => "Plan ready",
-        RevisionState::Executing => "Executing",
-        RevisionState::Interpreting => "Interpreting",
-        RevisionState::Complete => "Complete",
-        RevisionState::PlanError => "Plan error",
-        RevisionState::QueryError => "Rerun required",
-        RevisionState::InterpretationError => "Interpretation error",
-        RevisionState::Stale => "Stale",
+        RevisionState::Draft => {crate::strings::analysis::DRAFT},
+        RevisionState::GeneratingPlan => {crate::strings::analysis::CREATING_PLAN},
+        RevisionState::PlanReady => {crate::strings::analysis::PLAN_READY},
+        RevisionState::Executing => {crate::strings::analysis::EXECUTING},
+        RevisionState::Interpreting => {crate::strings::analysis::INTERPRETING},
+        RevisionState::Complete => {crate::strings::analysis::COMPLETE},
+        RevisionState::PlanError => {crate::strings::analysis::PLAN_ERROR},
+        RevisionState::QueryError => {crate::strings::analysis::RERUN_REQUIRED},
+        RevisionState::InterpretationError => {crate::strings::analysis::INTERPRETATION_ERROR},
+        RevisionState::Stale => {crate::strings::analysis::STALE},
     }
 }
 
@@ -1902,23 +1902,23 @@ fn analyze_progress_label(revision: Option<&AnalysisRevision>) -> &'static str {
             .find(|step| step.status == AnalyzeTraceStatus::Running)
     }) {
         return match step.kind {
-            AnalyzeTraceKind::GenerateSpec => "Creating plan…",
-            AnalyzeTraceKind::RepairSpec => "Repairing plan…",
-            AnalyzeTraceKind::Compile => "Compiling SQL…",
-            AnalyzeTraceKind::Execute => "Executing…",
-            AnalyzeTraceKind::Interpret => "Interpreting…",
+            AnalyzeTraceKind::GenerateSpec => {crate::strings::analysis::CREATING_PLAN_ELLIPSIS},
+            AnalyzeTraceKind::RepairSpec => {crate::strings::analysis::REPAIRING_PLAN_ELLIPSIS},
+            AnalyzeTraceKind::Compile => {crate::strings::analysis::COMPILING_SQL_ELLIPSIS},
+            AnalyzeTraceKind::Execute => {crate::strings::analysis::EXECUTING_ELLIPSIS},
+            AnalyzeTraceKind::Interpret => {crate::strings::analysis::INTERPRETING_ELLIPSIS},
         };
     }
     match revision.map(|revision| &revision.state) {
         Some(RevisionState::GeneratingPlan)
             if revision.is_some_and(|revision| revision.repair_count > 0) =>
         {
-            "Repairing plan…"
+            {crate::strings::analysis::REPAIRING_PLAN_ELLIPSIS}
         }
-        Some(RevisionState::GeneratingPlan) => "Creating plan…",
-        Some(RevisionState::Executing) => "Executing…",
-        Some(RevisionState::Interpreting) => "Interpreting…",
-        _ => "Analyzing…",
+        Some(RevisionState::GeneratingPlan) => {crate::strings::analysis::CREATING_PLAN_ELLIPSIS},
+        Some(RevisionState::Executing) => {crate::strings::analysis::EXECUTING_ELLIPSIS},
+        Some(RevisionState::Interpreting) => {crate::strings::analysis::INTERPRETING_ELLIPSIS},
+        _ => {crate::strings::analysis::ANALYZING_ELLIPSIS},
     }
 }
 
@@ -1937,10 +1937,10 @@ fn trace_step_preview(step: &AnalyzeTraceStep) -> String {
     }
     step.prompt
         .as_deref()
-        .unwrap_or("In progress")
+        .unwrap_or({crate::strings::analysis::IN_PROGRESS})
         .lines()
         .next()
-        .unwrap_or("In progress")
+        .unwrap_or({crate::strings::analysis::IN_PROGRESS})
         .chars()
         .take(140)
         .collect()
@@ -1948,10 +1948,10 @@ fn trace_step_preview(step: &AnalyzeTraceStep) -> String {
 
 fn trace_status_label(status: AnalyzeTraceStatus) -> &'static str {
     match status {
-        AnalyzeTraceStatus::Pending => "pending",
-        AnalyzeTraceStatus::Running => "running",
-        AnalyzeTraceStatus::Ok => "ok",
-        AnalyzeTraceStatus::Error => "error",
+        AnalyzeTraceStatus::Pending => {crate::strings::analysis::TRACE_PENDING},
+        AnalyzeTraceStatus::Running => {crate::strings::analysis::TRACE_RUNNING},
+        AnalyzeTraceStatus::Ok => {crate::strings::analysis::TRACE_OK},
+        AnalyzeTraceStatus::Error => {crate::strings::analysis::TRACE_ERROR},
     }
 }
 
@@ -1964,10 +1964,10 @@ fn AnalyzeTraceView(steps: Vec<AnalyzeTraceStep>) -> Element {
         div { class: "analyze-trace-surface",
             div { class: "span-table",
                 div { class: "span-table-head",
-                    div { "Structure" }
-                    div { "Overview" }
-                    div { class: "span-axis-head", span { "Sequence" } }
-                    div { "Status" }
+                    div { {crate::strings::components::STRUCTURE} }
+                    div { {crate::strings::detail::OVERVIEW} }
+                    div { class: "span-axis-head", span { {crate::strings::analysis::SEQUENCE} } }
+                    div { {crate::strings::runs::STATUS_COL} }
                 }
                 for (index, step) in steps.iter().enumerate() {
                     {
@@ -1997,7 +1997,7 @@ fn AnalyzeTraceView(steps: Vec<AnalyzeTraceStep>) -> Element {
                                                 strong { "{title}" }
                                                 span { class: "phase-badge {phase}", "{phase}" }
                                                 if step.status == AnalyzeTraceStatus::Error {
-                                                    span { class: "pc2-error-chip", "error" }
+                                                    span { class: "pc2-error-chip", {crate::strings::analysis::TRACE_ERROR} }
                                                 }
                                             }
                                             span { "step {index + 1} of {axis_len}" }
@@ -2024,24 +2024,24 @@ fn AnalyzeTraceView(steps: Vec<AnalyzeTraceStep>) -> Element {
                                     div { class: "span-detail analyze-trace-detail",
                                         if let Some(prompt) = step.prompt.as_ref() {
                                             div {
-                                                strong { "Prompt" }
+                                                strong { {crate::strings::detail::PROMPT} }
                                                 pre { "{prompt}" }
                                             }
                                         }
                                         if let Some(output) = step.output.as_ref() {
                                             div {
-                                                strong { "Result" }
+                                                strong { {crate::strings::analysis::RESULT} }
                                                 pre { "{output}" }
                                             }
                                         }
                                         if let Some(error) = step.error.as_ref() {
                                             div {
-                                                strong { "Error" }
+                                                strong { {crate::strings::analysis::ERROR} }
                                                 pre { "{error}" }
                                             }
                                         }
                                         if step.prompt.is_none() && step.output.is_none() && step.error.is_none() {
-                                            p { "This step is still running." }
+                                            p { {crate::strings::analysis::STEP_STILL_RUNNING} }
                                         }
                                     }
                                 }
@@ -2059,7 +2059,7 @@ fn revision_row_label(revision: &AnalysisRevision) -> String {
         .execution
         .as_ref()
         .map(|execution| format!("{} rows", execution.returned_rows))
-        .unwrap_or_else(|| "Not run".into())
+        .unwrap_or_else(|| {crate::strings::analysis::NOT_RUN}.into())
 }
 
 fn current_time_millis() -> u64 {
@@ -2089,7 +2089,7 @@ fn PlanListRow(label: &'static str, values: Vec<String>) -> Element {
             dt { "{label}" }
             dd {
                 if values.is_empty() {
-                    span { class: "analyze-none", "None" }
+                    span { class: "analyze-none", {crate::strings::analysis::NONE} }
                 } else {
                     ul { for value in values { li { "{value}" } } }
                 }
@@ -2109,9 +2109,9 @@ fn InterpretationPanel(
         section { class: "analyze-interpretation", aria_label: "Result summary",
             div { class: "analyze-interpretation-grid",
                 section { class: "analyze-interpretation-block observed",
-                    h3 { "Observed in this result" }
+                    h3 { {crate::strings::analysis::OBSERVED_IN_RESULT} }
                     if interpretation.observations.is_empty() {
-                        p { class: "analyze-none", "No direct observations were returned." }
+                        p { class: "analyze-none", {crate::strings::analysis::NO_OBSERVATIONS} }
                     } else {
                         ul { for observation in &interpretation.observations { li { "{observation}" } } }
                     }
@@ -2121,8 +2121,8 @@ fn InterpretationPanel(
                                 if let Some(identity) = interpretation_reference_identity(reference) {
                                     span { class: "analyze-interpretation-reference linked",
                                         span { "{reference.label}" }
-                                        a { href: "{identity.run_href}", "Run" }
-                                        if let Some(turn_href) = identity.turn_href { a { href: "{turn_href}", "Step" } }
+                                        a { href: "{identity.run_href}", {crate::strings::analysis::RUN} }
+                                        if let Some(turn_href) = identity.turn_href { a { href: "{turn_href}", {crate::strings::analysis::STEP} } }
                                     }
                                 } else {
                                     span { class: "analyze-interpretation-reference", "{reference.label}" }
@@ -2132,28 +2132,28 @@ fn InterpretationPanel(
                     }
                 }
                 section { class: "analyze-interpretation-block inferred",
-                    h3 { "Possible explanation" }
+                    h3 { {crate::strings::analysis::POSSIBLE_EXPLANATION} }
                     if interpretation.inferences.is_empty() {
-                        p { class: "analyze-none", "No inference was offered from these results." }
+                        p { class: "analyze-none", {crate::strings::analysis::NO_INFERENCE} }
                     } else {
                         ul { for inference in &interpretation.inferences { li { "{inference}" } } }
                     }
                 }
                 section { class: "analyze-interpretation-block limitations",
-                    h3 { "Coverage and limitations" }
+                    h3 { {crate::strings::analysis::COVERAGE_LIMITATIONS} }
                     if interpretation.limitations.is_empty() {
-                        p { class: "analyze-none", "No additional limitations were reported." }
+                        p { class: "analyze-none", {crate::strings::analysis::NO_LIMITATIONS} }
                     } else {
                         ul { for limitation in &interpretation.limitations { li { "{limitation}" } } }
                     }
                 }
                 section { class: "analyze-interpretation-block follow-ups",
-                    h3 { "Continue investigating" }
+                    h3 { {crate::strings::analysis::CONTINUE_INVESTIGATING} }
                     if !follow_up_enabled && !interpretation.follow_ups.is_empty() {
-                        p { class: "analyze-follow-up-stale", role: "status", "Follow-up planning is paused because the draft question changed. Restore the reviewed question or generate the edited draft." }
+                        p { class: "analyze-follow-up-stale", role: "status", {crate::strings::analysis::FOLLOWUP_PAUSED} }
                     }
                     if interpretation.follow_ups.is_empty() {
-                        p { class: "analyze-none", "No follow-up questions were suggested." }
+                        p { class: "analyze-none", {crate::strings::analysis::NO_FOLLOWUPS} }
                     } else {
                         div { class: "analyze-follow-up-list",
                             for (index, follow_up) in interpretation.follow_ups.iter().enumerate() {
@@ -2168,7 +2168,7 @@ fn InterpretationPanel(
                                                 let follow_up = follow_up.clone();
                                                 move |_| on_follow_up.call(follow_up.clone())
                                             },
-                                            "Analyze"
+                                            {crate::strings::analysis::ANALYZE}
                                         }
                                         button {
                                             class: "analyze-link-button",
@@ -2178,7 +2178,7 @@ fn InterpretationPanel(
                                                 let follow_up = follow_up.clone();
                                                 move |_| on_edit_follow_up.call(follow_up.clone())
                                             },
-                                            "Edit question"
+                                            {crate::strings::analysis::EDIT_QUESTION}
                                         }
                                     }
                                 }
@@ -2243,7 +2243,7 @@ mod tests {
 
         assert_eq!(model.primary_action, PrimaryAction::Analyze);
         assert!(!model.query_in_flight);
-        assert_eq!(model.sql_disclosure_label, "Compiled SQL");
+        assert_eq!(model.sql_disclosure_label, {crate::strings::analysis::COMPILED_SQL});
         assert!(!model.trace_open);
         assert!(revision.pending_effect.is_none());
     }
@@ -2251,7 +2251,7 @@ mod tests {
     fn compiled_spec() -> AnalysisSpec {
         AnalysisSpec {
             intent: "composition".into(),
-            grain: "run".into(),
+            grain: {crate::strings::components::RUN}.into(),
             measure: "step_count".into(),
             dimension: Some("agent_model_name".into()),
             filters: Vec::new(),
@@ -2276,7 +2276,7 @@ mod tests {
             true,
             true,
         );
-        assert_eq!(composer.primary_label, "Analyze");
+        assert_eq!(composer.primary_label, {crate::strings::analysis::ANALYZE});
         assert!(composer.primary_enabled);
         assert!(!composer.submits_sql);
         assert!(composer.show_spec_summary);
@@ -2295,7 +2295,7 @@ mod tests {
             true,
             true,
         );
-        assert_eq!(compiled.primary_label, "Run");
+        assert_eq!(compiled.primary_label, {crate::strings::analysis::RUN});
         assert!(compiled.primary_enabled);
         assert!(compiled.submits_sql);
         assert!(compiled.show_spec_summary);
@@ -2351,8 +2351,8 @@ mod tests {
         let model = AnalysisViewModel::from_revision(&revision, &revision.question);
         assert!(model.trace_open);
         assert!(model.query_in_flight);
-        assert_eq!(analyze_progress_label(Some(&revision)), "Creating plan…");
-        assert_eq!(revision.trace[0].kind.title(), "Create plan");
+        assert_eq!(analyze_progress_label(Some(&revision)), crate::strings::analysis::CREATING_PLAN_ELLIPSIS);
+        assert_eq!(revision.trace[0].kind.title(), crate::strings::analysis::TRACE_KIND_CREATE_PLAN);
     }
 
     #[test]
@@ -2465,14 +2465,14 @@ mod tests {
         ));
 
         assert_eq!(session_label(&session), "Compare run outcomes");
-        assert_eq!(session_label(&empty), "New analysis");
+        assert_eq!(session_label(&empty), {crate::strings::analysis::NEW_ANALYSIS});
         assert_eq!(
             revision_state_label(&session.active_revision().unwrap().state),
-            "Plan ready"
+            {crate::strings::analysis::PLAN_READY}
         );
         assert_eq!(
             revision_row_label(session.active_revision().unwrap()),
-            "Not run"
+            {crate::strings::analysis::NOT_RUN}
         );
         assert_eq!(relative_time_label(1_000, 31_000), "Just now");
         assert_eq!(relative_time_label(1_000, 301_000), "5 min ago");
@@ -2502,7 +2502,7 @@ mod tests {
                 path: "agent/root-a/session-a".into(),
                 row_count: 1,
                 duplicate_event_ids: 0,
-                status: "ok".into(),
+                status: {crate::strings::analysis::TRACE_OK}.into(),
                 format: None,
             },
         };
@@ -2875,7 +2875,7 @@ mod tests {
                 path: "agent/root-a/session-a".into(),
                 row_count: 1,
                 duplicate_event_ids: 0,
-                status: "ok".into(),
+                status: {crate::strings::analysis::TRACE_OK}.into(),
                 format: None,
             },
         );

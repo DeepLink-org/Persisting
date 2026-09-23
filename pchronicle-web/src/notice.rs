@@ -15,26 +15,26 @@ pub(crate) struct WorkspaceNotice {
 
 pub(crate) fn workspace_notice(failure: &ApiFailure) -> WorkspaceNotice {
     let (title, action) = match failure.code.as_str() {
-        "invalid_request" => ("This request isn't valid", String::new()),
-        "not_found" => ("Nothing matched", String::new()),
+        "invalid_request" => ({crate::strings::notice::INVALID_REQUEST}, String::new()),
+        "not_found" => ({crate::strings::notice::NOTHING_MATCHED}, String::new()),
         "conflict" => (
-            "This view is out of date",
-            "Refresh the catalog and try again".into(),
+            {crate::strings::notice::VIEW_OUT_OF_DATE},
+            {crate::strings::notice::REFRESH_CATALOG}.into(),
         ),
-        "unsupported" | "unplannable" => ("This isn't supported", String::new()),
+        "unsupported" | "unplannable" => ({crate::strings::notice::NOT_SUPPORTED}, String::new()),
         "resource_exhausted" => (
-            "The result is too large",
-            "Narrow the query or lower the row limit".into(),
+            {crate::strings::notice::RESULT_TOO_LARGE},
+            {crate::strings::notice::NARROW_QUERY}.into(),
         ),
         "unavailable" => (
-            "The server isn't reachable",
-            "Check that pchronicle serve is still running".into(),
+            {crate::strings::notice::SERVER_UNREACHABLE},
+            {crate::strings::notice::CHECK_SERVE}.into(),
         ),
         "internal" => (
-            "Something went wrong",
-            "The server log for this request ID has the cause".into(),
+            {crate::strings::notice::SOMETHING_WRONG},
+            {crate::strings::notice::SERVER_LOG_CAUSE}.into(),
         ),
-        _ => ("Request failed", String::new()),
+        _ => ({crate::strings::notice::REQUEST_FAILED}, String::new()),
     };
     let summary = if failure.message.is_empty() {
         title.to_string()
@@ -76,19 +76,19 @@ pub(crate) fn ErrorNotice(
                 }
                 if let Some(request_id) = request_id {
                     p { class: "pc2-workspace-notice-request",
-                        "Request ID "
+                        {crate::strings::notice::REQUEST_ID_PREFIX}
                         code { "{request_id}" }
                         button {
                             class: "pc2-workspace-notice-copy-id",
                             r#type: "button",
                             aria_label: "Copy request ID",
                             onclick: move |_| copy_request_id(&request_id),
-                            "Copy"
+                            {crate::strings::common::COPY}
                         }
                     }
                 }
                 details { class: "pc2-workspace-notice-details",
-                    summary { "Show technical details" }
+                    summary { {crate::strings::notice::SHOW_TECHNICAL} }
                     pre { "{notice.detail}" }
                     if let Some(engine_detail) = engine_detail {
                         pre { "{engine_detail}" }
@@ -119,7 +119,7 @@ mod tests {
             r#"{"code":"internal","message":"internal server error","request_id":"deadbeefdeadbeef"}"#,
         );
         let notice = workspace_notice(&failure);
-        assert_eq!(notice.title, "Something went wrong");
+        assert_eq!(notice.title, {crate::strings::notice::SOMETHING_WRONG});
         assert_eq!(notice.request_id.as_deref(), Some("deadbeefdeadbeef"));
         assert!(!notice.detail.contains("secret"));
         assert!(!notice.summary.contains("secret"));
@@ -133,8 +133,8 @@ mod tests {
             r#"{"code":"resource_exhausted","message":"find result exceeds row limit of 51","request_id":"rid"}"#,
         );
         let notice = workspace_notice(&failure);
-        assert_eq!(notice.title, "The result is too large");
-        assert!(notice.action.contains("Narrow the query"));
+        assert_eq!(notice.title, {crate::strings::notice::RESULT_TOO_LARGE});
+        assert!(notice.action.contains("缩小查询范围"));
     }
 
     #[test]
@@ -144,7 +144,7 @@ mod tests {
             r#"{"code":"unplannable","message":"compiled SQL could not be planned against the live catalog","request_id":"rid","engine_detail":"column x not found"}"#,
         );
         let notice = workspace_notice(&failure);
-        assert_eq!(notice.title, "This isn't supported");
+        assert_eq!(notice.title, {crate::strings::notice::NOT_SUPPORTED});
         assert_eq!(notice.engine_detail.as_deref(), Some("column x not found"));
         assert!(notice.detail.contains("unplannable"));
         assert_ne!(notice.summary, notice.engine_detail.clone().unwrap());

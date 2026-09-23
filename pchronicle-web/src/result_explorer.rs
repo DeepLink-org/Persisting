@@ -57,25 +57,25 @@ pub fn identity_href(row: &Value) -> Option<ResultIdentity> {
 
 pub fn profile_scope_label(evidence: &QueryEvidence) -> String {
     if evidence.returned_rows == 0 {
-        return "No distribution · 0 returned rows".into();
+        return {crate::strings::result::NO_DISTRIBUTION}.into();
     }
     format!(
         "{} · {} returned {}{}",
         if evidence.truncated {
-            "Preview distribution"
+            crate::strings::result::PREVIEW_DISTRIBUTION
         } else {
-            "Distribution of all returned rows"
+            crate::strings::result::DIST_ALL_ROWS
         },
         evidence.returned_rows,
         if evidence.returned_rows == 1 {
             "row"
         } else {
-            "rows"
+            crate::strings::common::ROWS
         },
         if evidence.truncated {
-            " · truncated"
+            format!(" · {}", crate::strings::common::TRUNCATED)
         } else {
-            ""
+            String::new()
         },
     )
 }
@@ -112,7 +112,7 @@ pub fn ResultExplorer(
         section { class: "result-explorer", aria_label: "Result Explorer",
             header { class: "result-explorer-header",
                 div {
-                    strong { "Result Explorer" }
+                    strong { {crate::strings::result::EXPLORER_TITLE} }
                     span { "{scope_label}" }
                 }
                 span { class: "result-explorer-count", "{evidence.returned_rows} rows · {columns.len()} columns" }
@@ -120,7 +120,7 @@ pub fn ResultExplorer(
             if !refinement_enabled {
                 div { class: "result-refinement-stale", role: "status",
                     strong { "Refinement planning is paused" }
-                    span { "Regenerate for the edited question, or restore the reviewed question to prepare a refinement." }
+                    span { {crate::strings::result::REFINEMENT_HINT} }
                 }
             }
             div { class: "result-explorer-layout",
@@ -158,8 +158,8 @@ pub fn ResultExplorer(
                                                 if column_index == 0 {
                                                     if let Some(identity) = identity_href(row) {
                                                         div { class: "result-identity-links",
-                                                            a { href: "{identity.run_href}", "Run" }
-                                                            if let Some(turn_href) = identity.turn_href { a { href: "{turn_href}", "Step" } }
+                                                            a { href: "{identity.run_href}", {crate::strings::analysis::RUN} }
+                                                            if let Some(turn_href) = identity.turn_href { a { href: "{turn_href}", {crate::strings::analysis::STEP} } }
                                                         }
                                                     }
                                                 }
@@ -174,13 +174,13 @@ pub fn ResultExplorer(
                     if let Some(intent) = staged_intent() {
                         div { class: "result-refinement-stage", role: "status",
                             div {
-                                span { "Staged refinement" }
+                                span { {crate::strings::result::STAGED_REFINEMENT} }
                                 strong { "{intent.column} · {intent.label}" }
-                                small { "No query has run and the current SQL is unchanged." }
+                                small { {crate::strings::result::NO_QUERY_UNCHANGED} }
                             }
                             div { class: "result-refinement-actions",
-                                button { class: "analyze-link-button", r#type: "button", onclick: move |_| staged_intent.set(None), "Cancel" }
-                                button { class: "button primary", r#type: "button", disabled: !refinement_enabled, onclick: move |_| on_prepare_refinement.call(AnalysisRefinement::Filter { intent: intent.clone() }), "Apply through Assistant" }
+                                button { class: "analyze-link-button", r#type: "button", onclick: move |_| staged_intent.set(None), {crate::strings::common::CANCEL} }
+                                button { class: "button primary", r#type: "button", disabled: !refinement_enabled, onclick: move |_| on_prepare_refinement.call(AnalysisRefinement::Filter { intent: intent.clone() }), {crate::strings::result::APPLY_THROUGH_ASSISTANT} }
                             }
                         }
                     }
@@ -205,7 +205,7 @@ pub fn ResultExplorer(
             footer { class: "result-explorer-footer",
                 span { "Result limit · {evidence.max_rows} rows / {byte_budget}" }
                 if hidden_columns > 0 { span { "+{hidden_columns} columns hidden" } }
-                if evidence.truncated { span { "Returned rows only; the server truncated this result." } }
+                if evidence.truncated { span { {crate::strings::result::RETURNED_TRUNCATED} } }
             }
         }
     }
@@ -276,20 +276,20 @@ fn ProfilePanel(
     };
     rsx! {
         aside { class: "result-profile-panel", aria_label: "Column profile for {profile.name}",
-            p { class: "analyze-eyebrow", "Selected column" }
+            p { class: "analyze-eyebrow", {crate::strings::result::SELECTED_COLUMN} }
             h3 { "{profile.name}" }
             div { class: "result-profile-kind", "{kind_label(&profile.kind)}" }
             p { class: "result-profile-scope", "{scope_label}" }
             dl { class: "result-profile-stats",
-                div { dt { "Present" } dd { "{profile.non_null_count}" } }
-                div { dt { "Unique" } dd { "{profile.unique_count}" } }
-                div { dt { "Missing" } dd { "{missing:.1}%" } }
+                div { dt { {crate::strings::result::PRESENT} } dd { "{profile.non_null_count}" } }
+                div { dt { {crate::strings::result::UNIQUE} } dd { "{profile.unique_count}" } }
+                div { dt { {crate::strings::result::MISSING} } dd { "{missing:.1}%" } }
                 for (label, value) in profile_stat_rows(&profile) {
                     div { dt { "{label}" } dd { "{value}" } }
                 }
             }
             if profile.row_count == 0 {
-                p { class: "result-profile-none", "No returned rows; no distribution is available." }
+                p { class: "result-profile-none", {crate::strings::result::NO_DIST_AVAILABLE} }
             } else {
                 div { class: "result-profile-bars",
                     for (index, count) in profile_counts(&profile).into_iter().enumerate() {
@@ -308,11 +308,11 @@ fn ProfilePanel(
             if profile.missing_count > 0 {
                 button { class: "result-profile-missing", r#type: "button", onclick: { let intent = missing_intent(revision_id, &profile); move |_| on_stage.call(intent.clone()) }, "Stage missing values · {profile.missing_count}" }
             }
-            button { class: "button result-full-profile", r#type: "button", disabled: !refinement_enabled, onclick: move |_| on_prepare_refinement.call(full_profile.clone()), "Create full-distribution query" }
+            button { class: "button result-full-profile", r#type: "button", disabled: !refinement_enabled, onclick: move |_| on_prepare_refinement.call(full_profile.clone()), {crate::strings::result::CREATE_FULL_DIST} }
             if refinement_enabled {
-                small { "Assistant will draft an aggregate plan for review. It will not run automatically." }
+                small { {crate::strings::result::ASSISTANT_DRAFT_HINT} }
             } else {
-                small { "Regenerate or restore the reviewed question before preparing this query." }
+                small { {crate::strings::result::REGENERATE_BEFORE} }
             }
         }
     }
@@ -431,7 +431,7 @@ fn BoundedCell(value: Value) -> Element {
     let mut expanded = use_signal(|| false);
     rsx! {
         if truncated || structured {
-            button { class: "result-cell result-cell-expand {kind}", r#type: "button", title: "Open full cell value", aria_label: "Open full cell value", onclick: move |_| expanded.set(true),
+            button { class: "result-cell result-cell-expand {kind}", r#type: "button", title: {crate::strings::components::OPEN_FULL_CELL}, aria_label: "Open full cell value", onclick: move |_| expanded.set(true),
                 span { "{preview}" } i { "↗" }
             }
         } else {
@@ -440,10 +440,10 @@ fn BoundedCell(value: Value) -> Element {
         if expanded() {
             div { class: "result-cell-backdrop", role: "presentation", onclick: move |_| expanded.set(false),
                 section { class: "result-cell-modal", role: "dialog", aria_modal: "true", aria_label: "Full cell value", tabindex: "-1", onclick: move |event| event.stop_propagation(), onkeydown: move |event| if event.key() == Key::Escape { expanded.set(false); },
-                    header { div { strong { "Full cell value" } span { "{kind}" } } button { aria_label: "Close full cell value", onclick: move |_| expanded.set(false), "×" } }
+                    header { div { strong { {crate::strings::components::FULL_CELL_VALUE} } span { "{kind}" } } button { aria_label: "Close full cell value", onclick: move |_| expanded.set(false), "×" } }
                     if structured { div { class: "result-cell-json", JsonValue { value: value.clone() } } }
                     else { pre { "{full_value}" } }
-                    footer { span { "{full_value.chars().count()} characters" } button { class: "button primary", onclick: move |_| expanded.set(false), "Close" } }
+                    footer { span { "{full_value.chars().count()} characters" } button { class: "button primary", onclick: move |_| expanded.set(false), {crate::strings::common::CLOSE} } }
                 }
             }
         }
@@ -541,14 +541,14 @@ fn profile_summary(profile: &ColumnProfile) -> String {
 
 fn profile_stat_rows(profile: &ColumnProfile) -> Vec<(&'static str, String)> {
     let labels = match profile.kind {
-        ColumnKind::Number => Some(("Minimum", "Maximum", "Mean", "Median")),
+        ColumnKind::Number => Some(({crate::strings::result::MINIMUM}, "Maximum", "Mean", {crate::strings::result::MEDIAN})),
         ColumnKind::Text | ColumnKind::Array => Some((
-            "Minimum length",
+            {crate::strings::result::MIN_LENGTH},
             "Maximum length",
-            "Mean length",
-            "Median length",
+            {crate::strings::result::MEAN_LENGTH},
+            {crate::strings::result::MEDIAN_LENGTH},
         )),
-        ColumnKind::DateTime => Some(("Earliest", "Latest", "", "")),
+        ColumnKind::DateTime => Some(({crate::strings::result::EARLIEST}, "Latest", "", "")),
         _ => None,
     };
     let Some((min_label, max_label, mean_label, median_label)) = labels else {
@@ -684,7 +684,7 @@ mod tests {
     fn truncated_results_are_labeled_as_preview() {
         assert_eq!(
             profile_scope_label(&evidence(Vec::new(), 100, true)),
-            "Preview distribution · 100 returned rows · truncated"
+            "预览分布 · 100 returned 行 · 已截断"
         );
     }
 
@@ -692,7 +692,7 @@ mod tests {
     fn complete_results_are_labeled_as_all_returned_rows() {
         assert_eq!(
             profile_scope_label(&evidence(Vec::new(), 3, false)),
-            "Distribution of all returned rows · 3 returned rows"
+            "全部已返回行的分布 · 3 returned 行"
         );
     }
 

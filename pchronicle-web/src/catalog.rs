@@ -35,17 +35,17 @@ pub fn CatalogExplorer(
                     if let Some(status) = tree.as_ref().and_then(|tree| tree.browse.as_ref()) {
                         p { role: "status",
                             if status.observed_at == 0 && status.refreshing {
-                                "Loading directory contents…"
+                                {crate::strings::catalog::LOADING_CONTENTS}
                             } else if status.observed_at == 0 && status.state == "unavailable" {
-                                "Directory unavailable · Retrying automatically"
+                                {crate::strings::catalog::DIR_UNAVAILABLE_RETRY}
                             } else if status.last_error.is_some() {
-                                "Showing cached view · Refresh failed; retrying automatically"
+                                {crate::strings::catalog::CACHED_REFRESH_FAILED}
                             } else if status.partial {
-                                "Partial view · Some directories have not been loaded"
+                                {crate::strings::catalog::PARTIAL_VIEW}
                             } else if status.refreshing {
-                                "Showing cached view · Refreshing in background"
+                                {crate::strings::catalog::CACHED_REFRESHING}
                             } else if status.stale {
-                                "Showing cached view · Waiting for refresh"
+                                {crate::strings::catalog::CACHED_WAITING}
                             }
                         }
                     }
@@ -54,7 +54,7 @@ pub fn CatalogExplorer(
                     class: "button pc-catalog-open",
                     onclick: move |_| on_runs.call((dataset.clone(), prefix.clone())),
                     WorkspaceIcon { name: "runs" }
-                    "Open in Runs"
+                    {crate::strings::catalog::OPEN_IN_RUNS}
                 }
             }
             if inside {
@@ -63,22 +63,22 @@ pub fn CatalogExplorer(
             div { class: "pc-catalog-mosaic",
                 if (loading && tree.is_none()) || tree.as_ref().and_then(|tree| tree.browse.as_ref())
                     .is_some_and(|status| status.observed_at == 0 && status.refreshing) {
-                    div { class: "pc-catalog-empty", span { class: "spinner" } "Loading datasets…" }
+                    div { class: "pc-catalog-empty", span { class: "spinner" } {crate::strings::analysis::LOADING_DATASETS} }
                 } else if auth_required {
                     div { class: "pc-catalog-empty",
                         strong { "Catalog identity required" }
-                        span { "Add an access key and secret key to browse this catalog." }
-                        button { class: "button primary", onclick: on_settings, "Open Keys" }
+                        span { {crate::strings::catalog::ADD_KEYS_HINT} }
+                        button { class: "button primary", onclick: on_settings, {crate::strings::catalog::OPEN_KEYS} }
                     }
                 } else if tree.as_ref().and_then(|tree| tree.browse.as_ref())
                     .is_some_and(|status| status.observed_at == 0 && (status.state == "unavailable" || status.last_error.is_some())) {
-                    div { class: "pc-catalog-empty", strong { "Directory unavailable" } span { "Retrying automatically. Check the storage connection if this persists." } }
+                    div { class: "pc-catalog-empty", strong { "Directory unavailable" } span { {crate::strings::catalog::DIR_UNAVAILABLE_HINT} } }
                 } else if tree.as_ref().is_none_or(|tree| tree.children.is_empty() && tree.run_count == 0) {
-                    div { class: "pc-catalog-empty", strong { "No datasets" } span { "Add a dataset, then refresh this page." } }
+                    div { class: "pc-catalog-empty", strong { "No datasets" } span { {crate::strings::catalog::NO_DATASETS_HINT} } }
                 } else if tree.as_ref().is_some_and(|tree| tree.children.is_empty()) {
                     div { class: "pc-catalog-empty",
                         strong { "Source file" }
-                        span { "This path contains one source file. Open it in Runs to inspect its runs." }
+                        span { {crate::strings::catalog::SOURCE_FILE_HINT} }
                     }
                 } else {
                     CatalogFolders {
@@ -143,11 +143,11 @@ fn CatalogStats(tree: Option<CatalogTree>) -> Element {
     rsx! {
         div { class: "pc-catalog-stats",
             div { WorkspaceIcon { name: "folder" } div { span { "Datasets" } strong { "{tree.dataset_count.unwrap_or_else(|| tree.children.len())}" } } }
-            div { WorkspaceIcon { name: "analysis" } div { span { "Trajectories" } strong { "{tree.trajectory_count.unwrap_or(tree.run_count)}" } } }
-            div { WorkspaceIcon { name: "warning" } div { span { "Failed" } strong { "{tree.failed_count}" } } }
+            div { WorkspaceIcon { name: "analysis" } div { span { {crate::strings::catalog::TRAJECTORIES} } strong { "{tree.trajectory_count.unwrap_or(tree.run_count)}" } } }
+            div { WorkspaceIcon { name: "warning" } div { span { {crate::strings::status::FAILED} } strong { "{tree.failed_count}" } } }
         }
         if errors > 0 {
-            p { class: "pc-catalog-errors", "{errors} source files could not be loaded" }
+            p { class: "pc-catalog-errors", {crate::strings::catalog::SOURCE_LOAD_ERRORS_FMT} }
         }
     }
 }
@@ -218,12 +218,12 @@ fn CatalogFolder(
                             "{dataset_count} datasets · {child.trajectory_count.unwrap_or(0)} trajectories"
                         }
                     } else {
-                        span { "Directory" }
+                        span { {crate::strings::catalog::DIRECTORY} }
                     }
                 } else if trajectory_count > 0 {
                     span { "{trajectory_count} trajectories" }
                 } else {
-                    span { "Source" }
+                    span { {crate::strings::catalog::SOURCE} }
                 }
                 WorkspaceIcon { name: "chevron" }
             }
@@ -233,7 +233,7 @@ fn CatalogFolder(
 
 fn catalog_subtitle(tree: Option<&CatalogTree>) -> String {
     let Some(tree) = tree else {
-        return "Browse the current path, like ls.".into();
+        return {crate::strings::catalog::BROWSE_LIKE_LS}.into();
     };
     if tree.dataset.is_none() {
         format!("{} mounts", tree.children.len())

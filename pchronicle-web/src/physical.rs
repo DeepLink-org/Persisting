@@ -201,7 +201,7 @@ pub fn PhysicalWorkspace() -> Element {
             current
                 .num_rows
                 .map(|rows| format!("{rows} rows"))
-                .unwrap_or_else(|| "rows unknown".to_string())
+                .unwrap_or_else(|| {crate::strings::physical::ROWS_UNKNOWN}.to_string())
         })
         .unwrap_or_default();
     let selected_table_layout = layout().and_then(|current| {
@@ -217,15 +217,15 @@ pub fn PhysicalWorkspace() -> Element {
         section { class: "physical-workspace", "aria-label": "Lance storage details",
             aside { class: "physical-tree",
                 header {
-                    strong { "Lance sources" }
+                    strong { {crate::strings::physical::LANCE_SOURCES} }
                     span { "{sources().len()}" }
                 }
                 if loading_sources() {
-                    div { class: "physical-empty", "Loading source files…" }
+                    div { class: "physical-empty", {crate::strings::physical::LOADING_SOURCES} }
                 } else if sources().is_empty() {
                     div { class: "physical-empty",
                         strong { "No Lance sources" }
-                        span { "Storage details are available for Lance datasets. Browse JSON and other files under Datasets or Runs." }
+                        span { {crate::strings::physical::NO_LANCE_HINT} }
                     }
                 } else {
                     div { class: "physical-tree-list",
@@ -284,7 +284,7 @@ pub fn PhysicalWorkspace() -> Element {
                             }
                         }
                     } else if loading_layout() {
-                        div { class: "physical-empty", "Reading data groups…" }
+                        div { class: "physical-empty", {crate::strings::physical::READING_GROUPS} }
                     }
                 }
             }
@@ -296,14 +296,14 @@ pub fn PhysicalWorkspace() -> Element {
                             if let Some(source) = selected_source.as_ref() {
                                 "{source.dataset}/{source.file}"
                             } else {
-                                "Select a Lance source"
+                                {crate::strings::physical::SELECT_SOURCE}
                             }
                         }
                         p {
                             if let Some(source) = selected_source.as_ref() {
                                 "{source.uri}"
                             } else {
-                                "Select a source, data group, file, and column to inspect stored values."
+                                {crate::strings::physical::SELECT_HINT}
                             }
                         }
                     }
@@ -372,13 +372,13 @@ pub fn PhysicalWorkspace() -> Element {
                         }
                     }
                 } else if loading_file() {
-                    div { class: "physical-empty", "Reading data file layout…" }
+                    div { class: "physical-empty", {crate::strings::physical::READING_LAYOUT} }
                 } else if !data_file().is_empty() {
-                    div { class: "physical-empty", "No layout for this data file." }
+                    div { class: "physical-empty", {crate::strings::physical::NO_LAYOUT} }
                 } else if selected_table_layout.is_none() {
                     div { class: "physical-empty",
                         strong { "Choose a data group" }
-                        span { "The strip shows each data group's rows and size. Select a group or file, then select a column to inspect sample values." }
+                        span { {crate::strings::physical::CHOOSE_GROUP_HINT} }
                     }
                 }
                 if drawer_open() {
@@ -442,8 +442,8 @@ fn PhysicalColumnCard(
                     }
                 }
             }
-            PhysicalDistributionStrip { label: "values", buckets: column.value_distribution.clone() }
-            PhysicalDistributionStrip { label: "size", buckets: column.size_distribution.clone() }
+            PhysicalDistributionStrip { label: {crate::strings::physical::VALUES}, buckets: column.value_distribution.clone() }
+            PhysicalDistributionStrip { label: {crate::strings::physical::SIZE}, buckets: column.size_distribution.clone() }
             div { class: "physical-page-strip",
                 for page in column.pages.clone() {
                     {
@@ -539,12 +539,12 @@ fn PhysicalSampleDrawer(
                         span { {column_count_label(stats)} }
                     }
                 }
-                button { class: "physical-drawer-close", onclick: move |_| on_close.call(()), "Close" }
+                button { class: "physical-drawer-close", onclick: move |_| on_close.call(()), {crate::strings::common::CLOSE} }
             }
             if review_max {
                 if let Some(max_value) = stats.as_ref().and_then(|column| column.max_value.clone()) {
                     div { class: "physical-max-card",
-                        strong { "Largest stored value" }
+                        strong { {crate::strings::physical::LARGEST_STORED} }
                         span { "row {max_value.row_offset} · {format_bytes(Some(max_value.size_bytes))}" }
                         pre { "{max_value.preview}" }
                     }
@@ -552,7 +552,7 @@ fn PhysicalSampleDrawer(
             }
             div { class: "physical-preview",
                 header {
-                    strong { "Page sample" }
+                    strong { {crate::strings::physical::PAGE_SAMPLE} }
                     if let Some(current) = preview.as_ref() {
                         span {
                             "offset {current.offset} · {current.rows.len()} rows"
@@ -564,7 +564,7 @@ fn PhysicalSampleDrawer(
                             class: "physical-page-nav",
                             disabled: !can_previous,
                             onclick: move |_| on_page.call(page_offset.saturating_sub(page_limit)),
-                            "Previous"
+                            {crate::strings::common::PREVIOUS}
                         }
                         span { class: "physical-page-status",
                             if let Some(page_count) = page_count {
@@ -577,12 +577,12 @@ fn PhysicalSampleDrawer(
                             class: "physical-page-nav",
                             disabled: !can_next,
                             onclick: move |_| on_page.call(page_offset.saturating_add(page_limit)),
-                            "Next"
+                            {crate::strings::common::NEXT_SIMPLE}
                         }
                     }
                 }
                 if loading {
-                    div { class: "physical-empty", "Loading page values…" }
+                    div { class: "physical-empty", {crate::strings::physical::LOADING_PAGE_VALUES} }
                 } else if let Some(current) = preview {
                     div { class: "physical-preview-table-wrap",
                         table { class: "physical-preview-table",
@@ -605,7 +605,7 @@ fn PhysicalSampleDrawer(
                         }
                     }
                 } else {
-                    div { class: "physical-empty", "No sample for this column." }
+                    div { class: "physical-empty", {crate::strings::physical::NO_SAMPLE} }
                 }
             }
         }
@@ -693,7 +693,7 @@ fn PhysicalFragmentStrip(
         div { class: "physical-layout",
             div { class: "physical-column",
                 div { class: "physical-column-label",
-                    strong { "Data group distribution" }
+                    strong { {crate::strings::physical::DATA_GROUP_DIST} }
                     span { {table_label(&table)} }
                 }
                 div { class: "physical-page-strip physical-fragment-strip",
@@ -727,7 +727,7 @@ fn PhysicalFragmentStrip(
                     }
                 }
                 p { class: "physical-note",
-                    "Bar width follows stored rows, or file size when the row count is unavailable."
+                    {crate::strings::physical::BAR_WIDTH_NOTE}
                 }
             }
         }
@@ -767,7 +767,7 @@ fn fragment_rows_label(fragment: &PhysicalFragment) -> String {
     fragment
         .physical_rows
         .map(|rows| format!("{rows} rows"))
-        .unwrap_or_else(|| "rows unknown".into())
+        .unwrap_or_else(|| {crate::strings::physical::ROWS_UNKNOWN}.into())
 }
 
 fn fragment_meta_label(fragment: &PhysicalFragment) -> String {
@@ -777,7 +777,7 @@ fn fragment_meta_label(fragment: &PhysicalFragment) -> String {
         format!("{} files", fragment.files.len()),
     ];
     if fragment.deletion_file.is_some() {
-        parts.push("deletions".into());
+        parts.push({crate::strings::physical::DELETIONS}.into());
     }
     parts.join(" · ")
 }
@@ -987,7 +987,7 @@ mod tests {
         assert_eq!(fragment_weight(&table.fragments[0]), 60);
         assert_eq!(
             fragment_meta_label(&table.fragments[1]),
-            "40 rows · 200 B · 0 files · deletions"
+            "40 rows · 200 B · 0 files · 删除"
         );
     }
 

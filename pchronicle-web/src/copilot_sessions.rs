@@ -52,7 +52,7 @@ pub fn title_from_thread(thread: &AssistantThread) -> String {
         .iter()
         .find(|message| message.role == ThreadRole::User && !message.text.trim().is_empty())
         .map(|message| truncate_title(&message.text))
-        .unwrap_or_else(|| "New chat".into())
+        .unwrap_or_else(|| {crate::strings::assistant::NEW_CHAT}.into())
 }
 
 pub fn can_start_new_chat(run_selected: bool, thread: &AssistantThread) -> bool {
@@ -137,7 +137,7 @@ pub fn latest_session_for_run<'a>(
 pub fn relative_time(now: i64, then: i64) -> String {
     let delta = now.saturating_sub(then).max(0);
     if delta < 60_000 {
-        "just now".into()
+        {crate::strings::common::JUST_NOW}.into()
     } else if delta < 3_600_000 {
         format!("{}m ago", delta / 60_000)
     } else if delta < 86_400_000 {
@@ -369,7 +369,7 @@ mod tests {
             title_from_thread(&chat),
             "Why did the retry loop explode after tool 12?"
         );
-        assert_eq!(title_from_thread(&thread(Vec::new())), "New chat");
+        assert_eq!(title_from_thread(&thread(Vec::new())), {crate::strings::assistant::NEW_CHAT});
     }
 
     #[test]
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn relative_time_uses_compact_units() {
-        assert_eq!(relative_time(10_000, 9_000), "just now");
+        assert_eq!(relative_time(10_000, 9_000), {crate::strings::common::JUST_NOW});
         assert_eq!(relative_time(120_000, 0), "2m ago");
         assert_eq!(relative_time(3_600_000 * 3, 0), "3h ago");
         assert_eq!(relative_time(86_400_000 * 4, 0), "4d ago");

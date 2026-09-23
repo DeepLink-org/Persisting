@@ -67,7 +67,7 @@ struct CancelOnDrop(String);
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         update(&self.0, |e| {
-            if e.transport == "running" {
+            if e.transport == {crate::strings::analysis::TRACE_RUNNING} {
                 e.transport = "cancelled".into();
                 e.finished_ms = Some(e.started.elapsed().as_millis() as u64);
             }
@@ -114,7 +114,7 @@ impl TrackedSend for Request {
                 id: id.clone(),
                 method: self.method().to_string(),
                 path,
-                transport: "running".into(),
+                transport: {crate::strings::analysis::TRACE_RUNNING}.into(),
                 started: Instant::now(),
                 finished_ms: None,
                 snapshot: None,
@@ -147,7 +147,7 @@ fn selected_entry<'a>(entries: &'a [Entry], selected: &str) -> Option<&'a Entry>
 }
 
 fn needs_diagnostics(entry: &Entry) -> bool {
-    entry.diagnostic_error.is_none() && entry.snapshot.as_ref().is_none_or(|s| s.state == "running")
+    entry.diagnostic_error.is_none() && entry.snapshot.as_ref().is_none_or(|s| s.state == {crate::strings::analysis::TRACE_RUNNING})
 }
 
 fn use_request_polling(selected: Signal<String>) {
@@ -177,18 +177,18 @@ fn use_request_polling(selected: Signal<String>) {
                         .header(OBSERVER, &token)
                         .send()
                         .await
-                        .map_err(|_| "Diagnostics connection failed".to_string())?;
+                        .map_err(|_| {crate::strings::requests::DIAG_CONN_FAILED}.to_string())?;
                     if response.status() == 404 && started.elapsed().as_secs() < 10 {
                         return Ok(None);
                     }
                     if !response.ok() {
-                        return Err("Diagnostics expired or are unavailable; the original request may still be running".into());
+                        return Err({crate::strings::requests::DIAG_EXPIRED}.into());
                     }
                     response
                         .json::<Snapshot>()
                         .await
                         .map(Some)
-                        .map_err(|_| "Invalid diagnostics response".into())
+                        .map_err(|_| {crate::strings::requests::DIAG_INVALID}.into())
                 };
                 let result = match futures_util::future::select(
                     Box::pin(fetch),
@@ -197,7 +197,7 @@ fn use_request_polling(selected: Signal<String>) {
                 .await
                 {
                     futures_util::future::Either::Left((r, _)) => r,
-                    _ => Err("Diagnostics timed out; server status is unknown".into()),
+                    _ => Err({crate::strings::requests::DIAG_TIMEOUT}.into()),
                 };
                 update(&id, |e| match result {
                     Ok(Some(s)) => {
@@ -217,20 +217,20 @@ fn use_request_polling(selected: Signal<String>) {
 }
 fn label(name: &str) -> &str {
     match name {
-        "authentication" => "Check catalog identity",
-        "worker_queue" => "Wait for worker",
-        "worker_start" => "Start worker",
-        "worker_execution" => "Execute in worker",
-        "execution" => "Accept request",
-        "browse_cache" => "Read directory cache",
-        "manifest_summary" => "Read local manifest summaries",
-        "directory_wait" => "Wait for directory listing",
-        "query_queue" => "Wait for query slot / shared result",
-        "source_metadata" => "Resolve source metadata",
-        "storage_read" => "Read storage",
-        "query" => "Build / execute query",
-        "catalog_wait" => "Wait for catalog refresh",
-        "response" => "Prepare response",
+        "authentication" => {crate::strings::requests::STAGE_AUTHENTICATION},
+        "worker_queue" => {crate::strings::requests::STAGE_WORKER_QUEUE},
+        "worker_start" => {crate::strings::requests::STAGE_WORKER_START},
+        "worker_execution" => {crate::strings::requests::STAGE_WORKER_EXECUTION},
+        "execution" => {crate::strings::requests::STAGE_EXECUTION},
+        "browse_cache" => {crate::strings::requests::STAGE_BROWSE_CACHE},
+        "manifest_summary" => {crate::strings::requests::STAGE_MANIFEST_SUMMARY},
+        "directory_wait" => {crate::strings::requests::STAGE_DIRECTORY_WAIT},
+        "query_queue" => {crate::strings::requests::STAGE_QUERY_QUEUE},
+        "source_metadata" => {crate::strings::requests::STAGE_SOURCE_METADATA},
+        "storage_read" => {crate::strings::requests::STAGE_STORAGE_READ},
+        "query" => {crate::strings::requests::STAGE_QUERY},
+        "catalog_wait" => {crate::strings::requests::STAGE_CATALOG_WAIT},
+        "response" => {crate::strings::requests::STAGE_RESPONSE},
         _ => name,
     }
 }
@@ -267,9 +267,9 @@ pub fn RequestIndicator(on_open: EventHandler<()>) -> Element {
     let running = entries
         .iter()
         .filter(|e| {
-            e.transport == "running"
+            e.transport == {crate::strings::analysis::TRACE_RUNNING}
                 || (e.transport == "unknown"
-                    && e.snapshot.as_ref().is_some_and(|s| s.state == "running"))
+                    && e.snapshot.as_ref().is_some_and(|s| s.state == {crate::strings::analysis::TRACE_RUNNING}))
         })
         .count();
     let failed = entries
@@ -282,35 +282,35 @@ pub fn RequestIndicator(on_open: EventHandler<()>) -> Element {
         .iter()
         .rev()
         .find(|e| {
-            e.transport == "running"
+            e.transport == {crate::strings::analysis::TRACE_RUNNING}
                 || (e.transport == "unknown"
-                    && e.snapshot.as_ref().is_some_and(|s| s.state == "running"))
+                    && e.snapshot.as_ref().is_some_and(|s| s.state == {crate::strings::analysis::TRACE_RUNNING}))
         })
         .and_then(|e| e.snapshot.as_ref())
         .and_then(|s| {
             let s = s.worker.as_deref().unwrap_or(s);
             s.phases
                 .iter()
-                .find(|p| p.state == "running")
+                .find(|p| p.state == {crate::strings::analysis::TRACE_RUNNING})
                 .map(|p| format!("{} · {} ms", label(&p.name), p.elapsed_ms))
         });
     rsx! { button { class:"request-indicator", onclick:move |_|on_open.call(()),
         if running>0 { span { class:"spinner" } "{running} running" if let Some(stage)=current { small { "{stage}" } } }
         else if failed>0 { "{failed} failed · View requests" }
-        else { "Requests · Idle" }
+        else { {crate::strings::requests::IDLE} }
     } }
 }
 #[component]
 fn Phases(snapshot: Snapshot) -> Element {
     rsx! {
         if let Some(note)=&snapshot.note { p { role:"status", "{note}" } }
-        table { class:"request-phases", caption { "Execution stages" }
-            thead { tr { th { "Stage" } th { "Status" } th { "Elapsed" } } }
+        table { class:"request-phases", caption { {crate::strings::requests::EXECUTION_STAGES} }
+            thead { tr { th { "Stage" } th { "Status" } th { {crate::strings::requests::ELAPSED} } } }
             tbody { for phase in &snapshot.phases { tr { key:"{phase.name}",
                 td { "{label(&phase.name)}" } td { "{phase.state}" } td { "{phase.elapsed_ms} ms" }
             } } }
         }
-        if let Some(worker)=snapshot.worker { h3 { "Worker execution" } Phases { snapshot:*worker } }
+        if let Some(worker)=snapshot.worker { h3 { {crate::strings::requests::WORKER_EXECUTION} } Phases { snapshot:*worker } }
     }
 }
 #[component]
@@ -337,7 +337,7 @@ pub fn RequestsPanel() -> Element {
     let entries = REQUESTS.read().clone();
     let active = selected_entry(&entries, &selected()).cloned();
     rsx! { section { class:"requests-panel",
-        header { h1 { "Requests" } p { "Inspect this browser’s recent requests, execution stages and failures. Server history is retained for up to 10 minutes." }
+        header { h1 { "Requests" } p { {crate::strings::requests::PAGE_SUBTITLE} }
             form { onsubmit:move |event| {
                     event.prevent_default();
                     let id=lookup().trim().to_owned();
@@ -350,11 +350,11 @@ pub fn RequestsPanel() -> Element {
                         entries.push(Entry { id,method:"GET".into(),path:"Lookup".into(),transport:"unknown".into(),started:Instant::now()-std::time::Duration::from_secs(10),finished_ms:None,snapshot:None,diagnostic_error:None });
                     }
                 },
-                input { aria_label:"Request ID", placeholder:"Find by request ID", value:"{lookup}", oninput:move |e|lookup.set(e.value()) }
-                button { class:"button", r#type:"submit", "Find" }
+                input { aria_label:"Request ID", placeholder:{crate::strings::requests::FIND_PLACEHOLDER}, value:"{lookup}", oninput:move |e|lookup.set(e.value()) }
+                button { class:"button", r#type:"submit", {crate::strings::common::FIND} }
             }
         }
-        if !selected().is_empty() && !entries.iter().any(|e|e.id==selected()) { p { role:"status", "This request is not in this browser’s recent history." } }
+        if !selected().is_empty() && !entries.iter().any(|e|e.id==selected()) { p { role:"status", {crate::strings::requests::NOT_IN_HISTORY} } }
         div { class:"requests-grid",
             aside { aria_label:"Recent requests",
                 for entry in entries.iter().rev() {
@@ -371,15 +371,15 @@ pub fn RequestsPanel() -> Element {
                     h2 { "{entry.method} {entry.path}" } code { "{entry.id}" }
                     p { "Browser request: {entry.transport}" }
                     if let Some(error)=entry.diagnostic_error { p { class:"request-error", role:"alert", "{error}" }
-                        button { class:"button", onclick:{let id=entry.id.clone();move |_|update(&id,|e|e.diagnostic_error=None)}, "Retry diagnostics" }
+                        button { class:"button", onclick:{let id=entry.id.clone();move |_|update(&id,|e|e.diagnostic_error=None)}, {crate::strings::requests::RETRY_DIAGNOSTICS} }
                     }
                     if let Some(snapshot)=entry.snapshot {
                         p { role:"status", "Server: {snapshot.state} · {snapshot.elapsed_ms} ms" }
                         if let Some(status)=snapshot.status { p { "HTTP {status}" } }
                         if let Some(ref error)=snapshot.error { p { class:"request-error", role:"alert", "{error}" } }
                         Phases { snapshot }
-                    } else { p { role:"status", "Waiting for server diagnostics…" } }
-                } else { p { "Browse a dataset or open Runs to inspect a request." } }
+                    } else { p { role:"status", {crate::strings::requests::WAITING_DIAGNOSTICS} } }
+                } else { p { {crate::strings::requests::BROWSE_HINT} } }
             }
         }
     } }
@@ -419,7 +419,7 @@ mod tests {
             request_id: "test".into(),
             method: "GET".into(),
             path: "test".into(),
-            state: "running".into(),
+            state: {crate::strings::analysis::TRACE_RUNNING}.into(),
             elapsed_ms: 0,
             status: None,
             error: None,

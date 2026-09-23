@@ -40,7 +40,7 @@ const CATALOG_REFRESH_MS: u32 = 5_000;
 
 fn evidence_notice(turn_id: i64, detail: &str) -> WorkspaceNotice {
     WorkspaceNotice {
-        title: "Step details could not be decoded".into(),
+        title: {crate::strings::detail::STEP_DECODE_FAILED_TITLE}.into(),
         summary: format!("Step #{turn_id} · {}", type_mismatch_summary(detail)),
         action: String::new(),
         detail: detail.to_string(),
@@ -62,8 +62,8 @@ fn type_mismatch_summary(detail: &str) -> String {
         .and_then(|rest| rest.split_whitespace().next())
         .map(|value| value.trim_end_matches(['.', ',']));
     match (expected, received) {
-        (Some(expected), Some(received)) => format!("Expected {expected}, received {received}"),
-        _ => "The step data did not match the expected format".into(),
+        (Some(expected), Some(received)) => crate::strings::detail::expected_received(expected, received),
+        _ => {crate::strings::detail::STEP_FORMAT_MISMATCH}.into(),
     }
 }
 
@@ -601,7 +601,7 @@ pub fn App() -> Element {
             class: if embedded { "pc2-shell embed" } else { "pc2-shell" },
             tabindex: "-1",
             onkeydown: root_keydown,
-            a { class: "skip-link", href: "#pc2-main", "Skip to main content" }
+            a { class: "skip-link", href: "#pc2-main", {crate::strings::common::SKIP_TO_MAIN} }
             if !embedded {
             nav { class: "rail", aria_label: "pChronicle navigation",
                 button { class: "brand-mark", title: "Persisting Chronicle", aria_label: "Persisting Chronicle home", onclick: move |_| page.set("home".into()),
@@ -614,20 +614,20 @@ pub fn App() -> Element {
                     RailButton { active: page() == "tools", icon: "analysis", label: ANALYSIS, onclick: move |_| page.set("tools".into()) }
                     RailButton { active: page() == "physical", icon: "storage", label: STORAGE, onclick: move |_| page.set("physical".into()) }
                 }
-                RailButton { active: page() == "requests", icon: "analysis", label: "Requests", onclick: move |_| page.set("requests".into()) }
+                RailButton { active: page() == "requests", icon: "analysis", label: {crate::strings::requests::PAGE_TITLE}, onclick: move |_| page.set("requests".into()) }
                 div { class: "rail-spacer" }
                 div { class: "rail-secondary", aria_label: "Assistant and settings",
                     button { class: if copilot_open() { "rail-button active" } else { "rail-button" }, aria_label: "Toggle Assistant", aria_expanded: copilot_open(), onclick: move |_| copilot_open.set(!copilot_open()), WorkspaceIcon { name: "assistant" } span { {ASSISTANT} } }
-                    button { class: if settings_open() { "rail-button active" } else { "rail-button" }, aria_label: "Settings", onclick: move |_| settings_open.set(true), WorkspaceIcon { name: "keys" } span { "Keys" } }
+                    button { class: if settings_open() { "rail-button active" } else { "rail-button" }, aria_label: "Settings", onclick: move |_| settings_open.set(true), WorkspaceIcon { name: "keys" } span { {crate::strings::llm::KEYS_TITLE} } }
                 }
                 crate::requests::RequestIndicator { on_open: move |_| page.set("requests".into()) }
                 {
                     let identity = catalog_auth::load();
                     let configured = identity.is_configured();
                     let label = if configured {
-                        if identity.label.is_empty() { "Catalog".to_string() } else { identity.label.clone() }
+                        if identity.label.is_empty() { {crate::strings::common::CATALOG}.to_string() } else { identity.label.clone() }
                     } else {
-                        "Public access".to_string()
+                        {crate::strings::common::PUBLIC_ACCESS}.to_string()
                     };
                     rsx! {
                         div { class: "rail-status", title: "Active catalog profile: {label}",
@@ -857,7 +857,7 @@ pub fn App() -> Element {
                                         page.set("tools".into());
                                     },
                                 }
-                            } else { LoadingWorkspace { label: "Loading run details…" } }
+                            } else { LoadingWorkspace { label: {crate::strings::runs::LOADING_RUN_DETAILS} } }
                         } }
                     }
                     _ => {
@@ -1317,7 +1317,7 @@ fn load_workspace(
         {
             futures_util::future::Either::Left((result, _)) => result,
             _ => Err(api::ApiFailure::network(
-                "Loading steps timed out. Open Requests to inspect server progress, then retry.",
+                {crate::strings::runs::STEPS_TIMEOUT},
             )),
         };
         if *generation.peek() != requested {
@@ -1365,7 +1365,7 @@ fn load_workspace(
         {
             futures_util::future::Either::Left((result, _)) => result,
             _ => Err(api::ApiFailure::network(
-                "Run statistics timed out. Steps remain available; open Requests to inspect progress.",
+                {crate::strings::runs::STATS_TIMEOUT},
             )),
         };
         if *generation.peek() != requested {
@@ -1625,7 +1625,7 @@ fn PathRunRow(
 fn ChatMarker(run: RunSummary, on_open_chat: EventHandler<RunSummary>) -> Element {
     let click_run = run.clone();
     let key_run = run;
-    let marker_title = "Open Assistant chat for this run";
+    let marker_title = {crate::strings::runs::OPEN_ASSISTANT_CHAT};
     rsx! {
         span {
             class: "pc2-chat-dot",
@@ -1682,17 +1682,17 @@ fn PathExplorer(
     let show_pager = !paged && total > limit;
     rsx! { aside { class: "pc2-path-explorer",
         header {
-            div { strong { "Run paths" } span { if paged { "Search results on this page" } else if view_mode == PathListMode::Flat { "All runs in this dataset" } else { "Tree by import path" } } }
+            div { strong { "Run paths" } span { if paged { {crate::strings::runs::SEARCH_RESULTS_ON_PAGE} } else if view_mode == PathListMode::Flat { {crate::strings::runs::ALL_RUNS_IN_DATASET} } else { {crate::strings::runs::TREE_BY_IMPORT_PATH} } } }
             div { class: "pc2-path-view-toggle", role: "radiogroup", aria_label: "Run list view",
-                button { class: if view_mode == PathListMode::Flat { "active" } else { "" }, role: "radio", aria_checked: view_mode == PathListMode::Flat, onclick: move |_| on_view_mode.call(PathListMode::Flat), "Flat" }
-                button { class: if view_mode == PathListMode::Tree { "active" } else { "" }, role: "radio", aria_checked: view_mode == PathListMode::Tree, onclick: move |_| on_view_mode.call(PathListMode::Tree), "Tree" }
+                button { class: if view_mode == PathListMode::Flat { "active" } else { "" }, role: "radio", aria_checked: view_mode == PathListMode::Flat, onclick: move |_| on_view_mode.call(PathListMode::Flat), {crate::strings::runs::FLAT} }
+                button { class: if view_mode == PathListMode::Tree { "active" } else { "" }, role: "radio", aria_checked: view_mode == PathListMode::Tree, onclick: move |_| on_view_mode.call(PathListMode::Tree), {crate::strings::runs::TREE} }
             }
             span { "{runs.len()}" }
         }
         div { class: "pc2-path-tree",
-            button { class: if selected_path.is_empty() { "pc2-path-all active" } else { "pc2-path-all" }, onclick: move |_| on_path.call(String::new()), span { class: "pc2-path-icon root", "⌂" } strong { if paged { "Search results" } else { "All runs" } } code { "{total}" } }
-            if loading && runs.is_empty() { div { class: "pc2-path-loading", span { class: "spinner" } "Loading paths…" } }
-            else if runs.is_empty() { div { class: "pc2-path-empty", "No captured run paths." } }
+            button { class: if selected_path.is_empty() { "pc2-path-all active" } else { "pc2-path-all" }, onclick: move |_| on_path.call(String::new()), span { class: "pc2-path-icon root", "⌂" } strong { if paged { {crate::strings::runs::SEARCH_RESULTS} } else { "All runs" } } code { "{total}" } }
+            if loading && runs.is_empty() { div { class: "pc2-path-loading", span { class: "spinner" } {crate::strings::runs::LOADING_PATHS} } }
+            else if runs.is_empty() { div { class: "pc2-path-empty", {crate::strings::runs::NO_CAPTURED_PATHS} } }
             else if view_mode == PathListMode::Flat {
                 for run in runs.iter() {
                     PathRunRow { key: "flat-{run.path}", run: run.clone(), name: run.session_id.clone(), chat_sessions: chat_sessions.clone(), selected_path: selected_path.clone(), on_select, on_open_chat }
@@ -1706,7 +1706,7 @@ fn PathExplorer(
         footer { class: if show_pager { "pc2-path-footer paged" } else { "pc2-path-footer" },
             if show_pager {
                 label { class: "pc2-path-page",
-                    span { "Page" }
+                    span { {crate::strings::common::PAGE} }
                     select {
                         value: "{current_page}",
                         aria_label: "Jump to run path page",
@@ -1728,11 +1728,11 @@ fn PathExplorer(
                 }
                 span { "{page_start}–{page_end} of {total}" }
             } else if paged {
-                "Showing the current search page."
+                {crate::strings::runs::SHOWING_SEARCH_PAGE}
             } else if view_mode == PathListMode::Flat {
-                "Showing all runs in this dataset."
+                {crate::strings::runs::SHOWING_ALL_RUNS}
             } else {
-                "Tree follows the imported path."
+                {crate::strings::runs::TREE_FOLLOWS_IMPORT}
             }
         }
     } }
@@ -1824,25 +1824,25 @@ fn RunsExplorer(
         _ => "FTS unavailable",
     };
     let search_placeholder = if search.fts_available {
-        "Search message body · Enter to search"
+        {crate::strings::runs::SEARCH_PLACEHOLDER}
     } else {
-        "Search unavailable for this Dataset"
+        {crate::strings::runs::SEARCH_UNAVAILABLE}
     };
     rsx! {
         section { class: "pc2-page",
             header { class: "pc2-page-head",
-                div { p { class: "eyebrow", "pChronicle" } h1 { "Runs" } p { "Inspect agent execution, latency, tool use, and failures." } }
+                div { p { class: "eyebrow", "pChronicle" } h1 { "Runs" } p { {crate::strings::runs::PAGE_SUBTITLE} } }
                 button { class: "button", onclick: on_refresh, "↻ Refresh" }
             }
             div { class: "pc2-filterbar",
-                label { class: "pc2-filter-search", span { "⌕" } input { value: "{draft_query}", placeholder: "{search_placeholder}", aria_label: "Search runs and content", title: "Search message body. Use #all(...) for all fields or an explicit field/JSON filter. Press Enter to search", oninput: move |event| draft_query.set(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); on_apply_query.call(draft_query()); } } } if !draft_query().is_empty() { button { r#type: "button", class: "pc2-filter-clear", aria_label: "Clear run search", title: "Clear search", onclick: move |event| { event.prevent_default(); draft_query.set(String::new()); on_apply_query.call(String::new()); }, "×" } } }
+                label { class: "pc2-filter-search", span { "⌕" } input { value: "{draft_query}", placeholder: "{search_placeholder}", aria_label: "Search runs and content", title: {crate::strings::detail::SEARCH_BODY_TITLE}, oninput: move |event| draft_query.set(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); on_apply_query.call(draft_query()); } } } if !draft_query().is_empty() { button { r#type: "button", class: "pc2-filter-clear", aria_label: "Clear run search", title: {crate::strings::detail::CLEAR_SEARCH}, onclick: move |event| { event.prevent_default(); draft_query.set(String::new()); on_apply_query.call(String::new()); }, "×" } } }
                 select { value: "{dataset}", aria_label: "Filter by Dataset", onchange: move |event| on_dataset.call(event.value()),
-                    option { value: "all", "All Datasets" }
+                    option { value: "all", {crate::strings::runs::ALL_DATASETS} }
                     for mounted in datasets { option { value: "{mounted.name}", "{mounted.label()}" } }
                 }
-                select { value: "{status}", aria_label: "Filter by run status", onchange: move |event| on_status.call(event.value()), option { value: "all", "All statuses" } option { value: "active", "Active" } option { value: "completed", "Completed" } option { value: "failed", "Failed" } }
-                select { value: "{sort}", aria_label: "Sort runs", onchange: move |event| on_sort.call(event.value()), option { value: "session", "Session" } option { value: "events", "Events" } option { value: "status", "Status" } option { value: "agent", "Agent" } }
-                button { class: "pc2-sort", aria_label: "Toggle sort direction", onclick: move |_| on_direction.call(if direction == "asc" { "desc".into() } else { "asc".into() }), if direction == "asc" { "↑ Asc" } else { "↓ Desc" } }
+                select { value: "{status}", aria_label: "Filter by run status", onchange: move |event| on_status.call(event.value()), option { value: "all", {crate::strings::status::ALL_STATUSES} } option { value: "active", {crate::strings::status::ACTIVE} } option { value: "completed", {crate::strings::status::COMPLETED} } option { value: "failed", {crate::strings::status::FAILED} } }
+                select { value: "{sort}", aria_label: "Sort runs", onchange: move |event| on_sort.call(event.value()), option { value: "session", {crate::strings::runs::SESSION} } option { value: "events", {crate::strings::runs::EVENTS_COL} } option { value: "status", {crate::strings::runs::STATUS_COL} } option { value: "agent", {crate::strings::runs::SORT_AGENT} } }
+                button { class: "pc2-sort", aria_label: "Toggle sort direction", onclick: move |_| on_direction.call(if direction == "asc" { "desc".into() } else { "asc".into() }), if direction == "asc" { "↑ Asc" } else { {crate::strings::runs::DESC} } }
                 if !path.is_empty() { button { class: "pc2-path-filter", title: "{path}", onclick: move |_| on_path.call(String::new()), "⌁ {short(&path, 24)} ×" } }
                 if !file.is_empty() { button { class: "pc2-path-filter", title: "{file}", onclick: move |_| on_file.call(String::new()), "_file_ {short(&file, 24)} ×" } }
                 span { class: if search.fts_available { "pc2-search-mode available" } else { "pc2-search-mode unavailable" }, title: "{search_label}", "{search_label}" }
@@ -1852,19 +1852,19 @@ fn RunsExplorer(
                 footer { class: "pc2-pagination",
                     button { disabled: page_offset == 0, onclick: move |_| on_page.call(page_offset.saturating_sub(page_limit)), "← Previous" }
                     span { "{page_offset + usize::from(total > 0)}–{page_next} of {total}" }
-                    button { disabled: !page_has_more, onclick: move |_| on_page.call(page_next), "Next →" }
+                    button { disabled: !page_has_more, onclick: move |_| on_page.call(page_next), {crate::strings::common::NEXT} }
                 }
             }
             div { class: "pc2-table-wrap",
                 table { class: "pc2-run-table",
-                    thead { tr { th { "Session" } th { "Agent / model" } th { "Status" } th { "Events" } th { "Root" } } }
+                    thead { tr { th { "Session" } th { {crate::strings::runs::AGENT_MODEL} } th { "Status" } th { {crate::strings::runs::EVENTS_COL} } th { "Root" } } }
                     tbody {
                         if loading && page.is_none() {
                             for _ in 0..6 { tr { class: "pc2-table-skeleton", td { colspan: "5" } } }
                         } else if loading && page.as_ref().is_none_or(|page| page.records.is_empty()) {
                             for _ in 0..6 { tr { class: "pc2-table-skeleton", td { colspan: "5" } } }
                         } else if page.as_ref().is_none_or(|page| page.records.is_empty()) {
-                            tr { td { colspan: "5", div { class: "pc2-empty", strong { "No matching runs" } span { "Adjust the filters or refresh the datasets." } } } }
+                            tr { td { colspan: "5", div { class: "pc2-empty", strong { "No matching runs" } span { {crate::strings::runs::NO_MATCHING_HINT} } } } }
                         } else {
                             for item in page.as_ref().unwrap().records.iter() {
                                 RunTableRow { key: "{item.run.dataset}/{item.run.file}/{item.run.session_id}", item: item.clone(), query: query.clone(), has_chat: has_chat_for_run(&chat_sessions, &item.run), on_select, on_open_chat }
@@ -1898,8 +1898,8 @@ fn RunTableRow(
         .map(|value| search_preview_excerpt(value, &highlight_query));
     rsx! {
         tr { tabindex: "0", onclick: move |_| on_select.call(run.clone()), onkeydown: move |event| if event.key() == Key::Enter { on_select.call(keyboard_run.clone()) },
-            td { div { class: "pc2-session-cell", div { class: "pc2-session-heading", strong { if compact { "Record · " } HighlightedText { text: item.run.session_id.clone(), query: query.clone() } } if has_chat && !compact { ChatMarker { run: run.clone(), on_open_chat } } } span { if compact { "1 JSON record · {item.run.file}" } else { "{item.run.row_count} captured rows" } } if let Some(preview) = preview { div { class: "pc2-run-search-preview", title: "{preview}", span { "Match: " } HighlightedText { text: preview.clone(), query: highlight_query.clone() } } } } }
-            td { div { class: "pc2-session-cell", strong { if compact { "Compact JSONL" } else { HighlightedText { text: item.run.agent_id.clone(), query: query.clone() } } } span { if !compact { HighlightedText { text: model_text.clone(), query: query.clone() } } } } }
+            td { div { class: "pc2-session-cell", div { class: "pc2-session-heading", strong { if compact { {crate::strings::runs::RECORD_PREFIX} } HighlightedText { text: item.run.session_id.clone(), query: query.clone() } } if has_chat && !compact { ChatMarker { run: run.clone(), on_open_chat } } } span { if compact { "1 JSON record · {item.run.file}" } else { "{item.run.row_count} captured rows" } } if let Some(preview) = preview { div { class: "pc2-run-search-preview", title: "{preview}", span { {crate::strings::runs::MATCH_PREFIX} } HighlightedText { text: preview.clone(), query: highlight_query.clone() } } } } }
+            td { div { class: "pc2-session-cell", strong { if compact { {crate::strings::runs::COMPACT_JSONL} } else { HighlightedText { text: item.run.agent_id.clone(), query: query.clone() } } } span { if !compact { HighlightedText { text: model_text.clone(), query: query.clone() } } } } }
             td { StatusBadge { value: item.run.status.clone() } }
             td { class: "pc2-number", "{item.run.row_count}" }
             td { code { title: "{item.run.root_session_id.as_deref().unwrap_or_default()}", HighlightedText { text: root_text, query: query.clone() } } }
@@ -2030,44 +2030,44 @@ fn RunDetailWorkspace(
     let query_for_list = query.clone();
     let search_label = match search.mode.as_str() {
         "fts" if search.fts_available => "FTS · Jieba",
-        "memory" if search.fts_available => "Memory fallback",
-        "memory" => "Memory filter",
+        "memory" if search.fts_available => {crate::strings::runs::MEMORY_FALLBACK},
+        "memory" => {crate::strings::runs::MEMORY_FILTER},
         _ if search.fts_available => "FTS available · Jieba",
         _ => "FTS unavailable · Memory filter",
     };
     let search_placeholder = if search.fts_available {
-        "Search steps · FTS available (Jieba)"
+        {crate::strings::detail::SEARCH_STEPS_FTS}
     } else {
-        "Search steps · memory filter"
+        {crate::strings::detail::SEARCH_STEPS_MEMORY}
     };
     rsx! {
         section { class: if compact_header() { "pc2-detail is-condensed" } else { "pc2-detail" },
             if failed {
-                div { role: "alert", "Run statistics could not be loaded. Steps remain available."
-                    button { class: "button", onclick: on_retry, "Retry" }
+                div { role: "alert", {crate::strings::detail::STATS_FAILED}
+                    button { class: "button", onclick: on_retry, {crate::strings::common::RETRY} }
                 }
             }
             header { class: "pc2-detail-head",
-                div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, "← Runs" } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
+                div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, {crate::strings::detail::BACK_TO_RUNS} } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
                 div { class: "pc2-head-actions",
                     if !run.is_compact_jsonl() {
-                        button { class: "button primary", onclick: on_open_copilot, "◇ Ask Assistant" }
-                        button { class: "button", onclick: { let run = run.clone(); move |_| on_analyze.call(run.clone()) }, "Analyze this run" }
+                        button { class: "button primary", onclick: on_open_copilot, {crate::strings::detail::ASK_ASSISTANT} }
+                        button { class: "button", onclick: { let run = run.clone(); move |_| on_analyze.call(run.clone()) }, {crate::strings::detail::ANALYZE_THIS_RUN} }
                     }
                 }
             }
             if run.is_compact_jsonl() {
                 section { class: "pc2-trace-surface pc2-compact-record",
                     header { class: "pc2-trace-toolbar",
-                        div { strong { "JSON record" } span { "Compact JSONL · no inferred step semantics" } }
+                        div { strong { "JSON record" } span { {crate::strings::detail::COMPACT_NO_SEMANTICS} } }
                     }
                     div { class: "pc2-turn-list pc2-span-scroll",
                         if loading && compact_record.is_none() {
-                            div { class: "pc2-inline-loading", span { class: "spinner" } "Loading record…" }
+                            div { class: "pc2-inline-loading", span { class: "spinner" } {crate::strings::detail::LOADING_RECORD} }
                         } else if let Some(detail) = compact_record {
                             JsonViewer { value: detail.record }
                         } else {
-                            div { class: "pc2-empty", strong { "Record unavailable" } }
+                            div { class: "pc2-empty", strong { {crate::strings::detail::RECORD_UNAVAILABLE} } }
                         }
                     }
                 }
@@ -2082,11 +2082,11 @@ fn RunDetailWorkspace(
                 }
             }
             } else if loading {
-                div { class: "pc2-inline-loading", role: "status", "Loading run statistics…" }
+                div { class: "pc2-inline-loading", role: "status", {crate::strings::detail::LOADING_STATS} }
             }
             nav { class: "pc2-detail-tabs", aria_label: "Run detail view",
                 button { class: if detail_mode == "trace" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("trace".into()), {TIMELINE} }
-                button { class: if detail_mode == "analysis" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("analysis".into()), "Analysis" }
+                button { class: if detail_mode == "analysis" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("analysis".into()), {crate::strings::detail::TAB_ANALYSIS} }
                 if let Some(value) = &analysis {
                     span { "{turns.len()} of {value.turn_count} steps loaded for interactive charts" }
                 } else { span { "{turns.len()} steps loaded" } }
@@ -2102,24 +2102,24 @@ fn RunDetailWorkspace(
                     },
                     on_scroll: on_detail_scroll,
                 }
-                } else { div { role: "status", "Run statistics are not available yet." } }
+                } else { div { role: "status", {crate::strings::detail::STATS_UNAVAILABLE} } }
             } else {
                 section { class: "pc2-trace-surface pc2-inline-trace",
                     div { class: "pc2-trace-toolbar",
-                        div { strong { if steps_active { "Steps" } else { "Conversations" } } span { "Bars show each step's place in the run · colors show type · sequence is not wall-clock time · expand a row for details" } }
+                        div { strong { if steps_active { {crate::strings::detail::STEPS} } else { "Conversations" } } span { {crate::strings::detail::TIMELINE_HINT} } }
                         div { class: "pc2-toolbar-controls",
                             div { class: "pc2-view-toggle", role: "group", aria_label: "Timeline layout",
-                                button { class: if chats_active { "active" } else { "" }, onclick: move |_| on_view.call("chats".to_string()), "Conversations" }
+                                button { class: if chats_active { "active" } else { "" }, onclick: move |_| on_view.call("chats".to_string()), {crate::strings::detail::CONVERSATIONS} }
                                 button { class: if steps_active { "active" } else { "" }, onclick: move |_| on_view.call("steps".to_string()), {STEPS} }
                             }
-                            select { value: "{source}", aria_label: "Filter steps by role", onchange: move |event| on_source.call(event.value()), option { value: "all", "All roles" } option { value: "user", "User" } option { value: "agent", "Agent" } option { value: "system", "System" } }
+                            select { value: "{source}", aria_label: "Filter steps by role", onchange: move |event| on_source.call(event.value()), option { value: "all", {crate::strings::detail::ALL_ROLES} } option { value: "user", {crate::strings::detail::ROLE_USER} } option { value: "agent", {crate::strings::runs::SORT_AGENT} } option { value: "system", {crate::strings::detail::ROLE_SYSTEM} } }
                             span { class: if search.fts_available { "pc2-search-mode available" } else { "pc2-search-mode unavailable" }, title: "{search_label}", "{search_label}" }
-                            label { class: "pc2-filter-search pc2-detail-filter-search", span { "⌕" } input { value: "{query}", placeholder: "{search_placeholder}", aria_label: "Filter steps", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); on_apply_query.call(query.clone()); } } } if !query.is_empty() { button { r#type: "button", class: "pc2-filter-clear", aria_label: "Clear step filter", title: "Clear filter", onclick: move |event| { event.prevent_default(); on_apply_query.call(String::new()); }, "×" } } }
+                            label { class: "pc2-filter-search pc2-detail-filter-search", span { "⌕" } input { value: "{query}", placeholder: "{search_placeholder}", aria_label: "Filter steps", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); on_apply_query.call(query.clone()); } } } if !query.is_empty() { button { r#type: "button", class: "pc2-filter-clear", aria_label: "Clear step filter", title: {crate::strings::detail::CLEAR_FILTER}, onclick: move |event| { event.prevent_default(); on_apply_query.call(String::new()); }, "×" } } }
                         }
                     }
                     div { id: RUN_DETAIL_SCROLL_ID, class: "pc2-turn-list pc2-span-scroll", onscroll: on_detail_scroll,
-                        if turn_loading { div { class: "pc2-inline-loading", role: "status", span { class: "spinner" } "Loading steps…" } }
-                        if turns.is_empty() && !turn_loading { div { class: "pc2-empty", strong { "No visible steps" } span { "No loaded steps match this filter." } } }
+                        if turn_loading { div { class: "pc2-inline-loading", role: "status", span { class: "spinner" } {crate::strings::detail::LOADING_STEPS} } }
+                        if turns.is_empty() && !turn_loading { div { class: "pc2-empty", strong { "No visible steps" } span { {crate::strings::detail::NO_LOADED_STEPS_MATCH} } } }
                         else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, view: view_for_list, source: source_for_list, query: query_for_list, on_turn, on_open_drawer } }
                     }
                 }
@@ -2135,11 +2135,11 @@ fn RunDetailWorkspace(
 #[component]
 fn MetricsStrip(analysis: RunAnalysis) -> Element {
     rsx! { div { class: "pc2-metrics",
-        Metric { label: "Steps", value: analysis.turn_count.to_string(), detail: format!("{} {}", analysis.event_count, analysis.event_provenance.display_label().to_ascii_lowercase()) }
-        Metric { label: "Tools", value: analysis.tool_call_count.to_string(), detail: format!("{} tool names", analysis.tools.len()) }
-        Metric { label: "Explicit errors", value: analysis.error_count.to_string(), detail: "Captured signals only" }
-        Metric { label: "Tokens", value: analysis.total_tokens.map(|value| value.to_string()).unwrap_or_else(|| "—".into()), detail: format!("in {} · out {}", optional_u64(analysis.prompt_tokens), optional_u64(analysis.completion_tokens)) }
-        Metric { label: "Latency P95", value: analysis.latency_ms.p95.map(format_ms).unwrap_or_else(|| "—".into()), detail: format!("{}/{} samples", analysis.latency_ms.sample_count, analysis.latency_ms.total_count) }
+        Metric { label: {crate::strings::detail::STEPS}, value: analysis.turn_count.to_string(), detail: format!("{} {}", analysis.event_count, analysis.event_provenance.display_label().to_ascii_lowercase()) }
+        Metric { label: {crate::strings::detail::METRIC_TOOLS}, value: analysis.tool_call_count.to_string(), detail: format!("{} tool names", analysis.tools.len()) }
+        Metric { label: {crate::strings::detail::METRIC_EXPLICIT_ERRORS}, value: analysis.error_count.to_string(), detail: {crate::strings::detail::CAPTURED_SIGNALS_ONLY} }
+        Metric { label: {crate::strings::detail::METRIC_TOKENS}, value: analysis.total_tokens.map(|value| value.to_string()).unwrap_or_else(|| "—".into()), detail: format!("in {} · out {}", optional_u64(analysis.prompt_tokens), optional_u64(analysis.completion_tokens)) }
+        Metric { label: {crate::strings::detail::METRIC_LATENCY_P95}, value: analysis.latency_ms.p95.map(format_ms).unwrap_or_else(|| "—".into()), detail: format!("{}/{} samples", analysis.latency_ms.sample_count, analysis.latency_ms.total_count) }
     } }
 }
 
@@ -2171,9 +2171,9 @@ fn CompactOverviewStrip(
         analysis.turn_count,
     );
     rsx! { div { class: "pc2-trace-overview",
-        CompactMixCard { title: "Composition", tone: "blue", segments: sources, onclick: on_open_analysis }
-        CompactMixCard { title: "Behavior", tone: "violet", segments: kinds, onclick: on_open_analysis }
-        CompactMixCard { title: "Models", tone: "green", segments: models, onclick: on_open_analysis }
+        CompactMixCard { title: {crate::strings::detail::COMPOSITION}, tone: "blue", segments: sources, onclick: on_open_analysis }
+        CompactMixCard { title: {crate::strings::detail::BEHAVIOR}, tone: "violet", segments: kinds, onclick: on_open_analysis }
+        CompactMixCard { title: {crate::strings::detail::MODELS}, tone: "green", segments: models, onclick: on_open_analysis }
         CompactCoverageCard { points: coverage, onclick: on_open_analysis }
     } }
 }
@@ -2187,10 +2187,10 @@ fn CompactMixCard(
 ) -> Element {
     let legend = segments.clone();
     let title_attr = mix_title(&segments);
-    rsx! { button { class: "pc2-trace-overview-card", r#type: "button", aria_label: "Open Analysis overview · {title}", title: "Open Analysis for the full chart", onclick,
+    rsx! { button { class: "pc2-trace-overview-card", r#type: "button", aria_label: "Open Analysis overview · {title}", title: {crate::strings::detail::OPEN_ANALYSIS_CHART_TITLE}, onclick,
         span { class: "pc2-trace-overview-title", "{title}" }
         if segments.is_empty() {
-            span { class: "pc2-trace-overview-empty", "No captured values" }
+            span { class: "pc2-trace-overview-empty", {crate::strings::detail::NO_CAPTURED_VALUES} }
         } else {
             div { class: "pc2-mix-track {tone}", title: "{title_attr}",
                 for segment in segments {
@@ -2208,8 +2208,8 @@ fn CompactMixCard(
 
 #[component]
 fn CompactCoverageCard(points: Vec<CoveragePoint>, onclick: EventHandler<MouseEvent>) -> Element {
-    rsx! { button { class: "pc2-trace-overview-card", r#type: "button", aria_label: "Open Analysis overview · Coverage", title: "Open Analysis for the full chart", onclick,
-        span { class: "pc2-trace-overview-title", "Coverage" }
+    rsx! { button { class: "pc2-trace-overview-card", r#type: "button", aria_label: "Open Analysis overview · Coverage", title: {crate::strings::detail::OPEN_ANALYSIS_CHART_TITLE}, onclick,
+        span { class: "pc2-trace-overview-title", {crate::strings::detail::COVERAGE} }
         div { class: "pc2-mini-coverage",
             for point in points {
                 div { class: "pc2-mini-coverage-row",
@@ -2233,10 +2233,10 @@ fn AnalysisWorkspace(
     let active = tab();
     rsx! { section { class: "pc2-analysis-workspace",
         nav { class: "pc2-analysis-tabs", aria_label: "Analysis view",
-            AnalysisTab { value: "overview", label: "Overview", active: active.clone(), on_select: move |value| tab.set(value) }
-            AnalysisTab { value: "performance", label: "Performance", active: active.clone(), on_select: move |value| tab.set(value) }
-            AnalysisTab { value: "tokens", label: "Tokens", active: active.clone(), on_select: move |value| tab.set(value) }
-            AnalysisTab { value: "tools", label: "Tools", active: active.clone(), on_select: move |value| tab.set(value) }
+            AnalysisTab { value: "overview", label: {crate::strings::detail::OVERVIEW}, active: active.clone(), on_select: move |value| tab.set(value) }
+            AnalysisTab { value: "performance", label: {crate::strings::detail::PERFORMANCE}, active: active.clone(), on_select: move |value| tab.set(value) }
+            AnalysisTab { value: "tokens", label: {crate::strings::detail::METRIC_TOKENS}, active: active.clone(), on_select: move |value| tab.set(value) }
+            AnalysisTab { value: "tools", label: {crate::strings::detail::METRIC_TOOLS}, active: active.clone(), on_select: move |value| tab.set(value) }
         }
         div { id: RUN_DETAIL_SCROLL_ID, class: "pc2-analysis-scroll", onscroll: on_scroll,
             match active.as_str() {
@@ -2265,28 +2265,28 @@ fn OverviewAnalysis(analysis: RunAnalysis, turns: Vec<TurnSummary>) -> Element {
     let elapsed = match (&analysis.start_timestamp, &analysis.end_timestamp) {
         (Some(start), Some(end)) if start != end => format!("{start} → {end}"),
         (Some(start), _) => start.clone(),
-        _ => "No captured timestamps".into(),
+        _ => {crate::strings::detail::NO_CAPTURED_TIMESTAMPS}.into(),
     };
     rsx! { div { class: "pc2-analysis-grid overview",
-        AnalysisCard { title: "Execution composition", subtitle: "Steps grouped by recorded role",
+        AnalysisCard { title: {crate::strings::detail::EXECUTION_COMPOSITION}, subtitle: {crate::strings::detail::EXECUTION_COMPOSITION_SUB},
             DimensionBars { items: analysis.source_breakdown.clone(), tone: "blue" }
         }
-        AnalysisCard { title: "Behavior mix", subtitle: "Recorded step types",
+        AnalysisCard { title: {crate::strings::detail::BEHAVIOR_MIX}, subtitle: {crate::strings::detail::BEHAVIOR_MIX_SUB},
             DimensionBars { items: analysis.kind_breakdown.clone(), tone: "violet" }
         }
-        AnalysisCard { title: "Model mix", subtitle: "Model usage and coverage by step",
+        AnalysisCard { title: {crate::strings::detail::MODEL_MIX}, subtitle: {crate::strings::detail::MODEL_MIX_SUB},
             DimensionBars { items: analysis.model_breakdown.clone(), tone: "green" }
         }
-        AnalysisCard { title: "Data coverage", subtitle: "Available measurements and missing values",
+        AnalysisCard { title: {crate::strings::detail::DATA_COVERAGE}, subtitle: {crate::strings::detail::DATA_COVERAGE_SUB},
             div { class: "pc2-coverage-list",
-                CoverageRow { label: "Latency", observed: analysis.latency_ms.sample_count, total: analysis.latency_ms.total_count }
-                CoverageRow { label: "TTFT", observed: analysis.ttft_ms.sample_count, total: analysis.ttft_ms.total_count }
-                CoverageRow { label: "Timestamp", observed, total: analysis.turn_count }
-                CoverageRow { label: "Token usage", observed: turns.iter().filter(|turn| turn.total_tokens.is_some()).count(), total: analysis.turn_count }
+                CoverageRow { label: {crate::strings::detail::LATENCY}, observed: analysis.latency_ms.sample_count, total: analysis.latency_ms.total_count }
+                CoverageRow { label: {crate::strings::components::TTFT_PREFIX}, observed: analysis.ttft_ms.sample_count, total: analysis.ttft_ms.total_count }
+                CoverageRow { label: {crate::strings::detail::TIMESTAMP}, observed, total: analysis.turn_count }
+                CoverageRow { label: {crate::strings::detail::TOKEN_USAGE}, observed: turns.iter().filter(|turn| turn.total_tokens.is_some()).count(), total: analysis.turn_count }
             }
         }
         article { class: "pc2-analysis-card wide pc2-run-span",
-            header { div { h3 { "Captured run span" } p { "Lexically ordered source timestamps; unavailable values remain explicit" } } }
+            header { div { h3 { "Captured run span" } p { {crate::strings::detail::CAPTURED_RUN_SPAN_SUB} } } }
             code { "{elapsed}" }
             div { class: "pc2-run-span-meta",
                 span { strong { "{analysis.models.len()}" } " models" }
@@ -2310,25 +2310,25 @@ fn PerformanceAnalysis(
     slowest.sort_by(|left, right| right.1.total_cmp(&left.1));
     slowest.truncate(8);
     rsx! { div { class: "pc2-analysis-grid performance",
-        AnalysisCard { title: "Latency distribution", subtitle: "Fixed buckets keep runs directly comparable",
+        AnalysisCard { title: {crate::strings::detail::LATENCY_DISTRIBUTION}, subtitle: {crate::strings::detail::LATENCY_DISTRIBUTION_SUB},
             LatencyHistogram { buckets: analysis.latency_histogram.clone() }
         }
-        AnalysisCard { title: "Percentile profile", subtitle: "Observed samples only",
+        AnalysisCard { title: {crate::strings::detail::PERCENTILE_PROFILE}, subtitle: {crate::strings::detail::PERCENTILE_PROFILE_SUB},
             div { class: "pc2-percentiles",
                 Percentile { label: "P50", value: analysis.latency_ms.p50, max: analysis.latency_ms.max }
                 Percentile { label: "P95", value: analysis.latency_ms.p95, max: analysis.latency_ms.max }
-                Percentile { label: "Max", value: analysis.latency_ms.max, max: analysis.latency_ms.max }
+                Percentile { label: {crate::strings::detail::MAX}, value: analysis.latency_ms.max, max: analysis.latency_ms.max }
                 div { class: "pc2-percentile-coverage", "Latency {analysis.latency_ms.sample_count}/{analysis.latency_ms.total_count} · TTFT {analysis.ttft_ms.sample_count}/{analysis.ttft_ms.total_count}" }
             }
         }
         article { class: "pc2-analysis-card wide",
-            header { div { h3 { "Latency by step" } p { "Ordered by sequence and normalized to the slowest loaded step · select a bar for details" } } }
+            header { div { h3 { "Latency by step" } p { {crate::strings::detail::LATENCY_BY_STEP_SUB} } } }
             TurnMetricChart { turns: turns.clone(), metric: "latency", on_turn }
         }
         article { class: "pc2-analysis-card wide",
-            header { div { h3 { "Slowest steps" } p { "Highest observed end-to-end latency among the loaded steps" } } }
+            header { div { h3 { "Slowest steps" } p { {crate::strings::detail::SLOWEST_STEPS_SUB} } } }
             div { class: "pc2-ranked-list",
-                if slowest.is_empty() { EmptyAnalysis { label: "No latency samples by step" } }
+                if slowest.is_empty() { EmptyAnalysis { label: {crate::strings::detail::NO_LATENCY_SAMPLES} } }
                 for (index, (turn, latency)) in slowest.into_iter().enumerate() {
                     button { onclick: move |_| on_turn.call(turn.id),
                         span { class: "pc2-rank", "{index + 1}" }
@@ -2357,7 +2357,7 @@ fn TokenAnalysis(
     let completion_width = percent(completion as f64, total as f64);
     rsx! { div { class: "pc2-analysis-grid tokens",
         article { class: "pc2-analysis-card wide pc2-token-composition",
-            header { div { h3 { "Token composition" } p { "Captured prompt and completion usage across the run" } } strong { "{optional_u64(analysis.total_tokens)} total" } }
+            header { div { h3 { "Token composition" } p { {crate::strings::detail::TOKEN_COMPOSITION_SUB} } } strong { "{optional_u64(analysis.total_tokens)} total" } }
             div { class: "pc2-token-track", title: "Prompt {prompt} · Completion {completion}",
                 i { class: "prompt", style: "width:{prompt_width}%" }
                 i { class: "completion", style: "width:{completion_width}%" }
@@ -2365,13 +2365,13 @@ fn TokenAnalysis(
             div { class: "pc2-token-legend", span { i { class: "prompt" } "Prompt {prompt}" } span { i { class: "completion" } "Completion {completion}" } }
         }
         article { class: "pc2-analysis-card wide",
-            header { div { h3 { "Tokens by step" } p { "Prompt and completion tokens · select a bar for details" } } }
+            header { div { h3 { "Tokens by step" } p { {crate::strings::detail::TOKENS_BY_STEP_SUB} } } }
             TurnMetricChart { turns: turns.clone(), metric: "tokens", on_turn }
         }
-        AnalysisCard { title: "Tokens by source", subtitle: "Full-run aggregate by captured source",
+        AnalysisCard { title: {crate::strings::detail::TOKENS_BY_SOURCE}, subtitle: {crate::strings::detail::TOKENS_BY_SOURCE_SUB},
             TokenDimensionBars { items: analysis.source_breakdown.clone() }
         }
-        AnalysisCard { title: "Tokens by model", subtitle: "Full-run aggregate by attributed model",
+        AnalysisCard { title: {crate::strings::detail::TOKENS_BY_MODEL}, subtitle: {crate::strings::detail::TOKENS_BY_MODEL_SUB},
             TokenDimensionBars { items: analysis.model_breakdown.clone() }
         }
     } }
@@ -2382,13 +2382,13 @@ fn ToolAnalysis(tools: Vec<ToolAggregate>) -> Element {
     let mut tools = tools;
     tools.sort_by_key(|tool| std::cmp::Reverse(tool.count));
     let max_count = tools.iter().map(|tool| tool.count).max().unwrap_or(0);
-    let tool_noun = if tools.len() == 1 { "tool" } else { "tools" };
+    let tool_noun = if tools.len() == 1 { "tool" } else { {crate::strings::components::TOOLS} };
     rsx! { div { class: "pc2-analysis-grid tools",
         article { class: "pc2-analysis-card wide",
-            header { div { h3 { "Tool performance" } p { "Frequency, observed duration, and association with steps that reported errors" } } span { "{tools.len()} {tool_noun}" } }
+            header { div { h3 { "Tool performance" } p { {crate::strings::detail::TOOL_PERFORMANCE_SUB} } } span { "{tools.len()} {tool_noun}" } }
             div { class: "pc2-tool-table",
-                div { class: "pc2-tool-head", span { "Tool" } span { "Calls" } span { "Observed duration" } span { "Average" } span { "Max" } span { "Error-linked" } }
-                if tools.is_empty() { EmptyAnalysis { label: "No tool calls captured" } }
+                div { class: "pc2-tool-head", span { "Tool" } span { "Calls" } span { {crate::strings::detail::OBSERVED_DURATION} } span { "Average" } span { "Max" } span { {crate::strings::detail::ERROR_LINKED} } }
+                if tools.is_empty() { EmptyAnalysis { label: {crate::strings::detail::NO_TOOL_CALLS} } }
                 for tool in tools {
                     div { class: "pc2-tool-row",
                         div { strong { "{tool.name}" } span { class: "pc2-mini-track", i { style: format!("width:{}%", percent(tool.count as f64, max_count as f64)) } } }
@@ -2413,7 +2413,7 @@ fn AnalysisCard(title: &'static str, subtitle: &'static str, children: Element) 
 fn DimensionBars(items: Vec<DimensionAggregate>, tone: &'static str) -> Element {
     let max = items.iter().map(|item| item.turn_count).max().unwrap_or(0);
     rsx! { div { class: "pc2-dimension-list {tone}",
-        if items.is_empty() { EmptyAnalysis { label: "No values captured" } }
+        if items.is_empty() { EmptyAnalysis { label: {crate::strings::detail::NO_VALUES} } }
         for item in items {
             div { class: "pc2-dimension-row",
                 div { span { title: "{item.name}", "{item.name}" } code { "{item.turn_count}" } }
@@ -2432,7 +2432,7 @@ fn TokenDimensionBars(items: Vec<DimensionAggregate>) -> Element {
         .max()
         .unwrap_or(0);
     rsx! { div { class: "pc2-dimension-list amber",
-        if max == 0 { EmptyAnalysis { label: "No token attribution captured" } }
+        if max == 0 { EmptyAnalysis { label: {crate::strings::detail::NO_TOKEN_ATTRIBUTION} } }
         for item in items.into_iter().filter(|item| item.total_tokens.is_some()) {
             div { class: "pc2-dimension-row",
                 div { span { title: "{item.name}", "{item.name}" } code { {item.total_tokens.unwrap_or_default().to_string()} } }
@@ -2482,8 +2482,8 @@ fn TurnMetricChart(
         .fold(0.0f64, f64::max);
     rsx! { div { class: "pc2-turn-chart",
         if max <= 0.0 {
-            if metric == "tokens" { EmptyAnalysis { label: "No token samples by step" } }
-            else { EmptyAnalysis { label: "No latency samples by step" } }
+            if metric == "tokens" { EmptyAnalysis { label: {crate::strings::detail::NO_TOKEN_SAMPLES} } }
+            else { EmptyAnalysis { label: {crate::strings::detail::NO_LATENCY_SAMPLES} } }
         }
         else { div { class: "pc2-turn-bars",
             for turn in visible {
@@ -2583,8 +2583,8 @@ fn AssistantWideToggle(wide: bool, on_toggle: EventHandler<MouseEvent>) -> Eleme
     rsx! {
         button {
             class: "pc2-copilot-wide-toggle",
-            aria_label: if wide { "Restore Assistant width" } else { "Expand Assistant to two-thirds width" },
-            title: if wide { "Restore Assistant width" } else { "Expand Assistant to two-thirds of the screen" },
+            aria_label: if wide { {crate::strings::assistant::RESTORE_WIDTH} } else { "Expand Assistant to two-thirds width" },
+            title: if wide { "Restore Assistant width" } else { {crate::strings::assistant::EXPAND_WIDTH} },
             aria_pressed: wide,
             onclick: on_toggle,
             if wide { "⤡" } else { "⤢" }
@@ -2614,7 +2614,7 @@ fn AssistantPanel(
     let mut input = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut history_open = use_signal(|| false);
-    let mut step = use_signal(|| "Working…".to_string());
+    let mut step = use_signal(|| {crate::strings::common::WORKING}.to_string());
     let mut following = use_signal(|| true);
     let run_for_effect = run.clone();
     use_effect(move || {
@@ -2654,7 +2654,7 @@ fn AssistantPanel(
         let config_value = submit_config.clone();
         if !config_value.is_configured() {
             const CONFIGURE_MESSAGE: &str =
-                "Configure an OpenAI-compatible model in Settings before asking Assistant.";
+                {crate::strings::assistant::CONFIGURE_MODEL};
             submit_open_settings.call(());
             let mut next_thread = thread();
             let already_shown = next_thread.messages.last().is_some_and(|message| {
@@ -2690,7 +2690,7 @@ fn AssistantPanel(
         });
         thread.set(pending_thread.clone());
         input.set(String::new());
-        step.set("Working…".into());
+        step.set({crate::strings::common::WORKING}.into());
         following.set(true);
         busy.set(true);
         spawn(async move {
@@ -2750,20 +2750,20 @@ fn AssistantPanel(
     let title = title_from_thread(&thread());
     let new_chat_enabled = can_start_new_chat(run.is_some(), &thread()) && !busy();
     let context_line = match (&run, &analysis, selected.as_ref()) {
-        (None, _, _) => "Open a run to start a chat.".to_string(),
-        (Some(_), None, _) => "Loading run details…".to_string(),
+        (None, _, _) => {crate::strings::assistant::OPEN_RUN_TO_CHAT}.to_string(),
+        (Some(_), None, _) => {crate::strings::runs::LOADING_RUN_DETAILS}.to_string(),
         (Some(_), Some(_), Some(detail)) => format!("Step {} in context", detail.summary.id),
-        (Some(_), Some(_), None) => "Current run in context".to_string(),
+        (Some(_), Some(_), None) => {crate::strings::assistant::CURRENT_RUN_CONTEXT}.to_string(),
     };
     let composer_enabled = run.is_some() && analysis.is_some() && !busy();
     let sessions = index().sessions;
     rsx! { aside { class: assistant_panel_class(wide),
         div { class: "pc2-copilot-head",
-            div { class: "pc2-copilot-head-title", strong { "{title}" } span { "Read-only · selected run data" } }
+            div { class: "pc2-copilot-head-title", strong { "{title}" } span { {crate::strings::assistant::READ_ONLY_SELECTED} } }
             div { class: "pc2-copilot-actions",
                 button {
                     aria_label: "New chat",
-                    title: "New chat",
+                    title: {crate::strings::assistant::NEW_CHAT},
                     disabled: !new_chat_enabled,
                     onclick: move |_| {
                         if !new_chat_enabled { return; }
@@ -2775,7 +2775,7 @@ fn AssistantPanel(
                 }
                 button {
                     aria_label: "Chat history",
-                    title: "Chat history",
+                    title: {crate::strings::assistant::CHAT_HISTORY},
                     aria_pressed: history_open(),
                     disabled: busy(),
                     onclick: move |_| history_open.set(!history_open()),
@@ -2789,7 +2789,7 @@ fn AssistantPanel(
         if history_open() {
             div { class: "pc2-copilot-history", role: "listbox", aria_label: "Assistant history",
                 if sessions.is_empty() {
-                    div { class: "pc2-copilot-history-empty", "No saved chats yet." }
+                    div { class: "pc2-copilot-history-empty", {crate::strings::assistant::NO_SAVED_CHATS} }
                 }
                 for meta in sessions.iter().cloned() {
                     {
@@ -2853,13 +2853,13 @@ fn AssistantPanel(
                     following.set(copilot_following_after_scroll(following(), copilot_chat_is_near_bottom()));
                 },
                 if thread().messages.is_empty() {
-                    div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Assistant" }
+                    div { class: "pc2-chat-welcome", span { "◇" } strong { {crate::strings::assistant::ASK_ASSISTANT} }
                         if run.is_none() {
-                            p { "Open a run, or select a previous chat from history." }
+                            p { {crate::strings::assistant::OPEN_RUN_OR_HISTORY} }
                         } else if llm_config.is_configured() {
-                            p { "Assistant can inspect this analysis, examine a step, or run read-only SQL." }
+                            p { {crate::strings::assistant::CAN_INSPECT} }
                         } else {
-                            p { "Configure an OpenAI-compatible model in Settings before asking Assistant." }
+                            p { {crate::strings::assistant::CONFIGURE_MODEL} }
                         }
                     }
                 }
@@ -2879,7 +2879,7 @@ fn AssistantPanel(
                         class: "pc2-chat-follow",
                         r#type: "button",
                         aria_pressed: "true",
-                        title: "Stop following new output",
+                        title: {crate::strings::assistant::STOP_FOLLOWING},
                         aria_label: "Stop following new output",
                         onclick: move |_| following.set(false),
                         "Following"
@@ -2888,7 +2888,7 @@ fn AssistantPanel(
                     button {
                         class: "pc2-chat-follow jump",
                         r#type: "button",
-                        title: "Jump to latest output and follow",
+                        title: {crate::strings::assistant::JUMP_FOLLOW},
                         aria_label: "Jump to latest output and follow",
                         onclick: move |_| {
                             following.set(true);
@@ -2903,12 +2903,12 @@ fn AssistantPanel(
             textarea {
                 value: "{input}",
                 rows: "2",
-                placeholder: if run.is_none() { "Open a run to start a chat…" } else if analysis.is_none() { "Loading run details…" } else { "Ask about this run…" },
+                placeholder: if run.is_none() { {crate::strings::assistant::PLACEHOLDER_NO_RUN} } else if analysis.is_none() { {crate::strings::runs::LOADING_RUN_DETAILS} } else { {crate::strings::assistant::PLACEHOLDER_ASK} },
                 oninput: move |event| input.set(event.value()),
                 onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); submit_copilot.call(()); },
                 disabled: !composer_enabled
             }
-            button { class: "button primary", disabled: !composer_enabled || input().trim().is_empty(), "Send" }
+            button { class: "button primary", disabled: !composer_enabled || input().trim().is_empty(), {crate::strings::assistant::SEND} }
         }
         div { class: "pc2-composer-context", "{context_line}" }
     } }
@@ -2931,12 +2931,12 @@ fn ChatBubble(
         let action = message
             .tool_name
             .clone()
-            .unwrap_or_else(|| "tool".to_string());
+            .unwrap_or_else(|| {crate::strings::components::TOOL}.to_string());
         return rsx! {
             div { class: "pc2-message tool",
                 span { class: "pc2-action-label", "Running {action} ›" }
                 if !message.text.trim().is_empty() {
-                    details { summary { "Tool output" } pre { "{message.text}" } }
+                    details { summary { {crate::strings::assistant::TOOL_OUTPUT} } pre { "{message.text}" } }
                 }
             }
         };
@@ -2952,14 +2952,14 @@ fn ChatBubble(
                     let visible = turns.iter().filter(|turn| trajectory.turn_ids.contains(&turn.id)).cloned().collect::<Vec<_>>();
                     rsx! { div { key: "trajectory-{index}", class: "pc2-chat-component",
                         if let Some(title) = trajectory.title { strong { class: "pc2-chat-component-title", "{title}" } }
-                        if visible.is_empty() { div { class: "pc2-data-empty", "Referenced steps are outside the loaded data window." } }
+                        if visible.is_empty() { div { class: "pc2-data-empty", {crate::strings::assistant::REFS_OUTSIDE} } }
                         else { TrajectoryView { turns: visible, expanded_turn_id: None, detail: None, loading: false, embedded: true, view: "steps".to_string(), on_turn } }
                     } }
                 },
             }
         }
-        if let Some(sql) = &message.sql { details { class: "pc2-message-sql", summary { "Executed read-only SQL" } pre { "{sql}" } } }
-        if message.truncated { div { class: "pc2-truncated", "The available data was limited or truncated; conclusions may be incomplete." } }
+        if let Some(sql) = &message.sql { details { class: "pc2-message-sql", summary { {crate::strings::assistant::EXECUTED_SQL} } pre { "{sql}" } } }
+        if message.truncated { div { class: "pc2-truncated", {crate::strings::assistant::DATA_TRUNCATED} } }
         if !refs.is_empty() { div { class: "pc2-citations", for id in refs { button { onclick: move |_| on_turn.call(id), "Step #{id}" } } } }
     } }
 }
@@ -3061,22 +3061,22 @@ fn coverage_points(
 ) -> Vec<CoveragePoint> {
     vec![
         CoveragePoint {
-            label: "Latency",
+            label: {crate::strings::detail::LATENCY},
             observed: latency_observed,
             total: latency_total,
         },
         CoveragePoint {
-            label: "TTFT",
+            label: {crate::strings::components::TTFT_PREFIX},
             observed: ttft_observed,
             total: ttft_total,
         },
         CoveragePoint {
-            label: "Timestamp",
+            label: {crate::strings::detail::TIMESTAMP},
             observed: timestamp_observed,
             total: timestamp_total,
         },
         CoveragePoint {
-            label: "Tokens",
+            label: {crate::strings::detail::METRIC_TOKENS},
             observed: token_observed,
             total: token_total,
         },
@@ -3147,8 +3147,16 @@ fn turn_references(value: &str) -> Vec<i64> {
 }
 
 fn url_param(name: &str) -> Option<String> {
-    let search = web_sys::window()?.location().search().ok()?;
-    query_value(&search, name)
+    #[cfg(target_arch = "wasm32")]
+    {
+        let search = web_sys::window()?.location().search().ok()?;
+        query_value(&search, name)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = name;
+        None
+    }
 }
 
 fn embed_enabled() -> bool {
@@ -3841,10 +3849,10 @@ mod tests {
                 .map(|point| (point.label, point.observed, point.total))
                 .collect::<Vec<_>>(),
             vec![
-                ("Latency", 42, 86),
-                ("TTFT", 8, 86),
-                ("Timestamp", 84, 86),
-                ("Tokens", 42, 86),
+                ({crate::strings::detail::LATENCY}, 42, 86),
+                ({crate::strings::components::TTFT_PREFIX}, 8, 86),
+                ({crate::strings::detail::TIMESTAMP}, 84, 86),
+                ({crate::strings::detail::METRIC_TOKENS}, 42, 86),
             ]
         );
     }
@@ -3855,10 +3863,10 @@ mod tests {
             85,
             "invalid type: integer `1785310111`, expected a string at line 1 column 561",
         );
-        assert_eq!(notice.title, "Step details could not be decoded");
+        assert_eq!(notice.title, {crate::strings::detail::STEP_DECODE_FAILED_TITLE});
         assert_eq!(
             notice.summary,
-            "Step #85 · Expected string, received integer"
+            "Step #85 · 期望 string，实际收到 integer"
         );
         assert!(notice.detail.contains("1785310111"));
         assert_eq!(notice.turn_id, Some(85));

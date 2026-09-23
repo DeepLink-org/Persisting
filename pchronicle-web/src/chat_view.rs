@@ -26,7 +26,7 @@ impl TraceCard {
 }
 
 pub fn normalize_trace_view(value: &str) -> &'static str {
-    if value == "steps" { "steps" } else { "chats" }
+    if value == {crate::strings::components::STEPS_SUFFIX} { {crate::strings::components::STEPS_SUFFIX} } else { "chats" }
 }
 
 pub fn group_chats(turns: &[TurnSummary]) -> Vec<TraceCard> {
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn unknown_and_legacy_tree_views_become_chats() {
         assert_eq!(normalize_trace_view("chats"), "chats");
-        assert_eq!(normalize_trace_view("steps"), "steps");
+        assert_eq!(normalize_trace_view({crate::strings::components::STEPS_SUFFIX}), {crate::strings::components::STEPS_SUFFIX});
         assert_eq!(normalize_trace_view("tree"), "chats");
         assert_eq!(normalize_trace_view(""), "chats");
     }

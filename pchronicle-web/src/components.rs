@@ -199,11 +199,11 @@ pub fn DataTable(
     } else {
         "pc2-data-component"
     };
-    let title = title.unwrap_or_else(|| "Query result".into());
+    let title = title.unwrap_or_else(|| {crate::strings::components::QUERY_RESULT}.into());
     rsx! { section { class,
-        header { div { strong { "{title}" } span { "{evidence.returned_rows} rows · {columns.len()} columns" } } if evidence.truncated { span { class: "pc2-data-truncated", "truncated" } } }
+        header { div { strong { "{title}" } span { "{evidence.returned_rows} rows · {columns.len()} columns" } } if evidence.truncated { span { class: "pc2-data-truncated", {crate::strings::common::TRUNCATED} } } }
         if evidence.rows.is_empty() {
-            div { class: "pc2-data-empty", "The query returned no rows." }
+            div { class: "pc2-data-empty", {crate::strings::components::NO_ROWS} }
         } else {
             div { class: "pc2-data-scroll",
                 table { class: "pc2-data-table",
@@ -215,7 +215,7 @@ pub fn DataTable(
         footer {
             span { "Limited to {evidence.max_rows} rows / {byte_budget}" }
             if hidden_columns > 0 { span { "+{hidden_columns} columns hidden" } }
-            if evidence.truncated { span { "The server truncated this result before rendering." } }
+            if evidence.truncated { span { {crate::strings::components::SERVER_TRUNCATED} } }
         }
     } }
 }
@@ -234,16 +234,16 @@ fn CellValue(value: Value, limit: usize) -> Element {
     let mut expanded = use_signal(|| false);
     rsx! {
         if truncated {
-            button { class: "pc2-cell-value pc2-cell-expand {kind}", title: "Open full cell value", aria_label: "Open full cell value", onclick: move |_| expanded.set(true), span { "{preview}" } i { "↗" } }
+            button { class: "pc2-cell-value pc2-cell-expand {kind}", title: {crate::strings::components::OPEN_FULL_CELL}, aria_label: "Open full cell value", onclick: move |_| expanded.set(true), span { "{preview}" } i { "↗" } }
         } else {
             span { class: "pc2-cell-value {kind}", "{preview}" }
         }
         if expanded() {
             div { class: "pc2-cell-modal-backdrop", role: "presentation", onclick: move |_| expanded.set(false),
                 section { class: "pc2-cell-modal", role: "dialog", aria_modal: "true", aria_label: "Full cell value", tabindex: "-1", onclick: move |event| event.stop_propagation(), onkeydown: move |event| if event.key() == Key::Escape { expanded.set(false); },
-                    header { div { strong { "Full cell value" } span { "{kind}" } } button { aria_label: "Close full cell value", onclick: move |_| expanded.set(false), "×" } }
+                    header { div { strong { {crate::strings::components::FULL_CELL_VALUE} } span { "{kind}" } } button { aria_label: "Close full cell value", onclick: move |_| expanded.set(false), "×" } }
                     pre { "{full_value}" }
-                    footer { span { "{full_value.chars().count()} characters" } button { class: "button primary", onclick: move |_| expanded.set(false), "Close" } }
+                    footer { span { "{full_value.chars().count()} characters" } button { class: "button primary", onclick: move |_| expanded.set(false), {crate::strings::common::CLOSE} } }
                 }
             }
         }
@@ -375,10 +375,10 @@ fn format_char_count(count: u64) -> String {
 
 fn kind_label(kind: &str) -> &'static str {
     match kind {
-        "chat" => "Conversation",
-        "system" => "System",
-        "user" => "User",
-        _ => "Agent",
+        "chat" => {crate::strings::components::CONVERSATION},
+        "system" => {crate::strings::detail::ROLE_SYSTEM},
+        "user" => {crate::strings::detail::ROLE_USER},
+        _ => {crate::strings::runs::SORT_AGENT},
     }
 }
 
@@ -395,7 +395,7 @@ fn structure_meta(group: &CompactSpanGroup) -> String {
 }
 
 fn format_tool_count(count: usize) -> String {
-    format!("{count} {}", if count == 1 { "tool" } else { "tools" })
+    format!("{count} {}", if count == 1 { "tool" } else { {crate::strings::components::TOOLS} })
 }
 
 fn tool_summary_label(tool_count: usize, tool_names: &[String]) -> String {
@@ -546,7 +546,7 @@ fn chat_overview(entries: &[TurnSummary]) -> String {
         .iter()
         .find(|turn| turn.source == "user")
         .map(|turn| compact_preview(&turn.preview, 180))
-        .unwrap_or_else(|| "No user step".into())
+        .unwrap_or_else(|| {crate::strings::components::NO_USER_STEP}.into())
 }
 
 fn step_overview(turn: &TurnSummary) -> String {
@@ -632,7 +632,7 @@ fn chat_span_groups(turns: &[TurnSummary]) -> Vec<CompactSpanGroup> {
                     let overview = step_overview(&turn);
                     span_from_entries(
                         format!("system-{index}"),
-                        "System".into(),
+                        {crate::strings::detail::ROLE_SYSTEM}.into(),
                         overview,
                         vec![turn],
                         fallback,
@@ -675,7 +675,7 @@ fn step_span_groups(turns: &[TurnSummary]) -> Vec<CompactSpanGroup> {
 fn compact_preview(value: &str, limit: usize) -> String {
     let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
-        "No text".into()
+        {crate::strings::components::NO_TEXT}.into()
     } else if normalized.chars().count() <= limit {
         normalized
     } else {
@@ -778,7 +778,7 @@ pub fn TrajectoryView(
     } else {
         "pc2-trajectory-component"
     };
-    let groups = if view == "steps" {
+    let groups = if view == {crate::strings::components::STEPS_SUFFIX} {
         let visible = turns
             .iter()
             .filter(|turn| step_row_visible(turn, &source, &query))
@@ -791,8 +791,8 @@ pub fn TrajectoryView(
             .filter(|group| chat_row_visible(&group.entries, &source, &query))
             .collect::<Vec<_>>()
     };
-    let noun = if view == "steps" {
-        "steps"
+    let noun = if view == {crate::strings::components::STEPS_SUFFIX} {
+        {crate::strings::components::STEPS_SUFFIX}
     } else {
         "conversations"
     };
@@ -857,8 +857,8 @@ pub fn TrajectoryView(
         div { class: "span-summary", span { strong { "{groups.len()} {noun}" } " · {total_refs} event references" } span { "Sequence window 0 — {axis_len.saturating_sub(1)}" } }
         div { class: "{table_class}", role: "tree", aria_label: "Run step hierarchy",
             div { class: "span-sticky-chrome",
-                div { class: "span-table-head", div { "Structure" } div { "Overview" } div { class: "span-axis-head", span { "Sequence / coverage" } div { class: "span-axis-ticks", span { "0" } span { "25%" } span { "50%" } span { "75%" } span { "{axis_len.saturating_sub(1)}" } } } div { "Details" } }
-                div { class: "trace-root-summary", div { class: "span-structure root", div { div { class: "span-structure-title", strong { "run" } span { "{groups.len()} {noun}" } } div { class: "root-composition", if !root_meta.is_empty() { span { title: "{root_meta}", "{root_meta}" } } for modality in root_modalities { span { class: "modality-chip {modality}", "{modality}" } } } } } div { class: "span-row-copy root-copy" } OccupancyTrack { bars: root_bars.clone(), expose_range, focus_left, caption: root_caption, title: "Run coverage · {turns.len()} steps", exposed_ids: exposed_ids.clone(), expanded_turn_id, hovered_ids: hover_ids.clone() } div { class: "span-evidence-count", if total_refs > 0 { strong { "{total_refs} events" } } if total_tools > 0 { span { "{root_tool_label}" } } if !embedded { if let Some(id) = root_drawer_id { button { class: "pc2-conversation-drawer-button pc2-run-agenticmd-button", title: "Open run as AgenticMD", aria_label: "Open run as AgenticMD", onclick: move |event| { event.prevent_default(); event.stop_propagation(); on_open_drawer.call((id, "Run".to_string(), root_drawer_ids.clone())); }, "↗" } } } } }
+                div { class: "span-table-head", div { {crate::strings::components::STRUCTURE} } div { "Overview" } div { class: "span-axis-head", span { {crate::strings::components::SEQUENCE_COVERAGE} } div { class: "span-axis-ticks", span { "0" } span { "25%" } span { "50%" } span { "75%" } span { "{axis_len.saturating_sub(1)}" } } } div { {crate::strings::components::DETAILS} } }
+                div { class: "trace-root-summary", div { class: "span-structure root", div { div { class: "span-structure-title", strong { {crate::strings::components::RUN} } span { "{groups.len()} {noun}" } } div { class: "root-composition", if !root_meta.is_empty() { span { title: "{root_meta}", "{root_meta}" } } for modality in root_modalities { span { class: "modality-chip {modality}", "{modality}" } } } } } div { class: "span-row-copy root-copy" } OccupancyTrack { bars: root_bars.clone(), expose_range, focus_left, caption: root_caption, title: "Run coverage · {turns.len()} steps", exposed_ids: exposed_ids.clone(), expanded_turn_id, hovered_ids: hover_ids.clone() } div { class: "span-evidence-count", if total_refs > 0 { strong { "{total_refs} events" } } if total_tools > 0 { span { "{root_tool_label}" } } if !embedded { if let Some(id) = root_drawer_id { button { class: "pc2-conversation-drawer-button pc2-run-agenticmd-button", title: {crate::strings::components::OPEN_RUN_AGENTICMD}, aria_label: "Open run as AgenticMD", onclick: move |event| { event.prevent_default(); event.stop_propagation(); on_open_drawer.call((id, {crate::strings::analysis::RUN}.to_string(), root_drawer_ids.clone())); }, "↗" } } } } }
             }
             div { class: "span-children", for group in groups {
                     CompactSpanRow {
@@ -953,7 +953,7 @@ fn CompactSpanRow(
             div { class: "span-structure", span { class: "disclosure" } div {
                 div { class: "span-structure-title", strong { title: "{group.label}", "{group.label}" }
                     if kind != "chat" { span { class: "phase-badge {kind}", "{kind_text}" } }
-                    if has_error { span { class: "pc2-error-chip", "error" } }
+                    if has_error { span { class: "pc2-error-chip", {crate::strings::analysis::TRACE_ERROR} } }
                     if step_count > 1 { span { class: "summary-chip", "{step_count} steps" } }
                     if !composition_label(&group.entries).is_empty() { span { class: "summary-chip", "{composition_label(&group.entries)}" } }
                     if !tool_summary.is_empty() { span { class: "summary-chip tool", title: "{tool_summary}", "{tool_summary}" } }
@@ -970,7 +970,7 @@ fn CompactSpanRow(
         }
         if !embedded {
             if let Some(id) = drawer_id {
-                button { class: "pc2-conversation-drawer-button", title: "Open conversation as AgenticMD", aria_label: "Open {drawer_label} as AgenticMD", onclick: move |event| { event.prevent_default(); event.stop_propagation(); on_open_drawer.call((id, drawer_label.clone(), drawer_ids.clone())); }, "↗" }
+                button { class: "pc2-conversation-drawer-button", title: {crate::strings::components::OPEN_CONVERSATION_AGENTICMD}, aria_label: "Open {drawer_label} as AgenticMD", onclick: move |event| { event.prevent_default(); event.stop_propagation(); on_open_drawer.call((id, drawer_label.clone(), drawer_ids.clone())); }, "↗" }
             }
         }
         if row_open {
@@ -1009,14 +1009,14 @@ fn OccupancyTrack(
                     div {
                         class: "span-expose-band",
                         style: "left:{range.left:.4}%;width:{range.width:.4}%",
-                        title: "Steps visible in the current list",
+                        title: {crate::strings::components::STEPS_VISIBLE},
                     }
                 }
                 for bar in bars {
                     div { class: "span-bar {bar.source} {bar_emphasis(bar.turn_id, &exposed_ids, expanded_turn_id, &hovered_ids)}", style: "left:{bar.left:.4}%;width:{bar.width:.4}%" }
                 }
                 if let Some(left) = focus_left {
-                    div { class: "span-focus-line", style: "left:{left:.4}%", title: "Expanded step" }
+                    div { class: "span-focus-line", style: "left:{left:.4}%", title: {crate::strings::components::EXPANDED_STEP} }
                     div { class: "span-focus-dot", style: "left:{left:.4}%" }
                 }
             }
@@ -1048,7 +1048,7 @@ fn CompactTurnRow(
             div { class: "compact-turn synthetic-prompt",
                 span { class: "compact-turn-chevron" }
                 span { class: "pc2-role user", "user" }
-                span { class: "synthetic-prompt-kind", "initial prompt" }
+                span { class: "synthetic-prompt-kind", {crate::strings::components::INITIAL_PROMPT} }
                 span { class: "compact-preview", title: "{preview}", HighlightedText { text: preview.clone(), query: query.clone() } }
             }
         };
@@ -1058,7 +1058,7 @@ fn CompactTurnRow(
     }
     rsx! { details { class: if expanded { "compact-turn selected" } else { "compact-turn" }, open: expanded,
         summary { aria_label: "Expand {turn.source} step {id}", onclick: move |event| { event.prevent_default(); on_turn.call(id); }, span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } if expanded { span { class: "compact-kind", "{expanded_facts}" } } else { span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", HighlightedText { text: preview.clone(), query: query.clone() } } span { class: "compact-turn-stats", if !collapsed_meta.is_empty() { span { "{collapsed_meta}" } } if tool_count > 0 { span { "{tool_label}" } } span { "{event_count} events" } } } }
-        if expanded { div { class: "compact-turn-body pc2-inline-detail", if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Loading full step…" } } else if let Some(value) = detail.filter(|value| value.summary.id == id) { InlineTurnDetail { value, query: query.clone() } } else { div { class: "pc2-inline-unavailable", "Details are unavailable for this step." } } } }
+        if expanded { div { class: "compact-turn-body pc2-inline-detail", if loading { div { class: "pc2-inline-loading", span { class: "spinner" } {crate::strings::components::LOADING_FULL_STEP} } } else if let Some(value) = detail.filter(|value| value.summary.id == id) { InlineTurnDetail { value, query: query.clone() } } else { div { class: "pc2-inline-unavailable", {crate::strings::components::DETAILS_UNAVAILABLE} } } } }
     } }
 }
 
@@ -1102,19 +1102,19 @@ fn InlineTurnDetail(value: TurnDetail, #[props(default)] query: String) -> Eleme
         || !native_tool_calls.is_empty();
     rsx! {
         div { class: "pc2-inspector-chips",
-            Fact { label: "Step", value: format!("#{}", value.summary.id) }
-            Fact { label: "Role", value: value.summary.source.clone() }
-            if let Some(kind) = value.summary.kind.clone() { Fact { label: "Type", value: kind } }
-            if let Some(model) = value.summary.model_name.clone() { Fact { label: "Model", value: model } }
-            if let Some(latency) = value.summary.latency_ms { Fact { label: "Latency", value: format_ms(latency) } }
-            if let Some(tokens) = value.summary.total_tokens { Fact { label: "Tokens", value: tokens.to_string() } }
+            Fact { label: {crate::strings::analysis::STEP}, value: format!("#{}", value.summary.id) }
+            Fact { label: {crate::strings::components::ROLE_LABEL}, value: value.summary.source.clone() }
+            if let Some(kind) = value.summary.kind.clone() { Fact { label: {crate::strings::components::TYPE_LABEL}, value: kind } }
+            if let Some(model) = value.summary.model_name.clone() { Fact { label: {crate::strings::llm::MODEL}, value: model } }
+            if let Some(latency) = value.summary.latency_ms { Fact { label: {crate::strings::detail::LATENCY}, value: format_ms(latency) } }
+            if let Some(tokens) = value.summary.total_tokens { Fact { label: {crate::strings::detail::METRIC_TOKENS}, value: tokens.to_string() } }
         }
-        if let Some(ttft) = value.summary.ttft_ms { Fact { label: "TTFT", value: format_ms(ttft) } }
+        if let Some(ttft) = value.summary.ttft_ms { Fact { label: {crate::strings::components::TTFT_PREFIX}, value: format_ms(ttft) } }
         if value.summary.prompt_tokens.is_some() || value.summary.completion_tokens.is_some() {
-            Fact { label: "Token split", value: format!("{} in · {} out", optional_u64(value.summary.prompt_tokens), optional_u64(value.summary.completion_tokens)) }
+            Fact { label: {crate::strings::components::TOKEN_SPLIT}, value: format!("{} in · {} out", optional_u64(value.summary.prompt_tokens), optional_u64(value.summary.completion_tokens)) }
         }
         if !value.events.is_empty() {
-            Fact { label: "Events", value: value.events.len().to_string() }
+            Fact { label: {crate::strings::runs::EVENTS_COL}, value: value.events.len().to_string() }
         }
         if !embedded_from_message.is_empty() {
             ToolCallCards { calls: embedded_from_message, observation: value.turn.observation.clone() }
@@ -1141,26 +1141,26 @@ fn InlineTurnDetail(value: TurnDetail, #[props(default)] query: String) -> Eleme
         }
         if !has_embedded_tool_calls {
             if structured_message && !message_is_text_bearing {
-                InlineSection { title: "Message", JsonValue { value: message } }
+                InlineSection { title: {crate::strings::components::MESSAGE}, JsonValue { value: message } }
             } else {
-                if !message_text.trim().is_empty() && message_text != "No text" {
-                    InlineSection { title: "Message", pre { HighlightedText { text: message_text.clone(), query: query.clone() } } }
+                if !message_text.trim().is_empty() && message_text != {crate::strings::components::NO_TEXT} {
+                    InlineSection { title: {crate::strings::components::MESSAGE}, pre { HighlightedText { text: message_text.clone(), query: query.clone() } } }
                 }
             }
         }
         if let Some(reasoning) = &value.turn.reasoning_content {
-            InlineSection { title: "Reasoning", pre { HighlightedText { text: reasoning.clone(), query: query.clone() } } }
+            InlineSection { title: {crate::strings::components::REASONING}, pre { HighlightedText { text: reasoning.clone(), query: query.clone() } } }
         }
         if !has_any_tool_calls {
             if let Some(observation) = value.turn.observation.clone() {
-                InlineSection { title: "Observation", ObservationChips { value: observation.clone() } ObservationBlock { value: observation, tone: "generic" } }
+                InlineSection { title: {crate::strings::components::OBSERVATION}, ObservationChips { value: observation.clone() } ObservationBlock { value: observation, tone: "generic" } }
             }
         }
         if !value.events.is_empty() {
             InlineSection { title: event_block_title, JsonValue { value: events } }
         }
         if let Some(extra) = value.turn.extra.clone() {
-            InlineSection { title: "Extra", JsonValue { value: extra } }
+            InlineSection { title: {crate::strings::components::EXTRA}, JsonValue { value: extra } }
         }
         if let Some(metrics) = value
             .turn
@@ -1169,7 +1169,7 @@ fn InlineTurnDetail(value: TurnDetail, #[props(default)] query: String) -> Eleme
             .and_then(compact_metric_value)
             .filter(metrics_are_renderable)
         {
-            InlineSection { title: "Metrics", JsonValue { value: metrics } }
+            InlineSection { title: {crate::strings::components::METRICS}, JsonValue { value: metrics } }
         }
     }
 }
@@ -1177,7 +1177,7 @@ fn InlineTurnDetail(value: TurnDetail, #[props(default)] query: String) -> Eleme
 #[component]
 pub fn StepDrawer(
     detail: Option<TurnDetail>,
-    #[props(default = "Step details".to_string())] title: String,
+    #[props(default = {crate::strings::components::STEP_DETAILS}.to_string())] title: String,
     #[props(default)] conversation_turns: Vec<StorylineTurn>,
     #[props(default)] conversation_details: Vec<TurnDetail>,
     #[props(default)] requested_block_count: usize,
@@ -1193,7 +1193,7 @@ pub fn StepDrawer(
                         div { strong { "{title}" } }
                         button { class: "pc2-step-drawer-close", aria_label: "Close step details", onclick: on_close, "×" }
                     }
-                    div { class: "pc2-step-drawer-loading", if loading { span { class: "spinner" } "Loading step…" } else { "Details are unavailable for this step." } }
+                    div { class: "pc2-step-drawer-loading", if loading { span { class: "spinner" } {crate::strings::components::LOADING_STEP} } else { {crate::strings::components::DETAILS_UNAVAILABLE} } }
                 }
             }
         };
@@ -1278,7 +1278,7 @@ pub fn StepDrawer(
                     div { class: "pc2-step-drawer-title",
                         strong { "AgenticMD" }
                         span { class: "pc2-step-drawer-kind", "{block_count_label}" }
-                        if loading { span { class: "pc2-step-drawer-loading-state", role: "status", "Loading…" } }
+                        if loading { span { class: "pc2-step-drawer-loading-state", role: "status", {crate::strings::common::LOADING} } }
                     }
                     button { class: "pc2-step-drawer-close", aria_label: "Close step details", onclick: on_close, "×" }
                 }
@@ -1327,7 +1327,7 @@ fn InlineSection(
         section { class: if expanded() { "pc2-inline-section expanded" } else { "pc2-inline-section" },
             header { class: "pc2-inline-section-head", strong { "{title}" } }
             div { class: "pc2-inline-section-body", {children} }
-            button { class: "pc2-inline-section-reveal", aria_expanded: expanded(), aria_label: if expanded() { "Collapse section" } else { "Expand section" }, title: if expanded() { "Collapse" } else { "Expand truncated content" }, onclick: move |_| expanded.set(!expanded()), if expanded() { "⌃" } else { "⌄" } }
+            button { class: "pc2-inline-section-reveal", aria_expanded: expanded(), aria_label: if expanded() { "Collapse section" } else { "Expand section" }, title: if expanded() { "Collapse" } else { {crate::strings::components::EXPAND_TRUNCATED} }, onclick: move |_| expanded.set(!expanded()), if expanded() { "⌃" } else { "⌄" } }
         }
     }
 }
@@ -1390,8 +1390,8 @@ fn ExpandableRegion(clipped: bool, #[props(default)] class: String, children: El
                 button {
                     class: "pc2-expandable-region-toggle",
                     aria_expanded: expanded(),
-                    aria_label: if expanded() { "Collapse content" } else { "Expand truncated content" },
-                    title: if expanded() { "Collapse" } else { "Expand truncated content" },
+                    aria_label: if expanded() { "Collapse content" } else { {crate::strings::components::EXPAND_TRUNCATED} },
+                    title: if expanded() { "Collapse" } else { {crate::strings::components::EXPAND_TRUNCATED} },
                     onclick: move |_| expanded.set(!expanded()),
                     if expanded() { "⌃" } else { "⌄" }
                 }
@@ -1796,14 +1796,14 @@ mod tests {
         }
         assert_eq!(
             tool_summary_label(4, &unique),
-            "4 tools · bash_command, mcp_search +1"
+            "4 工具 · bash_command, mcp_search +1"
         );
         assert_eq!(
             tool_summary_label(1, &["execute_bash".into()]),
             "1 tool · execute_bash"
         );
         assert_eq!(format_tool_count(1), "1 tool");
-        assert_eq!(format_tool_count(2), "2 tools");
+        assert_eq!(format_tool_count(2), "2 工具");
         assert_eq!(tool_summary_label(0, &unique), "");
     }
 
@@ -1814,7 +1814,7 @@ mod tests {
         agent.char_count = 12;
         let groups = chat_span_groups(&[agent]);
         assert_eq!(groups[0].kind_chip, "chat");
-        assert_eq!(groups[0].overview, "No user step");
+        assert_eq!(groups[0].overview, {crate::strings::components::NO_USER_STEP});
         assert_eq!(row_char_count(&groups[0].entries, true), 0);
     }
 
@@ -1840,7 +1840,7 @@ mod tests {
         turn.preview.clear();
         let groups = step_span_groups(&[turn]);
         assert_eq!(groups[0].kind_chip, "agent");
-        assert_eq!(groups[0].overview, "No text");
+        assert_eq!(groups[0].overview, {crate::strings::components::NO_TEXT});
     }
 
     #[test]
