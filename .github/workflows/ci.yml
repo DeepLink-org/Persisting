@@ -251,28 +251,41 @@ jobs:
         with:
           shared-key: ci-pchronicle-s3
 
-      - name: Start pinned MinIO server
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.2"
+          cache: false
+
+      # Upstream no longer distributes the public container images or binaries.
+      - name: Build pinned MinIO tools from source
+        env:
+          GOBIN: ${{ runner.temp }}/minio-bin
         run: |
-          docker run --detach --name persisting-minio-contract \
-            --publish 9000:9000 \
-            --env MINIO_ROOT_USER=minioadmin \
-            --env MINIO_ROOT_PASSWORD=minioadmin123 \
-            quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z \
-            server /data
+          go install github.com/minio/minio@RELEASE.2025-07-23T15-54-02Z
+          go install github.com/minio/mc@RELEASE.2025-08-13T08-35-41Z
+          echo "$GOBIN" >> "$GITHUB_PATH"
+
+      - name: Start pinned MinIO server
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin123
+        run: |
+          nohup minio server "$RUNNER_TEMP/minio-data" --address 127.0.0.1:9000 \
+            > "$RUNNER_TEMP/minio.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/minio.pid"
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then
               exit 0
             fi
             sleep 1
           done
-          docker logs persisting-minio-contract
+          cat "$RUNNER_TEMP/minio.log"
           exit 1
 
       - name: Create isolated test bucket
         run: |
-          docker run --rm --network host --entrypoint /bin/sh \
-            quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
-            'mc alias set local http://127.0.0.1:9000 minioadmin minioadmin123 && mc mb --ignore-existing local/persisting-tests'
+          mc alias set local http://127.0.0.1:9000 minioadmin minioadmin123
+          mc mb --ignore-existing local/persisting-tests
 
       - name: Run real S3 storage contract
         env:
@@ -288,11 +301,14 @@ jobs:
 
       - name: Show MinIO logs after failure
         if: failure()
-        run: docker logs persisting-minio-contract
+        run: cat "$RUNNER_TEMP/minio.log"
 
       - name: Stop MinIO
         if: always()
-        run: docker rm --force persisting-minio-contract || true
+        run: |
+          if [ -f "$RUNNER_TEMP/minio.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/minio.pid")" || true
+          fi
 
   python-test:
     name: Python Test
