@@ -1,5 +1,8 @@
 # End-to-end architecture
 
+> pVisor and pPilot are maintained in external repositories. This repository
+> contains pChronicle and the libraries needed for capture and durable history.
+
 This document defines the contracts between Persisting products. Provider
 mechanisms belong to pVisor Design; storage layouts belong to pChronicle Design;
 commands belong to each product's Reference.
@@ -33,8 +36,8 @@ boundary follows the selected platform:
 The provider reports requested versus effective capability dimensions in the Run
 Bundle. A successful process exit does not imply that the requested boundary
 was installed, and a workspace stage remains reviewable independently of the
-provider that produced it. See [pVisor isolation design](../pvisor/design/isolation.md)
-and the [execution guide](../pvisor/guides/execution.md) for provider-specific
+provider that produced it. See pVisor isolation design (external repository)
+and the execution guide (external repository) for provider-specific
 behavior and prerequisites.
 
 ## Independent ingress paths
@@ -145,7 +148,7 @@ Chronicle publication starts a pChronicle sidecar over authenticated loopback
 IPC and treats only a successful sidecar acknowledgement as durable. The
 legacy mode name `lance` is an alias for `spawn`; pVisor no longer writes Lance
 itself. Sidecar flags and mode names belong to the
-[pVisor CLI reference](../pvisor/reference/cli.md) and
+pVisor CLI reference (external repository) and
 [RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md).
 
 ## Failure and recovery
@@ -195,11 +198,11 @@ See [Security and evidence](security-evidence.md) for evidence levels and
 | Boundary | Contract owner | Detailed document |
 | --- | --- | --- |
 | logical runtime event and local Chronicle control protocol | `persisting-events` | [RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md) |
-| Agent execution and Effect review | pVisor | [pVisor concepts](../pvisor/concepts/index.md) and [guides](../pvisor/guides/index.md) |
-| provider and runtime mechanisms | pVisor | [pVisor design](../pvisor/design/index.md) |
+| Agent execution and Effect review | pVisor | pVisor concepts (external repository) and guides (external repository) |
+| provider and runtime mechanisms | pVisor | pVisor design (external repository) |
 | Dataset, facts, and projections | pChronicle | [pChronicle concepts](../pchronicle/concepts/index.md) |
 | storage and Snapshot implementation | pChronicle | [pChronicle design](../pchronicle/design/index.md) |
-| stable command syntax and formats | each product | [pVisor reference](../pvisor/reference/index.md) and [pChronicle reference](../pchronicle/reference/index.md) |
+| stable command syntax and formats | each product | pVisor reference (external repository) and [pChronicle reference](../pchronicle/reference/index.md) |
 | normative ownership decisions | Project RFCs | [RFC index](../rfcs/index.md) |
 
 This document changes only when a cross-product contract changes. Product

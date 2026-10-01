@@ -228,6 +228,6 @@ formats are handled by `pchronicle import/export`.
 - [Discover and query](../guides/discover-and-query.md)
 - [Snapshot](catalog.md)
 - [AgenticMD format](../reference/agenticmd.md)
-- [Gateway architecture](../../pvisor/design/gateway.md)
-- [pVisor CLI](../../pvisor/reference/cli.md)
+- Gateway architecture (external repository)
+- pVisor CLI (external repository)
 - [`pchronicle` Dataset commands](../reference/cli.md)

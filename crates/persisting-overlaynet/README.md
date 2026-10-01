@@ -1,6 +1,9 @@
 # persisting-overlaynet
 
-**Network interception and egress-policy data planes for pVisor.**
+pVisor and pPilot are maintained in external repositories. This repository
+ships pChronicle and the internal libraries needed for capture and history.
+
+**Network interception and egress-policy data planes for trajectory capture.**
 
 Owns the proxy data plane: request classification, HTTP `CONNECT`,
 absolute-URI forwarding, access enforcement through
@@ -36,7 +39,7 @@ just test persisting-overlaynet
 
 ## Links
 
-- [OverlayNet architecture](../../docs/src/pvisor/design/overlaynet.md)
-- [Network control](../../docs/src/pvisor/guides/network.md)
+- OverlayNet architecture (external repository)
+- Network control (external repository)
 - [`persisting-gateway`](../persisting-gateway/README.md)
 - [`persisting-agentctl`](../persisting-agentctl/README.md)

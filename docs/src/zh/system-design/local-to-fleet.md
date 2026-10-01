@@ -1,5 +1,7 @@
 # 从本地到集群
 
+> pVisor 与 pPilot 已拆分到外部仓库。本仓库保留 pChronicle 及捕获、持久历史所需的内部库。
+
 可移植单位是逻辑 Run，而不是一台正在运行的虚拟机。
 
 ![AgentVisor 执行连续体](../../assets/diagrams/agentvisor/execution-continuum.svg)
@@ -19,6 +21,6 @@
 在个人设备上，主要体验是 staged workspace 与可审查 Effect；在集群中，同一模型增加
 placement、tenant isolation、lease、attestation、恢复与 reconciliation，而不重新定义 Run。
 
-稳定 identity 模型见 [Run、Attempt 与 Effect](../pvisor/concepts/run-model.md)。Provider
-admission 属于 [pVisor 隔离设计](../pvisor/design/isolation.md)；集群协调（placement、lease
+稳定 identity 模型见 Run、Attempt 与 Effect （外部仓库）。Provider
+admission 属于 pVisor 隔离设计 （外部仓库）；集群协调（placement、lease
 与 reconciliation）属于部署控制面，不会改变逻辑 Run 契约。

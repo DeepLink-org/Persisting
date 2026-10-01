@@ -1,5 +1,8 @@
 # pChronicle CLI
 
+pVisor and pPilot are maintained in external repositories. This repository
+ships pChronicle and the internal libraries needed for capture and history.
+
 **Standalone `pchronicle` CLI for onboarding, browsing, querying, importing,
 exporting, and serving trajectory Datasets.**
 
@@ -57,9 +60,9 @@ just chronicle-binary
 
 ## Links
 
-- [pChronicle get started](../../docs/src/pchronicle/get-started.md)
-- [pChronicle CLI reference](../../docs/src/pchronicle/reference/cli.md)
-- [Local read-only Dataset server](../../docs/src/pchronicle/guides/serve.md)
-- [Gateway forwarding, rewriting, and capture](../../docs/src/pchronicle/guides/serve-gateway.md)
+- [pChronicle get started](../../docs/src/en/pchronicle/get-started.md)
+- [pChronicle CLI reference](../../docs/src/en/pchronicle/reference/cli.md)
+- [Local read-only Dataset server](../../docs/src/en/pchronicle/guides/serve.md)
+- [Gateway forwarding, rewriting, and capture](../../docs/src/en/pchronicle/guides/serve-gateway.md)
 - [`persisting-pchronicle`](../persisting-pchronicle/README.md)
 - [`pchronicle-web`](../../pchronicle-web/README.md)

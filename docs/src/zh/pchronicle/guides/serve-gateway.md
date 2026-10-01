@@ -55,7 +55,7 @@ capture events 追加到 CLI 指定的输出 Dataset。Dataset Web UI 和 API �
 
 当 Agent 或 SDK 已经能够调用 OpenAI、Anthropic 或 Gemini 兼容的 base URL，而你希望不
 启动 pVisor Run 就捕获这些流量时，可以使用这个模式。如果 Gateway 需要与 Agent 执行共享
-生命周期和隔离边界，应改用 [pVisor 捕获](../../pvisor/guides/capture.md)。
+生命周期和隔离边界，应改用 pVisor 捕获 （外部仓库）。
 
 ## 配置输入
 
@@ -163,7 +163,7 @@ Capture metadata 会区分客户端请求模型和实际 upstream 模型，并�
 | `network` | 否 | `mode = "public"` | 显式 forward-proxy 流量的策略。 |
 
 共享 Gateway schema 还接受 `[overlay]`，但 `pchronicle serve` 不会创建或 apply 文件系统
-overlay。Overlay 生命周期属于 [pVisor](../../pvisor/guides/execution.md)。
+overlay。Overlay 生命周期属于 pVisor （外部仓库）。
 
 ### 捕获级别
 

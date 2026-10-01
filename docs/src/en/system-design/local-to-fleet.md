@@ -1,5 +1,8 @@
 # Local to fleet
 
+> pVisor and pPilot are maintained in external repositories. This repository
+> contains pChronicle and the libraries needed for capture and durable history.
+
 The portable unit is a logical Run, not a live virtual machine.
 
 ![The AgentVisor execution continuum](../../assets/diagrams/agentvisor/execution-continuum.svg)
@@ -22,6 +25,6 @@ effects. In a fleet, the same model adds placement, tenant isolation, leases,
 attestation, recovery, and reconciliation without redefining the Run.
 
 The stable identity model is defined in
-[Run, Attempt, and Effect](../pvisor/concepts/run-model.md). Provider admission
-belongs to [pVisor isolation](../pvisor/design/isolation.md). Fleet coordination—placement, leases, and reconciliation—belongs to the
+Run, Attempt, and Effect (external repository). Provider admission
+belongs to pVisor isolation (external repository). Fleet coordination—placement, leases, and reconciliation—belongs to the
 deployment control plane and does not change the logical Run contract.

@@ -1,5 +1,8 @@
 # Design principles
 
+> pVisor and pPilot are maintained in external repositories. This repository
+> contains pChronicle and the libraries needed for capture and durable history.
+
 These principles explain why Persisting has separate products and why the
 documentation emphasizes reviewable steps.
 

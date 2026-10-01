@@ -1,5 +1,8 @@
 # pChronicle
 
+pVisor and pPilot are maintained in external repositories. This repository
+ships pChronicle and the internal libraries needed for capture and history.
+
 **Persisting 的结构化轨迹与 Dataset 数据层。**
 
 拥有轨迹领域模型、磁盘格式、Lance 持久化、数据源发现、DataFusion 查询、格式交换
@@ -53,9 +56,9 @@ just proptest pchronicle
 
 ## Links
 
-- [pChronicle overview](../../docs/src/pchronicle/index.zh.md)
-- [产品架构](../../docs/src/pchronicle/design/architecture.zh.md)
-- [记录数据、视图与版本](../../docs/src/pchronicle/concepts/facts-and-projections.zh.md)
-- [pChronicle CLI](../../docs/src/pchronicle/reference/cli.zh.md)
+- [pChronicle overview](../../docs/src/en/pchronicle/index.zh.md)
+- [产品架构](../../docs/src/en/pchronicle/design/architecture.zh.md)
+- [记录数据、视图与版本](../../docs/src/en/pchronicle/concepts/facts-and-projections.zh.md)
+- [pChronicle CLI](../../docs/src/en/pchronicle/reference/cli.zh.md)
 - [RFC-0003 ownership](../../docs/src/rfcs/0003-pchronicle-ownership.md)
 - [`persisting-pchronicle-cli`](../persisting-pchronicle-cli/README.md)

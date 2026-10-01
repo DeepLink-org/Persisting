@@ -4,20 +4,16 @@
 //! [`ControlController`]. Authorization is represented as a state transition;
 //! the driver then records whether the authorized operation was applied or
 //! failed. [`AgentCtlClient`] implements pVisor's optional cooperative
-//! AgentCtl protocol, while
-//! [`PVisorProcessClient`] submits a [`RunSpec`] to a standalone foreground
-//! pVisor binary. Supervisor messages are shared wire contracts rather than
+//! AgentCtl protocol. Supervisor messages are shared wire contracts rather than
 //! types owned by either pPilot or pVisor.
 
 mod client;
-mod process;
 pub mod protocol;
 mod runtime;
 mod supervisor;
 
 pub use client::{AgentCtlClient, AgentCtlClientConfig, AgentCtlResponseError};
 use ipnet::IpNet;
-pub use process::{PVisorProcessClient, PVisorProcessOptions};
 pub use protocol::*;
 pub use runtime::*;
 pub use runtime::{AccessEffect as ControlEffect, AccessReason as ControlReason};

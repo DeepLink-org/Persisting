@@ -166,26 +166,12 @@ def test_release_artifacts_reject_oversized_wheel(tmp_path: Path) -> None:
         release_artifacts.validate_artifacts(tmp_path, version, max_bytes=1)
 
 
-@pytest.mark.parametrize(
-    ("editable", "bundle_firmware"),
-    [(True, False), (False, True)],
-)
-def test_build_backend_options_only_skip_firmware_for_editable_builds(
-    editable: bool,
-    bundle_firmware: bool,
-) -> None:
-    options = wheel_stage.options_from_build_backend(None, editable=editable)
-
-    assert options.bundle_firmware is bundle_firmware
-
-
 def test_build_backend_options_accept_explicit_cargo_settings() -> None:
     options = wheel_stage.options_from_build_backend(
         {
             "cargo-profile": "dev",
             "cargo-locked": "false",
             "cargo-jobs": "3",
-            "bundle-firmware": "false",
         },
         editable=False,
     )
@@ -193,10 +179,9 @@ def test_build_backend_options_accept_explicit_cargo_settings() -> None:
     assert options.profile == "dev"
     assert options.locked is False
     assert options.jobs == "3"
-    assert options.bundle_firmware is False
 
 
-def test_editable_staging_does_not_resolve_firmware(
+def test_staging_replaces_old_component_payloads(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -210,71 +195,33 @@ def test_editable_staging_does_not_resolve_firmware(
     monkeypatch.setattr(wheel_stage, "WHEEL_DATA", tmp_path / "wheel-data")
     monkeypatch.setattr(wheel_stage, "_build_web_assets", lambda: None)
     monkeypatch.setattr(wheel_stage, "_build", lambda _options: artifacts)
-    monkeypatch.setattr(wheel_stage, "_is_macos", lambda _options: False)
 
-    def unexpected_firmware(_options):
-        raise AssertionError("editable staging must not resolve wheel firmware")
+    old_scripts = tmp_path / "wheel-data" / "scripts"
+    old_scripts.mkdir(parents=True)
+    for name in ("pvisor", "ppilot", "libkrunfw.5.dylib"):
+        (old_scripts / name).write_bytes(b"old payload")
 
-    monkeypatch.setattr(wheel_stage, "_firmware_source", unexpected_firmware)
+    scripts = wheel_stage.stage_wheel_binaries(wheel_stage.BuildOptions())
 
-    scripts = wheel_stage.stage_wheel_binaries(wheel_stage.BuildOptions(bundle_firmware=False))
-
-    assert {path.name for path in scripts.iterdir()} == set(wheel_stage.EXPECTED_BINARIES)
-
-
-def test_release_staging_resolves_firmware_before_build(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
-
-    def missing_firmware(_options):
-        events.append("firmware")
-        raise RuntimeError("missing firmware")
-
-    def unexpected_build(_options):
-        events.append("build")
-        raise AssertionError("Cargo must not run before firmware is ready")
-
-    monkeypatch.setattr(wheel_stage, "_firmware_source", missing_firmware)
-    monkeypatch.setattr(wheel_stage, "_build", unexpected_build)
-
-    with pytest.raises(RuntimeError, match="missing firmware"):
-        wheel_stage.stage_wheel_binaries(wheel_stage.BuildOptions())
-
-    assert events == ["firmware"]
+    assert {path.name for path in scripts.iterdir()} == {"pchronicle"}
+    assert (scripts / "pchronicle").stat().st_mode & 0o111
 
 
-def test_firmware_source_prefers_explicit_path(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    firmware = tmp_path / "libkrunfw.5.dylib"
-    firmware.write_bytes(b"firmware")
-    monkeypatch.setenv("PERSISTING_LIBKRUNFW_PATH", str(tmp_path))
+def test_wheel_contents_require_only_pchronicle(tmp_path: Path) -> None:
+    wheel = tmp_path / "persisting-1.2.3-py3-none-macosx_11_0_arm64.whl"
+    _write_wheel(wheel, "1.2.3")
+    with zipfile.ZipFile(wheel, "a") as archive:
+        script = zipfile.ZipInfo("persisting-1.2.3.data/scripts/pchronicle")
+        script.external_attr = 0o100755 << 16
+        archive.writestr(script, b"pchronicle")
+    version, scripts = wheel_verify._wheel_contents(wheel)
+    assert version == "1.2.3"
+    assert set(scripts) == {"pchronicle"}
 
-    source, name = wheel_stage._firmware_source(
-        wheel_stage.BuildOptions(target="aarch64-apple-darwin")
-    )
-
-    assert source == firmware.resolve()
-    assert name == firmware.name
-
-
-def test_firmware_source_fetches_when_path_is_not_configured(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    firmware = tmp_path / "libkrunfw.5.dylib"
-    firmware.write_bytes(b"firmware")
-    monkeypatch.delenv("PERSISTING_LIBKRUNFW_PATH", raising=False)
-    monkeypatch.setattr(wheel_stage, "_fetch_firmware", lambda _options, _name: firmware)
-
-    source, name = wheel_stage._firmware_source(
-        wheel_stage.BuildOptions(target="aarch64-apple-darwin")
-    )
-
-    assert source == firmware
-    assert name == firmware.name
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("persisting-1.2.3.data/scripts/pvisor", b"retired component")
+    with pytest.raises(RuntimeError, match="unexpected wheel scripts"):
+        wheel_verify._wheel_contents(wheel)
 
 
 def test_cargo_command_uses_plain_build_by_default() -> None:
@@ -282,6 +229,9 @@ def test_cargo_command_uses_plain_build_by_default() -> None:
 
     assert command[:2] == ["cargo", "build"]
     assert "--target" not in command
+    assert [command[i + 1] for i, arg in enumerate(command) if arg == "-p"] == [
+        "persisting-pchronicle-cli"
+    ]
 
 
 def test_manylinux_glibc_requirement_accepts_2_28() -> None:

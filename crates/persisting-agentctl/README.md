@@ -1,5 +1,8 @@
 # persisting-agentctl
 
+pVisor and pPilot are maintained in external repositories. This repository
+ships pChronicle and the internal libraries needed for capture and history.
+
 **Agent control contracts, policies, the versioned AgentCtl v1 protocol, and its
 synchronous client SDK.**
 
@@ -65,7 +68,7 @@ just test persisting-agentctl
 
 ## Links
 
-- [pVisor isolation architecture](../../docs/src/pvisor/design/isolation.md)
-- [OverlayNet architecture](../../docs/src/pvisor/design/overlaynet.md)
-- [System architecture](../../docs/src/system-design/architecture.md)
-- [`persisting-pvisor`](../persisting-pvisor/README.md)
+- pVisor isolation architecture (external repository)
+- OverlayNet architecture (external repository)
+- [System architecture](../../docs/src/en/system-design/architecture.md)
+- `persisting-pvisor` (external repository)

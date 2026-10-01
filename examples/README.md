@@ -3,17 +3,8 @@
 **按产品问题组织的可复现 CLI 示例，而不是按 API 罗列。**
 
 每个 `run.sh` 管理自己的 `.work/`、运行产品命令、直接打印生成的文件与报告。
-运行后可继续检查 `.work/`。这里不拥有产品实现；pVisor / pPilot / pChronicle
+运行后可继续检查 `.work/`。这里不拥有产品实现；pChronicle
 的行为以文档站和对应 crate 为准。
-
-## pVisor
-
-| 示例 | 指标 |
-|---|---|
-| [1.1 文件系统隔离](pvisor/01-filesystem-isolation/) | lower 值、upper 文件数、Bundle changes |
-| [1.2 changeset 管理](pvisor/02-changeset-management/) | review/apply/drop 文件数 |
-| [1.3 pVisor 网络边界](pvisor/03-network-isolation/) | allowlist、deny-all，以及 direct socket 可绕过 cooperative proxy 的边界 |
-| [1.4 Gateway 捕获与管控 LLM](pvisor/04-gateway-llm-control/) | upstream POST、sink requests、AgenticMD blocks |
 
 ## pChronicle
 
@@ -29,29 +20,17 @@ ACTF 小型确定性 Dataset，用于手动体验和 CLI 集成测试。
 | [2.5 外围格式往返](pchronicle/05-format-roundtrip/) | 严格 ATIF 往返后的 JSON 数据模型相等 |
 | [2.6 直接查询 OpenAI/ACTF](pchronicle/06-query-openai-actf-directly/) | 两种交换格式直接映射为统一逻辑表 |
 
-## pPilot
-
-| 示例 | 指标 |
-|---|---|
-| [3.1 run](ppilot/01-run/) | 完成/失败数、结果总和、worker slot 数 |
-| [3.2 produce](ppilot/02-produce/) | 完成数、Run Bundle 数、lineage 数 |
-
 ## Run
 
 ```bash
 just examples
-just examples-pvisor
 just examples-pchronicle
-just examples-ppilot
 ```
 
 这些入口统一增量编译并使用 release targets，之后复用 Cargo 缓存。需要
-macOS/Linux、Cargo、Python 3、`jq`、`awk`、`curl` 和常见 POSIX 工具；
-OverlayFS 示例还需要 macFUSE 或 FUSE3。
+macOS/Linux、Cargo、Python 3、`jq`、`awk`、`curl` 和常见 POSIX 工具。
 
 ## Links
 
-- [Reproducible examples](../docs/src/project/examples.md)
-- [pVisor get started](../docs/src/pvisor/get-started.md)
-- [pPilot get started](../docs/src/ppilot/get-started.md)
-- [pChronicle get started](../docs/src/pchronicle/get-started.md)
+- [Reproducible examples](../docs/src/en/project/examples.md)
+- [pChronicle get started](../docs/src/en/pchronicle/get-started.md)

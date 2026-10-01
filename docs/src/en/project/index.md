@@ -1,6 +1,6 @@
 # Project
 
-Persisting's public product path is pVisor and pChronicle. This
+Persisting's public product is pChronicle. This
 section records delivery state, durable decisions, contributor workflows, and
 systems outside that current path.
 

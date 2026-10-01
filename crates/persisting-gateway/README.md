@@ -1,6 +1,6 @@
 # persisting-gateway
 
-**pVisor's built-in Agent protocol driver: LLM HTTP forwarding plus canonical
+**pChronicle Agent protocol gateway: LLM HTTP forwarding and canonical
 trajectory capture.**
 
 Owns the application-level path from Agent/LLM HTTP exchanges to trajectory
@@ -14,9 +14,8 @@ transport, access enforcement, and generic sink dispatch.
 [`persisting-pchronicle`](../persisting-pchronicle/README.md) owns schemas,
 persistence, reading, replay, conversion, and derived views.
 
-Capture remains the user-facing capability. It runs through `pvisor run` or
-`pchronicle serve --gateway-config`. Gateway is an internal pVisor driver and a
-reusable crate, not a peer product or standalone service.
+Capture runs through `pchronicle serve --gateway-config`. Gateway is an internal
+library; external execution components can also integrate it.
 
 This crate implements `persisting-overlaynet::OverlaySink`. Protocol rendering
 and capture share one in-memory `LlmRequestEventPayload` (`llm/v1`). Provider
@@ -38,8 +37,6 @@ benchmarks and regressions. It does not start Gateway itself.
 
 ## Links
 
-- [Gateway architecture](../../docs/src/pvisor/design/gateway.md)
-- [Capture trajectories](../../docs/src/pvisor/guides/capture.md)
-- [Gateway forwarding, rewriting, and capture](../../docs/src/pchronicle/guides/serve-gateway.md)
+- [Gateway forwarding, rewriting, and capture](../../docs/src/en/pchronicle/guides/serve-gateway.md)
 - [`persisting-overlaynet`](../persisting-overlaynet/README.md)
 - [`persisting-pchronicle`](../persisting-pchronicle/README.md)

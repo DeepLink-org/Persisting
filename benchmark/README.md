@@ -1,6 +1,6 @@
 # Persisting benchmarks
 
-**仓库级黑盒与微基准入口：Gateway、pChronicle、pVisor，以及独立的 Queue 吞吐压测。**
+**仓库级黑盒与微基准入口：Gateway、pChronicle，以及独立的 Queue 吞吐压测。**
 
 拥有可复现的压测脚本与报告契约。不拥有被测组件的产品行为；Queue 子系统的语义以
 Queue 文档为准，这里只保留既有压测入口。
@@ -33,20 +33,6 @@ just benchmark-pchronicle-compare \
 ```
 
 详见 [`pchronicle/`](pchronicle/README.md)。
-
-## pVisor
-
-进程启动与 durable Run Bundle 访问基准：
-
-```bash
-just benchmark-pvisor
-just benchmark-pvisor nightly target/pvisor-benchmark/nightly
-just benchmark-pvisor-compare \
-  target/pvisor-benchmark/candidate/raw-report.json \
-  target/pvisor-benchmark/main/raw-report.json
-```
-
-详见 [`pvisor/`](pvisor/README.md)。
 
 ## Queue
 
@@ -102,6 +88,4 @@ python benchmark/throughput_stress.py -p 8 -c 8 -d 60 -b 100 --warmup 2
 
 ## Links
 
-- [Gateway architecture](../docs/src/pvisor/design/gateway.md)
-- [pChronicle design](../docs/src/pchronicle/design/index.md)
-- [pVisor design](../docs/src/pvisor/design/index.md)
+- [pChronicle design](../docs/src/en/pchronicle/design/index.md)

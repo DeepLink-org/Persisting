@@ -1,6 +1,6 @@
 # Project
 
-Persisting 的公开产品主路径是 pVisor 与 pChronicle。这一节记录交付状态、稳定决策、贡献者
+Persisting 的公开产品是 pChronicle。这一节记录交付状态、稳定决策、贡献者
 工作流，以及不在当前主路径中的独立系统。
 
 ## 架构

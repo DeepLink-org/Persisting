@@ -1,14 +1,17 @@
 # System Design
 
-Persisting provides durable infrastructure for Agent execution and trajectory
-history. This section focuses on the
-current public product path:
+> pVisor and pPilot are maintained in external repositories. This repository
+> contains pChronicle and the libraries needed for capture and durable history.
 
-- [pVisor](../pvisor/index.md) virtualizes and governs one Agent Run;
+Persisting provides durable Agent trajectory history. This section describes
+how pChronicle integrates with external execution components:
+
+- pVisor (external repository) virtualizes and governs one Agent Run;
 - [pChronicle](../pchronicle/index.md) organizes durable trajectory Sources into
   queryable Datasets.
 
-Gateway, OverlayFS, and OverlayNet are pVisor runtime mechanisms. Where
+Gateway and OverlayNet support trajectory capture here; OverlayFS belongs to
+the external execution components. Where
 available, stable Run identity connects the domains, but each also has a
 standalone entry path.
 
@@ -53,7 +56,7 @@ need to answer crosses both domains.
 - [Complete architecture and target model](architecture.md)
 - [Local-to-fleet continuity](local-to-fleet.md)
 - [Security and evidence model](security-evidence.md)
-- [pVisor implementation boundaries](../pvisor/design/index.md)
+- pVisor implementation boundaries (external repository)
 - [pChronicle implementation boundaries](../pchronicle/design/index.md)
 
 Delivery state is reported in the product Design pages and

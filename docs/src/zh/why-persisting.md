@@ -8,10 +8,8 @@ Agent 可能先产出有用的结果，之后才发现很难回答“发生了�
 Agent 会修改文件、调用工具、读取数据，并在一次长流程中持续做决定。终端
 输出不足以安全审查；没有持久记录的沙箱难以复盘；原始事件日志又很难稳定查询。
 
-Persisting 把执行和历史看成两个相关但独立的工作：
+Persisting 专注于持久 Agent 历史：
 
-- **pVisor 管理 Run。** 它提供 staged workspace，记录实际生效的控制机制，并
-  让人在应用 Effect 前先审查。
 - **pChronicle 保存轨迹。** 它把支持的 Source 规范化为可查询 Dataset，方便
   之后检查、比较和改进 Run。
 
@@ -29,8 +27,7 @@ Effect 和 Evidence。
 ## 什么时候适合使用
 
 当 Agent 能修改真实项目、Run 需要在人审查后才能合并，或轨迹需要在终端关闭后
-仍可使用时，Persisting 就适合介入。需要控制执行时从 pVisor 开始；已有历史时
-从 pChronicle 开始；只有问题跨越执行与历史边界时才连接两者。
+仍可使用时，Persisting 就适合介入。使用 pChronicle 查询持久历史；pVisor 与 pPilot 已拆分到外部仓库。
 
 如果只是运行一次无需审查、也无需留存历史的脚本，Persisting 可能不是必要的基础设施。
 

@@ -178,6 +178,6 @@ OpenAI msg ┘
 - [发现并查询](../guides/discover-and-query.md)
 - [Snapshot](catalog.md)
 - [AgenticMD 格式](../reference/agenticmd.md)
-- [Gateway 架构](../../pvisor/design/gateway.md)
-- [pVisor 命令](../../pvisor/reference/cli.md)
+- Gateway 架构 （外部仓库）
+- pVisor 命令 （外部仓库）
 - [`pchronicle` Dataset 命令](../reference/cli.md)

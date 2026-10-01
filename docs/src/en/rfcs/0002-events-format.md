@@ -7,7 +7,7 @@
 | **Date** | 2026-07-30 |
 | **Component** | `persisting-events` + Gateway + pChronicle |
 | **Implements** | `persisting-events::EventRecord` · `persisting-pchronicle` `formats/events.rs` / `EventRow` |
-| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [RFC-0007 Events/Sidecar 边界](0007-events-contract-pchronicle-sidecar.md) · [Capture 管线](../pvisor/design/gateway.md) · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
+| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [RFC-0007 Events/Sidecar 边界](0007-events-contract-pchronicle-sidecar.md) · Capture 管线 (external repository) · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
 
 ---
 
@@ -553,7 +553,7 @@ key = events 字段，value = 在 Storyline 上求值的 JSONPath。
 | 文档 | 关系 |
 |---|---|
 | [轨迹存储](../pchronicle/design/trajectory-storage.md) | Lance SoT；本 RFC 强调 SoT 内容应是 HTTP wire |
-| [Gateway 管线](../pvisor/design/gateway.md) | 生产 events；Story 边界在 **之后** 解释 |
+| Gateway 管线 (external repository) | 生产 events；Story 边界在 **之后** 解释 |
 | [RFC-0001 Storyline](0001-storyline-format.md) | 有损 Normal 视图 / hub |
 | [轨迹 Markdown 格式](../pchronicle/reference/agenticmd.md) | 人读投影，不是 SoT |
 

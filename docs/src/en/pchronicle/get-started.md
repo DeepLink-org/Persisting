@@ -134,7 +134,6 @@ use `--errors strict` in automation when partial results should fail the job.
 - [Open the local Web UI](guides/ui.md)
 - [Import or export Runs](guides/exchange.md)
 - [Serve a Dataset locally](guides/serve.md)
-- [Capture a new Run with pVisor](../pvisor/guides/capture.md)
 - [Learn the Dataset and Source model](concepts/index.md)
 
 The walkthrough Dataset is temporary. Use your own path before moving to

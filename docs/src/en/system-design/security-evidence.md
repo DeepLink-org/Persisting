@@ -1,5 +1,8 @@
 # Security and evidence model
 
+> pVisor and pPilot are maintained in external repositories. This repository
+> contains pChronicle and the libraries needed for capture and durable history.
+
 Persisting does not compress security into one `safe` or `sandboxed` label.
 Every Run reports guarantees by capability dimension. pVisor owns admission
 and runtime enforcement. Placement and recovery mechanisms do not upgrade a
@@ -44,8 +47,8 @@ This final event path is narrower than the Run Bundle: it does not currently
 publish the complete Artifact, lineage, filesystem Effect,
 AgentCtl/network/resource Evidence, output, or metrics inventory.
 
-Read [Capabilities and evidence](../pvisor/concepts/capabilities-and-evidence.md)
-for the user model, [pVisor isolation design](../pvisor/design/isolation.md) and
-[OverlayNet](../pvisor/design/overlaynet.md) for mechanisms, and
+Read Capabilities and evidence (external repository)
+for the user model, pVisor isolation design (external repository) and
+OverlayNet (external repository) for mechanisms, and
 [Facts and projections](../pchronicle/concepts/facts-and-projections.md) for the
 history boundary.

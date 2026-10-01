@@ -24,7 +24,7 @@ inputs:
   install-zig:
     description: "Install Zig for the macOS-to-Linux guest init cross-build"
     required: false
-    default: "true"
+    default: "false"
 
 runs:
   using: "composite"

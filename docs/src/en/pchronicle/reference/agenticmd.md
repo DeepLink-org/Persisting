@@ -92,7 +92,6 @@ exchange uses the formats supported by
 
 ## 6. Examples and implementation
 
-- Gateway end-to-end quantitative example: `examples/pvisor/04-gateway-llm-control/`
 - Lance/ATIF storage and analysis examples: `examples/pchronicle/`
 - Format and view implementation: `crates/persisting-pchronicle/src/formats/`, `src/projection/`
 - [pChronicle run storage](../design/trajectory-storage.md)

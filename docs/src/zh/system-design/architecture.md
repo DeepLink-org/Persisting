@@ -1,5 +1,7 @@
 # 端到端架构
 
+> pVisor 与 pPilot 已拆分到外部仓库。本仓库保留 pChronicle 及捕获、持久历史所需的内部库。
+
 本文只定义 Persisting 产品之间的契约。Provider 机制属于 pVisor Design，存储布局属于
 pChronicle Design，命令属于各产品 Reference。
 
@@ -29,8 +31,8 @@ Gateway、OverlayFS 和 OverlayNet 是 pVisor 运行时机制，不构成独立�
 
 Provider 会在 Run Bundle 中分别记录请求的 capability 与实际生效的维度。进程成功退出
 不代表请求的边界已经安装；workspace stage 也独立于产生它的 Provider，仍可 review。
-Provider 的行为与前置条件见 [pVisor 隔离设计](../pvisor/design/isolation.md) 和
-[执行指南](../pvisor/guides/execution.md)。
+Provider 的行为与前置条件见 pVisor 隔离设计 （外部仓库） 和
+执行指南 （外部仓库）。
 
 ## 独立 Ingress 路径
 
@@ -126,7 +128,7 @@ Ingestion 保留这些边界。规范化表示或 Snapshot 不会升级 Source �
 pVisor 默认构建不链接 Lance/DataFusion。配置后的 Chronicle 发布会通过带认证的
 loopback IPC 启动 pChronicle sidecar，并且只把 sidecar 成功响应视为 durable
 acknowledgement。旧模式名 `lance` 是 `spawn` 的兼容别名；pVisor 不再自行写 Lance。
-Sidecar 标志与模式名见 [pVisor CLI](../pvisor/reference/cli.md) 与
+Sidecar 标志与模式名见 pVisor CLI （外部仓库） 与
 [RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md)。
 
 ## 故障与恢复
@@ -174,11 +176,11 @@ Evidence 层级见[安全与 Evidence](security-evidence.md)，可迁移要求�
 | 边界 | 契约 Owner | 详细文章 |
 | --- | --- | --- |
 | 逻辑运行事件与本地 Chronicle control 协议 | `persisting-events` | [RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md) |
-| Agent 执行与 Effect review | pVisor | [pVisor 概念](../pvisor/concepts/index.md)与[指南](../pvisor/guides/index.md) |
-| Provider 与运行时机制 | pVisor | [pVisor Design](../pvisor/design/index.md) |
+| Agent 执行与 Effect review | pVisor | pVisor 概念 （外部仓库）与指南 （外部仓库） |
+| Provider 与运行时机制 | pVisor | pVisor Design （外部仓库） |
 | Dataset、事实与 Projection | pChronicle | [pChronicle 概念](../pchronicle/concepts/index.md) |
 | 存储与 Snapshot 实现 | pChronicle | [pChronicle Design](../pchronicle/design/index.md) |
-| 稳定命令语法与格式 | 各产品 | [pVisor Reference](../pvisor/reference/index.md)与 [pChronicle Reference](../pchronicle/reference/index.md) |
+| 稳定命令语法与格式 | 各产品 | pVisor Reference （外部仓库）与 [pChronicle Reference](../pchronicle/reference/index.md) |
 | 规范性 ownership 决策 | Project RFC | [RFC 索引](../rfcs/index.md) |
 
 只有跨产品契约变化时才修改本文。产品实现状态和 roadmap 属于对应 Design 页或 Project

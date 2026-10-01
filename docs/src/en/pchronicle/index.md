@@ -72,7 +72,7 @@ When you already have a question, follow the matching path:
 
 pChronicle reads and organizes run history. It does not execute or schedule
 Agents. To run an Agent in a controlled workspace, start with
-[pVisor](../pvisor/index.md).
+pVisor (external repository).
 
 ## A useful reading order
 

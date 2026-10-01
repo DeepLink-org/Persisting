@@ -1,12 +1,14 @@
 # System Design
 
-Persisting 提供 Agent 执行与轨迹历史的持久化基础设施。本节聚焦
-当前公开产品路径：
+> pVisor 与 pPilot 已拆分到外部仓库。本仓库保留 pChronicle 及捕获、持久历史所需的内部库。
 
-- [pVisor](../pvisor/index.md) 虚拟化并治理单个 Agent Run；
+Persisting 提供持久 Agent 轨迹历史。本节描述 pChronicle 与外部执行组件的集成：
+
+- pVisor （外部仓库） 虚拟化并治理单个 Agent Run；
 - [pChronicle](../pchronicle/index.md) 把持久轨迹 Source 组织为可查询 Dataset。
 
-Gateway、OverlayFS 与 OverlayNet 是 pVisor 运行时机制。存在稳定 Run identity 时，它会连接
+Gateway 与 OverlayNet 在本仓库支持轨迹捕获；OverlayFS 属于外部执行组件。
+存在稳定 Run identity 时，它会连接
 这些产品域，但各域也有独立入口。
 
 ![Persisting 产品域与集成关系](../../assets/diagrams/persisting/system-products.svg)
@@ -46,7 +48,7 @@ capture 交接。
 - [完整架构与目标模型](architecture.md)
 - [从本地到集群的连续性](local-to-fleet.md)
 - [安全与 Evidence 模型](security-evidence.md)
-- [pVisor 实现边界](../pvisor/design/index.md)
+- pVisor 实现边界 （外部仓库）
 - [pChronicle 实现边界](../pchronicle/design/index.md)
 
 交付状态以产品 Design 页面与[项目工程笔记](../project/engineering.md)为准。目标架构不能

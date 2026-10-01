@@ -55,9 +55,9 @@ def check():
                 if dest_locale in ('en', 'zh') and dest_locale != locale:
                     issues.append(f'{rel}: navigation changes language: {href}')
     for locale in ('en', 'zh'):
-        product = (ROOT / locale / 'pvisor/index.html').read_text()
+        product = (ROOT / locale / 'pchronicle/get-started/index.html').read_text()
         if 'class="admonition tip"' not in product or '<pre' not in product:
-            issues.append(f'{locale}/pvisor: missing rendered callout or code block')
+            issues.append(f'{locale}/pchronicle: missing rendered callout or code block')
     if issues:
         raise SystemExit('\n'.join(sorted(set(issues))))
     print(f'Checked {len(pages)} HTML pages: local links, anchors, images, language navigation, callouts and code blocks passed.')

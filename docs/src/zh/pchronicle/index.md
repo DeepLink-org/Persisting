@@ -66,7 +66,7 @@ pchronicle query ./trajectory-data \
 - **打开本地 UI 与 API：** [提供 Dataset 服务](guides/ui.md)
 
 pChronicle 读取并组织运行历史，不执行或调度 Agent。要在受控工作区中运行 Agent，请从
-[pVisor](../pvisor/index.md)开始。
+pVisor （外部仓库）开始。
 
 ## 推荐阅读顺序
 

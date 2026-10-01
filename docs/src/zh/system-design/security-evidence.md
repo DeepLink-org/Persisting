@@ -1,5 +1,7 @@
 # 安全与 Evidence 模型
 
+> pVisor 与 pPilot 已拆分到外部仓库。本仓库保留 pChronicle 及捕获、持久历史所需的内部库。
+
 Persisting 不会把安全压缩成一个 `safe` 或 `sandboxed` 标签。每个 Run 都按 capability
 维度报告保证。pVisor 拥有 admission 与 runtime enforcement。Placement 与恢复机制不会提升
 pVisor 的 Evidence 等级。配置后的
@@ -41,6 +43,6 @@ requested capability
 最后一段 event 路径比 Run Bundle 更窄：当前不会发布完整的 Artifact、lineage、filesystem
 Effect、AgentCtl/network/resource Evidence、output 或 metrics 清单。
 
-用户模型见 [Capability 与 Evidence](../pvisor/concepts/capabilities-and-evidence.md)，平台机制见
-[pVisor 隔离设计](../pvisor/design/isolation.md)与 [OverlayNet](../pvisor/design/overlaynet.md)，
+用户模型见 Capability 与 Evidence （外部仓库），平台机制见
+pVisor 隔离设计 （外部仓库）与 OverlayNet （外部仓库），
 历史边界见[事实与 Projection](../pchronicle/concepts/facts-and-projections.md)。

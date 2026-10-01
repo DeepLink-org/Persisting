@@ -127,15 +127,8 @@ jobs:
             packages: >-
               persisting-agentctl
               persisting-events
-              persisting-overlay-core
-              persisting-overlayfs
               persisting-overlaynet
-              persisting-replay
             event_control: true
-            prepare_pvisor: false
-            prepare_runtime: false
-            smoke_pvisor: false
-            smoke_ppilot: false
             smoke_pchronicle: false
             install_zig: false
           - platform: Linux
@@ -143,32 +136,6 @@ jobs:
             shard: gateway
             packages: persisting-gateway
             event_control: false
-            prepare_pvisor: false
-            prepare_runtime: false
-            smoke_pvisor: false
-            smoke_ppilot: false
-            smoke_pchronicle: false
-            install_zig: false
-          - platform: Linux
-            os: ubuntu-latest
-            shard: pvisor
-            packages: persisting-pvisor
-            event_control: false
-            prepare_pvisor: true
-            prepare_runtime: false
-            smoke_pvisor: true
-            smoke_ppilot: false
-            smoke_pchronicle: false
-            install_zig: false
-          - platform: Linux
-            os: ubuntu-latest
-            shard: ppilot
-            packages: persisting-ppilot
-            event_control: false
-            prepare_pvisor: false
-            prepare_runtime: true
-            smoke_pvisor: false
-            smoke_ppilot: true
             smoke_pchronicle: false
             install_zig: false
           - platform: Linux
@@ -178,43 +145,19 @@ jobs:
               persisting-pchronicle
               persisting-pchronicle-cli
             event_control: false
-            prepare_pvisor: false
-            prepare_runtime: false
-            smoke_pvisor: false
-            smoke_ppilot: false
             smoke_pchronicle: true
             install_zig: false
           - platform: macOS
             os: macos-latest
-            shard: agent-runtime
+            shard: capture
             packages: >-
               persisting-agentctl
               persisting-events
               persisting-gateway
-              persisting-overlay-core
-              persisting-overlayfs
               persisting-overlaynet
-              persisting-ppilot
-              persisting-pvisor
-              persisting-replay
             event_control: false
-            prepare_pvisor: false
-            prepare_runtime: true
-            smoke_pvisor: true
-            smoke_ppilot: true
             smoke_pchronicle: false
-            install_zig: true
-          - platform: macOS
-            os: macos-latest
-            shard: pvisor
-            packages: persisting-pvisor
-            event_control: false
-            prepare_pvisor: true
-            prepare_runtime: false
-            smoke_pvisor: true
-            smoke_ppilot: false
-            smoke_pchronicle: false
-            install_zig: true
+            install_zig: false
           - platform: macOS
             os: macos-latest
             shard: pchronicle
@@ -222,10 +165,6 @@ jobs:
               persisting-pchronicle
               persisting-pchronicle-cli
             event_control: false
-            prepare_pvisor: false
-            prepare_runtime: false
-            smoke_pvisor: false
-            smoke_ppilot: false
             smoke_pchronicle: true
             install_zig: false
     steps:
@@ -241,38 +180,12 @@ jobs:
         with:
           shared-key: ci-rust-${{ matrix.shard }}
 
-      # macOS needs the Hypervisor entitlement on the product binary. Running
-      # the same recipe on Linux also keeps the smoke-test setup identical.
-      - name: Build pVisor product binary
-        if: matrix.prepare_pvisor
-        run: just pvisor debug
-
-      # pPilot's integration tests resolve the real pVisor and pChronicle
-      # executables from PATH. Build them once in this shard before nextest.
-      - name: Build Agent runtime component set
-        if: matrix.prepare_runtime
-        run: |
-          just build-agent-runtime debug
-          echo "${GITHUB_WORKSPACE}/target/debug" >> "${GITHUB_PATH}"
-
       - name: Run ${{ matrix.shard }} tests
-        env:
-          # GitHub-hosted Linux runners may disable unprivileged user
-          # namespaces. The dedicated isolation job remains strict.
-          PERSISTING_TEST_ALLOW_NO_USERNS: "1"
         run: just ci-nextest ${{ matrix.packages }}
 
       - name: Test shared event control contract
         if: matrix.event_control
         run: just test-events-control
-
-      - name: Smoke pVisor CLI
-        if: matrix.smoke_pvisor
-        run: just smoke-pvisor-cli
-
-      - name: Smoke pPilot CLI
-        if: matrix.smoke_ppilot
-        run: just smoke-ppilot-cli
 
       - name: Smoke pChronicle CLI
         if: matrix.smoke_pchronicle
@@ -320,47 +233,6 @@ jobs:
 
       - name: Build and test Web crate
         run: just test-pchronicle-web
-
-  pvisor-isolation-regression:
-    name: pVisor Isolation Regression / Linux
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          install-zig: "false"
-          components: ""
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-pvisor-isolation
-
-      - name: Enable rootless isolation primitives
-        shell: bash
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fuse3 jq util-linux
-          if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
-            sudo sysctl -w kernel.unprivileged_userns_clone=1
-          fi
-          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          test -c /dev/fuse
-          unshare --user --map-root-user --mount --net /bin/true
-
-      - name: Run strict pVisor isolation regressions
-        env:
-          PERSISTING_RUN_HOME: ${{ runner.temp }}/pvisor-isolation-runs
-        run: just test-pvisor-isolation
-
-      - name: Run pVisor filesystem examples
-        env:
-          WORK_ROOT: ${{ runner.temp }}/pvisor-filesystem-examples
-        run: just examples-pvisor-filesystem
 
   s3-contract:
     name: pChronicle S3 Contract / MinIO
@@ -441,44 +313,6 @@ jobs:
       - name: Pytest
         run: just test-py
 
-  pvisor-cases:
-    name: pVisor case checklist
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          install-nextest: "false"
-          install-zig: "false"
-          components: ""
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-pvisor-cases
-
-      - name: Run documented cases
-        run: |
-          just cases pvisor \
-            --case A01,A02,A03,A04,A05,A06 \
-            --case B01,B02,B03,B04 \
-            --case C02,C03,C04 \
-            --case D01,D03 \
-            --case F01,F02,F03 \
-            --case G01,G02,G03,G06 \
-            --case H01,H02 \
-            --case I01,I02,I03 \
-            --case J03
-
-      - name: Upload case report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pvisor-case-report
-          path: target/pvisor-case-report.md
-          if-no-files-found: ignore
-
   examples:
     name: Examples / ${{ matrix.shard }}
     runs-on: ubuntu-latest
@@ -486,12 +320,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - shard: pvisor
-            command: |
-              just test-pvisor-benchmark
-              just examples-pvisor-portable
-          - shard: ppilot
-            command: just examples-ppilot
           - shard: pchronicle
             command: just examples-pchronicle
     steps:
@@ -535,10 +363,8 @@ jobs:
       - rust-test
       - rust-proptest
       - pchronicle-web-test
-      - pvisor-isolation-regression
       - s3-contract
       - python-test
-      - pvisor-cases
       - examples
     runs-on: ubuntu-latest
     steps:

@@ -8,8 +8,6 @@ gen_py := repo / "scripts" / "generate_benchmark_data.py"
 # Product CLI component set. Keep all Cargo build entry points below routed
 # through `build-components` so package/bin changes have one source in just.
 component_pchronicle := "-p persisting-pchronicle-cli --bin pchronicle"
-component_pvisor := "-p persisting-pvisor --bin pvisor"
-component_ppilot := "-p persisting-ppilot --bin ppilot"
 
 # Python 路径（ruff format）
 ruff_paths := "persisting tests examples"
@@ -27,10 +25,7 @@ default:
     @echo "  just proptest pchronicle # pChronicle 全量 Proptest 回归"
     @echo "  just ci                  # CI 近似全量"
     @echo "  just py-dev              # 同步纯 Python 开发环境"
-    @echo "  just install-cli         # 安装 pchronicle、pvisor 和 ppilot"
-    @echo "  just pvisor              # 构建 release pVisor；macOS 自动签名"
-    @echo "  just examples-pvisor     # 构建并验证全部 pVisor examples"
-    @echo "  just benchmark-pvisor    # pVisor 进程启动与 Bundle 访问基准"
+    @echo "  just install-cli         # 安装 pchronicle"
     @echo "  just chronicle-binary    # 构建可直接测试的 pChronicle UI binary"
     @echo "  just echo                # 启动确定性的本地 LLM Echo upstream"
     @echo "  just benchmark-gateway   # Gateway 转发与持久化黑盒压测"
@@ -59,48 +54,12 @@ test-list:
         just gateway-fuzz         一分钟 Gateway 四类 fuzz 汇总
         just gateway-fuzz-formats / gateway-fuzz-forwarding
         just gateway-fuzz-storage / gateway-fuzz-network
-        just cases pvisor|pchronicle|pchronicle-cluster
-        just cases pvisor --run-unavailable --keep
+        just cases pchronicle|pchronicle-cluster
 
       组件示例
-        just examples-pvisor              全部 pVisor 场景
-        just examples-pvisor-filesystem   需要 FUSE 的 01/02 场景
-        just examples-pvisor-portable     普通 runner 可跑的 03/04 场景
-        just example-pvisor 03-network-isolation
-        just examples-pchronicle / examples-ppilot
+        just examples-pchronicle
 
-      pVisor 回归 / 基准
-        just test-pvisor / test-pvisor-lance / test-pvisor-isolation
-        just smoke-pvisor-cli
-        just benchmark-pvisor             快速 smoke 基准
-        just benchmark-pvisor nightly     稳定分布基准
     EOF
-
-# Run and validate every deterministic, quantitative pVisor example.
-[group('test')]
-examples-pvisor profile="release": (pvisor profile)
-    bash examples/pvisor/test.sh --profile "{{ profile }}" \
-      01-filesystem-isolation \
-      02-changeset-management \
-      03-network-isolation \
-      04-gateway-llm-control
-
-# Run and validate the FUSE-backed workspace and changeset examples.
-[group('test')]
-examples-pvisor-filesystem profile="release": (pvisor profile)
-    bash examples/pvisor/test.sh --profile "{{ profile }}" \
-      01-filesystem-isolation 02-changeset-management
-
-# Run and validate pVisor examples that do not require FUSE or user namespaces.
-[group('test')]
-examples-pvisor-portable profile="release": (pvisor profile)
-    bash examples/pvisor/test.sh --profile "{{ profile }}" \
-      03-network-isolation 04-gateway-llm-control
-
-# Run and validate one named pVisor example.
-[group('test')]
-example-pvisor scenario profile="release": (pvisor profile)
-    bash examples/pvisor/test.sh --profile "{{ profile }}" "{{ scenario }}"
 
 # Run the deterministic, quantitative pChronicle examples.
 [group('test')]
@@ -111,20 +70,8 @@ examples-pchronicle:
     bash "{{ repo }}/examples/pchronicle/test.sh" --profile release
     bash "{{ repo }}/examples/pchronicle/output-contract.sh" >/dev/null
 
-# Run the deterministic, quantitative pPilot examples.
 [group('test')]
-examples-ppilot:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    just build-components release all
-    for example in "{{ repo }}"/examples/ppilot/*; do
-        [[ -f "$example/run.sh" ]] || continue
-        echo "==> ${example#"{{ repo }}/"}/run.sh"
-        (cd "$example" && bash run.sh)
-    done
-
-[group('test')]
-examples: examples-pvisor examples-pchronicle examples-ppilot
+examples: examples-pchronicle
 
 # Run repository-level black-box regression scenarios against prebuilt real
 # component binaries. Long-running scenarios are excluded from this sweep.
@@ -220,30 +167,6 @@ benchmark-pchronicle-compare baseline candidate output="target/pchronicle-benchm
       --candidate "{{ candidate }}" \
       --output "{{ output }}"
 
-# Run pVisor's process-level startup and durable Run Bundle benchmark. The
-# smoke suite is intended for PR CI; nightly raises warmups and sample counts.
-[group('benchmark')]
-benchmark-pvisor suite="smoke" output="target/pvisor-benchmark/current" target_dir="target/pvisor-benchmark-build":
-    bash benchmark/pvisor/run.sh run \
-      --suite "{{ suite }}" \
-      --output "{{ output }}" \
-      --target-dir "{{ target_dir }}"
-
-# Compare reports from the same host. A missing baseline is valid for the first
-# commit that introduces the benchmark and produces a candidate-only report.
-[group('benchmark')]
-benchmark-pvisor-compare candidate baseline="" output="target/pvisor-benchmark/comparison" regression_threshold="15":
-    bash benchmark/pvisor/run.sh compare \
-      --candidate "{{ candidate }}" \
-      --baseline "{{ baseline }}" \
-      --output "{{ output }}" \
-      --regression-threshold "{{ regression_threshold }}"
-
-# Unit-test the benchmark report and comparison contract without running it.
-[group('test')]
-test-pvisor-benchmark:
-    PYTHONDONTWRITEBYTECODE=1 python3 benchmark/pvisor/test_bench.py
-
 # ── 构建 ─────────────────────────────────────────────────────────────────────
 
 # Start the deterministic local LLM upstream used to test Gateway forwarding,
@@ -287,28 +210,18 @@ chronicle-binary profile="debug": chronicle-web-build
 build profile="debug":
     just build-components "{{ profile }}" all
 
-# Single Cargo build entry for product CLIs. Any set that produces `pvisor`
-# also applies the macOS Hypervisor entitlement when running on Darwin.
+# Build pChronicle, optionally including its storage benchmark executable.
 [group('build')]
 build-components profile="debug" components="all":
     #!/usr/bin/env bash
     set -euo pipefail
-    profile="{{ profile }}"
-    components="{{ components }}"
-    case "$profile" in
+    case "{{ profile }}" in
       debug) cargo_profile=dev ;;
       release) cargo_profile=release ;;
-      *) echo "unsupported build profile: $profile (expected debug or release)" >&2; exit 2 ;;
+      *) echo "unsupported build profile: {{ profile }} (expected debug or release)" >&2; exit 2 ;;
     esac
-
-    built_pvisor=0
-    case "$components" in
-      all|runtime)
-        cargo build --profile "$cargo_profile" --locked \
-          {{ component_pchronicle }} {{ component_pvisor }} {{ component_ppilot }}
-        built_pvisor=1
-        ;;
-      pchronicle)
+    case "{{ components }}" in
+      all|pchronicle)
         cargo build --profile "$cargo_profile" --locked {{ component_pchronicle }}
         ;;
       pchronicle-benchmark)
@@ -316,73 +229,18 @@ build-components profile="debug" components="all":
           {{ component_pchronicle }} \
           -p persisting-pchronicle --example pchronicle_storage_query_benchmark
         ;;
-      pvisor-pchronicle)
-        cargo build --profile "$cargo_profile" --locked \
-          {{ component_pvisor }} {{ component_pchronicle }}
-        built_pvisor=1
-        ;;
-      pvisor)
-        cargo build --profile "$cargo_profile" --locked {{ component_pvisor }}
-        built_pvisor=1
-        ;;
-      ppilot)
-        cargo build --profile "$cargo_profile" --locked {{ component_ppilot }}
-        ;;
-      pchronicle-ppilot)
-        cargo build --profile "$cargo_profile" --locked \
-          {{ component_pchronicle }} {{ component_ppilot }}
-        ;;
-      *)
-        echo "unsupported component set: $components (all|pchronicle|pchronicle-benchmark|pvisor|pvisor-pchronicle|ppilot|pchronicle-ppilot)" >&2
-        exit 2
-        ;;
+      *) echo "unsupported component set: {{ components }} (all|pchronicle|pchronicle-benchmark)" >&2; exit 2 ;;
     esac
 
-    if [[ "$built_pvisor" -eq 1 ]]; then
-      just _sign-pvisor "$profile"
-    fi
-
-# macOS HVF entitlement for the pVisor binary produced by `build-components`.
-[private]
-_sign-pvisor profile:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    profile="{{ profile }}"
-    case "$profile" in
-      debug|release) ;;
-      *) echo "unsupported pVisor profile: $profile (expected debug or release)" >&2; exit 2 ;;
-    esac
-    binary="{{ repo }}/target/$profile/pvisor"
-    test -x "$binary"
-    if [[ "$(uname -s)" != "Darwin" ]]; then
-      echo "Built pVisor: $binary"
-      exit 0
-    fi
-    entitlements="{{ repo }}/crates/persisting-pvisor/macos-hypervisor.entitlements"
-    command -v codesign >/dev/null
-    codesign --force --sign - --entitlements "$entitlements" "$binary"
-    codesign --verify --strict --verbose=2 "$binary"
-    codesign -d --entitlements :- "$binary" 2>&1 \
-      | grep -q 'com.apple.security.hypervisor'
-    echo "Built and signed pVisor: $binary"
-
-# Build (and on macOS, sign) pVisor. Thin forward to `build-components`.
-# Usage: `just pvisor` (release) or `just pvisor debug`.
-[group('build')]
-pvisor profile="release":
-    just build-components "{{ profile }}" pvisor
-
-# Install the three product CLIs.
+# Install the pChronicle CLI.
 install-cli:
     #!/usr/bin/env bash
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
     cargo install --path crates/persisting-pchronicle-cli --locked --force --root "$install_root"
-    cargo install --path crates/persisting-pvisor --locked --force --root "$install_root"
-    cargo install --path crates/persisting-ppilot --locked --force --root "$install_root"
     printf 'Installed Persisting component set in %s/bin\n' "$install_root"
 
-# PEP 517 release wheel（Python package + pchronicle/pvisor/ppilot）→ dist/
+# PEP 517 release wheel（Python package + pchronicle）→ dist/
 build-wheel:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -492,12 +350,6 @@ ci:
     just proptest pchronicle
     just build
 
-# Build the Agent runtime binaries that pPilot integration tests resolve from PATH.
-[group('build')]
-build-agent-runtime profile="debug":
-    just pvisor "{{ profile }}"
-    just build-components "{{ profile }}" pchronicle-ppilot
-
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
 # CI shard helper: `just ci-nextest persisting-gateway persisting-events …`
@@ -525,61 +377,19 @@ test-crate crate:
       pchronicle-cli) cargo nextest run -p persisting-pchronicle-cli --locked ;;
       agentctl) cargo nextest run -p persisting-agentctl --locked ;;
       capture) cargo nextest run -p persisting-gateway --locked ;;
-      ppilot)
-        just build-components debug pvisor
-        cargo nextest run -p persisting-ppilot --locked
-        ;;
-      pvisor) cargo nextest run -p persisting-pvisor --locked ;;
       dlcapt) cargo test -p persisting-dlcapt ;;
-      *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|agentctl|capture|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;
+      *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|agentctl|capture|dlcapt)" >&2; exit 2 ;;
     esac
 
 test-rust package="":
     #!/usr/bin/env bash
     set -euo pipefail
     package="{{ package }}"
-    if [[ -z "$package" || "$package" == "persisting-ppilot" ]]; then
-        target_dir="${CARGO_TARGET_DIR:-$PWD/target}"
-        if [[ "$target_dir" != /* ]]; then
-            target_dir="$PWD/$target_dir"
-        fi
-        just build-components debug pvisor-pchronicle
-        export PATH="$target_dir/debug:$PATH"
-    fi
     if [[ -n "$package" ]]; then
         cargo nextest run --locked -p "$package"
     else
         cargo nextest run --workspace --exclude persisting-dlcapt --locked
     fi
-
-# Default pVisor crate profile, including CLI and integration regressions.
-[group('test')]
-test-pvisor:
-    cargo nextest run -p persisting-pvisor --locked
-
-# Mandatory pVisor ↔ pChronicle capture bridge feature profile.
-[group('test')]
-test-pvisor-lance:
-    cargo nextest run -p persisting-pvisor --features lance-chronicle --locked
-
-# Strict Linux rootless/FUSE boundary tests. This deliberately does not allow
-# the optional-userns skip used by the broad cross-platform workspace job.
-[group('test')]
-test-pvisor-isolation:
-    env -u PERSISTING_TEST_ALLOW_NO_USERNS \
-      cargo nextest run -p persisting-pvisor --test rootless_local --locked -- --nocapture
-
-# Product CLI surface exercised by CI after the debug component build.
-[group('test')]
-smoke-pvisor-cli:
-    target/debug/pvisor run --help >/dev/null
-    target/debug/pvisor status --help >/dev/null
-    target/debug/pvisor review --help >/dev/null
-
-[group('test')]
-smoke-ppilot-cli:
-    target/debug/ppilot run --help >/dev/null
-    target/debug/ppilot produce --help >/dev/null
 
 [group('test')]
 smoke-pchronicle-cli:
@@ -644,7 +454,7 @@ test package="":
       exit 0
     fi
     case "$package" in
-      pchronicle|pchronicle-cli|agentctl|capture|ppilot|pvisor|dlcapt)
+      pchronicle|pchronicle-cli|agentctl|capture|dlcapt)
         just test-crate "$package"
         ;;
       *)
@@ -700,8 +510,6 @@ check-quick:
       -p persisting-agentctl \
       -p persisting-events \
       -p persisting-gateway \
-      -p persisting-ppilot \
-      -p persisting-pvisor \
       --locked
     cargo check -p persisting-pchronicle --no-default-features --locked
 
@@ -724,12 +532,9 @@ test-pchronicle-cases-platform:
 
 # Run documented integration cases by component.
 # Examples:
-#   just cases pvisor
 #   just cases pchronicle
 #   just cases pchronicle-cluster
 # Extra runner flags can be passed directly, e.g.
-#   just cases pvisor --run-unavailable --keep
-#   just cases pvisor --case A01,A02 --case B01
 [group('test')]
 cases target *args:
     #!/usr/bin/env bash
@@ -741,10 +546,6 @@ cases target *args:
       shift
     fi
     case "{{target}}" in
-      pvisor)
-        just pvisor release
-        python3 scripts/run-pvisor-cases.py --report target/pvisor-case-report.md "$@"
-        ;;
       pchronicle)
         just build-components release pchronicle
         python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-self-case-report.md "$@"
@@ -754,7 +555,7 @@ cases target *args:
         python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-platform-case-report.md "$@"
         ;;
       *)
-        echo "usage: just cases pvisor|pchronicle|pchronicle-cluster [runner-args...]" >&2
+        echo "usage: just cases pchronicle|pchronicle-cluster [runner-args...]" >&2
         exit 2
         ;;
     esac
