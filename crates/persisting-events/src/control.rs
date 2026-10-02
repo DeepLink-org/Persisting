@@ -222,6 +222,10 @@ pub enum ChronicleControlResponse {
 }
 
 #[async_trait]
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to futures"
+)]
 pub trait ChronicleControl: Send + Sync {
     fn root_uri(&self) -> &str;
 
