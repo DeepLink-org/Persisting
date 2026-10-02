@@ -61,10 +61,11 @@ impl BlockCache {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         // ponytail: retain 64 cache configurations per process; use an LRU of
         // configurations if a service actually rotates through more roots.
-        if !caches.contains_key(&config) && caches.len() >= 64 {
-            if let Some(key) = caches.keys().next().cloned() {
-                caches.remove(&key);
-            }
+        if !caches.contains_key(&config)
+            && caches.len() >= 64
+            && let Some(key) = caches.keys().next().cloned()
+        {
+            caches.remove(&key);
         }
         let shared = caches.entry(config.clone()).or_default().clone();
         Self { config, shared }

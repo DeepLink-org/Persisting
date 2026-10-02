@@ -185,10 +185,11 @@ pub fn lance_wrapper(capacity_bytes: u64) -> Arc<dyn lance_io::object_store::Wra
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let key = (config.clone(), backend_identity_from_env());
     // Lance keys its object-store cache by wrapper Arc identity.
-    if !wrappers.contains_key(&key) && wrappers.len() >= 64 {
-        if let Some(old) = wrappers.keys().next().cloned() {
-            wrappers.remove(&old);
-        }
+    if !wrappers.contains_key(&key)
+        && wrappers.len() >= 64
+        && let Some(old) = wrappers.keys().next().cloned()
+    {
+        wrappers.remove(&old);
     }
     wrappers
         .entry(key)
