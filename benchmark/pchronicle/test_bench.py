@@ -4,7 +4,6 @@ import pathlib
 import tempfile
 import unittest
 
-
 MODULE_PATH = pathlib.Path(__file__).with_name("bench.py")
 SPEC = importlib.util.spec_from_file_location("pchronicle_bench", MODULE_PATH)
 bench = importlib.util.module_from_spec(SPEC)

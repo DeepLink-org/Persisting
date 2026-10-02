@@ -5,10 +5,9 @@ repo := justfile_directory()
 docs_dir := repo / "docs"
 gen_py := repo / "scripts" / "generate_benchmark_data.py"
 
-# Python 路径（ruff format）
-ruff_paths := "persisting tests examples"
-# lint 默认只扫包代码（与 CI 一致）；全量用 lint-py-all
-ruff_lint_paths := "persisting"
+# Python checks follow the active pChronicle scope in AGENTS.md.
+python_tests := "tests/test_release_packaging.py tests/test_trajectory_dialogue.py benchmark/pchronicle"
+ruff_paths := "scripts/packaging scripts/ci scripts/build-docs.py scripts/check-docs.py scripts/serve-docs.py scripts/run-pchronicle-cases.py " + python_tests
 
 # ── 帮助 ─────────────────────────────────────────────────────────────────────
 
@@ -191,11 +190,10 @@ lint: lint-rust lint-py
 lint-rust: clippy-deny clippy-pchronicle-web clippy-pchronicle-features
 
 lint-py:
-    uvx ruff check {{ ruff_lint_paths }}
-
-# 含 tests/examples（较严，可能有存量告警）
-lint-py-all:
     uvx ruff check {{ ruff_paths }}
+
+# Compatibility alias; Python lint already covers in-scope scripts and tests.
+lint-py-all: lint-py
 
 clippy-deny:
     cargo clippy -p persisting-pchronicle -p persisting-pchronicle-cli --all-targets --locked -- -D warnings
@@ -310,7 +308,7 @@ proptest package:
 # Rust + Python. Rust tests run debug-mode nextest for faster iteration; use
 # `just test-rust` with a package for targeted coverage. Passing a package runs
 # only that Rust package; `pchronicle` also runs persisting-pchronicle-cli.
-# The full Python suite runs only for the no-argument repository-wide invocation.
+# In-scope Python tests run only for the no-argument invocation.
 test package="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -336,10 +334,10 @@ py-dev:
     uv sync --all-extras
 
 test-py:
-    uv run pytest tests/ -q
+    uv run --extra dev pytest {{ python_tests }} -q
 
 test-py-v:
-    uv run pytest tests/ -v
+    uv run --extra dev pytest {{ python_tests }} -v
 
 # 安装本地 nightly 脚本自检（需已有 GitHub nightly release）
 install-nightly:

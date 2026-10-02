@@ -9,7 +9,7 @@
 
 | 命令 | 作用 |
 |---|---|
-| `just test` | 通过 `cargo nextest` 跑pChronicle 与 CLI 测试，再跑 Python 套件 |
+| `just test` | 通过 `cargo nextest` 跑pChronicle 与 CLI 测试，再跑范围内的 Python 测试 |
 | `just test <package>` | 单个 crate 或 Cargo package（例如 `pchronicle` 或 `persisting-pchronicle`） |
 | `just docs-sync` | 安装锁定的文档环境 |
 | `just docs-serve` | 本地 Zensical 预览，文件修改时自动刷新 |
@@ -24,7 +24,8 @@
 或短 crate 别名（`pchronicle`、`pchronicle-cli`）。`just test pchronicle` 会同时跑
 `persisting-pchronicle` 与 `persisting-pchronicle-cli`（与 CI 的 pchronicle
 shard 一致）；只要 CLI 时用 `just test pchronicle-cli`。无参数形式还会跑
-`just test-py`。
+`just test-py`，覆盖打包、轨迹行契约与基准报告。Python 格式化和 lint 检查这些
+测试及 pChronicle 构建、文档和用例脚本，遵循 `AGENTS.md` 的范围。
 
 ## 当前笔记
 

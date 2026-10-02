@@ -10,7 +10,7 @@ Run these from the repository root. `just --list` shows the full recipe set.
 
 | Command | What it does |
 |---|---|
-| `just test` | pChronicle and CLI tests through `cargo nextest`, then the Python suite |
+| `just test` | pChronicle and CLI tests through `cargo nextest`, then in-scope Python tests |
 | `just test <package>` | One crate or Cargo package (for example `pchronicle` or `persisting-pchronicle`) |
 | `just docs-sync` | Install the locked documentation environment |
 | `just docs-serve` | Local Zensical preview with automatic reload when files change |
@@ -26,7 +26,9 @@ package name or a short crate alias (`pchronicle`,
 `pchronicle-cli`). `just test pchronicle` runs both
 `persisting-pchronicle` and `persisting-pchronicle-cli` (same as the CI
 pchronicle shard); use `just test pchronicle-cli` for the CLI crate alone.
-The no-argument form also runs `just test-py`.
+The no-argument form also runs `just test-py` for packaging, trajectory row
+contracts, and benchmark reports. Python format/lint cover their tests and the
+pChronicle build, documentation, and case scripts, following `AGENTS.md`.
 
 ## Current notes
 

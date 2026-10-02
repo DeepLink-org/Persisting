@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run executable bash examples embedded in pChronicle cases documents."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,7 +10,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import time
 from pathlib import Path
 
 CASE_RE = re.compile(r"^##\s+([SP]\d{2})：?\s*(.*)$")
