@@ -109,18 +109,16 @@ pub(super) enum CatalogTableKind {
     Runs,
     Steps,
     ToolCalls,
-    Events,
 }
 
 impl CatalogTableKind {
-    pub(super) const ALL: [Self; 4] = [Self::Runs, Self::Steps, Self::ToolCalls, Self::Events];
+    pub(super) const ALL: [Self; 3] = [Self::Runs, Self::Steps, Self::ToolCalls];
 
     pub(super) fn table_name(self) -> &'static str {
         match self {
             Self::Runs => "runs",
             Self::Steps => "steps",
             Self::ToolCalls => "tool_calls",
-            Self::Events => "events",
         }
     }
 
@@ -129,7 +127,6 @@ impl CatalogTableKind {
             Self::Runs => story_runs_arrow_schema(),
             Self::Steps => story_steps_arrow_schema(),
             Self::ToolCalls => story_tool_calls_arrow_schema(),
-            Self::Events => raw_event_arrow_schema(),
         }
     }
 }
@@ -166,21 +163,17 @@ impl CatalogTableProvider {
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
-        event_session_ids: Option<&BTreeSet<String>>,
     ) -> datafusion::common::Result<Option<Arc<dyn ExecutionPlan>>> {
         let resolved = source.resolve().await.map_err(|error| {
             crate::store::datafusion_bridge::into_datafusion(
                 error.context("resolve Dataset source"),
             )
         })?;
-        let Some(table) = resolved
-            .table(self.kind, event_session_ids)
-            .await
-            .map_err(|error| {
-                crate::store::datafusion_bridge::into_datafusion(
-                    error.context("prepare Dataset source table"),
-                )
-            })?
+        let Some(table) = resolved.table(self.kind).await.map_err(|error| {
+            crate::store::datafusion_bridge::into_datafusion(
+                error.context("prepare Dataset source table"),
+            )
+        })?
         else {
             return Ok(None);
         };
@@ -222,16 +215,13 @@ impl TableProvider for CatalogTableProvider {
         limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let output_schema = projected_schema(&self.schema, projection)?;
-        let event_session_ids = required_string_values(filters, "session_id");
-        let event_session_ids = event_session_ids.as_ref();
         let selected = self
             .sources
             .iter()
             .filter(|source| {
-                source.supports(self.kind)
-                    && filters
-                        .iter()
-                        .all(|filter| evaluate_file_filter(filter, source.file()).unwrap_or(true))
+                filters
+                    .iter()
+                    .all(|filter| evaluate_file_filter(filter, source.file()).unwrap_or(true))
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -239,15 +229,8 @@ impl TableProvider for CatalogTableProvider {
         // during late resolution still fails the query rather than disappearing.
         let planned = stream::iter(selected)
             .map(|source| async move {
-                self.scan_source(
-                    source.as_ref(),
-                    state,
-                    projection,
-                    filters,
-                    limit,
-                    event_session_ids,
-                )
-                .await
+                self.scan_source(source.as_ref(), state, projection, filters, limit)
+                    .await
             })
             .buffered(self.max_concurrent_sources)
             .try_collect::<Vec<_>>()
@@ -323,63 +306,6 @@ fn evaluate_file_filter(expr: &Expr, path: &str) -> Option<bool> {
         }
         Expr::Not(inner) => evaluate_file_filter(inner, path).map(|value| !value),
         Expr::Literal(ScalarValue::Boolean(value), _) => *value,
-        _ => None,
-    }
-}
-
-fn required_string_values(filters: &[Expr], column: &str) -> Option<BTreeSet<String>> {
-    filters
-        .iter()
-        .filter_map(|filter| required_string_values_expr(filter, column))
-        .reduce(|left, right| left.intersection(&right).cloned().collect())
-}
-
-fn required_string_values_expr(expr: &Expr, column: &str) -> Option<BTreeSet<String>> {
-    match expr {
-        Expr::BinaryExpr(binary) if binary.op == Operator::Eq => {
-            let value = if is_named_column(&binary.left, column) {
-                string_scalar(&binary.right)
-            } else if is_named_column(&binary.right, column) {
-                string_scalar(&binary.left)
-            } else {
-                None
-            }?;
-            Some(BTreeSet::from([value.to_string()]))
-        }
-        Expr::BinaryExpr(binary) if binary.op == Operator::And => {
-            match (
-                required_string_values_expr(&binary.left, column),
-                required_string_values_expr(&binary.right, column),
-            ) {
-                (Some(left), Some(right)) => Some(left.intersection(&right).cloned().collect()),
-                (Some(values), None) | (None, Some(values)) => Some(values),
-                (None, None) => None,
-            }
-        }
-        Expr::BinaryExpr(binary) if binary.op == Operator::Or => {
-            let left = required_string_values_expr(&binary.left, column)?;
-            let right = required_string_values_expr(&binary.right, column)?;
-            Some(left.union(&right).cloned().collect())
-        }
-        Expr::InList(list) if !list.negated && is_named_column(&list.expr, column) => list
-            .list
-            .iter()
-            .map(string_scalar)
-            .map(|value| value.map(str::to_string))
-            .collect(),
-        _ => None,
-    }
-}
-
-fn is_named_column(expr: &Expr, name: &str) -> bool {
-    matches!(expr, Expr::Column(column) if column.name == name)
-}
-
-fn string_scalar(expr: &Expr) -> Option<&str> {
-    match expr {
-        Expr::Literal(ScalarValue::Utf8(Some(value)), _)
-        | Expr::Literal(ScalarValue::LargeUtf8(Some(value)), _)
-        | Expr::Literal(ScalarValue::Utf8View(Some(value)), _) => Some(value),
         _ => None,
     }
 }
@@ -604,26 +530,6 @@ pub(super) fn sources_table_provider(
                     .map(Option::as_deref)
                     .collect::<Vec<_>>(),
             )),
-            Arc::new(StringArray::from(
-                sources
-                    .iter()
-                    .map(|source| {
-                        source.projection_status.map(|status| match status {
-                            CatalogProjectionStatus::Fresh => "fresh",
-                            CatalogProjectionStatus::Stale => "stale",
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            )),
-            Arc::new(StringArray::from(
-                sources
-                    .iter()
-                    .map(|source| source.projection_generation.as_deref())
-                    .collect::<Vec<_>>(),
-            )),
-            Arc::new(UInt64Array::from_iter_values(
-                sources.iter().map(|source| source.projection_candidates),
-            )),
             Arc::new(UInt64Array::from(
                 sources
                     .iter()
@@ -659,9 +565,6 @@ fn sources_schema() -> SchemaRef {
         Field::new("format", DataType::Utf8, true),
         Field::new("kind", DataType::Utf8, false),
         Field::new("snapshot_ref", DataType::Utf8, true),
-        Field::new("projection_status", DataType::Utf8, true),
-        Field::new("projection_generation", DataType::Utf8, true),
-        Field::new("projection_candidates", DataType::UInt64, false),
         Field::new("size_bytes", DataType::UInt64, true),
         Field::new("last_modified", DataType::Utf8, true),
         Field::new("status", DataType::Utf8, false),

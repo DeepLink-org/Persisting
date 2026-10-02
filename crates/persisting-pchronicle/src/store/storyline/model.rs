@@ -1,4 +1,4 @@
-//! Relational rows for the Storyline-native, three-table Lance projection.
+//! Relational rows for the Storyline-native, three-table Lance storage.
 //!
 //! A Storyline document is normalized into one run row, ordered step rows, and
 //! tool-call rows. ATIF-compatible `observation.results[]` values are attached

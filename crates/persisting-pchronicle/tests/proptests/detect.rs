@@ -29,20 +29,6 @@ proptest! {
     }
 
     #[test]
-    fn public_event_lance_names_are_detected_independent_of_ascii_case(
-        prefix in safe_stem_strategy(),
-        suffix in safe_stem_strategy(),
-        uppercase in any::<bool>(),
-    ) {
-        let path = format!("{prefix}-event-{suffix}.lance");
-        let path = if uppercase { path.to_ascii_uppercase() } else { path };
-        prop_assert_eq!(
-            detect_format(Some(Path::new(&path)), None).unwrap(),
-            Some(DocumentFormat::CanonicalEvent),
-        );
-    }
-
-    #[test]
     fn public_agentic_markers_survive_leading_whitespace(
         spaces in 0usize..32,
         use_block_marker in any::<bool>(),

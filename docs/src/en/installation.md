@@ -24,4 +24,3 @@ From a checkout, `pip install -e .` builds pChronicle and its Web assets.
 Dioxus CLI. See [Engineering notes](project/engineering.md).
 
 Continue with [Explore your first Dataset](pchronicle/get-started.md) or
-[Gateway capture](pchronicle/guides/serve-gateway.md).

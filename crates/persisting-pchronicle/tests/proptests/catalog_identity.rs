@@ -46,16 +46,11 @@ proptest! {
     #[test]
     fn public_source_revisions_always_expose_a_stable_snapshot_reference(
         value in proptest::string::string_regex("[A-Za-z0-9._:/-]{1,32}").unwrap(),
-        revision_kind in 0u8..4,
+        revision_kind in 0u8..3,
     ) {
         let revision = match revision_kind {
             0 => CatalogSourceRevision::Storyline { generation: value.clone() },
-            1 => CatalogSourceRevision::Events {
-                fact_version: 1,
-                fact_rows: 2,
-                layout_revision: 3,
-            },
-            2 => CatalogSourceRevision::LocalFile { fingerprint: value.clone() },
+            1 => CatalogSourceRevision::LocalFile { fingerprint: value.clone() },
             _ => CatalogSourceRevision::Object {
                 version: Some(value.clone()),
                 etag: None,
@@ -66,11 +61,8 @@ proptest! {
         };
         let snapshot = revision.snapshot_ref();
         prop_assert!(!snapshot.is_empty());
-        if revision_kind == 1 {
-            prop_assert_eq!(snapshot, "manifest-revision:3");
-        } else if revision_kind == 0 || revision_kind == 2 {
-            prop_assert_eq!(snapshot, value);
-        } else {
+        if revision_kind <= 1 {
+            prop_assert_eq!(snapshot, value);        } else {
             prop_assert_eq!(snapshot, format!("version:{value}"));
         }
     }

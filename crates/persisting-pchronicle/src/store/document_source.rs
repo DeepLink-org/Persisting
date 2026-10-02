@@ -1,6 +1,5 @@
 //! Private provider variants behind the public `DocumentSource` API.
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
@@ -9,7 +8,7 @@ use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
 
 use crate::agenticmd::parse_agenticmd;
-use crate::convert::{actf_to_storylines, project_event_records};
+use crate::convert::actf_to_storylines;
 use crate::document::encode_json_storylines;
 use crate::document::{
     DEFAULT_DOCUMENT_MATERIALIZE_BYTES, DEFAULT_DOCUMENT_MATERIALIZE_ROWS, FilterPushdown,
@@ -21,16 +20,12 @@ use crate::formats::{StorylineDocument, parse_openai_msg_corpus_value};
 
 use super::files::DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES;
 use super::{
-    AgenticMdDataSource, AtifReader, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
-    DEFAULT_MAX_EVENT_FALLBACK_ROWS, FileTrajectoryDataSource, LocalQueryManifest,
-    RawEventDataSource, StorylineDataSource, datafusion_bridge::from_datafusion,
+    AgenticMdDataSource, AtifReader, FileTrajectoryDataSource, LocalQueryManifest,
+    StorylineDataSource, datafusion_bridge::from_datafusion,
 };
 
 #[derive(Debug)]
 pub(crate) enum DocumentSourceImpl {
-    Events {
-        source: RawEventDataSource,
-    },
     StorylineLance {
         source: Box<StorylineDataSource>,
     },
@@ -52,9 +47,6 @@ pub(crate) async fn open_document_source(
 ) -> Result<DocumentSourceImpl> {
     let path = path.to_path_buf();
     match format {
-        DocumentFormat::CanonicalEvent => Ok(DocumentSourceImpl::Events {
-            source: RawEventDataSource::open(&path).await?,
-        }),
         DocumentFormat::StorylineLance => {
             let source = StorylineDataSource::open(&path).await?;
             Ok(DocumentSourceImpl::StorylineLance {
@@ -95,7 +87,6 @@ pub(crate) async fn open_document_source(
 impl DocumentSourceImpl {
     pub(crate) fn format(&self) -> DocumentFormat {
         match self {
-            Self::Events { .. } => DocumentFormat::CanonicalEvent,
             Self::StorylineLance { .. } => DocumentFormat::StorylineLance,
             Self::AgenticMd { .. } => DocumentFormat::AgenticMd,
             Self::Files { format, .. } => *format,
@@ -104,15 +95,6 @@ impl DocumentSourceImpl {
 
     pub(crate) fn capabilities(&self) -> QueryCapabilities {
         match self.format() {
-            DocumentFormat::CanonicalEvent => QueryCapabilities {
-                projection_pushdown: true,
-                filter_pushdown: FilterPushdown::Exact,
-                limit_pushdown: true,
-                scalar_indexes: true,
-                streaming_decode: true,
-                late_content_materialization: false,
-                snapshot_consistent: true,
-            },
             DocumentFormat::StorylineLance => QueryCapabilities {
                 projection_pushdown: true,
                 filter_pushdown: FilterPushdown::ExpressionDependent,
@@ -216,25 +198,7 @@ impl DocumentSourceImpl {
             } if *source_format == format => {
                 virtual_rows_for_files(format, manifest, source.max_file_bytes(), None)
             }
-            Self::Events { source } if format == DocumentFormat::CanonicalEvent => {
-                let context = SessionContext::new();
-                source.register(&context)?;
-                let mut stream = context
-                    .sql("SELECT * FROM events ORDER BY seq")
-                    .await?
-                    .execute_stream()
-                    .await?;
-                let mut rows = Vec::new();
-                while let Some(batch) = stream.try_next().await? {
-                    for row in super::event_rows_from_batch(&batch)? {
-                        rows.push((
-                            row.event_id.unwrap_or_else(|| row.seq.to_string()),
-                            row.payload_json,
-                        ));
-                    }
-                }
-                Ok(rows)
-            }
+
             Self::AgenticMd { raw, story, .. } if format == DocumentFormat::AgenticMd => {
                 let value = serde_json::json!({
                     "format": "agenticmd",
@@ -330,38 +294,6 @@ impl DocumentSourceImpl {
                 }
                 Ok(())
             }
-            Self::Events { source, .. } => {
-                let context = SessionContext::new();
-                source.register(&context)?;
-                let mut batches = context
-                    .sql(
-                        "SELECT DISTINCT session_id FROM events \
-                         WHERE session_id IS NOT NULL ORDER BY session_id",
-                    )
-                    .await
-                    .map_err(|error| from_datafusion("plan event document scan", error))?
-                    .execute_stream()
-                    .await
-                    .map_err(|error| from_datafusion("start event document scan", error))?;
-                while let Some(batch) = batches
-                    .try_next()
-                    .await
-                    .map_err(|error| from_datafusion("stream event documents", error))?
-                {
-                    for session_id in strings_from_batch(&batch, "session_id")? {
-                        let requested = BTreeSet::from([session_id]);
-                        let records = source
-                            .read_records_for_storylines_bounded(
-                                &requested,
-                                DEFAULT_MAX_EVENT_FALLBACK_ROWS,
-                                DEFAULT_MAX_EVENT_FALLBACK_BYTES,
-                            )
-                            .await?;
-                        on_storyline(project_event_records(&records)?)?;
-                    }
-                }
-                Ok(())
-            }
         }
     }
 
@@ -379,13 +311,6 @@ impl DocumentSourceImpl {
         }
     }
 
-    pub(crate) fn event_snapshot(&self) -> Option<&super::EventFactSnapshot> {
-        match self {
-            Self::Events { source, .. } => Some(source.fact_snapshot()),
-            _ => None,
-        }
-    }
-
     pub(crate) fn storyline_generation(&self) -> Option<&str> {
         match self {
             Self::StorylineLance { source, .. } => Some(source.generation()),
@@ -394,15 +319,11 @@ impl DocumentSourceImpl {
     }
 
     fn tables(&self) -> QueryTables {
-        match self {
-            Self::Events { .. } => QueryTables::Events,
-            _ => QueryTables::Storyline,
-        }
+        QueryTables::Storyline
     }
 
     fn register(&self, context: &SessionContext) -> Result<()> {
         match self {
-            Self::Events { source, .. } => source.register(context),
             Self::StorylineLance { source, .. } => source.register(context),
             Self::AgenticMd { source, .. } => source.register(context),
             Self::Files { source, .. } => source.register(context),

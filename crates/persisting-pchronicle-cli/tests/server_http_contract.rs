@@ -65,14 +65,7 @@ async fn warehouse_read_route_matrix_exposes_the_documented_surface() -> Result<
                     .iter()
                     .filter_map(|table| table["name"].as_str())
                     .collect();
-                for name in [
-                    "sources",
-                    "runs",
-                    "steps",
-                    "tool_calls",
-                    "events",
-                    "trajectories",
-                ] {
+                for name in ["sources", "runs", "steps", "tool_calls", "trajectories"] {
                     assert!(
                         names.contains(&name),
                         "query tables omit documented relation {name}: {names:?}"
@@ -92,6 +85,7 @@ async fn warehouse_write_route_matrix_never_exposes_dataset_mutations() -> Resul
         (Method::POST, "/api/maintain"),
         (Method::POST, "/api/query"),
         (Method::PUT, "/api/events"),
+        (Method::GET, "/api/events"),
         (Method::DELETE, "/api/catalog"),
     ] {
         let response = app

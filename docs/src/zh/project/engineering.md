@@ -9,7 +9,7 @@
 
 | 命令 | 作用 |
 |---|---|
-| `just test` | 通过 `cargo nextest` 跑工作区 Rust 测试，再跑 Python 套件 |
+| `just test` | 通过 `cargo nextest` 跑pChronicle 与 CLI 测试，再跑范围内的 Python 测试 |
 | `just test <package>` | 单个 crate 或 Cargo package（例如 `pchronicle` 或 `persisting-pchronicle`） |
 | `just docs-sync` | 安装锁定的文档环境 |
 | `just docs-serve` | 本地 Zensical 预览，文件修改时自动刷新 |
@@ -18,14 +18,14 @@
 | `just examples` | pChronicle 产品示例套件 |
 | `just dev` | 自动格式化、lint，然后运行 Rust 测试 |
 | `just ci` | 只读 lint 检查、Rust/Python 测试、性质测试，然后构建 |
-| `just check-quick` | 核心 runtime crate 与无默认 feature 的 pChronicle 检查 |
+| `just check-quick` | pChronicle CLI 与无默认 feature 的 pChronicle 检查 |
 
 `just test` 使用 debug nextest profile 以便更快迭代。传入 Cargo package 名
-或短 crate 别名（`pchronicle`、`pchronicle-cli`、
-`agentctl`、`capture`）。`just test pchronicle` 会同时跑
+或短 crate 别名（`pchronicle`、`pchronicle-cli`）。`just test pchronicle` 会同时跑
 `persisting-pchronicle` 与 `persisting-pchronicle-cli`（与 CI 的 pchronicle
 shard 一致）；只要 CLI 时用 `just test pchronicle-cli`。无参数形式还会跑
-`just test-py`。
+`just test-py`，覆盖打包、轨迹行契约与基准报告。Python 格式化和 lint 检查这些
+测试及 pChronicle 构建、文档和用例脚本，遵循 `AGENTS.md` 的范围。
 
 ## 当前笔记
 
@@ -47,7 +47,7 @@ Rust 测试用 `cargo nextest` 做进程隔离和并行执行；用
 镜像（glibc 2.28），以便 rustc libstd 能链接 `statx` /
 `copy_file_range`。
 
-`just check-quick` 检查核心 runtime crate 以及无默认 feature 的 pChronicle。
+`just check-quick` 检查 pChronicle CLI 以及无默认 feature 的 pChronicle。
 `just dev` 先格式化文件，再运行 lint 和 Rust 测试；`just ci` 使用只读 lint 检查，
 并额外运行 Python 和性质测试。GitHub Actions 还覆盖平台分片、Web 构建、S3 与示例。
 

@@ -1,5 +1,0 @@
-{
-  "input": [{"role": "user", "content": "Hello"}],
-  "model": "gpt-4o",
-  "stream": true
-}

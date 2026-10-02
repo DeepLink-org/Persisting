@@ -24,10 +24,8 @@ dirs.workspace = true
 futures.workspace = true
 include_dir = "=0.7.4"
 libc.workspace = true
-persisting-gateway.workspace = true
 persisting-pchronicle = { workspace = true, features = ["lance-store", "s3-store"] }
 lance.workspace = true
-persisting-events = { workspace = true, features = ["control"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tempfile.workspace = true
@@ -43,6 +41,5 @@ uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 http-body-util.workspace = true
-persisting-agentctl.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 tower = { version = "0.5", features = ["util"] }

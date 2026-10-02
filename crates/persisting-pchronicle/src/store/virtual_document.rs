@@ -31,7 +31,6 @@ use crate::format::DocumentFormat;
 /// values would require quoting (`dataset.openai-msg`) in every query.
 pub(crate) fn table_name(format: DocumentFormat) -> Option<&'static str> {
     Some(match format {
-        DocumentFormat::CanonicalEvent => "events",
         DocumentFormat::Atif => "atif",
         DocumentFormat::Storyline => "storyline",
         DocumentFormat::Actf => "actf",
@@ -44,9 +43,6 @@ pub(crate) fn table_name(format: DocumentFormat) -> Option<&'static str> {
 }
 
 pub(crate) fn formats() -> impl Iterator<Item = DocumentFormat> {
-    // Canonical Event already owns the stable `events` table (with its
-    // denormalized columns and payload_json); registering another provider
-    // under the same name would make catalog registration fail.
     [
         DocumentFormat::Atif,
         DocumentFormat::Storyline,
@@ -525,7 +521,6 @@ mod tests {
 
     #[test]
     fn virtual_table_names_use_query_friendly_aliases() {
-        assert_eq!(table_name(DocumentFormat::CanonicalEvent), Some("events"));
         assert_eq!(table_name(DocumentFormat::AgenticMd), Some("markdown"));
         assert_eq!(table_name(DocumentFormat::ClaudeCode), Some("claude"));
         assert_eq!(table_name(DocumentFormat::Atif), Some("atif"));

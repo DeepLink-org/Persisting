@@ -127,68 +127,6 @@ pub struct StorylineTablePaths {
     pub steps_version: u64,
     pub tool_calls_version: u64,
     pub objects_version: u64,
-    /// Verified derivation metadata. `None` marks a directly-written store.
-    pub projection: Option<StorylineProjectionLineage>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ProjectionSourceSnapshot {
-    CanonicalEvents {
-        source_uri: String,
-        fact_version: u64,
-        fact_rows: u64,
-        layout_revision: u64,
-    },
-    Exchange {
-        source_uri: String,
-        snapshot_ref: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        content_digest: Option<String>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorylineProjectionLineage {
-    pub source_id: String,
-    pub source_file: String,
-    pub source: ProjectionSourceSnapshot,
-    pub projector_name: String,
-    pub recipe_hash: String,
-    pub completeness: String,
-}
-
-impl StorylineProjectionLineage {
-    fn validate(&self) -> Result<()> {
-        for (name, value) in [
-            ("source_id", self.source_id.as_str()),
-            ("source_file", self.source_file.as_str()),
-            ("projector_name", self.projector_name.as_str()),
-            ("recipe_hash", self.recipe_hash.as_str()),
-            ("completeness", self.completeness.as_str()),
-        ] {
-            anyhow::ensure!(
-                !value.trim().is_empty(),
-                "projection {name} must not be empty"
-            );
-        }
-        match &self.source {
-            ProjectionSourceSnapshot::CanonicalEvents { source_uri, .. }
-            | ProjectionSourceSnapshot::Exchange { source_uri, .. } => {
-                anyhow::ensure!(
-                    !source_uri.trim().is_empty(),
-                    "projection source_uri must not be empty"
-                );
-            }
-        }
-        if let ProjectionSourceSnapshot::Exchange { snapshot_ref, .. } = &self.source {
-            anyhow::ensure!(
-                !snapshot_ref.trim().is_empty(),
-                "projection exchange snapshot_ref must not be empty"
-            );
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,8 +140,6 @@ struct StorylineSnapshotPointer {
     steps_version: u64,
     tool_calls_version: u64,
     objects_version: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    projection: Option<StorylineProjectionLineage>,
 }
 
 #[derive(Debug, Clone)]
@@ -251,27 +187,10 @@ pub struct StorylineStreamImportReport {
     pub tool_calls: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum StorylineProjectionPublicationOutcome {
-    Published(StorylineStreamImportReport),
-    OutputNotEmpty,
-}
-
-fn published_storyline_report(
-    outcome: StorylineProjectionPublicationOutcome,
-) -> Result<StorylineStreamImportReport> {
-    match outcome {
-        StorylineProjectionPublicationOutcome::Published(report) => Ok(report),
-        StorylineProjectionPublicationOutcome::OutputNotEmpty => {
-            anyhow::bail!("non-create Storyline publication reported nonempty output")
-        }
-    }
-}
-
 fn attach_stream_cleanup_failures(
-    result: Result<StorylineProjectionPublicationOutcome>,
+    result: Result<StorylineStreamImportReport>,
     cleanup_failures: Vec<String>,
-) -> Result<StorylineProjectionPublicationOutcome> {
+) -> Result<StorylineStreamImportReport> {
     if cleanup_failures.is_empty() {
         return result;
     }
@@ -284,26 +203,6 @@ fn attach_stream_cleanup_failures(
         Err(error) => Err(error.context(cleanup)),
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StorylineStreamWriteMode {
-    Replace,
-    Rebuild,
-    CreateProjection,
-}
-
-#[cfg(test)]
-#[derive(Clone)]
-struct CreateAfterEmptyReadBarrierHook {
-    root_uri: String,
-    barrier: Arc<tokio::sync::Barrier>,
-    content_arrivals: Arc<std::sync::atomic::AtomicUsize>,
-    content_created: Arc<tokio::sync::Notify>,
-}
-
-#[cfg(test)]
-static CREATE_AFTER_EMPTY_READ_BARRIER: std::sync::Mutex<Option<CreateAfterEmptyReadBarrierHook>> =
-    std::sync::Mutex::new(None);
 
 #[cfg(test)]
 #[derive(Clone)]
@@ -392,19 +291,6 @@ impl Drop for StorylineSearchIndexSuppressGuard {
 }
 
 #[cfg(test)]
-async fn wait_after_empty_current_read(root_uri: &str) {
-    let barrier = CREATE_AFTER_EMPTY_READ_BARRIER
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .filter(|hook| hook.root_uri == root_uri)
-        .map(|hook| hook.barrier.clone());
-    if let Some(barrier) = barrier {
-        barrier.wait().await;
-    }
-}
-
-#[cfg(test)]
 async fn wait_after_replacement_current_read(root_uri: &str) {
     let barrier = REPLACEMENT_AFTER_CURRENT_READ_BARRIER
         .lock()
@@ -428,45 +314,6 @@ async fn wait_after_maintenance_publish(root_uri: &str) {
     if let Some(hook) = hook {
         hook.reached.notify_one();
         hook.resume.notified().await;
-    }
-}
-
-#[cfg(test)]
-async fn wait_for_first_content_create(root_uri: &str) -> bool {
-    let hook = CREATE_AFTER_EMPTY_READ_BARRIER
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .filter(|hook| hook.root_uri == root_uri)
-        .cloned();
-    let Some(hook) = hook else {
-        return false;
-    };
-    if hook
-        .content_arrivals
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-        == 0
-    {
-        true
-    } else {
-        hook.content_created.notified().await;
-        false
-    }
-}
-
-#[cfg(test)]
-fn release_waiting_content_create(root_uri: &str, first: bool) {
-    if !first {
-        return;
-    }
-    let notify = CREATE_AFTER_EMPTY_READ_BARRIER
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .filter(|hook| hook.root_uri == root_uri)
-        .map(|hook| hook.content_created.clone());
-    if let Some(notify) = notify {
-        notify.notify_one();
     }
 }
 
@@ -749,35 +596,11 @@ impl StorylineLanceStore {
         paths.steps_version = pointer.steps_version;
         paths.tool_calls_version = pointer.tool_calls_version;
         paths.objects_version = pointer.objects_version;
-        paths.projection = pointer.projection;
         Ok(Some(paths))
     }
 
     pub async fn replace_storyline(&self, story: &StorylineDocument) -> Result<()> {
         self.replace_storylines(std::slice::from_ref(story)).await
-    }
-
-    /// Publish complete Storyline replacements with verifiable source lineage.
-    pub async fn replace_projected_storylines(
-        &self,
-        stories: &[StorylineDocument],
-        projection: StorylineProjectionLineage,
-    ) -> Result<()> {
-        if stories.is_empty() {
-            return Ok(());
-        }
-        projection.validate()?;
-        let outcome = self
-            .replace_storyline_stream_with_projection(
-                stories.iter().cloned().map(Ok::<_, anyhow::Error>),
-                Some(projection),
-                StorylineStreamWriteMode::Replace,
-                None,
-                StorylineStreamOptions::default(),
-            )
-            .await?;
-        published_storyline_report(outcome)?;
-        Ok(())
     }
 
     /// Build an empty Storyline store directly from a replayable ATIF input.
@@ -809,16 +632,8 @@ impl StorylineLanceStore {
     where
         I: IntoIterator<Item = Result<StorylineDocument>>,
     {
-        let outcome = self
-            .replace_storyline_stream_with_projection(
-                stories,
-                None,
-                StorylineStreamWriteMode::Replace,
-                None,
-                StorylineStreamOptions::default(),
-            )
-            .await?;
-        published_storyline_report(outcome)
+        self.write_storyline_stream(stories, None, StorylineStreamOptions::default())
+            .await
     }
 
     /// Like [`Self::replace_storyline_stream`], with explicit stream options.
@@ -830,16 +645,7 @@ impl StorylineLanceStore {
     where
         I: IntoIterator<Item = Result<StorylineDocument>>,
     {
-        let outcome = self
-            .replace_storyline_stream_with_projection(
-                stories,
-                None,
-                StorylineStreamWriteMode::Replace,
-                None,
-                options,
-            )
-            .await?;
-        published_storyline_report(outcome)
+        self.write_storyline_stream(stories, None, options).await
     }
 
     /// Append pre-disambiguated Storylines only if the Dataset is still at
@@ -870,90 +676,16 @@ impl StorylineLanceStore {
     where
         I: IntoIterator<Item = Result<StorylineDocument>>,
     {
-        let outcome = self
-            .replace_storyline_stream_with_projection(
-                stories,
-                None,
-                StorylineStreamWriteMode::Replace,
-                Some(expected_generation),
-                options,
-            )
-            .await?;
-        published_storyline_report(outcome)
+        self.write_storyline_stream(stories, Some(expected_generation), options)
+            .await
     }
 
-    pub async fn replace_projected_storyline_stream<I>(
+    async fn write_storyline_stream<I>(
         &self,
         stories: I,
-        projection: StorylineProjectionLineage,
-    ) -> Result<StorylineStreamImportReport>
-    where
-        I: IntoIterator<Item = Result<StorylineDocument>>,
-    {
-        projection.validate()?;
-        let outcome = self
-            .replace_storyline_stream_with_projection(
-                stories,
-                Some(projection),
-                StorylineStreamWriteMode::Replace,
-                None,
-                StorylineStreamOptions::default(),
-            )
-            .await?;
-        published_storyline_report(outcome)
-    }
-
-    pub(crate) async fn create_projected_storyline_stream<I>(
-        &self,
-        stories: I,
-        projection: StorylineProjectionLineage,
-    ) -> Result<StorylineProjectionPublicationOutcome>
-    where
-        I: IntoIterator<Item = Result<StorylineDocument>>,
-    {
-        projection.validate()?;
-        self.replace_storyline_stream_with_projection(
-            stories,
-            Some(projection),
-            StorylineStreamWriteMode::CreateProjection,
-            None,
-            StorylineStreamOptions::default(),
-        )
-        .await
-    }
-
-    /// Rebuild every normalized table into a new physical generation, then
-    /// atomically replace CURRENT. Existing readers remain pinned to the old
-    /// generation until publication succeeds.
-    pub async fn rebuild_projected_storyline_stream<I>(
-        &self,
-        stories: I,
-        projection: StorylineProjectionLineage,
-    ) -> Result<StorylineStreamImportReport>
-    where
-        I: IntoIterator<Item = Result<StorylineDocument>>,
-    {
-        projection.validate()?;
-        let outcome = self
-            .replace_storyline_stream_with_projection(
-                stories,
-                Some(projection),
-                StorylineStreamWriteMode::Rebuild,
-                None,
-                StorylineStreamOptions::default(),
-            )
-            .await?;
-        published_storyline_report(outcome)
-    }
-
-    async fn replace_storyline_stream_with_projection<I>(
-        &self,
-        stories: I,
-        projection: Option<StorylineProjectionLineage>,
-        mode: StorylineStreamWriteMode,
         required_generation: Option<&str>,
         stream_options: StorylineStreamOptions,
-    ) -> Result<StorylineProjectionPublicationOutcome>
+    ) -> Result<StorylineStreamImportReport>
     where
         I: IntoIterator<Item = Result<StorylineDocument>>,
     {
@@ -966,20 +698,12 @@ impl StorylineLanceStore {
                 "Storyline append conflict: Dataset changed after duplicate-ID resolution"
             );
         }
-        if mode == StorylineStreamWriteMode::CreateProjection && original.is_some() {
-            return Ok(StorylineProjectionPublicationOutcome::OutputNotEmpty);
-        }
-        #[cfg(test)]
-        if mode == StorylineStreamWriteMode::CreateProjection {
-            wait_after_empty_current_read(&self.root_uri).await;
-        }
+
         let expected_generation = original.as_ref().map(|paths| paths.generation.clone());
         #[cfg(test)]
-        if mode == StorylineStreamWriteMode::Replace {
-            wait_after_replacement_current_read(&self.root_uri).await;
-        }
+        wait_after_replacement_current_read(&self.root_uri).await;
         let writer_owner = next_generation();
-        let writer_lease = if mode == StorylineStreamWriteMode::Replace && original.is_some() {
+        let writer_lease = if original.is_some() {
             Some(
                 self.acquire_writer_lease_for_generation(
                     &writer_owner,
@@ -993,12 +717,11 @@ impl StorylineLanceStore {
         let mut writer_renewal = writer_lease
             .as_ref()
             .map(|lease| self.start_writer_lease_renewal(writer_owner.clone(), lease.lease.epoch));
-        let rebuild = mode == StorylineStreamWriteMode::Rebuild;
         let takeover_generation = writer_lease
             .as_ref()
             .filter(|lease| lease.takeover)
             .map(|_| next_generation());
-        let mut paths = if rebuild || takeover_generation.is_some() {
+        let mut paths = if takeover_generation.is_some() {
             None
         } else {
             original.clone()
@@ -1006,9 +729,7 @@ impl StorylineLanceStore {
         let mut new_table_generation = takeover_generation.clone();
         let mut iterator = stories.into_iter();
         let mut chunk_state = StorylineChunkState::default();
-        let mut next_storage_ordinal = if rebuild {
-            0
-        } else if let Some(paths) = &original {
+        let mut next_storage_ordinal = if let Some(paths) = &original {
             next_storage_ordinal(paths).await?
         } else {
             0
@@ -1032,7 +753,7 @@ impl StorylineLanceStore {
                 else {
                     break;
                 };
-                if !rebuild && let Some(original) = &original {
+                if let Some(original) = &original {
                     let existing =
                         read_storage_ordinals_for_document_ids(original, &chunk.document_ids)
                             .await?;
@@ -1062,23 +783,14 @@ impl StorylineLanceStore {
                     None => {
                         let generation = next_generation();
                         let mut created = self.paths_for_generation(&generation);
-                        #[cfg(test)]
-                        let first_content_create =
-                            if mode == StorylineStreamWriteMode::CreateProjection {
-                                wait_for_first_content_create(&self.root_uri).await
-                            } else {
-                                false
-                            };
                         let objects_result = commit_pending_content(
                             &created.objects,
                             original.as_ref().map(|paths| paths.objects_version),
                             pending,
-                            mode == StorylineStreamWriteMode::CreateProjection,
+                            false,
                             stream_options.optimize_indices,
                         )
                         .await;
-                        #[cfg(test)]
-                        release_waiting_content_create(&self.root_uri, first_content_create);
                         let objects_version = objects_result?;
                         let (runs_version, steps_version, tool_calls_version) = join3_remote_aware(
                             self.is_remote_object_store(),
@@ -1228,9 +940,8 @@ impl StorylineLanceStore {
                 steps_version,
                 tool_calls_version,
                 objects_version: current.objects_version,
-                projection,
             };
-            let published = if let Some(lease) = &writer_lease {
+            if let Some(lease) = &writer_lease {
                 let renewal = writer_renewal
                     .take()
                     .context("missing Storyline writer lease renewal")?;
@@ -1243,20 +954,13 @@ impl StorylineLanceStore {
                     "Storyline writer lease lost while publishing generation {}",
                     snapshot.generation
                 );
-                true
-            } else if mode == StorylineStreamWriteMode::CreateProjection {
-                self.try_commit_snapshot(&snapshot, expected_generation.as_deref())
-                    .await?
             } else {
                 self.commit_snapshot(&snapshot, expected_generation.as_deref())
                     .await?;
-                true
             };
-            if !published {
-                return Ok(StorylineProjectionPublicationOutcome::OutputNotEmpty);
-            }
+
             report.generation = generation;
-            Ok(StorylineProjectionPublicationOutcome::Published(report))
+            Ok(report)
         }
         .await;
 
@@ -1283,11 +987,7 @@ impl StorylineLanceStore {
             }
         }
 
-        if (result.is_err()
-            || matches!(
-                &result,
-                Ok(StorylineProjectionPublicationOutcome::OutputNotEmpty)
-            ))
+        if result.is_err()
             && let Some(generation) = new_table_generation
             && let Err(error) = self
                 .control_store
@@ -1402,7 +1102,6 @@ impl StorylineLanceStore {
                 steps_version,
                 tool_calls_version,
                 objects_version,
-                projection: paths.projection.clone(),
             };
             let published_snapshot = self
                 .publish_writer_snapshot_retaining_lease(
@@ -1498,15 +1197,13 @@ impl StorylineLanceStore {
             return Ok(());
         }
         let outcome = self
-            .replace_storyline_stream_with_projection(
+            .write_storyline_stream(
                 stories.iter().cloned().map(Ok::<_, anyhow::Error>),
-                None,
-                StorylineStreamWriteMode::Replace,
                 None,
                 StorylineStreamOptions::default(),
             )
             .await?;
-        published_storyline_report(outcome)?;
+        let _ = outcome;
         Ok(())
     }
 
@@ -1637,7 +1334,6 @@ impl StorylineLanceStore {
             steps_version: 0,
             tool_calls_version: 0,
             objects_version: 0,
-            projection: None,
         }
     }
 
@@ -1680,7 +1376,6 @@ impl StorylineLanceStore {
         cloned.steps_version = steps_version;
         cloned.tool_calls_version = tool_calls_version;
         cloned.objects_version = source.objects_version;
-        cloned.projection.clone_from(&source.projection);
         Ok(cloned)
     }
 
@@ -1778,9 +1473,7 @@ fn validate_snapshot_pointer(pointer: &StorylineSnapshotPointer) -> Result<()> {
         pointer.schema_version,
         STORYLINE_LANCE_SCHEMA_VERSION
     );
-    if let Some(projection) = &pointer.projection {
-        projection.validate()?;
-    }
+
     validate_generation_name(&pointer.generation)?;
     if let Some(parent) = &pointer.parent_generation {
         validate_generation_name(parent)?;

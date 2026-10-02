@@ -3,9 +3,7 @@
 **Standalone `pchronicle` CLI for onboarding, browsing, querying, importing,
 exporting, and serving trajectory Datasets.**
 
-Owns the `pchronicle` binary, Warehouse HTTP, the write-capable
-`--control` plane for local integrations, optional Gateway ingest/forwarding
-flags, and the embed of staged `pchronicle-web` assets at build time.
+Owns the `pchronicle` binary, loopback Warehouse HTTP, and embedded Web assets.
 
 Does not own trajectory models, Lance storage, Catalog, or the query engine —
 those live in [`persisting-pchronicle`](../persisting-pchronicle/README.md).
@@ -15,7 +13,7 @@ Does not own the Web UI source —
 Current commands include `onboard`, `dataset` (pin/unpin/list/show/set/rename),
 `list`/`ls`, `stats`, bounded read-only `query`, built-in `stats` reports, assisted
 `agent` sessions, Source-local `find`, create/append/replace `import`,
-destructive `drop`, complete-trajectory `export`, directory `sync`, `echo`, and
+destructive `drop`, complete-trajectory `export`, directory `sync`, and
 `serve`. Import and export support ATIF, OpenAI Messages, ACTF,
 Storyline JSON, and record-level Compact JSONL. `sync --from SOURCE [--mirror
 MIRROR] [--to OUTPUT]` polls a source directory and, on each coalesced batch,
@@ -24,10 +22,9 @@ Storyline Lance Dataset at `--to`. Provide at least one destination. With
 `--input-format compact-jsonl`, only `--mirror` is valid. Use `--once` for a
 finite run.
 
-`pchronicle serve --control 127.0.0.1:0 URI` exposes the authenticated local
-Control protocol for event producers. `serve --listen` is the read-only Warehouse. Public bind addresses are
-rejected. Small deterministic Datasets live in
-[`../../examples/data`](../../examples/data).
+`pchronicle serve --listen 127.0.0.1:8080 URI` exposes the loopback Warehouse
+API and Web UI. Public bind addresses are rejected. Deterministic Datasets live
+in [`examples/data`](../../examples/data).
 
 ## Develop
 
@@ -59,6 +56,5 @@ just chronicle-binary
 - [pChronicle get started](../../docs/src/en/pchronicle/get-started.md)
 - [pChronicle CLI reference](../../docs/src/en/pchronicle/reference/cli.md)
 - [Local read-only Dataset server](../../docs/src/en/pchronicle/guides/serve.md)
-- [Gateway forwarding, rewriting, and capture](../../docs/src/en/pchronicle/guides/serve-gateway.md)
 - [`persisting-pchronicle`](../persisting-pchronicle/README.md)
 - [`pchronicle-web`](../../pchronicle-web/README.md)

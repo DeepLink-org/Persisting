@@ -9,14 +9,6 @@ Version 2.0. See the repository root `LICENSE` file.
 Third-party notices
 ===================
 
-agentgateway test fixtures
---------------------------
-
-Regression fixtures under `crates/persisting-gateway/tests/fixtures/` may
-include materials originally published under Apache-2.0 by the agentgateway
-project. Those files remain under their upstream Apache-2.0 terms as noted in
-`crates/persisting-gateway/tests/fixtures/README.md`.
-
 dldb
 ----
 

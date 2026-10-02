@@ -9,8 +9,7 @@ use std::time::Duration;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use persisting_pchronicle::document::{
-    DocumentFormat, decode_json_storylines, encode_json_storylines, project_event_records,
-    storyline_to_events,
+    DocumentFormat, decode_json_storylines, encode_json_storylines,
 };
 use persisting_pchronicle::model::StorylineDocument;
 
@@ -50,31 +49,6 @@ fn conversion_benchmarks(criterion: &mut Criterion) {
                 )
                 .expect("serialize benchmark ATIF");
                 black_box(parse_atif(black_box(&atif)));
-            }
-        });
-    });
-    group.finish();
-}
-
-fn projection_cpu_benchmarks(criterion: &mut Criterion) {
-    let fixtures = load_fixtures();
-    let stories = fixtures
-        .iter()
-        .map(|raw| parse_atif(raw))
-        .collect::<Vec<_>>();
-    let events = stories
-        .iter()
-        .map(|story| storyline_to_events(story).expect("project fixture to canonical events"))
-        .collect::<Vec<_>>();
-    let mut group = criterion.benchmark_group("projection_cpu");
-    group.throughput(Throughput::Elements(stories.len() as u64));
-    group.bench_function("events_to_storyline_corpus", |bencher| {
-        bencher.iter(|| {
-            for document in &events {
-                black_box(
-                    project_event_records(black_box(&document.events))
-                        .expect("project canonical benchmark events"),
-                );
             }
         });
     });
@@ -126,6 +100,6 @@ fn env_u64(name: &str, default: u64) -> u64 {
 criterion_group! {
     name = benches;
     config = criterion_config();
-    targets = conversion_benchmarks, projection_cpu_benchmarks
+    targets = conversion_benchmarks
 }
 criterion_main!(benches);

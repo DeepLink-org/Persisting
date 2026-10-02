@@ -294,7 +294,7 @@ mod tests {
     fn sample_run(session: &str) -> RunSummary {
         RunSummary {
             dataset: "captures".into(),
-            file: "events.lance".into(),
+            file: "storyline".into(),
             run_id: Some(session.into()),
             agent_id: "agent".into(),
             model_name: None,
@@ -302,7 +302,6 @@ mod tests {
             root_session_id: None,
             path: String::new(),
             row_count: 1,
-            duplicate_event_ids: 0,
             status: "completed".into(),
             format: None,
         }

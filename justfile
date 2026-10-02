@@ -5,14 +5,9 @@ repo := justfile_directory()
 docs_dir := repo / "docs"
 gen_py := repo / "scripts" / "generate_benchmark_data.py"
 
-# Product CLI component set. Keep all Cargo build entry points below routed
-# through `build-components` so package/bin changes have one source in just.
-component_pchronicle := "-p persisting-pchronicle-cli --bin pchronicle"
-
-# Python 路径（ruff format）
-ruff_paths := "persisting tests examples"
-# lint 默认只扫包代码（与 CI 一致）；全量用 lint-py-all
-ruff_lint_paths := "persisting"
+# Python checks follow the active pChronicle scope in AGENTS.md.
+python_tests := "tests/test_release_packaging.py tests/test_trajectory_dialogue.py benchmark/pchronicle"
+ruff_paths := "scripts/packaging scripts/ci scripts/build-docs.py scripts/check-docs.py scripts/serve-docs.py scripts/run-pchronicle-cases.py " + python_tests
 
 # ── 帮助 ─────────────────────────────────────────────────────────────────────
 
@@ -27,9 +22,6 @@ default:
     @echo "  just py-dev              # 同步纯 Python 开发环境"
     @echo "  just install-cli         # 安装 pchronicle"
     @echo "  just chronicle-binary    # 构建可直接测试的 pChronicle UI binary"
-    @echo "  just echo                # 启动确定性的本地 LLM Echo upstream"
-    @echo "  just benchmark-gateway   # Gateway 转发与持久化黑盒压测"
-    @echo "  just benchmark-gateway-replay # 回放 examples/data 并生成人工 review bundle"
     @echo "  just build-wheel         # 打 release wheel → dist/"
     @echo "  just docs-serve          # 本地文档"
 
@@ -48,12 +40,9 @@ test-list:
         just ci                   CI 近似
         just test [package]        日常功能测试；可指定 Cargo 包
         just proptest pchronicle   pChronicle 全量性质测试回归
-        just capture-test / test-py  其他定向测试入口
+        just test-py  其他定向测试入口
         （Rust 测试由 cargo nextest 执行；文档测试仍用 cargo test）
         just regression           大规模黑盒回归（按场景运行 tests/regression）
-        just gateway-fuzz         一分钟 Gateway 四类 fuzz 汇总
-        just gateway-fuzz-formats / gateway-fuzz-forwarding
-        just gateway-fuzz-storage / gateway-fuzz-network
         just cases pchronicle|pchronicle-cluster
 
       组件示例
@@ -66,7 +55,8 @@ test-list:
 examples-pchronicle:
     #!/usr/bin/env bash
     set -euo pipefail
-    just build-components release pchronicle-benchmark
+    just build release
+    cargo build --release --locked -p persisting-pchronicle --example pchronicle_storage_query_benchmark
     bash "{{ repo }}/examples/pchronicle/test.sh" --profile release
     bash "{{ repo }}/examples/pchronicle/output-contract.sh" >/dev/null
 
@@ -78,78 +68,6 @@ examples: examples-pchronicle
 [group('test')]
 regression:
     bash tests/regression/run.sh
-
-# Run the four Gateway fuzz contracts (about one minute total by default).
-# Override duration, concurrency, and rate through PERSISTING_FUZZ_* variables.
-[group('test')]
-gateway-fuzz:
-    bash tests/regression/gateway-fuzz/run.sh
-
-[group('test')]
-gateway-fuzz-formats:
-    bash tests/regression/gateway-fuzz/formats/run.sh
-
-[group('test')]
-gateway-fuzz-forwarding:
-    bash tests/regression/gateway-fuzz/forwarding/run.sh
-
-[group('test')]
-gateway-fuzz-storage:
-    bash tests/regression/gateway-fuzz/storage/run.sh
-
-[group('test')]
-gateway-fuzz-network:
-    bash tests/regression/gateway-fuzz/network-policy/run.sh
-
-# Benchmark Gateway forwarding, typed capture, WAL, and durable Lance append
-# against the deterministic local Echo upstream.
-# Set PERSISTING_KEEP_TEST_ARTIFACTS=1 to retain the Dataset, WAL, and logs.
-# Usage: `just benchmark-gateway`, or `just benchmark-gateway 30 32 1024 0 16 2048`.
-[group('benchmark')]
-benchmark-gateway duration="10" concurrency="16" payload_bytes="256" warmup="0" sessions="16" requests="1024":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    extra_args=()
-    if [[ "${PERSISTING_KEEP_TEST_ARTIFACTS:-0}" == "1" ]]; then
-      extra_args+=(--keep-artifacts)
-    fi
-    bash benchmark/gateway/run.sh \
-      --duration "{{ duration }}" \
-      --concurrency "{{ concurrency }}" \
-      --sessions "{{ sessions }}" \
-      --requests "{{ requests }}" \
-      --payload-bytes "{{ payload_bytes }}" \
-      --warmup "{{ warmup }}" \
-      "${extra_args[@]}"
-
-# Replay every supported trajectory example through Gateway and write a
-# timestamped, human-reviewable bundle. Both arguments accept relative paths.
-[group('benchmark')]
-benchmark-gateway-replay data="examples/data" output="benchmark/gateway/results/replay-review":
-    bash benchmark/gateway/replay.sh \
-      --data "{{ data }}" \
-      --output "{{ output }}"
-
-# Find Gateway's saturation point with a closed-loop concurrency sweep. This
-# consumes the existing release binary and deliberately skips the Echo baseline.
-# Usage: `just benchmark-gateway-sweep`, or
-# `just benchmark-gateway-sweep 10 "1 2 4 8 16 32 64" 256 0 16 256`.
-[group('benchmark')]
-benchmark-gateway-sweep duration="5" concurrencies="1 2 4 8 16 32" payload_bytes="256" warmup="0" sessions="16" requests="256":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for concurrency in {{ concurrencies }}; do
-      printf '\n==> Gateway concurrency %s\n' "$concurrency"
-      bash benchmark/gateway/run.sh \
-        --duration "{{ duration }}" \
-        --concurrency "$concurrency" \
-        --sessions "{{ sessions }}" \
-        --requests "{{ requests }}" \
-        --payload-bytes "{{ payload_bytes }}" \
-        --warmup "{{ warmup }}" \
-        --skip-baseline \
-        --output "benchmark/gateway/results/sweep-c${concurrency}.json"
-    done
 
 # Run the unified Criterion + hyperfine pChronicle smoke benchmark and render
 # raw JSON, Markdown, HTML, and a Bencher-compatible metric projection.
@@ -168,13 +86,6 @@ benchmark-pchronicle-compare baseline candidate output="target/pchronicle-benchm
       --output "{{ output }}"
 
 # ── 构建 ─────────────────────────────────────────────────────────────────────
-
-# Start the deterministic local LLM upstream used to test Gateway forwarding,
-# model/protocol rewriting, streaming, and capture.
-# Usage: `just echo`, or `just echo 127.0.0.1:19080 base64`.
-[group('build')]
-echo listen="127.0.0.1:19080" encoding="plain":
-    target/release/pchronicle echo --listen "{{ listen }}" --encoding "{{ encoding }}"
 
 # Build the Dioxus trajectory workbench for compile-time embedding.
 chronicle-web-build:
@@ -198,21 +109,16 @@ chronicle-binary profile="debug": chronicle-web-build
         exit 2
         ;;
     esac
-    just build-components "$profile" pchronicle
+    just build "$profile"
     binary="{{ repo }}/target/$profile/pchronicle"
     test -x "$binary"
     "$binary" serve --help >/dev/null
     printf 'Built pChronicle test binary: %s\n' "$binary"
     printf 'Run: %s serve --warehouse %s\n' "$binary" "{{ repo }}/data"
 
-# Thin forward to `build-components` for the full product CLI set.
+# Build the pChronicle CLI; use chronicle-binary to embed the Web UI.
 [group('build')]
 build profile="debug":
-    just build-components "{{ profile }}" all
-
-# Build pChronicle, optionally including its storage benchmark executable.
-[group('build')]
-build-components profile="debug" components="all":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ profile }}" in
@@ -220,17 +126,7 @@ build-components profile="debug" components="all":
       release) cargo_profile=release ;;
       *) echo "unsupported build profile: {{ profile }} (expected debug or release)" >&2; exit 2 ;;
     esac
-    case "{{ components }}" in
-      all|pchronicle)
-        cargo build --profile "$cargo_profile" --locked {{ component_pchronicle }}
-        ;;
-      pchronicle-benchmark)
-        cargo build --profile "$cargo_profile" --locked \
-          {{ component_pchronicle }} \
-          -p persisting-pchronicle --example pchronicle_storage_query_benchmark
-        ;;
-      *) echo "unsupported component set: {{ components }} (all|pchronicle|pchronicle-benchmark)" >&2; exit 2 ;;
-    esac
+    cargo build --profile "$cargo_profile" --locked -p persisting-pchronicle-cli --bin pchronicle
 
 # Install the pChronicle CLI.
 install-cli:
@@ -238,7 +134,7 @@ install-cli:
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
     cargo install --path crates/persisting-pchronicle-cli --locked --force --root "$install_root"
-    printf 'Installed Persisting component set in %s/bin\n' "$install_root"
+    printf 'Installed pchronicle in %s/bin\n' "$install_root"
 
 # PEP 517 release wheel（Python package + pchronicle）→ dist/
 build-wheel:
@@ -272,7 +168,7 @@ clean:
 fmt: fmt-rust fmt-py
 
 fmt-rust:
-    cargo fmt --all
+    cargo fmt -p persisting-pchronicle -p persisting-pchronicle-cli
     cargo fmt --manifest-path pchronicle-web/Cargo.toml
 
 fmt-py:
@@ -282,7 +178,7 @@ fmt-py:
 fmt-check: fmt-check-rust fmt-check-py
 
 fmt-check-rust:
-    cargo fmt --all -- --check
+    cargo fmt -p persisting-pchronicle -p persisting-pchronicle-cli -- --check
     cargo fmt --manifest-path pchronicle-web/Cargo.toml -- --check
 
 fmt-check-py:
@@ -291,25 +187,21 @@ fmt-check-py:
 # clippy + ruff（不改写）
 lint: lint-rust lint-py
 
-lint-rust: clippy-deny clippy-pchronicle-web clippy-pchronicle-panics clippy-pchronicle-features
+lint-rust: clippy-deny clippy-pchronicle-web clippy-pchronicle-features
 
 lint-py:
-    uvx ruff check {{ ruff_lint_paths }}
-
-# 含 tests/examples（较严，可能有存量告警）
-lint-py-all:
     uvx ruff check {{ ruff_paths }}
 
-clippy-deny:
-    cargo clippy --workspace --exclude persisting-dlcapt --all-targets --locked -- -D warnings
+# Compatibility alias; Python lint already covers in-scope scripts and tests.
+lint-py-all: lint-py
 
-# pchronicle-web is a separate Cargo workspace and is not covered by the root
-# workspace Clippy invocation above.
+clippy-deny:
+    cargo clippy -p persisting-pchronicle -p persisting-pchronicle-cli --all-targets --locked -- -D warnings
+    cargo clippy -p persisting-pchronicle --lib --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
+
+# pchronicle-web is a separate Cargo workspace and has its own Clippy check.
 clippy-pchronicle-web:
     cargo clippy --manifest-path pchronicle-web/Cargo.toml --all-targets --locked -- -D warnings
-
-clippy-pchronicle-panics:
-    cargo clippy -p persisting-pchronicle --lib --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
 
 clippy-pchronicle-features:
     cargo clippy -p persisting-pchronicle --lib --no-default-features --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
@@ -354,18 +246,6 @@ ci:
 
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
-# CI shard helper: `just ci-nextest persisting-gateway persisting-events …`
-# Variadic args are interpolated by just (not passed as shebang $@).
-[group('test')]
-ci-nextest +packages:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    args=()
-    for pkg in {{ packages }}; do
-      args+=(-p "$pkg")
-    done
-    cargo nextest run --locked "${args[@]}"
-
 # 单 crate：pchronicle（含 CLI，对齐 CI pchronicle shard）| pchronicle-cli | …
 test-crate crate:
     #!/usr/bin/env bash
@@ -377,10 +257,8 @@ test-crate crate:
           -p persisting-pchronicle-cli
         ;;
       pchronicle-cli) cargo nextest run -p persisting-pchronicle-cli --locked ;;
-      agentctl) cargo nextest run -p persisting-agentctl --locked ;;
-      capture) cargo nextest run -p persisting-gateway --locked ;;
       dlcapt) cargo test -p persisting-dlcapt ;;
-      *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|agentctl|capture|dlcapt)" >&2; exit 2 ;;
+      *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|dlcapt)" >&2; exit 2 ;;
     esac
 
 test-rust package="":
@@ -390,38 +268,23 @@ test-rust package="":
     if [[ -n "$package" ]]; then
         cargo nextest run --locked -p "$package"
     else
-        cargo nextest run --workspace --exclude persisting-dlcapt --locked
+        just test-crate pchronicle
     fi
 
 [group('test')]
 smoke-pchronicle-cli:
-    just build-components debug pchronicle
+    just build debug
     target/debug/pchronicle query --help >/dev/null
-
-# Shared EventRecord control-plane feature contract used by the Linux core shard.
-[group('test')]
-test-events-control:
-    cargo nextest run -p persisting-events --features control --locked
 
 # Separate Cargo workspace covering the Dioxus trajectory workbench.
 [group('test')]
-test-pchronicle-web: chronicle-web-build
+test-pchronicle-web:
     cargo nextest run --manifest-path pchronicle-web/Cargo.toml --locked
 
 # Real S3/MinIO contract (ignored by default; requires PCHRONICLE_S3_TEST_URI).
 [group('test')]
 test-pchronicle-s3:
     cargo nextest run -p persisting-pchronicle --test s3_storage --locked --run-ignored all
-
-test-capture-claude:
-    cargo nextest run -p persisting-gateway --test capture_apps_claude --locked
-
-test-capture-fixtures:
-    cargo nextest run -p persisting-gateway --locked --test llm_fixtures --test ag_fixture_tests
-
-test-capture-network:
-    cargo nextest run -p persisting-gateway --locked --lib network_policy
-    cargo nextest run -p persisting-gateway --locked --test network_policy_http
 
 test-search-integration:
     cargo test -p persisting-pchronicle --test search_integration
@@ -445,7 +308,7 @@ proptest package:
 # Rust + Python. Rust tests run debug-mode nextest for faster iteration; use
 # `just test-rust` with a package for targeted coverage. Passing a package runs
 # only that Rust package; `pchronicle` also runs persisting-pchronicle-cli.
-# The full Python suite runs only for the no-argument repository-wide invocation.
+# In-scope Python tests run only for the no-argument invocation.
 test package="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -456,7 +319,7 @@ test package="":
       exit 0
     fi
     case "$package" in
-      pchronicle|pchronicle-cli|agentctl|capture|dlcapt)
+      pchronicle|pchronicle-cli|dlcapt)
         just test-crate "$package"
         ;;
       *)
@@ -471,10 +334,10 @@ py-dev:
     uv sync --all-extras
 
 test-py:
-    uv run pytest tests/ -q
+    uv run --extra dev pytest {{ python_tests }} -q
 
 test-py-v:
-    uv run pytest tests/ -v
+    uv run --extra dev pytest {{ python_tests }} -v
 
 # 安装本地 nightly 脚本自检（需已有 GitHub nightly release）
 install-nightly:
@@ -508,28 +371,20 @@ generate-benchmark search_rows="100" traj_rows="50" seed="42" search_out="" traj
     python3 "$gen_py" "${args[@]}"
 
 check-quick:
-    cargo check \
-      -p persisting-agentctl \
-      -p persisting-events \
-      -p persisting-gateway \
-      --locked
+    cargo check -p persisting-pchronicle-cli --locked
     cargo check -p persisting-pchronicle --no-default-features --locked
-
-# capture 相关 Rust 测试（Gateway 包测试已覆盖全部 capture targets）。
-capture-test:
-    just test-crate capture
 
 # Execute pChronicle single-machine/self-service cases.
 [group('test')]
 test-pchronicle-cases:
-    cargo build --release -p persisting-pchronicle-cli --locked
+    just build release
     python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle target/release/pchronicle --report target/pchronicle-self-case-report.md
 
 # List and execute pChronicle platform/Catalog cases. Server lifecycle cases are
 # reported as MANUAL unless explicitly selected with PCHRONICLE_CASE_MODE.
 [group('test')]
 test-pchronicle-cases-platform:
-    cargo build --release -p persisting-pchronicle-cli --locked
+    just build release
     python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle target/release/pchronicle --report target/pchronicle-platform-case-report.md
 
 # Run documented integration cases by component.
@@ -549,11 +404,11 @@ cases target *args:
     fi
     case "{{target}}" in
       pchronicle)
-        just build-components release pchronicle
+        just build release
         python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-self-case-report.md "$@"
         ;;
       pchronicle-cluster)
-        just build-components release pchronicle
+        just build release
         python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-platform-case-report.md "$@"
         ;;
       *)

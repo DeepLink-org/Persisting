@@ -60,8 +60,6 @@ pChronicle 定义并序列化 frontmatter，常用字段包括：
 
 ## 4. Live 更新
 
-启用 live Markdown 时，Gateway 在写入 canonical Lance 的同时将可见对话投影为 AgenticMD：
-
 1. user 块按 `call_id` 写入；
 2. 流式 assistant 使用相同 `call_id` 原地更新；
 3. 重写一个 assistant 块时必须保留其后的 user 块；
@@ -74,7 +72,7 @@ pChronicle 定义并序列化 frontmatter，常用字段包括：
 
 Lance events 负责保真、replay、stats 和结构化查询。内部 trajectory operation 可以从
 Lance 重建 AgenticMD，但当前公共 `pchronicle` CLI 不提供 AgenticMD materialize 或 import
-子命令。AgenticMD 不会自动 compact 或恢复 canonical event；公共交换使用
+子命令。公共交换使用
 [`pchronicle import/export`](cli.md) 支持的格式。
 
 ## 6. 示例与实现

@@ -10,8 +10,7 @@ use crate::chat_view::{
 };
 use crate::json_value::{JsonValue, is_structured_json};
 use crate::model::{
-    EventProvenance, QueryEvidence, StorylineTurn, TurnDetail, TurnSummary, WireToolCall,
-    extract_message_text,
+    QueryEvidence, StorylineTurn, TurnDetail, TurnSummary, WireToolCall, extract_message_text,
 };
 
 #[component]
@@ -283,22 +282,8 @@ fn span_from_entries(
     let call_id = entries
         .iter()
         .find_map(|turn| turn.call_id.clone().filter(|value| !value.is_empty()));
-    let seqs = entries
-        .iter()
-        .flat_map(|turn| turn.event_seqs.iter().copied())
-        .collect::<Vec<_>>();
-    let (first_seq, last_seq) = if seqs.is_empty() {
-        let first = fallback_index as u64;
-        (
-            first,
-            first.saturating_add(entries.len().saturating_sub(1) as u64),
-        )
-    } else {
-        (
-            seqs.iter().copied().min().unwrap_or(0),
-            seqs.iter().copied().max().unwrap_or(0),
-        )
-    };
+    let first_seq = fallback_index as u64;
+    let last_seq = first_seq.saturating_add(entries.len().saturating_sub(1) as u64);
     CompactSpanGroup {
         key,
         label,
@@ -562,27 +547,11 @@ fn session_index_map(turns: &[TurnSummary]) -> HashMap<i64, usize> {
 }
 
 fn session_axis_len(turns: &[TurnSummary]) -> usize {
-    if turns.iter().any(|turn| !turn.event_seqs.is_empty()) {
-        turns
-            .iter()
-            .flat_map(|turn| turn.event_seqs.iter().copied())
-            .max()
-            .map(|seq| seq as usize + 1)
-            .unwrap_or(turns.len())
-            .max(1)
-    } else {
-        turns.len().max(1)
-    }
+    turns.len().max(1)
 }
 
-fn turn_session_span(turn: &TurnSummary, session_index: usize) -> (usize, usize) {
-    match (
-        turn.event_seqs.iter().copied().min(),
-        turn.event_seqs.iter().copied().max(),
-    ) {
-        (Some(first), Some(last)) => (first as usize, last as usize),
-        _ => (session_index, session_index),
-    }
+fn turn_session_span(_turn: &TurnSummary, session_index: usize) -> (usize, usize) {
+    (session_index, session_index)
 }
 
 fn seq_bars(
@@ -807,10 +776,6 @@ pub fn TrajectoryView(
     let session_index = session_index_map(&turns);
     let axis_len = session_axis_len(&turns);
     let root_bars = seq_bars(&turns, &session_index, axis_len);
-    let total_refs = turns
-        .iter()
-        .map(|turn| turn.event_seqs.len())
-        .sum::<usize>();
     let total_tools = turns
         .iter()
         .map(|turn| turn.tool_names.len())
@@ -854,11 +819,11 @@ pub fn TrajectoryView(
     });
     let root_caption = sequence_caption(0, axis_len.saturating_sub(1) as u64);
     rsx! { div { class,
-        div { class: "span-summary", span { strong { "{groups.len()} {noun}" } " · {total_refs} event references" } span { "Sequence window 0 — {axis_len.saturating_sub(1)}" } }
+        div { class: "span-summary", span { strong { "{groups.len()} {noun}" } " · {turns.len()} steps" } span { "Sequence window 0 — {axis_len.saturating_sub(1)}" } }
         div { class: "{table_class}", role: "tree", aria_label: "Run step hierarchy",
             div { class: "span-sticky-chrome",
                 div { class: "span-table-head", div { "Structure" } div { "Overview" } div { class: "span-axis-head", span { "Sequence / coverage" } div { class: "span-axis-ticks", span { "0" } span { "25%" } span { "50%" } span { "75%" } span { "{axis_len.saturating_sub(1)}" } } } div { "Details" } }
-                div { class: "trace-root-summary", div { class: "span-structure root", div { div { class: "span-structure-title", strong { "run" } span { "{groups.len()} {noun}" } } div { class: "root-composition", if !root_meta.is_empty() { span { title: "{root_meta}", "{root_meta}" } } for modality in root_modalities { span { class: "modality-chip {modality}", "{modality}" } } } } } div { class: "span-row-copy root-copy" } OccupancyTrack { bars: root_bars.clone(), expose_range, focus_left, caption: root_caption, title: "Run coverage · {turns.len()} steps", exposed_ids: exposed_ids.clone(), expanded_turn_id, hovered_ids: hover_ids.clone() } div { class: "span-evidence-count", if total_refs > 0 { strong { "{total_refs} events" } } if total_tools > 0 { span { "{root_tool_label}" } } if !embedded { if let Some(id) = root_drawer_id { button { class: "pc2-conversation-drawer-button pc2-run-agenticmd-button", title: "Open run as AgenticMD", aria_label: "Open run as AgenticMD", onclick: move |event| { event.prevent_default(); event.stop_propagation(); on_open_drawer.call((id, "Run".to_string(), root_drawer_ids.clone())); }, "↗" } } } } }
+                div { class: "trace-root-summary", div { class: "span-structure root", div { div { class: "span-structure-title", strong { "run" } span { "{groups.len()} {noun}" } } div { class: "root-composition", if !root_meta.is_empty() { span { title: "{root_meta}", "{root_meta}" } } for modality in root_modalities { span { class: "modality-chip {modality}", "{modality}" } } } } } div { class: "span-row-copy root-copy" } OccupancyTrack { bars: root_bars.clone(), expose_range, focus_left, caption: root_caption, title: "Run coverage · {turns.len()} steps", exposed_ids: exposed_ids.clone(), expanded_turn_id, hovered_ids: hover_ids.clone() } div { class: "span-evidence-count", if total_tools > 0 { span { "{root_tool_label}" } } if !embedded { if let Some(id) = root_drawer_id { button { class: "pc2-conversation-drawer-button pc2-run-agenticmd-button", title: "Open run as AgenticMD", aria_label: "Open run as AgenticMD", onclick: move |event| { event.prevent_default(); event.stop_propagation(); on_open_drawer.call((id, "Run".to_string(), root_drawer_ids.clone())); }, "↗" } } } } }
             }
             div { class: "span-children", for group in groups {
                     CompactSpanRow {
@@ -906,11 +871,6 @@ fn CompactSpanRow(
     on_hover: EventHandler<Vec<i64>>,
     #[props(default)] query: String,
 ) -> Element {
-    let event_refs = group
-        .entries
-        .iter()
-        .map(|turn| turn.event_seqs.len())
-        .sum::<usize>();
     let preview = group.overview.clone();
     let diagnostic = group_diagnostic(&group.entries);
     let modalities = summary_modalities(&group.entries);
@@ -958,7 +918,7 @@ fn CompactSpanRow(
                     if !composition_label(&group.entries).is_empty() { span { class: "summary-chip", "{composition_label(&group.entries)}" } }
                     if !tool_summary.is_empty() { span { class: "summary-chip tool", title: "{tool_summary}", "{tool_summary}" } }
                     for modality in modalities { span { class: "modality-chip {modality}", "{modality}" } }
-                    if event_refs > 0 { span { class: "summary-chip event", "{event_refs} events" } }
+
                 }
             } }
             div { class: "span-row-copy",
@@ -966,7 +926,7 @@ fn CompactSpanRow(
                 if row_open { span { class: "span-row-diagnostic", title: "{diagnostic}", "{diagnostic}" } }
             }
             OccupancyTrack { bars, expose_range, focus_left, caption: caption.clone(), title: "{caption} · {meta}", exposed_ids, expanded_turn_id, hovered_ids }
-            div { class: "span-evidence-count", if event_refs > 0 { span { class: "span-count-chip event", "{event_refs} events" } } }
+            div { class: "span-evidence-count",  }
         }
         if !embedded {
             if let Some(id) = drawer_id {
@@ -1042,7 +1002,6 @@ fn CompactTurnRow(
     let expanded_facts = turn_expanded_facts(&turn);
     let tool_count = turn.tool_names.len();
     let tool_label = format_tool_count(tool_count);
-    let event_count = turn.event_seqs.len();
     if id < 0 {
         return rsx! {
             div { class: "compact-turn synthetic-prompt",
@@ -1054,10 +1013,10 @@ fn CompactTurnRow(
         };
     }
     if embedded {
-        return rsx! { button { class: "compact-turn pc2-embedded-turn", onclick: move |_| on_turn.call(id), span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", HighlightedText { text: preview.clone(), query: query.clone() } } span { class: "compact-turn-stats", if tool_count > 0 { span { "{tool_label}" } } span { "{event_count} events" } } } };
+        return rsx! { button { class: "compact-turn pc2-embedded-turn", onclick: move |_| on_turn.call(id), span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", HighlightedText { text: preview.clone(), query: query.clone() } } span { class: "compact-turn-stats", if tool_count > 0 { span { "{tool_label}" } }  } } };
     }
     rsx! { details { class: if expanded { "compact-turn selected" } else { "compact-turn" }, open: expanded,
-        summary { aria_label: "Expand {turn.source} step {id}", onclick: move |event| { event.prevent_default(); on_turn.call(id); }, span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } if expanded { span { class: "compact-kind", "{expanded_facts}" } } else { span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", HighlightedText { text: preview.clone(), query: query.clone() } } span { class: "compact-turn-stats", if !collapsed_meta.is_empty() { span { "{collapsed_meta}" } } if tool_count > 0 { span { "{tool_label}" } } span { "{event_count} events" } } } }
+        summary { aria_label: "Expand {turn.source} step {id}", onclick: move |event| { event.prevent_default(); on_turn.call(id); }, span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } if expanded { span { class: "compact-kind", "{expanded_facts}" } } else { span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", HighlightedText { text: preview.clone(), query: query.clone() } } span { class: "compact-turn-stats", if !collapsed_meta.is_empty() { span { "{collapsed_meta}" } } if tool_count > 0 { span { "{tool_label}" } }  } } }
         if expanded { div { class: "compact-turn-body pc2-inline-detail", if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Loading full step…" } } else if let Some(value) = detail.filter(|value| value.summary.id == id) { InlineTurnDetail { value, query: query.clone() } } else { div { class: "pc2-inline-unavailable", "Details are unavailable for this step." } } } }
     } }
 }
@@ -1092,11 +1051,6 @@ fn InlineTurnDetail(value: TurnDetail, #[props(default)] query: String) -> Eleme
     } else {
         Vec::new()
     };
-    let events = serde_json::to_value(&value.events).unwrap_or(Value::Array(Vec::new()));
-    let event_block_title = match value.event_provenance {
-        EventProvenance::Canonical => crate::terminology::RECORDED_EVENTS,
-        EventProvenance::SyntheticFromStoryline => crate::terminology::RECONSTRUCTED_EVENTS,
-    };
     let has_any_tool_calls = !embedded_from_message.is_empty()
         || !deduped_wire_calls.is_empty()
         || !native_tool_calls.is_empty();
@@ -1113,9 +1067,7 @@ fn InlineTurnDetail(value: TurnDetail, #[props(default)] query: String) -> Eleme
         if value.summary.prompt_tokens.is_some() || value.summary.completion_tokens.is_some() {
             Fact { label: "Token split", value: format!("{} in · {} out", optional_u64(value.summary.prompt_tokens), optional_u64(value.summary.completion_tokens)) }
         }
-        if !value.events.is_empty() {
-            Fact { label: "Events", value: value.events.len().to_string() }
-        }
+
         if !embedded_from_message.is_empty() {
             ToolCallCards { calls: embedded_from_message, observation: value.turn.observation.clone() }
         } else if !deduped_wire_calls.is_empty() {
@@ -1156,9 +1108,7 @@ fn InlineTurnDetail(value: TurnDetail, #[props(default)] query: String) -> Eleme
                 InlineSection { title: "Observation", ObservationChips { value: observation.clone() } ObservationBlock { value: observation, tone: "generic" } }
             }
         }
-        if !value.events.is_empty() {
-            InlineSection { title: event_block_title, JsonValue { value: events } }
-        }
+
         if let Some(extra) = value.turn.extra.clone() {
             InlineSection { title: "Extra", JsonValue { value: extra } }
         }
@@ -1697,7 +1647,7 @@ mod tests {
         );
     }
 
-    fn turn(id: i64, source: &str, seqs: &[u64]) -> TurnSummary {
+    fn turn(id: i64, source: &str) -> TurnSummary {
         TurnSummary {
             id,
             source: source.into(),
@@ -1715,18 +1665,13 @@ mod tests {
             completion_tokens: None,
             total_tokens: None,
             tool_names: Vec::new(),
-            event_seqs: seqs.to_vec(),
             has_error: false,
         }
     }
 
     #[test]
     fn chats_keep_one_timeline_row_for_a_user_and_following_agents() {
-        let turns = vec![
-            turn(1, "user", &[0]),
-            turn(2, "agent", &[2, 5]),
-            turn(3, "agent", &[6]),
-        ];
+        let turns = vec![turn(1, "user"), turn(2, "agent"), turn(3, "agent")];
         let groups = chat_span_groups(&turns);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].label, "Conversation 1");
@@ -1739,7 +1684,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
-        assert_eq!((groups[0].first_seq, groups[0].last_seq), (0, 6));
+        assert_eq!((groups[0].first_seq, groups[0].last_seq), (0, 2));
         let session_index = session_index_map(&turns);
         let bars = seq_bars(&groups[0].entries, &session_index, session_axis_len(&turns));
         assert_eq!(
@@ -1747,19 +1692,19 @@ mod tests {
             vec!["user", "agent", "agent"]
         );
         assert!((bars[0].left - 0.0).abs() < 1e-9);
-        assert!((bars[0].width - 100.0 / 7.0).abs() < 1e-9);
-        assert!((bars[1].left - 200.0 / 7.0).abs() < 1e-9);
-        assert!((bars[1].width - 400.0 / 7.0).abs() < 1e-9);
-        assert!((bars[2].left - 600.0 / 7.0).abs() < 1e-9);
+        assert!((bars[0].width - 100.0 / 3.0).abs() < 1e-9);
+        assert!((bars[1].left - 100.0 / 3.0).abs() < 1e-9);
+        assert!((bars[1].width - 100.0 / 3.0).abs() < 1e-9);
+        assert!((bars[2].left - 200.0 / 3.0).abs() < 1e-9);
     }
 
     #[test]
     fn chat_structure_uses_user_chars_and_union_modalities() {
-        let mut user = turn(1, "user", &[0]);
+        let mut user = turn(1, "user");
         user.preview = "Please continue".into();
         user.char_count = 15;
         user.modalities = vec!["text".into()];
-        let mut agent = turn(2, "agent", &[1]);
+        let mut agent = turn(2, "agent");
         agent.preview = "<tool_call>ls".into();
         agent.char_count = 80;
         agent.modalities = vec!["text".into(), "tool_call".into()];
@@ -1809,7 +1754,7 @@ mod tests {
 
     #[test]
     fn chat_without_user_keeps_chat_kind_and_no_user_overview() {
-        let mut agent = turn(2, "agent", &[0]);
+        let mut agent = turn(2, "agent");
         agent.modalities = vec!["text".into()];
         agent.char_count = 12;
         let groups = chat_span_groups(&[agent]);
@@ -1836,7 +1781,7 @@ mod tests {
 
     #[test]
     fn steps_empty_preview_reads_as_no_text() {
-        let mut turn = turn(3, "agent", &[0]);
+        let mut turn = turn(3, "agent");
         turn.preview.clear();
         let groups = step_span_groups(&[turn]);
         assert_eq!(groups[0].kind_chip, "agent");
@@ -1845,10 +1790,10 @@ mod tests {
 
     #[test]
     fn expanded_chat_overview_is_diagnostics_not_user_text() {
-        let mut user = turn(1, "user", &[0]);
+        let mut user = turn(1, "user");
         user.preview = "Please continue".into();
         user.total_tokens = Some(100);
-        let mut agent = turn(2, "agent", &[1]);
+        let mut agent = turn(2, "agent");
         agent.preview = "running ls".into();
         agent.model_name = Some("glm".into());
         agent.latency_ms = Some(2020.0);
@@ -1874,10 +1819,10 @@ mod tests {
     #[test]
     fn occupancy_marks_split_exposed_range_from_expanded_turn() {
         let turns = vec![
-            turn(1, "user", &[0]),
-            turn(2, "agent", &[1]),
-            turn(3, "user", &[2]),
-            turn(4, "agent", &[3]),
+            turn(1, "user"),
+            turn(2, "agent"),
+            turn(3, "user"),
+            turn(4, "agent"),
         ];
         let session_index = session_index_map(&turns);
         let bars = seq_bars(&turns, &session_index, session_axis_len(&turns));
@@ -1901,10 +1846,10 @@ mod tests {
     #[test]
     fn sequence_axis_keeps_session_relative_position_and_type_colors() {
         let turns = vec![
-            turn(1, "system", &[]),
-            turn(2, "user", &[]),
-            turn(3, "agent", &[]),
-            turn(4, "user", &[]),
+            turn(1, "system"),
+            turn(2, "user"),
+            turn(3, "agent"),
+            turn(4, "user"),
         ];
         let session_index = session_index_map(&turns);
         let axis_len = session_axis_len(&turns);
@@ -1924,11 +1869,7 @@ mod tests {
 
     #[test]
     fn source_filter_keeps_chat_members() {
-        let turns = vec![
-            turn(1, "user", &[0]),
-            turn(2, "agent", &[2]),
-            turn(3, "system", &[4]),
-        ];
+        let turns = vec![turn(1, "user"), turn(2, "agent"), turn(3, "system")];
         let visible = chat_span_groups(&turns)
             .into_iter()
             .filter(|group| chat_row_visible(&group.entries, "agent", ""))
@@ -1947,11 +1888,11 @@ mod tests {
 
     #[test]
     fn steps_keep_one_timeline_row_per_turn() {
-        let turns = vec![turn(1, "user", &[0]), turn(2, "agent", &[3])];
+        let turns = vec![turn(1, "user"), turn(2, "agent")];
         let groups = step_span_groups(&turns);
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].label, "#1");
-        assert_eq!(groups[1].first_seq, 3);
+        assert_eq!(groups[1].first_seq, 1);
     }
 
     #[test]

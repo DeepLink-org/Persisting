@@ -12,6 +12,8 @@ __pycache__/
 crates/persisting-engine/ds/
 
 # Local review, benchmark, and runtime artifacts
+.pchronicle-import-wal/
+import.log
 /data/
 /tmp/
 

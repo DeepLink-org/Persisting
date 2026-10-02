@@ -664,7 +664,7 @@ mod tests {
     fn nullable_run_and_root_coordinates_still_create_links() {
         let row = json!({
             "dataset":"captures",
-            "_file_":"gateway/events.lance",
+            "_file_":"gateway/storyline",
             "agent_id":"gateway",
             "session_id":"session-a",
             "run_id": null,

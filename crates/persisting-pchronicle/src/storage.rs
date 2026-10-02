@@ -31,26 +31,11 @@ pub fn parse_byte_size(value: &str) -> std::result::Result<usize, String> {
         .ok_or_else(|| "byte size must be greater than zero and fit in usize".to_owned())
 }
 
-#[cfg(feature = "lance-store")]
-pub use crate::append_queue::{
-    DEFAULT_RAW_EVENT_BATCH_DELAY, DEFAULT_RAW_EVENT_BATCH_SIZE,
-    DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD, DEFAULT_RAW_EVENT_HIERARCHY_FANOUT,
-    DEFAULT_RAW_EVENT_MAINTENANCE_CAPACITY, DEFAULT_RAW_EVENT_QUEUE_CAPACITY,
-    DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT, RawEventAppendOutcome, RawEventAppendSender,
-    RawEventAppendWorker, raw_event_append_queue, raw_event_append_queue_with_capacity,
-};
-pub use crate::layout::{
-    StoryCoords, StoryLocationPartial, is_subagent_session_storage_key,
-    is_trajectory_markdown_path, list_story_read_locations, locate_run_bucket_markdown,
-    locate_session_markdown, locate_session_markdown_for_key, merge_story_location,
-    resolve_story_read_location, sanitize_session_filename, session_filename_stem,
-    session_markdown_filename, session_markdown_path_for_key, session_markdown_write_path_for_key,
-    story_lance_event_path, story_run_dir, try_infer_story_location,
-};
-
-#[cfg(feature = "lance-store")]
-pub use crate::discovery::{
-    drop_lifecycle_run_partitions, expand_story_locations, expand_story_locations_blocking,
+pub use crate::agenticmd::{
+    is_subagent_session_storage_key, is_trajectory_markdown_path, locate_run_bucket_markdown,
+    locate_session_markdown, locate_session_markdown_for_key, sanitize_session_filename,
+    session_filename_stem, session_markdown_filename, session_markdown_path_for_key,
+    session_markdown_write_path_for_key,
 };
 
 #[cfg(feature = "lance-store")]
@@ -85,32 +70,25 @@ pub async fn open_lance_dataset(uri: &str) -> lance::Result<lance::Dataset> {
 
 #[cfg(feature = "lance-store")]
 pub use crate::store::{
-    AppendOutcome, AttemptRecord, AttemptRecordState, AttemptRegistry, CachedDataset,
-    CatalogConsistency, CatalogDataset, CatalogErrorPolicy, CatalogEventProvenance,
-    CatalogEventView, CatalogNamespace, CatalogPage, CatalogProjectionStatus,
-    CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind, CatalogSourceRevision,
-    CatalogSourceStatus, CatalogState, CatalogStatus, CatalogStorylineKey, CatalogTrajectoryBundle,
-    ChronicleManifest, CommitRunOutcome, CompactJsonlBuildPhase, CompactJsonlColumn,
-    CompactJsonlImportEvent, CompactJsonlOffload, CompactJsonlOptions, CompactJsonlRecord,
-    CompactJsonlStore, DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES,
-    DEFAULT_DATASET_NAME, DEFAULT_MAX_CHUNK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
-    DEFAULT_MAX_EVENT_FALLBACK_ROWS, DEFAULT_PHYSICAL_PAGE_LIMIT, Dataset, DatasetCatalogSnapshot,
+    CachedDataset, CatalogConsistency, CatalogDataset, CatalogErrorPolicy, CatalogNamespace,
+    CatalogPage, CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind,
+    CatalogSourceRevision, CatalogSourceStatus, CatalogState, CatalogStatus, CatalogStorylineKey,
+    ChronicleManifest, CompactJsonlBuildPhase, CompactJsonlColumn, CompactJsonlImportEvent,
+    CompactJsonlOffload, CompactJsonlOptions, CompactJsonlRecord, CompactJsonlStore,
+    DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES, DEFAULT_DATASET_NAME,
+    DEFAULT_MAX_CHUNK_BYTES, DEFAULT_PHYSICAL_PAGE_LIMIT, Dataset, DatasetCatalogSnapshot,
     DatasetLocation, DatasetLocationKind, DatasetMount, DatasetResolver, DiscoveredSource,
-    EventFactSnapshot, EventLogLayoutStats, EventWriterFence, ExportOutcome, ImportableObjectEvent,
-    LanceMaintenanceOptions, LanceMaintenanceReport, LeaseAcquireOutcome, LocationSummary,
+    ImportableObjectEvent, LanceMaintenanceOptions, LanceMaintenanceReport, LocationSummary,
     ManifestCache, ManifestKind, ManifestListing, ManifestReadMode, ManifestRefreshReport,
     ManifestStats, NamespacePath, PathListEntry, PathListKind, PersistentCache, PhysicalColumn,
     PhysicalDataFile, PhysicalFileLayout, PhysicalFragment, PhysicalLayout, PhysicalPage,
-    PhysicalPagePreview, PhysicalPageQuery, PhysicalSource, PhysicalTable,
-    ProjectionSourceSnapshot, QueryScope, RawEventLanceAppender, RawEventLanceStore, ReplayOutcome,
-    ResolveMode, ResolveTarget, RunControlStore, ShallowNavEntry, StorylineContentOptions,
-    StorylineContentReadMode, StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
-    StorylineMaintenanceReport, StorylineProjectionLineage, StorylineSearchIndexSuppressGuard,
-    StorylineStreamImportReport, StorylineStreamOptions, StorylineTablePaths, TrajectoryStats,
-    attempt_registry_now_ms, distinct_session_ids_in_run, export_source_dirs, export_story_bundle,
-    inspect_physical_file, inspect_physical_layout, inspect_physical_page, list_physical_sources,
-    load_manifest, load_manifest_at_uri, raw_event_lance_path, write_compact_jsonl_manifest,
-    write_storyline_manifest, write_storyline_manifest_at_uri,
+    PhysicalPagePreview, PhysicalPageQuery, PhysicalSource, PhysicalTable, QueryScope, ResolveMode,
+    ResolveTarget, ShallowNavEntry, StorylineContentOptions, StorylineContentReadMode,
+    StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
+    StorylineMaintenanceReport, StorylineSearchIndexSuppressGuard, StorylineStreamImportReport,
+    StorylineStreamOptions, StorylineTablePaths, inspect_physical_file, inspect_physical_layout,
+    inspect_physical_page, list_physical_sources, load_manifest, load_manifest_at_uri,
+    write_compact_jsonl_manifest, write_storyline_manifest, write_storyline_manifest_at_uri,
 };
 
 // Compatibility exports; new callers should use `crate::search`.
@@ -122,23 +100,4 @@ pub use crate::search::{
 };
 
 #[cfg(feature = "lance-store")]
-pub use crate::store::{
-    DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES, maintain_raw_events,
-};
-
-#[cfg(feature = "lance-store")]
-pub use crate::projection::{
-    AutomaticProjectionInspection, AutomaticProjectionInventory, AutomaticProjectionInventoryError,
-    AutomaticProjectionMaintenanceMode, AutomaticProjectionMaintenanceReport,
-    AutomaticProjectionState, AutomaticProjectionTarget, ProjectionRebuildReason,
-    StorylineProjectionBuildOutcome, StorylineProjectionBuildReport, StorylineProjectionStatus,
-    StorylineProjectionSyncMode, StorylineProjectionSyncOutcome, StorylineProjectionSyncReport,
-    StorylineProjectionVerification, automatic_projection_inventory, build_storyline_projection,
-    inspect_automatic_storyline_projection, maintain_automatic_storyline_projection,
-    probe_canonical_event_store, rebuild_storyline_projection,
-    storyline_projection_destination_exists, storyline_projection_status,
-    sync_storyline_projection, verify_storyline_projection,
-};
-
-#[cfg(feature = "lance-store")]
-pub use crate::revision::{RevisionRow, read_revisions, revision_dataset_path, write_revisions};
+pub use crate::store::{DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES};

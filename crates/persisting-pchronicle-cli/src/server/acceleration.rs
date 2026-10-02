@@ -39,8 +39,6 @@ const MAX_ROUTING_INDEX_ROWS: usize = 1_000_000;
 const MAX_ROUTING_INDEX_VALUES: usize = 1_000_000;
 const RUN_COLUMNS: &[&str] = &["run_id", "session_id", "agent_id", "agent_model_name"];
 const STEP_COLUMNS: &[&str] = &["run_id", "session_id"];
-const EVENT_IDENTITY_COLUMNS: &[&str] = &["event_id", "trace_id"];
-const EVENT_PARTITION_COLUMNS: &[&str] = &["session_id", "agent_id"];
 
 #[derive(Debug, Default)]
 pub(crate) struct ServerAcceleration {
@@ -48,8 +46,6 @@ pub(crate) struct ServerAcceleration {
     run_summaries: OnceCell<RequiredAcceleration<CachedRunSummaries>>,
     run_summaries_by_dataset: Mutex<HashMap<String, CachedRunSummaries>>,
     runs: OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
-    event_identities: OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
-    event_partitions: OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
 }
 
 type CachedRunSummaries = Arc<Vec<RunSummary>>;
@@ -96,12 +92,6 @@ pub(crate) struct AccelerationStatus {
     pub(crate) run_index: Option<RoutingIndexStatus>,
     /// The generation's optional run index reached a terminal unavailable state.
     pub(crate) run_index_unavailable: bool,
-    pub(crate) event_identity_index: Option<RoutingIndexStatus>,
-    /// The generation's optional identity index reached a terminal unavailable state.
-    pub(crate) event_identity_index_unavailable: bool,
-    pub(crate) event_partition_index: Option<RoutingIndexStatus>,
-    /// The generation's optional partition index reached a terminal unavailable state.
-    pub(crate) event_partition_index_unavailable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -154,19 +144,11 @@ impl ServerAcceleration {
         let (run_summaries_ready, run_summaries_failed) =
             required_acceleration_status(&self.run_summaries);
         let (run_index, run_index_unavailable) = cached_index_status(&self.runs);
-        let (event_identity_index, event_identity_index_unavailable) =
-            cached_index_status(&self.event_identities);
-        let (event_partition_index, event_partition_index_unavailable) =
-            cached_index_status(&self.event_partitions);
         AccelerationStatus {
             run_summaries_ready,
             run_summaries_failed,
             run_index,
             run_index_unavailable,
-            event_identity_index,
-            event_identity_index_unavailable,
-            event_partition_index,
-            event_partition_index_unavailable,
         }
     }
 
@@ -247,12 +229,6 @@ impl ServerAcceleration {
         self.route_sql_with(snapshot, sql, |kind| async move {
             match kind {
                 RoutingIndexKind::Runs => build_run_index(snapshot, engine).await,
-                RoutingIndexKind::EventIdentities => {
-                    build_event_identity_index(snapshot, engine).await
-                }
-                RoutingIndexKind::EventPartitions => {
-                    build_event_partition_index(snapshot, engine).await
-                }
             }
         })
         .await
@@ -280,8 +256,6 @@ impl ServerAcceleration {
 
         let (cell, name) = match query.index_kind {
             RoutingIndexKind::Runs => (&self.runs, "run"),
-            RoutingIndexKind::EventIdentities => (&self.event_identities, "event_identity"),
-            RoutingIndexKind::EventPartitions => (&self.event_partitions, "event_partition"),
         };
         let Some(index) = self
             .optional_index_with(cell, name, || build(query.index_kind))
@@ -371,8 +345,6 @@ fn cached_index_status(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RoutingIndexKind {
     Runs,
-    EventIdentities,
-    EventPartitions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -439,7 +411,6 @@ impl AnalyzedQuery {
         }
         let (dataset, table) = resolve_table(snapshot, name)?;
         let indexed_columns = match table.as_str() {
-            "events" => [EVENT_IDENTITY_COLUMNS, EVENT_PARTITION_COLUMNS].concat(),
             "runs" | "trajectories" => RUN_COLUMNS.to_vec(),
             "steps" | "tool_calls" => STEP_COLUMNS.to_vec(),
             _ => return None,
@@ -457,22 +428,8 @@ impl AnalyzedQuery {
             collect_required_constraints(selection, &mut constraints);
         }
         constraints.retain(|constraint| indexed_columns.contains(&constraint.column.as_str()));
-        let index_kind = match table.as_str() {
-            "events"
-                if constraints.iter().any(|constraint| {
-                    EVENT_IDENTITY_COLUMNS.contains(&constraint.column.as_str())
-                }) =>
-            {
-                RoutingIndexKind::EventIdentities
-            }
-            "events" => RoutingIndexKind::EventPartitions,
-            _ => RoutingIndexKind::Runs,
-        };
-        let selected_columns = match index_kind {
-            RoutingIndexKind::Runs => indexed_columns.as_slice(),
-            RoutingIndexKind::EventIdentities => EVENT_IDENTITY_COLUMNS,
-            RoutingIndexKind::EventPartitions => EVENT_PARTITION_COLUMNS,
-        };
+        let index_kind = RoutingIndexKind::Runs;
+        let selected_columns = indexed_columns.as_slice();
         constraints.retain(|constraint| selected_columns.contains(&constraint.column.as_str()));
         Some(Self {
             statement,
@@ -961,14 +918,12 @@ async fn build_run_summaries(
                             root_session_id: None,
                             path,
                             row_count: 1,
-                            duplicate_event_ids: 0,
                             status: "record".into(),
                             format: Some("compact-jsonl/v1".into()),
                         });
                     }
                 }
             }
-            let event_stats = build_event_stats(engine, name, &source.file).await?;
             let file = crate::sql_string(&source.file);
             let sql = format!(
                 "WITH step_counts AS ( \
@@ -1033,13 +988,7 @@ async fn build_run_summaries(
                     run_id.as_deref(),
                     parent_session_id.as_deref(),
                 );
-                let status = event_stats
-                    .get(&(file.clone(), session_id.clone()))
-                    .map_or_else(
-                        || run_status(&row),
-                        |stats| stats.status.clone().unwrap_or_else(|| "active".into()),
-                    );
-                let event_stats = event_stats.get(&(file.clone(), session_id.clone()));
+                let status = run_status(&row);
                 summaries.push(RunSummary {
                     dataset: name.clone(),
                     file,
@@ -1050,15 +999,10 @@ async fn build_run_summaries(
                     session_id,
                     root_session_id,
                     path,
-                    row_count: event_stats.map_or_else(
-                        || {
-                            row.get("row_count")
-                                .and_then(JsonValue::as_u64)
-                                .unwrap_or(0) as usize
-                        },
-                        |stats| stats.row_count,
-                    ),
-                    duplicate_event_ids: event_stats.map_or(0, |stats| stats.duplicate_event_ids),
+                    row_count: row
+                        .get("row_count")
+                        .and_then(JsonValue::as_u64)
+                        .unwrap_or(0) as usize,
                     status,
                     format: None,
                 });
@@ -1105,95 +1049,6 @@ async fn bounded_summary_jsonl(
         "summary query completed"
     );
     String::from_utf8(output.bytes).context("decode run summary JSONL")
-}
-
-#[derive(Debug, Clone)]
-struct EventStats {
-    row_count: usize,
-    duplicate_event_ids: usize,
-    status: Option<String>,
-}
-
-async fn build_event_stats(
-    engine: &ChronicleQueryEngine,
-    dataset: &str,
-    file: &str,
-) -> Result<HashMap<(String, String), EventStats>> {
-    let file = crate::sql_string(file);
-    let sql = format!(
-        "SELECT _file_, session_id, COUNT(*) AS row_count, \
-                COUNT(event_id) - COUNT(DISTINCT event_id) AS duplicate_event_ids, \
-                MAX(CASE \
-                    WHEN kind = 'run.failed' OR kind = 'run.cancelled' THEN 3 \
-                    WHEN kind = 'run.completed' THEN 2 \
-                    WHEN kind = 'session.ended' THEN 1 \
-                    ELSE 0 END) AS terminal_rank, \
-                MAX(CASE WHEN kind = 'session.ended' THEN payload_json ELSE NULL END) \
-                    AS session_ended_payload_json, \
-                SUM(CASE WHEN kind = 'llm.request' THEN 1 ELSE 0 END) \
-                    AS request_count, \
-                SUM(CASE WHEN kind = 'llm.response' OR kind = 'llm.response.stream' \
-                    THEN 1 ELSE 0 END) AS response_count \
-         FROM {dataset}.events WHERE _file_ = {file} GROUP BY _file_, session_id"
-    );
-    let body =
-        bounded_summary_jsonl(engine, &sql, MAX_SUMMARY_ROWS as u64, MAX_SUMMARY_BYTES).await?;
-    body.lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            let row: JsonValue = serde_json::from_str(line).context("decode event stats row")?;
-            let file = required_json_string(&row, "_file_")?.to_string();
-            let session_id = required_json_string(&row, "session_id")?.to_string();
-            let row_count = required_json_u64(&row, "row_count")? as usize;
-            let duplicate_event_ids = required_json_u64(&row, "duplicate_event_ids")? as usize;
-            let terminal_rank = required_json_u64(&row, "terminal_rank")?;
-            let request_count = required_json_u64(&row, "request_count")?;
-            let response_count = required_json_u64(&row, "response_count")?;
-            let status = terminal_event_status(
-                terminal_rank,
-                row.get("session_ended_payload_json")
-                    .and_then(JsonValue::as_str),
-            )
-            .or_else(|| capture_call_status(request_count, response_count));
-            Ok((
-                (file, session_id),
-                EventStats {
-                    row_count,
-                    duplicate_event_ids,
-                    status,
-                },
-            ))
-        })
-        .collect()
-}
-
-fn terminal_event_status(rank: u64, session_ended_payload_json: Option<&str>) -> Option<String> {
-    match rank {
-        3.. => Some("failed".into()),
-        2 => Some("completed".into()),
-        1 => {
-            let exit_code = session_ended_payload_json
-                .and_then(|raw| serde_json::from_str::<JsonValue>(raw).ok())
-                .and_then(|event| event.get("payload").cloned())
-                .and_then(|payload| payload.get("exit_code").and_then(JsonValue::as_i64));
-            Some(if exit_code.is_some_and(|code| code != 0) {
-                "failed".into()
-            } else {
-                "completed".into()
-            })
-        }
-        _ => None,
-    }
-}
-
-fn capture_call_status(request_count: u64, response_count: u64) -> Option<String> {
-    if request_count == 0 && response_count == 0 {
-        None
-    } else if response_count >= request_count {
-        Some("completed".into())
-    } else {
-        Some("active".into())
-    }
 }
 
 fn run_status(row: &JsonValue) -> String {
@@ -1337,31 +1192,6 @@ mod run_summary_tests {
 
         assert_eq!(run_status(&serde_json::json!({})), "active");
     }
-
-    #[test]
-    fn session_ended_status_honors_nonzero_exit_codes() {
-        let failed = serde_json::json!({"payload": {"exit_code": 7}}).to_string();
-        let completed = serde_json::json!({"payload": {"exit_code": 0}}).to_string();
-
-        assert_eq!(
-            terminal_event_status(1, Some(&failed)).as_deref(),
-            Some("failed")
-        );
-        assert_eq!(
-            terminal_event_status(1, Some(&completed)).as_deref(),
-            Some("completed")
-        );
-        assert_eq!(terminal_event_status(3, None).as_deref(), Some("failed"));
-        assert_eq!(terminal_event_status(0, None), None);
-    }
-
-    #[test]
-    fn gateway_call_pairs_close_runs_without_explicit_session_events() {
-        assert_eq!(capture_call_status(3, 3).as_deref(), Some("completed"));
-        assert_eq!(capture_call_status(3, 2).as_deref(), Some("active"));
-        assert_eq!(capture_call_status(0, 1).as_deref(), Some("completed"));
-        assert_eq!(capture_call_status(0, 0), None);
-    }
 }
 
 async fn build_run_index(
@@ -1385,96 +1215,6 @@ async fn build_run_index(
         }
     }
     Ok(Arc::new(routes.finish()))
-}
-
-async fn build_event_identity_index(
-    snapshot: &DatasetCatalogSnapshot,
-    engine: &ChronicleQueryEngine,
-) -> Result<Arc<SourceRoutingIndex>> {
-    let mut routes = SourceRoutingIndexBuilder::new(EVENT_IDENTITY_COLUMNS);
-    for dataset in snapshot.datasets() {
-        let name = &dataset.mount.name;
-        routes.ensure_dataset(name);
-        let mut batches = engine
-            .dataframe(&format!(
-                "SELECT _file_, event_id, trace_id FROM {name}.events"
-            ))
-            .await?
-            .execute_stream()
-            .await?;
-        while let Some(batch) = batches.try_next().await? {
-            add_event_identity_batch(&mut routes, name, &batch)?;
-            routes.ensure_within_limits()?;
-        }
-    }
-    Ok(Arc::new(routes.finish()))
-}
-
-async fn build_event_partition_index(
-    snapshot: &DatasetCatalogSnapshot,
-    engine: &ChronicleQueryEngine,
-) -> Result<Arc<SourceRoutingIndex>> {
-    let mut routes = SourceRoutingIndexBuilder::new(EVENT_PARTITION_COLUMNS);
-    for dataset in snapshot.datasets() {
-        let name = &dataset.mount.name;
-        routes.ensure_dataset(name);
-        let mut batches = engine
-            .dataframe(&format!(
-                "SELECT _file_, session_id, agent_id FROM {name}.events"
-            ))
-            .await?
-            .execute_stream()
-            .await?;
-        while let Some(batch) = batches.try_next().await? {
-            add_event_partition_batch(&mut routes, name, &batch)?;
-            routes.ensure_within_limits()?;
-        }
-    }
-    Ok(Arc::new(routes.finish()))
-}
-
-fn add_event_identity_batch(
-    routes: &mut SourceRoutingIndexBuilder,
-    dataset: &str,
-    batch: &RecordBatch,
-) -> Result<()> {
-    let file = string_column(batch, "_file_")?;
-    let event_id = string_column(batch, "event_id")?;
-    let trace_id = string_column(batch, "trace_id")?;
-    for row in 0..batch.num_rows() {
-        anyhow::ensure!(!file.is_null(row), "event routing row has null _file_");
-        routes.add(
-            dataset,
-            file.value(row),
-            [
-                ("event_id", optional_string(event_id, row)),
-                ("trace_id", optional_string(trace_id, row)),
-            ],
-        );
-    }
-    Ok(())
-}
-
-fn add_event_partition_batch(
-    routes: &mut SourceRoutingIndexBuilder,
-    dataset: &str,
-    batch: &RecordBatch,
-) -> Result<()> {
-    let file = string_column(batch, "_file_")?;
-    let session_id = string_column(batch, "session_id")?;
-    let agent_id = string_column(batch, "agent_id")?;
-    for row in 0..batch.num_rows() {
-        anyhow::ensure!(!file.is_null(row), "event routing row has null _file_");
-        routes.add(
-            dataset,
-            file.value(row),
-            [
-                ("session_id", optional_string(session_id, row)),
-                ("agent_id", optional_string(agent_id, row)),
-            ],
-        );
-    }
-    Ok(())
 }
 
 fn add_run_batch(
@@ -1523,12 +1263,6 @@ fn required_json_string<'a>(row: &'a JsonValue, field: &str) -> Result<&'a str> 
     row.get(field)
         .and_then(JsonValue::as_str)
         .with_context(|| format!("run index row is missing string field {field}"))
-}
-
-fn required_json_u64(row: &JsonValue, field: &str) -> Result<u64> {
-    row.get(field)
-        .and_then(JsonValue::as_u64)
-        .with_context(|| format!("run index row is missing unsigned integer field {field}"))
 }
 
 #[cfg(test)]
@@ -1710,8 +1444,6 @@ mod tests {
         let status = acceleration.status();
         assert!(status.run_index.is_none());
         assert!(status.run_index_unavailable);
-        assert!(!status.event_identity_index_unavailable);
-        assert!(!status.event_partition_index_unavailable);
         let status = serde_json::to_string(&status)?;
         assert!(!status.contains("optional-index-source-diagnostic"));
         assert!(!routed.iter().any(|query| {
@@ -1743,40 +1475,13 @@ mod tests {
         Ok(())
     }
 
-    fn event(
-        event_id: &str,
-        trace_id: &str,
-        agent_id: &str,
-    ) -> persisting_pchronicle::model::EventRecord {
-        persisting_pchronicle::model::EventRecord {
-            identity: persisting_pchronicle::model::EventIdentity {
-                event_id: Some(event_id.into()),
-                ..Default::default()
-            },
-            seq: 1,
-            source: "server-routing-test".into(),
-            kind: "event".into(),
-            timestamp: None,
-            session_id: None,
-            agent_id: Some(agent_id.into()),
-            parent_uuid: None,
-            trace_id: Some(trace_id.into()),
-            call_id: None,
-            subagent_id: None,
-            parent_agent_id: None,
-            branch: None,
-            parent_call_id: None,
-            payload: serde_json::json!({"event_id": event_id}),
-        }
-    }
-
     #[test]
     fn routing_index_intersects_values_without_duplicating_source_paths() {
         let mut builder =
             SourceRoutingIndexBuilder::new(&["event_id", "trace_id", "session_id", "agent_id"]);
         builder.add(
             "live",
-            "project-a/run-1/events.lance",
+            "project-a/run-1/storyline",
             [
                 ("event_id", Some("event-1")),
                 ("trace_id", Some("trace-1")),
@@ -1786,7 +1491,7 @@ mod tests {
         );
         builder.add(
             "live",
-            "project-a/run-1/events.lance",
+            "project-a/run-1/storyline",
             [
                 ("event_id", Some("event-2")),
                 ("trace_id", Some("trace-1")),
@@ -1796,7 +1501,7 @@ mod tests {
         );
         builder.add(
             "live",
-            "project-b/run-2/events.lance",
+            "project-b/run-2/storyline",
             [
                 ("event_id", Some("event-3")),
                 ("trace_id", Some("trace-2")),
@@ -1806,7 +1511,7 @@ mod tests {
         );
         builder.add(
             "live",
-            "project-c/run-3/events.lance",
+            "project-c/run-3/storyline",
             [
                 ("event_id", Some("")),
                 ("trace_id", None),
@@ -1831,7 +1536,7 @@ mod tests {
                     },
                 ]
             ),
-            Some(vec!["project-a/run-1/events.lance".into()])
+            Some(vec!["project-a/run-1/storyline".into()])
         );
         assert_eq!(
             index.candidates(
@@ -1851,7 +1556,7 @@ mod tests {
                     values: vec![String::new()],
                 }]
             ),
-            Some(vec!["project-c/run-3/events.lance".into()])
+            Some(vec!["project-c/run-3/storyline".into()])
         );
     }
 
@@ -1879,116 +1584,13 @@ mod tests {
 
     #[test]
     fn routing_index_limits_are_explicit() {
-        let mut builder = SourceRoutingIndexBuilder::new(EVENT_IDENTITY_COLUMNS);
+        let mut builder = SourceRoutingIndexBuilder::new(RUN_COLUMNS);
         builder.add(
             "live",
-            "one/events.lance",
-            [("event_id", Some("one")), ("trace_id", Some("trace"))],
+            "one/storyline",
+            [("session_id", Some("one")), ("agent_id", Some("agent"))],
         );
         assert!(builder.ensure_limits(0, usize::MAX).is_err());
         assert!(builder.ensure_limits(usize::MAX, 1).is_err());
-    }
-
-    #[tokio::test]
-    async fn event_index_routes_to_one_catalog_source_without_changing_results() -> Result<()> {
-        use persisting_pchronicle::storage::{
-            CatalogSnapshotOptions, DEFAULT_DATASET_NAME, DatasetMount, RawEventLanceAppender,
-            StoryCoords,
-        };
-
-        let root = std::env::temp_dir().join(format!(
-            "pchronicle-server-event-routing-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root)?;
-        let project_a = StoryCoords::new(
-            root.to_string_lossy(),
-            "project-a",
-            "session-a",
-            Some("run-a".into()),
-        );
-        let project_b = StoryCoords::new(
-            root.to_string_lossy(),
-            "project-b",
-            "session-b",
-            Some("run-b".into()),
-        );
-        let mut appender = RawEventLanceAppender::default();
-        appender
-            .append_event_batch(&[
-                (project_a, event("event-a", "trace-a", "project-a")),
-                (project_b, event("event-b", "trace-b", "project-b")),
-            ])
-            .await?;
-        appender.finish();
-
-        // Shallow Directory discovery only inspects mount children. Lift each
-        // events.lance beside the agent dir so both Sources stay in one Dataset
-        // while agent_id remains project-a / project-b.
-        for (agent, run) in [("project-a", "run-a"), ("project-b", "run-b")] {
-            let from = root.join(agent).join(run).join("events.lance");
-            let to = root.join(agent).join("events.lance");
-            std::fs::rename(&from, &to)?;
-            let _ = std::fs::remove_dir_all(root.join(agent).join(run));
-        }
-
-        let snapshot = Arc::new(
-            DatasetCatalogSnapshot::discover(
-                vec![DatasetMount::default(root.to_string_lossy())?],
-                Some(DEFAULT_DATASET_NAME.into()),
-                CatalogSnapshotOptions::default(),
-            )
-            .await?,
-        );
-        let engine = snapshot.clone().query_engine(Default::default()).await?;
-        let acceleration = ServerAcceleration::default();
-        let sql = "SELECT _file_, event_id FROM events WHERE agent_id = 'project-a' AND event_id = 'event-a'";
-        let routed = acceleration.route_sql(&snapshot, &engine, sql).await;
-        assert_eq!(routed.outcome, RoutingOutcome::Applied);
-        assert_eq!(routed.candidate_sources, Some(1));
-        assert!(
-            routed.sql.contains("project-a/events.lance"),
-            "routed sql should prune to project-a events: {}",
-            routed.sql
-        );
-
-        let original = engine.query_jsonl(sql).await?;
-        let accelerated = engine.query_jsonl(&routed.sql).await?;
-        assert_eq!(accelerated, original);
-        assert_eq!(acceleration.status().event_identity_index.unwrap().rows, 2);
-        assert!(acceleration.status().event_partition_index.is_none());
-
-        let partition_acceleration = ServerAcceleration::default();
-        let project_sql =
-            "SELECT event_id FROM events WHERE agent_id = 'project-a' ORDER BY event_id";
-        let project_routed = partition_acceleration
-            .route_sql(&snapshot, &engine, project_sql)
-            .await;
-        assert_eq!(project_routed.outcome, RoutingOutcome::Applied);
-        assert_eq!(project_routed.candidate_sources, Some(1));
-        assert_eq!(
-            engine.query_jsonl(&project_routed.sql).await?,
-            engine.query_jsonl(project_sql).await?
-        );
-        assert!(
-            partition_acceleration
-                .status()
-                .event_identity_index
-                .is_none()
-        );
-        assert_eq!(
-            partition_acceleration
-                .status()
-                .event_partition_index
-                .unwrap()
-                .rows,
-            2
-        );
-
-        std::fs::remove_dir_all(root)?;
-        Ok(())
     }
 }

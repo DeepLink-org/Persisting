@@ -40,11 +40,10 @@ use source::*;
 pub use status::{CatalogConsistency, CatalogState, CatalogStatus};
 
 use discovery::{
-    bind_canonical_storyline_projections, discover_cached_candidates, discover_candidate_at,
-    discover_candidates, freeze_candidate, normalize_event_storylines,
+    discover_cached_candidates, discover_candidate_at, discover_candidates, freeze_candidate,
 };
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -72,23 +71,18 @@ use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::OnceCell;
 
-use crate::convert::{event_storyline_key, project_event_records, storyline_to_events};
 use crate::format::DocumentFormat;
-use crate::formats::events::EventsDocument;
-use crate::formats::{EventRecord, StorylineDocument};
-use crate::projection::projection_lineage_is_fresh;
+use crate::formats::StorylineDocument;
 
-use super::events::datafusion::{RawEventDataSource, RawEventDataSourceOptions, RawEventSnapshot};
 use super::files::matches_file_filter;
 use super::opendal_store::Entry as OpendalEntry;
 use super::{
     FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, FileTrajectoryQueryMetrics,
-    LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions, ProjectionSourceSnapshot,
-    SOURCE_FILE_COLUMN, StoryRunRow, StoryStepRow, StoryToolCallRow, StorylineDataSource,
-    StorylineDataSourceOptions, StorylineTableKind, StorylineTablePaths, raw_event_arrow_schema,
-    reconstruct_storyline, split_storyline, story_runs_arrow_schema, story_runs_from_batch,
-    story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch, story_steps_to_batch,
-    story_tool_calls_arrow_schema, story_tool_calls_from_batch, story_tool_calls_to_batch,
+    LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions, SOURCE_FILE_COLUMN,
+    StorylineDataSource, StorylineDataSourceOptions, StorylineTableKind, StorylineTablePaths,
+    reconstruct_storyline, story_runs_arrow_schema, story_runs_from_batch,
+    story_steps_arrow_schema, story_steps_from_batch, story_tool_calls_arrow_schema,
+    story_tool_calls_from_batch,
 };
 
 #[derive(Clone, Debug)]
@@ -118,15 +112,8 @@ impl From<OpendalEntry> for RemoteObjectMeta {
 
 pub const DEFAULT_DATASET_NAME: &str = "dataset";
 
-#[derive(Debug, Clone)]
-pub(crate) enum PhysicalOpenTarget {
-    Events { uri: String },
-    Storyline { paths: Box<StorylineTablePaths> },
-}
 pub const CATALOG_SOURCES_TABLE: &str = "sources";
 pub const CATALOG_TRAJECTORIES_TABLE: &str = "trajectories";
-pub const DEFAULT_MAX_EVENT_FALLBACK_ROWS: usize = 100_000;
-pub const DEFAULT_MAX_EVENT_FALLBACK_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -152,13 +139,6 @@ pub enum CatalogSourceStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CatalogProjectionStatus {
-    Fresh,
-    Stale,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DiscoveredSource {
     /// Stable path relative to the Dataset mount. A source at the mount root
@@ -167,11 +147,7 @@ pub struct DiscoveredSource {
     pub format: Option<String>,
     pub kind: CatalogSourceKind,
     pub revision: Option<CatalogSourceRevision>,
-    pub projection_status: Option<CatalogProjectionStatus>,
-    pub projection_generation: Option<String>,
-    /// Number of lineage-linked Storyline projections considered for this
-    /// canonical source. Values greater than one are diagnostic, not fatal.
-    pub projection_candidates: u64,
+    /// Physical source size when available.
     pub size_bytes: Option<u64>,
     pub last_modified: Option<String>,
     pub status: CatalogSourceStatus,
@@ -197,50 +173,8 @@ pub struct CatalogStorylineKey {
     pub file: String,
     /// Stable identity of one document within `file`.
     pub document_id: String,
-    /// Session partition used when the source is Canonical Event storage.
+    /// Session identity within the document.
     pub session_id: String,
-}
-
-/// Epistemic origin of the records in a Catalog event view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CatalogEventProvenance {
-    Canonical,
-    SyntheticFromStoryline,
-}
-
-impl CatalogEventProvenance {
-    pub const fn is_canonical(self) -> bool {
-        matches!(self, Self::Canonical)
-    }
-
-    pub const fn transform(self) -> Option<&'static str> {
-        match self {
-            Self::Canonical => None,
-            Self::SyntheticFromStoryline => Some("storyline_to_events_v1"),
-        }
-    }
-}
-
-/// Event-shaped records together with their epistemic origin.
-///
-/// The wrapper is intentionally not interchangeable with `EventsDocument`:
-/// callers must account for whether records were observed canonically or
-/// synthesized from a normalized Storyline.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CatalogEventView {
-    pub provenance: CatalogEventProvenance,
-    pub document: EventsDocument,
-}
-
-/// One source-consistent trajectory materialization for Web/API consumers.
-///
-/// Non-event sources normalize the Storyline once and derive the event view
-/// from that same document, avoiding a second scan and content hydration pass.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CatalogTrajectoryBundle {
-    pub storyline: StorylineDocument,
-    pub event_view: CatalogEventView,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -286,11 +220,6 @@ pub struct CatalogSnapshotOptions {
     pub(crate) storyline: StorylineDataSourceOptions,
     /// Maximum physical Sources opened concurrently while planning one scan.
     pub max_concurrent_sources: usize,
-    /// Maximum selected canonical rows that may be normalized in memory when a
-    /// fresh Storyline projection is unavailable.
-    pub max_event_fallback_rows: usize,
-    /// Maximum Arrow bytes retained while normalizing selected canonical rows.
-    pub max_event_fallback_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -325,8 +254,6 @@ impl Default for CatalogSnapshotOptions {
             files: FileTrajectoryDataSourceOptions::default(),
             storyline: StorylineDataSourceOptions::default(),
             max_concurrent_sources,
-            max_event_fallback_rows: DEFAULT_MAX_EVENT_FALLBACK_ROWS,
-            max_event_fallback_bytes: DEFAULT_MAX_EVENT_FALLBACK_BYTES,
         }
     }
 }
@@ -339,14 +266,6 @@ pub struct DatasetCatalogSnapshot {
     datasets: Vec<CatalogDataset>,
     prepared: Vec<PreparedDataset>,
     _temporary_files: Arc<SnapshotTempDir>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CatalogCanonicalEventSource {
-    pub(crate) dataset: String,
-    pub(crate) source_path: String,
-    pub(crate) source_uri: String,
-    pub(crate) snapshot: crate::store::EventFactSnapshot,
 }
 
 impl DatasetCatalogSnapshot {
@@ -465,7 +384,6 @@ impl DatasetCatalogSnapshot {
                     }
                 }
             }
-            bind_canonical_storyline_projections(&mut source_rows, &mut prepared_sources)?;
             if let Some(prefix) = scope
                 .as_ref()
                 .and_then(|scope| scope.source_file.as_deref())
@@ -473,8 +391,7 @@ impl DatasetCatalogSnapshot {
                 let prefix = prefix.trim().trim_matches('/');
                 let matches =
                     |file: &str| file == prefix || file.starts_with(&format!("{prefix}/"));
-                // Filter after canonical/projection binding, preserving the same
-                // source identity as full discovery even on fallback paths.
+                // Preserve the requested source namespace on fallback paths.
                 source_rows.retain(|source| matches(&source.file));
                 prepared_sources.retain(|source| matches(source.file()));
             }
@@ -521,28 +438,6 @@ impl DatasetCatalogSnapshot {
 
     pub fn datasets(&self) -> &[CatalogDataset] {
         &self.datasets
-    }
-
-    pub(crate) fn canonical_event_sources(&self) -> Vec<CatalogCanonicalEventSource> {
-        self.prepared
-            .iter()
-            .flat_map(|dataset| {
-                dataset
-                    .sources
-                    .iter()
-                    .filter_map(|source| match &source.spec {
-                        LazySourceSpec::Events { uri, snapshot, .. } => {
-                            Some(CatalogCanonicalEventSource {
-                                dataset: dataset.name.clone(),
-                                source_path: source.file.clone(),
-                                source_uri: uri.clone(),
-                                snapshot: snapshot.fact_snapshot(),
-                            })
-                        }
-                        _ => None,
-                    })
-            })
-            .collect()
     }
 
     pub fn dataset(&self, name: &str) -> Option<&CatalogDataset> {
@@ -618,168 +513,8 @@ impl DatasetCatalogSnapshot {
         crate::store::CompactJsonlStore::read_record(uri, &key.document_id).await
     }
 
-    /// Resolve one canonical Storyline from the latest visible events
-    /// manifest. This intentionally bypasses the immutable Catalog snapshot
-    /// for live Gateway observation while retaining the Catalog's source
-    /// identity and path resolution.
-    pub async fn load_live_storyline(
-        &self,
-        key: &CatalogStorylineKey,
-    ) -> Result<Option<StorylineDocument>> {
-        let source = self.lazy_source(key)?.resolve().await?;
-        let ResolvedSource::Events(events) = source.as_ref() else {
-            return load_storyline_from_source(source.as_ref(), key).await;
-        };
-        let uri = self
-            .lazy_source(key)?
-            .canonical_event_uri()
-            .context("live Storyline source is not canonical events")?;
-        let latest = RawEventDataSource::open_uri(uri).await?;
-        let session_ids = BTreeSet::from([key.session_id.clone()]);
-        let records = latest
-            .read_records_for_storylines_bounded(
-                &session_ids,
-                events.max_fallback_rows,
-                events.max_fallback_bytes,
-            )
-            .await?;
-        (!records.is_empty())
-            .then(|| project_event_records(&records))
-            .transpose()
-    }
-
-    /// Resolve the normalized Storyline and event view without normalizing a
-    /// non-event source twice.
-    pub async fn load_trajectory_bundle(
-        &self,
-        key: &CatalogStorylineKey,
-    ) -> Result<Option<CatalogTrajectoryBundle>> {
-        let source = self.lazy_source(key)?.resolve().await?;
-        if let ResolvedSource::Events(events) = source.as_ref() {
-            let Some(records) = events.records_for_storyline(&key.session_id).await? else {
-                return Ok(None);
-            };
-            let storyline = load_storyline_from_source(source.as_ref(), key)
-                .await?
-                .context("canonical events resolved without a normalized Storyline")?;
-            return Ok(Some(CatalogTrajectoryBundle {
-                storyline,
-                event_view: CatalogEventView {
-                    provenance: CatalogEventProvenance::Canonical,
-                    document: EventsDocument::new(records),
-                },
-            }));
-        }
-
-        let Some(storyline) = load_storyline_from_source(source.as_ref(), key).await? else {
-            return Ok(None);
-        };
-        let document = storyline_to_events(&storyline)?;
-        Ok(Some(CatalogTrajectoryBundle {
-            storyline,
-            event_view: CatalogEventView {
-                provenance: CatalogEventProvenance::SyntheticFromStoryline,
-                document,
-            },
-        }))
-    }
-
-    /// Resolve a live Gateway trajectory bundle from the latest canonical
-    /// events manifest. Projection freshness does not gate this read path.
-    pub async fn load_live_trajectory_bundle(
-        &self,
-        key: &CatalogStorylineKey,
-    ) -> Result<Option<CatalogTrajectoryBundle>> {
-        let source = self.lazy_source(key)?.resolve().await?;
-        let ResolvedSource::Events(events) = source.as_ref() else {
-            return self.load_trajectory_bundle(key).await;
-        };
-        let uri = self
-            .lazy_source(key)?
-            .canonical_event_uri()
-            .context("live trajectory source is not canonical events")?;
-        let latest = RawEventDataSource::open_uri(uri).await?;
-        let session_ids = BTreeSet::from([key.session_id.clone()]);
-        let records = latest
-            .read_records_for_storylines_bounded(
-                &session_ids,
-                events.max_fallback_rows,
-                events.max_fallback_bytes,
-            )
-            .await?;
-        if records.is_empty() {
-            return Ok(None);
-        }
-        let storyline = project_event_records(&records)?;
-        Ok(Some(CatalogTrajectoryBundle {
-            storyline,
-            event_view: CatalogEventView {
-                provenance: CatalogEventProvenance::Canonical,
-                document: EventsDocument::new(records),
-            },
-        }))
-    }
-
-    /// Return canonical records when the source is events.lance, otherwise a
-    /// deterministic synthetic event view of the normalized Storyline.
-    pub async fn load_events(&self, key: &CatalogStorylineKey) -> Result<Option<CatalogEventView>> {
-        let source = self.lazy_source(key)?.resolve().await?;
-        if let ResolvedSource::Events(source) = source.as_ref() {
-            return Ok(source
-                .records_for_storyline(&key.session_id)
-                .await?
-                .map(|records| CatalogEventView {
-                    provenance: CatalogEventProvenance::Canonical,
-                    document: EventsDocument::new(records),
-                }));
-        }
-        let Some(storyline) = load_storyline_from_source(source.as_ref(), key).await? else {
-            return Ok(None);
-        };
-        Ok(Some(CatalogEventView {
-            provenance: CatalogEventProvenance::SyntheticFromStoryline,
-            document: storyline_to_events(&storyline)?,
-        }))
-    }
-
-    /// Read the latest canonical events for live Gateway observation.
-    pub async fn load_live_events(
-        &self,
-        key: &CatalogStorylineKey,
-    ) -> Result<Option<CatalogEventView>> {
-        let source = self.lazy_source(key)?.resolve().await?;
-        let ResolvedSource::Events(events) = source.as_ref() else {
-            return self.load_events(key).await;
-        };
-        let uri = self
-            .lazy_source(key)?
-            .canonical_event_uri()
-            .context("live event source is not canonical events")?;
-        let latest = RawEventDataSource::open_uri(uri).await?;
-        let session_ids = BTreeSet::from([key.session_id.clone()]);
-        let records = latest
-            .read_records_for_storylines_bounded(
-                &session_ids,
-                events.max_fallback_rows,
-                events.max_fallback_bytes,
-            )
-            .await?;
-        Ok((!records.is_empty()).then_some(CatalogEventView {
-            provenance: CatalogEventProvenance::Canonical,
-            document: EventsDocument::new(records),
-        }))
-    }
-
-    /// Physical canonical events URI for a Storyline source. Non-canonical sources
-    /// return `None`; callers must not infer write locations from Dataset mount
-    /// roots because a mount may start at any hierarchy level.
-    pub fn canonical_event_uri(&self, key: &CatalogStorylineKey) -> Result<Option<&str>> {
-        Ok(self.lazy_source(key)?.canonical_event_uri())
-    }
-
     /// Return the normalized Storyline table paths for a physical Storyline
-    /// source. File and canonical-event sources return `None` and retain their
-    /// existing in-memory search behavior in callers.
+    /// source. Other source kinds return `None`.
     pub fn storyline_table_paths(
         &self,
         dataset: &str,
@@ -800,33 +535,6 @@ impl DatasetCatalogSnapshot {
             LazySourceSpec::Storyline { paths } => Some(paths.clone()),
             _ => None,
         })
-    }
-
-    pub(crate) fn physical_open_target(
-        &self,
-        dataset: &str,
-        file: &str,
-    ) -> Result<PhysicalOpenTarget> {
-        let dataset_name = identity::normalize_sql_alias(dataset)?;
-        let prepared = self
-            .prepared
-            .iter()
-            .find(|candidate| candidate.name == dataset_name)
-            .with_context(|| format!("physical source not found: {dataset}/{file}"))?;
-        let source = prepared
-            .sources
-            .iter()
-            .find(|source| source.file() == file)
-            .with_context(|| format!("physical source not found: {dataset}/{file}"))?;
-        match &source.spec {
-            LazySourceSpec::Events { uri, .. } => {
-                Ok(PhysicalOpenTarget::Events { uri: uri.clone() })
-            }
-            LazySourceSpec::Storyline { paths } => Ok(PhysicalOpenTarget::Storyline {
-                paths: Box::new(paths.clone()),
-            }),
-            _ => anyhow::bail!("physical source is not a Lance dataset: {dataset}/{file}"),
-        }
     }
 
     fn lazy_source(&self, key: &CatalogStorylineKey) -> Result<&LazySource> {
@@ -948,14 +656,6 @@ fn validate_catalog_options(options: CatalogSnapshotOptions) -> Result<()> {
     anyhow::ensure!(
         options.max_concurrent_sources > 0,
         "catalog max_concurrent_sources must be positive"
-    );
-    anyhow::ensure!(
-        options.max_event_fallback_rows > 0,
-        "catalog max_event_fallback_rows must be positive"
-    );
-    anyhow::ensure!(
-        options.max_event_fallback_bytes > 0,
-        "catalog max_event_fallback_bytes must be positive"
     );
     Ok(())
 }
@@ -1087,15 +787,7 @@ fn catalog_snapshot_id(datasets: &[CatalogDataset]) -> String {
                 hasher.update(b"\0");
                 hasher.update(snapshot_ref.as_bytes());
             }
-            if let Some(projection_generation) = &source.projection_generation {
-                hasher.update(b"\0projection:");
-                hasher.update(projection_generation.as_bytes());
-                hasher.update(match source.projection_status {
-                    Some(CatalogProjectionStatus::Fresh) => b":fresh",
-                    Some(CatalogProjectionStatus::Stale) => b":stale",
-                    None => b":none",
-                });
-            }
+
             if let Some(error) = &source.error {
                 hasher.update(b"\0");
                 hasher.update(error.as_bytes());

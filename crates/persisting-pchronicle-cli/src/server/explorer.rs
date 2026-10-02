@@ -1,9 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
-use persisting_pchronicle::model::EventRecord;
-use persisting_pchronicle::storage::{
-    CatalogEventProvenance, DatasetMount, PathListEntry, PathListKind,
-};
+use persisting_pchronicle::storage::{DatasetMount, PathListEntry, PathListKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -298,8 +295,6 @@ pub(crate) struct HistogramBucket {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct RunAnalysis {
     pub(crate) run: RunSummary,
-    pub(crate) event_provenance: CatalogEventProvenance,
-    pub(crate) event_count: usize,
     pub(crate) turn_count: usize,
     pub(crate) tool_call_count: usize,
     pub(crate) error_count: usize,
@@ -336,7 +331,6 @@ pub(crate) struct TurnSummary {
     pub(crate) completion_tokens: Option<u64>,
     pub(crate) total_tokens: Option<u64>,
     pub(crate) tool_names: Vec<String>,
-    pub(crate) event_seqs: Vec<u64>,
     pub(crate) has_error: bool,
 }
 
@@ -345,8 +339,6 @@ pub(crate) struct TurnDetail {
     pub(crate) summary: TurnSummary,
     pub(crate) turn: persisting_pchronicle::model::StorylineTurn,
     pub(crate) wire_tool_calls: Vec<WireToolCall>,
-    pub(crate) event_provenance: CatalogEventProvenance,
-    pub(crate) events: Vec<EventRecord>,
 }
 
 pub(crate) fn explorer_run_path(
@@ -500,12 +492,7 @@ pub(crate) fn run_identity(run: &RunSummary) -> String {
     format!("{}\u{1f}{}\u{1f}{}", run.dataset, run.file, run.document_id)
 }
 
-pub(crate) fn analyze(
-    run: RunSummary,
-    turns: &[TrajectoryTurnView],
-    events: &[EventRecord],
-    event_provenance: CatalogEventProvenance,
-) -> RunAnalysis {
+pub(crate) fn analyze(run: RunSummary, turns: &[TrajectoryTurnView]) -> RunAnalysis {
     let mut latencies = Vec::new();
     let mut ttfts = Vec::new();
     let mut prompt_tokens = 0u64;
@@ -521,13 +508,11 @@ pub(crate) fn analyze(
     let mut kinds = BTreeMap::<String, DimensionAccumulator>::new();
     let mut model_groups = BTreeMap::<String, DimensionAccumulator>::new();
     let mut error_count = 0usize;
-    let index = EventIndex::new(events);
 
     for item in turns {
         if let Some(timestamp) = item.turn.timestamp.as_ref() {
             timestamps.push(timestamp.clone());
         }
-        let linked = index.linked(&item.event_seqs, events);
         let mut values = Vec::new();
         if let Some(value) = &item.turn.metrics {
             values.push(value);
@@ -535,7 +520,6 @@ pub(crate) fn analyze(
         if let Some(value) = &item.turn.extra {
             values.push(value);
         }
-        values.extend(linked.iter().map(|event| &event.payload));
 
         let (turn_prompt_tokens, turn_completion_tokens, turn_total_tokens) = token_counts(&values);
         if let Some(value) = turn_prompt_tokens {
@@ -582,7 +566,7 @@ pub(crate) fn analyze(
         {
             models.insert(model.clone());
         }
-        let has_error = turn_has_error(item, &linked);
+        let has_error = turn_has_error(item);
         if has_error {
             error_count += 1;
         }
@@ -645,8 +629,6 @@ pub(crate) fn analyze(
     let latency_histogram = latency_histogram(&latencies);
 
     RunAnalysis {
-        event_provenance,
-        event_count: events.len(),
         turn_count: turns.len(),
         tool_call_count: turns
             .iter()
@@ -683,13 +665,11 @@ pub(crate) fn analyze(
 
 pub(crate) fn turn_list_with_search(
     turns: &[TrajectoryTurnView],
-    events: &[EventRecord],
     q: Option<&str>,
     source: Option<&str>,
     search: TurnSearchStatus,
 ) -> TurnExplorerPage {
     let needle = q.unwrap_or_default().trim().to_ascii_lowercase();
-    let index = EventIndex::new(events);
     let records = turns
         .iter()
         .filter(|item| {
@@ -697,7 +677,7 @@ pub(crate) fn turn_list_with_search(
                 source.is_empty() || source == "all" || item.turn.source == source
             }) && (needle.is_empty() || searchable_turn(item).contains(&needle))
         })
-        .map(|item| turn_summary(item, events, &index))
+        .map(turn_summary)
         .collect::<Vec<_>>();
     let total = records.len();
     TurnExplorerPage {
@@ -716,67 +696,15 @@ pub(crate) fn turn_list_with_search(
     }
 }
 
-/// Positions of every event sequence inside a trajectory's event list.
-///
-/// Turns reference their events by sequence, so resolving them by scanning the
-/// whole list once per turn costs `turns × events` and dominates long
-/// trajectories. Repeated sequences are all kept: a source may emit an id more
-/// than once, and collapsing them would change token and tool aggregates.
-struct EventIndex(HashMap<u64, Vec<usize>>);
-
-impl EventIndex {
-    fn new(events: &[EventRecord]) -> Self {
-        let mut positions = HashMap::<u64, Vec<usize>>::with_capacity(events.len());
-        for (position, event) in events.iter().enumerate() {
-            positions.entry(event.seq).or_default().push(position);
-        }
-        Self(positions)
-    }
-
-    fn linked<'a>(&self, seqs: &[u64], events: &'a [EventRecord]) -> Vec<&'a EventRecord> {
-        let mut positions = seqs
-            .iter()
-            .filter_map(|seq| self.0.get(seq))
-            .flatten()
-            .copied()
-            .collect::<Vec<_>>();
-        // A turn may list its sequences out of order or repeat one; callers
-        // expect each event once, in event-list order, as a scan produced them.
-        positions.sort_unstable();
-        positions.dedup();
-        positions
-            .into_iter()
-            .map(|position| &events[position])
-            .collect()
-    }
-}
-
-pub(crate) fn turn_detail(
-    item: &TrajectoryTurnView,
-    events: &[EventRecord],
-    event_provenance: CatalogEventProvenance,
-) -> TurnDetail {
-    let index = EventIndex::new(events);
-    let linked = index
-        .linked(&item.event_seqs, events)
-        .into_iter()
-        .cloned()
-        .collect::<Vec<_>>();
+pub(crate) fn turn_detail(item: &TrajectoryTurnView) -> TurnDetail {
     TurnDetail {
-        summary: turn_summary(item, events, &index),
+        summary: turn_summary(item),
         turn: item.turn.clone(),
         wire_tool_calls: item.wire_tool_calls.clone(),
-        event_provenance,
-        events: linked,
     }
 }
 
-fn turn_summary(
-    item: &TrajectoryTurnView,
-    events: &[EventRecord],
-    index: &EventIndex,
-) -> TurnSummary {
-    let linked = index.linked(&item.event_seqs, events);
+fn turn_summary(item: &TrajectoryTurnView) -> TurnSummary {
     let mut values = Vec::new();
     if let Some(value) = &item.turn.metrics {
         values.push(value);
@@ -784,7 +712,6 @@ fn turn_summary(
     if let Some(value) = &item.turn.extra {
         values.push(value);
     }
-    values.extend(linked.iter().map(|event| &event.payload));
     let (prompt_tokens, completion_tokens, total_tokens) = token_counts(&values);
     let tool_names = display_tool_calls(item)
         .into_iter()
@@ -834,8 +761,7 @@ fn turn_summary(
         completion_tokens,
         total_tokens,
         tool_names,
-        event_seqs: item.event_seqs.clone(),
-        has_error: turn_has_error(item, &linked),
+        has_error: turn_has_error(item),
     }
 }
 
@@ -1158,11 +1084,14 @@ fn compact(value: &str, limit: usize) -> String {
     }
 }
 
-fn turn_has_error(item: &TrajectoryTurnView, events: &[&EventRecord]) -> bool {
+fn turn_has_error(item: &TrajectoryTurnView) -> bool {
     item.turn.kind.as_deref().is_some_and(explicit_error_text)
-        || events.iter().any(|event| {
-            explicit_error_text(&event.kind) || value_has_explicit_error(&event.payload)
-        })
+        || value_has_explicit_error(&item.turn.message)
+        || item
+            .turn
+            .extra
+            .as_ref()
+            .is_some_and(value_has_explicit_error)
 }
 
 fn explicit_error_text(value: &str) -> bool {
@@ -1281,44 +1210,6 @@ mod tests {
     }
 
     #[test]
-    fn event_index_matches_a_full_scan_for_duplicate_and_unordered_sequences() {
-        let events = [7u64, 3, 7, 5, 3, 9]
-            .into_iter()
-            .map(|seq| EventRecord {
-                identity: Default::default(),
-                seq,
-                source: "test".into(),
-                kind: "note".into(),
-                timestamp: None,
-                session_id: None,
-                agent_id: None,
-                parent_uuid: None,
-                trace_id: None,
-                call_id: None,
-                subagent_id: None,
-                parent_agent_id: None,
-                branch: None,
-                parent_call_id: None,
-                payload: serde_json::json!({ "seq": seq }),
-            })
-            .collect::<Vec<_>>();
-        let index = EventIndex::new(&events);
-        for seqs in [
-            vec![],
-            vec![3],
-            vec![9, 3, 7],
-            vec![5, 5],
-            vec![3, 4, 7, 11],
-        ] {
-            let scanned = events
-                .iter()
-                .filter(|event| seqs.contains(&event.seq))
-                .collect::<Vec<_>>();
-            assert_eq!(index.linked(&seqs, &events), scanned, "{seqs:?}");
-        }
-    }
-
-    #[test]
     fn percentiles_report_coverage_without_inventing_missing_samples() {
         let stats = metric_stats(vec![10.0, 20.0, 30.0, 40.0], 8);
         assert_eq!(stats.sample_count, 4);
@@ -1418,7 +1309,6 @@ mod tests {
             root_session_id: None,
             path: format!("{dataset}/{file}/{session}"),
             row_count: 1,
-            duplicate_event_ids: 0,
             status: status.into(),
             format: Some("compact-jsonl/v1".into()),
         }
@@ -1514,9 +1404,6 @@ mod tests {
                     format: Some("compact-jsonl/v1".into()),
                     kind: CatalogSourceKind::Store,
                     revision: None,
-                    projection_status: None,
-                    projection_generation: None,
-                    projection_candidates: 0,
                     size_bytes: None,
                     last_modified: None,
                     status: CatalogSourceStatus::Ready,
@@ -1532,9 +1419,6 @@ mod tests {
                     format: None,
                     kind: CatalogSourceKind::File,
                     revision: None,
-                    projection_status: None,
-                    projection_generation: None,
-                    projection_candidates: 0,
                     size_bytes: None,
                     last_modified: None,
                     status: CatalogSourceStatus::Ready,
@@ -1594,8 +1478,8 @@ mod tests {
     #[test]
     fn run_page_file_prefix_is_not_run_path() {
         let summaries = vec![
-            sample_run("evals", "gsm8k/train/events.lance", "completed", "s1"),
-            sample_run("evals", "gsm8k/test/events.lance", "completed", "s2"),
+            sample_run("evals", "gsm8k/train/storyline", "completed", "s1"),
+            sample_run("evals", "gsm8k/test/storyline", "completed", "s2"),
             sample_run("evals", "mmlu.json", "completed", "s3"),
         ];
         let page = run_page(

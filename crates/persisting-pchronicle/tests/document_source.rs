@@ -6,8 +6,8 @@ use persisting_pchronicle::document::{
     DEFAULT_DOCUMENT_MATERIALIZE_ROWS, DocumentFormat, FilterPushdown, QueryTables,
     encode_agenticmd, encode_json_storylines, open_document,
 };
-use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument, StorylineTurn};
-use persisting_pchronicle::storage::{RawEventLanceStore, StoryCoords, StorylineLanceStore};
+use persisting_pchronicle::model::{StorylineDocument, StorylineTurn};
+use persisting_pchronicle::storage::StorylineLanceStore;
 use serde_json::json;
 
 mod support;
@@ -54,7 +54,7 @@ async fn assert_storyline_tables(format: DocumentFormat, path: &Path) -> Result<
 }
 
 #[tokio::test]
-async fn opens_all_seven_formats_and_reports_true_capabilities() -> Result<()> {
+async fn opens_supported_formats_and_reports_true_capabilities() -> Result<()> {
     let temporary = tempfile::tempdir()?;
 
     let agentic_path = temporary.path().join("story.md");
@@ -76,49 +76,6 @@ async fn opens_all_seven_formats_and_reports_true_capabilities() -> Result<()> {
     storyline_store
         .replace_storylines(std::slice::from_ref(&agentic_story))
         .await?;
-
-    let event_storage = temporary.path().join("events");
-    std::fs::create_dir_all(&event_storage)?;
-    let event_coords = StoryCoords::new(
-        event_storage.to_string_lossy(),
-        "agent",
-        "event-session",
-        None,
-    );
-    RawEventLanceStore
-        .append_events(
-            &event_coords,
-            &[EventRecord {
-                identity: EventIdentity::default(),
-                seq: 1,
-                source: "test".into(),
-                kind: "note".into(),
-                timestamp: Some("2026-01-01T00:00:00Z".into()),
-                session_id: Some("event-session".into()),
-                agent_id: Some("agent".into()),
-                parent_uuid: None,
-                trace_id: None,
-                call_id: None,
-                subagent_id: None,
-                parent_agent_id: None,
-                branch: None,
-                parent_call_id: None,
-                payload: json!({"content": "event"}),
-            }],
-        )
-        .await?;
-    let event_path = persisting_pchronicle::storage::raw_event_lance_path(&event_coords)?;
-
-    let events = open_document(DocumentFormat::CanonicalEvent, &event_path).await?;
-    assert_eq!(
-        events.register_datafusion(&SessionContext::new())?,
-        QueryTables::Events
-    );
-    let event_caps = events.capabilities();
-    assert_eq!(event_caps.filter_pushdown, FilterPushdown::Exact);
-    assert!(event_caps.scalar_indexes);
-    assert!(event_caps.snapshot_consistent);
-    assert_eq!(events.project_storylines().await?.len(), 1);
 
     let storyline = open_document(DocumentFormat::StorylineLance, &storyline_path).await?;
     assert_eq!(

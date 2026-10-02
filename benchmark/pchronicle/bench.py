@@ -22,7 +22,6 @@ import subprocess
 import sys
 from typing import Any
 
-
 SCHEMA = "pchronicle-benchmark"
 README_START = "<!-- pchronicle-benchmark:start -->"
 README_END = "<!-- pchronicle-benchmark:end -->"
@@ -82,9 +81,10 @@ def command_output(command: list[str], cwd: pathlib.Path) -> str:
 
 
 def environment(repo: pathlib.Path, suite: str) -> dict[str, Any]:
-    dirty = subprocess.run(
-        ["git", "diff", "--quiet", "--ignore-submodules", "--"], cwd=repo
-    ).returncode != 0
+    dirty = (
+        subprocess.run(["git", "diff", "--quiet", "--ignore-submodules", "--"], cwd=repo).returncode
+        != 0
+    )
     return {
         "suite": suite,
         "git_commit": command_output(["git", "rev-parse", "HEAD"], repo),
@@ -149,9 +149,7 @@ def jsonpath_segments(path: str) -> list[str]:
     while position < len(path):
         matched = JSONPATH_TOKEN_RE.match(path, position)
         if matched is None:
-            raise ValueError(
-                "benchmark JSONPath supports only bracketed name selectors: " + path
-            )
+            raise ValueError("benchmark JSONPath supports only bracketed name selectors: " + path)
         key = json.loads(matched.group("key"))
         if not isinstance(key, str) or not key:
             raise ValueError(f"JSONPath name selector must be a non-empty string: {path}")
@@ -169,9 +167,7 @@ def jsonpath_get(document: dict[str, Any], path: str) -> Any:
     return current
 
 
-def jsonpath_set(
-    document: dict[str, Any], path: str, value: Any, *, replace: bool = False
-) -> None:
+def jsonpath_set(document: dict[str, Any], path: str, value: Any, *, replace: bool = False) -> None:
     segments = jsonpath_segments(path)
     if not segments:
         raise ValueError("the benchmark JSONPath root cannot be replaced")
@@ -190,9 +186,7 @@ def jsonpath_set(
 def store_metrics(document: dict[str, Any], metrics: list[dict[str, Any]]) -> None:
     for item in metrics:
         path = metric_jsonpath(item["case"], item["metric"])
-        measurement = {
-            key: value for key, value in item.items() if key not in {"case", "metric"}
-        }
+        measurement = {key: value for key, value in item.items() if key not in {"case", "metric"}}
         jsonpath_set(document, path, measurement)
 
 
@@ -249,9 +243,7 @@ def run_criterion(
         {
             "CARGO_TARGET_DIR": str(target_dir),
             "PCHRONICLE_CRITERION_SAMPLES": str(config["criterion_samples"]),
-            "PCHRONICLE_CRITERION_MEASUREMENT_MS": str(
-                config["criterion_measurement_ms"]
-            ),
+            "PCHRONICLE_CRITERION_MEASUREMENT_MS": str(config["criterion_measurement_ms"]),
             "PCHRONICLE_CRITERION_WARMUP_MS": str(config["criterion_warmup_ms"]),
         }
     )
@@ -290,12 +282,8 @@ def run_criterion(
                     "ns",
                     "lower",
                     "criterion",
-                    float(confidence["lower_bound"])
-                    if "lower_bound" in confidence
-                    else None,
-                    float(confidence["upper_bound"])
-                    if "upper_bound" in confidence
-                    else None,
+                    float(confidence["lower_bound"]) if "lower_bound" in confidence else None,
+                    float(confidence["upper_bound"]) if "upper_bound" in confidence else None,
                 )
             )
     if not metrics:
@@ -488,18 +476,6 @@ def run_suite(args: argparse.Namespace) -> None:
             config["hyperfine_runs"],
         )
     )
-    if bench_target_exists(repo, "projection_pipeline"):
-        projection = build_bench_executable(repo, target_dir, "projection_pipeline", output)
-        metrics.extend(
-            run_system_scenario(
-                repo,
-                output,
-                projection,
-                "projection_pipeline",
-                common,
-                config["hyperfine_runs"],
-            )
-        )
     for shape in ("ndjson", "array"):
         metrics.extend(
             run_system_scenario(
@@ -762,14 +738,12 @@ table{{border-collapse:collapse;width:100%;margin-bottom:28px}} th,td{{padding:8
 th:first-child,td:first-child{{text-align:left}} th{{background:#f5f7fa}}
 </style></head><body><div class="summary"><h1>pChronicle benchmark</h1>
 <strong class="{tone}">{verdict}</strong><span>{len(regressions)} regressions · {len(improvements)} improvements</span></div>
-{''.join(sections)}<details><summary>Complete Markdown report</summary><pre>{html.escape(markdown)}</pre></details></body></html>
+{"".join(sections)}<details><summary>Complete Markdown report</summary><pre>{html.escape(markdown)}</pre></details></body></html>
 """
 
 
 def update_readme(args: argparse.Namespace) -> None:
-    report = read_report(
-        pathlib.Path(args.report), getattr(args, "report_jsonpath", None)
-    )
+    report = read_report(pathlib.Path(args.report), getattr(args, "report_jsonpath", None))
     readme = pathlib.Path(args.readme)
     content = readme.read_text(encoding="utf-8")
     if README_START not in content or README_END not in content:
@@ -777,15 +751,7 @@ def update_readme(args: argparse.Namespace) -> None:
     run = report["run"]
     priorities = [
         metric_jsonpath("criterion/atif_conversion/parse_corpus", "latency_median_ns"),
-        metric_jsonpath(
-            "criterion/atif_conversion/roundtrip_corpus", "latency_median_ns"
-        ),
-        metric_jsonpath(
-            "criterion/projection_cpu/events_to_storyline_corpus", "latency_median_ns"
-        ),
-        metric_jsonpath("system/projection_pipeline/event_append", "initial_append_ms"),
-        metric_jsonpath("system/projection_pipeline/projection_build", "build_ms"),
-        metric_jsonpath("system/projection_pipeline/projection_incremental", "sync_ms"),
+        metric_jsonpath("criterion/atif_conversion/roundtrip_corpus", "latency_median_ns"),
         metric_jsonpath("system/lance_vs_json/lifecycle", "cold_query_ms"),
         metric_jsonpath("system/lance_vs_json/lifecycle", "get_storyline_full_ms"),
         metric_jsonpath("system/lance_vs_json/lifecycle", "replace_storyline_ms"),
@@ -794,10 +760,7 @@ def update_readme(args: argparse.Namespace) -> None:
         metric_jsonpath("system/lance_vs_json/summary", "lance_over_json"),
         metric_jsonpath("system/json_streaming_ndjson/json_streaming", "p95_ms"),
         metric_jsonpath("system/json_streaming_ndjson/json_streaming", "rows_s"),
-        metric_jsonpath(
-            "system/json_streaming_ndjson/json_streaming", "process_peak_rss_mib"
-        ),
-        metric_jsonpath("hyperfine/projection_pipeline", "wall_median_seconds"),
+        metric_jsonpath("system/json_streaming_ndjson/json_streaming", "process_peak_rss_mib"),
         metric_jsonpath("hyperfine/lance_vs_json", "wall_median_seconds"),
     ]
     selected = []

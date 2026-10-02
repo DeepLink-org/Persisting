@@ -134,7 +134,6 @@ fn run_from_search(search: &str) -> Option<RunSummary> {
         root_session_id: query_value(search, "root_session_id").filter(|value| !value.is_empty()),
         path: String::new(),
         row_count: 0,
-        duplicate_event_ids: 0,
         status: "loading".into(),
         format: None,
     })
@@ -230,7 +229,6 @@ pub fn App() -> Element {
             root_session_id: initial_root,
             path: String::new(),
             row_count: 0,
-            duplicate_event_ids: 0,
             status: "loading".into(),
             format: None,
         });
@@ -2128,7 +2126,7 @@ fn RunDetailWorkspace(
 #[component]
 fn MetricsStrip(analysis: RunAnalysis) -> Element {
     rsx! { div { class: "pc2-metrics",
-        Metric { label: "Steps", value: analysis.turn_count.to_string(), detail: format!("{} {}", analysis.event_count, analysis.event_provenance.display_label().to_ascii_lowercase()) }
+        Metric { label: "Steps", value: analysis.turn_count.to_string(), detail: "Storyline steps" }
         Metric { label: "Tools", value: analysis.tool_call_count.to_string(), detail: format!("{} tool names", analysis.tools.len()) }
         Metric { label: "Explicit errors", value: analysis.error_count.to_string(), detail: "Captured signals only" }
         Metric { label: "Tokens", value: analysis.total_tokens.map(|value| value.to_string()).unwrap_or_else(|| "—".into()), detail: format!("in {} · out {}", optional_u64(analysis.prompt_tokens), optional_u64(analysis.completion_tokens)) }
@@ -2283,7 +2281,6 @@ fn OverviewAnalysis(analysis: RunAnalysis, turns: Vec<TurnSummary>) -> Element {
             code { "{elapsed}" }
             div { class: "pc2-run-span-meta",
                 span { strong { "{analysis.models.len()}" } " models" }
-                span { strong { "{analysis.event_count}" } " {analysis.event_provenance.display_label().to_ascii_lowercase()}" }
                 span { strong { "{analysis.error_count}" } " steps with explicit errors" }
             }
         }
@@ -3442,7 +3439,7 @@ mod tests {
                 "call_id": null, "preview": "ready-step-before-statistics", "model_name": null,
                 "latency_ms": null, "ttft_ms": null, "prompt_tokens": null,
                 "completion_tokens": null, "total_tokens": null, "tool_names": [],
-                "event_seqs": [], "has_error": false
+                "has_error": false
             }))
             .unwrap();
             rsx! { RunDetailWorkspace {
@@ -3579,7 +3576,6 @@ mod tests {
             root_session_id: Some("root".into()),
             path: path.into(),
             row_count: 1,
-            duplicate_event_ids: 0,
             status: "completed".into(),
             format: None,
         }

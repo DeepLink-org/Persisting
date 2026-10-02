@@ -18,8 +18,7 @@ the Sources it can discover and pin; it does not infer unreported trajectories.
 ## Source
 
 A Source is the smallest independently discovered and versioned trajectory
-representation inside a Dataset. It may be a canonical event store, a
-Storyline projection, or a supported exchange file. Every normalized row keeps
+representation inside a Dataset. It may be a Storyline store or a supported exchange file. Every normalized row keeps
 its `source_path`, so external IDs remain Source-local and collisions stay
 visible.
 

@@ -711,15 +711,15 @@ fn json_dataset_root() -> std::path::PathBuf {
         std::process::id()
     ));
     std::fs::create_dir_all(&root).unwrap();
-    write_gateway_fixture(&root, "gateway.json", "json-session", "json-job");
+    write_openai_fixture(&root, "gateway.json", "json-session", "json-job");
     root
 }
 
-fn write_gateway_fixture(root: &std::path::Path, file: &str, session_id: &str, job_id: &str) {
-    write_gateway_fixture_with_status(root, file, session_id, job_id, false);
+fn write_openai_fixture(root: &std::path::Path, file: &str, session_id: &str, job_id: &str) {
+    write_openai_fixture_with_status(root, file, session_id, job_id, false);
 }
 
-fn write_gateway_fixture_with_status(
+fn write_openai_fixture_with_status(
     root: &std::path::Path,
     file: &str,
     session_id: &str,
@@ -777,187 +777,6 @@ fn mounted_config_rejects_duplicate_dataset_names() {
 }
 
 #[test]
-fn projected_turn_sequence_wins_over_call_wide_event_group() {
-    let turn = StorylineTurn {
-        id: 1,
-        kind: Some("llm.response".into()),
-        timestamp: None,
-        source: "agent".into(),
-        message: json!("done"),
-        reasoning_content: None,
-        reasoning_effort: None,
-        tool_calls: None,
-        observation: None,
-        metrics: None,
-        model_name: None,
-        llm_call_count: Some(1),
-        is_copied_context: None,
-        latency_ms: None,
-        ttft_ms: None,
-        extra: Some(json!({"call_id": "model-call", "seq": 11})),
-        env: None,
-        prompt: None,
-        finished_at: None,
-    };
-    let by_call = BTreeMap::from([("model-call".into(), vec![10, 11])]);
-
-    assert_eq!(event_seqs_for_turn(&turn, &by_call), vec![11]);
-}
-
-#[test]
-fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
-    use persisting_pchronicle::model::StorylineToolCall;
-
-    let user = StorylineTurn {
-        id: 1,
-        kind: Some("llm.request".into()),
-        timestamp: Some(
-            persisting_pchronicle::model::StorylineTimestamp::from_rfc3339("2026-08-20T00:00:00Z")
-                .unwrap(),
-        ),
-        source: "user".into(),
-        message: json!("run tool"),
-        reasoning_content: None,
-        reasoning_effort: None,
-        tool_calls: None,
-        observation: None,
-        metrics: None,
-        model_name: None,
-        llm_call_count: None,
-        is_copied_context: None,
-        latency_ms: None,
-        ttft_ms: None,
-        extra: Some(json!({"call_id": "model-call", "seq": 0})),
-        env: None,
-        prompt: None,
-        finished_at: None,
-    };
-    let agent = StorylineTurn {
-        id: 2,
-        kind: Some("llm.response".into()),
-        timestamp: Some(
-            persisting_pchronicle::model::StorylineTimestamp::from_rfc3339("2026-08-20T00:00:01Z")
-                .unwrap(),
-        ),
-        source: "agent".into(),
-        message: json!(""),
-        reasoning_content: None,
-        reasoning_effort: None,
-        tool_calls: Some(vec![StorylineToolCall {
-            tool_call_id: "tool-call-1".into(),
-            function_name: "lookup".into(),
-            arguments: json!({"q": "x"}),
-            result: None,
-            duration_ms: None,
-            extra: None,
-            kind: None,
-            response: None,
-        }]),
-        observation: None,
-        metrics: Some(json!({
-            "prompt_tokens": 10,
-            "completion_tokens": 4,
-            "total_tokens": 14
-        })),
-        model_name: Some("test-model".into()),
-        llm_call_count: Some(1),
-        is_copied_context: None,
-        latency_ms: Some(1000),
-        ttft_ms: Some(100),
-        extra: Some(json!({"call_id": "model-call", "seq": 1})),
-        env: None,
-        prompt: None,
-        finished_at: None,
-    };
-    let event = |seq, kind: &str, payload| EventRecord {
-        identity: Default::default(),
-        seq,
-        source: "gateway".into(),
-        kind: kind.into(),
-        timestamp: None,
-        session_id: Some("session".into()),
-        agent_id: Some("agent".into()),
-        parent_uuid: None,
-        trace_id: None,
-        call_id: Some("model-call".into()),
-        subagent_id: None,
-        parent_agent_id: None,
-        branch: None,
-        parent_call_id: None,
-        payload,
-    };
-    let events = vec![
-        event(0, "llm.request", json!({"model": "test-model"})),
-        event(
-            1,
-            "llm.response.stream",
-            json!({
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 4,
-                    "total_tokens": 14
-                }
-            }),
-        ),
-    ];
-    let turns = vec![
-        TrajectoryTurnView {
-            turn: user,
-            call_id: Some("model-call".into()),
-            event_seqs: vec![0],
-            // A later request carries the prior assistant tool call as message
-            // history. It must not be counted as a new invocation.
-            wire_tool_calls: vec![WireToolCall {
-                id: Some("tool-call-1".into()),
-                name: "lookup".into(),
-                arguments: json!({"q": "x"}),
-                result: None,
-            }],
-        },
-        TrajectoryTurnView {
-            turn: agent,
-            call_id: Some("model-call".into()),
-            event_seqs: vec![1],
-            wire_tool_calls: vec![WireToolCall {
-                id: Some("tool-call-1".into()),
-                name: "lookup".into(),
-                arguments: json!({"q": "x"}),
-                result: None,
-            }],
-        },
-    ];
-    let mut user_with_native_call = turns[0].clone();
-    user_with_native_call.turn.tool_calls = turns[1].turn.tool_calls.clone();
-    assert!(explorer::display_tool_calls(&user_with_native_call).is_empty());
-    let run = RunSummary {
-        dataset: "dataset".into(),
-        file: "events.lance".into(),
-        document_id: "session".into(),
-        run_id: None,
-        agent_id: "agent".into(),
-        model_name: Some("test-model".into()),
-        session_id: "session".into(),
-        root_session_id: None,
-        path: "dataset/events.lance/session".into(),
-        row_count: 2,
-        duplicate_event_ids: 0,
-        status: "completed".into(),
-        format: None,
-    };
-
-    let analysis = explorer::analyze(run, &turns, &events, CatalogEventProvenance::Canonical);
-    assert_eq!(analysis.prompt_tokens, Some(10));
-    assert_eq!(analysis.completion_tokens, Some(4));
-    assert_eq!(analysis.total_tokens, Some(14));
-    assert_eq!(analysis.tool_call_count, 1);
-    assert_eq!(analysis.tools.len(), 1);
-    assert_eq!(analysis.tools[0].name, "lookup");
-    assert_eq!(analysis.tools[0].count, 1);
-    assert_eq!(analysis.latency_ms.sample_count, 1);
-    assert_eq!(analysis.ttft_ms.sample_count, 1);
-}
-
-#[test]
 fn evidence_queries_are_wrapped_with_a_server_side_row_bound() {
     assert_eq!(
         bounded_evidence_sql("SELECT * FROM dataset.runs;", 200),
@@ -971,34 +790,6 @@ fn evidence_queries_are_wrapped_with_a_server_side_row_bound() {
         bounded_evidence_sql("EXPLAIN SELECT * FROM dataset.runs", 10),
         "EXPLAIN SELECT * FROM dataset.runs"
     );
-}
-
-#[test]
-fn canonical_event_uri_resolves_write_coordinates_independent_of_mount_root() {
-    let run = RunSummary {
-        dataset: "live".into(),
-        file: "agent/run-1/events.lance".into(),
-        document_id: "child".into(),
-        run_id: Some("child".into()),
-        agent_id: "agent".into(),
-        model_name: None,
-        session_id: "child".into(),
-        root_session_id: Some("run-1".into()),
-        path: "live/agent/run-1/events.lance/child".into(),
-        row_count: 1,
-        duplicate_event_ids: 0,
-        status: "active".into(),
-        format: None,
-    };
-    let local = event_uri_coords("/tmp/capture/agent/run-1/events.lance", &run).unwrap();
-    assert_eq!(local.storage, "/tmp/capture");
-    assert_eq!(local.agent_id, "agent");
-    assert_eq!(local.root_session_id.as_deref(), Some("run-1"));
-
-    let remote = event_uri_coords("s3://bucket/prefix/agent/run-1/events.lance", &run).unwrap();
-    assert_eq!(remote.storage, "s3://bucket/prefix");
-    assert_eq!(remote.agent_id, "agent");
-    assert_eq!(remote.session_id, "child");
 }
 
 #[tokio::test]
@@ -1028,7 +819,6 @@ async fn json_datasets_expose_tables_and_support_read_only_sql() {
     assert_eq!(tables["tables"][2]["name"], "steps");
     assert_eq!(tables["tables"][3]["name"], "tool_calls");
     assert_eq!(tables["tables"][4]["name"], "trajectories");
-    assert_eq!(tables["tables"][5]["name"], "events");
     assert_eq!(tables["tables"][4]["kind"], "view");
     let view_names: Vec<_> = tables["tables"]
         .as_array()
@@ -1107,7 +897,7 @@ async fn explorer_automatically_refreshes_new_dataset_sources() {
         serde_json::from_slice(&initial.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(initial["snapshot"]["total"], 1);
 
-    write_gateway_fixture(&root, "second.json", "second-session", "second-job");
+    write_openai_fixture(&root, "second.json", "second-session", "second-job");
     let tree = app
         .clone()
         .oneshot(
@@ -1231,7 +1021,7 @@ async fn server_routing_index_prunes_point_queries_and_resets_on_refresh() -> an
     use tower::ServiceExt;
 
     let root = json_dataset_root();
-    write_gateway_fixture(&root, "second.json", "second-session", "second-job");
+    write_openai_fixture(&root, "second.json", "second-session", "second-job");
     let app = router(root.to_string_lossy().to_string());
 
     let routed = app
@@ -1475,57 +1265,6 @@ async fn prepared_catalog_installs_refreshes_and_retains_the_last_good_runtime()
 }
 
 #[tokio::test]
-async fn live_warehouse_reads_new_events_without_catalog_refresh() -> anyhow::Result<()> {
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
-
-    let temp = tempfile::tempdir()?;
-    let coords = StoryCoords::new(temp.path().to_string_lossy(), "agent", "session", None);
-    let event = |seq| EventRecord {
-        identity: persisting_pchronicle::model::EventIdentity::default(),
-        seq,
-        source: "test".into(),
-        kind: "note".into(),
-        timestamp: None,
-        session_id: Some("session".into()),
-        agent_id: Some("agent".into()),
-        parent_uuid: None,
-        trace_id: None,
-        call_id: None,
-        subagent_id: None,
-        parent_agent_id: None,
-        branch: None,
-        parent_call_id: None,
-        payload: json!({"seq": seq}),
-    };
-    persisting_pchronicle::storage::RawEventLanceStore
-        .append_events(&coords, &[event(0)])
-        .await?;
-    let config = ChronicleServerConfig::mounted(vec![DatasetMount::default(
-        temp.path().to_string_lossy().to_string(),
-    )?])?;
-    let prepared = PreparedWarehouse::prepare_live(config).await?;
-
-    // Append after the Warehouse has pinned its initial Catalog snapshot.
-    persisting_pchronicle::storage::RawEventLanceStore
-        .append_events(&coords, &[event(1)])
-        .await?;
-    let response = prepared
-        .router()
-        .oneshot(
-            axum::http::Request::builder()
-                .uri("/api/events?agent_id=agent&session_id=session")
-                .body(axum::body::Body::empty())?,
-        )
-        .await?;
-    assert_eq!(response.status(), StatusCode::OK);
-    let body: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
-    assert_eq!(body["snapshot"]["total"], 2);
-    assert_eq!(body["records"].as_array().map(Vec::len), Some(2));
-    Ok(())
-}
-
-#[tokio::test]
 async fn warehouse_keeps_api_v1_aliases_for_embedded_web_ui() {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -1635,7 +1374,7 @@ async fn warehouse_does_not_expose_unused_har_or_revisions_routes() {
 #[tokio::test]
 async fn unscoped_runs_refresh_in_background_and_back_off_after_failure() {
     let root = tempfile::tempdir().unwrap();
-    write_gateway_fixture(root.path(), "first.json", "first-session", "job");
+    write_openai_fixture(root.path(), "first.json", "first-session", "job");
     let config = ChronicleServerConfig::mounted(vec![
         DatasetMount::default(root.path().to_string_lossy().to_string()).unwrap(),
     ])
@@ -1646,7 +1385,7 @@ async fn unscoped_runs_refresh_in_background_and_back_off_after_failure() {
     Arc::get_mut(&mut initial).unwrap().built_at = Instant::now() - Duration::from_secs(60);
     let old_id = initial.snapshot.snapshot_id().to_owned();
     *state.catalog.write().await = Some(initial);
-    write_gateway_fixture(root.path(), "second.json", "second-session", "job");
+    write_openai_fixture(root.path(), "second.json", "second-session", "job");
 
     // An ongoing Catalog refresh must never make a warm UI request wait.
     let guard = state.catalog_refresh.lock().await;
@@ -1711,14 +1450,14 @@ async fn explorer_runs_reuses_ui_summaries_until_explicit_catalog_refresh() {
     use tower::ServiceExt;
 
     let root = tempfile::tempdir().unwrap();
-    write_gateway_fixture(root.path(), "first.json", "first-session", "job");
+    write_openai_fixture(root.path(), "first.json", "first-session", "job");
     let app = router(root.path().to_string_lossy().to_string());
     let uri = "/api/explorer/runs?dataset=dataset&limit=1";
     let (status, initial) = get_json(&app, uri).await;
     assert_eq!(status, StatusCode::OK, "{initial}");
     assert_eq!(initial["snapshot"]["total"], 1);
 
-    write_gateway_fixture(root.path(), "second.json", "second-session", "job");
+    write_openai_fixture(root.path(), "second.json", "second-session", "job");
     let response = app
         .clone()
         .oneshot(
@@ -1761,7 +1500,7 @@ async fn explorer_runs_prunes_unrelated_sources_before_querying() {
     let root = tempfile::tempdir().unwrap();
     let prefix = "nested/a'_%";
     std::fs::create_dir_all(root.path().join(prefix)).unwrap();
-    write_gateway_fixture(
+    write_openai_fixture(
         root.path(),
         &format!("{prefix}/run.json"),
         "selected",
@@ -1903,7 +1642,6 @@ async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
         String::from_utf8_lossy(&analysis_body)
     );
     let analysis: Value = serde_json::from_slice(&analysis_body).unwrap();
-    assert_eq!(analysis["event_provenance"], "synthetic_from_storyline");
     assert_eq!(analysis["turn_count"], 2);
     assert_eq!(analysis["latency_histogram"].as_array().unwrap().len(), 6);
     assert_eq!(analysis["source_breakdown"].as_array().unwrap().len(), 2);
@@ -1947,28 +1685,7 @@ async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
     let detail: Value = serde_json::from_slice(&detail_body).unwrap();
     assert_eq!(detail["summary"]["id"], 1);
     assert_eq!(detail["turn"]["src"], "user");
-    assert_eq!(detail["event_provenance"], "synthetic_from_storyline");
-
-    let events = app
-        .clone()
-        .oneshot(
-            axum::http::Request::builder()
-                .uri(format!("/api/events?{coordinates}"))
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(events.status(), StatusCode::OK);
-    let events = response_json(events).await;
-    assert_eq!(
-        events["provenance"],
-        json!({
-            "kind": "synthetic_from_storyline",
-            "transform": "storyline_to_events_v1"
-        })
-    );
-    assert!(!events["records"].as_array().unwrap().is_empty());
+    assert!(detail.get("events").is_none());
 
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -2037,7 +1754,7 @@ async fn explorer_uses_terminal_metadata_for_run_status() {
     use tower::ServiceExt;
 
     let root = json_dataset_root();
-    write_gateway_fixture_with_status(
+    write_openai_fixture_with_status(
         &root,
         "completed.json",
         "completed-session",
@@ -2233,7 +1950,7 @@ async fn explorer_tree_lists_mounted_datasets_by_run_count() -> anyhow::Result<(
 
     let live = json_dataset_root();
     std::fs::create_dir_all(live.join("nested"))?;
-    write_gateway_fixture(&live, "nested/run.json", "nested-session", "nested-job");
+    write_openai_fixture(&live, "nested/run.json", "nested-session", "nested-job");
     let archive = json_dataset_root();
     let config = ChronicleServerConfig::mounted(vec![
         DatasetMount::new("live", live.to_string_lossy())?,
@@ -2808,7 +2525,6 @@ async fn exact_trajectory_endpoints_do_not_wait_for_global_catalog() -> anyhow::
         "explorer/turns",
         "explorer/turn",
         "trajectory-view",
-        "events",
         "storyline",
     ] {
         let (status, body) = tokio::time::timeout(
@@ -2818,7 +2534,6 @@ async fn exact_trajectory_endpoints_do_not_wait_for_global_catalog() -> anyhow::
         .await?;
         assert_eq!(status, StatusCode::OK, "{endpoint}: {body}");
         if endpoint == "explorer/run" {
-            assert_eq!(body["event_provenance"], "synthetic_from_storyline");
             assert!(body["turn_count"].as_u64().unwrap() > 0);
         }
     }
@@ -2892,7 +2607,7 @@ async fn runs_unknown_dataset_is_a_structured_error_without_panicking() {
 #[tokio::test]
 async fn runs_deadline_includes_catalog_lock_and_releases_cancelled_work() {
     let root = tempfile::tempdir().unwrap();
-    write_gateway_fixture(root.path(), "run.json", "session", "job");
+    write_openai_fixture(root.path(), "run.json", "session", "job");
     let config = ChronicleServerConfig::mounted(vec![
         DatasetMount::default(root.path().to_string_lossy().to_string()).unwrap(),
     ])
@@ -3038,8 +2753,6 @@ async fn overlapping_trajectory_loads_share_immutable_result() {
         agent_id: run.agent_id.clone(),
         session_id: run.session_id.clone(),
         root_session_id: run.root_session_id.clone(),
-        offset: None,
-        limit: None,
     };
     let (left, right) = tokio::join!(
         load_trajectory(&state, &query, &request, &metrics),

@@ -1,8 +1,0 @@
-{
-  "model": "rerank-v3.5",
-  "query": "q",
-  "documents": ["a"],
-  "max_tokens_per_doc": 512,
-  "return_documents": false,
-  "truncation": "END"
-}

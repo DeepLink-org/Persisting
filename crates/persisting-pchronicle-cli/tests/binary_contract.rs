@@ -106,20 +106,7 @@ fn serve_help_exposes_only_the_canonical_dataset_surface() -> Result<()> {
     );
     assert!(stdout.contains("pchronicle serve catalog"), "{stdout}");
     assert!(stdout.contains("catalog"), "{stdout}");
-    for option in [
-        "--listen",
-        "--control",
-        "--open",
-        "--home-link",
-        "--gateway",
-        "--gateway-config",
-        "--gateway-dataset",
-        "--gateway-split",
-        "--gateway-state",
-        "--gateway-stream-markdown",
-        "--gateway-debug",
-        "--catalog-config",
-    ] {
+    for option in ["--listen", "--open", "--home-link", "--catalog-config"] {
         assert!(
             stdout.contains(option),
             "serve help omits {option}: {stdout}"
@@ -397,75 +384,6 @@ SELECT 1
     );
     assert!(!skill_example_needs_storyline(&blocks[0]));
     assert!(skill_example_needs_storyline(&blocks[1]));
-    Ok(())
-}
-
-#[tokio::test]
-async fn canonical_event_import_is_queryable_in_release() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let storage = temp.path().join("capture");
-    let coords = persisting_pchronicle::storage::StoryCoords::new(
-        storage.to_string_lossy(),
-        "agent",
-        "run",
-        Some("run".into()),
-    );
-    persisting_pchronicle::storage::RawEventLanceStore
-        .append_events(
-            &coords,
-            &[persisting_pchronicle::model::EventRecord {
-                identity: Default::default(),
-                seq: 0,
-                source: "test".into(),
-                kind: "note".into(),
-                timestamp: None,
-                session_id: Some("run".into()),
-                agent_id: Some("agent".into()),
-                parent_uuid: None,
-                trace_id: None,
-                call_id: None,
-                subagent_id: None,
-                parent_agent_id: None,
-                branch: None,
-                parent_call_id: None,
-                payload: serde_json::json!({"content":"release-smoke"}),
-            }],
-        )
-        .await?;
-    let source = persisting_pchronicle::storage::raw_event_lance_path(&coords)?;
-    let output = temp.path().join("storyline");
-    let imported = pchronicle(&[
-        "import",
-        "--from",
-        source.to_str().unwrap(),
-        "--output",
-        output.to_str().unwrap(),
-    ])?;
-    assert!(
-        imported.status.success(),
-        "{}",
-        String::from_utf8_lossy(&imported.stderr)
-    );
-    let response: Value = serde_json::from_slice(&imported.stdout)?;
-    assert_eq!(response["format"], "events");
-    assert_eq!(response["output_format"], "storyline-lance");
-    assert_eq!(response["fact_rows"], 1);
-    assert!(response.get("input_bytes").is_none());
-
-    let queried = pchronicle(&[
-        "query",
-        output.to_str().unwrap(),
-        "SELECT COUNT(*) AS runs FROM dataset.runs",
-        "--format",
-        "jsonl",
-    ])?;
-    assert!(
-        queried.status.success(),
-        "{}",
-        String::from_utf8_lossy(&queried.stderr)
-    );
-    let row: Value = serde_json::from_slice(&queried.stdout)?;
-    assert_eq!(row["runs"], 1);
     Ok(())
 }
 
@@ -1044,4 +962,18 @@ fn skill_bash_blocks(skill: &str) -> Result<Vec<String>> {
 #[cfg(unix)]
 fn skill_example_needs_storyline(block: &str) -> bool {
     block.split_whitespace().any(|token| token == "find")
+}
+
+#[test]
+fn removed_capture_commands_and_options_are_rejected() -> Result<()> {
+    for args in [
+        vec!["echo"],
+        vec!["dev", "echo"],
+        vec!["serve", "data", "--gateway", "auto"],
+        vec!["serve", "data", "--control", "127.0.0.1:0"],
+    ] {
+        let output = pchronicle(&args)?;
+        assert!(!output.status.success(), "accepted removed CLI: {args:?}");
+    }
+    Ok(())
 }

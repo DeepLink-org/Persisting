@@ -1,7 +1,7 @@
 # pChronicle Directory 与平台场景
 
 面向平台部署的 Directory 配置。ACL 文件管理用户、datasets（libraries）和授权；
-Warehouse 的 listen / Gateway 参数仍由 `pchronicle serve` 提供。
+Warehouse 的 listen 参数仍由 `pchronicle serve` 提供。
 
 ## P01：从空配置签发 Directory 用户
 

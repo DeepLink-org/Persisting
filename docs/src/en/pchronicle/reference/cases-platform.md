@@ -1,7 +1,7 @@
 # pChronicle Directory and platform cases
 
 Platform-oriented Directory setup. The ACL file manages users, datasets
-(libraries), and grants; Warehouse listen/Gateway options still come from
+(libraries), and grants; Warehouse listen options still come from
 `pchronicle serve`.
 
 ## P01: Issue a Directory user from an empty config

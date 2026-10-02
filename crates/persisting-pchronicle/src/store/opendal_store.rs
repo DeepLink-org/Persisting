@@ -507,10 +507,6 @@ impl Store {
         .await
         .map(|_| ())
     }
-
-    pub(crate) fn fallback_lock(&self) -> Option<Arc<tokio::sync::Mutex<()>>> {
-        self.fallback_lock.clone()
-    }
 }
 
 fn operator_cache_key(uri: &str, normalized: &str) -> String {

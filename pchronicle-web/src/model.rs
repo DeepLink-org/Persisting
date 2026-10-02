@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -51,7 +49,6 @@ pub struct RunSummary {
     pub root_session_id: Option<String>,
     pub path: String,
     pub row_count: usize,
-    pub duplicate_event_ids: usize,
     pub status: String,
     #[serde(default)]
     pub format: Option<String>,
@@ -461,46 +458,6 @@ pub struct WireToolCall {
     pub result: Option<Value>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct EventRecord {
-    pub seq: u64,
-    pub source: String,
-    pub kind: String,
-    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
-    pub timestamp: Option<String>,
-    pub event_id: Option<String>,
-    pub call_id: Option<String>,
-    pub trace_id: Option<String>,
-    pub producer: Option<String>,
-    pub payload: Value,
-    #[serde(flatten)]
-    pub rest: BTreeMap<String, Value>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EventProvenance {
-    Canonical,
-    SyntheticFromStoryline,
-}
-
-impl EventProvenance {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Canonical => "canonical",
-            Self::SyntheticFromStoryline => "synthetic_from_storyline",
-        }
-    }
-
-    /// Plain-language label for user-facing summaries.
-    pub const fn display_label(self) -> &'static str {
-        match self {
-            Self::Canonical => crate::terminology::RECORDED_EVENTS,
-            Self::SyntheticFromStoryline => crate::terminology::RECONSTRUCTED_EVENTS,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct MetricStats {
     pub sample_count: usize,
@@ -542,8 +499,6 @@ pub struct HistogramBucket {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct RunAnalysis {
     pub run: RunSummary,
-    pub event_provenance: EventProvenance,
-    pub event_count: usize,
     pub turn_count: usize,
     pub tool_call_count: usize,
     pub error_count: usize,
@@ -584,7 +539,6 @@ pub struct TurnSummary {
     pub completion_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
     pub tool_names: Vec<String>,
-    pub event_seqs: Vec<u64>,
     pub has_error: bool,
 }
 
@@ -613,8 +567,6 @@ pub struct TurnDetail {
     pub summary: TurnSummary,
     pub turn: StorylineTurn,
     pub wire_tool_calls: Vec<WireToolCall>,
-    pub event_provenance: EventProvenance,
-    pub events: Vec<EventRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -642,7 +594,6 @@ mod tests {
             root_session_id: Some("root+1".into()),
             path: "agent one/root+1/subagents/s-1".into(),
             row_count: 2,
-            duplicate_event_ids: 0,
             status: "ok".into(),
             format: None,
         };
@@ -664,7 +615,7 @@ mod tests {
             },
             "records": [{
                 "dataset": "captures",
-                "file": "capture-comparison/events.lance",
+                "file": "capture-comparison/storyline",
                 "document_id": "session-1",
                 "run_id": null,
                 "agent_id": "capture-comparison",
@@ -673,18 +624,18 @@ mod tests {
                 "root_session_id": null,
                 "path": "captures/capture-comparison/session-1",
                 "row_count": 6,
-                "duplicate_event_ids": 0,
+
                 "status": "completed",
                 "model": "test-model"
             }],
             "path_index": []
         }))
-        .expect("canonical Gateway runs may not have a run id");
+        .expect("Storyline runs may not have a run id");
 
         assert_eq!(page.records[0].run.run_id, None);
         assert_eq!(
             page.records[0].run.query(),
-            "dataset=captures&file=capture-comparison%2Fevents.lance&agent_id=capture-comparison&session_id=session-1"
+            "dataset=captures&file=capture-comparison%2Fstoryline&agent_id=capture-comparison&session_id=session-1"
         );
     }
 
@@ -695,7 +646,7 @@ mod tests {
                 "dataset": "records", "file": "data.lance", "run_id": null,
                 "agent_id": "compact-jsonl", "model_name": null, "session_id": "row-1",
                 "root_session_id": null, "path": "records/data.lance/row-1",
-                "row_count": 1, "duplicate_event_ids": 0, "status": "record",
+                "row_count": 1,  "status": "record",
                 "format": "compact-jsonl/v1"
             },
             "record": {"id": "row-1", "nested": {"ok": true}}
@@ -703,37 +654,6 @@ mod tests {
         .unwrap();
         assert!(detail.run.is_compact_jsonl());
         assert_eq!(detail.record["nested"]["ok"], true);
-    }
-
-    #[test]
-    fn turn_detail_accepts_numeric_storyline_timestamps() {
-        let turn: StorylineTurn = serde_json::from_value(serde_json::json!({
-            "id": 85,
-            "src": "user",
-            "msg": "hello",
-            "ts": 1785310111
-        }))
-        .expect("explorer detail preserves numeric Storyline timestamps");
-        assert_eq!(turn.timestamp.as_deref(), Some("1785310111"));
-
-        let event: EventRecord = serde_json::from_value(serde_json::json!({
-            "seq": 1,
-            "source": "gateway",
-            "kind": "llm.request",
-            "timestamp": 1785310111,
-            "payload": {}
-        }))
-        .expect("linked events may carry numeric timestamps");
-        assert_eq!(event.timestamp.as_deref(), Some("1785310111"));
-
-        let rfc3339: StorylineTurn = serde_json::from_value(serde_json::json!({
-            "id": 1,
-            "src": "agent",
-            "msg": "ok",
-            "ts": "2026-07-29T00:00:00Z"
-        }))
-        .unwrap();
-        assert_eq!(rfc3339.timestamp.as_deref(), Some("2026-07-29T00:00:00Z"));
     }
 
     #[test]

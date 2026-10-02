@@ -1,7 +1,7 @@
 [project]
 name = "persisting"
 version = "0.3.0"
-description = "Durable Agent trajectory capture, storage, and query infrastructure"
+description = "Durable Agent trajectory processing, storage, and query infrastructure"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"

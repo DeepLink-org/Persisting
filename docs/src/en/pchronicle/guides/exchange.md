@@ -51,49 +51,6 @@ pchronicle import --from ./corpus --to ./normalized \
  --output-format storyline
 ```
 
-A validated, non-empty canonical Event Store is detected before JSON scanning
-and always creates Storyline Lance:
-
-```bash
-pchronicle import --from ./run/events.lance --to ./run/storyline
-```
-
-This mode accepts local and object-store URIs, never mutates the source, and
-supports create or confirmed replace (not append). Its JSON result reports `format: "events"`,
-`output_format: "storyline-lance"`, and `fact_rows`; it omits `input_bytes`.
-Explicit `--output-format preserve` and JSON exchange `--input-format` values are
-invalid for canonical events.
-
-In the squashed Dataset, `_file_` is `.` for all normalized rows:
-
-```bash
-pchronicle query ./normalized \
- --sql 'SELECT _file_, COUNT(*) AS runs FROM dataset.runs GROUP BY _file_'
-```
-
-`document_id` is globally unique in Storyline output. Collisions receive a
-deterministic `#N` suffix; append can instead skip them with
-`--on-duplicate skip`. Successful Storyline output does not retain source paths
-as queryable information; use preserve output when file boundaries matter.
-
-ATIF `.jsonl` and `.ndjson` inputs decode every non-empty record. Symbolic
-links found while walking a directory are skipped; an explicitly named link to
-a regular file retains single-file behavior. The directory is published
-atomically only after every input and the selected storage output succeed.
-Stdin must be finite and explicit:
-
-```bash
-cat input.json | pchronicle import --from - \
- --to ./imported --input-format openai-messages
-```
-
-After import, inspect the new boundary:
-
-```bash
-pchronicle stats ./imported
-pchronicle stats overview ./imported
-```
-
 ## Export complete Runs
 
 ```bash
@@ -115,5 +72,5 @@ Import/export is not a storage migration protocol and arbitrary SQL rows are
 not exportable Runs. For exact flags, see the
 [`pchronicle` CLI reference](../reference/cli.md). See
 [Run data formats](../reference/formats/index.md) for contracts and
-[data contracts and revisions](../concepts/facts-and-projections.md)
+[trajectory data and versions](../concepts/facts-and-projections.md)
 for the internal layer boundary.

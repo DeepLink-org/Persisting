@@ -1,6 +1,6 @@
 //! Document-codec contract for JSON / JSONL / Markdown trajectory files.
 //!
-//! Storage backends (Canonical Event Lance, Storyline Lance) are not codecs
+//! Storage backends (Storyline Lance) are not codecs
 //! and must not implement this trait.
 
 use std::io::{BufRead, Write};

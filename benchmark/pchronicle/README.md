@@ -8,10 +8,7 @@
 The guarded paths are:
 
 - ATIF parse and round-trip conversion;
-- canonical events → Storyline projection;
 - Storyline split into and reconstruction from the three relational tables;
-- canonical Lance event append;
-- full and incremental Storyline projection, including verification;
 - Storyline point reads, replacement, indexed SQL, and group-by queries;
 - projected JSON streaming latency, throughput, allocations, and peak RSS.
 
@@ -58,9 +55,9 @@ array. Every leaf has one stable JSONPath address:
 {
   "measurements": {
     "system": {
-      "projection_pipeline": {
-        "projection_incremental": {
-          "sync_ms": {
+      "lance_vs_json": {
+        "lifecycle": {
+          "cold_query_ms": {
             "value": 42.1,
             "unit": "ms",
             "direction": "lower",
@@ -79,7 +76,7 @@ escaping. Read a value with:
 ```bash
 python3 benchmark/pchronicle/bench.py jsonpath-get \
   --document target/pchronicle-benchmark/current/raw-report.json \
-  --path '$["measurements"]["system"]["projection_pipeline"]["projection_incremental"]["sync_ms"]'
+  --path '$["measurements"]["system"]["lance_vs_json"]["lifecycle"]["cold_query_ms"]'
 ```
 
 Future benchmark producers can insert a new leaf with `jsonpath-set`. Duplicate
@@ -115,5 +112,5 @@ unbounded repository history.
 
 ## Links
 
-- [pChronicle design](../../docs/src/pchronicle/design/index.md)
+- [pChronicle design](../../docs/src/en/pchronicle/design/index.md)
 - [`persisting-pchronicle`](../../crates/persisting-pchronicle/README.md)

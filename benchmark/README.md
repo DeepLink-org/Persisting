@@ -1,24 +1,9 @@
 # Persisting benchmarks
 
-**仓库级黑盒与微基准入口：Gateway、pChronicle，以及独立的 Queue 吞吐压测。**
+**仓库级黑盒与微基准入口：pChronicle，以及独立的 Queue 吞吐压测。**
 
 拥有可复现的压测脚本与报告契约。不拥有被测组件的产品行为；Queue 子系统的语义以
 Queue 文档为准，这里只保留既有压测入口。
-
-## Gateway
-
-Gateway 黑盒压测位于 [`gateway/`](gateway/README.md)，使用确定性的本地 Echo upstream，
-同时测量转发、Typed LLM capture、WAL 和 Lance durable append：
-
-```bash
-just benchmark-gateway
-
-# 回放 examples/data，生成可人工检查的 request/response/capture bundle
-just benchmark-gateway-replay
-```
-
-结果包含吞吐、p50/p95/p99 延迟、Echo 直连基线，以及基于 canonical manifest 的
-持久化事件数量校验。
 
 ## pChronicle
 

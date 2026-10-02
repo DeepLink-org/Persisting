@@ -10,7 +10,7 @@ Run these from the repository root. `just --list` shows the full recipe set.
 
 | Command | What it does |
 |---|---|
-| `just test` | Workspace Rust tests through `cargo nextest`, then the Python suite |
+| `just test` | pChronicle and CLI tests through `cargo nextest`, then in-scope Python tests |
 | `just test <package>` | One crate or Cargo package (for example `pchronicle` or `persisting-pchronicle`) |
 | `just docs-sync` | Install the locked documentation environment |
 | `just docs-serve` | Local Zensical preview with automatic reload when files change |
@@ -19,14 +19,16 @@ Run these from the repository root. `just --list` shows the full recipe set.
 | `just examples` | pChronicle product example suite |
 | `just dev` | Apply formatting, lint, then run Rust tests |
 | `just ci` | Check lint without rewriting files, run Rust/Python tests and property tests, then build |
-| `just check-quick` | Check core runtime crates and pChronicle without default features |
+| `just check-quick` | Check pChronicle CLI and pChronicle without default features |
 
 `just test` uses the debug nextest profile for faster iteration. Pass a Cargo
 package name or a short crate alias (`pchronicle`,
-`pchronicle-cli`, `agentctl`, `capture`). `just test pchronicle` runs both
+`pchronicle-cli`). `just test pchronicle` runs both
 `persisting-pchronicle` and `persisting-pchronicle-cli` (same as the CI
 pchronicle shard); use `just test pchronicle-cli` for the CLI crate alone.
-The no-argument form also runs `just test-py`.
+The no-argument form also runs `just test-py` for packaging, trajectory row
+contracts, and benchmark reports. Python format/lint cover their tests and the
+pChronicle build, documentation, and case scripts, following `AGENTS.md`.
 
 ## Current notes
 
@@ -49,7 +51,7 @@ Local and ordinary CI builds use the platform's default linker. Linux wheels
 use the manylinux_2_28 image (glibc 2.28) so rustc libstd can
 link `statx` / `copy_file_range`.
 
-`just check-quick` checks core runtime crates and pChronicle without default
+`just check-quick` checks the pChronicle CLI and pChronicle without default
 features. `just dev` formats files before lint and Rust tests; `just ci` uses
 read-only lint checks and also runs Python and property tests. The GitHub Actions
 workflow additionally covers platform shards, Web builds, S3, and examples.

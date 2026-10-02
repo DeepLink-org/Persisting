@@ -1,99 +1,7 @@
-# Storyline three-table Lance storage
+# Storyline Lance
 
-`StorylineLanceStore` is pChronicle's Storyline-native normalized storage
-representation. It sits beside the raw `events.lance` event log and does
-not replace it.
-
-The logical wire schema follows
-[RFC-0001 § Wire schema](../../rfcs/0001-storyline-format.md#wire-schema).
-Field-by-field conversions for ACTF, ATIF, and OpenAI Messages follow the
-mapping sections of
-[RFC-0004](../../rfcs/0004-actf-format.md#actf-storyline-json-pointer-mapping),
-[RFC-0008](../../rfcs/0008-atif-format.md#atif-storyline-json-pointer-mapping),
-and
-[RFC-0009](../../rfcs/0009-openai-messages-format.md#openai-storyline-json-pointer-mapping).
-This design defines only the Lance physical projection of Storyline.
-
-## Projection contract and closed loop
-
-Storyline retains the Hub interchange contract (path A), while the
-three-table store is a rebuildable silver projection of canonical
-`events.lance` (path B). The two uses share a schema, but not write
-identity: interchange imports and direct `replace_storyline` calls carry
-no canonical lineage. Only the events projector may publish a `CURRENT`
-with projection lineage.
-
-```text
-events.lance (source of truth)
-  ├─ serve startup/runtime ─► runs + steps + tool_calls + objects
-  ├─ append-compatible sync ─► replace only sessions touched by the append suffix
-  └─ Catalog fallback ──────► project a pinned events snapshot when missing or stale
-```
-
-`CURRENT` pins exact Lance versions for all four tables and records the
-source URI and source identity, `fact_version`, `fact_rows`, the source
-layout revision at build time, projector and recipe identity, recipe hash,
-and completeness. `fact_version` and `fact_rows` are the freshness
-watermark. Compaction changes only the layout revision and does not stale
-a projection. Direct document writes clear lineage; maintenance preserves
-it.
-
-Incremental sync treats `[previous_fact_rows, fact_rows)` as an append
-range only because the canonical manifest validates
-`fact_rows == total_rows()`. Layout maintenance must preserve both
-replacement row count and segment order, so compaction cannot move that
-logical watermark. After reading the range, the projector also requires
-the returned record count to equal the exact range length; violating any
-of these proof obligations fails closed instead of silently skipping
-facts.
-
-Operational commands:
-
-```bash
-pchronicle serve --control 127.0.0.1:0 ./trajectory-data
-pchronicle stats ./trajectory-data --format json
-```
-
-Before readiness, `serve` discovers every validated non-empty canonical
-Store and converges its deterministic sibling `storyline`. At runtime it
-discovers new Stores, performs append-compatible sync or full rebuild as
-required, and retries bounded failures without blocking durable canonical
-writes. A destination without matching lineage is foreign and is never
-overwritten. `status` reports `fresh`, `stale`, `missing`, or `error`
-plus the source watermark and selected generation.
-
-Catalog merges a lineage-linked sidecar with the events source into one
-logical source. When `sources.projection_status` is `fresh`, normalized
-queries use the three tables. When it is `stale`, Catalog hides the
-sidecar and falls back to a deterministic projection of the pinned events
-snapshot. `projection_generation` exposes the generation actually
-selected. A Storyline document store without lineage is never inferred to
-be a projection of canonical events.
-
-The Gateway-backed Warehouse has an explicit live-read path for point
-trace observation: after the Catalog resolves an already discovered
-canonical source, `/api/events`, `/api/storyline`, and
-`/api/trajectory-view` reopen its latest visible events manifest. This
-does not change the immutable snapshot semantics of broad SQL queries,
-and it does not make the derived Storyline sidecar authoritative.
-
-The projection supervisor is part of `serve`, applies bounded concurrency
-and retry, and shuts down with the process. It remains outside the
-Gateway capture write path, so projection or Catalog refresh failures
-cannot block canonical event writes.
-
-This page owns the three-table physical schema, the content layer,
-Snapshot publication, query integration, and maintenance semantics. Fact
-source and projection ownership are in
-[Run storage](trajectory-storage.md). The user query workflow is in
-[Discover and query](../guides/discover-and-query.md).
-
-This is pChronicle's only normalized three-table model. The older ATIF
-`sessions` / `steps` / `tool_calls` layout, `NormalizedStore`, and
-in-memory joined views have been removed. ATIF still exists as an
-import/export format, but a query first converts it to Storyline and then
-projects it onto the `runs` / `steps` / `tool_calls` schema defined here.
-A second table structure is not maintained.
+`StorylineLanceStore` stores Storyline documents directly. Published generations
+pin the runs, steps, tool-call, and content tables through `CURRENT`.
 
 ## Table model
 
@@ -420,8 +328,8 @@ mainly for benchmarks, diagnosis, or a full-scan control on a tiny table.
 
 ## Unified query engine
 
-`ChronicleQueryEngine` is the public read-only SQL facade. All six disk
-formats (Canonical Event, Storyline Lance, AgenticMD, ATIF, OpenAI Msg,
+`ChronicleQueryEngine` is the public read-only SQL facade. All five disk
+formats (Storyline Lance, AgenticMD, ATIF, OpenAI Msg,
 ACTF) open through the single entry
 `ChronicleQueryEngine::open(format, path, options)` and register the
 semantically matching query tables, so SQL does not change with the
@@ -449,13 +357,6 @@ let jsonl = atif.query_jsonl(
     "SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source"
 ).await?;
 ```
-
-`DocumentFormat::CanonicalEvent` registers the `events` table;
-`runs`/`steps`/`tool_calls` are not registered live by default —
-Storyline query surfaces prefer the lineage-fresh Storyline Lance
-projection, and without one a bounded row/byte-budget fallback runs
-(budget exhaustion is an explicit error, never a silent truncation). The
-other five formats register `runs`/`steps`/`tool_calls`.
 
 `query` returns Arrow `RecordBatch` values, which suits further
 server-side processing. `dataframe` returns a lazy DataFrame for extra
@@ -576,13 +477,6 @@ the Lance engine opens, it pins the three versions pointed to by
 `CURRENT`, so the three tables in one query session come from the same
 Snapshot.
 
-The repository uses a unified Criterion.rs + hyperfine benchmark runner.
-Criterion owns CPU-bound conversion, events→Storyline, and three-table
-split/reconstruct microbenchmarks. Canonical event append, projection
-build/sync/verify, Lance/DataFusion lifetime, JSON streaming, and RSS
-scenarios are repeated by hyperfine in independent processes and then
-folded into unified JSON, Markdown, and HTML:
-
 ```bash
 # PR/local smoke workload
 just benchmark-pchronicle
@@ -629,12 +523,3 @@ near-constant datasource open time, and the gains from column pruning,
 parallel scan, and selective indexes.
 
 ## Related documents
-
-- [Recorded data, views, and versions](../concepts/facts-and-projections.md):
-  why Storyline is a projection.
-- [pChronicle architecture](architecture.md): publication and read-
-  consistency guarantees.
-- [Snapshot](catalog.md): how Source discovery and a pinned Snapshot open
-  this store.
-- [`pchronicle` reference](../reference/cli.md): current public query,
-  import/export, and serve commands.

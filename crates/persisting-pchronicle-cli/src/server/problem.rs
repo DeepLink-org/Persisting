@@ -221,7 +221,6 @@ impl ApiError {
         )
     }
 
-    #[allow(dead_code)]
     pub(super) fn unavailable() -> Self {
         Self::public(
             StatusCode::SERVICE_UNAVAILABLE,

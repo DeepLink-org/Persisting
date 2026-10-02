@@ -2,7 +2,6 @@
 
 | 格式 | 角色 | 规范 |
 | --- | --- | --- |
-| Events | HTTP-first 记录事件格式 | [RFC-0002](../../../rfcs/0002-events-format.md) |
 | Storyline | 内部规范化 Run 与 tool-call 模型 | [RFC-0001 § Wire schema](../../../rfcs/0001-storyline-format.md#wire-schema) |
 | ACTF | JSON Run 交换格式 | [RFC-0004 § JSON Pointer 映射](../../../rfcs/0004-actf-format.md#actf-storyline-json-pointer-mapping) |
 | ATIF | Agent Run 交换格式 | [RFC-0008 § JSON Pointer 映射](../../../rfcs/0008-atif-format.md#atif-storyline-json-pointer-mapping) |

@@ -70,7 +70,6 @@ async fn catalog_command_matrix_reports_every_supported_format() -> Result<()> {
                 "trajectories": fixture.trajectories,
                 "steps": fixture.steps,
                 "tool_calls": fixture.tool_calls,
-                "events": 0,
             }),
             "{fixture:?}"
         );
