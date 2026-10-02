@@ -1,5 +1,5 @@
 name: "Setup Build Environment"
-description: "Python, Rust, uv, just, and optional legacy protoc for Persisting CI"
+description: "Python, optional Rust, and pinned build tools for Persisting CI"
 inputs:
   python-version:
     description: "Python version"
@@ -9,10 +9,14 @@ inputs:
     description: "Rust toolchain"
     required: false
     default: "stable"
+  install-rust:
+    description: "Install Rust for jobs that compile or check Rust code"
+    required: false
+    default: "true"
   components:
     description: "Rust components (comma-separated)"
     required: false
-    default: "rustfmt, clippy, rust-src"
+    default: "rustfmt, clippy"
   install-dioxus:
     description: "Install the pinned Dioxus CLI and wasm target"
     required: false
@@ -21,10 +25,6 @@ inputs:
     description: "Install cargo-nextest"
     required: false
     default: "true"
-  install-zig:
-    description: "Install Zig for the macOS-to-Linux guest init cross-build"
-    required: false
-    default: "false"
 
 runs:
   using: "composite"
@@ -35,6 +35,7 @@ runs:
         python-version: ${{ inputs.python-version }}
 
     - name: Install Rust toolchain
+      if: inputs.install-rust == 'true'
       uses: dtolnay/rust-toolchain@master
       with:
         toolchain: ${{ inputs.rust-toolchain }}
@@ -51,17 +52,10 @@ runs:
         tool: just@1.57.0
 
     - name: Install cargo-nextest
-      if: inputs.install-nextest == 'true'
+      if: inputs.install-rust == 'true' && inputs.install-nextest == 'true'
       uses: taiki-e/install-action@v2
       with:
         tool: cargo-nextest@0.9.137
-
-    - name: Install Linux guest init cross-compiler
-      if: runner.os == 'macOS' && inputs.install-zig == 'true'
-      shell: bash
-      run: |
-        brew install zig
-        zig version
 
     - name: Add Dioxus Web target
       if: inputs.install-dioxus == 'true'

@@ -181,6 +181,30 @@ def test_build_backend_options_accept_explicit_cargo_settings() -> None:
     assert options.jobs == "3"
 
 
+def test_web_assets_become_stale_after_lockfile_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    web = tmp_path / "web"
+    public = tmp_path / "public"
+    web.mkdir()
+    public.mkdir()
+    (web / "Cargo.lock").write_text("version = 3\n", encoding="utf-8")
+    (public / "index.html").write_text("<html></html>", encoding="utf-8")
+    monkeypatch.setattr(wheel_stage, "WEB_ROOT", web)
+    monkeypatch.setattr(wheel_stage, "WEB_PUBLIC", public)
+    manifest = public / "embedded.manifest"
+    manifest.write_text(
+        f"__PCHRONICLE_EMBEDDED_WEB_ASSETS_V1__\n{wheel_stage._web_inputs_digest()}\n",
+        encoding="utf-8",
+    )
+    assert wheel_stage._web_assets_are_current(manifest, wheel_stage._web_inputs_digest())
+
+    (web / "Cargo.lock").write_text("version = 4\n", encoding="utf-8")
+
+    assert not wheel_stage._web_assets_are_current(manifest, wheel_stage._web_inputs_digest())
+
+
 def test_staging_replaces_old_component_payloads(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

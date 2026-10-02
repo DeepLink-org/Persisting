@@ -30,7 +30,6 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-nextest: "false"
-          install-zig: "false"
 
       - name: Install hyperfine
         uses: taiki-e/install-action@v2
@@ -40,6 +39,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: pchronicle-benchmark
+          workspaces: . -> target/pchronicle-benchmark-ci
 
       - name: Resolve main baseline
         id: baseline
@@ -71,11 +71,13 @@ jobs:
         run: |
           set -euo pipefail
           baseline_repo="${{ steps.baseline.outputs.repo }}"
+          # Run revisions sequentially; reuse dependencies and copy each report
+          # before the next run replaces the Criterion output in the shared target.
           mkdir -p "${RUNNER_TEMP}/pchronicle-benchmark/main"
           python3 "$baseline_repo/benchmark/pchronicle/bench.py" run \
             --repo "$baseline_repo" \
             --suite smoke \
-            --target-dir "${GITHUB_WORKSPACE}/target/pchronicle-benchmark-ci-main" \
+            --target-dir "${GITHUB_WORKSPACE}/target/pchronicle-benchmark-ci" \
             --output "${RUNNER_TEMP}/pchronicle-benchmark/main"
 
       - name: Benchmark candidate
@@ -86,7 +88,7 @@ jobs:
           python3 benchmark/pchronicle/bench.py run \
             --repo . \
             --suite smoke \
-            --target-dir "${GITHUB_WORKSPACE}/target/pchronicle-benchmark-ci-candidate" \
+            --target-dir "${GITHUB_WORKSPACE}/target/pchronicle-benchmark-ci" \
             --output "${RUNNER_TEMP}/pchronicle-benchmark/candidate"
 
       - name: Upload benchmark data

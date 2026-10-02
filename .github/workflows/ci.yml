@@ -28,7 +28,6 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-nextest: "false"
-          install-zig: "false"
           components: "rustfmt"
 
       - name: Rust formatting
@@ -44,7 +43,6 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-nextest: "false"
-          install-zig: "false"
           components: "clippy"
 
       - uses: Swatinem/rust-cache@v2
@@ -64,7 +62,6 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-nextest: "false"
-          install-zig: "false"
           components: "clippy"
 
       - uses: Swatinem/rust-cache@v2
@@ -87,7 +84,6 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-nextest: "false"
-          install-zig: "false"
           components: "clippy"
 
       - uses: Swatinem/rust-cache@v2
@@ -107,8 +103,8 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
+          install-rust: "false"
           install-nextest: "false"
-          install-zig: "false"
           components: ""
 
       - name: Ruff
@@ -130,14 +126,12 @@ jobs:
               persisting-overlaynet
             event_control: true
             smoke_pchronicle: false
-            install_zig: false
           - platform: Linux
             os: ubuntu-latest
             shard: gateway
             packages: persisting-gateway
             event_control: false
             smoke_pchronicle: false
-            install_zig: false
           - platform: Linux
             os: ubuntu-latest
             shard: pchronicle
@@ -146,7 +140,6 @@ jobs:
               persisting-pchronicle-cli
             event_control: false
             smoke_pchronicle: true
-            install_zig: false
           - platform: macOS
             os: macos-latest
             shard: capture
@@ -157,7 +150,6 @@ jobs:
               persisting-overlaynet
             event_control: false
             smoke_pchronicle: false
-            install_zig: false
           - platform: macOS
             os: macos-latest
             shard: pchronicle
@@ -166,14 +158,12 @@ jobs:
               persisting-pchronicle-cli
             event_control: false
             smoke_pchronicle: true
-            install_zig: false
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-zig: "${{ matrix.install_zig }}"
           components: ""
 
       - uses: Swatinem/rust-cache@v2
@@ -201,7 +191,6 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-zig: "false"
           components: ""
 
       - uses: Swatinem/rust-cache@v2
@@ -223,7 +212,6 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-dioxus: "true"
-          install-zig: "false"
           components: ""
 
       - uses: Swatinem/rust-cache@v2
@@ -238,32 +226,46 @@ jobs:
     name: pChronicle S3 Contract / MinIO
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      MINIO_VERSION: RELEASE.2025-07-23T15-54-02Z
+      MC_VERSION: RELEASE.2025-08-13T08-35-41Z
+      MINIO_GO_VERSION: "1.24.2"
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-zig: "false"
           components: ""
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-pchronicle-s3
 
-      - uses: actions/setup-go@v5
+      - name: Cache pinned MinIO tools
+        id: minio-tools
+        uses: actions/cache@v4
         with:
-          go-version: "1.24.2"
+          path: ${{ runner.temp }}/minio-bin
+          key: minio-v1-${{ runner.os }}-${{ runner.arch }}-go${{ env.MINIO_GO_VERSION }}-${{ env.MINIO_VERSION }}-${{ env.MC_VERSION }}
+
+      - uses: actions/setup-go@v5
+        if: steps.minio-tools.outputs.cache-hit != 'true'
+        with:
+          go-version: ${{ env.MINIO_GO_VERSION }}
           cache: false
 
       # Upstream no longer distributes the public container images or binaries.
       - name: Build pinned MinIO tools from source
+        if: steps.minio-tools.outputs.cache-hit != 'true'
         env:
           GOBIN: ${{ runner.temp }}/minio-bin
         run: |
-          go install github.com/minio/minio@RELEASE.2025-07-23T15-54-02Z
-          go install github.com/minio/mc@RELEASE.2025-08-13T08-35-41Z
-          echo "$GOBIN" >> "$GITHUB_PATH"
+          go install "github.com/minio/minio@$MINIO_VERSION"
+          go install "github.com/minio/mc@$MC_VERSION"
+
+      - name: Add MinIO tools to PATH
+        run: echo "$RUNNER_TEMP/minio-bin" >> "$GITHUB_PATH"
 
       - name: Start pinned MinIO server
         env:
@@ -301,7 +303,7 @@ jobs:
 
       - name: Show MinIO logs after failure
         if: failure()
-        run: cat "$RUNNER_TEMP/minio.log"
+        run: test ! -f "$RUNNER_TEMP/minio.log" || cat "$RUNNER_TEMP/minio.log"
 
       - name: Stop MinIO
         if: always()
@@ -319,8 +321,8 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
+          install-rust: "false"
           install-nextest: "false"
-          install-zig: "false"
           components: ""
 
       - name: Sync Python deps
@@ -330,42 +332,28 @@ jobs:
         run: just test-py
 
   examples:
-    name: Examples / ${{ matrix.shard }}
+    name: Examples / pchronicle
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - shard: pchronicle
-            command: just examples-pchronicle
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Python for examples
-        id: setup-python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
 
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
           install-nextest: "false"
-          install-zig: "false"
           components: ""
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-examples-${{ matrix.shard }}
+          shared-key: ci-examples-pchronicle
 
       - name: Install jq
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
 
-      - name: Run ${{ matrix.shard }} examples
+      - name: Run pChronicle examples
         env:
-          WORK_ROOT: ${{ runner.temp }}/${{ matrix.shard }}-examples
-          PYTHON_BIN: ${{ steps.setup-python.outputs.python-path }}
-        run: ${{ matrix.command }}
+          WORK_ROOT: ${{ runner.temp }}/pchronicle-examples
+        run: just examples-pchronicle
 
   ci:
     name: CI
