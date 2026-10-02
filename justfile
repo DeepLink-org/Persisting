@@ -263,6 +263,7 @@ build-wheel-debug:
 
 clean:
     cargo clean
+    cargo clean --manifest-path pchronicle-web/Cargo.toml
     rm -rf dist target/wheels .venv htmlcov .coverage coverage.xml
 
 # ── 格式化 / Lint ─────────────────────────────────────────────────────────────
@@ -346,7 +347,8 @@ ci-lint:
 
 # CI 近似：功能门禁 + Proptest 回归 + 构建
 ci:
-    just dev
+    just ci-lint
+    just test
     just proptest pchronicle
     just build
 

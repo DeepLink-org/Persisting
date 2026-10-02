@@ -64,6 +64,9 @@ jobs:
 
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
+        with:
+          install-nextest: "false"
+          components: ""
 
       - name: Install hyperfine
         uses: taiki-e/install-action@v2
@@ -73,6 +76,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: pchronicle-benchmark
+          workspaces: . -> target/pchronicle-benchmark-ci
 
       - name: Run and render benchmark
         run: |

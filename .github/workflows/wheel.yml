@@ -32,8 +32,14 @@ jobs:
         with:
           python-version: "3.12"
           install-dioxus: "true"
+          install-nextest: "false"
+          components: ""
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            pchronicle-web -> target
 
       - name: Build pChronicle Web assets
         run: just chronicle-web-build

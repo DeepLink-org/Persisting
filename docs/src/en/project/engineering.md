@@ -17,8 +17,9 @@ Run these from the repository root. `just --list` shows the full recipe set.
 | `just docs-serve-dirty` | Local Zensical preview when automatic reload stalls |
 | `just docs-build` | Build the static documentation site |
 | `just examples` | pChronicle product example suite |
-| `just gate` | Format, lint, and the full Rust test workspace |
-| `just dev` | Scoped runtime-crate check; not the full workspace matrix |
+| `just dev` | Apply formatting, lint, then run Rust tests |
+| `just ci` | Check lint without rewriting files, run Rust/Python tests and property tests, then build |
+| `just check-quick` | Check core runtime crates and pChronicle without default features |
 
 `just test` uses the debug nextest profile for faster iteration. Pass a Cargo
 package name or a short crate alias (`pchronicle`,
@@ -36,8 +37,7 @@ The no-argument form also runs `just test-py`.
 
 ## Fast local builds
 
-The repository `rust-toolchain.toml` selects stable for normal compiler validation
-and opt-in diagnostics. Normal development, test, and release builds all use
+The repository `rust-toolchain.toml` selects stable with rustfmt and Clippy. Normal development, test, and release builds all use
 the toolchain's default LLVM backend.
 
 Rust tests use `cargo nextest` for process isolation and parallel test
@@ -49,31 +49,24 @@ Local and ordinary CI builds use the platform's default linker. Linux wheels
 use the manylinux_2_28 image (glibc 2.28) so rustc libstd can
 link `statx` / `copy_file_range`.
 
-`just dev` is intentionally scoped to runtime crates and a no-default-feature
-pChronicle check. Use `just gate` or the CI workflows for the full workspace,
-all-targets, and storage-feature matrix.
+`just check-quick` checks core runtime crates and pChronicle without default
+features. `just dev` formats files before lint and Rust tests; `just ci` uses
+read-only lint checks and also runs Python and property tests. The GitHub Actions
+workflow additionally covers platform shards, Web builds, S3, and examples.
 
 `cargo nextest` does not run doctests. Keep documentation tests on the regular
 Cargo runner when needed, for example `cargo test --doc -p <package>`.
 
-### Nightly diagnostics (opt-in)
+### CI build reuse
 
-The repository keeps two expensive/nightly diagnostics out of the normal
-edit loop:
+MinIO tools are cached by OS, architecture, Go version, and pinned source releases.
+Benchmark revisions run sequentially on one runner and reuse a Cargo target
+directory; their reports are saved separately. Wheel builds cache both Rust
+workspaces, and the embedded Web resource fingerprint includes its lockfile.
 
-- `just build-analysis persisting-pchronicle` enables Cargo's `-Z build-analysis`
-  for one package and writes per-session JSONL metrics under `$CARGO_HOME/log`.
-  Inspect them with `just build-analysis-report` (or pass `report=timings` or
-  `report=rebuilds`). The dedicated target directory prevents diagnostic
-  artifacts from polluting the normal incremental cache.
-- `just sanitize address persisting-agentctl` runs the selected crate's tests
-  with LLVM AddressSanitizer. The recipe uses `-Z build-std`, so the nightly
-  `rust-src` component is required. Other supported values are `leak`,
-  `thread`, and `undefined`; availability depends on the host platform.
-
-Sanitizer builds are deliberately not part of `just dev`/CI's default path:
-they rebuild the standard library and are intended for focused debugging
-sessions.
+Python-only jobs skip Rust installation. Build-only jobs skip cargo-nextest.
+Documentation runs use a per-ref concurrency group so a PR cannot cancel a
+main-branch documentation deployment.
 
 For supported behavior, start with [pChronicle Guides](../pchronicle/guides/index.md), and consult
 [System Design](../system-design/index.md) for the rationale behind an

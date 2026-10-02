@@ -183,7 +183,7 @@ def _build(options: BuildOptions) -> dict[str, Path]:
 def _web_inputs_digest() -> str:
     """Hash the inputs that affect the generated Dioxus public directory."""
     digest = hashlib.sha256()
-    inputs = [WEB_ROOT / "Cargo.toml", WEB_ROOT / "Dioxus.toml"]
+    inputs = [WEB_ROOT / "Cargo.toml", WEB_ROOT / "Cargo.lock", WEB_ROOT / "Dioxus.toml"]
     inputs.extend(sorted((WEB_ROOT / "src").rglob("*")))
     inputs.extend(sorted((WEB_ROOT / "assets").rglob("*")))
     for path in inputs:
