@@ -10,7 +10,7 @@ Run these from the repository root. `just --list` shows the full recipe set.
 
 | Command | What it does |
 |---|---|
-| `just test` | Workspace Rust tests through `cargo nextest`, then the Python suite |
+| `just test` | pChronicle and CLI tests through `cargo nextest`, then the Python suite |
 | `just test <package>` | One crate or Cargo package (for example `pchronicle` or `persisting-pchronicle`) |
 | `just docs-sync` | Install the locked documentation environment |
 | `just docs-serve` | Local Zensical preview with automatic reload when files change |
@@ -49,7 +49,7 @@ Local and ordinary CI builds use the platform's default linker. Linux wheels
 use the manylinux_2_28 image (glibc 2.28) so rustc libstd can
 link `statx` / `copy_file_range`.
 
-`just check-quick` checks core runtime crates and pChronicle without default
+`just check-quick` checks the pChronicle CLI and pChronicle without default
 features. `just dev` formats files before lint and Rust tests; `just ci` uses
 read-only lint checks and also runs Python and property tests. The GitHub Actions
 workflow additionally covers platform shards, Web builds, S3, and examples.

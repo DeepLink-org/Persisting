@@ -60,4 +60,4 @@ pchronicle export --from ./imported --to one.json --output-format actf \
 Import/export 不是存储迁移协议，任意 SQL row 也不是可导出的完整 Run。精确参数见
 [`pchronicle` 命令参考](../reference/cli.md)。格式契约见
 [运行数据格式](../reference/formats/index.md)，层次边界见
-[数据契约与 Revision](../concepts/facts-and-projections.md)。
+[轨迹数据与版本](../concepts/facts-and-projections.md)。

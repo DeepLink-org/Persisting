@@ -33,27 +33,8 @@ jobs:
       - name: Rust formatting
         run: just fmt-check-rust
 
-  rust-clippy-workspace:
-    name: Clippy / Workspace
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          install-nextest: "false"
-          components: "clippy"
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-clippy-workspace
-
-      - name: Workspace Clippy
-        run: just clippy-deny
-
-  rust-clippy-pchronicle:
-    name: Clippy / pChronicle Feature Contracts
+  rust-clippy:
+    name: Clippy / pChronicle
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,8 +49,8 @@ jobs:
         with:
           shared-key: ci-clippy-pchronicle
 
-      - name: Strict pChronicle Clippy
-        run: just clippy-pchronicle-panics
+      - name: pChronicle and CLI Clippy
+        run: just clippy-deny
 
       - name: pChronicle storage feature contracts
         run: just clippy-pchronicle-features
@@ -94,43 +75,13 @@ jobs:
       - name: pChronicle Web Clippy
         run: just clippy-pchronicle-web
 
-  python-lint:
-    name: Python Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          install-rust: "false"
-          install-nextest: "false"
-          components: ""
-
-      - name: Ruff
-        run: just lint-py
-
   rust-test:
-    name: Rust Test / ${{ matrix.platform }} / ${{ matrix.shard }}
+    name: Rust Test / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: Linux
-            os: ubuntu-latest
-            shard: pchronicle
-            packages: >-
-              persisting-pchronicle
-              persisting-pchronicle-cli
-            smoke_pchronicle: true
-          - platform: macOS
-            os: macos-latest
-            shard: pchronicle
-            packages: >-
-              persisting-pchronicle
-              persisting-pchronicle-cli
-            smoke_pchronicle: true
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -141,13 +92,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-rust-${{ matrix.shard }}
+          shared-key: ci-rust-pchronicle
 
-      - name: Run ${{ matrix.shard }} tests
-        run: just ci-nextest ${{ matrix.packages }}
+      - name: Run pChronicle and CLI tests
+        run: just test pchronicle
 
       - name: Smoke pChronicle CLI
-        if: matrix.smoke_pchronicle
         run: just smoke-pchronicle-cli
 
   rust-proptest:
@@ -188,7 +138,10 @@ jobs:
           shared-key: ci-pchronicle-web
           workspaces: pchronicle-web -> target
 
-      - name: Build and test Web crate
+      - name: Build Web assets
+        run: just chronicle-web-build
+
+      - name: Test Web crate
         run: just test-pchronicle-web
 
   s3-contract:
@@ -281,8 +234,8 @@ jobs:
             kill "$(cat "$RUNNER_TEMP/minio.pid")" || true
           fi
 
-  python-test:
-    name: Python Test
+  python:
+    name: Python Lint and Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -296,6 +249,9 @@ jobs:
 
       - name: Sync Python deps
         run: just py-dev
+
+      - name: Ruff
+        run: just lint-py
 
       - name: Pytest
         run: just test-py
@@ -329,15 +285,13 @@ jobs:
     if: always()
     needs:
       - format
-      - rust-clippy-workspace
-      - rust-clippy-pchronicle
+      - rust-clippy
       - rust-clippy-pchronicle-web
-      - python-lint
       - rust-test
       - rust-proptest
       - pchronicle-web-test
       - s3-contract
-      - python-test
+      - python
       - examples
     runs-on: ubuntu-latest
     steps:

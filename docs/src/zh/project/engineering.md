@@ -9,7 +9,7 @@
 
 | 命令 | 作用 |
 |---|---|
-| `just test` | 通过 `cargo nextest` 跑工作区 Rust 测试，再跑 Python 套件 |
+| `just test` | 通过 `cargo nextest` 跑pChronicle 与 CLI 测试，再跑 Python 套件 |
 | `just test <package>` | 单个 crate 或 Cargo package（例如 `pchronicle` 或 `persisting-pchronicle`） |
 | `just docs-sync` | 安装锁定的文档环境 |
 | `just docs-serve` | 本地 Zensical 预览，文件修改时自动刷新 |
@@ -46,7 +46,7 @@ Rust 测试用 `cargo nextest` 做进程隔离和并行执行；用
 镜像（glibc 2.28），以便 rustc libstd 能链接 `statx` /
 `copy_file_range`。
 
-`just check-quick` 检查核心 runtime crate 以及无默认 feature 的 pChronicle。
+`just check-quick` 检查 pChronicle CLI 以及无默认 feature 的 pChronicle。
 `just dev` 先格式化文件，再运行 lint 和 Rust 测试；`just ci` 使用只读 lint 检查，
 并额外运行 Python 和性质测试。GitHub Actions 还覆盖平台分片、Web 构建、S3 与示例。
 

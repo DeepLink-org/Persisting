@@ -113,7 +113,7 @@ codegen-units = 8
 panic = "abort"
 
 [patch.crates-io]
-# Lance 9.0.1 invokes prost-build from six build scripts. This compatibility
+# Lance invokes prost-build from its build scripts. This compatibility
 # adapter preserves Prost's code generation API but parses .proto files with
 # pure-Rust protox, avoiding both a system protoc and vendored protobuf-src.
 prost-build = { path = "vendor/prost-build-protox" }

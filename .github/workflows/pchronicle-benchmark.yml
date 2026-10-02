@@ -91,34 +91,6 @@ jobs:
             --target-dir "${GITHUB_WORKSPACE}/target/pchronicle-benchmark-ci" \
             --output "${RUNNER_TEMP}/pchronicle-benchmark/candidate"
 
-      - name: Upload benchmark data
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pchronicle-benchmark-part-${{ github.run_id }}
-          path: ${{ runner.temp }}/pchronicle-benchmark
-          retention-days: 30
-          if-no-files-found: warn
-
-  compare:
-    name: Criterion + hyperfine report
-    needs: benchmark
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout candidate
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Download benchmark data
-        uses: actions/download-artifact@v4
-        with:
-          pattern: pchronicle-benchmark-part-*
-          path: ${{ runner.temp }}/pchronicle-benchmark
-          merge-multiple: true
-
       - name: Compare and render report page
         shell: bash
         run: |

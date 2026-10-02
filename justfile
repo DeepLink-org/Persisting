@@ -5,10 +5,6 @@ repo := justfile_directory()
 docs_dir := repo / "docs"
 gen_py := repo / "scripts" / "generate_benchmark_data.py"
 
-# Product CLI component set. Keep all Cargo build entry points below routed
-# through `build-components` so package/bin changes have one source in just.
-component_pchronicle := "-p persisting-pchronicle-cli --bin pchronicle"
-
 # Python 路径（ruff format）
 ruff_paths := "persisting tests examples"
 # lint 默认只扫包代码（与 CI 一致）；全量用 lint-py-all
@@ -27,7 +23,6 @@ default:
     @echo "  just py-dev              # 同步纯 Python 开发环境"
     @echo "  just install-cli         # 安装 pchronicle"
     @echo "  just chronicle-binary    # 构建可直接测试的 pChronicle UI binary"
-    @echo "  just echo                # 启动确定性的本地 LLM Echo upstream"
     @echo "  just build-wheel         # 打 release wheel → dist/"
     @echo "  just docs-serve          # 本地文档"
 
@@ -61,7 +56,8 @@ test-list:
 examples-pchronicle:
     #!/usr/bin/env bash
     set -euo pipefail
-    just build-components release pchronicle-benchmark
+    just build release
+    cargo build --release --locked -p persisting-pchronicle --example pchronicle_storage_query_benchmark
     bash "{{ repo }}/examples/pchronicle/test.sh" --profile release
     bash "{{ repo }}/examples/pchronicle/output-contract.sh" >/dev/null
 
@@ -114,21 +110,16 @@ chronicle-binary profile="debug": chronicle-web-build
         exit 2
         ;;
     esac
-    just build-components "$profile" pchronicle
+    just build "$profile"
     binary="{{ repo }}/target/$profile/pchronicle"
     test -x "$binary"
     "$binary" serve --help >/dev/null
     printf 'Built pChronicle test binary: %s\n' "$binary"
     printf 'Run: %s serve --warehouse %s\n' "$binary" "{{ repo }}/data"
 
-# Thin forward to `build-components` for the full product CLI set.
+# Build the pChronicle CLI; use chronicle-binary to embed the Web UI.
 [group('build')]
 build profile="debug":
-    just build-components "{{ profile }}" all
-
-# Build pChronicle, optionally including its storage benchmark executable.
-[group('build')]
-build-components profile="debug" components="all":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ profile }}" in
@@ -136,17 +127,7 @@ build-components profile="debug" components="all":
       release) cargo_profile=release ;;
       *) echo "unsupported build profile: {{ profile }} (expected debug or release)" >&2; exit 2 ;;
     esac
-    case "{{ components }}" in
-      all|pchronicle)
-        cargo build --profile "$cargo_profile" --locked {{ component_pchronicle }}
-        ;;
-      pchronicle-benchmark)
-        cargo build --profile "$cargo_profile" --locked \
-          {{ component_pchronicle }} \
-          -p persisting-pchronicle --example pchronicle_storage_query_benchmark
-        ;;
-      *) echo "unsupported component set: {{ components }} (all|pchronicle|pchronicle-benchmark)" >&2; exit 2 ;;
-    esac
+    cargo build --profile "$cargo_profile" --locked -p persisting-pchronicle-cli --bin pchronicle
 
 # Install the pChronicle CLI.
 install-cli:
@@ -154,7 +135,7 @@ install-cli:
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
     cargo install --path crates/persisting-pchronicle-cli --locked --force --root "$install_root"
-    printf 'Installed Persisting component set in %s/bin\n' "$install_root"
+    printf 'Installed pchronicle in %s/bin\n' "$install_root"
 
 # PEP 517 release wheel（Python package + pchronicle）→ dist/
 build-wheel:
@@ -188,7 +169,7 @@ clean:
 fmt: fmt-rust fmt-py
 
 fmt-rust:
-    cargo fmt --all
+    cargo fmt -p persisting-pchronicle -p persisting-pchronicle-cli
     cargo fmt --manifest-path pchronicle-web/Cargo.toml
 
 fmt-py:
@@ -198,7 +179,7 @@ fmt-py:
 fmt-check: fmt-check-rust fmt-check-py
 
 fmt-check-rust:
-    cargo fmt --all -- --check
+    cargo fmt -p persisting-pchronicle -p persisting-pchronicle-cli -- --check
     cargo fmt --manifest-path pchronicle-web/Cargo.toml -- --check
 
 fmt-check-py:
@@ -207,7 +188,7 @@ fmt-check-py:
 # clippy + ruff（不改写）
 lint: lint-rust lint-py
 
-lint-rust: clippy-deny clippy-pchronicle-web clippy-pchronicle-panics clippy-pchronicle-features
+lint-rust: clippy-deny clippy-pchronicle-web clippy-pchronicle-features
 
 lint-py:
     uvx ruff check {{ ruff_lint_paths }}
@@ -217,15 +198,12 @@ lint-py-all:
     uvx ruff check {{ ruff_paths }}
 
 clippy-deny:
-    cargo clippy --workspace --exclude persisting-dlcapt --all-targets --locked -- -D warnings
+    cargo clippy -p persisting-pchronicle -p persisting-pchronicle-cli --all-targets --locked -- -D warnings
+    cargo clippy -p persisting-pchronicle --lib --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
 
-# pchronicle-web is a separate Cargo workspace and is not covered by the root
-# workspace Clippy invocation above.
+# pchronicle-web is a separate Cargo workspace and has its own Clippy check.
 clippy-pchronicle-web:
     cargo clippy --manifest-path pchronicle-web/Cargo.toml --all-targets --locked -- -D warnings
-
-clippy-pchronicle-panics:
-    cargo clippy -p persisting-pchronicle --lib --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
 
 clippy-pchronicle-features:
     cargo clippy -p persisting-pchronicle --lib --no-default-features --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
@@ -270,17 +248,6 @@ ci:
 
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
-# Variadic args are interpolated by just (not passed as shebang $@).
-[group('test')]
-ci-nextest +packages:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    args=()
-    for pkg in {{ packages }}; do
-      args+=(-p "$pkg")
-    done
-    cargo nextest run --locked "${args[@]}"
-
 # 单 crate：pchronicle（含 CLI，对齐 CI pchronicle shard）| pchronicle-cli | …
 test-crate crate:
     #!/usr/bin/env bash
@@ -303,17 +270,17 @@ test-rust package="":
     if [[ -n "$package" ]]; then
         cargo nextest run --locked -p "$package"
     else
-        cargo nextest run --workspace --exclude persisting-dlcapt --locked
+        just test-crate pchronicle
     fi
 
 [group('test')]
 smoke-pchronicle-cli:
-    just build-components debug pchronicle
+    just build debug
     target/debug/pchronicle query --help >/dev/null
 
 # Separate Cargo workspace covering the Dioxus trajectory workbench.
 [group('test')]
-test-pchronicle-web: chronicle-web-build
+test-pchronicle-web:
     cargo nextest run --manifest-path pchronicle-web/Cargo.toml --locked
 
 # Real S3/MinIO contract (ignored by default; requires PCHRONICLE_S3_TEST_URI).
@@ -412,14 +379,14 @@ check-quick:
 # Execute pChronicle single-machine/self-service cases.
 [group('test')]
 test-pchronicle-cases:
-    cargo build --release -p persisting-pchronicle-cli --locked
+    just build release
     python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle target/release/pchronicle --report target/pchronicle-self-case-report.md
 
 # List and execute pChronicle platform/Catalog cases. Server lifecycle cases are
 # reported as MANUAL unless explicitly selected with PCHRONICLE_CASE_MODE.
 [group('test')]
 test-pchronicle-cases-platform:
-    cargo build --release -p persisting-pchronicle-cli --locked
+    just build release
     python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle target/release/pchronicle --report target/pchronicle-platform-case-report.md
 
 # Run documented integration cases by component.
@@ -439,11 +406,11 @@ cases target *args:
     fi
     case "{{target}}" in
       pchronicle)
-        just build-components release pchronicle
+        just build release
         python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-self.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-self-case-report.md "$@"
         ;;
       pchronicle-cluster)
-        just build-components release pchronicle
+        just build release
         python3 scripts/run-pchronicle-cases.py --document docs/src/zh/pchronicle/reference/cases-platform.md --pchronicle "{{ repo }}/target/release/pchronicle" --report target/pchronicle-platform-case-report.md "$@"
         ;;
       *)
