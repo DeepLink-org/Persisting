@@ -1,6 +1,6 @@
 # 安装
 
-本仓库发布 `pchronicle` 命令和内嵌 Web UI。pVisor 与 pPilot 已拆分到外部仓库。
+本仓库发布 `pchronicle` 命令和内嵌 Web UI。
 
 ## 安装
 

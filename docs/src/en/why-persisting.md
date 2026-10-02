@@ -19,24 +19,23 @@ Persisting focuses on durable Agent history:
 
 Every workflow should make three things easy to answer:
 
-1. What was the Agent allowed to do?
+1. Which Agent, model, and tool calls were recorded?
 2. What actually changed or happened?
 3. Which evidence and history support the answer?
 
-Persisting does not claim that a successful command proves a perfect boundary.
-It records the mechanisms, limitations, Effects, and evidence that were
-actually available.
+Answers remain tied to the recorded Sources and their versions. Missing
+records remain a limit on what can be concluded.
 
 ## When Persisting fits
 
 Use pChronicle when trajectory history should remain useful after a terminal
-session ends. pVisor and pPilot are maintained in external repositories.
+session ends.
 
 If you only need a one-off script with no review or history requirement,
 Persisting may be more infrastructure than the task needs.
 
 ## The design direction
 
-Persisting is built around explicit boundaries, inspectable evidence, reversible
-writes, and portable data. These principles guide the [system design](system-design/index.md)
+Persisting is built around explicit data ownership, inspectable Sources,
+versioned snapshots, and portable data. These principles guide the [system design](system-design/index.md)
 and the current [roadmap](roadmap.md).

@@ -8,8 +8,6 @@ systems outside that current path.
 
 - [System overview](../system-design/index.md)
 - [End-to-end architecture](../system-design/architecture.md)
-- [Local-to-fleet contracts](../system-design/local-to-fleet.md)
-- [Security and evidence](../system-design/security-evidence.md)
 
 ## Build and release
 

@@ -3,9 +3,8 @@
 //! Drivers such as OverlayNet and Capture submit typed resources to a
 //! [`ControlController`]. Authorization is represented as a state transition;
 //! the driver then records whether the authorized operation was applied or
-//! failed. [`AgentCtlClient`] implements pVisor's optional cooperative
-//! AgentCtl protocol. Supervisor messages are shared wire contracts rather than
-//! types owned by either pPilot or pVisor.
+//! failed. [`AgentCtlClient`] implements the optional cooperative AgentCtl
+//! protocol. Supervisor messages are shared wire contracts for integrations.
 
 mod client;
 pub mod protocol;

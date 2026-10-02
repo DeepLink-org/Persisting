@@ -43,7 +43,7 @@ Rust 测试用 `cargo nextest` 做进程隔离和并行执行；用
 或使用仓库 CI setup action。
 
 本地和普通 CI 构建使用平台默认 linker。Linux wheel 使用 manylinux_2_28
-镜像（glibc 2.28），以便 rustc libstd 和 libkrun 能链接 `statx` /
+镜像（glibc 2.28），以便 rustc libstd 能链接 `statx` /
 `copy_file_range`。
 
 `just dev` 刻意限定在 runtime crate 以及无默认 feature 的 pChronicle 检查。

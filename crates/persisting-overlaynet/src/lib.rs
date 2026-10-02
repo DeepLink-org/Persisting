@@ -1,4 +1,4 @@
-//! Network interception and egress policy drivers for pVisor.
+//! Network interception and egress policy drivers for trajectory capture.
 //!
 //! Host/container execution uses the cooperative HTTP proxy. libkrun VM
 //! execution uses a non-bypassable virtio-net/smoltcp IPv4 TCP and DNS data

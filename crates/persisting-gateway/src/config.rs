@@ -31,13 +31,13 @@ pub struct ProxyConfig {
     /// Harbor-aligned egress policy for forward-proxy traffic (`CONNECT` + absolute-URI).
     #[serde(default)]
     pub network: NetworkConfig,
-    /// Optional embedded OverlayFS mount for the Attempt (consumed by pVisor).
+    /// Optional overlay configuration for integrations; Gateway does not mount it.
     #[serde(default)]
     pub overlay: OverlayConfig,
     pub models: Vec<ModelRoute>,
 }
 
-/// Filesystem overlay settings (same capture TOML; applied by pVisor).
+/// Filesystem overlay settings retained in capture TOML for integrations.
 ///
 /// Model: **target** (read-only base / apply destination) + **staging** (upper
 /// holds deltas). The Agent sees `merged`; changes do **not** touch `target`
@@ -45,7 +45,7 @@ pub struct ProxyConfig {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct OverlayConfig {
-    /// When true, pVisor mounts its embedded OverlayFS for the Attempt.
+    /// Whether the integration requests an overlay for the Attempt.
     #[serde(default)]
     pub enabled: bool,
     /// Target filesystem: primary lower layer and destination for `apply`.
@@ -70,7 +70,7 @@ pub struct OverlayConfig {
     /// operation log (overrides `{storage}/.overlay/jujutsu`).
     #[serde(default)]
     pub jujutsu_store_path: Option<String>,
-    /// Jujutsu workspace/fork name (defaults to the pVisor session id).
+    /// Jujutsu workspace/fork name for the integration.
     #[serde(default)]
     pub jujutsu_workspace: Option<String>,
     /// Writable upper directory (overrides `{stage_dir}/upper` when set).
@@ -83,7 +83,7 @@ pub struct OverlayConfig {
     #[serde(default)]
     pub merged_dir: Option<String>,
     /// If true, apply staging onto `target` automatically when the Attempt ends.
-    /// Default false — review then `pvisor apply` or `pvisor drop`.
+    /// Default false; effects require an explicit apply or discard decision.
     #[serde(default)]
     pub auto_apply: bool,
     /// If true, discard staging automatically when the Attempt ends.

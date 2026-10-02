@@ -1,8 +1,8 @@
 //! AgentCtl v1 Control-plane wire contract.
 //!
-//! AgentCtl is an optional, cooperative channel between pVisor and runtime
+//! AgentCtl is an optional, cooperative channel between a control server and runtime
 //! clients inside one Run. A client authenticates once with [`AgentRequest::Hello`]
-//! and then periodically exchanges its [`AgentState`] for pVisor's current
+//! and then periodically exchanges its [`AgentState`] for the server's current
 //! [`AgentDirective`] through [`AgentRequest::Sync`]. Each bounded,
 //! newline-delimited JSON connection carries exactly one request and one
 //! response.
@@ -15,7 +15,7 @@
 //! client must observe before admitting work. A successful `Sync` refreshes
 //! Session liveness and returns the latest directive.
 //!
-//! Outside a checkpoint, pVisor considers a Session stale after it misses
+//! Outside a checkpoint, the server considers a Session stale after it misses
 //! three recommended Sync intervals. A later `Hello` may replace a stale
 //! Session. Live duplicates and capacity conflicts are rejected. Staleness is
 //! diagnostic and lifecycle state; it is not proof that the client process
@@ -23,17 +23,17 @@
 //!
 //! # Checkpoint protocol
 //!
-//! When pVisor publishes [`AgentDirective::Quiesce`], every runtime Session
+//! When the server publishes [`AgentDirective::Quiesce`], every runtime Session
 //! that was live at checkpoint start must stop accepting work, drain in-flight
 //! work, and report [`AgentState::Quiesced`] with the same checkpoint ID.
-//! pVisor freezes that participant set, rejects every new or replacement
+//! The server freezes that participant set, rejects every new or replacement
 //! `Hello`, and never expires a participant until the checkpoint completes or
 //! is abandoned. Each checkpoint attempt requires a fresh matching report;
 //! an acknowledgement retained from an earlier attempt cannot satisfy it.
 //!
 //! A new `Quiesced` report whose ID does not match the active checkpoint is a
 //! conflict. Repeating the exact accepted report is idempotent, including
-//! after pVisor publishes `Continue` or `Shutdown`, so a still-quiesced client
+//! after the server publishes `Continue` or `Shutdown`, so a still-quiesced client
 //! can learn that new directive. Reporting `Active` or `Idle` while draining
 //! removes any current acknowledgement. Clients remain quiesced until they
 //! observe [`AgentDirective::Continue`] or [`AgentDirective::Shutdown`]. A
@@ -53,7 +53,7 @@
 //!
 //! Client states are Agent declarations. They are not enforcement evidence,
 //! an authoritative process inventory, or proof that unreported external
-//! effects do not exist. pVisor obtains authoritative process facts from its
+//! effects do not exist. Integrations obtain authoritative process facts from the
 //! execution provider.
 //!
 //! # Wire examples
@@ -96,7 +96,7 @@ pub const AGENTCTL_VERSION_ENV: &str = "PERSISTING_AGENTCTL_VERSION";
 /// Environment variable naming the transport, currently `unix`.
 pub const AGENTCTL_TRANSPORT_ENV: &str = "PERSISTING_AGENTCTL_TRANSPORT";
 
-/// A request sent by a runtime client to pVisor.
+/// A request sent by a runtime client to the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentRequest {
@@ -104,12 +104,12 @@ pub enum AgentRequest {
     Hello {
         /// Protocol version spoken by the client.
         version: u32,
-        /// Run-scoped bearer token injected by pVisor.
+        /// Run-scoped bearer token injected by the server.
         token: String,
         /// Non-empty client identity, unique among live Sessions in the Run.
         client_id: String,
     },
-    /// Report current cooperative state and obtain pVisor's current directive.
+    /// Report current cooperative state and obtain the server's current directive.
     Sync {
         /// Protocol version spoken by the client.
         version: u32,
@@ -135,7 +135,7 @@ pub enum AgentState {
     },
 }
 
-/// Desired cooperative state published by pVisor.
+/// Desired cooperative state published by the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentDirective {
@@ -171,7 +171,7 @@ pub enum AgentErrorCode {
     Conflict,
 }
 
-/// A response sent by pVisor to a runtime client.
+/// A response sent by the server to a runtime client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentResponse {

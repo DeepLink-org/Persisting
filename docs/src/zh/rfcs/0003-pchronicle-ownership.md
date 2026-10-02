@@ -68,7 +68,7 @@ Gateway 的 live Markdown 行为可以保留 producer-specific 策略，例如�
 - `persisting-gateway/src/session/` 维护 session 身份、路由、client metadata、索引与 snapshot。
 - `persisting-gateway/src/projection/` 维护 Gateway 特有的可见文本解释、实时过滤、draft/upsert 和 reconcile。
 - `persisting-gateway/src/engine/` 维护采集 actor、WAL、顺序状态机和 egress；这里的 “engine” 是 Gateway 内部编排器，不是轨迹存储层。
-- `persisting-overlaynet` 是 pVisor 当前的轻量显式代理网络层，负责 CONNECT、absolute-URI forward、header 规则和网络访问策略执行；Gateway 作为 `OverlaySink` 在其上解释并转发 LLM 流量、产出轨迹事件。OverlayNet 不依赖 Gateway，可配置其他 sink。
+- `persisting-overlaynet` 是轻量显式代理网络层，负责 CONNECT、absolute-URI forward、header 规则和网络访问策略执行；Gateway 作为 `OverlaySink` 在其上解释并转发 LLM 流量、产出轨迹事件。OverlayNet 不依赖 Gateway，可配置其他 sink。
 
 ## 一致性与故障语义
 
@@ -87,14 +87,14 @@ Run lease epoch MUST 通过 `EventWriterFence` 进入 canonical event 提交协�
 ## 收敛结果
 
 - 原 Engine 中的 Trajectory 适配、Lance、Markdown 和 Arrow row 实现全部迁入 pChronicle；Engine crate 删除。
-- Gateway、pVisor 与 pChronicle 直接使用 `persisting-events::EventRecord`；Gateway extension 仅承载实时 payload 解释。
+- Gateway 与 pChronicle 直接使用 `persisting-events::EventRecord`；Gateway extension 仅承载实时 payload 解释。
 - Gateway 仅保留实时 payload 解释、live Markdown eligibility/upsert orchestration 与运行时 reconcile；格式解析、文件 I/O、frontmatter 契约与索引实现委托 pChronicle。
 - 只生产事件或调用 control 协议的组件依赖 `persisting-events`；需要存储、查询或格式转换的调用方依赖 pChronicle。
 - 旧 ATIF `sessions` / `steps` / `tool_calls`、`NormalizedStore`、内存联表视图及对应 Python 门面删除；ATIF 查询统一复用 Storyline 三表 schema。
 - append 边界直接传递 `EventRecord` 批次，不保留 RON/event-lines 字符串适配层。
 
 新代码 SHOULD 按能力选择依赖：事件 producer 使用 `persisting-events`，存储和读取调用方
-使用 pChronicle。Gateway 与 pVisor 不得为了构造 `EventRecord` 依赖 pChronicle。
+使用 pChronicle。事件 producer 不得为了构造 `EventRecord` 依赖 pChronicle。
 
 ## 验收条件
 

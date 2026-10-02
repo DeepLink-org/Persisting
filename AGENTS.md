@@ -26,8 +26,8 @@ This exclusion covers, in particular:
   workflows
 
 The default active scope is pChronicle, its trajectory CLI and Web UI, and
-the Gateway, Control, events, and OverlayNet libraries it depends on. pVisor
-and pPilot are maintained in external repositories. `persisting-dlcapt` is a separate standalone component; excluding it
+the Gateway, Control, events, and OverlayNet libraries it depends on.
+`persisting-dlcapt` is a separate standalone component; excluding it
 does not exclude Gateway trajectory capture or pChronicle capture storage.
 
 Enter an excluded subsystem only when:

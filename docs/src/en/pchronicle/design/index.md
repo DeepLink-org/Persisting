@@ -14,4 +14,4 @@ in the [terminology guide](../reference/terminology.md).
 | Three-table Storyline projection and content layer | [Storyline Lance](storyline-lance.md) |
 
 The [pChronicle Reference](../reference/index.md) describes current commands and
-formats. Cross-product ownership belongs to [System Design](../../system-design/index.md).
+formats. Component ownership belongs to [System Design](../../system-design/index.md).

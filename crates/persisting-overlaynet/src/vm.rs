@@ -1014,7 +1014,7 @@ fn synthetic_address(address: Ipv4Addr) -> bool {
 
 /// Hard VM destinations that cannot be enabled by Public mode or by a DNS
 /// rebinding result. RFC1918 and loopback remain available intentionally for
-/// explicit host/LAN services; pVisor's own virtual and special-purpose ranges
+/// explicit host/LAN services; the virtual router and special-purpose ranges
 /// do not.
 fn forbidden_host_address(address: IpAddr) -> bool {
     let IpAddr::V4(address) = address else {

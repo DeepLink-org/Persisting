@@ -7,8 +7,6 @@ Persisting 的公开产品是 pChronicle。这一节记录交付状态、稳定�
 
 - [系统概览](../system-design/index.md)
 - [端到端架构](../system-design/architecture.md)
-- [从本地到集群](../system-design/local-to-fleet.md)
-- [安全与 Evidence](../system-design/security-evidence.md)
 
 ## 构建与发布
 

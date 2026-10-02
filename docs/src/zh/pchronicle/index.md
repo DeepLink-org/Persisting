@@ -9,7 +9,7 @@
 Agent 的经验，是它做过的一切。**pChronicle 是 Agent 轨迹存储引擎**：它以真正有意义的
 单位——Run（运行）——记录这些经验，让每一次运行都更易于理解与改进。可用于浏览、查询、
 交换和服务运行 Dataset；既可以读取 Persisting 产生的运行记录，也可以直接读取受支持的外部
-格式；不要求先运行 pVisor。
+格式。
 
 在 Persisting 里，pChronicle 负责保存与查询轨迹历史；它可以作为本地工具使用，也可以在多条
 path 前面以服务方式部署。
@@ -64,9 +64,6 @@ pchronicle query ./trajectory-data \
 - **导入或导出记录：** [交换数据](guides/exchange.md)
 - **使用 Agent 分析：** `pchronicle agent codex DATASET`
 - **打开本地 UI 与 API：** [提供 Dataset 服务](guides/ui.md)
-
-pChronicle 读取并组织运行历史，不执行或调度 Agent。要在受控工作区中运行 Agent，请从
-pVisor （外部仓库）开始。
 
 ## 推荐阅读顺序
 

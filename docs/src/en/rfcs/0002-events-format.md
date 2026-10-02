@@ -7,7 +7,7 @@
 | **Date** | 2026-07-30 |
 | **Component** | `persisting-events` + Gateway + pChronicle |
 | **Implements** | `persisting-events::EventRecord` · `persisting-pchronicle` `formats/events.rs` / `EventRow` |
-| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [RFC-0007 Events/Sidecar 边界](0007-events-contract-pchronicle-sidecar.md) · Capture 管线 (external repository) · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
+| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [RFC-0007 Events/Sidecar 边界](0007-events-contract-pchronicle-sidecar.md) · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
 
 ---
 
@@ -125,7 +125,7 @@ Persisting Gateway 的主入口是代理流量。`events` 应对齐这一现实�
 ## Schema：逻辑事件 `EventRecord`
 
 编码：UTF-8 JSON object。`EventRecord` 由存储无关的 `persisting-events` 唯一定义；
-Gateway、pVisor 与 pChronicle 直接使用同一类型。pChronicle 独占由该逻辑记录派生的
+Gateway 与 pChronicle 直接使用同一类型。pChronicle 独占由该逻辑记录派生的
 物理 row schema 与存储实现。
 一行事件 MUST 包含 `seq`、`source`、`kind`、`payload`。
 
@@ -154,7 +154,7 @@ Gateway、pVisor 与 pChronicle 直接使用同一类型。pChronicle 独占由�
 顶栏 **SHOULD NOT** 承载完整对话文本；正文在 `payload` 的 wire 字段中。
 
 新写入事件必须同时提供 `timestamp` 与 `timestamp_unix_ms`。Gateway capture sink 和
-pVisor runtime 是 producer 侧的共同兜底；admission 仅为旧记录或兼容导入补齐缺失值。
+事件 producer 负责提供时间字段；admission 仅为旧记录或兼容导入补齐缺失值。
 事件顺序仍由 `source + seq` 定义，时间戳用于关联和展示。
 
 ### `payload`：HTTP-first wire 对象

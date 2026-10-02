@@ -1,55 +1,21 @@
-# System Design
+# 系统设计
 
-> pVisor 与 pPilot 已拆分到外部仓库。本仓库保留 pChronicle 及捕获、持久历史所需的内部库。
-
-Persisting 提供持久 Agent 轨迹历史。本节描述 pChronicle 与外部执行组件的集成：
-
-- pVisor （外部仓库） 虚拟化并治理单个 Agent Run；
-- [pChronicle](../pchronicle/index.md) 把持久轨迹 Source 组织为可查询 Dataset。
-
-Gateway 与 OverlayNet 在本仓库支持轨迹捕获；OverlayFS 属于外部执行组件。
-存在稳定 Run identity 时，它会连接
-这些产品域，但各域也有独立入口。
-
-![Persisting 产品域与集成关系](../../assets/diagrams/persisting/system-products.svg)
-
-## 跨产品契约
+Persisting 围绕 [pChronicle](../pchronicle/index.md) 构建 Agent 轨迹存储引擎。
+Gateway 捕获模型流量，共享事件契约将记录交给存储，CLI 和 Web UI 提供 Dataset 浏览与分析入口。
 
 ```text
-Configured pVisor capture
-  Gateway trajectory events ─┐
-  pVisor lifecycle records ──┴─> canonical event Source ─┐
-Pinned external Sources                                  │
-  ATIF / ACTF / OpenAI Messages / Storyline ─────────────┴─> Snapshot
-                                                               └─> normalized Dataset views
+Gateway 捕获 ── EventRecord ── pChronicle 存储 ─┐
+ATIF / ACTF / OpenAI Messages / Storyline Source ┴─> Dataset Snapshot
+                                                       └─> 查询 / 交换 / Web UI
 ```
 
-Attempt finalization 会写入私有、带版本的 Run Bundle，并保留 staged Effect，供之后执行
-review/apply/drop；这一过程不需要 pChronicle。配置后的 capture 会发送 Gateway 轨迹 event
-与 pVisor lifecycle record，包括这些 record 携带的 Evidence。完整 Bundle 及其中的 Artifact、
-lineage、Effect 与更完整的 Evidence 清单仍留在本地，除非另行搬运。
-
-外部文件与 Storyline Source 会被直接固定版本并规范化，无需经过 pVisor，也不会先变成
-canonical event。每条路径保留与 Source 对应的保证；ingestion 不会补充 Source 未提供的
-Evidence。
-
-职责边界可以概括为两点：
-
-- **pVisor 负责执行。** 它定义单个 Run 的边界，以及模型、网络和文件系统 runtime driver。
-  即使没有捕获历史，私有 Run Bundle 也独立有效。
-- **pChronicle 负责历史。** 它记录 canonical event 和终态事实，并提供 Dataset 查询、交换与
-  revision lineage。
-
-这个拆分直接服务于使用者：可以先独立使用执行或历史，只有当问题同时跨越两个域时才配置
-capture 交接。
+Canonical events 保存已记录的事实；Storyline 规范化和查询投影将受支持的 Source
+呈现为统一视图。Snapshot 固定查询使用的 Source 版本，导入不会补出源数据中不存在的事实。
 
 ## 按问题继续阅读
 
-- [完整架构与目标模型](architecture.md)
-- [从本地到集群的连续性](local-to-fleet.md)
-- [安全与 Evidence 模型](security-evidence.md)
-- pVisor 实现边界 （外部仓库）
-- [pChronicle 实现边界](../pchronicle/design/index.md)
-
-交付状态以产品 Design 页面与[项目工程笔记](../project/engineering.md)为准。目标架构不能
-作为功能已经实现的证据。
+- [组件职责与数据流](architecture.md)
+- [设计原则](design-principles.md)
+- [存储与查询实现](../pchronicle/design/index.md)
+- [Gateway 捕获](../pchronicle/guides/serve-gateway.md)
+- [项目工程说明](../project/engineering.md)

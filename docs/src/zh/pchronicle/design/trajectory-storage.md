@@ -20,8 +20,8 @@
 - events、Storyline、ATIF、ACTF、OpenAI messages、AgenticMD 之间的格式转换；
 - materialize、revision lineage 和标准查询视图。
 
-`persisting-events` 拥有存储无关的逻辑事件信封。Gateway 与 pVisor 负责产出事件；CLI
-可以在进程内调用 pChronicle，pVisor 也可以通过 `pchronicle serve` 的 Control 服务提交。
+`persisting-events` 拥有存储无关的逻辑事件信封。Gateway 负责产出事件；CLI
+可以在进程内调用 pChronicle，本地 producer 也可以通过 `pchronicle serve` 的 Control 服务提交。
 这些 producer 都不定义第二套运行数据落盘格式。
 
 ## 2. 逻辑坐标
@@ -59,7 +59,7 @@ Gateway 的 durable 微批写入每累计 8 个小 fragment 就 seal 一个 L0 s
 segment 数按层级增长而不是随事件线性增长；旧 version/file 仍按 maintenance 的保留期
 vacuum，避免破坏已经固定旧快照的 reader。
 物理 schema 把 `event_id` 提升为独立业务列，并把 `timestamp` 规范化为 UTC
-`Timestamp(Millisecond)`。新写入的 Gateway 与 pVisor `EventRecord` 会同时提供 RFC3339
+`Timestamp(Millisecond)`。新写入的 Gateway `EventRecord` 会同时提供 RFC3339
 `timestamp` 和 `timestamp_unix_ms`；两者必须在毫秒级一致。admission 仍会为旧 producer
 或兼容导入根据 RFC3339 `timestamp` 或接收时间补齐缺失值。Storyline 投影也从
 `timestamp_unix_ms` 生成 UTC 毫秒文本，输入文本时间戳保存在 `payload_json`。事实层不检查
@@ -73,9 +73,7 @@ AgenticMD 是面向人的 Markdown 调试视图。它保存可见对话块和会
 代码审阅与人工分析。它会省略协议噪声，字段也允许缺失或扩展，因此不是存储格式或
 原始 HTTP 事件的无损替代。
 
-`pvisor run --record-format lance --record-destination WAREHOUSE` 启动 pChronicle sidecar，
-由 sidecar 写 canonical Lance events；pVisor 本身不打开 Lance。
-`--gateway-stream-markdown` 可同时维护 live AgenticMD。Markdown 是诊断投影，Dataset
+Gateway 捕获通过 pChronicle 写入 canonical events。Live AgenticMD 是诊断投影，Dataset
 消费统一使用 pChronicle API 和 `pchronicle` 命令。
 
 ### Storyline 三表 Lance
@@ -170,7 +168,6 @@ OpenAI msg ┘
 |---|---|---|
 | Gateway | 协议解析、调用生命周期、采集顺序、live projection 策略 | 通用 store、格式 schema、离线转换 |
 | pChronicle | 格式、路径、落盘、读取、转换与 revision lineage | 网络转发、Agent 生命周期 |
-| pVisor | Run 生命周期及 Gateway/OverlayNet/OverlayFS 装配 | 长期运行数据 schema |
 
 ## 8. 相关文档
 
@@ -178,6 +175,5 @@ OpenAI msg ┘
 - [发现并查询](../guides/discover-and-query.md)
 - [Snapshot](catalog.md)
 - [AgenticMD 格式](../reference/agenticmd.md)
-- Gateway 架构 （外部仓库）
-- pVisor 命令 （外部仓库）
+- [Gateway 捕获](../guides/serve-gateway.md)
 - [`pchronicle` Dataset 命令](../reference/cli.md)

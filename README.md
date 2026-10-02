@@ -9,8 +9,7 @@
 <img src="docs/static/img/logos/persisting-with-text.png" alt="Persisting logo" width="360" />
 
 Persisting contains **pChronicle**, which captures, browses, queries, exchanges,
-and serves durable Agent trajectory Datasets. pVisor and pPilot have moved to
-external repositories and are no longer built or distributed here.
+and serves durable Agent trajectory Datasets.
 
 <img src="docs/static/img/logos/pchronicle-with-text.png" alt="pChronicle" width="220" />
 

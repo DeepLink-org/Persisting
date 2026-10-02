@@ -1,39 +1,32 @@
 # Design principles
 
-> pVisor and pPilot are maintained in external repositories. This repository
-> contains pChronicle and the libraries needed for capture and durable history.
+## Keep facts and projections distinct
 
-These principles explain why Persisting has separate products and why the
-documentation emphasizes reviewable steps.
+Canonical events preserve recorded facts. Normalized Storyline views and query
+projections remain traceable to their Sources; missing records stay visible as
+limits on the answer.
 
-## Boundaries are explicit
+## Make ownership explicit
 
-pVisor describes the execution boundary that was actually installed. pChronicle
-describes the Source and Dataset that were actually observed. Neither product
-silently upgrades a missing control or incomplete Source into a stronger claim.
+Shared event contracts describe logical records. pChronicle owns storage,
+query, and exchange, while Gateway owns capture and protocol adaptation.
+The CLI and Web UI use those boundaries rather than defining new data models.
 
-## Writes are reversible until reviewed
+## Preserve provenance and versions
 
-Agent Effects remain staged until a person or an explicit policy applies them.
-Review is part of the workflow, not a report added after the write.
+An answer should identify the Dataset, Source, Snapshot, and query that produced
+it. Revision lineage keeps derived outputs connected to their inputs across
+normalization and export.
 
-## Evidence travels with the result
+## Bound the work
 
-A summary should point back to the Run, Dataset, Source, or query that produced
-it. Lineage is useful only when it survives export, normalization, and later
-inspection.
+Query budgets, bounded capture queues, and explicit append acknowledgements
+make resource use and write outcomes inspectable. A failed projection must not
+be reported as a successful durable append.
 
-## Execution and history stay composable
+## Keep data portable
 
-pVisor can run without pChronicle, and pChronicle can analyze external Sources
-without pVisor. The integration is a narrow capture contract so each product
-remains useful on its own.
+Documented formats and the CLI make Datasets usable without a particular
+viewer. Local files and object-store Sources share the Dataset model.
 
-## Portable data beats a privileged viewer
-
-Datasets, query results, and Run records should remain inspectable through the
-CLI and documented formats. A web view can improve discovery, but it should not
-be the only way to recover an answer.
-
-See the [system overview](index.md) and the [roadmap](../roadmap.md) for how
-these principles shape current delivery.
+See the [system overview](index.md) and [roadmap](../roadmap.md).

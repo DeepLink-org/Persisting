@@ -68,9 +68,7 @@ remain read-only.
 
 Use this mode when an Agent or SDK already knows how to call an OpenAI-,
 Anthropic-, or Gemini-compatible base URL and you want to capture that traffic
-without starting a pVisor Run. Use pVisor capture (external repository)
-instead when the Gateway must share the lifecycle and isolation boundary of an
-Agent execution.
+in a Dataset.
 
 ## Configuration inputs
 
@@ -182,8 +180,7 @@ closes the corresponding capture call.
 | `network` | No | `mode = "public"` | Policy for explicit forward-proxy traffic. |
 
 The shared Gateway schema also accepts an `[overlay]` table, but
-`pchronicle serve` does not create or apply a filesystem overlay. Overlay
-lifecycle belongs to pVisor (external repository).
+`pchronicle serve` does not create or apply a filesystem overlay.
 
 ### Capture levels
 
@@ -366,9 +363,8 @@ allowed_hosts = ["pypi.org", "files.pythonhosted.org", "*.github.com"]
 `public` is the default. `no-network` denies explicit proxy egress.
 `allowlist` requires a matching `allowed_hosts` entry or structured
 `[[network.rules]]` rule. Explicit `[[network.deny_rules]]` entries take
-precedence over allows. Prefer pVisor when this policy must be a
-non-bypassable boundary for an Agent process; `pchronicle serve` only controls
-traffic that the client sends through the Gateway.
+precedence over allows. `pchronicle serve` only controls traffic that the client
+sends through the Gateway; this does not provide process-wide network isolation.
 
 ## Dataset and state selection
 

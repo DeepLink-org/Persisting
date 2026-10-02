@@ -10,12 +10,12 @@ source of truth for delivered behavior.
   lookup useful without a service or account.
 - Keep English and Chinese documentation paths aligned and examples runnable.
 
-## Next: connect execution to durable history
+## Next: improve capture and analysis
 
 - Preserve Run identity and lineage across capture, normalization, and query.
 - Improve comparison workflows for Runs, Sessions, and revisions.
 
-## Later: move from one workstation to a fleet
+## Later: share trajectory data across teams
 
 - Share Dataset catalogs and policies across teams without hiding provenance.
 
@@ -27,4 +27,4 @@ source of truth for delivered behavior.
 An item is not complete because a design document exists. Look for a working
 CLI path, tests or examples, documented limitations, and a release entry before
 treating a capability as available. Proposed changes belong in an RFC when
-they change a data contract, execution boundary, or public command.
+they change a data contract, storage boundary, or public command.

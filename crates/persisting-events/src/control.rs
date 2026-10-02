@@ -1,7 +1,7 @@
 //! Lightweight, versioned control-plane client for the standalone pChronicle process.
 //!
 //! This optional module contains no storage engine. pChronicle implements the
-//! durable operations; orchestrators such as pPilot depend only on these
+//! durable operations; local integrations depend only on these
 //! contracts and the long-lived process transport.
 
 use crate::{EventRecord, unix_now_ms};

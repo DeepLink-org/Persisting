@@ -1,4 +1,4 @@
-//! Versioned pPilot Supervisor protocol shared by the control and execution planes.
+//! Versioned Supervisor protocol shared by the control and execution planes.
 
 use crate::{AttemptId, NetworkBandwidthLimit, RunId};
 use serde::{Deserialize, Serialize};
@@ -38,7 +38,7 @@ pub enum SupervisorClientMessage {
     Ack(SupervisorDirectiveAck),
 }
 
-/// A time-bounded rate grant enforced locally by pVisor.
+/// A time-bounded rate grant enforced locally by a runtime integration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupervisorNetworkQuotaGrant {
     pub grant_id: String,

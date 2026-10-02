@@ -1,4 +1,4 @@
-//! In-process Gateway for one pVisor Attempt (no forked daemon).
+//! In-process Gateway for one Attempt (no forked daemon).
 
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -22,14 +22,14 @@ pub struct InProcessCapture {
 }
 
 /// Attempt-scoped network services shared by Gateway and other interception
-/// drivers owned by pVisor.
+/// drivers supplied by the caller.
 #[derive(Clone)]
 pub struct InProcessRuntime {
     pub controller: Arc<dyn ControlController>,
     pub interception_metrics: InterceptionMetrics,
     pub bandwidth_registry: BandwidthRegistry,
     pub attempt_id: Option<String>,
-    /// Disable LLM dispatch for pVisor runs that only need the network proxy.
+    /// Disable LLM dispatch for Runs that only need the network proxy.
     pub gateway_enabled: bool,
 }
 

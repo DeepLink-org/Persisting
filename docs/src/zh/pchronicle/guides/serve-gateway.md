@@ -53,9 +53,8 @@ span/秒和 p50/p95/p99 延迟。三个环境变量可以按硬件调整规模�
 选择 upstream，按需改写模型和 wire protocol，再以客户端协议返回响应，同时把 canonical
 capture events 追加到 CLI 指定的输出 Dataset。Dataset Web UI 和 API 仍然保持只读。
 
-当 Agent 或 SDK 已经能够调用 OpenAI、Anthropic 或 Gemini 兼容的 base URL，而你希望不
-启动 pVisor Run 就捕获这些流量时，可以使用这个模式。如果 Gateway 需要与 Agent 执行共享
-生命周期和隔离边界，应改用 pVisor 捕获 （外部仓库）。
+当 Agent 或 SDK 已经能够调用 OpenAI、Anthropic 或 Gemini 兼容的 base URL，而你希望把
+这些流量捕获到 Dataset 时，可以使用这个模式。
 
 ## 配置输入
 
@@ -163,7 +162,7 @@ Capture metadata 会区分客户端请求模型和实际 upstream 模型，并�
 | `network` | 否 | `mode = "public"` | 显式 forward-proxy 流量的策略。 |
 
 共享 Gateway schema 还接受 `[overlay]`，但 `pchronicle serve` 不会创建或 apply 文件系统
-overlay。Overlay 生命周期属于 pVisor （外部仓库）。
+overlay。
 
 ### 捕获级别
 
@@ -332,8 +331,7 @@ allowed_hosts = ["pypi.org", "files.pythonhosted.org", "*.github.com"]
 
 `public` 是默认值；`no-network` 拒绝显式 proxy egress；`allowlist` 要求请求命中
 `allowed_hosts` 或结构化 `[[network.rules]]`。显式 `[[network.deny_rules]]` 的优先级高于
-allow。若策略必须成为 Agent 进程不可绕过的边界，应使用 pVisor；`pchronicle serve` 只能
-控制客户端主动发送到 Gateway 的流量。
+allow。`pchronicle serve` 只能控制客户端主动发送到 Gateway 的流量，不提供进程级网络隔离。
 
 ## Dataset 与状态目录选择
 

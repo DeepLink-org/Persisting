@@ -10,5 +10,3 @@
 
 Guide 解释决策并完成工作流；精确参数查阅 [`pchronicle` 命令行指南](../reference/cli.md)，仓库内
 fixture 见[项目示例](../../project/examples.md)。
-
-pChronicle 拥有持久历史；执行控制属于 pVisor。

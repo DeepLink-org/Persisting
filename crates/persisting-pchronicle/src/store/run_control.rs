@@ -70,7 +70,7 @@ impl RunControlStore {
     }
 
     /// Replace a lease only after the caller has established that its attempt
-    /// is absent or stale (for example through pPilot reconciliation).
+    /// is absent or stale (for example during coordinator reconciliation).
     pub async fn takeover_lease(
         &self,
         run_id: &RunId,

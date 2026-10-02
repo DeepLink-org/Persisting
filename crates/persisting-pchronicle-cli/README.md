@@ -1,20 +1,16 @@
 # pChronicle CLI
 
-pVisor and pPilot are maintained in external repositories. This repository
-ships pChronicle and the internal libraries needed for capture and history.
-
 **Standalone `pchronicle` CLI for onboarding, browsing, querying, importing,
 exporting, and serving trajectory Datasets.**
 
 Owns the `pchronicle` binary, Warehouse HTTP, the write-capable
-`--control` plane used by pPilot and pVisor, optional Gateway ingest/forwarding
+`--control` plane for local integrations, optional Gateway ingest/forwarding
 flags, and the embed of staged `pchronicle-web` assets at build time.
 
 Does not own trajectory models, Lance storage, Catalog, or the query engine —
 those live in [`persisting-pchronicle`](../persisting-pchronicle/README.md).
 Does not own the Web UI source —
-[`pchronicle-web`](../../pchronicle-web/README.md) does. Does not start, schedule,
-or isolate Agent Runs (pVisor / pPilot).
+[`pchronicle-web`](../../pchronicle-web/README.md) does.
 
 Current commands include `onboard`, `dataset` (pin/unpin/list/show/set/rename),
 `list`/`ls`, `stats`, bounded read-only `query`, built-in `stats` reports, assisted
@@ -28,8 +24,8 @@ Storyline Lance Dataset at `--to`. Provide at least one destination. With
 `--input-format compact-jsonl`, only `--mirror` is valid. Use `--once` for a
 finite run.
 
-`pchronicle serve --control 127.0.0.1:0 URI` is normally launched by pPilot or
-pVisor. `serve --listen` is the read-only Warehouse. Public bind addresses are
+`pchronicle serve --control 127.0.0.1:0 URI` exposes the authenticated local
+Control protocol for event producers. `serve --listen` is the read-only Warehouse. Public bind addresses are
 rejected. Small deterministic Datasets live in
 [`../../examples/data`](../../examples/data).
 

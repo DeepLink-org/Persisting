@@ -12,5 +12,3 @@ task-oriented workflow.
 The guides explain decisions and complete workflows. Use the
 [`pchronicle` reference](../reference/cli.md) for exact flags, and
 [Project examples](../../project/examples.md) for repository fixtures.
-
-pChronicle owns durable history. Execution control belongs to pVisor.

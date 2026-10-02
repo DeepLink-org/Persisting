@@ -1,7 +1,6 @@
 # Installation
 
 This repository distributes the `pchronicle` command and embedded Web UI.
-pVisor and pPilot are maintained in external repositories.
 
 ## Install
 
