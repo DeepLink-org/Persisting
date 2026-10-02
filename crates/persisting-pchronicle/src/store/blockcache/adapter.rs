@@ -1,5 +1,5 @@
 //! Lance bridge and ObjectStore read-through adapter. Only validated range reads
-//! are cached; HEAD and full GET retain the backend's native semantics/stream.
+//! are cached; explicit HEAD retains the backend's native freshness semantics.
 
 use super::{BlockCache, CacheConfig};
 use crate::store::object_store_io_gate::{self as io_gate, IoKind};
@@ -13,7 +13,7 @@ use object_store::{
 };
 use std::{
     ops::Range,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -69,6 +69,8 @@ async fn remote_write_request<T>(
 struct GatedMultipartUpload {
     inner: Arc<tokio::sync::Mutex<Box<dyn MultipartUpload>>>,
     io_scope: String,
+    store: CachedObjectStore,
+    path: Path,
 }
 
 impl std::fmt::Debug for GatedMultipartUpload {
@@ -95,7 +97,11 @@ impl MultipartUpload for GatedMultipartUpload {
 
     async fn complete(&mut self) -> ObjectResult<PutResult> {
         let mut inner = self.inner.lock().await;
-        remote_write_request(&self.io_scope, inner.complete()).await
+        let result = remote_write_request(&self.io_scope, inner.complete()).await;
+        if result.is_ok() {
+            self.store.forget_head(&self.path);
+        }
+        result
     }
 
     async fn abort(&mut self) -> ObjectResult<()> {
@@ -112,9 +118,33 @@ pub struct LanceCacheWrapper {
 }
 
 fn backend_identity_from_env() -> String {
-    let backend: std::collections::BTreeMap<_, _> = std::env::vars()
+    backend_identity(std::env::vars())
+}
+
+fn backend_identity(vars: impl Iterator<Item = (String, String)>) -> String {
+    let backend: std::collections::BTreeMap<_, _> = vars
         .filter(|(key, _)| {
             key.starts_with("AWS_") || key.starts_with("AZURE_") || key.starts_with("GOOGLE_")
+        })
+        .map(|(key, value)| {
+            // Workers give these missing files a new temporary HOME each time.
+            // Hash actual configuration, not an incidental pathname. Keep the
+            // path on other I/O errors so distinct unreadable configs stay apart.
+            let value = if matches!(
+                key.as_str(),
+                "AWS_CONFIG_FILE" | "AWS_SHARED_CREDENTIALS_FILE"
+            ) {
+                match std::fs::read(&value) {
+                    Ok(bytes) => blake3::hash(&bytes).to_hex().to_string(),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        "<missing>".into()
+                    }
+                    Err(_) => value,
+                }
+            } else {
+                value
+            };
+            (key, value)
         })
         .collect();
     blake3::hash(&serde_json::to_vec(&backend).unwrap_or_default())
@@ -143,13 +173,34 @@ impl lance_io::object_store::WrappingObjectStore for LanceCacheWrapper {
 }
 
 pub fn lance_wrapper(capacity_bytes: u64) -> Arc<dyn lance_io::object_store::WrappingObjectStore> {
+    type WrapperKey = (CacheConfig, String);
+    static WRAPPERS: OnceLock<
+        Mutex<std::collections::HashMap<WrapperKey, Arc<LanceCacheWrapper>>>,
+    > = OnceLock::new();
     let mut config = CacheConfig::from_env();
     config.capacity_bytes = capacity_bytes;
-    Arc::new(LanceCacheWrapper {
-        capacity_bytes,
-        block_size_bytes: config.block_size_bytes,
-        root: config.root,
-    })
+    let mut wrappers = WRAPPERS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = (config.clone(), backend_identity_from_env());
+    // Lance keys its object-store cache by wrapper Arc identity.
+    if !wrappers.contains_key(&key)
+        && wrappers.len() >= 64
+        && let Some(old) = wrappers.keys().next().cloned()
+    {
+        wrappers.remove(&old);
+    }
+    wrappers
+        .entry(key)
+        .or_insert_with(|| {
+            Arc::new(LanceCacheWrapper {
+                capacity_bytes,
+                block_size_bytes: config.block_size_bytes,
+                root: config.root,
+            })
+        })
+        .clone()
 }
 
 pub fn lance_store_params(capacity_bytes: u64) -> lance_io::object_store::ObjectStoreParams {
@@ -180,9 +231,10 @@ struct HeadMemo {
     entries: std::collections::HashMap<HeadKey, (ObjectMeta, Attributes, Instant)>,
 }
 
-/// A path plus the version asked for, which is all that changes the answer;
+/// The cache/backend namespace, path and version identify the answer;
 /// remaining conditions are checked against the metadata by the caller.
-type HeadKey = (String, Option<String>);
+type MetadataNamespace = (std::path::PathBuf, String);
+type HeadKey = (MetadataNamespace, String, Option<String>);
 
 impl HeadMemo {
     fn get(&self, key: &HeadKey) -> Option<(ObjectMeta, Attributes)> {
@@ -190,8 +242,9 @@ impl HeadMemo {
         (fetched.elapsed() < HEAD_TTL).then(|| (meta.clone(), attributes.clone()))
     }
 
-    fn forget(&mut self, path: &str) {
-        self.entries.retain(|(known, _), _| known != path);
+    fn forget(&mut self, namespace: &MetadataNamespace, path: &str) {
+        self.entries
+            .retain(|(scope, known, _), _| scope != namespace || known != path);
     }
 
     fn insert(&mut self, key: HeadKey, meta: ObjectMeta, attributes: Attributes) {
@@ -213,6 +266,7 @@ pub struct CachedObjectStore {
     block_size_bytes: u64,
     store_uri: String,
     io_scope: String,
+    metadata_namespace: MetadataNamespace,
     heads: Arc<Mutex<HeadMemo>>,
 }
 
@@ -221,14 +275,25 @@ impl CachedObjectStore {
     /// as well as bucket. Use a digest for any sensitive configuration.
     pub fn new(inner: Arc<dyn ObjectStore>, config: CacheConfig, store_uri: String) -> Self {
         let block_size_bytes = config.block_size_bytes;
+        let metadata_namespace = (config.root.clone(), store_uri.clone());
+        static HEADS: OnceLock<Arc<Mutex<HeadMemo>>> = OnceLock::new();
         Self {
             inner,
             cache: BlockCache::new(config),
             block_size_bytes,
             io_scope: io_gate::scope_key(&store_uri),
             store_uri,
-            heads: Arc::new(Mutex::new(HeadMemo::default())),
+            metadata_namespace,
+            heads: HEADS.get_or_init(Default::default).clone(),
         }
+    }
+
+    pub fn stats(&self) -> super::CacheStats {
+        self.cache.stats()
+    }
+
+    fn forget_head(&self, path: &Path) {
+        self.heads().forget(&self.metadata_namespace, path.as_ref());
     }
 
     fn heads(&self) -> std::sync::MutexGuard<'_, HeadMemo> {
@@ -250,7 +315,13 @@ impl CachedObjectStore {
         self.cache
             .get_or_fetch(&file, (range.end - range.start) as usize, async {
                 remote_request(&self.io_scope, async {
-                    let result = self.inner.get_opts(path, options.clone()).await?;
+                    let result = match self.inner.get_opts(path, options.clone()).await {
+                        Ok(result) => result,
+                        Err(error) => {
+                            self.forget_head(path);
+                            return Err(error);
+                        }
+                    };
                     // Do not publish mismatched bytes even if a compatible backend
                     // ignores If-Match or the requested VersionId.
                     if result.range != range
@@ -266,7 +337,7 @@ impl CachedObjectStore {
                     {
                         // Remembered metadata describes bytes the backend no
                         // longer serves; the next read must ask again.
-                        self.heads().forget(path.as_ref());
+                        self.forget_head(path);
                         return Err(object_store::Error::Precondition {
                             path: path.to_string(),
                             source: "object changed while reading cached block".into(),
@@ -289,7 +360,11 @@ impl std::fmt::Display for CachedObjectStore {
 #[async_trait]
 impl ObjectStore for CachedObjectStore {
     async fn put_opts(&self, p: &Path, b: PutPayload, o: PutOptions) -> ObjectResult<PutResult> {
-        remote_write_request(&self.io_scope, self.inner.put_opts(p, b, o)).await
+        let result = remote_write_request(&self.io_scope, self.inner.put_opts(p, b, o)).await;
+        if result.is_ok() {
+            self.forget_head(p);
+        }
+        result
     }
     async fn put_multipart_opts(
         &self,
@@ -301,16 +376,30 @@ impl ObjectStore for CachedObjectStore {
         Ok(Box::new(GatedMultipartUpload {
             inner: Arc::new(tokio::sync::Mutex::new(upload)),
             io_scope: self.io_scope.clone(),
+            store: self.clone(),
+            path: p.clone(),
         }))
     }
     async fn get_opts(&self, p: &Path, o: GetOptions) -> ObjectResult<GetResult> {
-        if o.head || o.range.is_none() {
+        // Lance rewrites this hint after commits; keep discovery fresh even
+        // while immutable data and versioned manifests use cached metadata.
+        if p.filename() == Some("latest_version_hint.json") {
             return remote_request(&self.io_scope, self.inner.get_opts(p, o)).await;
+        }
+        let head_key = (
+            self.metadata_namespace.clone(),
+            p.to_string(),
+            o.version.clone(),
+        );
+        if o.head {
+            let head = remote_request(&self.io_scope, self.inner.get_opts(p, o)).await?;
+            self.heads()
+                .insert(head_key, head.meta.clone(), head.attributes.clone());
+            return Ok(head);
         }
         // Metadata for the requested version. Conditions beyond the version are
         // checked locally below, so remembered metadata reaches the same verdict
         // a conditional round trip would have returned.
-        let head_key = (p.to_string(), o.version.clone());
         let remembered = self.heads().get(&head_key);
         let (head_meta, head_attributes) = match remembered {
             Some(head) => head,
@@ -350,9 +439,18 @@ impl ObjectStore for CachedObjectStore {
         if o.version.is_some() && o.version != head_meta.version {
             return remote_request(&self.io_scope, self.inner.get_opts(p, o)).await;
         }
-        let Some(range) = o.range.as_ref() else {
-            return remote_request(&self.io_scope, self.inner.get_opts(p, o)).await;
-        };
+        if head_meta.size == 0 && o.range.is_none() {
+            return Ok(GetResult {
+                payload: GetResultPayload::Stream(futures::stream::empty().boxed()),
+                meta: head_meta,
+                range: 0..0,
+                attributes: head_attributes,
+            });
+        }
+        let range = o
+            .range
+            .clone()
+            .unwrap_or_else(|| (0..head_meta.size).into());
         let range =
             range
                 .as_range(head_meta.size)
@@ -435,14 +533,17 @@ impl ObjectStore for CachedObjectStore {
         p: BoxStream<'static, ObjectResult<Path>>,
     ) -> BoxStream<'static, ObjectResult<Path>> {
         let uri = self.io_scope.clone();
+        let this = self.clone();
         let stream = self.inner.delete_stream(p);
         futures::stream::unfold(stream, move |mut stream| {
             let uri = uri.clone();
+            let this = this.clone();
             async move {
                 let _permit = io_gate::acquire(&uri, IoKind::Write).await;
                 match stream.next().await {
                     Some(result) => {
-                        if result.is_ok() {
+                        if let Ok(path) = &result {
+                            this.forget_head(path);
                             io_gate::note_success(&uri);
                         } else if result
                             .as_ref()
@@ -489,7 +590,11 @@ impl ObjectStore for CachedObjectStore {
         remote_request(&self.io_scope, self.inner.list_with_delimiter(p)).await
     }
     async fn copy_opts(&self, a: &Path, b: &Path, o: CopyOptions) -> ObjectResult<()> {
-        remote_write_request(&self.io_scope, self.inner.copy_opts(a, b, o)).await
+        let result = remote_write_request(&self.io_scope, self.inner.copy_opts(a, b, o)).await;
+        if result.is_ok() {
+            self.forget_head(b);
+        }
+        result
     }
 }
 
@@ -497,6 +602,58 @@ impl ObjectStore for CachedObjectStore {
 mod tests {
     use super::*;
     use object_store::{ObjectStoreExt, memory::InMemory};
+
+    #[test]
+    fn backend_namespace_survives_worker_home_changes_but_isolates_credentials() {
+        let root = tempfile::tempdir().unwrap();
+        let vars = |home: &str, key: &str| {
+            vec![
+                (
+                    "AWS_CONFIG_FILE".into(),
+                    root.path()
+                        .join(home)
+                        .join("config")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                (
+                    "AWS_SHARED_CREDENTIALS_FILE".into(),
+                    root.path()
+                        .join(home)
+                        .join("credentials")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                ("AWS_ACCESS_KEY_ID".into(), key.into()),
+                ("AWS_ENDPOINT".into(), "https://s3.example.test".into()),
+            ]
+        };
+        assert_eq!(
+            backend_identity(vars("worker-1", "one").into_iter()),
+            backend_identity(vars("worker-2", "one").into_iter())
+        );
+        assert_ne!(
+            backend_identity(vars("worker-1", "one").into_iter()),
+            backend_identity(vars("worker-2", "two").into_iter())
+        );
+        std::fs::create_dir(root.path().join("worker-1")).unwrap();
+        std::fs::write(
+            root.path().join("worker-1/config"),
+            b"different backend config",
+        )
+        .unwrap();
+        assert_ne!(
+            backend_identity(vars("worker-1", "one").into_iter()),
+            backend_identity(vars("worker-2", "one").into_iter())
+        );
+    }
+
+    #[test]
+    fn lance_opens_reuse_the_wrapper_identity() {
+        let a = lance_wrapper(1234567);
+        let b = lance_wrapper(1234567);
+        assert!(Arc::ptr_eq(&a, &b));
+    }
 
     #[tokio::test]
     async fn range_cache_preserves_head_and_full_get_semantics() {
@@ -522,6 +679,35 @@ mod tests {
         assert_eq!(
             cached.get(&path).await.unwrap().bytes().await.unwrap(),
             Bytes::from_static(b"0123456789")
+        );
+        let empty = Path::from("empty.lance");
+        inner.put(&empty, Bytes::new().into()).await.unwrap();
+        assert!(
+            cached
+                .get(&empty)
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let hint = Path::from("dataset/_versions/latest_version_hint.json");
+        inner
+            .put(&hint, Bytes::from_static(b"one").into())
+            .await
+            .unwrap();
+        assert_eq!(
+            cached.get(&hint).await.unwrap().bytes().await.unwrap(),
+            Bytes::from_static(b"one")
+        );
+        inner
+            .put(&hint, Bytes::from_static(b"two").into())
+            .await
+            .unwrap();
+        assert_eq!(
+            cached.get(&hint).await.unwrap().bytes().await.unwrap(),
+            Bytes::from_static(b"two")
         );
     }
 
@@ -615,5 +801,68 @@ mod tests {
             after_miss,
             "a fully cached range must not reach the backend"
         );
+    }
+    #[tokio::test]
+    async fn full_reads_reuse_blocks_across_opens_and_mutations_invalidate_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let memory = Arc::new(InMemory::new());
+        let path = Path::from("dataset/data.lance");
+        memory
+            .put(&path, Bytes::from_static(b"0123456789").into())
+            .await
+            .unwrap();
+        let gets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let inner: Arc<dyn ObjectStore> = Arc::new(Counted {
+            inner: memory,
+            gets: gets.clone(),
+        });
+        let config = CacheConfig::new(root.path().into(), 1024, 4);
+        let first =
+            CachedObjectStore::new(inner.clone(), config.clone(), "s3://test-bucket".into());
+        first.head(&path).await.unwrap();
+        assert_eq!(
+            first.get(&path).await.unwrap().bytes().await.unwrap(),
+            Bytes::from_static(b"0123456789")
+        );
+        // The explicit HEAD filled metadata, followed by exactly three blocks.
+        assert_eq!(gets.load(std::sync::atomic::Ordering::Relaxed), 4);
+        drop(first);
+        let second = CachedObjectStore::new(inner, config, "s3://test-bucket".into());
+        assert_eq!(
+            second.get(&path).await.unwrap().bytes().await.unwrap(),
+            Bytes::from_static(b"0123456789")
+        );
+        assert_eq!(
+            gets.load(std::sync::atomic::Ordering::Relaxed),
+            4,
+            "warm reopen must not download or re-HEAD"
+        );
+        assert_eq!(second.stats().hit_bytes, 10);
+        assert_eq!(second.stats().downloaded_bytes, 10);
+        second
+            .put(&path, Bytes::from_static(b"abcdefghij").into())
+            .await
+            .unwrap();
+        assert_eq!(
+            second.get_range(&path, 0..4).await.unwrap(),
+            Bytes::from_static(b"abcd")
+        );
+        assert!(gets.load(std::sync::atomic::Ordering::Relaxed) > 4);
+        second.copy(&path, &Path::from("copy.lance")).await.unwrap();
+        assert_eq!(
+            second
+                .get(&Path::from("copy.lance"))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+            Bytes::from_static(b"abcdefghij")
+        );
+        second.delete(&path).await.unwrap();
+        assert!(matches!(
+            second.get_range(&path, 0..4).await,
+            Err(object_store::Error::NotFound { .. })
+        ));
     }
 }

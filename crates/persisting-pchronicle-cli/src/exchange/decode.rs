@@ -438,7 +438,8 @@ pub(crate) fn decode_import_source(
             format!("{} is not UTF-8: {error}", diagnostic_path.display()),
         )
     })?;
-    let allow_skip = requested_format == ExchangeFormat::Auto && logical_source_path.is_some();
+    // Batch imports keep readable sources regardless of the requested format.
+    let allow_skip = logical_source_path.is_some();
     let format = match resolve_import_format(
         requested_format,
         suggested_format,
@@ -839,6 +840,79 @@ pub(crate) async fn validate_import_source(format: ExchangeFormat, path: &Path) 
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn directory_import_skips_unreadable_sources_for_every_format() {
+        for format in [
+            ExchangeFormat::Atif,
+            ExchangeFormat::Actf,
+            ExchangeFormat::OpenaiMessages,
+            ExchangeFormat::Storyline,
+            ExchangeFormat::Codex,
+            ExchangeFormat::ClaudeCode,
+        ] {
+            let outcome = decode_import_source(
+                format,
+                None,
+                ImportOutputFormat::Preserve,
+                Some(Path::new("input")),
+                Some(Path::new("bad.json")),
+                Some(Path::new("bad.json")),
+                b"not json",
+                &mut Default::default(),
+            )
+            .unwrap();
+            assert!(
+                matches!(outcome, DecodeImportOutcome::Skipped { .. }),
+                "{format:?}"
+            );
+        }
+        for (format, input) in [
+            (
+                ExchangeFormat::Atif,
+                include_bytes!("../../assets/onboard/support-ticket.json").as_slice(),
+            ),
+            (
+                ExchangeFormat::Actf,
+                include_bytes!("../../assets/onboard/code-repair.actf.json").as_slice(),
+            ),
+            (
+                ExchangeFormat::OpenaiMessages,
+                include_bytes!("../../assets/onboard/training.json").as_slice(),
+            ),
+        ] {
+            let outcome = decode_import_source(
+                format,
+                None,
+                ImportOutputFormat::Preserve,
+                Some(Path::new("input")),
+                Some(Path::new("source.json")),
+                Some(Path::new("source.json")),
+                input,
+                &mut Default::default(),
+            )
+            .unwrap();
+            match outcome {
+                DecodeImportOutcome::Imported(decoded) => {
+                    assert!(!decoded.storylines.is_empty(), "{format:?}");
+                }
+                DecodeImportOutcome::Skipped { reason, .. } => panic!("{format:?}: {reason}"),
+            }
+        }
+        assert!(
+            decode_import_source(
+                ExchangeFormat::Actf,
+                None,
+                ImportOutputFormat::Preserve,
+                None,
+                None,
+                None,
+                b"{}",
+                &mut Default::default(),
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn visible_json_extensions() {

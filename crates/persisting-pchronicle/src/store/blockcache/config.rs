@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 pub const DEFAULT_CAPACITY_BYTES: u64 = 512 * 1024 * 1024;
 pub const SERVE_CAPACITY_BYTES: u64 = 8 * DEFAULT_CAPACITY_BYTES;
-pub const DEFAULT_BLOCK_SIZE_BYTES: u64 = 8 * 1024 * 1024;
+pub const DEFAULT_BLOCK_SIZE_BYTES: u64 = 1024 * 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CacheConfig {
     pub root: PathBuf,
     pub capacity_bytes: u64,
@@ -27,7 +27,12 @@ impl CacheConfig {
             .and_then(|v| v.parse().ok())
             .filter(|v| *v > 0)
             .unwrap_or(DEFAULT_CAPACITY_BYTES);
-        Self::new(default_cache_dir(), capacity, DEFAULT_BLOCK_SIZE_BYTES)
+        let block_size = std::env::var("PCHRONICLE_LANCE_CACHE_BLOCK_SIZE_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(DEFAULT_BLOCK_SIZE_BYTES);
+        Self::new(default_cache_dir(), capacity, block_size)
     }
 }
 

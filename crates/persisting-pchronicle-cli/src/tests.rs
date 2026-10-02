@@ -3121,7 +3121,8 @@ async fn directory_import_dedupes_unknown_warnings_across_sources() -> Result<()
 }
 
 #[tokio::test]
-async fn directory_import_skips_invalid_json_and_publishes_valid_sources() -> Result<()> {
+async fn directory_import_explicit_format_skips_invalid_json_and_publishes_valid_sources()
+-> Result<()> {
     let temp = tempfile::tempdir()?;
     let input = temp.path().join("input");
     fs::create_dir_all(&input)?;
@@ -3136,6 +3137,8 @@ async fn directory_import_skips_invalid_json_and_publishes_valid_sources() -> Re
         let mut argv = vec![
             "pchronicle".to_owned(),
             "import".to_owned(),
+            "--format".to_owned(),
+            "atif".to_owned(),
             "--from".to_owned(),
             input.to_string_lossy().into_owned(),
             "--output".to_owned(),

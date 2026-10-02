@@ -249,6 +249,44 @@ async fn full_atif_array_reports_bounded_input_buffer_peak() {
 }
 
 #[tokio::test]
+async fn queries_incomplete_actf_with_projected_and_full_decode() {
+    for trajectory in [
+        serde_json::json!({"steps":[{"step_id":1,"assistant_content":null}]}),
+        serde_json::json!(null),
+    ] {
+        let input = tempfile::NamedTempFile::with_suffix(".json").unwrap();
+        std::fs::write(
+            input.path(),
+            serde_json::json!({
+                "task_id":"incomplete",
+                "attempts":{"1":{"trajectory":trajectory}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let manifest = LocalQueryManifest::for_format(input.path(), DocumentFormat::Actf).unwrap();
+        let source = FileTrajectoryDataSource::from_manifest(manifest).unwrap();
+        let context = SessionContext::new();
+        source.register(&context).unwrap();
+        for sql in [
+            "SELECT session_id FROM runs",
+            "SELECT session_id, message_json FROM steps",
+        ] {
+            let batches = context.sql(sql).await.unwrap().collect().await.unwrap();
+            let expected = if sql.contains("runs") || !trajectory.is_null() {
+                1
+            } else {
+                0
+            };
+            assert_eq!(
+                batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+                expected
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn queries_actf_event_log_trajectory_as_steps() {
     let input = tempfile::NamedTempFile::with_suffix(".json").unwrap();
     std::fs::write(

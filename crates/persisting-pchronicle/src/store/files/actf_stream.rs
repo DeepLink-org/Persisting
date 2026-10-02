@@ -225,7 +225,7 @@ impl<'de> Visitor<'de> for ProjectedActfAttemptVisitor<'_> {
                 }
             }
         }
-        trajectory.ok_or_else(|| de::Error::missing_field("trajectory"))
+        trajectory.ok_or_else(|| de::Error::custom(ACTF_TRAJECTORY_NOT_PROJECTABLE))
     }
 }
 
@@ -233,8 +233,7 @@ struct ProjectedActfTrajectorySeed<'a> {
     scan: &'a FileScanSpec,
 }
 
-pub(super) const ACTF_TRAJECTORY_NOT_PROJECTABLE: &str =
-    "ACTF trajectory is an event log; use full decode";
+pub(super) const ACTF_TRAJECTORY_NOT_PROJECTABLE: &str = "ACTF trajectory requires full decode";
 
 impl<'de> DeserializeSeed<'de> for ProjectedActfTrajectorySeed<'_> {
     type Value = ProjectedActfAttempt;
@@ -256,6 +255,10 @@ impl<'de> Visitor<'de> for ProjectedActfTrajectoryVisitor<'_> {
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("an ACTF trajectory object or event-log array")
+    }
+
+    fn visit_unit<E: de::Error>(self) -> std::result::Result<Self::Value, E> {
+        Err(de::Error::custom(ACTF_TRAJECTORY_NOT_PROJECTABLE))
     }
 
     fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
@@ -281,7 +284,7 @@ impl<'de> Visitor<'de> for ProjectedActfTrajectoryVisitor<'_> {
                 }
             }
         }
-        steps.ok_or_else(|| de::Error::missing_field("steps"))
+        steps.ok_or_else(|| de::Error::custom(ACTF_TRAJECTORY_NOT_PROJECTABLE))
     }
 }
 
@@ -322,7 +325,7 @@ impl<'de> Visitor<'de> for ProjectedActfStepsVisitor<'_> {
             steps.push(step);
         }
         if steps.is_empty() {
-            return Err(de::Error::custom("ACTF trajectory steps must not be empty"));
+            return Err(de::Error::custom(ACTF_TRAJECTORY_NOT_PROJECTABLE));
         }
         Ok(ProjectedActfAttempt { steps })
     }
@@ -414,7 +417,8 @@ impl<'de> Visitor<'de> for ProjectedActfStepVisitor<'_> {
 
         Ok(ProjectedActfStep {
             step_id: step_id.ok_or_else(|| de::Error::missing_field("step_id"))?,
-            started_at: started_at.ok_or_else(|| de::Error::missing_field("started_at"))?,
+            started_at: started_at
+                .ok_or_else(|| de::Error::custom(ACTF_TRAJECTORY_NOT_PROJECTABLE))?,
             content,
             reasoning_content,
             tools_nonempty,
@@ -440,7 +444,7 @@ impl<'de> DeserializeSeed<'de> for ProjectedActfAssistantContentSeed<'_> {
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_map(ProjectedActfAssistantContentVisitor { scan: self.scan })
+        deserializer.deserialize_any(ProjectedActfAssistantContentVisitor { scan: self.scan })
     }
 }
 
@@ -453,6 +457,13 @@ impl<'de> Visitor<'de> for ProjectedActfAssistantContentVisitor<'_> {
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ACTF assistant_content object")
+    }
+
+    fn visit_unit<E: de::Error>(self) -> std::result::Result<Self::Value, E> {
+        Ok(ProjectedActfAssistantContent {
+            content: String::new(),
+            reasoning_content: None,
+        })
     }
 
     fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>

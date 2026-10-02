@@ -314,6 +314,7 @@ fn command(
         "SSL_CERT_DIR",
         "PCHRONICLE_QUERY_MEMORY_LIMIT",
         "PCHRONICLE_LANCE_CACHE_CAPACITY_BYTES",
+        "PCHRONICLE_LANCE_CACHE_BLOCK_SIZE_BYTES",
         // Workers issue the reads, so admission tuning that never reaches them
         // tunes nothing.
         "PCHRONICLE_OBJECT_STORE_CONCURRENCY",
@@ -339,7 +340,11 @@ impl Worker {
         // and every scope can share them. Keeping them beside the per-scope
         // caches rather than inside one means a reader does not refetch what
         // another worker already paid for.
-        let blocks = root.join("blocks");
+        let blocks = std::path::absolute(
+            std::env::var_os("PCHRONICLE_LANCE_CACHE_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| root.join("blocks")),
+        )?;
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
         #[cfg(unix)]

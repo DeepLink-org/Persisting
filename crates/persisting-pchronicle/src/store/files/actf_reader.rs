@@ -79,12 +79,13 @@ fn push_actf_stories_from_slice(
     stories: &mut Vec<StorylineDocument>,
 ) -> io::Result<()> {
     let mut deserializer = serde_json::Deserializer::from_slice(record);
-    let document = ActfDocument::deserialize(&mut deserializer)
+    let mut document = ActfDocument::deserialize(&mut deserializer)
         .and_then(|document| {
             deserializer.end()?;
             Ok(document)
         })
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    document.normalize_for_import();
     document
         .validate()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
@@ -104,11 +105,12 @@ fn extend_actf_stories(
 
 fn deserialize_actf_document<R: Read>(reader: R) -> Result<ActfDocument> {
     let mut deserializer = serde_json::Deserializer::from_reader(reader);
-    let document =
+    let mut document =
         ActfDocument::deserialize(&mut deserializer).context("deserialize ACTF document")?;
     deserializer
         .end()
         .context("finish ACTF document deserialization")?;
+    document.normalize_for_import();
     document
         .validate()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
