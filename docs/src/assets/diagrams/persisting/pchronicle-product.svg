@@ -38,7 +38,7 @@
   <g id="canonical-event-sources">
     <rect x="40" y="155" width="350" height="100" rx="18" class="box"/>
     <text x="65" y="192" class="label">Canonical event Sources</text>
-    <text x="65" y="224" class="tiny">Gateway · pVisor lifecycle · native writers</text>
+    <text x="65" y="224" class="tiny">Gateway · event producers · native writers</text>
   </g>
 
   <g id="external-sources">

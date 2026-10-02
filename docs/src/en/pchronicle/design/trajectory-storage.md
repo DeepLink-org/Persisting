@@ -27,8 +27,8 @@ owns:
 - materialize, revision lineage, and the standard query views.
 
 `persisting-events` owns the storage-independent logical event envelope.
-Gateway and pVisor produce events. The CLI can call pChronicle in-process;
-pVisor can also submit through the Control service of `pchronicle serve`.
+Gateway produces events. The CLI can call pChronicle in-process;
+local producers can also submit through the Control service of `pchronicle serve`.
 None of those producers define a second on-disk run format.
 
 ## 2. Logical coordinates
@@ -74,7 +74,7 @@ broken.
 
 The physical schema lifts `event_id` into its own business column and
 normalizes `timestamp` to UTC `Timestamp(Millisecond)`. Newly written
-Gateway and pVisor `EventRecord`s supply both an RFC3339 `timestamp` and
+Gateway `EventRecord`s supply both an RFC3339 `timestamp` and
 `timestamp_unix_ms`; the two values must agree at millisecond precision.
 Admission still fills missing values for older producers or compatibility
 imports from the RFC3339 `timestamp` or the receive time. Storyline
@@ -93,11 +93,9 @@ inspection, code review, and manual analysis. It omits protocol noise and
 allows missing or extended fields, so it is not a lossless substitute for
 the storage format or the raw HTTP events.
 
-`pvisor run --record-format lance --record-destination WAREHOUSE` starts a
-pChronicle sidecar that writes canonical Lance events. pVisor itself does
-not open Lance. `--gateway-stream-markdown` can maintain live AgenticMD at
-the same time. Markdown is a diagnostic projection. Dataset consumption
-always goes through the pChronicle API and the `pchronicle` commands.
+Gateway capture writes canonical events through pChronicle. Live AgenticMD is
+a diagnostic projection. Dataset consumption uses the pChronicle API and the
+`pchronicle` commands.
 
 ### Storyline three-table Lance
 
@@ -220,7 +218,6 @@ formats are handled by `pchronicle import/export`.
 |---|---|---|
 | Gateway | protocol parsing, call lifecycle, capture order, live projection policy | generic store, format schema, offline conversion |
 | pChronicle | formats, paths, durability, reads, conversion, and revision lineage | network forwarding, Agent lifecycle |
-| pVisor | Run lifecycle and Gateway / OverlayNet / OverlayFS assembly | long-lived run-data schema |
 
 ## 8. Related documents
 
@@ -228,6 +225,5 @@ formats are handled by `pchronicle import/export`.
 - [Discover and query](../guides/discover-and-query.md)
 - [Snapshot](catalog.md)
 - [AgenticMD format](../reference/agenticmd.md)
-- [Gateway architecture](../../pvisor/design/gateway.md)
-- [pVisor CLI](../../pvisor/reference/cli.md)
+- [Gateway capture](../guides/serve-gateway.md)
 - [`pchronicle` Dataset commands](../reference/cli.md)

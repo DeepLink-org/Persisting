@@ -1,7 +1,7 @@
 //! Lightweight, versioned control-plane client for the standalone pChronicle process.
 //!
 //! This optional module contains no storage engine. pChronicle implements the
-//! durable operations; orchestrators such as pPilot depend only on these
+//! durable operations; local integrations depend only on these
 //! contracts and the long-lived process transport.
 
 use crate::{EventRecord, unix_now_ms};
@@ -222,6 +222,10 @@ pub enum ChronicleControlResponse {
 }
 
 #[async_trait]
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to futures"
+)]
 pub trait ChronicleControl: Send + Sync {
     fn root_uri(&self) -> &str;
 

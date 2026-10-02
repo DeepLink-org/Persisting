@@ -46,5 +46,5 @@ Logs are retained automatically on failure. Set
 ## Links
 
 - [Regression tests](../README.md)
-- [Gateway architecture](../../../docs/src/pvisor/design/gateway.md)
+- [Gateway architecture](../../../docs/src/en/pchronicle/guides/serve-gateway.md)
 - [`persisting-gateway`](../../../crates/persisting-gateway/README.md)

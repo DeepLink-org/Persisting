@@ -16,14 +16,10 @@ permissions:
 
 jobs:
   benchmark:
-    name: Benchmark (${{ matrix.ref }})
+    name: Benchmark (main and candidate)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        ref: [main, candidate]
+    timeout-minutes: 60
+    # Both revisions must run on the same machine for comparable CPU timings.
     steps:
       - name: Checkout candidate
         uses: actions/checkout@v4
@@ -43,10 +39,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: pchronicle-benchmark-${{ matrix.ref }}
+          shared-key: pchronicle-benchmark
 
       - name: Resolve main baseline
-        if: matrix.ref == 'main'
         id: baseline
         shell: bash
         run: |
@@ -71,7 +66,7 @@ jobs:
           fi
 
       - name: Benchmark main
-        if: matrix.ref == 'main' && steps.baseline.outputs.supported == 'true'
+        if: steps.baseline.outputs.supported == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -84,7 +79,6 @@ jobs:
             --output "${RUNNER_TEMP}/pchronicle-benchmark/main"
 
       - name: Benchmark candidate
-        if: matrix.ref == 'candidate'
         shell: bash
         run: |
           set -euo pipefail
@@ -99,7 +93,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pchronicle-benchmark-part-${{ matrix.ref }}-${{ github.run_id }}
+          name: pchronicle-benchmark-part-${{ github.run_id }}
           path: ${{ runner.temp }}/pchronicle-benchmark
           retention-days: 30
           if-no-files-found: warn

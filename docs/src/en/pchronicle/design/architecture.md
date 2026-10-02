@@ -2,7 +2,7 @@
 
 This document explains how pChronicle stores Agent trajectories and exposes
 resource-limited read surfaces. User workflows belong to [Guides](../guides/index.md),
-exact commands to [Reference](../reference/cli.md), and cross-product ownership to
+exact commands to [Reference](../reference/cli.md), and component ownership to
 [System Design](../../system-design/architecture.md).
 
 ![pChronicle product boundary](../../../assets/diagrams/persisting/pchronicle-product.svg)

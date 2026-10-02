@@ -1,7 +1,7 @@
 //! pChronicle's write-capable control plane.
 //!
 //! The Warehouse HTTP server remains read-only. This long-lived JSONL/stdin
-//! protocol is intended for trusted local orchestrators such as pPilot.
+//! protocol is intended for trusted local integrations.
 
 use anyhow::{Context, Result};
 use fs2::FileExt;

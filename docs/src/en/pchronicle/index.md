@@ -10,7 +10,7 @@ Agent experience is the sum of everything an agent did. **pChronicle is an Agent
 trajectory storage engine**: it records that experience at the unit that matters
 — the Run — and makes every Run easier to understand and improve. Use it to
 browse, query, exchange, and serve run Datasets produced by Persisting or by
-supported external formats; pChronicle does not require pVisor to run.
+supported external formats.
 
 In Persisting, pChronicle stores and queries trajectory history. It can run as a
 local tool or be deployed as a service in front of many paths.
@@ -69,10 +69,6 @@ When you already have a question, follow the matching path:
 - **Import or export runs:** [Exchange data](guides/exchange.md)
 - **Analyze with an Agent:** `pchronicle agent codex DATASET`
 - **Open the local UI and API:** [Serve a Dataset](guides/ui.md)
-
-pChronicle reads and organizes run history. It does not execute or schedule
-Agents. To run an Agent in a controlled workspace, start with
-[pVisor](../pvisor/index.md).
 
 ## A useful reading order
 

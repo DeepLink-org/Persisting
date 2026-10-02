@@ -79,7 +79,6 @@ Lance 重建 AgenticMD，但当前公共 `pchronicle` CLI 不提供 AgenticMD ma
 
 ## 6. 示例与实现
 
-- Gateway 端到端定量示例：`examples/pvisor/04-gateway-llm-control/`
 - Lance/ATIF 存储与分析示例：`examples/pchronicle/`
 - 格式与视图实现：`crates/persisting-pchronicle/src/formats/`、`src/projection/`
 - [pChronicle 运行存储](../design/trajectory-storage.md)

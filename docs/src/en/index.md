@@ -1,7 +1,7 @@
 ---
 template: home.html
 title: Persistent Infrastructure for the Agent Era
-description: Run Agents inside a reviewable execution boundary and preserve queryable history.
+description: Capture, import, and query durable Agent trajectory history.
 hide:
   - navigation
   - toc

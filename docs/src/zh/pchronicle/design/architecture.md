@@ -1,7 +1,7 @@
 # pChronicle 架构
 
 本文解释 pChronicle 如何存储 Agent 轨迹，并提供有资源限制的读取面。用户工作流属于
-[Guides](../guides/index.md)，精确命令属于[Reference](../reference/cli.md)，跨产品 ownership
+[Guides](../guides/index.md)，精确命令属于[Reference](../reference/cli.md)，组件职责
 属于 [System Design](../../system-design/architecture.md)。
 
 ![pChronicle 产品边界](../../../assets/diagrams/persisting/pchronicle-product.svg)

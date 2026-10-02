@@ -10,7 +10,7 @@
 [`persisting-pchronicle-cli`](../persisting-pchronicle-cli/README.md) 拥有
 `pchronicle` 命令、loopback API 与嵌入式静态资源。
 [`pchronicle-web`](../../pchronicle-web/README.md) 拥有浏览前端。
-pVisor / Gateway 生产 canonical events；pPilot 编排多个 Run。
+Gateway 生产 canonical events。
 
 Canonical Event 与 Storyline 分别在事实层和交换/分析层保持权威，关系是单向投影：
 `events.lance` 是 append-only 运行时事实源；`StorylineDocument` 是与 ATIF v1.7
@@ -53,9 +53,9 @@ just proptest pchronicle
 
 ## Links
 
-- [pChronicle overview](../../docs/src/pchronicle/index.zh.md)
-- [产品架构](../../docs/src/pchronicle/design/architecture.zh.md)
-- [记录数据、视图与版本](../../docs/src/pchronicle/concepts/facts-and-projections.zh.md)
-- [pChronicle CLI](../../docs/src/pchronicle/reference/cli.zh.md)
-- [RFC-0003 ownership](../../docs/src/rfcs/0003-pchronicle-ownership.md)
+- [pChronicle overview](../../docs/src/zh/pchronicle/index.md)
+- [产品架构](../../docs/src/zh/pchronicle/design/architecture.md)
+- [记录数据、视图与版本](../../docs/src/zh/pchronicle/concepts/facts-and-projections.md)
+- [pChronicle CLI](../../docs/src/zh/pchronicle/reference/cli.md)
+- [RFC-0003 ownership](../../docs/src/zh/rfcs/0003-pchronicle-ownership.md)
 - [`persisting-pchronicle-cli`](../persisting-pchronicle-cli/README.md)

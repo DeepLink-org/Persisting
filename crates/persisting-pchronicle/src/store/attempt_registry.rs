@@ -1,7 +1,7 @@
-//! Durable pVisor Attempt liveness and terminal-result registry.
+//! Durable Attempt liveness and terminal-result registry.
 //!
 //! One CAS-managed record exists per Run. A newer lease epoch fences every
-//! update from an older Attempt, while heartbeat expiry lets pPilot distinguish
+//! update from an older Attempt, while heartbeat expiry lets a coordinator distinguish
 //! a live remote Attempt from an orphan after coordinator restart.
 
 use super::cas_store::{CasStore, Mutation, unix_now_ms};

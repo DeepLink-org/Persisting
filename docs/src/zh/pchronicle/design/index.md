@@ -12,5 +12,5 @@ Snapshot，以及记录事实与派生视图的区分见
 | Canonical event 与 projection ownership | [运行存储](trajectory-storage.md) |
 | Storyline 三表 projection 与内容层 | [Storyline Lance](storyline-lance.md) |
 
-当前命令与格式见 [pChronicle Reference](../reference/index.md)，跨产品 ownership 见
+当前命令与格式见 [pChronicle Reference](../reference/index.md)，组件职责见
 [System Design](../../system-design/index.md)。

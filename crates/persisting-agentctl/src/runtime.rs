@@ -1,4 +1,4 @@
-//! Stable value types shared by pVisor, pPilot, capture, and storage.
+//! Stable value types shared by capture, storage, and runtime integrations.
 //!
 //! The runtime and narrative dimensions are deliberately orthogonal:
 //!
@@ -64,7 +64,7 @@ string_id!(RunId);
 string_id!(AttemptId);
 string_id!(StorylineId);
 
-/// Connection material injected by pPilot into a RunSpec it launches.
+/// Connection material supplied by a coordinator in a RunSpec.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupervisorBootstrap {
     pub endpoint: String,
@@ -72,8 +72,8 @@ pub struct SupervisorBootstrap {
     pub controller_epoch: u64,
     #[serde(default = "default_supervisor_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
-    /// pChronicle root used by pVisor to publish durable Attempt liveness and
-    /// terminal results. This is optional for standalone pVisor Runs.
+    /// pChronicle root used to publish durable Attempt liveness and
+    /// terminal results. This is optional for standalone Runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_registry_uri: Option<String>,
     #[serde(default = "default_attempt_ttl_ms")]
@@ -100,13 +100,13 @@ impl AgentRef {
     }
 }
 
-/// One semantic Agent execution submitted to pVisor.
+/// One semantic Agent execution described by a runtime integration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunSpec {
     #[serde(default = "runtime_schema_version")]
     pub schema_version: u32,
     pub run_id: RunId,
-    /// Monotonic pPilot ownership generation. Zero is reserved for callers that
+    /// Monotonic coordinator ownership generation. Zero is reserved for callers that
     /// do not use durable orchestration/fencing.
     #[serde(default)]
     pub lease_epoch: u64,
@@ -122,8 +122,8 @@ pub struct RunSpec {
     pub runtime: RuntimeConfig,
     #[serde(default)]
     pub capabilities: CapabilitySet,
-    /// Optional pPilot control channel. Absence, connection failure, or later
-    /// disconnection never prevents standalone pVisor execution.
+    /// Optional coordinator control channel. Absence, connection failure, or later
+    /// disconnection never prevents standalone execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supervisor: Option<SupervisorBootstrap>,
     #[serde(default)]
@@ -213,7 +213,7 @@ pub enum StdioMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
-    /// Wall-clock limit for one Attempt. `None` means no pVisor deadline.
+    /// Wall-clock limit for one Attempt. `None` means no execution deadline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     /// Grace period between a cooperative process-tree termination request and
@@ -382,7 +382,7 @@ pub struct NetworkBandwidthLimit {
     pub bytes_per_second: u64,
 }
 
-/// Runtime-neutral network request presented to pVisor for authorization.
+/// Runtime-neutral network request presented to a controller for authorization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkAccessRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -410,7 +410,7 @@ pub enum NetworkTransport {
 }
 
 /// Model invocation metadata. Request/response bodies intentionally stay in
-/// Capture; pVisor receives only the information needed for policy and audit.
+/// Capture; the controller receives only the information needed for policy and audit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelCallRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -794,7 +794,7 @@ pub struct RunResult {
     pub warnings: Vec<String>,
 }
 
-/// The current pPilot execution owner for one logical Run.
+/// The current execution owner for one logical Run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunLeaseRecord {
     pub run_id: RunId,
@@ -809,7 +809,7 @@ pub struct RunLeaseRecord {
 }
 
 /// Immutable terminal commit request. `result_digest` binds the commit to the
-/// durable pPilot completion record without embedding an arbitrarily large
+/// durable completion record without embedding an arbitrarily large
 /// result in the control object.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunCommitRequest {

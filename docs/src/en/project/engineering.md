@@ -11,17 +11,17 @@ Run these from the repository root. `just --list` shows the full recipe set.
 | Command | What it does |
 |---|---|
 | `just test` | Workspace Rust tests through `cargo nextest`, then the Python suite |
-| `just test <package>` | One crate or Cargo package (for example `pvisor` or `persisting-pvisor`) |
+| `just test <package>` | One crate or Cargo package (for example `pchronicle` or `persisting-pchronicle`) |
 | `just docs-sync` | Install the locked documentation environment |
 | `just docs-serve` | Local Zensical preview with automatic reload when files change |
 | `just docs-serve-dirty` | Local Zensical preview when automatic reload stalls |
 | `just docs-build` | Build the static documentation site |
-| `just examples` | pVisor and pChronicle product example suites |
+| `just examples` | pChronicle product example suite |
 | `just gate` | Format, lint, and the full Rust test workspace |
 | `just dev` | Scoped runtime-crate check; not the full workspace matrix |
 
 `just test` uses the debug nextest profile for faster iteration. Pass a Cargo
-package name or a short crate alias (`pvisor`, `pchronicle`,
+package name or a short crate alias (`pchronicle`,
 `pchronicle-cli`, `agentctl`, `capture`). `just test pchronicle` runs both
 `persisting-pchronicle` and `persisting-pchronicle-cli` (same as the CI
 pchronicle shard); use `just test pchronicle-cli` for the CLI crate alone.
@@ -46,7 +46,7 @@ execution; install version `0.9.137` with
 repository CI setup action.
 
 Local and ordinary CI builds use the platform's default linker. Linux wheels
-use the manylinux_2_28 image (glibc 2.28) so rustc libstd and libkrun can
+use the manylinux_2_28 image (glibc 2.28) so rustc libstd can
 link `statx` / `copy_file_range`.
 
 `just dev` is intentionally scoped to runtime crates and a no-default-feature
@@ -61,7 +61,7 @@ Cargo runner when needed, for example `cargo test --doc -p <package>`.
 The repository keeps two expensive/nightly diagnostics out of the normal
 edit loop:
 
-- `just build-analysis persisting-pvisor` enables Cargo's `-Z build-analysis`
+- `just build-analysis persisting-pchronicle` enables Cargo's `-Z build-analysis`
   for one package and writes per-session JSONL metrics under `$CARGO_HOME/log`.
   Inspect them with `just build-analysis-report` (or pass `report=timings` or
   `report=rebuilds`). The dedicated target directory prevents diagnostic
@@ -75,8 +75,6 @@ Sanitizer builds are deliberately not part of `just dev`/CI's default path:
 they rebuild the standard library and are intended for focused debugging
 sessions.
 
-For supported behavior, start with [pVisor Guides](../pvisor/guides/index.md),
-批量 Run 工作流，或
-[pChronicle Guides](../pchronicle/guides/index.md), and consult
+For supported behavior, start with [pChronicle Guides](../pchronicle/guides/index.md), and consult
 [System Design](../system-design/index.md) for the rationale behind an
 implementation.

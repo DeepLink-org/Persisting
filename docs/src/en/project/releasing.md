@@ -7,9 +7,8 @@ does not contain a PyO3 extension and does not use Maturin.
 Each platform wheel is tagged `py3-none-<platform>` and contains:
 
 - the Python `persisting` package;
-- native command-line scripts;
+- the native `pchronicle` command;
 - the bundled pChronicle Web assets;
-- the platform libkrun firmware payload required by pVisor.
 
 The release set currently contains Linux x86_64 and Apple Silicon macOS wheels.
 Source distributions are not part of the published artifact set.
@@ -53,18 +52,13 @@ project during the first successful upload but does not reserve the name.
 ## Build and verification path
 
 The PEP 517 backend is setuptools with the repository-owned
-`scripts/packaging/build_backend.py`. Before wheel assembly it builds the three
-Rust CLIs, stages firmware, and ensures the Dioxus bundle exists. `setup.py`
+`scripts/packaging/build_backend.py`. Before wheel assembly it builds the
+pChronicle CLI and ensures the Dioxus bundle exists. `setup.py`
 marks the wheel platform-specific while keeping the Python and ABI tags
 `py3-none`.
 
-The packaging script fetches the pinned libkrun firmware archive for both
-Linux x86_64 and Apple Silicon macOS unless `PERSISTING_LIBKRUNFW_PATH` points
-at an existing payload. Local wheel builds must use one of those supported
-paths; a missing payload is a build error rather than an incomplete wheel.
-
 Linux wheels use the manylinux_2_28 / glibc 2.28 tag. Current rustc libstd
-and libkrun's virtiofs passthrough need `statx` and `copy_file_range`, which
+needs `statx` and `copy_file_range`, which
 are not available on manylinux2014.
 
 Every wheel is checked for its component set and install-time CLI smoke tests.

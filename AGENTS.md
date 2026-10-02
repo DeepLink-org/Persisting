@@ -25,9 +25,9 @@ This exclusion covers, in particular:
 - `crates/persisting-dlcapt/` and dlcapt-specific scripts, tests, features, and
   workflows
 
-The default active scope is the Agent infrastructure centered on pVisor,
-pPilot, pChronicle, Gateway, Control, OverlayFS, OverlayNet, and trajectory CLI
-surfaces. `persisting-dlcapt` is a separate standalone component; excluding it
+The default active scope is pChronicle, its trajectory CLI and Web UI, and
+the Gateway, Control, events, and OverlayNet libraries it depends on.
+`persisting-dlcapt` is a separate standalone component; excluding it
 does not exclude Gateway trajectory capture or pChronicle capture storage.
 
 Enter an excluded subsystem only when:

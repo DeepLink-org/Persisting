@@ -3,7 +3,7 @@ version = "0.3.0"
 edition = "2024"
 authors = ["reiase"]
 license = "Apache-2.0"
-description = "Agent execution, orchestration, and durable history infrastructure"
+description = "Durable Agent trajectory capture, storage, and query infrastructure"
 
 [workspace]
 resolver = "3"
@@ -12,21 +12,13 @@ members = [
     "crates/persisting-events",
     "crates/persisting-gateway",
     "crates/persisting-dlcapt",
-    "crates/persisting-ppilot",
-    "crates/persisting-pvisor",
-    "crates/persisting-replay",
     "crates/persisting-pchronicle",
     "crates/persisting-pchronicle-cli",
-    "crates/persisting-overlayfs",
-    "crates/persisting-overlay-core",
     "crates/persisting-overlaynet",
 ]
-exclude = ["vendor/libkrun", "vendor/krun-vmm", "vendor/krun-devices"]
 
 default-members = [
     "crates/persisting-pchronicle-cli",
-    "crates/persisting-ppilot",
-    "crates/persisting-pvisor",
 ]
 
 [workspace.dependencies]
@@ -41,19 +33,14 @@ clap = "4"
 dashmap = "6"
 datafusion = { version = "54.1.0", default-features = false }
 dirs = "6"
-env_logger = "0.11"
 fs2 = "0.4"
-flate2 = "1"
-fuser = { version = "0.15", default-features = false }
 futures = "0.3"
 futures-util = { version = "0.3", default-features = false }
-globset = "0.4"
 hostname = "0.4"
 http-body-util = "0.1"
 hyper = "1"
 hyper-util = { version = "0.1", default-features = false }
 ipnet = "2"
-jj-lib = "0.43.0"
 lance = { version = "11.0.0", default-features = false }
 lance-arrow = "11.0.0"
 lance-core = "11.0.0"
@@ -64,8 +51,6 @@ lance-io = "11.0.0"
 lance-linalg = "11.0.0"
 lance-table = "11.0.0"
 libc = "0.2"
-libkrun = "=1.19.3"
-log = "0.4"
 opendal = { version = "0.57.0", default-features = true, features = [
     "services-azblob",
     "services-cos",
@@ -80,13 +65,8 @@ object_store = "0.13.2"
 persisting-agentctl = { path = "crates/persisting-agentctl" }
 persisting-events = { path = "crates/persisting-events" }
 persisting-gateway = { path = "crates/persisting-gateway" }
-persisting-overlayfs = { path = "crates/persisting-overlayfs", default-features = false }
-persisting-overlay-core = { path = "crates/persisting-overlay-core" }
 persisting-overlaynet = { path = "crates/persisting-overlaynet" }
 persisting-pchronicle = { path = "crates/persisting-pchronicle", default-features = false }
-persisting-pvisor = { path = "crates/persisting-pvisor" }
-persisting-replay = { path = "crates/persisting-replay" }
-pollster = "0.4"
 pulsing-actor = { version = "0.1.2", default-features = false }
 proptest = "1"
 regex = "1"
@@ -94,9 +74,7 @@ reqwest = { version = "0.12", default-features = false }
 serde = "1"
 serde_json = "1"
 serde_yaml = "0.9"
-sha2 = "0.11"
 smoltcp = { version = "0.13.1", default-features = false }
-tar = "0.4"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", default-features = false }
@@ -155,8 +133,3 @@ panic = "abort"
 # adapter preserves Prost's code generation API but parses .proto files with
 # pure-Rust protox, avoiding both a system protoc and vendored protobuf-src.
 prost-build = { path = "vendor/prost-build-protox" }
-fuser = { path = "vendor/fuser" }
-libkrun = { path = "vendor/libkrun" }
-krun-init-blob = { path = "vendor/krun-init-blob" }
-krun-vmm = { path = "vendor/krun-vmm" }
-krun-devices = { path = "vendor/krun-devices" }

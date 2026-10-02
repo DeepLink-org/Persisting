@@ -1,4 +1,4 @@
-//! Synchronous client for pVisor's cooperative, low-frequency AgentCtl protocol.
+//! Synchronous client for the cooperative, low-frequency AgentCtl protocol.
 
 use crate::{
     AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
@@ -143,7 +143,7 @@ impl AgentCtlClient {
         }
     }
 
-    /// Report cooperative state and return pVisor's current directive.
+    /// Report cooperative state and return the server's current directive.
     pub fn sync(&mut self, state: AgentState) -> anyhow::Result<AgentDirective> {
         let session_id = self
             .session_id

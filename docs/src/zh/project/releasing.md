@@ -6,9 +6,8 @@ PyPI。项目仍然以 Python wheel 交付，但不包含 PyO3 扩展，也不�
 每个平台 wheel 标记为 `py3-none-<platform>`，并包含：
 
 - Python `persisting` 包；
-- 原生命令行脚本；
+- 原生 `pchronicle` 命令；
 - 捆绑的 pChronicle Web 资源；
-- pVisor 所需的平台 libkrun firmware payload。
 
 当前发布集包含 Linux x86_64 和 Apple Silicon macOS wheel。源码分发不是已
 发布产物的一部分。
@@ -51,17 +50,11 @@ GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上�
 ## 构建与校验路径
 
 PEP 517 backend 是 setuptools，配合仓库自有的
-`scripts/packaging/build_backend.py`。组装 wheel 之前，它会构建三条 Rust
-CLI、暂存 firmware，并确保 Dioxus bundle 存在。`setup.py` 把 wheel 标为
+`scripts/packaging/build_backend.py`。组装 wheel 之前，它会构建 pChronicle Rust
+CLI，并确保 Dioxus bundle 存在。`setup.py` 把 wheel 标为
 平台相关，同时把 Python 与 ABI tag 保持为 `py3-none`。
 
-打包脚本会拉取 pinned 的 libkrun firmware 归档（Linux x86_64 与 Apple
-Silicon macOS），除非 `PERSISTING_LIBKRUNFW_PATH` 指向已有 payload。本地
-wheel 构建必须走这些受支持路径之一；缺少 payload 是构建错误，而不是不完整
-的 wheel。
-
-Linux wheel 使用 manylinux_2_28 / glibc 2.28 标签。当前 rustc libstd 和
-libkrun 的 virtiofs passthrough 需要 `statx` 与 `copy_file_range`，
+Linux wheel 使用 manylinux_2_28 / glibc 2.28 标签。当前 rustc libstd 需要 `statx` 与 `copy_file_range`，
 manylinux2014 上没有这些符号。
 
 每个 wheel 都会检查组件集和安装时 CLI smoke test。发布集检查随后要求每个

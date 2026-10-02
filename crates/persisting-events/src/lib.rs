@@ -1,6 +1,6 @@
 //! Storage-independent runtime event contracts shared by Persisting components.
 //!
-//! Producers such as pVisor and Gateway emit these records. Consumers such as
+//! Producers such as Gateway emit these records. Consumers such as
 //! pChronicle decide how to persist, query, and project them.
 //! The optional `control` feature also carries the lightweight, versioned
 //! sidecar protocol so callers do not need another protocol-only package.

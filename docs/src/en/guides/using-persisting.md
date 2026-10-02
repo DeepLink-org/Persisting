@@ -3,24 +3,17 @@
 Choose the smallest workflow that answers the question in front of you. You do
 not need to adopt every component at once.
 
-## I need an Agent to change a project safely
-
-Start with [pVisor](../pvisor/get-started.md): run one Agent in a staged
-workspace, review the Run Bundle, and apply only a trusted path. Add network or
-provider controls when the next Run needs them.
-
 ## I already have trajectory data
 
 Start with [pChronicle](../pchronicle/get-started.md): open a Dataset, inspect a
 summary, ask one bounded SQL question, and locate the evidence behind the
 answer. Use exchange or serving guides only after the read-only path works.
 
-## I need execution and history together
+## I need to capture new model traffic
 
-Use [pVisor capture](../pvisor/guides/capture.md) when lifecycle events from a
-Run should become a pChronicle Source. The private Run Bundle remains a local
-execution record; capture is an explicit handoff, not an implicit copy of every
-artifact.
+Use the [Gateway](../pchronicle/guides/serve-gateway.md) to forward requests
+and persist canonical events. External execution components can submit events
+through the pChronicle Control service.
 
 ## A reliable operating habit
 

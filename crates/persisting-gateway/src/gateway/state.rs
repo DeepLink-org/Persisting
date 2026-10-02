@@ -136,7 +136,7 @@ pub async fn serve_with_listeners_and_shutdown(
 
 /// Gateway sink with an injected runtime control state controller.
 ///
-/// pVisor injects the controller; Gateway and OverlayNet apply model/network
+/// The caller supplies the controller; Gateway and OverlayNet apply model/network
 /// transitions while retaining HTTP adaptation and trajectory extraction.
 pub async fn serve_with_runtime_control(
     config: ProxyConfig,

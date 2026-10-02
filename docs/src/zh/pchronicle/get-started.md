@@ -127,7 +127,6 @@ pchronicle find ./trajectory-data \
 - [打开本地 Web UI](guides/ui.md)
 - [导入或导出 Run](guides/exchange.md)
 - [在本地提供 Dataset 服务](guides/serve.md)
-- [使用 pVisor 捕获新 Run](../pvisor/guides/capture.md)
 - [理解 Dataset 与 Source 模型](concepts/index.md)
 
 Walkthrough 创建的 Dataset 是临时的。继续导入、服务化或生产自动化前，请换成自己的路径。

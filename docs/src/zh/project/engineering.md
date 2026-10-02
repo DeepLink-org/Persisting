@@ -10,17 +10,17 @@
 | 命令 | 作用 |
 |---|---|
 | `just test` | 通过 `cargo nextest` 跑工作区 Rust 测试，再跑 Python 套件 |
-| `just test <package>` | 单个 crate 或 Cargo package（例如 `pvisor` 或 `persisting-pvisor`） |
+| `just test <package>` | 单个 crate 或 Cargo package（例如 `pchronicle` 或 `persisting-pchronicle`） |
 | `just docs-sync` | 安装锁定的文档环境 |
 | `just docs-serve` | 本地 Zensical 预览，文件修改时自动刷新 |
 | `just docs-serve-dirty` | 自动重载卡住时重新启动 Zensical 预览 |
 | `just docs-build` | 构建静态文档站点 |
-| `just examples` | pVisor 与 pChronicle 产品示例套件 |
+| `just examples` | pChronicle 产品示例套件 |
 | `just gate` | 格式化、lint 以及完整 Rust 测试工作区 |
 | `just dev` | 限定范围的 runtime crate 检查；不是完整工作区矩阵 |
 
 `just test` 使用 debug nextest profile 以便更快迭代。传入 Cargo package 名
-或短 crate 别名（`pvisor`、`pchronicle`、`pchronicle-cli`、
+或短 crate 别名（`pchronicle`、`pchronicle-cli`、
 `agentctl`、`capture`）。`just test pchronicle` 会同时跑
 `persisting-pchronicle` 与 `persisting-pchronicle-cli`（与 CI 的 pchronicle
 shard 一致）；只要 CLI 时用 `just test pchronicle-cli`。无参数形式还会跑
@@ -43,7 +43,7 @@ Rust 测试用 `cargo nextest` 做进程隔离和并行执行；用
 或使用仓库 CI setup action。
 
 本地和普通 CI 构建使用平台默认 linker。Linux wheel 使用 manylinux_2_28
-镜像（glibc 2.28），以便 rustc libstd 和 libkrun 能链接 `statx` /
+镜像（glibc 2.28），以便 rustc libstd 能链接 `statx` /
 `copy_file_range`。
 
 `just dev` 刻意限定在 runtime crate 以及无默认 feature 的 pChronicle 检查。
@@ -57,7 +57,7 @@ Rust 测试用 `cargo nextest` 做进程隔离和并行执行；用
 
 仓库把两项昂贵 / nightly 诊断排除在日常编辑循环之外：
 
-- `just build-analysis persisting-pvisor` 为一个 package 启用 Cargo 的
+- `just build-analysis persisting-pchronicle` 为一个 package 启用 Cargo 的
   `-Z build-analysis`，并把每会话 JSONL 指标写到 `$CARGO_HOME/log`。用
   `just build-analysis-report` 查看（也可传 `report=timings` 或
   `report=rebuilds`）。独立的 target 目录避免诊断产物污染普通增量缓存。
@@ -69,7 +69,5 @@ Rust 测试用 `cargo nextest` 做进程隔离和并行执行；用
 Sanitizer 构建故意不进入 `just dev` / CI 的默认路径：它们会重建标准库，
 只适合聚焦的调试会话。
 
-支持的行为请从 [pVisor 指南](../pvisor/guides/index.md)、
-批量 Run 编排 或
-[pChronicle 指南](../pchronicle/guides/index.md) 开始，实现理由见
+支持的行为请从 [pChronicle 指南](../pchronicle/guides/index.md) 开始，实现理由见
 [系统架构](../system-design/index.md)。

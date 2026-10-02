@@ -8,6 +8,10 @@ pub use crate::capture::writers::lance_crate::LanceCrateWriter;
 
 /// 单表 session_steps 追加写；一步一行。
 #[async_trait]
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to futures"
+)]
 pub trait StepTableWriter: Send + Sync {
     async fn append(&self, record: &StepRecord) -> Result<()>;
 }

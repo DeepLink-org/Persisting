@@ -4,34 +4,25 @@
 |---|---|
 | **Status** | Accepted |
 | **Date** | 2026-08-16 |
-| **Components** | `persisting-events` · pVisor · orchestration layer · pChronicle · Gateway |
+| **Components** | `persisting-events` · pChronicle · Gateway |
 | **Amends** | [RFC-0002 Events](0002-events-format.md) · [RFC-0003 pChronicle ownership](0003-pchronicle-ownership.md) |
-| **Related** | [端到端架构](../system-design/architecture.md) · orchestration architecture · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
+| **Related** | [端到端架构](../system-design/architecture.md) · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
 
 ## 摘要
 
 Persisting 将运行时事件的逻辑契约从存储实现中拆出，由唯一新增 crate
-`persisting-events` 拥有。pVisor、Gateway、orchestration layer 与 pChronicle 共享该契约，但只有
+`persisting-events` 拥有。Gateway、事件 producer 与 pChronicle 共享该契约，但只有
 pChronicle 拥有 Lance、DataFusion、对象存储、Catalog、查询与投影实现。
 
-pVisor 需要持久轨迹或 Attempt registry 时启动
-`pchronicle serve --control 127.0.0.1:0 DATASET`，通过带版本和认证令牌的 control 协议提交事件并等待 durable
-acknowledgement。pVisor 默认构建不再链接 Lance/DataFusion，也不直接打开或写入
-`events.lance`。
+本地集成方可以启动 `pchronicle serve --control 127.0.0.1:0 DATASET`，
+通过带版本和认证令牌的 Control 协议提交事件并等待 durable acknowledgement。
+存储实现由服务进程拥有，客户端只依赖逻辑事件与协议类型。
 
 ## 动机
 
-此前 `EventRecord` 位于 pChronicle，pVisor 的默认持久化路径又以内嵌适配器链接
-pChronicle。这把“描述发生了什么”的稳定数据契约与“如何落盘、查询和投影”的实现绑在
-一起，导致单 Run 执行器携带不必要的存储依赖，也使 producer 难以在不依赖具体后端的
-情况下发布事件。
-
-边界调整需要同时满足：
-
-1. producer 与 consumer 仍使用同一种事件类型，禁止复制同构 schema；
-2. pVisor 不拥有存储格式，也不链接重型存储引擎；
-3. pChronicle 仍是唯一的结构化轨迹持久化和读取层；
-4. 不为少量进程协议再增加一个独立 client crate。
+逻辑事件描述“发生了什么”，物理存储实现决定“如何落盘、查询和投影”。将两者分离，
+让 producer 可以发布事件而无需依赖具体存储后端，同时继续使用同一种公共事件类型。
+pChronicle 保留结构化轨迹的持久化和读取职责。
 
 ## 决策
 
@@ -65,23 +56,14 @@ RFC-0003 中“pChronicle 拥有轨迹格式”的约束仍适用于物理 schem
 其中“pChronicle 唯一定义 `EventRecord`”以及“所有调用方直接依赖 pChronicle 类型”的部分
 由本 RFC 修订。
 
-### 3. pVisor 通过 sidecar 持久化
+### 3. 本地 producer 通过 Control 服务提交
 
-pVisor 只暴露两个面向用户的落盘选择：格式和目标位置。
+`pchronicle serve --control 127.0.0.1:0 DATASET` 提供本地持久化入口。
+`persisting-events` 的进程 client 负责启动子进程、握手与请求关联。
+子进程退出、握手失败或协议版本不兼容都使持久化请求显式失败。
 
-| 选择 | 行为 |
-|---|---|
-| `--record-format json` + 本地目录 | pVisor 直接追加完整 `events.jsonl`，不启动 pChronicle |
-| `--record-format json` + warehouse URI | 启动 pChronicle，由 sidecar 将 JSON 事件写入 warehouse |
-| `--record-format lance` | 启动 `pchronicle serve --control 127.0.0.1:0 <root>`，通过 control 协议写 canonical Lance |
-
-旧的 `--chronicle-mode`、`--chronicle-dir` 和 `--pchronicle-binary` 不再是 pVisor
-CLI 参数。pVisor 库/配置仍可通过 `chronicle.binary` 选择 sidecar executable；orchestration layer
-自己的 `--pchronicle-binary` 不属于 pVisor CLI。pVisor 管理自己启动的 child 生命周期；
-child 退出、握手失败或协议版本不兼容都会显式使持久化路径失败。
-
-pVisor 与 Gateway producer 只构造 `EventRecord`。它们 MUST NOT 选择 Lance row、执行
-DataFusion query，或根据 storage URI 加载对象存储 SDK。
+使用此协议的 producer 提交 `EventRecord`；Lance row、DataFusion 查询与对象存储
+实现由 pChronicle 管理。
 
 ### 4. Control 协议随事件契约发布
 
@@ -98,9 +80,8 @@ request ID 与令牌；client 校验响应版本和 request ID。frame 大小有
 
 ### 5. ACK、背压与不确定性
 
-pVisor 到 sidecar 的 append 队列是有界的。入队使用 `try_send`：队列已满或 worker 已
-关闭时，事件被明确拒绝，调用方可以复用该 `seq`。成功入队后调用方等待 sidecar 响应；
-只有 pChronicle 完成 append 并返回成功时，事件才对 pVisor 视为 durable。
+Gateway 到存储的 append 队列是有界的。提交被拒绝与提交后的结果不确定必须区分。
+只有 pChronicle 完成 append 并返回成功时，事件才视为 durable。
 
 连接中断、写入错误或 ACK 丢失无法证明事件未提交，必须分类为 unknown。此时 producer
 消耗该序号，不能把不确定写入伪装为“肯定未写”。事实层仍允许 at-least-once 与重复
@@ -112,7 +93,7 @@ pVisor 到 sidecar 的 append 队列是有界的。入队使用 `try_send`：队
 ## 依赖边界
 
 ```text
-pVisor / Gateway / orchestration layer
+Gateway / local event producers
           │
           │ EventRecord + optional control protocol
           ▼
@@ -127,16 +108,13 @@ pVisor / Gateway / orchestration layer
           └── Catalog / query / projection
 ```
 
-默认 pVisor dependency graph MUST NOT 通过 Chronicle 写路径引入 Lance、Arrow、DataFusion
-或云对象存储 SDK。其他 pVisor 组件若为了非存储的格式/投影 helper 暂时形成到
-pChronicle 的间接依赖，不改变本 RFC 的 ownership，但 SHOULD 在后续边界整理中消除；
-不得借此让 pVisor 重新直接写存储。
+`persisting-events` 的默认 feature 和可选 `control` feature 均不得引入 Lance、Arrow、
+DataFusion 或云对象存储 SDK。物理存储与查询实现只由 pChronicle 维护。
 
 ## 兼容与迁移
 
 - `EventRecord` 的 JSON 顶层字段保持扁平，移动 crate 不改变既有 wire 形状；
 - pChronicle 对外 re-export 公共事件类型，允许调用方渐进迁移 import；
-- pVisor 调用方应迁移到 `--record-format {json,lance}` 与 `--record-destination PATH|URI`；旧 Chronicle CLI 参数不再接受；
 - `persisting-pchronicle-client` 被删除，使用者改为
   `persisting-events = { features = ["control"] }`；
 - pChronicle 的既有 Lance dataset、目录布局和 replay 语义不因这次 crate 拆分而变化。
@@ -145,18 +123,18 @@ pChronicle 的间接依赖，不改变本 RFC 的 ownership，但 SHOULD 在后�
 
 | 方案 | 原因 |
 |---|---|
-| pVisor 继续内嵌 Lance adapter | 执行器与存储引擎生命周期、feature 和依赖重新耦合 |
+| producer 内嵌另一套 Lance adapter | producer 与存储引擎生命周期、feature 和依赖重新耦合 |
 | `EventRecord` 继续由 pChronicle 定义 | producer 为使用基础事件信封被迫依赖存储产品 |
 | 单独保留 `persisting-pchronicle-client` | 协议包过碎；control 契约可以作为事件边界的可选 feature |
-| pVisor 与 orchestration layer 各写一套 IPC client | 会产生协议漂移、重复认证与错误语义 |
-| pVisor 写 JSONL，pChronicle 以后导入 | 缺少运行期 durable ACK、fencing 与统一 canonical append 语义 |
+| 各集成方分别实现 IPC client | 会产生协议漂移、重复认证与错误语义 |
+| 仅依赖离线导入而无实时 Control 协议 | 缺少运行期 durable ACK、fencing 与统一 canonical append 语义 |
 
 ## 验收条件
 
 - Workspace 只新增 `persisting-events`，不存在 `persisting-pchronicle-client`；
-- pVisor、Gateway、pChronicle 复用同一 `EventRecord`，没有同构公共事件 struct；
-- pVisor 默认构建不直接依赖 pChronicle 存储 API，也不链接 Lance/DataFusion；
-- `spawn` 模式能够启动 sidecar，持久写入有序事件并发布 Attempt 终态；
+- Gateway、producer、pChronicle 复用同一 `EventRecord`，没有同构公共事件 struct；
+- `persisting-events` 不直接依赖 pChronicle 存储 API，也不链接 Lance/DataFusion；
+- 进程 client 能够启动 Control 服务，持久写入有序事件并发布 Attempt 终态；
 - 协议版本、认证、request correlation、frame limit、拒绝与 unknown 写入语义有测试；
 - pChronicle 的原有 replay、query 与物理存储测试继续通过。
 
@@ -164,4 +142,4 @@ pChronicle 的间接依赖，不改变本 RFC 的 ownership，但 SHOULD 在后�
 
 | Version | Date | Notes |
 |---|---|---|
-| Accepted | 2026-08-16 | 拆出 `persisting-events`，移除 client crate，以 pChronicle sidecar 替代 pVisor 内嵌存储 |
+| Accepted | 2026-08-16 | 拆出 `persisting-events`，移除 client crate，确立逻辑事件与 pChronicle 存储服务的边界 |

@@ -33,7 +33,7 @@ pub fn snapshot_run_proxy_config(
 }
 
 /// Write an already-resolved proxy configuration into the session snapshot.
-/// pVisor uses this after merging its TOML and CLI configuration, so Gateway
+/// Callers use this after resolving their configuration, so Gateway
 /// runtime setup never needs to know where configuration originated.
 pub fn snapshot_proxy_config(
     storage: &Path,

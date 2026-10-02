@@ -38,6 +38,10 @@ pub struct OverlayRequestContext<T> {
 /// always delivered to the configured sink. OverlayNet is independent of any
 /// concrete sink; an implementation may also compose several downstream sinks.
 #[async_trait]
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to futures"
+)]
 pub trait OverlaySink: Clone + Send + Sync + 'static {
     type RequestContext: Clone + Send + Sync + 'static;
 

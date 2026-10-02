@@ -140,6 +140,10 @@ struct BackendHealth {
 }
 
 #[async_trait(?Send)]
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to futures"
+)]
 trait LangfuseAnalyticsBackend {
     async fn append(&mut self, rows: &[LogicalRow]) -> Result<AppendReceipt>;
     async fn point(&self, project_id: &str, logical_id: &str) -> Result<Vec<Value>>;

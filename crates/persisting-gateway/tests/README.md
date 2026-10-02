@@ -29,4 +29,4 @@ cargo nextest run -p persisting-gateway --test model_api_forwarding --locked
 ## Links
 
 - [`persisting-gateway`](../README.md)
-- [Capture trajectories](../../../docs/src/pvisor/guides/capture.md)
+- [Capture trajectories](../../../docs/src/en/pchronicle/guides/serve-gateway.md)
