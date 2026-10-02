@@ -176,8 +176,7 @@ fn decode_json(
     let envelope = take_unknown_fields_envelope(&mut value)?;
     let mut document: ActfDocument =
         serde_json::from_value(value).map_err(|error| InputIssue::invalid(error.to_string()))?;
-    normalize_solved_at(&mut document.solved_at);
-    reconcile_document_tool_lists(&mut document);
+    document.normalize_for_import();
     document.validate()?;
     let mut stories =
         actf_to_storylines(&document).map_err(|error| InputIssue::invalid(error.to_string()))?;
@@ -218,11 +217,15 @@ fn decode_json(
 pub struct ActfDocument {
     pub task_id: String,
     /// Some error dumps emit numeric categories (`2`) instead of strings.
-    #[serde(deserialize_with = "stringish")]
+    #[serde(default, deserialize_with = "stringish")]
     pub category: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub k: u64,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub correct: bool,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub attempts_tried: u64,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub solved_at: Value,
     pub attempts: BTreeMap<String, ActfAttempt>,
     #[serde(flatten)]
@@ -231,11 +234,13 @@ pub struct ActfDocument {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActfAttempt {
+    #[serde(default, deserialize_with = "null_as_default")]
     pub correct: bool,
     #[serde(default)]
     pub final_answer: Value,
     #[serde(default)]
     pub ground_truth: Value,
+    #[serde(default)]
     pub trajectory: ActfTrajectory,
     #[serde(default, deserialize_with = "null_as_empty_string")]
     pub status: String,
@@ -267,6 +272,16 @@ pub struct ActfTrajectory {
     pub events: Vec<Value>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl Default for ActfTrajectory {
+    fn default() -> Self {
+        Self::from_event_log(Vec::new())
+    }
+}
+
+fn default_schema_version() -> String {
+    ACTF_SCHEMA_VERSION.into()
 }
 
 impl ActfTrajectory {
@@ -334,6 +349,7 @@ enum ActfTrajectoryWire {
     /// object shape, not this array.
     Events(Vec<Value>),
     Canonical {
+        #[serde(default = "default_schema_version")]
         schema_version: String,
         #[serde(default)]
         steps: Vec<ActfStep>,
@@ -396,7 +412,9 @@ impl<'de> Deserialize<'de> for ActfTrajectory {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActfStep {
     pub step_id: i64,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub assistant_content: ActfAssistantContent,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub metric: ActfMetric,
     #[serde(default, deserialize_with = "null_as_empty_string")]
     pub system_prompt: String,
@@ -424,7 +442,7 @@ impl ActfStep {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActfAssistantContent {
     #[serde(default, deserialize_with = "null_as_empty_string")]
     pub content: String,
@@ -436,7 +454,7 @@ pub struct ActfAssistantContent {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActfMetric {
     #[serde(default)]
     pub prompt_tokens_len: Value,
@@ -559,13 +577,23 @@ fn reconcile_document_tool_lists(document: &mut ActfDocument) {
 }
 
 impl ActfDocument {
+    /// Recover optional metadata from the attempts that are actually present.
+    pub(crate) fn normalize_for_import(&mut self) {
+        if self.category.trim().is_empty() {
+            self.category = "unknown".into();
+        }
+        self.attempts_tried = self.attempts.len() as u64;
+        self.k = self.k.max(self.attempts_tried);
+        normalize_solved_at(&mut self.solved_at);
+        reconcile_document_tool_lists(self);
+    }
+
     #[cfg(any(test, feature = "lance-store"))]
     pub fn from_json_str(input: &str) -> InputResult<Self> {
         let sanitized = super::common::sanitize_json_nonfinite(input);
         let mut document: Self = serde_json::from_str(sanitized.as_ref())
             .map_err(|error| InputIssue::invalid(error.to_string()))?;
-        normalize_solved_at(&mut document.solved_at);
-        reconcile_document_tool_lists(&mut document);
+        document.normalize_for_import();
         document.validate()?;
         Ok(document)
     }
@@ -760,6 +788,38 @@ mod tests {
             }
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn imports_incomplete_actf_metadata_without_losing_steps() {
+        let mut value = serde_json::to_value(fixture()).unwrap();
+        for key in ["category", "correct", "solved_at"] {
+            value.as_object_mut().unwrap().remove(key);
+        }
+        value["k"] = json!(0);
+        value["attempts_tried"] = json!(99);
+        let attempt = value["attempts"]["1"].as_object_mut().unwrap();
+        attempt.remove("correct");
+        let trajectory = attempt["trajectory"].as_object_mut().unwrap();
+        trajectory.remove("schema_version");
+        let step = trajectory["steps"][0].as_object_mut().unwrap();
+        step.remove("metric");
+        let stories = crate::document::decode_json_storylines(
+            DocumentFormat::Actf,
+            &value.to_string(),
+            "incomplete.actf.json",
+        )
+        .unwrap();
+        assert_eq!(stories.len(), 1);
+        assert_eq!(stories[0].turns.len(), 1);
+        assert_eq!(
+            stories[0].turns[0].reasoning_content.as_deref(),
+            Some("inspect")
+        );
+        assert_eq!(stories[0].turns[0].tool_calls.as_ref().unwrap().len(), 1);
+        let document = ActfDocument::from_json_str(&value.to_string()).unwrap();
+        assert_eq!(document.category, "unknown");
+        assert_eq!((document.k, document.attempts_tried), (1, 1));
     }
 
     #[test]
