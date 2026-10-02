@@ -1444,7 +1444,6 @@ mod tests {
                         root_session_id: Some("root-1".into()),
                         path: "private/internal/path".into(),
                         row_count: 99,
-                        duplicate_event_ids: 3,
                         status: "private-status".into(),
                         format: None,
                     },

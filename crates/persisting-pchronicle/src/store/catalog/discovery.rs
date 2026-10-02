@@ -10,12 +10,7 @@ pub(super) enum Candidate {
         size_bytes: Option<u64>,
         last_modified: Option<String>,
     },
-    Events {
-        file: String,
-        uri: String,
-        size_bytes: Option<u64>,
-        last_modified: Option<String>,
-    },
+
     Compact {
         file: String,
         uri: String,
@@ -47,19 +42,6 @@ impl Candidate {
             } => (
                 file.clone(),
                 Some(DocumentFormat::StorylineLance.as_str().to_string()),
-                CatalogSourceKind::Store,
-                *size_bytes,
-                last_modified.clone(),
-                None,
-            ),
-            Self::Events {
-                file,
-                size_bytes,
-                last_modified,
-                ..
-            } => (
-                file.clone(),
-                Some(DocumentFormat::CanonicalEvent.as_str().to_string()),
                 CatalogSourceKind::Store,
                 *size_bytes,
                 last_modified.clone(),
@@ -110,9 +92,6 @@ impl Candidate {
             format,
             kind,
             revision,
-            projection_status: None,
-            projection_generation: None,
-            projection_candidates: 0,
             size_bytes,
             last_modified,
             status: CatalogSourceStatus::Ready,
@@ -157,31 +136,7 @@ pub(super) async fn freeze_candidate(
                 )),
             ))
         }
-        Candidate::Events { file, uri, .. } => {
-            ensure_format_hint(mount, DocumentFormat::CanonicalEvent, &file)?;
-            let snapshot = RawEventDataSource::pin_uri(&uri)
-                .await
-                .with_context(|| format!("pin canonical event source {uri}"))?;
-            let fact = snapshot.fact_snapshot();
-            source_row.revision = Some(CatalogSourceRevision::Events {
-                fact_version: fact.fact_version,
-                fact_rows: fact.fact_rows,
-                layout_revision: fact.layout_revision,
-            });
-            Ok((
-                source_row,
-                Arc::new(LazySource::new(
-                    file,
-                    LazySourceSpec::Events {
-                        uri,
-                        snapshot,
-                        projection: None,
-                    },
-                    options,
-                    temporary_files,
-                )),
-            ))
-        }
+
         Candidate::Compact { file, uri, .. } => {
             if let Some(manifest) =
                 crate::store::catalog::manifest::try_load_manifest(Path::new(&uri))
@@ -262,122 +217,6 @@ pub(super) async fn freeze_candidate(
     }
 }
 
-/// Collapse a canonical events source and its derived Storyline sidecar into
-/// one Catalog identity. Fresh projections serve normalized tables; stale
-/// projections remain hidden and the canonical events adapter is used instead.
-pub(super) fn bind_canonical_storyline_projections(
-    source_rows: &mut Vec<DiscoveredSource>,
-    prepared_sources: &mut Vec<Arc<LazySource>>,
-) -> Result<()> {
-    struct Binding {
-        projection_file: String,
-        event_file: String,
-        paths: StorylineTablePaths,
-        fresh: bool,
-        last_modified: Option<String>,
-    }
-
-    let mut bindings = BTreeMap::<String, Vec<Binding>>::new();
-    for projection in prepared_sources.iter() {
-        let LazySourceSpec::Storyline { paths } = &projection.spec else {
-            continue;
-        };
-        let Some(lineage) = paths.projection.as_ref() else {
-            continue;
-        };
-        let ProjectionSourceSnapshot::CanonicalEvents { source_uri, .. } = &lineage.source else {
-            continue;
-        };
-        let Some(events) = prepared_sources.iter().find(|candidate| {
-            matches!(
-                &candidate.spec,
-                LazySourceSpec::Events { uri, .. } if uri == source_uri
-            )
-        }) else {
-            continue;
-        };
-        let LazySourceSpec::Events { snapshot, .. } = &events.spec else {
-            anyhow::bail!(
-                "catalog source '{}' matched canonical event URI but is not an events source",
-                events.file
-            )
-        };
-        let last_modified = source_rows
-            .iter()
-            .find(|source| source.file == projection.file)
-            .and_then(|source| source.last_modified.clone());
-        bindings
-            .entry(events.file.clone())
-            .or_default()
-            .push(Binding {
-                projection_file: projection.file.clone(),
-                event_file: events.file.clone(),
-                paths: paths.clone(),
-                fresh: projection_lineage_is_fresh(&snapshot.fact_snapshot(), lineage),
-                last_modified,
-            });
-    }
-
-    let mut projection_files = HashSet::new();
-    for candidates in bindings.values_mut() {
-        candidates.sort_by(|left, right| {
-            (
-                left.fresh,
-                left.last_modified.as_deref().unwrap_or(""),
-                left.paths.generation.as_str(),
-                left.projection_file.as_str(),
-            )
-                .cmp(&(
-                    right.fresh,
-                    right.last_modified.as_deref().unwrap_or(""),
-                    right.paths.generation.as_str(),
-                    right.projection_file.as_str(),
-                ))
-        });
-        let binding = candidates
-            .last()
-            .context("projection binding group is empty")?;
-        projection_files.extend(
-            candidates
-                .iter()
-                .map(|candidate| candidate.projection_file.clone()),
-        );
-        let event_index = prepared_sources
-            .iter()
-            .position(|source| source.file == binding.event_file)
-            .context("bound canonical event source disappeared")?;
-        let event = &prepared_sources[event_index];
-        let LazySourceSpec::Events { uri, snapshot, .. } = &event.spec else {
-            anyhow::bail!("bound Catalog source is not canonical events");
-        };
-        prepared_sources[event_index] = Arc::new(LazySource::new(
-            event.file.clone(),
-            LazySourceSpec::Events {
-                uri: uri.clone(),
-                snapshot: snapshot.clone(),
-                projection: binding.fresh.then(|| binding.paths.clone()),
-            },
-            event.options,
-            event.temporary_files.clone(),
-        ));
-        let event_row = source_rows
-            .iter_mut()
-            .find(|source| source.file == binding.event_file)
-            .context("bound canonical event source row disappeared")?;
-        event_row.projection_status = Some(if binding.fresh {
-            CatalogProjectionStatus::Fresh
-        } else {
-            CatalogProjectionStatus::Stale
-        });
-        event_row.projection_generation = Some(binding.paths.generation.clone());
-        event_row.projection_candidates = candidates.len() as u64;
-    }
-
-    source_rows.retain(|source| !projection_files.contains(&source.file));
-    prepared_sources.retain(|source| !projection_files.contains(&source.file));
-    Ok(())
-}
-
 fn ensure_format_hint(mount: &DatasetMount, actual: DocumentFormat, file: &str) -> Result<()> {
     if let Some(expected) = mount.format_hint {
         anyhow::ensure!(
@@ -394,119 +233,18 @@ mod proptests {
 
     use super::*;
 
-    fn token_strategy() -> impl Strategy<Value = String> {
-        proptest::string::string_regex("[A-Za-z0-9._/-]{1,32}").unwrap()
-    }
-
     proptest! {
-        #[test]
-        fn storyline_and_event_candidates_expose_stable_source_stubs(
-            file in token_strategy(),
-            uri in token_strategy(),
-            size in prop::option::of(0u64..1_000_000),
-            modified in prop::option::of(token_strategy()),
-            is_events in any::<bool>(),
-        ) {
-            let candidate = if is_events {
-                Candidate::Events { file: file.clone(), uri, size_bytes: size, last_modified: modified.clone() }
-            } else {
-                Candidate::Storyline { file: file.clone(), uri, size_bytes: size, last_modified: modified.clone() }
-            };
-            let source = candidate.source_stub();
-            prop_assert_eq!(source.file, file);
-            prop_assert_eq!(source.size_bytes, size);
-            prop_assert_eq!(source.last_modified, modified);
-            prop_assert_eq!(source.kind, CatalogSourceKind::Store);
-            prop_assert_eq!(source.status, CatalogSourceStatus::Ready);
-            prop_assert_eq!(source.format.as_deref(), Some(if is_events { DocumentFormat::CanonicalEvent.as_str() } else { DocumentFormat::StorylineLance.as_str() }));
-        }
-
         #[test]
         fn source_format_hints_must_match_the_candidate_format(
             name in proptest::string::string_regex("[A-Za-z_][A-Za-z0-9_]{0,19}").unwrap(),
         ) {
             let mount = DatasetMount::new(name, "memory://catalog/source").unwrap();
-            prop_assert!(ensure_format_hint(&mount, DocumentFormat::CanonicalEvent, "events.lance").is_ok());
+            prop_assert!(ensure_format_hint(&mount, DocumentFormat::Atif, "data.json").is_ok());
             let hinted = mount.with_format_hint(DocumentFormat::StorylineLance);
             prop_assert!(ensure_format_hint(&hinted, DocumentFormat::StorylineLance, "storyline").is_ok());
-            prop_assert!(ensure_format_hint(&hinted, DocumentFormat::CanonicalEvent, "events").is_err());
+            prop_assert!(ensure_format_hint(&hinted, DocumentFormat::Atif, "data.json").is_err());
         }
     }
-}
-
-pub(super) async fn normalize_event_storylines(
-    source: &RawEventDataSource,
-    session_ids: Option<&BTreeSet<String>>,
-    kind: CatalogTableKind,
-    max_rows: usize,
-    max_bytes: usize,
-) -> Result<Arc<MemTable>> {
-    let records = match session_ids {
-        Some(session_ids) => {
-            source
-                .read_records_for_storylines_bounded(session_ids, max_rows, max_bytes)
-                .await?
-        }
-        None => source.read_records_bounded(max_rows, max_bytes).await?,
-    };
-    normalize_event_records(records, kind, max_bytes)
-}
-
-fn normalize_event_records(
-    records: Vec<EventRecord>,
-    kind: CatalogTableKind,
-    max_bytes: usize,
-) -> Result<Arc<MemTable>> {
-    let mut groups = BTreeMap::<String, Vec<EventRecord>>::new();
-    for record in records {
-        let key = event_storyline_key(&record)
-            .context("canonical event cannot be projected without a Storyline identity")?;
-        groups.entry(key.to_string()).or_default().push(record);
-    }
-
-    let stories = groups.into_iter().map(|(group_key, records)| {
-        let story = project_event_records(&records)?;
-        anyhow::ensure!(
-            story.session_id == group_key,
-            "projected Storyline identity changed"
-        );
-        Ok(story)
-    });
-
-    let (schema, batch) = match kind {
-        CatalogTableKind::Runs => {
-            let mut rows = Vec::<StoryRunRow>::new();
-            for story in stories {
-                rows.push(split_storyline(&story?)?.run);
-            }
-            (story_runs_arrow_schema(), story_runs_to_batch(&rows)?)
-        }
-        CatalogTableKind::Steps => {
-            let mut rows = Vec::<StoryStepRow>::new();
-            for story in stories {
-                rows.extend(split_storyline(&story?)?.steps);
-            }
-            (story_steps_arrow_schema(), story_steps_to_batch(&rows)?)
-        }
-        CatalogTableKind::ToolCalls => {
-            let mut rows = Vec::<StoryToolCallRow>::new();
-            for story in stories {
-                rows.extend(split_storyline(&story?)?.tool_calls);
-            }
-            (
-                story_tool_calls_arrow_schema(),
-                story_tool_calls_to_batch(&rows)?,
-            )
-        }
-        CatalogTableKind::Events => {
-            anyhow::bail!("canonical events do not require Storyline normalization")
-        }
-    };
-    anyhow::ensure!(
-        batch.get_array_memory_size() <= max_bytes,
-        "normalized canonical event fallback exceeds max_event_fallback_bytes {max_bytes}; build or sync a Storyline projection"
-    );
-    Ok(Arc::new(MemTable::try_new(schema, vec![vec![batch]])?))
 }
 
 pub(super) async fn discover_candidates(
@@ -614,7 +352,7 @@ pub(super) async fn discover_candidate_at(
     let parts: Vec<_> = file.split('/').collect();
     for (index, part) in parts.iter().enumerate() {
         // Respect opaque Dataset ancestors. Directly jumping into a Lance
-        // interior or a linked projection would change the source namespace.
+        // interior would change the source namespace.
         match classify_local_dir(&root, &current).await? {
             LocalDirClass::Recurse => {}
             _ => return discover_candidates(mount, options).await,
@@ -654,14 +392,6 @@ pub(super) async fn discover_candidate_at(
         LocalDirClass::Skip => Vec::new(),
         LocalDirClass::Recurse => collect_local_virtual(&root, &current, budget).await?,
     };
-    // ponytail: linked projections can point outside this subtree. Discover the
-    // mount until discovery has an authoritative reverse lineage index.
-    if candidates
-        .iter()
-        .any(|candidate| matches!(candidate, Candidate::Storyline { .. }))
-    {
-        return discover_candidates(mount, options).await;
-    }
     Ok(candidates)
 }
 
@@ -808,28 +538,6 @@ fn candidate_from_local_leaf_manifest(
     )
 }
 
-fn local_events_bundle(mount_root: &Path, path: &Path) -> Result<Vec<Candidate>> {
-    let events = path.join("events.lance");
-    let metadata = fs::metadata(events.join("_manifest.json"))?;
-    let mut out = vec![Candidate::Events {
-        file: relative_catalog_path(mount_root, &events, true)?,
-        uri: canonical_local_uri(&events)?,
-        size_bytes: Some(metadata.len()),
-        last_modified: modified_string(&metadata),
-    }];
-    let storyline = path.join("storyline");
-    if storyline.join("CURRENT").is_file() {
-        let metadata = fs::metadata(storyline.join("CURRENT"))?;
-        out.push(Candidate::Storyline {
-            file: relative_catalog_path(mount_root, &storyline, true)?,
-            uri: canonical_local_uri(&storyline)?,
-            size_bytes: Some(metadata.len()),
-            last_modified: modified_string(&metadata),
-        });
-    }
-    Ok(out)
-}
-
 async fn classify_local_dir(mount_root: &Path, path: &Path) -> Result<LocalDirClass> {
     if let Some(manifest) = try_load_manifest(path) {
         return match manifest.kind {
@@ -847,20 +555,6 @@ async fn classify_local_dir(mount_root: &Path, path: &Path) -> Result<LocalDirCl
             size_bytes: Some(metadata.len()),
             last_modified: modified_string(&metadata),
         }]));
-    }
-    if path.join("_manifest.json").is_file()
-        && path.file_name().is_some_and(|name| name == "events.lance")
-    {
-        let metadata = fs::metadata(path.join("_manifest.json"))?;
-        return Ok(LocalDirClass::Leaf(vec![Candidate::Events {
-            file: catalog_file_name(mount_root, path)?,
-            uri: canonical_local_uri(path)?,
-            size_bytes: Some(metadata.len()),
-            last_modified: modified_string(&metadata),
-        }]));
-    }
-    if path.join("events.lance/_manifest.json").is_file() {
-        return Ok(LocalDirClass::Leaf(local_events_bundle(mount_root, path)?));
     }
     if is_lance_directory(path) {
         if is_compact_jsonl_directory(path).await? {
@@ -958,8 +652,8 @@ async fn discover_object_candidates(
     }
 }
 
-// Follow only the requested ancestry. Opaque leaves and canonical event bundles
-// keep their namespace semantics; unrelated siblings must never gate an exact read.
+// Follow only the requested ancestry. Opaque leaves keep their namespace
+// semantics; unrelated siblings must never gate an exact read.
 async fn discover_object_candidate_at(
     uri: &str,
     file: &str,
@@ -987,14 +681,8 @@ async fn discover_object_candidate_at(
         }
         match probe_object_prefix(&store, uri, &current, root_source_path(&current)).await? {
             Some(ObjectProbe::Source(candidate)) => {
-                let sidecar = object_storyline_sidecar(&store, uri, &candidate).await?;
-                let mut candidates = vec![candidate];
-                candidates.extend(sidecar);
-                // Both sides are needed for canonical projection binding before
-                // discover_impl filters to the requested source namespace.
-                for _ in &candidates {
-                    budget.observe_source()?;
-                }
+                let candidates = vec![candidate];
+                budget.observe_source()?;
                 if !candidates.iter().any(|candidate| {
                     let source = candidate.source_stub().file;
                     source == file || source.starts_with(&format!("{file}/"))
@@ -1116,14 +804,8 @@ async fn collect_object_virtual(
             .await?
             {
                 Some(ObjectProbe::Source(candidate)) => {
-                    let maybe_storyline =
-                        object_storyline_sidecar(store, root_uri, &candidate).await?;
                     budget.observe_source()?;
                     candidates.push(candidate);
-                    if let Some(storyline) = maybe_storyline {
-                        budget.observe_source()?;
-                        candidates.push(storyline);
-                    }
                 }
                 Some(ObjectProbe::Branch) => stack.push(child_relative),
                 None if child.ends_with(".lance") => {}
@@ -1133,31 +815,6 @@ async fn collect_object_virtual(
     }
     candidates.sort_by(|left, right| left.source_stub().file.cmp(&right.source_stub().file));
     Ok(candidates)
-}
-
-async fn object_storyline_sidecar(
-    store: &OpendalStore,
-    root_uri: &str,
-    candidate: &Candidate,
-) -> Result<Option<Candidate>> {
-    let storyline_rel = match candidate {
-        Candidate::Events { file, .. } if file.ends_with("/events.lance") => {
-            format!("{}/storyline", file.trim_end_matches("/events.lance"))
-        }
-        Candidate::Events { file, .. } if file == "events.lance" => "storyline".into(),
-        _ => return Ok(None),
-    };
-    match probe_object_prefix(
-        store,
-        root_uri,
-        &storyline_rel,
-        root_source_path(&storyline_rel),
-    )
-    .await?
-    {
-        Some(ObjectProbe::Source(storyline)) => Ok(Some(storyline)),
-        _ => Ok(None),
-    }
 }
 
 async fn probe_object_prefix(
@@ -1232,38 +889,6 @@ async fn probe_object_prefix(
         return Ok(Some(ObjectProbe::Source(Candidate::Storyline {
             file: source_file,
             uri: child_uri(root_uri, relative),
-            size_bytes: Some(meta.size),
-            last_modified: Some(meta.last_modified),
-        })));
-    }
-
-    let events_manifest = if relative.is_empty() {
-        "_manifest.json".to_string()
-    } else if relative.trim_end_matches('/').ends_with("events.lance") {
-        join("_manifest.json")
-    } else {
-        join("events.lance/_manifest.json")
-    };
-    if let Some(entry) = store.stat_file(&events_manifest).await? {
-        let meta = RemoteObjectMeta::from(entry);
-        let events_relative = if relative.is_empty() {
-            if root_uri.trim_end_matches('/').ends_with("events.lance") {
-                String::new()
-            } else {
-                "events.lance".to_string()
-            }
-        } else if relative.trim_end_matches('/').ends_with("events.lance") {
-            relative.to_string()
-        } else {
-            format!("{}/events.lance", relative.trim_end_matches('/'))
-        };
-        return Ok(Some(ObjectProbe::Source(Candidate::Events {
-            file: if events_relative.is_empty() {
-                ".".into()
-            } else {
-                events_relative.clone()
-            },
-            uri: child_uri(root_uri, &events_relative),
             size_bytes: Some(meta.size),
             last_modified: Some(meta.last_modified),
         })));

@@ -19,11 +19,11 @@ Run these from the repository root. `just --list` shows the full recipe set.
 | `just examples` | pChronicle product example suite |
 | `just dev` | Apply formatting, lint, then run Rust tests |
 | `just ci` | Check lint without rewriting files, run Rust/Python tests and property tests, then build |
-| `just check-quick` | Check core runtime crates and pChronicle without default features |
+| `just check-quick` | Check pChronicle CLI and pChronicle without default features |
 
 `just test` uses the debug nextest profile for faster iteration. Pass a Cargo
 package name or a short crate alias (`pchronicle`,
-`pchronicle-cli`, `agentctl`, `capture`). `just test pchronicle` runs both
+`pchronicle-cli`). `just test pchronicle` runs both
 `persisting-pchronicle` and `persisting-pchronicle-cli` (same as the CI
 pchronicle shard); use `just test pchronicle-cli` for the CLI crate alone.
 The no-argument form also runs `just test-py`.

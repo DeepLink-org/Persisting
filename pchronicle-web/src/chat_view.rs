@@ -99,7 +99,6 @@ pub fn prompt_turn(turn: &TurnSummary) -> Option<TurnSummary> {
     user.completion_tokens = None;
     user.total_tokens = None;
     user.tool_names.clear();
-    user.event_seqs.clear();
     user.has_error = false;
     user.user_prompt = None;
     Some(user)
@@ -167,7 +166,6 @@ mod tests {
             completion_tokens: None,
             total_tokens: None,
             tool_names: Vec::new(),
-            event_seqs: Vec::new(),
             has_error: false,
         }
     }

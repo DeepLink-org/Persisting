@@ -311,12 +311,7 @@ impl DatasetLocation {
             if dir.join("CURRENT").is_file() {
                 return Ok(Some("storyline"));
             }
-            if dir.join("events.lance/_manifest.json").is_file()
-                || (dir.file_name().is_some_and(|name| name == "events.lance")
-                    && dir.join("_manifest.json").is_file())
-            {
-                return Ok(Some("other"));
-            }
+
             return Ok(None);
         }
 
@@ -351,15 +346,7 @@ impl DatasetLocation {
         if store.stat_file(&join("CURRENT")).await?.is_some() {
             return Ok(Some("storyline"));
         }
-        if store
-            .stat_file(&join("events.lance/_manifest.json"))
-            .await?
-            .is_some()
-            || (relative.ends_with("events.lance")
-                && store.stat_file(&join("_manifest.json")).await?.is_some())
-        {
-            return Ok(Some("other"));
-        }
+
         Ok(None)
     }
 

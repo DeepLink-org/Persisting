@@ -172,17 +172,6 @@ pub(crate) async fn run_import(
     let from_location = (!args.stream)
         .then(|| DatasetLocation::parse(&args.from))
         .transpose()?;
-    let canonical = if let Some(location) = &from_location {
-        let looks_like_store = location.is_object_store()
-            || location.local_path().is_some_and(std::path::Path::is_dir);
-        if looks_like_store {
-            probe_canonical_event_store(location.as_str()).await?
-        } else {
-            None
-        }
-    } else {
-        None
-    };
     let output_arg = match args.output.as_deref() {
         Some(output) => expand_dataset_reference(output, settings_override, false)?,
         None => default_import_output(&args, settings_override)?,
@@ -195,8 +184,7 @@ pub(crate) async fn run_import(
             .await;
     }
     let requested_destination = DatasetLocation::parse(&output_arg)?;
-    if canonical.is_none()
-        && requested_destination.is_object_store()
+    if requested_destination.is_object_store()
         && args.output_format != Some(ImportOutputFormat::Storyline)
     {
         anyhow::ensure!(
@@ -208,21 +196,7 @@ pub(crate) async fn run_import(
         prepare_import_destination(&args, &output_arg, stdin_is_terminal, stdin, stderr).await?;
     let destination = prepared.location;
     let replace_existing = prepared.replace_existing;
-    if let Some(snapshot) = canonical {
-        anyhow::ensure!(
-            mode != ImportMode::Append,
-            "canonical event import does not support --append"
-        );
-        return run_canonical_event_import(
-            args,
-            snapshot,
-            destination,
-            replace_existing,
-            stdout,
-            stderr,
-        )
-        .await;
-    }
+
     let mut progress = CliProgress::new(stderr_is_terminal);
     let _s3_throttle_ui = progress.attach_object_store_throttle();
     let object_store_from = from_location
@@ -2071,100 +2045,6 @@ pub(crate) async fn commit_storyline_import_batch(
     // Bytes were already attributed when trajectories entered the batch.
     commit.note_committed(imported_total, 0);
     Ok(imported_total)
-}
-
-pub(crate) async fn run_canonical_event_import(
-    args: ImportArgs,
-    _snapshot: EventFactSnapshot,
-    destination: DatasetLocation,
-    replace_existing: bool,
-    stdout: &mut dyn Write,
-    stderr: &mut dyn Write,
-) -> Result<()> {
-    anyhow::ensure!(
-        args.format == ExchangeFormat::Auto,
-        "canonical event import does not accept a JSON exchange --format"
-    );
-    anyhow::ensure!(
-        args.output_format != Some(ImportOutputFormat::Preserve),
-        "canonical event import cannot preserve an existing canonical event Store"
-    );
-    if destination.exists().await? && !replace_existing {
-        return Err(cli_boundary_error(
-            BoundaryCode::Conflict,
-            "import output already exists",
-        ));
-    }
-    let output_uri = destination.as_str().to_string();
-
-    let (report, staged_path) = if replace_existing {
-        let output = destination
-            .local_path()
-            .context("replace import output must be a local Dataset path")?;
-        let parent = output
-            .parent()
-            .context("replace import output must have a parent directory")?;
-        let staging = tempfile::Builder::new()
-            .prefix(".pchronicle-import-")
-            .tempdir_in(parent)
-            .with_context(|| format!("create import staging directory in {}", parent.display()))?;
-        let staging_uri = staging.path().to_string_lossy().into_owned();
-        let report =
-            match build_storyline_projection(&args.from, &staging_uri, "events.lance").await? {
-                StorylineProjectionBuildOutcome::Built(report) => report,
-                StorylineProjectionBuildOutcome::OutputNotEmpty => {
-                    return Err(cli_boundary_error(
-                        BoundaryCode::Conflict,
-                        "import staging Dataset already exists",
-                    ));
-                }
-            };
-        std::fs::File::open(staging.path())
-            .and_then(|directory| directory.sync_all())
-            .context("sync import staging directory")?;
-        (report, Some((staging.keep(), output.to_path_buf())))
-    } else {
-        let report =
-            match build_storyline_projection(&args.from, &output_uri, "events.lance").await? {
-                StorylineProjectionBuildOutcome::Built(report) => report,
-                StorylineProjectionBuildOutcome::OutputNotEmpty => {
-                    return Err(cli_boundary_error(
-                        BoundaryCode::Conflict,
-                        "import output already exists",
-                    ));
-                }
-            };
-        (report, None)
-    };
-    if let Some((staging_path, output)) = staged_path {
-        let mut cleanup = StagingPathGuard::new(staging_path.clone());
-        publish_staged_dataset(&staging_path, &output, true, None).await?;
-        cleanup.disarm();
-    }
-    let response = ImportResponse {
-        dataset_uri: output_uri,
-        source_path: Some("events.lance".into()),
-        format: Some("events".into()),
-        output_format: ImportOutputFormat::Storyline.response_name().into(),
-        sources: 1,
-        trajectories: report.storylines,
-        fact_rows: Some(report.fact_rows),
-        input_bytes: None,
-        on_disk_bytes: None,
-    };
-    serde_json::to_writer_pretty(&mut *stdout, &response)
-        .context("encode canonical event import JSON")?;
-    writeln!(stdout).context("write canonical event import JSON")?;
-    writeln!(
-        stderr,
-        "dataset_uri={} source=events.lance format=events output_format={} trajectories={} fact_rows={}",
-        response.dataset_uri,
-        response.output_format,
-        response.trajectories,
-        report.fact_rows,
-    )
-    .context("write canonical event import metadata")?;
-    Ok(())
 }
 
 #[cfg(test)]

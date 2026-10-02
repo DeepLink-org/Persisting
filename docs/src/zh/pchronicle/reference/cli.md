@@ -319,8 +319,7 @@ decode 与可跳过的 commit 失败会写入 WAL 与 `import.log`，进程继�
 | `claude-code` | 是 | 否 |
 | `compact-jsonl` | 是 | 是 |
 
-Codex 和 Claude Code session 是 decode-only 输入格式。Canonical Event Store 会自动识别并投影为
-Storyline Dataset。默认创建要求目标不存在。`--append` 要求目标是已有 Storyline Dataset；
+Codex 和 Claude Code session 是 decode-only 输入格式。默认创建要求目标不存在。`--append` 要求目标是已有 Storyline Dataset；
 重复 `document_id` 默认增加 `#N` 后缀，也可用 `--on-duplicate skip` 跳过。`--replace` 会先将完整导入
 写入临时路径，再将旧本地 Dataset rename 到备份路径、将新 Dataset rename 到正式路径，确认新路径
 发布后才删除备份；因此必须交互确认或传入 `--yes`。对象存储 Dataset 的 replace 会先清空目标前缀再写入（非原子）。
@@ -409,66 +408,21 @@ Agent 注入是行为引导，不是 filesystem、network 或 tool permission �
 
 ### 2.12 `serve`
 
-```text
-pchronicle serve
- [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
- [--home-link TEXT=PATH]...
- [--gateway ADDRESS --gateway-dataset DATASET [--gateway-split TEMPLATE]
- [--gateway-split-idle DURATION]]
- [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
- [--gateway-stream-markdown] [--gateway-debug]
- [--catalog-config FILE]
- [<[NAME=]DATASET> ...]
-pchronicle serve catalog dataset add --catalog-config FILE NAME --uri URI [OPTIONS]
-pchronicle serve catalog dataset remove --catalog-config FILE NAME...
-pchronicle serve catalog dataset list --catalog-config FILE
-pchronicle serve catalog issue --catalog-config FILE NAME
-pchronicle serve catalog grant --catalog-config FILE NAME DATASET...
-pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
-```
-
 ```bash
 pchronicle serve ./trajectory-data
-pchronicle serve \
- --gateway auto \
- --gateway-dataset ./trajectory-data \
- --gateway-split '{user}/{date}/{hour}'
+pchronicle serve --listen 127.0.0.1:8080 train=./train eval=./eval
+pchronicle serve --catalog-config catalog.toml --listen 127.0.0.1:8081
 ```
 
-未指定服务 flag 时，只读 Web/API 默认监听 `127.0.0.1:0`。多个 Dataset 使用
-`NAME=DATASET` mount；Control 模式要求名为 `default` 的 mount。可重复的
-`--home-link TEXT=PATH` 会在首页 Warehouse 旁增加胶囊；`PATH` 必须是同源相对路径。
-`--catalog-config FILE`
-启用逐请求 AK/SK 认证及 `catalog://` locator。父进程只监听、认证和调度，已授权数据集由
-独立 exec worker 读取；不能与位置参数 Dataset、Gateway 或 Control 同时使用。配合 `dataset pin NAME catalog://127.0.0.1:PORT --ak --sk`。
-`pchronicle serve catalog dataset add|remove|list` 与 `issue|grant|revoke` 只改该文件、
-不启动 HTTP；`issue` 把用户 sk 只打印一次。改 library、用户或授权后必须重启 serve。
-worker 池按并发压力创建进程：优先复用同一权限范围的空闲 worker，全部忙碌时按需扩容，
-每个范围最多 4 个、整个服务最多 8 个进程。达到上限后等待任意可用容量，
-最多接纳 32 个正在处理或排队的请求。每个 worker 内部仍串行处理，IPC 不交叉。
-空闲超过 120 秒的进程由每 30 秒执行一次的清理任务回收；全局容量不足时可提前回收
-其他范围的空闲进程。排队、启动和执行合计上限为 60 秒，请求体读取上限为 10 秒。
-过载返回 503；执行期间超时或 IPC 失败会淘汰对应进程，排队取消不会中断其他请求。
-同一用户、授权范围和后端凭证版本复用 worker 及独立磁盘缓存；修改授权后重启生效。
-缓存位于 `PCHRONICLE_CACHE_DIR/workers/`，未设置时使用系统 pchronicle 缓存目录。
-子进程不继承父进程的 AWS 环境、profile 或用户主目录配置；登录 AK/SK 用于认证，
-数据集的 AK/SK 经私有 IPC 传入并用于对象存储访问。不同 S3 endpoint/凭证的数据集必须
-分别通过 `dataset` 参数选择，暂不支持这类跨凭证查询。健康检查、UI 配置和静态页面公开，
-数据 API 需要认证。没有用户的 catalog 仍可管理，但数据 API 不接受匿名访问。
-这是进程与凭证上下文隔离，不是 OS 用户降权或文件系统沙箱；本地路径仍使用服务进程的 OS 身份。
+监听地址只允许 loopback。命名挂载提供稳定的 SQL 别名。
+`--open` 打开 Web UI，`--home-link TEXT=PATH` 增加同源导航链接。
+`--catalog-config` 启用 Directory 和数据操作认证，不能与位置参数挂载同时使用。
+通过 `pchronicle serve catalog` 配置 Dataset 和用户授权，存储凭证按后端与 worker
+隔离。启动就绪 JSON 包含 `warehouse_endpoint`。
 
-`catalog` 是 `serve` 的保留子命令，挂载同名路径请用 `./catalog`。见
-[RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md) 与
-[RFC-0015](../../rfcs/0015-chronicle-manifest.md)。无需配置的 `--gateway`
-在 `POST /v1/events` 接收 canonical trajectory events；`--gateway-dataset` 是自动挂载的
-输出 URI，不再是 mount name。`--gateway-split` 支持 `{user}`、`{date}`、`{hour}`。
-已有 canonical source 默认在最后一条事件后空闲 30 分钟才自动刷新 Storyline projection；
-可用 `--gateway-split-idle DURATION` 覆盖。
-Gateway 模式启用 Warehouse 后，单 trace 的事件、Storyline 和 trajectory 接口会读取已经发现
-source 的最新 canonical manifest，正在进行中的 trace 不需要等待 projection 或全局 Catalog 刷新。
-旧式转发 Gateway 仍可使用 `--gateway-config`，对象存储 capture 必须提供本地
-`--gateway-state`。所有 listener 只允许
-loopback；服务准备完成后，stdout 输出一行版本化 readiness JSON，endpoint 和诊断写 stderr。
+刷新先构建新 Snapshot 再切换读者，失败时保留旧视图。数据写入使用 CLI import。
+日志写入 stderr，`--log-level` 控制详细程度。失败 API 响应包含 `code`、`message`
+和 `request_id`，内部错误细节保留在服务日志。
 
 #### Catalog 管理
 

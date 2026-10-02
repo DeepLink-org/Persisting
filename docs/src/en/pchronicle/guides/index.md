@@ -7,7 +7,6 @@ task-oriented workflow.
 2. [Import and export Runs](exchange.md).
 3. [Serve Datasets locally](serve.md).
 4. [Browse, drill down, and analyze in the local Web UI](ui.md).
-5. [Forward, rewrite, and capture through the `serve` Gateway](serve-gateway.md).
 
 The guides explain decisions and complete workflows. Use the
 [`pchronicle` reference](../reference/cli.md) for exact flags, and

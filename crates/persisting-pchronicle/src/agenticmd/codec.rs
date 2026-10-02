@@ -168,7 +168,7 @@ fn escape_yaml_control_characters(json: &str) -> String {
 
 /// Encode a single agenticmd / capture TLV block (comment header + body).
 ///
-/// Normative on-disk layout shared with `persisting-gateway` live write paths.
+/// Normative on-disk layout for Storyline Markdown documents.
 pub fn encode_agenticmd_block(block: &MarkdownBlock) -> Result<String> {
     let header = MarkdownHeader {
         type_name: block.header.type_name.clone(),

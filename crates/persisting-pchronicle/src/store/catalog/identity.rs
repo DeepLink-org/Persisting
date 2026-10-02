@@ -109,11 +109,7 @@ pub enum CatalogSourceRevision {
     Storyline {
         generation: String,
     },
-    Events {
-        fact_version: u64,
-        fact_rows: u64,
-        layout_revision: u64,
-    },
+
     LocalFile {
         fingerprint: String,
     },
@@ -130,9 +126,6 @@ impl CatalogSourceRevision {
     pub fn snapshot_ref(&self) -> String {
         match self {
             Self::Storyline { generation } => generation.clone(),
-            Self::Events {
-                layout_revision, ..
-            } => format!("manifest-revision:{layout_revision}"),
             Self::LocalFile { fingerprint } => fingerprint.clone(),
             Self::Object {
                 version: Some(version),

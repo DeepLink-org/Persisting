@@ -9,8 +9,6 @@ use std::str::FromStr;
 /// 枚举只描述物理表示，不暗示所有格式支持相同的读写操作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DocumentFormat {
-    /// Lance 中 append-only 的 Canonical Event 事实。
-    CanonicalEvent,
     /// 严格版本化的 Storyline JSON wire。
     Storyline,
     /// Lance 中的 Storyline runs、steps、tool calls 和 objects。
@@ -31,7 +29,6 @@ pub enum DocumentFormat {
 
 impl DocumentFormat {
     pub const ALL: &[Self] = &[
-        Self::CanonicalEvent,
         Self::Storyline,
         Self::StorylineLance,
         Self::AgenticMd,
@@ -44,7 +41,6 @@ impl DocumentFormat {
 
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::CanonicalEvent => "canonical-event",
             Self::Storyline => "storyline",
             Self::StorylineLance => "storyline-lance",
             Self::AgenticMd => "agenticmd",
@@ -68,7 +64,6 @@ impl FromStr for DocumentFormat {
 
     fn from_str(input: &str) -> InputResult<Self> {
         match input.trim().to_ascii_lowercase().as_str() {
-            "canonical-event" => Ok(Self::CanonicalEvent),
             "storyline" => Ok(Self::Storyline),
             "storyline-lance" => Ok(Self::StorylineLance),
             "agenticmd" => Ok(Self::AgenticMd),
@@ -78,7 +73,7 @@ impl FromStr for DocumentFormat {
             "codex" => Ok(Self::Codex),
             "claude-code" => Ok(Self::ClaudeCode),
             other => Err(InputIssue::invalid(format!(
-                "unknown document format '{other}'; expected canonical-event|storyline|storyline-lance|agenticmd|atif|openai-msg|actf|codex|claude-code"
+                "unknown document format '{other}'; expected storyline|storyline-lance|agenticmd|atif|openai-msg|actf|codex|claude-code"
             ))),
         }
     }
@@ -92,7 +87,6 @@ mod tests {
     #[test]
     fn document_format_names_are_canonical_only() {
         let cases = [
-            ("canonical-event", DocumentFormat::CanonicalEvent),
             ("storyline", DocumentFormat::Storyline),
             ("storyline-lance", DocumentFormat::StorylineLance),
             ("agenticmd", DocumentFormat::AgenticMd),

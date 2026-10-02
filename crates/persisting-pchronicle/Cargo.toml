@@ -61,8 +61,6 @@ lance-linalg = { workspace = true, optional = true }
 lance-table = { workspace = true, optional = true }
 opendal = { workspace = true, optional = true }
 object_store = { workspace = true, optional = true }
-persisting-agentctl.workspace = true
-persisting-events.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["raw_value", "arbitrary_precision"] }
 serde_yaml.workspace = true
@@ -96,14 +94,6 @@ harness = false
 name = "json_streaming"
 harness = false
 
-[[bench]]
-name = "projection_pipeline"
-harness = false
-
-[[example]]
-name = "langfuse_backend_feasibility"
-required-features = ["lance-store"]
-
 [[example]]
 name = "pchronicle_storage_query_benchmark"
 required-features = ["lance-store"]
@@ -125,10 +115,6 @@ name = "atif_lance_corpus"
 required-features = ["lance-store"]
 
 [[test]]
-name = "capture_fixture_corpus"
-required-features = ["lance-store"]
-
-[[test]]
 name = "direct_file_query"
 required-features = ["lance-store"]
 
@@ -138,14 +124,6 @@ required-features = ["lance-store"]
 
 [[test]]
 name = "import_roundtrip_fixtures"
-required-features = ["lance-store"]
-
-[[test]]
-name = "langfuse_backend_faults"
-required-features = ["lance-store"]
-
-[[test]]
-name = "production_scale"
 required-features = ["lance-store"]
 
 [[test]]
@@ -172,11 +150,6 @@ path = "tests/proptests/storyline_codec.rs"
 required-features = ["proptest"]
 
 [[test]]
-name = "proptest_events_projection"
-path = "tests/proptests/events_projection.rs"
-required-features = ["proptest"]
-
-[[test]]
 name = "proptest_storage_layout"
 path = "tests/proptests/storage_layout.rs"
 required-features = ["proptest"]
@@ -184,11 +157,6 @@ required-features = ["proptest"]
 [[test]]
 name = "proptest_timestamp"
 path = "tests/proptests/timestamp.rs"
-required-features = ["proptest"]
-
-[[test]]
-name = "proptest_interop"
-path = "tests/proptests/interop.rs"
 required-features = ["proptest"]
 
 [[test]]
@@ -222,11 +190,6 @@ path = "tests/proptests/llm.rs"
 required-features = ["proptest"]
 
 [[test]]
-name = "proptest_events_model"
-path = "tests/proptests/events_model.rs"
-required-features = ["proptest"]
-
-[[test]]
 name = "proptest_unknown_fields"
 path = "tests/proptests/unknown_fields.rs"
 required-features = ["proptest"]
@@ -242,11 +205,6 @@ path = "tests/proptests/analysis_compile.rs"
 required-features = ["proptest"]
 
 [[test]]
-name = "proptest_revision"
-path = "tests/proptests/revision.rs"
-required-features = ["proptest"]
-
-[[test]]
 name = "proptest_storage_location"
 path = "tests/proptests/storage_location.rs"
 required-features = ["proptest"]
@@ -257,28 +215,8 @@ path = "tests/proptests/catalog_identity.rs"
 required-features = ["proptest"]
 
 [[test]]
-name = "proptest_attempt_registry"
-path = "tests/proptests/attempt_registry.rs"
-required-features = ["proptest"]
-
-[[test]]
-name = "proptest_egress"
-path = "tests/proptests/egress.rs"
-required-features = ["proptest"]
-
-[[test]]
-name = "proptest_run_control"
-path = "tests/proptests/run_control.rs"
-required-features = ["proptest"]
-
-[[test]]
 name = "proptest_catalog_namespace"
 path = "tests/proptests/catalog_namespace.rs"
-required-features = ["proptest"]
-
-[[test]]
-name = "proptest_layout_resolve"
-path = "tests/proptests/layout_resolve.rs"
 required-features = ["proptest"]
 
 [[test]]
@@ -287,43 +225,8 @@ path = "tests/proptests/agenticmd_layout.rs"
 required-features = ["proptest"]
 
 [[test]]
-name = "proptest_event_manifest"
-path = "tests/proptests/event_manifest.rs"
-required-features = ["proptest"]
-
-[[test]]
-name = "proptest_projection_automatic"
-path = "tests/proptests/projection_automatic.rs"
-required-features = ["proptest"]
-
-[[test]]
 name = "proptest_storyline_store"
 path = "tests/proptests/storyline_store.rs"
-required-features = ["proptest"]
-
-[[test]]
-name = "proptest_discovery"
-path = "tests/proptests/discovery.rs"
-required-features = ["proptest"]
-
-[[test]]
-name = "proptest_layout_coords"
-path = "tests/proptests/layout_coords.rs"
-required-features = ["proptest"]
-
-[[test]]
-name = "proptest_event_snapshot"
-path = "tests/proptests/event_snapshot.rs"
-required-features = ["proptest"]
-
-[[test]]
-name = "proptest_catalog_provenance"
-path = "tests/proptests/catalog_provenance.rs"
-required-features = ["proptest"]
-
-[[test]]
-name = "proptest_storyline_metadata"
-path = "tests/proptests/storyline_metadata.rs"
 required-features = ["proptest"]
 
 [[test]]
@@ -339,11 +242,6 @@ required-features = ["proptest"]
 [[test]]
 name = "proptest_codex"
 path = "tests/proptests/codex.rs"
-required-features = ["proptest"]
-
-[[test]]
-name = "proptest_events_convert"
-path = "tests/proptests/events_convert.rs"
 required-features = ["proptest"]
 
 [[test]]

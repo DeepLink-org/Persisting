@@ -44,7 +44,7 @@ pChronicle 已对其它布局使用应用控制文件（Storyline 的 `CURRENT`�
   - `list(path)` 与 shell `ls` 一致：只列一层 children，MUST NOT 把嵌套 source 摊平；
   - `open(path)` 生成 Snapshot。叶子 Dataset 是一个 source。纯目录 MAY 被当成
     **虚拟 dataset** 打开：该路径下所有嵌套 Dataset 叶子与外围 JSON 合成一个查询空间。
-- 在 sidecar 缺失时，仍可用 `CURRENT` / events / compact-jsonl 标记做 Dataset
+- 在 sidecar 缺失时，仍可用 `CURRENT` / compact-jsonl 标记做 Dataset
   分类。`list` MUST NOT 为分类而全量递归列举对象存储前缀。对 Directory 做 `open`
   时 MAY 在现有 `max_entries` / `max_files` 上限内递归。
 
@@ -83,7 +83,7 @@ pChronicle 已对其它布局使用应用控制文件（Storyline 的 `CURRENT`�
 1. `chronicle.manifest` 且 `kind = "leaf"`
 2. `CURRENT`（Storyline）
 3. `events.lance/_manifest.json`，或名为 `events.lance` 且含 `_manifest.json` 的目录
-4. compact-jsonl Lance（`pchronicle.format = compact-jsonl/v1`，或 leaf sidecar
+3. compact-jsonl Lance（`pchronicle.format = compact-jsonl/v1`，或 leaf sidecar
    `format = "compact-jsonl/v1"`）
 
 否则该路径是 **Directory**（包括 `chronicle.manifest` 的 `kind = "branch"`）。

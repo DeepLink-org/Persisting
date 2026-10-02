@@ -8,7 +8,7 @@
 
 <img src="docs/static/img/logos/persisting-with-text.png" alt="Persisting logo" width="360" />
 
-Persisting contains **pChronicle**, which captures, browses, queries, exchanges,
+Persisting contains **pChronicle**, which imports, browses, queries, exchanges,
 and serves durable Agent trajectory Datasets.
 
 <img src="docs/static/img/logos/pchronicle-with-text.png" alt="pChronicle" width="220" />
@@ -41,16 +41,12 @@ The onboarding flow creates a temporary example Dataset—no source checkout
 required. `pchronicle import` accepts ATIF, ACTF, and OpenAI Messages;
 `pchronicle serve` starts a loopback-only, read-only Dataset UI and API.
 
-Gateway capture can write trajectory events into pChronicle Datasets. See the
-[Gateway guide](https://deeplink-org.github.io/Persisting/pchronicle/guides/serve-gateway/).
-
 ## Current maturity
 
 | Capability | Status |
 |---|---|
 | pChronicle local/S3 catalog, bounded SQL, analysis, find, import/export | Implemented |
 | pChronicle loopback-only read API and embedded Web UI | Implemented |
-| Gateway capture and cooperative proxy policy | Implemented |
 | Queue and document Search | Separate stable capabilities |
 | Tensor Memory / TTAS | Experimental |
 
@@ -70,10 +66,6 @@ Latest nightly pChronicle benchmark: `c72a8b678d1d` on `linux/x86_64` (2026-10-0
 |---|---:|---:|
 | `criterion/atif_conversion/parse_corpus` | `latency_median_ns` | 5.181e+06 ns |
 | `criterion/atif_conversion/roundtrip_corpus` | `latency_median_ns` | 6.915e+06 ns |
-| `criterion/projection_cpu/events_to_storyline_corpus` | `latency_median_ns` | 3.358e+05 ns |
-| `system/projection_pipeline/event_append` | `initial_append_ms` | 66.341 ms |
-| `system/projection_pipeline/projection_build` | `build_ms` | 5242.611 ms |
-| `system/projection_pipeline/projection_incremental` | `sync_ms` | 43.834 ms |
 | `system/lance_vs_json/lifecycle` | `cold_query_ms` | 3047.201 ms |
 | `system/lance_vs_json/lifecycle` | `get_storyline_full_ms` | 10.088 ms |
 | `system/lance_vs_json/lifecycle` | `replace_storyline_ms` | 43.831 ms |
@@ -83,7 +75,6 @@ Latest nightly pChronicle benchmark: `c72a8b678d1d` on `linux/x86_64` (2026-10-0
 | `system/json_streaming_ndjson/json_streaming` | `p95_ms` | 13.418 ms |
 | `system/json_streaming_ndjson/json_streaming` | `rows_s` | 2.941e+05 ops/s |
 | `system/json_streaming_ndjson/json_streaming` | `process_peak_rss_mib` | 47.652 MiB |
-| `hyperfine/projection_pipeline` | `wall_median_seconds` | 5.386 s |
 | `hyperfine/lance_vs_json` | `wall_median_seconds` | 40.431 s |
 
 [Open the complete benchmark run](https://github.com/DeepLink-org/Persisting/actions/runs/36958598183).

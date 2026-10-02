@@ -24,4 +24,3 @@ curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/script
 参见[工程说明](project/engineering.md)。
 
 继续阅读[探索第一个 Dataset](pchronicle/get-started.md)或
-[Gateway 捕获](pchronicle/guides/serve-gateway.md)。

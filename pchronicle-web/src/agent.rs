@@ -403,12 +403,10 @@ fn system_prompt(
     catalog_context: &str,
 ) -> String {
     let mut prompt = format!(
-        "You are pChronicle Assistant for local Agent run debugging. Use only data from the current run. Call tools when details are needed; do not invent facts. Missing measurements are not zero. Do not infer an error from arbitrary message text. Reconstructed events are derived from imported run data, not directly recorded events. Answer in the user's language, preferably in 3–7 concise bullets. Separate recorded facts from inference. Cite every inspected step with the internal marker [turn:ID]. Mention coverage or truncation when tool results report it.\n\nCurrent run analysis:\nsession={}\nstatus={}\nevent_origin={}\nstep_count={}\nevent_count={}\nerror_count={}\ntotal_tokens={}\nlatency_p95={}\nlatency_samples={}/{}\n\nquery_sql schema:\n{}",
+        "You are pChronicle Assistant for local Agent run debugging. Use only data from the current run. Call tools when details are needed; do not invent facts. Missing measurements are not zero. Do not infer an error from arbitrary message text. Answer in the user's language, preferably in 3–7 concise bullets. Separate recorded facts from inference. Cite every inspected step with the internal marker [turn:ID]. Mention coverage or truncation when tool results report it.\n\nCurrent run analysis:\nsession={}\nstatus={}\nstep_count={}\nerror_count={}\ntotal_tokens={}\nlatency_p95={}\nlatency_samples={}/{}\n\nquery_sql schema:\n{}",
         run.session_id,
         run.status,
-        analysis.event_provenance.as_str(),
         analysis.turn_count,
-        analysis.event_count,
         analysis.error_count,
         analysis
             .total_tokens
@@ -1060,10 +1058,8 @@ pub fn unknown_tool_result(name: &str) -> String {
 
 pub fn format_analysis_result(analysis: &RunAnalysis) -> String {
     format!(
-        "event_provenance={} turns={} events={} tools={} explicit_errors={} tokens={} latency_p95={} latency_samples={}/{}\nsources={:?}\nkinds={:?}\nmodels={:?}\ntool_names={:?}",
-        analysis.event_provenance.as_str(),
+        "turns={} tools={} explicit_errors={} tokens={} latency_p95={} latency_samples={}/{}\nsources={:?}\nkinds={:?}\nmodels={:?}\ntool_names={:?}",
         analysis.turn_count,
-        analysis.event_count,
         analysis.tool_call_count,
         analysis.error_count,
         analysis
@@ -1412,7 +1408,7 @@ mod tests {
     fn sample_run(session: &str, run_id: Option<&str>) -> RunSummary {
         RunSummary {
             dataset: "captures".into(),
-            file: "events.lance".into(),
+            file: "storyline".into(),
             run_id: run_id.map(str::to_string),
             agent_id: "agent".into(),
             model_name: None,
@@ -1420,7 +1416,6 @@ mod tests {
             root_session_id: None,
             path: String::new(),
             row_count: 1,
-            duplicate_event_ids: 0,
             status: "completed".into(),
             format: None,
         }
@@ -2100,8 +2095,6 @@ mod tests {
     fn sample_analysis() -> RunAnalysis {
         RunAnalysis {
             run: sample_run("s-a", Some("r1")),
-            event_provenance: crate::model::EventProvenance::Canonical,
-            event_count: 3,
             turn_count: 3,
             tool_call_count: 0,
             error_count: 0,
@@ -2140,7 +2133,6 @@ mod tests {
                 completion_tokens: None,
                 total_tokens: None,
                 tool_names: Vec::new(),
-                event_seqs: Vec::new(),
                 has_error: false,
             },
             turn: StorylineTurn {
@@ -2159,8 +2151,6 @@ mod tests {
                 extra: None,
             },
             wire_tool_calls: Vec::new(),
-            event_provenance: crate::model::EventProvenance::Canonical,
-            events: Vec::new(),
         }
     }
 

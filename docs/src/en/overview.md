@@ -40,5 +40,4 @@ Continue with [Explore your first Dataset](pchronicle/get-started.md) to learn
 Dataset health, evidence location, formats, exchange, and the read-only Web/API.
 
 **At the end of this section:** you can connect an answer to the Dataset and
-Source that produced it. Use [Gateway capture](pchronicle/guides/serve-gateway.md)
 to record new model traffic.

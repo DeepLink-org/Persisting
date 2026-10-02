@@ -34,15 +34,7 @@ pub struct QueryBackendInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuerySnapshot {
-    CanonicalEvent {
-        format_version: u32,
-        fact_version: u64,
-        fact_rows: u64,
-        layout_revision: u64,
-    },
-    Storyline {
-        generation: String,
-    },
+    Storyline { generation: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,22 +160,13 @@ impl ChronicleQueryEngine {
         source.inner.register_virtual_tables(&context).await?;
         let capabilities = source.capabilities();
         let source_count = source.inner.source_count();
-        let snapshot = if let Some(snapshot) = source.inner.event_snapshot() {
-            Some(QuerySnapshot::CanonicalEvent {
-                // Existing canonical manifests predate explicit format versioning.
-                format_version: 1,
-                fact_version: snapshot.fact_version,
-                fact_rows: snapshot.fact_rows,
-                layout_revision: snapshot.layout_revision,
-            })
-        } else {
+        let snapshot =
             source
                 .inner
                 .storyline_generation()
                 .map(|generation| QuerySnapshot::Storyline {
                     generation: generation.to_string(),
-                })
-        };
+                });
         let local_file_metrics = source.inner.file_metrics().into_iter().collect();
         Ok(Self {
             context,

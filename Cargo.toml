@@ -3,18 +3,14 @@ version = "0.3.0"
 edition = "2024"
 authors = ["reiase"]
 license = "Apache-2.0"
-description = "Durable Agent trajectory capture, storage, and query infrastructure"
+description = "Durable Agent trajectory processing, storage, and query infrastructure"
 
 [workspace]
 resolver = "3"
 members = [
-    "crates/persisting-agentctl",
-    "crates/persisting-events",
-    "crates/persisting-gateway",
     "crates/persisting-dlcapt",
     "crates/persisting-pchronicle",
     "crates/persisting-pchronicle-cli",
-    "crates/persisting-overlaynet",
 ]
 
 default-members = [
@@ -30,17 +26,11 @@ blake3 = "1"
 bytes = "1"
 chrono = "0.4"
 clap = "4"
-dashmap = "6"
 datafusion = { version = "54.1.0", default-features = false }
 dirs = "6"
 fs2 = "0.4"
 futures = "0.3"
-futures-util = { version = "0.3", default-features = false }
-hostname = "0.4"
 http-body-util = "0.1"
-hyper = "1"
-hyper-util = { version = "0.1", default-features = false }
-ipnet = "2"
 lance = { version = "11.0.0", default-features = false }
 lance-arrow = "11.0.0"
 lance-core = "11.0.0"
@@ -62,19 +52,13 @@ opendal = { version = "0.57.0", default-features = true, features = [
     "services-tos",
 ] }
 object_store = "0.13.2"
-persisting-agentctl = { path = "crates/persisting-agentctl" }
-persisting-events = { path = "crates/persisting-events" }
-persisting-gateway = { path = "crates/persisting-gateway" }
-persisting-overlaynet = { path = "crates/persisting-overlaynet" }
 persisting-pchronicle = { path = "crates/persisting-pchronicle", default-features = false }
-pulsing-actor = { version = "0.1.2", default-features = false }
 proptest = "1"
 regex = "1"
 reqwest = { version = "0.12", default-features = false }
 serde = "1"
 serde_json = "1"
 serde_yaml = "0.9"
-smoltcp = { version = "0.13.1", default-features = false }
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", default-features = false }

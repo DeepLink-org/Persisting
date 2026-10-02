@@ -18,11 +18,10 @@
 | `just examples` | pChronicle 产品示例套件 |
 | `just dev` | 自动格式化、lint，然后运行 Rust 测试 |
 | `just ci` | 只读 lint 检查、Rust/Python 测试、性质测试，然后构建 |
-| `just check-quick` | 核心 runtime crate 与无默认 feature 的 pChronicle 检查 |
+| `just check-quick` | pChronicle CLI 与无默认 feature 的 pChronicle 检查 |
 
 `just test` 使用 debug nextest profile 以便更快迭代。传入 Cargo package 名
-或短 crate 别名（`pchronicle`、`pchronicle-cli`、
-`agentctl`、`capture`）。`just test pchronicle` 会同时跑
+或短 crate 别名（`pchronicle`、`pchronicle-cli`）。`just test pchronicle` 会同时跑
 `persisting-pchronicle` 与 `persisting-pchronicle-cli`（与 CI 的 pchronicle
 shard 一致）；只要 CLI 时用 `just test pchronicle-cli`。无参数形式还会跑
 `just test-py`。

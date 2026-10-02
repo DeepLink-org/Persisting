@@ -303,78 +303,24 @@ pchronicle agent claude @prod --ask 'Compare model latency'
 
 ### Serve
 
-```text
-pchronicle serve
- [--listen LOOPBACK_ADDR] [--control LOOPBACK_ADDR] [--open]
- [--home-link TEXT=PATH]...
- [--gateway ADDRESS --gateway-dataset DATASET [--gateway-split TEMPLATE]
- [--gateway-split-idle DURATION]]
- [--gateway-config FILE --gateway-dataset DATASET [--gateway-state DIRECTORY]]
- [--gateway-stream-markdown] [--gateway-debug]
- [--catalog-config FILE]
- [<[NAME=]DATASET> ...]
-pchronicle serve catalog dataset add --catalog-config FILE NAME --uri URI [OPTIONS]
-pchronicle serve catalog dataset remove --catalog-config FILE NAME...
-pchronicle serve catalog dataset list --catalog-config FILE
-pchronicle serve catalog issue --catalog-config FILE NAME
-pchronicle serve catalog grant --catalog-config FILE NAME DATASET...
-pchronicle serve catalog revoke --catalog-config FILE NAME DATASET...
-```
-
 ```bash
 pchronicle serve ./trajectory-data
-pchronicle serve \
- --gateway auto \
- --gateway-dataset ./trajectory-data \
- --gateway-split '{user}/{date}/{hour}'
+pchronicle serve --listen 127.0.0.1:8080 train=./train eval=./eval
+pchronicle serve --catalog-config catalog.toml --listen 127.0.0.1:8081
 ```
 
-Every listener must use a loopback address. A bare single Dataset is mounted as
-`default`; with several Datasets, use `NAME=DATASET` when a stable mount name is
-needed. Control requires a mount named `default`.
-Repeatable `--home-link TEXT=PATH` adds homepage nav capsules beside Warehouse.
-`PATH` must be a same-origin relative path such as `/plugins`.
-`--catalog-config FILE` authenticates every data API request and dispatches it to
-an isolated exec worker containing only authorized mounts. It also enables
-`catalog://` locators, and conflicts with positional mounts, Gateway, and Control. Pair Directory clients with
-`dataset pin NAME catalog://127.0.0.1:PORT --ak --sk`.
-`pchronicle serve catalog dataset add|remove|list` and
-`issue|grant|revoke` rewrite that file and do not start HTTP; `issue` prints
-the user secret once. Restart serve after changing libraries, users, or grants.
-The pool reuses idle workers in the same authenticated scope and grows on demand
-when they are busy, up to 4 workers per scope and 8 workers server-wide. At capacity,
-requests wait for available capacity rather than a particular busy worker; at most
-32 requests are admitted. Each worker still executes serially to keep IPC isolated.
-A cleanup task runs every 30 seconds and reclaims workers idle for 120 seconds;
-idle workers from other scopes may be reclaimed sooner when global capacity is full.
-Queueing, startup and execution share a 60-second timeout; body reads have a
-10-second timeout. Overload returns 503. Cancellation during execution or IPC
-failure discards that worker; cancelling a queued request does not interrupt
-other requests. Worker and disk
-cache identity includes the user, grants and backend credential version. Caches
-live under `PCHRONICLE_CACHE_DIR/workers/` or the system pchronicle cache directory.
-Workers receive backend keys over private IPC before starting runtime threads;
-they do not inherit AWS environment, profiles or the server's home configuration.
-Login AK/SK authenticate the user; dataset AK/SK authenticate storage access.
-Datasets with different S3 endpoints or credentials require explicit `dataset`
-selection; cross-credential queries are currently rejected. Health, UI config
-and static pages remain public; data APIs require authentication even for a
-catalog with no users. Processes still use the server's OS identity: this is not
-an OS privilege drop or a filesystem sandbox.
+The listener is loopback-only. Named mounts provide stable SQL aliases.
+`--open` opens the Web UI; `--home-link TEXT=PATH` adds same-origin navigation
+links. `--catalog-config` enables authenticated Directory and data operations
+and cannot be combined with positional Dataset mounts. Configure datasets and
+user grants with `pchronicle serve catalog`; storage credentials remain scoped
+to each backend and worker. The server emits a readiness JSON record containing
+`warehouse_endpoint`.
 
-`catalog` is a reserved `serve` subcommand; mount a path of that name as
-`./catalog`.
-See [RFC-0013](../../rfcs/0013-pchronicle-warehouse-catalog.md) and
-[RFC-0015](../../rfcs/0015-chronicle-manifest.md) for nested discovery sidecars.
-The config-free Gateway accepts canonical trajectory events at
-`POST /v1/events`. `--gateway-dataset` is an output URI and is auto-mounted;
-it is no longer a mounted Dataset name. Split templates accept the exact
-placeholders `{user}`, `{date}`, and `{hour}`. Existing canonical sources wait
-30 minutes by default after their last event before automatic Storyline
-projection; override this with `--gateway-split-idle DURATION`.
-In Gateway mode, the Warehouse's single-trace event, Storyline, and trajectory
-endpoints read the latest canonical manifest for an already discovered source,
-so active traces do not wait for projection or a global Snapshot refresh.
+Refresh builds a replacement Snapshot before switching readers. Failed refresh
+keeps the previous view readable. Dataset writes remain CLI import operations.
+Logs go to stderr; `--log-level` controls verbosity. Failed API requests include
+`code`, `message`, and `request_id`; internal details remain in the server log.
 
 ## Output and exit status
 

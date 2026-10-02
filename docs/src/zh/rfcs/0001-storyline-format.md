@@ -7,7 +7,6 @@
 | **Date** | 2026-07-30 |
 | **Component** | pChronicle (`persisting-pchronicle`) |
 | **Implements** | `crates/persisting-pchronicle/src/formats/storyline.rs` |
-| **Related** | [RFC-0002 Events](0002-events-format.md) · [RFC-0004 ACTF](0004-actf-format.md) · [RFC-0008 ATIF](0008-atif-format.md) · [RFC-0009 OpenAI Messages](0009-openai-messages-format.md) |
 
 ---
 
@@ -15,16 +14,8 @@
 
 **Storyline** 是 pChronicle 的**枢纽 interchange**：以 Harbor **ATIF-v1.7** 的 Trajectory / Step 折叠语义为基准，加上少量 hub 便利字段（短名 wire、性能顶栏、可选子会话外链）。
 
-捕获侧：`HTTP → events 流`（可 **记录** 到 `events.lance`，也可 **触发** handler）；handler 经 storyline 做格式转换与落盘。外围格式（`agenticmd` / `openai_msg` / `atif` / `actf`）**只与 storyline 互转**。
-
-Storyline **不是**事实源。Canonical 事实仍是 `events.lance`。
-
-```text
-events ──┐
-agenticmd ┼──► storyline ──► …
-openai_msg┤
-atif ─────┘
-```
+外围格式（`agenticmd` / `openai_msg` / `atif` / `actf`）只与 Storyline 互转。
+Storyline 是存储与查询管线使用的轨迹模型，可直接写入三表 Lance。
 
 ---
 
@@ -32,8 +23,7 @@ atif ─────┘
 
 1. **ATIF-first**：根对象 ≈ Trajectory，`turns[]` ≈ `steps[]`；能 1:1 的字段保持同义。
 2. **Hub-only**：A→B MUST 经 storyline。
-3. **少叙事**：不引入 Capture Call / 相位 / event 回链等运行时读模型；那些留在 events。
-4. **Not SoT**：回放与审计以 events 为准。
+3. **来源可追溯**：保留 Source 与 Snapshot 身份，不推断输入中缺失的执行记录。
 
 相对 ATIF 仅保留这些增量：
 
@@ -243,7 +233,6 @@ from_storyline(format, story)  → serialized
 convert(from, to, input)       ≡ from_storyline(to, into_storyline(from, input))
 ```
 
-`events` 为 Lance-only：字符串 convert API 对 `ChronicleFormat::Events` 报错；内存用 `events_to_storyline` / `storyline_to_events`。
 
 ---
 

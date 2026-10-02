@@ -9,7 +9,6 @@
 | `runs` | 一个规范化 Run/session | 每个就绪的 Run 数据源 |
 | `steps` | 一个规范化 Step | 每个就绪的 Run 数据源 |
 | `tool_calls` | 一次工具调用及关联结果 | 每个就绪的 Run 数据源 |
-| `events` | 一条 canonical 写入时事实 | 仅 canonical event Source |
 | `trajectories` | 一个带有序 Step 与工具汇总的完整 Run | 规范化 Run 数据源 |
 
 使用 `DESCRIBE` 查询已安装版本的精确 column：
@@ -19,7 +18,6 @@ DESCRIBE dataset.sources;
 DESCRIBE dataset.runs;
 DESCRIBE dataset.steps;
 DESCRIBE dataset.tool_calls;
-DESCRIBE dataset.events;
 DESCRIBE dataset.trajectories;
 ```
 
@@ -50,9 +48,6 @@ JOIN dataset.steps s
 | `format` | UTF-8, nullable | 检测或声明的表示 |
 | `kind` | UTF-8, non-null | `store` 或 `file` |
 | `snapshot_ref` | UTF-8, nullable | generation、manifest revision、fingerprint、version 或 ETag |
-| `projection_status` | UTF-8, nullable | canonical events Source 关联投影的 `fresh` 或 `stale` 状态 |
-| `projection_generation` | UTF-8, nullable | 被选为读取加速投影的 generation |
-| `projection_candidates` | UInt64, non-null | 参与选择的关联投影候选数 |
 | `size_bytes` | UInt64, nullable | 候选文件或 marker object 大小 |
 | `last_modified` | UTF-8, nullable | 可用时的 RFC 3339 timestamp |
 | `status` | UTF-8, non-null | `ready` 或 `error` |

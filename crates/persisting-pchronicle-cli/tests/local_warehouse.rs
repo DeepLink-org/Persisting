@@ -124,7 +124,6 @@ async fn default_pin_exercises_catalog_query_find_and_export_without_a_server() 
             "trajectories": 4,
             "steps": 9,
             "tool_calls": 2,
-            "events": 0,
         })
     );
 

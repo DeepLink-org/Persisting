@@ -67,9 +67,6 @@ frontmatter schema independent of Storyline.
 
 ## 4. Live updates
 
-When live Markdown is enabled, Gateway projects visible dialogue into
-AgenticMD while writing canonical Lance events:
-
 1. User blocks are written by `call_id`;
 2. A streaming assistant updates in place with the same `call_id`;
 3. Rewriting an assistant block must keep any following user blocks;
@@ -82,13 +79,6 @@ These rules are a live-projection policy. A missing or failed AgenticMD file
 does not change the canonical append result.
 
 ## 5. Relationship to Lance
-
-Lance events own fidelity, replay, stats, and structured query. Internal
-trajectory operations can rebuild AgenticMD from Lance, but the public
-`pchronicle` CLI does not expose AgenticMD materialize or import subcommands.
-AgenticMD does not compact or restore canonical events automatically. Public
-exchange uses the formats supported by
-[`pchronicle import/export`](cli.md).
 
 ## 6. Examples and implementation
 

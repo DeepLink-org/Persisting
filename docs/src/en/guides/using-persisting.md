@@ -9,12 +9,6 @@ Start with [pChronicle](../pchronicle/get-started.md): open a Dataset, inspect a
 summary, ask one bounded SQL question, and locate the evidence behind the
 answer. Use exchange or serving guides only after the read-only path works.
 
-## I need to capture new model traffic
-
-Use the [Gateway](../pchronicle/guides/serve-gateway.md) to forward requests
-and persist canonical events. External execution components can submit events
-through the pChronicle Control service.
-
 ## A reliable operating habit
 
 1. Start with one Run or one Dataset.

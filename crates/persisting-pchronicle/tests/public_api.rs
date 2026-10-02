@@ -5,7 +5,7 @@ use persisting_pchronicle::document::{
     DocumentFormat, InputIssue, InputIssueKind, InputResult, decode_json_storylines,
     encode_json_storylines,
 };
-use persisting_pchronicle::model::{EventRecord, StorylineDocument};
+use persisting_pchronicle::model::StorylineDocument;
 
 #[cfg(feature = "lance-store")]
 use persisting_pchronicle::query::{ChronicleQueryEngine, QueryCapabilities};
@@ -15,11 +15,13 @@ use persisting_pchronicle::search::{FindExpr, FindTextField, parse_match_express
 #[test]
 fn approved_facade_paths_compile() {
     let _: DocumentFormat = DocumentFormat::Atif;
+    for removed in ["events", "canonical-event"] {
+        assert!(removed.parse::<DocumentFormat>().is_err());
+    }
     let _: InputResult<Vec<StorylineDocument>> =
         decode_json_storylines(DocumentFormat::Atif, "{}", "compile-only.json");
     let _: fn(DocumentFormat, &[StorylineDocument]) -> Result<serde_json::Value> =
         encode_json_storylines;
-    let _: Option<EventRecord> = None;
 
     #[cfg(feature = "lance-store")]
     {

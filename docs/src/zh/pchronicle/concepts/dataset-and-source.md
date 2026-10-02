@@ -14,8 +14,7 @@ Dataset 是 discovery、Snapshot、query 与 exchange 的边界。它不声称�
 
 ## Source
 
-Source 是 Dataset 中能够独立发现和版本化的最小轨迹表示。它可以是 canonical event store、
-Storyline projection 或支持的交换文件。每一行规范化数据都保留 `source_path`，因此外部 ID
+Source 是 Dataset 中能够独立发现和版本化的最小轨迹表示。它可以是 Storyline store 或支持的交换文件。每一行规范化数据都保留 `source_path`，因此外部 ID
 仍是 Source-local，冲突不会被隐藏。
 
 实体的完整地址是：

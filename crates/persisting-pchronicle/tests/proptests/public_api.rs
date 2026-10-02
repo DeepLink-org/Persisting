@@ -11,7 +11,6 @@ proptest! {
     #[test]
     fn public_decode_only_formats_are_rejected_for_encoding(
         format in prop::sample::select(vec![
-            DocumentFormat::CanonicalEvent,
             DocumentFormat::StorylineLance,
             DocumentFormat::Codex,
             DocumentFormat::ClaudeCode,
@@ -24,7 +23,6 @@ proptest! {
     #[test]
     fn public_unregistered_formats_report_a_structured_input_issue(
         format in prop::sample::select(vec![
-            DocumentFormat::CanonicalEvent,
             DocumentFormat::StorylineLance,
         ]),
     ) {

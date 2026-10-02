@@ -35,5 +35,3 @@ pchronicle query ./trajectory-data \
 ```
 
 继续阅读[探索第一个 Dataset](pchronicle/get-started.md)，学习 Dataset 健康检查、证据定位、格式、导入导出和只读 Web/API。
-
-**完成本节后：**你可以把一个答案连接到产生它的 Dataset 和 Source。需要记录新的模型请求时，使用[Gateway 捕获](pchronicle/guides/serve-gateway.md)。

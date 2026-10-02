@@ -53,7 +53,7 @@ Goals:
   - `open(path)` builds a Snapshot. A leaf Dataset is one source. A plain
     directory MAY be opened as a **virtual dataset** that unions all nested
     Dataset leaves and peripheral JSON under that path.
-- When the sidecar is missing, still classify Datasets via `CURRENT` / events /
+- When the sidecar is missing, still classify Datasets via `CURRENT` /
   compact-jsonl markers. `list` MUST NOT recursively list an entire object-store
   prefix just to classify. `open` of a directory MAY recurse under the existing
   `max_entries` / `max_files` bounds.
@@ -100,9 +100,7 @@ A path is a **leaf Dataset** when any of these holds, in this order:
 
 1. `chronicle.manifest` with `kind = "leaf"`
 2. `CURRENT` (Storyline)
-3. `events.lance/_manifest.json` or a directory named `events.lance` with
-   `_manifest.json`
-4. compact-jsonl Lance (`pchronicle.format = compact-jsonl/v1`, or a leaf
+3. compact-jsonl Lance (`pchronicle.format = compact-jsonl/v1`, or a leaf
    sidecar with `format = "compact-jsonl/v1"`)
 
 Otherwise the path is a **Directory** (including `chronicle.manifest`

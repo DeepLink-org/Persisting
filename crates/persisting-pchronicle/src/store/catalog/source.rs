@@ -5,14 +5,6 @@ pub(super) async fn load_storyline_from_source(
     source: &ResolvedSource,
     key: &CatalogStorylineKey,
 ) -> Result<Option<StorylineDocument>> {
-    if let ResolvedSource::Events(events) = source
-        && events.projection.is_none()
-    {
-        let Some(records) = events.records_for_storyline(&key.session_id).await? else {
-            return Ok(None);
-        };
-        return Ok(Some(project_event_records(&records)?));
-    }
     let context = SessionContext::new();
     register_normalized_source(&context, source).await?;
     let document_predicate = sql_string(&key.document_id);
@@ -148,32 +140,6 @@ mod proptests {
             prop_assert_eq!(failure.source().map(ToString::to_string), Some(message));
         }
 
-        #[test]
-        fn storyline_lazy_sources_support_normalized_tables_but_not_events(
-            file in proptest::string::string_regex("[A-Za-z0-9._-]{1,24}").unwrap(),
-            generation in proptest::string::string_regex("gen-[A-Za-z0-9_-]{1,16}").unwrap(),
-        ) {
-            let temp = Arc::new(SnapshotTempDir::new().unwrap());
-            let paths = StorylineTablePaths {
-                generation: generation.clone(),
-                table_generation: generation.clone(),
-                runs: PathBuf::from("runs.lance"),
-                steps: PathBuf::from("steps.lance"),
-                tool_calls: PathBuf::from("tool_calls.lance"),
-                objects: PathBuf::from("objects.lance"),
-                runs_version: 1,
-                steps_version: 1,
-                tool_calls_version: 1,
-                objects_version: 1,
-                projection: None,
-            };
-            let source = LazySource::new(file, LazySourceSpec::Storyline { paths }, CatalogSnapshotOptions::default(), temp);
-            prop_assert!(source.supports(CatalogTableKind::Runs));
-            prop_assert!(source.supports(CatalogTableKind::Steps));
-            prop_assert!(source.supports(CatalogTableKind::ToolCalls));
-            prop_assert!(!source.supports(CatalogTableKind::Events));
-            prop_assert!(source.canonical_event_uri().is_none());
-        }
     }
 }
 
@@ -193,11 +159,7 @@ pub(super) enum LazySourceSpec {
     Storyline {
         paths: StorylineTablePaths,
     },
-    Events {
-        uri: String,
-        snapshot: RawEventSnapshot,
-        projection: Option<StorylineTablePaths>,
-    },
+
     Compact {
         uri: String,
     },
@@ -234,28 +196,12 @@ impl LazySource {
         &self.file
     }
 
-    pub(super) fn supports(&self, kind: CatalogTableKind) -> bool {
-        match (&self.spec, kind) {
-            (LazySourceSpec::Events { .. }, _) => true,
-            (_, CatalogTableKind::Events) => false,
-            _ => true,
-        }
-    }
-
     pub(super) fn format_hint(&self) -> Option<DocumentFormat> {
         match &self.spec {
             LazySourceSpec::Storyline { .. } => Some(DocumentFormat::StorylineLance),
-            LazySourceSpec::Events { .. } => Some(DocumentFormat::CanonicalEvent),
             LazySourceSpec::Compact { .. } => None,
             LazySourceSpec::LocalFile { format_hint, .. }
             | LazySourceSpec::RemoteFile { format_hint, .. } => *format_hint,
-        }
-    }
-
-    pub(super) fn canonical_event_uri(&self) -> Option<&str> {
-        match &self.spec {
-            LazySourceSpec::Events { uri, .. } => Some(uri),
-            _ => None,
         }
     }
 
@@ -285,34 +231,7 @@ impl LazySource {
                 )
                 .await?,
             )),
-            LazySourceSpec::Events {
-                snapshot,
-                projection,
-                ..
-            } => {
-                let source = RawEventDataSource::from_pinned_snapshot_with_options(
-                    snapshot.clone(),
-                    RawEventDataSourceOptions::default(),
-                )
-                .await?;
-                let projection = match projection {
-                    Some(paths) => Some(
-                        StorylineDataSource::from_pinned_paths_with_options(
-                            paths.clone(),
-                            self.options.storyline,
-                        )
-                        .await?,
-                    ),
-                    None => None,
-                };
-                Ok(ResolvedSource::Events(ResolvedEventSource {
-                    source,
-                    projection,
-                    max_fallback_rows: self.options.max_event_fallback_rows,
-                    max_fallback_bytes: self.options.max_event_fallback_bytes,
-                    normalization_count: AtomicUsize::new(0),
-                }))
-            }
+
             LazySourceSpec::Compact { .. } => Ok(ResolvedSource::Compact),
             LazySourceSpec::LocalFile {
                 root,
@@ -385,52 +304,8 @@ impl LazySource {
 #[derive(Debug)]
 pub(super) enum ResolvedSource {
     Storyline(StorylineDataSource),
-    Events(ResolvedEventSource),
     File(FileTrajectoryDataSource),
     Compact,
-}
-
-#[derive(Debug)]
-pub(super) struct ResolvedEventSource {
-    source: RawEventDataSource,
-    projection: Option<StorylineDataSource>,
-    pub(super) max_fallback_rows: usize,
-    pub(super) max_fallback_bytes: usize,
-    pub(super) normalization_count: AtomicUsize,
-}
-
-impl ResolvedEventSource {
-    async fn normalized_for(
-        &self,
-        session_ids: Option<&BTreeSet<String>>,
-        kind: CatalogTableKind,
-    ) -> Result<Arc<MemTable>> {
-        self.normalization_count.fetch_add(1, Ordering::Relaxed);
-        normalize_event_storylines(
-            &self.source,
-            session_ids,
-            kind,
-            self.max_fallback_rows,
-            self.max_fallback_bytes,
-        )
-        .await
-    }
-
-    pub(super) async fn records_for_storyline(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<Vec<EventRecord>>> {
-        let session_ids = BTreeSet::from([session_id.to_string()]);
-        let records = self
-            .source
-            .read_records_for_storylines_bounded(
-                &session_ids,
-                self.max_fallback_rows,
-                self.max_fallback_bytes,
-            )
-            .await?;
-        Ok((!records.is_empty()).then_some(records))
-    }
 }
 
 pub(super) struct ResolvedTable {
@@ -448,10 +323,7 @@ impl ResolvedSource {
         format: DocumentFormat,
         predicates: &[crate::store::virtual_document::NormalizedJsonPredicate],
     ) -> Result<Option<BTreeSet<String>>> {
-        if matches!(
-            format,
-            DocumentFormat::CanonicalEvent | DocumentFormat::Codex | DocumentFormat::ClaudeCode
-        ) {
+        if matches!(format, DocumentFormat::Codex | DocumentFormat::ClaudeCode) {
             return Ok(None);
         }
         let mut candidates: Option<BTreeSet<String>> = None;
@@ -467,7 +339,7 @@ impl ResolvedSource {
                     CatalogTableKind::ToolCalls
                 }
             };
-            let Some(table) = self.table(kind, None).await? else {
+            let Some(table) = self.table(kind).await? else {
                 return Ok(None);
             };
             if table.provider.schema().index_of("document_id").is_err() {
@@ -537,40 +409,17 @@ impl ResolvedSource {
                 }
                 Ok(rows)
             }
-            Self::Events(source) if format == DocumentFormat::CanonicalEvent => {
-                let context = SessionContext::new();
-                source.source.register(&context)?;
-                let batches = context
-                    .sql("SELECT * FROM events ORDER BY seq")
-                    .await?
-                    .collect()
-                    .await?;
-                let mut rows = Vec::new();
-                for batch in &batches {
-                    for row in super::super::event_rows_from_batch(batch)? {
-                        rows.push((
-                            row.event_id.unwrap_or_else(|| row.seq.to_string()),
-                            row.payload_json,
-                        ));
-                    }
-                }
-                Ok(rows)
-            }
+
             Self::Compact => Ok(Vec::new()),
             _ => Ok(Vec::new()),
         }
     }
 
-    pub(super) async fn table(
-        &self,
-        kind: CatalogTableKind,
-        event_session_ids: Option<&BTreeSet<String>>,
-    ) -> Result<Option<ResolvedTable>> {
+    pub(super) async fn table(&self, kind: CatalogTableKind) -> Result<Option<ResolvedTable>> {
         let storyline_kind = || match kind {
             CatalogTableKind::Runs => Some(StorylineTableKind::Runs),
             CatalogTableKind::Steps => Some(StorylineTableKind::Steps),
             CatalogTableKind::ToolCalls => Some(StorylineTableKind::ToolCalls),
-            CatalogTableKind::Events => None,
         };
         Ok(match self {
             Self::Storyline(source) => storyline_kind().map(|kind| ResolvedTable {
@@ -581,23 +430,7 @@ impl ResolvedSource {
                 provider: source.provider(kind),
                 carries_file_column: true,
             }),
-            Self::Events(source) if kind == CatalogTableKind::Events => Some(ResolvedTable {
-                provider: source.source.provider(),
-                carries_file_column: false,
-            }),
-            Self::Events(source) => {
-                if let Some(projection) = &source.projection {
-                    return Ok(storyline_kind().map(|kind| ResolvedTable {
-                        provider: projection.provider(kind),
-                        carries_file_column: false,
-                    }));
-                }
-                let normalized = source.normalized_for(event_session_ids, kind).await?;
-                Some(ResolvedTable {
-                    provider: normalized,
-                    carries_file_column: false,
-                })
-            }
+
             Self::Compact => None,
         })
     }
@@ -610,14 +443,7 @@ async fn register_normalized_source(
     match source {
         ResolvedSource::Storyline(source) => source.register(context),
         ResolvedSource::File(source) => source.register(context),
-        ResolvedSource::Events(source) => {
-            if let Some(projection) = &source.projection {
-                return projection.register(context);
-            }
-            anyhow::bail!(
-                "registering all normalized canonical events requires a fresh Storyline projection"
-            )
-        }
+
         ResolvedSource::Compact => {
             anyhow::bail!("compact JSONL has no normalized trajectory tables")
         }

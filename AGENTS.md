@@ -26,9 +26,9 @@ This exclusion covers, in particular:
   workflows
 
 The default active scope is pChronicle, its trajectory CLI and Web UI, and
-the Gateway, Control, events, and OverlayNet libraries it depends on.
+the data import, storage, conversion, and query pipeline they depend on.
 `persisting-dlcapt` is a separate standalone component; excluding it
-does not exclude Gateway trajectory capture or pChronicle capture storage.
+does not exclude pChronicle trajectory import or storage.
 
 Enter an excluded subsystem only when:
 
@@ -44,7 +44,7 @@ required. Do not use incidental cleanup as a reason to broaden scope.
 Use `just test` as the default validation command. It runs Rust tests through
 `cargo nextest` in debug mode (for faster iteration) and then runs the Python
 test suite. To limit Rust coverage to one package, pass its Cargo package name
-positionally, for example `just test persisting-agentctl`. The `pchronicle`
+positionally, for example `just test persisting-pchronicle-cli`. The `pchronicle`
 alias also runs `persisting-pchronicle-cli` (same as the CI pchronicle shard);
 use `just test pchronicle-cli` for the CLI crate alone. Use a direct
 `cargo test` invocation only when doctests or an explicitly documented special

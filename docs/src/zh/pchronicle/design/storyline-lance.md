@@ -1,74 +1,7 @@
-# Storyline 三表 Lance 存储
+# Storyline Lance
 
-`StorylineLanceStore` 是 pChronicle 的 Storyline-native 规范化存储表示。它与
-`events.lance` 原始事件日志并列存在，不替代后者。
-
-逻辑 wire schema 以 [RFC-0001 § Wire schema](../../rfcs/0001-storyline-format.md#wire-schema)
-为准；ACTF、ATIF 与 OpenAI Messages 的逐字段转换分别以
-[RFC-0004](../../rfcs/0004-actf-format.md#actf-storyline-json-pointer-mapping)、
-[RFC-0008](../../rfcs/0008-atif-format.md#atif-storyline-json-pointer-mapping)和
-[RFC-0009](../../rfcs/0009-openai-messages-format.md#openai-storyline-json-pointer-mapping)
-的映射章节为准。本设计只定义 Storyline 的 Lance 物理投影。
-
-## 投影合同与闭环
-
-Storyline 同时保留 Hub 交换合同（A 路径），三表则是可从 canonical `events.lance`
-重建的 silver projection（B 路径）。两种用途共享 schema，但写入身份严格分开：交换格式
-导入或直接 `replace_storyline` 不携带 canonical 血缘；只有 events projector 可以发布带
-projection lineage 的 `CURRENT`。
-
-```text
-events.lance (事实源)
-  ├─ serve 启动期/运行期 ─► runs + steps + tool_calls + objects
-  ├─ append-compatible sync ─► 只替换 append suffix 影响的 session
-  └─ Catalog fallback ──────► 投影缺失或 stale 时按固定快照即时转换
-```
-
-`CURRENT` 除四张表的精确 Lance version 外，还记录 source URI / source id、
-`fact_version`、`fact_rows`、构建时的 layout revision、projector、recipe hash 和
-completeness。`fact_version` / `fact_rows` 是新鲜度水位；单纯 compaction 只
-改变 layout revision，不会使投影过期。直接文档写入会清除 lineage，维护则原样保留。
-
-增量 sync 只有在 canonical manifest 强制校验 `fact_rows == total_rows()` 的前提下，才能把
-`[previous_fact_rows, fact_rows)` 当作 append 区间。布局维护还必须保持 replacement 前后行数
-和 segment 顺序不变，使 compaction 不会移动这个逻辑水位。区间读取完成后，projector 会再
-校验返回记录数严格等于区间长度；任一证明前提失效都会失败关闭，而不是静默漏事实。
-
-常用运维命令：
-
-```bash
-pchronicle serve --control 127.0.0.1:0 ./trajectory-data
-pchronicle stats ./trajectory-data --format json
-```
-
-`serve` 在输出 readiness 前发现所有已验证且非空的 canonical Store，并把投影收敛到确定的
-同级 `storyline`。运行期间会继续发现新 Store，按条件执行增量 sync 或完整 rebuild；失败采用
-有界并发和重试，且不阻塞 canonical durable write。没有匹配 lineage 的目标属于外来数据，
-绝不覆盖。`status` 报告 `fresh`、`stale`、`missing` 或 `error`，以及事实水位和 generation。
-
-Catalog 会把 lineage 指向同一 canonical URI 的 sidecar 与 events Source 合并为一个逻辑
-Source。`sources.projection_status` 为 `fresh` 时，规范化查询使用三表；为 `stale` 时隐藏
-sidecar 并回退到固定 events snapshot 的确定性投影。`projection_generation` 公开实际命中的
-generation，便于监控与诊断。Catalog 不会把无血缘的 Storyline 文档库自动认作 canonical
-events 的 projection。
-
-Gateway 配套的 Warehouse 为单 trace 观测提供显式 live-read 路径：Catalog 定位已经发现的
-canonical source 后，`/api/events`、`/api/storyline` 和 `/api/trajectory-view` 会重新打开该
-source 最新可见的 events manifest。这不改变全局 SQL 查询的不可变快照语义，也不会让派生的
-Storyline sidecar 变成权威事实源。
-
-投影 supervisor 已内置于 `serve`，使用有界并发和重试，并随进程一起关闭。它不进入
-Gateway 捕获写入热路径，因此 projection 或 Catalog refresh 故障不会阻塞 canonical
-events 写入。
-
-本文只负责三表物理 schema、内容层、Snapshot 发布、查询接入和维护语义。事实源与
-projection ownership 见[运行存储](trajectory-storage.md)，用户查询流程见
-[Dataset 查询指南](../guides/discover-and-query.md)。
-
-这是 pChronicle 唯一的规范化三表模型。旧的 ATIF
-`sessions` / `steps` / `tool_calls`、`NormalizedStore` 和内存联表视图已经删除。ATIF
-仍作为输入输出格式存在，但查询时先转换为 Storyline，再投影到本页定义的
-`runs` / `steps` / `tool_calls` schema，不再维护第二套表结构。
+`StorylineLanceStore` 直接保存 Storyline 文档，通过 `CURRENT` 发布并固定
+runs、steps、tool-call 和内容表的 generation 与版本。
 
 ## 表模型
 
@@ -309,8 +242,7 @@ Blob payload I/O；为避免把 preview 当成完整值产生错误结果，内�
 
 ## 统一查询引擎
 
-`ChronicleQueryEngine` 是对外的只读 SQL 门面。六种磁盘格式（Canonical Event、
-Storyline Lance、AgenticMD、ATIF、OpenAI Msg、ACTF）通过同一个入口
+`ChronicleQueryEngine` 是对外的只读 SQL 门面。五种磁盘格式（Storyline Lance、AgenticMD、ATIF、OpenAI Msg、ACTF）通过同一个入口
 `ChronicleQueryEngine::open(format, path, options)` 打开，注册语义对应的查询表，
 查询语句不随物理格式改变：
 
@@ -336,11 +268,6 @@ let jsonl = atif.query_jsonl(
     "SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source"
 ).await?;
 ```
-
-`DocumentFormat::CanonicalEvent` 注册 `events` 表；`runs`/`steps`/`tool_calls`
-默认不实时注册，需要 Storyline 查询面时优先使用 lineage 新鲜的 Storyline Lance
-投影，无投影时在行/字节预算内执行 bounded fallback（预算耗尽显式报错，不静默
-截断）。其余五种格式注册 `runs`/`steps`/`tool_calls`。
 
 `query` 返回 Arrow `RecordBatch`，适合服务端继续处理；`dataframe` 返回 lazy DataFrame，
 适合追加 DataFusion 变换或查看计划；`query_jsonl` 用于 CLI/API 边界。调用者也可通过
@@ -436,11 +363,6 @@ pchronicle query ./openai-data \
 这个门面执行 DDL/DML。Lance 引擎打开时固定 `CURRENT` 指向的三个版本，从而保证一次
 查询会话内三张表来自同一快照。
 
-仓库使用 Criterion.rs + hyperfine 的统一 benchmark runner。Criterion 负责 CPU-bound
-转换、events→Storyline 和三表 split/reconstruct 微基准；canonical event append、投影
-build/sync/verify、Lance/DataFusion 生命周期、JSON streaming 与 RSS 场景由 hyperfine
-重复执行独立进程，最终生成统一 JSON、Markdown 和 HTML：
-
 ```bash
 # PR/local smoke workload
 just benchmark-pchronicle
@@ -474,8 +396,3 @@ benchmark 还单独输出 DataSource 冷打开并执行 SQL、`get_storyline_ful
 裁剪、并行扫描和选择性索引收益。
 
 ## 相关文档
-
-- [事实、Projection 与 Revision](../concepts/facts-and-projections.md)：解释 Storyline 为何是 projection。
-- [pChronicle 架构](architecture.md)：定义 publication 和 read consistency 保证。
-- [Snapshot](catalog.md)：说明 Source discovery 与固定 Snapshot 如何打开本 Store。
-- [`pchronicle` 参考](../reference/cli.md)：当前对外查询、导入导出与服务命令。

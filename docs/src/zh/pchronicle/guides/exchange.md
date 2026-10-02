@@ -40,47 +40,6 @@ pchronicle import --from ./corpus --to ./normalized \
  --output-format storyline
 ```
 
-经过验证且非空的 canonical Event Store 会在 JSON 扫描前被识别，并始终创建
-Storyline Lance：
-
-```bash
-pchronicle import --from ./run/events.lance --to ./run/storyline
-```
-
-此模式接受本地和 object-store URI，不修改源，支持 create 或经确认的 replace（不支持 append）。JSON 结果报告
-`format: "events"`、`output_format: "storyline-lance"` 和 `fact_rows`，不包含
-`input_bytes`。canonical events 不接受显式 `--output-format preserve` 或 JSON exchange
-`--input-format`。
-
-squash 后，Dataset 所有规范化表中的 `_file_` 都是 `.`：
-
-```bash
-pchronicle query ./normalized \
- --sql 'SELECT _file_, COUNT(*) AS runs FROM dataset.runs GROUP BY _file_'
-```
-
-Storyline 输出中的 `document_id` 全局唯一；冲突时会确定性地增加 `#N` 后缀，append 也可用
-`--on-duplicate skip` 跳过。成功的 Storyline Store 不把来源路径保存为可查询信息。需要保留
-文件边界时应使用 preserve 输出。
-
-ATIF `.jsonl` 与 `.ndjson` 输入会逐条解码其中的非空记录。递归扫描目录时会跳过软链接；
-若 `--from` 显式指定一个指向普通文件的软链接，则仍按单文件导入。只有所有输入和所选
-存储输出都成功后才会原子发布完整输出目录。单文件 preserve 导入会使用
-`trajectories.atif.jsonl`/`trajectories.atif.ndjson`，确保后续查询仍按行式容器读取。stdin 必须
-是有限且格式明确的输入：
-
-```bash
-cat input.json | pchronicle import --from - \
- --to ./imported --input-format openai-messages
-```
-
-导入后检查新边界：
-
-```bash
-pchronicle stats ./imported
-pchronicle stats overview ./imported
-```
-
 ## 导出完整 Run
 
 ```bash

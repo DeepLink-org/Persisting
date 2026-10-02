@@ -488,18 +488,6 @@ def run_suite(args: argparse.Namespace) -> None:
             config["hyperfine_runs"],
         )
     )
-    if bench_target_exists(repo, "projection_pipeline"):
-        projection = build_bench_executable(repo, target_dir, "projection_pipeline", output)
-        metrics.extend(
-            run_system_scenario(
-                repo,
-                output,
-                projection,
-                "projection_pipeline",
-                common,
-                config["hyperfine_runs"],
-            )
-        )
     for shape in ("ndjson", "array"):
         metrics.extend(
             run_system_scenario(
@@ -780,12 +768,6 @@ def update_readme(args: argparse.Namespace) -> None:
         metric_jsonpath(
             "criterion/atif_conversion/roundtrip_corpus", "latency_median_ns"
         ),
-        metric_jsonpath(
-            "criterion/projection_cpu/events_to_storyline_corpus", "latency_median_ns"
-        ),
-        metric_jsonpath("system/projection_pipeline/event_append", "initial_append_ms"),
-        metric_jsonpath("system/projection_pipeline/projection_build", "build_ms"),
-        metric_jsonpath("system/projection_pipeline/projection_incremental", "sync_ms"),
         metric_jsonpath("system/lance_vs_json/lifecycle", "cold_query_ms"),
         metric_jsonpath("system/lance_vs_json/lifecycle", "get_storyline_full_ms"),
         metric_jsonpath("system/lance_vs_json/lifecycle", "replace_storyline_ms"),
@@ -797,7 +779,6 @@ def update_readme(args: argparse.Namespace) -> None:
         metric_jsonpath(
             "system/json_streaming_ndjson/json_streaming", "process_peak_rss_mib"
         ),
-        metric_jsonpath("hyperfine/projection_pipeline", "wall_median_seconds"),
         metric_jsonpath("hyperfine/lance_vs_json", "wall_median_seconds"),
     ]
     selected = []

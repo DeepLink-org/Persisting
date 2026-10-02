@@ -10,7 +10,6 @@ relations even when no compatible Source contributes rows.
 | `runs` | one normalized Run/session | every ready run data source |
 | `steps` | one normalized Step | every ready run data source |
 | `tool_calls` | one tool invocation and its linked result | every ready run data source |
-| `events` | one canonical write-time fact | canonical event Sources only |
 | `trajectories` | one complete Run with ordered Step and tool aggregates | normalized run data sources |
 
 Use `DESCRIBE` for the exact columns exposed by the installed version:
@@ -20,13 +19,12 @@ DESCRIBE dataset.sources;
 DESCRIBE dataset.runs;
 DESCRIBE dataset.steps;
 DESCRIBE dataset.tool_calls;
-DESCRIBE dataset.events;
 DESCRIBE dataset.trajectories;
 ```
 
 ## Source identity
 
-Entity IDs are Source-local. `runs`, `steps`, `tool_calls`, and `events` retain
+Entity IDs are Source-local. `runs`, `steps`, `tool_calls` retain
 `_file_`, the Dataset-relative `source_path`. A durable entity address includes
 the Dataset URI, `_file_`, entity kind, and original ID.
 
@@ -54,9 +52,6 @@ namespace.
 | `format` | UTF-8, nullable | detected or declared representation |
 | `kind` | UTF-8, non-null | `store` or `file` |
 | `snapshot_ref` | UTF-8, nullable | generation, manifest revision, fingerprint, version, or ETag |
-| `projection_status` | UTF-8, nullable | `fresh` or `stale` for a canonical events Source with a linked Storyline projection |
-| `projection_generation` | UTF-8, nullable | generation selected as the read acceleration projection |
-| `projection_candidates` | UInt64, non-null | number of linked projection candidates considered |
 | `size_bytes` | UInt64, nullable | candidate file or marker-object size |
 | `last_modified` | UTF-8, nullable | RFC 3339 timestamp when available |
 | `status` | UTF-8, non-null | `ready` or `error` |

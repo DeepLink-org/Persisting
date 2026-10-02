@@ -2,20 +2,12 @@
 
 **Persisting 的结构化轨迹与 Dataset 数据层。**
 
-拥有轨迹领域模型、磁盘格式、Lance 持久化、数据源发现、DataFusion 查询、格式交换
-和可重建投影。其他 crate 可以生产或消费轨迹，但不应再定义第二套存储格式或轨迹
-协议 DTO。
+拥有 Storyline 轨迹模型、格式编解码、Lance 持久化、数据源发现、DataFusion 查询
+与格式交换。ATIF、ACTF、OpenAI Messages、Codex 和 Claude Code 等输入经
+Storyline 进入存储与查询管线，AgenticMD 是 Storyline 的 Markdown 编码。
 
-不拥有产品 CLI、只读 Warehouse HTTP、Web UI，也不拥有 Run 的启动与编排。
-[`persisting-pchronicle-cli`](../persisting-pchronicle-cli/README.md) 拥有
-`pchronicle` 命令、loopback API 与嵌入式静态资源。
-[`pchronicle-web`](../../pchronicle-web/README.md) 拥有浏览前端。
-Gateway 生产 canonical events。
-
-Canonical Event 与 Storyline 分别在事实层和交换/分析层保持权威，关系是单向投影：
-`events.lance` 是 append-only 运行时事实源；`StorylineDocument` 是与 ATIF v1.7
-对齐的权威轨迹模型和外围格式转换枢纽。AgenticMD 只是 Storyline 的人类可读
-Markdown 编码。
+CLI 和 Warehouse HTTP 由 [`persisting-pchronicle-cli`](../persisting-pchronicle-cli/README.md)
+提供，浏览前端由 [`pchronicle-web`](../../pchronicle-web/README.md) 提供。
 
 默认功能面通过四个模块组织：`model`、`document`、`storage`、`query`。外围 wire
 DTO、低层 parser、Arrow codec 和 DataFusion provider 保持私有。`search` 是独立
@@ -40,8 +32,7 @@ store.maintain(&LanceMaintenanceOptions {
 预算按每张 Storyline 表、每次调用独立计算，默认不限制；它限制 compaction 输入，
 不限制索引维护、GC、总内存或独立 Blob v2 文件的 I/O。Lance 不会拆开超预算的任务，
 如果没有任务能放进预算，本次 compaction 可以不做任何合并，需要提高预算；字节预算
-要求源文件已有大小元数据。Raw Event 跨 segment 的维护使用不同路径，会明确拒绝
-这两个预算参数。每次成功维护仍通过 CURRENT 原子发布快照。
+要求源文件已有大小元数据。每次成功维护仍通过 CURRENT 原子发布快照。
 
 ## Develop
 
@@ -55,7 +46,7 @@ just proptest pchronicle
 
 - [pChronicle overview](../../docs/src/zh/pchronicle/index.md)
 - [产品架构](../../docs/src/zh/pchronicle/design/architecture.md)
-- [记录数据、视图与版本](../../docs/src/zh/pchronicle/concepts/facts-and-projections.md)
+- [轨迹数据与版本](../../docs/src/zh/pchronicle/concepts/facts-and-projections.md)
 - [pChronicle CLI](../../docs/src/zh/pchronicle/reference/cli.md)
 - [RFC-0003 ownership](../../docs/src/zh/rfcs/0003-pchronicle-ownership.md)
 - [`persisting-pchronicle-cli`](../persisting-pchronicle-cli/README.md)

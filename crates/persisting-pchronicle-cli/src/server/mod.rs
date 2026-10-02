@@ -28,15 +28,12 @@ use persisting_pchronicle::analysis_compile::{
     AnalysisSpec, CompileError, CompileScope, CompiledQuery, TableSchema, compile,
 };
 use persisting_pchronicle::document::InputIssue;
-use persisting_pchronicle::model::{EventRecord, StorylineTurn};
+use persisting_pchronicle::model::StorylineTurn;
 use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 use persisting_pchronicle::search::storyline_steps_fts_available;
-#[cfg(test)]
-use persisting_pchronicle::storage::StoryCoords;
 use persisting_pchronicle::storage::{
-    CatalogConsistency, CatalogErrorPolicy, CatalogEventProvenance, CatalogSnapshotOptions,
-    CatalogStorylineKey, DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount,
-    with_background_object_store_io,
+    CatalogConsistency, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogStorylineKey,
+    DEFAULT_DATASET_NAME, DatasetCatalogSnapshot, DatasetMount, with_background_object_store_io,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -67,9 +64,6 @@ struct AppState {
     catalog_refresh_interval: Duration,
     trajectory_cache: TrajectoryCache,
     trajectory_flights: Arc<Mutex<HashMap<String, Weak<TrajectoryFlight>>>>,
-    /// Gateway-backed Warehouses read canonical events from the latest
-    /// manifest for single-trace observation, independent of projection idle.
-    live_reads: bool,
     catalog_acl: Option<Arc<catalog::CatalogState>>,
     catalog_query_worker: bool,
     catalog_workers: Arc<catalog_worker::WorkerPool>,
@@ -209,7 +203,6 @@ pub(crate) struct RunSummary {
     pub(crate) root_session_id: Option<String>,
     pub(crate) path: String,
     pub(crate) row_count: usize,
-    pub(crate) duplicate_event_ids: usize,
     pub(crate) status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) format: Option<String>,
@@ -223,8 +216,6 @@ pub(crate) struct SessionQuery {
     pub(crate) agent_id: String,
     pub(crate) session_id: String,
     pub(crate) root_session_id: Option<String>,
-    pub(crate) offset: Option<usize>,
-    pub(crate) limit: Option<usize>,
 }
 
 /// Build the read-only Warehouse API and Web UI.
@@ -248,7 +239,6 @@ fn app_state_with_catalog_refresh_interval(
         catalog_refresh_interval,
         trajectory_cache: Arc::new(tokio::sync::RwLock::new(None)),
         trajectory_flights: Arc::new(Mutex::new(HashMap::new())),
-        live_reads: false,
         catalog_acl: None,
         catalog_query_worker: false,
         catalog_workers: Arc::new(catalog_worker::WorkerPool::default()),
@@ -269,15 +259,6 @@ impl PreparedWarehouse {
         let warehouse = Self {
             state: app_state(config),
         };
-        browse_coordinator(&warehouse.state).await;
-        warehouse.install_initial_runtime().await?;
-        Ok(warehouse)
-    }
-
-    pub(crate) async fn prepare_live(config: ChronicleServerConfig) -> anyhow::Result<Self> {
-        let mut state = app_state(config);
-        state.live_reads = true;
-        let warehouse = Self { state };
         browse_coordinator(&warehouse.state).await;
         warehouse.install_initial_runtime().await?;
         Ok(warehouse)
@@ -331,16 +312,17 @@ impl PreparedWarehouse {
         snapshot_id
     }
 
+    #[cfg(test)]
+    pub(crate) async fn refresh_catalog(&self) -> anyhow::Result<String> {
+        let runtime = self.refresh_runtime().await?;
+        Ok(runtime.snapshot.snapshot_id().to_string())
+    }
+
     async fn refresh_runtime(&self) -> anyhow::Result<Arc<CatalogRuntime>> {
         let _refresh = self.state.catalog_refresh.lock().await;
         let runtime = build_catalog_runtime(&self.state.config).await?;
         self.install_catalog_runtime(runtime.clone()).await;
         Ok(runtime)
-    }
-
-    pub(crate) async fn refresh_catalog(&self) -> anyhow::Result<String> {
-        let runtime = self.refresh_runtime().await?;
-        Ok(runtime.snapshot.snapshot_id().to_string())
     }
 
     pub(crate) fn router(&self) -> Router {
@@ -385,7 +367,6 @@ fn api_routes() -> Router<AppState> {
         .route("/explorer/record", get(explorer_record))
         .route("/explorer/turns", get(explorer_turns))
         .route("/explorer/turn", get(explorer_turn))
-        .route("/events", get(events))
         .route("/storyline", get(storyline))
         .route("/trajectory-view", get(trajectory_view))
         .route("/catalog", get(catalog).post(refresh_catalog))
@@ -626,7 +607,7 @@ async fn current_catalog_for_runs(
         return Ok(runtime);
     }
     // A zero interval requests synchronous freshness (used by embedded callers).
-    if state.catalog_refresh_interval.is_zero() || state.live_reads {
+    if state.catalog_refresh_interval.is_zero() {
         let _refresh = state.catalog_refresh.lock().await;
         return Ok(rebuild_catalog_for_runs(state, runtime).await);
     }
@@ -769,7 +750,7 @@ async fn load_run_summaries(
                 ApiError::not_found("dataset was not found").with_request_id(request_id.as_str())
             })?;
         // Browse initialization and its disk projection are optional for Runs.
-        let cached_files = if file.is_none() && !state.live_reads {
+        let cached_files = if file.is_none() {
             match state.browse.get() {
                 Some(browse) => browse.cached_source_paths(mount).await,
                 None => Vec::new(),
@@ -809,15 +790,7 @@ async fn load_run_summaries(
             Ok(summaries)
         };
         let started = Instant::now();
-        let result = if state.live_reads {
-            state
-                .scoped_queries
-                .run(scope, || execute(false))
-                .await
-                .map(|summaries| (summaries, "summary_uncached"))
-        } else {
-            state.scoped_queries.cached(scope, execute).await
-        };
+        let result = state.scoped_queries.cached(scope, execute).await;
         let result = result
             .map(|(summaries, cache_status)| {
                 if let Some(metrics) = metrics {
@@ -1036,7 +1009,6 @@ async fn try_compact_jsonl_runs_page(
                     root_session_id: None,
                     path,
                     row_count: 1,
-                    duplicate_event_ids: 0,
                     status: "record".into(),
                     format: Some("compact-jsonl/v1".into()),
                 },
@@ -1191,7 +1163,6 @@ async fn try_on_demand_storyline_runs_page(
                     root_session_id: None,
                     path,
                     row_count: 1,
-                    duplicate_event_ids: 0,
                     status: "completed".into(),
                     format: Some("storyline-lance".into()),
                 },
@@ -1723,18 +1694,17 @@ async fn try_resolve_on_demand_storyline_run(
         root_session_id: query.root_session_id.clone(),
         path,
         row_count: 1,
-        duplicate_event_ids: 0,
         status: "completed".into(),
         format: Some("storyline-lance".into()),
     }))
 }
 
-async fn load_on_demand_storyline_bundle(
+async fn load_on_demand_storyline_document(
     runtime: &CatalogRuntime,
     run: &RunSummary,
     request_id: &RequestId,
     op: &'static str,
-) -> Result<Option<persisting_pchronicle::storage::CatalogTrajectoryBundle>, ApiError> {
+) -> Result<Option<persisting_pchronicle::model::StorylineDocument>, ApiError> {
     let Some(dataset) = runtime.snapshot.dataset(&run.dataset) else {
         return Ok(None);
     };
@@ -1772,43 +1742,29 @@ async fn load_on_demand_storyline_bundle(
     let Some(Some(storyline)) = stories.into_iter().next() else {
         return Ok(None);
     };
-    let document = persisting_pchronicle::document::storyline_to_events(&storyline)
-        .map_err(|error| fail(request_id, op, error))?;
-    Ok(Some(
-        persisting_pchronicle::storage::CatalogTrajectoryBundle {
-            storyline,
-            event_view: persisting_pchronicle::storage::CatalogEventView {
-                provenance: CatalogEventProvenance::SyntheticFromStoryline,
-                document,
-            },
-        },
-    ))
+    Ok(Some(storyline))
 }
 
-async fn catalog_or_on_demand_trajectory_bundle(
-    state: &AppState,
+async fn catalog_or_on_demand_storyline(
+    _state: &AppState,
     runtime: &CatalogRuntime,
     run: &RunSummary,
     request_id: &RequestId,
     op: &'static str,
-) -> Result<persisting_pchronicle::storage::CatalogTrajectoryBundle, ApiError> {
+) -> Result<persisting_pchronicle::model::StorylineDocument, ApiError> {
     request_progress::phase("storage_read");
     let key = catalog_storyline_key(run);
-    let catalog_result = if state.live_reads {
-        runtime.snapshot.load_live_trajectory_bundle(&key).await
-    } else {
-        runtime.snapshot.load_trajectory_bundle(&key).await
-    };
+    let catalog_result = runtime.snapshot.load_storyline(&key).await;
     match catalog_result {
-        Ok(Some(bundle)) => Ok(bundle),
-        Ok(None) => load_on_demand_storyline_bundle(runtime, run, request_id, op)
+        Ok(Some(document)) => Ok(document),
+        Ok(None) => load_on_demand_storyline_document(runtime, run, request_id, op)
             .await?
             .ok_or_else(|| ApiError::not_found("run was not found")),
         Err(error) => {
-            if let Some(bundle) =
-                load_on_demand_storyline_bundle(runtime, run, request_id, op).await?
+            if let Some(document) =
+                load_on_demand_storyline_document(runtime, run, request_id, op).await?
             {
-                Ok(bundle)
+                Ok(document)
             } else {
                 Err(fail(request_id, op, error))
             }
@@ -1825,101 +1781,6 @@ fn catalog_storyline_key(run: &RunSummary) -> CatalogStorylineKey {
     }
 }
 
-#[cfg(test)]
-fn event_uri_coords(uri: &str, run: &RunSummary) -> anyhow::Result<StoryCoords> {
-    let uri = uri.trim_end_matches('/');
-    let run_uri = uri
-        .strip_suffix("/events.lance")
-        .or_else(|| (uri == "events.lance").then_some(""))
-        .with_context(|| format!("canonical event URI does not end in events.lance: {uri}"))?;
-    let (agent_uri, physical_run_id) = run_uri
-        .rsplit_once('/')
-        .context("canonical event URI has no Run directory")?;
-    let (storage, physical_agent_id) = agent_uri
-        .rsplit_once('/')
-        .map_or((".", agent_uri), |(storage, agent)| (storage, agent));
-    anyhow::ensure!(
-        !physical_agent_id.is_empty() && !physical_run_id.is_empty(),
-        "canonical event URI has an invalid agent/Run hierarchy: {uri}"
-    );
-    Ok(StoryCoords::new(
-        storage,
-        physical_agent_id,
-        run.session_id.clone(),
-        Some(physical_run_id.to_string()),
-    ))
-}
-
-#[derive(Clone)]
-struct LoadedEventView {
-    provenance: CatalogEventProvenance,
-    records: Vec<EventRecord>,
-}
-
-async fn load_events(
-    state: &AppState,
-    query: &SessionQuery,
-    request_id: &RequestId,
-) -> Result<LoadedEventView, ApiError> {
-    let run = resolve_run_summary(state, query, request_id, None).await?;
-    let runtime = catalog_for_source(state, Some(&run.dataset), &run.file, request_id).await?;
-    let bundle =
-        catalog_or_on_demand_trajectory_bundle(state, &runtime, &run, request_id, "load_events")
-            .await?;
-    let document = bundle.event_view;
-    let offset = query
-        .offset
-        .unwrap_or(0)
-        .min(document.document.events.len());
-    let end = query
-        .limit
-        .map(|limit| {
-            offset
-                .saturating_add(limit)
-                .min(document.document.events.len())
-        })
-        .unwrap_or(document.document.events.len());
-    Ok(LoadedEventView {
-        provenance: document.provenance,
-        records: document.document.events[offset..end].to_vec(),
-    })
-}
-
-async fn events(
-    State(state): State<AppState>,
-    request_id: RequestId,
-    query: Result<Query<SessionQuery>, QueryRejection>,
-) -> Result<Json<Value>, ApiError> {
-    let query = api_query(query)?;
-    let offset = query.offset.unwrap_or(0);
-    let requested_limit = query.limit.unwrap_or(1000);
-    let full_query = SessionQuery {
-        offset: None,
-        limit: None,
-        ..query.clone()
-    };
-    let event_view = load_events(&state, &full_query, &request_id).await?;
-    let total = event_view.records.len();
-    let start = offset.min(total);
-    let end = start.saturating_add(requested_limit).min(total);
-    let records = event_view.records[start..end].to_vec();
-    let next_offset = offset + records.len();
-    Ok(Json(json!({
-        "provenance": {
-            "kind": event_view.provenance,
-            "transform": event_view.provenance.transform()
-        },
-        "snapshot": {
-            "offset": offset,
-            "next_offset": next_offset,
-            "total": total,
-            "has_more": next_offset < total && !records.is_empty(),
-            "limit": requested_limit
-        },
-        "records": records
-    })))
-}
-
 async fn storyline(
     State(state): State<AppState>,
     request_id: RequestId,
@@ -1928,11 +1789,10 @@ async fn storyline(
     let query = api_query(query)?;
     let run = resolve_run_summary(&state, &query, &request_id, None).await?;
     let runtime = catalog_for_source(&state, Some(&run.dataset), &run.file, &request_id).await?;
-    let bundle =
-        catalog_or_on_demand_trajectory_bundle(&state, &runtime, &run, &request_id, "storyline")
-            .await?;
+    let document =
+        catalog_or_on_demand_storyline(&state, &runtime, &run, &request_id, "storyline").await?;
     Ok(Json(
-        serde_json::to_value(bundle.storyline)
+        serde_json::to_value(document)
             .map_err(anyhow::Error::from)
             .map_err(|error| fail(&request_id, "storyline", error))?,
     ))
@@ -1942,7 +1802,6 @@ async fn storyline(
 pub(crate) struct TrajectoryTurnView {
     pub(crate) turn: StorylineTurn,
     pub(crate) call_id: Option<String>,
-    pub(crate) event_seqs: Vec<u64>,
     pub(crate) wire_tool_calls: Vec<WireToolCall>,
 }
 
@@ -1958,8 +1817,6 @@ pub(crate) struct WireToolCall {
 #[derive(Debug, Serialize)]
 struct TrajectoryView {
     run: RunSummary,
-    event_provenance: CatalogEventProvenance,
-    event_kind_counts: BTreeMap<String, usize>,
     tool_call_count: usize,
     turns: Vec<TrajectoryTurnView>,
 }
@@ -2037,30 +1894,10 @@ fn turn_call_id(turn: &StorylineTurn) -> Option<String> {
         .map(str::to_string)
 }
 
-fn turn_seq(turn: &StorylineTurn) -> Option<u64> {
-    turn.extra
-        .as_ref()
-        .and_then(|extra| extra.get("seq").or_else(|| extra.get("event_seq")))
-        .and_then(Value::as_u64)
-}
-
-fn event_seqs_for_turn(turn: &StorylineTurn, by_call: &BTreeMap<String, Vec<u64>>) -> Vec<u64> {
-    // Canonical Event -> Storyline projection records the authoritative source
-    // sequence on each turn. Prefer it over the broader call correlation: a
-    // call contains both request and response, and attaching both to both turns
-    // duplicates usage, tool calls, latency and TTFT in Explorer aggregates.
-    turn_seq(turn)
-        .map(|seq| vec![seq])
-        .or_else(|| turn_call_id(turn).and_then(|id| by_call.get(&id).cloned()))
-        .unwrap_or_default()
-}
-
 #[derive(Clone)]
 struct LoadedTrajectory {
     runtime: Arc<CatalogRuntime>,
     run: RunSummary,
-    event_provenance: CatalogEventProvenance,
-    records: Vec<EventRecord>,
     turns: Vec<TrajectoryTurnView>,
 }
 
@@ -2119,13 +1956,11 @@ async fn load_trajectory(
                 return Ok(Arc::new(LoadedTrajectory {
                     runtime,
                     run,
-                    event_provenance: CatalogEventProvenance::SyntheticFromStoryline,
-                    records: Vec::new(),
                     turns: Vec::new(),
                 }));
             }
             let phase = Instant::now();
-            let bundle = catalog_or_on_demand_trajectory_bundle(
+            let document = catalog_or_on_demand_storyline(
                 state,
                 &runtime,
                 &run,
@@ -2134,21 +1969,10 @@ async fn load_trajectory(
             )
             .await?;
             metrics.record("trajectory_read", phase);
-            let event_provenance = bundle.event_view.provenance;
-            let records = bundle.event_view.document.events;
-            let document = bundle.storyline;
             // ACTF step records carry the first user input at document level when it
             // is the baseline prompt. Preserve it on the first turn so Explorer can
             // render the user side of the conversation without changing storage.
             let document_prompt = document.prompt.clone();
-            let mut by_call = BTreeMap::<String, Vec<u64>>::new();
-            let mut by_seq = HashMap::<u64, Vec<usize>>::with_capacity(records.len());
-            for (position, event) in records.iter().enumerate() {
-                if let Some(call_id) = event.call_id.as_ref().filter(|id| !id.is_empty()) {
-                    by_call.entry(call_id.clone()).or_default().push(event.seq);
-                }
-                by_seq.entry(event.seq).or_default().push(position);
-            }
             let turns = document
                 .turns
                 .into_iter()
@@ -2158,21 +1982,10 @@ async fn load_trajectory(
                         turn.prompt = document_prompt.clone();
                     }
                     let call_id = turn_call_id(&turn);
-                    let event_seqs = event_seqs_for_turn(&turn, &by_call);
-                    // Resolve this turn's events through the sequence index.
-                    // Scanning every record per turn is quadratic and dominates
-                    // long trajectories.
-                    let mut positions = event_seqs
-                        .iter()
-                        .filter_map(|seq| by_seq.get(seq))
-                        .flatten()
-                        .copied()
-                        .collect::<Vec<_>>();
-                    positions.sort_unstable();
-                    positions.dedup();
                     let mut wire_tool_calls = Vec::new();
-                    for position in positions {
-                        collect_wire_tool_calls(&records[position].payload, &mut wire_tool_calls);
+                    collect_wire_tool_calls(&turn.message, &mut wire_tool_calls);
+                    if let Some(extra) = &turn.extra {
+                        collect_wire_tool_calls(extra, &mut wire_tool_calls);
                     }
                     let mut seen = BTreeSet::new();
                     wire_tool_calls.retain(|call| {
@@ -2202,7 +2015,6 @@ async fn load_trajectory(
                     TrajectoryTurnView {
                         turn,
                         call_id,
-                        event_seqs,
                         wire_tool_calls,
                     }
                 })
@@ -2210,8 +2022,6 @@ async fn load_trajectory(
             let loaded = Arc::new(LoadedTrajectory {
                 runtime,
                 run,
-                event_provenance,
-                records,
                 turns,
             });
             Ok::<_, ApiError>(loaded)
@@ -2233,10 +2043,6 @@ async fn trajectory_view(
 ) -> Result<Json<TrajectoryView>, ApiError> {
     let query = api_query(query)?;
     let loaded = load_trajectory(&state, &query, &request_id, &metrics).await?;
-    let mut event_kind_counts = BTreeMap::new();
-    for event in &loaded.records {
-        *event_kind_counts.entry(event.kind.clone()).or_insert(0) += 1;
-    }
     let tool_call_count = loaded
         .turns
         .iter()
@@ -2245,8 +2051,6 @@ async fn trajectory_view(
         .sum();
     Ok(Json(TrajectoryView {
         run: loaded.run.clone(),
-        event_provenance: loaded.event_provenance,
-        event_kind_counts,
         tool_call_count,
         turns: loaded.turns.clone(),
     }))
@@ -2275,12 +2079,7 @@ async fn explorer_run(
                 &metrics,
             ))
             .await?;
-            Ok(Json(explorer::analyze(
-                loaded.run.clone(),
-                &loaded.turns,
-                &loaded.records,
-                loaded.event_provenance,
-            )))
+            Ok(Json(explorer::analyze(loaded.run.clone(), &loaded.turns)))
         },
     )
     .await
@@ -2336,8 +2135,6 @@ impl TurnsQuery {
             agent_id: self.agent_id.clone(),
             session_id: self.session_id.clone(),
             root_session_id: self.root_session_id.clone(),
-            offset: None,
-            limit: None,
         }
     }
 }
@@ -2486,7 +2283,6 @@ async fn explorer_turns_inner(
     let phase = Instant::now();
     let mut page = explorer::turn_list_with_search(
         &turns,
-        &loaded.records,
         search_query,
         query.source.as_deref(),
         explorer::TurnSearchStatus {
@@ -2496,12 +2292,7 @@ async fn explorer_turns_inner(
         },
     );
     if query.include_analysis {
-        page.analysis = Some(explorer::analyze(
-            loaded.run.clone(),
-            &loaded.turns,
-            &loaded.records,
-            loaded.event_provenance,
-        ));
+        page.analysis = Some(explorer::analyze(loaded.run.clone(), &loaded.turns));
     }
     metrics.record("turn_projection", phase);
     Ok(Json(page))
@@ -2532,8 +2323,6 @@ async fn explorer_turn(
         agent_id: query.agent_id,
         session_id: query.session_id,
         root_session_id: query.root_session_id,
-        offset: None,
-        limit: None,
     };
     let loaded = load_trajectory(&state, &session, &request_id, &metrics).await?;
     let item = loaded
@@ -2541,11 +2330,7 @@ async fn explorer_turn(
         .iter()
         .find(|item| item.turn.id == query.turn_id)
         .ok_or_else(|| ApiError::not_found(format!("turn {} was not found", query.turn_id)))?;
-    Ok(Json(explorer::turn_detail(
-        item,
-        &loaded.records,
-        loaded.event_provenance,
-    )))
+    Ok(Json(explorer::turn_detail(item)))
 }
 
 #[derive(Debug, Serialize)]
@@ -2767,24 +2552,6 @@ fn source_query_fields() -> Vec<QueryFieldSummary> {
     ]
 }
 
-fn event_query_fields() -> Vec<QueryFieldSummary> {
-    vec![
-        field("_file_", "TEXT", "Dataset-relative recorded event source"),
-        field("seq", "BIGINT", "Canonical append sequence"),
-        field("event_id", "TEXT?", "Producer event identifier"),
-        field("timestamp", "TEXT?", "Captured timestamp"),
-        field("kind", "TEXT", "Canonical event kind"),
-        field("source", "TEXT", "Event producer"),
-        field("agent_id", "TEXT?", "Agent identifier"),
-        field("session_id", "TEXT?", "Session identifier"),
-        field("call_id", "TEXT?", "Call correlation identifier"),
-        field("trace_id", "TEXT?", "Trace correlation identifier"),
-        field("parent_call_id", "TEXT?", "Parent call identifier"),
-        field("model", "TEXT?", "Captured model"),
-        field("payload_json", "JSON", "Canonical event payload"),
-    ]
-}
-
 fn format_query_fields() -> Vec<QueryFieldSummary> {
     vec![
         field("id", "TEXT", "Stable record identifier"),
@@ -2828,13 +2595,6 @@ fn query_table_summaries() -> Vec<QueryTableSummary> {
             kind: "view",
             grain: "complete run",
             fields: trajectory_query_fields(),
-        },
-        QueryTableSummary {
-            name: "events",
-            description: "Recorded events; empty for sources without recorded events",
-            kind: "table",
-            grain: "event",
-            fields: event_query_fields(),
         },
         QueryTableSummary {
             name: "atif",

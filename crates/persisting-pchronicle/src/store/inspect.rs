@@ -15,8 +15,7 @@ use lance::deps::arrow_array::{
 use lance::deps::arrow_schema::DataType;
 use serde::Serialize;
 
-use super::catalog::{DatasetCatalogSnapshot, PhysicalOpenTarget};
-use super::events::inspect_visible_event_tables;
+use super::catalog::DatasetCatalogSnapshot;
 use super::storyline::StorylineTablePaths;
 use super::{CatalogSourceStatus, DiscoveredSource};
 use crate::format::DocumentFormat;
@@ -181,10 +180,10 @@ pub async fn inspect_physical_layout(
     file: &str,
 ) -> Result<PhysicalLayout> {
     let format = require_lance_source(snapshot, dataset, file)?;
-    let tables = match snapshot.physical_open_target(dataset, file)? {
-        PhysicalOpenTarget::Events { uri } => inspect_event_tables(&uri).await?,
-        PhysicalOpenTarget::Storyline { paths } => inspect_storyline_tables(&paths).await?,
-    };
+    let paths = snapshot
+        .storyline_table_paths(dataset, file)?
+        .with_context(|| format!("physical source is not a Lance dataset: {dataset}/{file}"))?;
+    let tables = inspect_storyline_tables(&paths).await?;
     Ok(PhysicalLayout {
         dataset: dataset.to_string(),
         file: file.to_string(),
@@ -312,9 +311,7 @@ pub async fn inspect_physical_page(
 
 fn lance_format(source: &DiscoveredSource) -> Option<&str> {
     let format = source.format.as_deref()?;
-    (format == DocumentFormat::CanonicalEvent.as_str()
-        || format == DocumentFormat::StorylineLance.as_str())
-    .then_some(format)
+    (format == DocumentFormat::StorylineLance.as_str()).then_some(format)
 }
 
 fn require_lance_source<'a>(
@@ -349,27 +346,12 @@ async fn table_uri(
     file: &str,
     table: &str,
 ) -> Result<String> {
-    match snapshot.physical_open_target(dataset, file)? {
-        PhysicalOpenTarget::Events { uri } => {
-            let tables = inspect_visible_event_tables(&uri).await?;
-            tables
-                .into_iter()
-                .find(|(name, _)| name == table)
-                .map(|(_, dataset)| dataset.uri().to_string())
-                .with_context(|| format!("physical table not found: {table}"))
-        }
-        PhysicalOpenTarget::Storyline { paths } => storyline_table_path(&paths, table)
-            .map(|path| path.to_string_lossy().into_owned())
-            .with_context(|| format!("physical table not found: {table}")),
-    }
-}
-
-async fn inspect_event_tables(uri: &str) -> Result<Vec<PhysicalTable>> {
-    let mut tables = Vec::new();
-    for (name, dataset) in inspect_visible_event_tables(uri).await? {
-        tables.push(physical_table(&name, dataset).await?);
-    }
-    Ok(tables)
+    let paths = snapshot
+        .storyline_table_paths(dataset, file)?
+        .with_context(|| format!("physical source is not a Lance dataset: {dataset}/{file}"))?;
+    storyline_table_path(&paths, table)
+        .map(|path| path.to_string_lossy().into_owned())
+        .with_context(|| format!("physical table not found: {table}"))
 }
 
 async fn inspect_storyline_tables(paths: &StorylineTablePaths) -> Result<Vec<PhysicalTable>> {

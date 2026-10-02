@@ -248,7 +248,6 @@ impl StageHandle {
         let _ = self.repaint();
     }
 
-    #[allow(dead_code)]
     pub(crate) fn record_bytes(&self, bytes: u64) {
         if let Ok(mut state) = self.state.lock() {
             state.bytes = state.bytes.saturating_add(bytes);
@@ -659,7 +658,6 @@ impl CliProgress {
         delete.repaint()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn note_committed(&self, committed: u64, batch_bytes: u64) -> Result<()> {
         self.stage(StageId::Commit)
             .note_committed(committed, batch_bytes);

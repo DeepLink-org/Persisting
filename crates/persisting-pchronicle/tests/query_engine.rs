@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use persisting_pchronicle::document::{DocumentFormat, QueryTables};
 use persisting_pchronicle::document::{decode_json_storylines, open_document};
-use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument};
+use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::query::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat, ExternalTableSpec,
     QuerySnapshot, QueryWriteOutcome,
 };
-use persisting_pchronicle::storage::{RawEventLanceStore, StoryCoords, StorylineLanceStore};
+use persisting_pchronicle::storage::StorylineLanceStore;
 
 mod support;
 
@@ -630,70 +630,6 @@ async fn query_engine_rejects_empty_object_store_without_current() -> Result<()>
         error.to_string().contains("no committed generation"),
         "{error:#}"
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn query_engine_exposes_canonical_events_table() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let storage = dir.path().join("store");
-    let session = StoryCoords::new(storage.to_string_lossy(), "agent", "story", None);
-    let records = [("event-a", 9_u64, "first"), ("event-b", 3_u64, "second")]
-        .into_iter()
-        .map(|(event_id, seq, content)| EventRecord {
-            identity: EventIdentity {
-                event_id: Some(event_id.into()),
-                ..Default::default()
-            },
-            seq,
-            source: "test".into(),
-            kind: "note".into(),
-            timestamp: None,
-            session_id: None,
-            agent_id: None,
-            parent_uuid: None,
-            trace_id: None,
-            call_id: None,
-            subagent_id: None,
-            parent_agent_id: None,
-            branch: None,
-            parent_call_id: None,
-            payload: serde_json::json!({"content": content}),
-        })
-        .collect::<Vec<_>>();
-    RawEventLanceStore.append_events(&session, &records).await?;
-
-    let path = persisting_pchronicle::storage::raw_event_lance_path(&session)?;
-    let engine = ChronicleQueryEngine::open(
-        DocumentFormat::CanonicalEvent,
-        &path,
-        ChronicleQueryExecutionOptions::default(),
-    )
-    .await?;
-    assert!(matches!(
-        engine
-            .backend_info()
-            .and_then(|backend| backend.snapshot.as_ref()),
-        Some(QuerySnapshot::CanonicalEvent {
-            format_version: 1,
-            fact_version,
-            fact_rows: 2,
-            layout_revision,
-        }) if *fact_version > 0 && *layout_revision > 0
-    ));
-    let output = engine
-        .query_jsonl("SELECT seq, session_id, kind, payload_json FROM events ORDER BY seq")
-        .await?;
-    let rows = output
-        .lines()
-        .map(serde_json::from_str::<serde_json::Value>)
-        .collect::<serde_json::Result<Vec<_>>>()?;
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0]["seq"], 3);
-    assert_eq!(rows[1]["seq"], 9);
-    let first: EventRecord = serde_json::from_str(rows[0]["payload_json"].as_str().unwrap())?;
-    let second: EventRecord = serde_json::from_str(rows[1]["payload_json"].as_str().unwrap())?;
-    assert_eq!([first.seq, second.seq], [3, 9]);
     Ok(())
 }
 

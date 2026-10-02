@@ -1,12 +1,13 @@
 # RFC-0006: pChronicle Vortex 轨迹后端提案
 
+> 历史设计：事件格式与事件到 Storyline 的投影已移除，当前存储直接使用 Storyline。
+
 | Field | Value |
 |---|---|
 | **Status** | Proposed |
 | **Date** | 2026-08-16 |
 | **Component** | `persisting-pchronicle` / proposed `persisting-pchronicle-vortex` |
 | **Decision scope** | 可重建、读取优化的 Vortex trajectory projection；不替换 canonical facts |
-| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [RFC-0002 Events](0002-events-format.md) · [RFC-0003 Ownership](0003-pchronicle-ownership.md) · [RFC-0005 Revision Lineage](0005-pchronicle-revision-lineage.md) |
 | **External references** | [ATIF v1.7](https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md) · [Vortex concepts](https://docs.vortex.dev/concepts/) · [Vortex file format](https://docs.vortex.dev/specs/file-format) |
 
 ## 1. 摘要与提议

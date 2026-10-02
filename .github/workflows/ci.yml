@@ -119,44 +119,17 @@ jobs:
         include:
           - platform: Linux
             os: ubuntu-latest
-            shard: core
-            packages: >-
-              persisting-agentctl
-              persisting-events
-              persisting-overlaynet
-            event_control: true
-            smoke_pchronicle: false
-          - platform: Linux
-            os: ubuntu-latest
-            shard: gateway
-            packages: persisting-gateway
-            event_control: false
-            smoke_pchronicle: false
-          - platform: Linux
-            os: ubuntu-latest
             shard: pchronicle
             packages: >-
               persisting-pchronicle
               persisting-pchronicle-cli
-            event_control: false
             smoke_pchronicle: true
           - platform: macOS
             os: macos-latest
-            shard: capture
-            packages: >-
-              persisting-agentctl
-              persisting-events
-              persisting-gateway
-              persisting-overlaynet
-            event_control: false
-            smoke_pchronicle: false
-          - platform: macOS
-            os: macos-latest
             shard: pchronicle
             packages: >-
               persisting-pchronicle
               persisting-pchronicle-cli
-            event_control: false
             smoke_pchronicle: true
     steps:
       - uses: actions/checkout@v4
@@ -172,10 +145,6 @@ jobs:
 
       - name: Run ${{ matrix.shard }} tests
         run: just ci-nextest ${{ matrix.packages }}
-
-      - name: Test shared event control contract
-        if: matrix.event_control
-        run: just test-events-control
 
       - name: Smoke pChronicle CLI
         if: matrix.smoke_pchronicle

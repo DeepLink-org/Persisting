@@ -5,22 +5,14 @@ use crate::atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajec
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TestFormat {
     Storyline,
-    CanonicalEvent,
     AgenticMd,
     OpenaiMsg,
     Atif,
 }
 
-impl TestFormat {
-    fn is_lance_only(self) -> bool {
-        self == Self::CanonicalEvent
-    }
-}
-
 fn into_storyline(format: TestFormat, input: &str) -> crate::Result<crate::StorylineDocument> {
     match format {
         TestFormat::Storyline => crate::formats::storyline::parse_storyline_document(input),
-        TestFormat::CanonicalEvent => Err(lance_only_error()),
         TestFormat::AgenticMd => Ok(crate::document::decode_agenticmd(input)?),
         TestFormat::OpenaiMsg => {
             let value = serde_json::from_str(input)?;
@@ -43,7 +35,6 @@ fn into_storyline(format: TestFormat, input: &str) -> crate::Result<crate::Story
 fn from_storyline(format: TestFormat, story: &crate::StorylineDocument) -> crate::Result<String> {
     match format {
         TestFormat::Storyline => story.to_json_string_pretty(),
-        TestFormat::CanonicalEvent => Err(lance_only_error()),
         TestFormat::AgenticMd => crate::document::encode_agenticmd(story),
         TestFormat::OpenaiMsg => Ok(serde_json::to_string_pretty(
             &crate::formats::openai_corpus::synthesize_openai_msg_corpus_value(
@@ -58,17 +49,9 @@ fn from_storyline(format: TestFormat, story: &crate::StorylineDocument) -> crate
 
 fn convert(from: TestFormat, to: TestFormat, input: &str) -> crate::Result<String> {
     if from == to {
-        return if from.is_lance_only() {
-            Err(lance_only_error())
-        } else {
-            Ok(input.to_string())
-        };
+        return Ok(input.to_string());
     }
     from_storyline(to, &into_storyline(from, input)?)
-}
-
-fn lance_only_error() -> anyhow::Error {
-    anyhow::anyhow!(crate::formats::events::events_lance_only_message())
 }
 
 fn sample_traj() -> AtifTrajectory {
@@ -223,151 +206,6 @@ fn convert_peripheral_via_hub_only() {
 }
 
 #[test]
-fn http_event_aliases_project_to_storyline() {
-    let doc = crate::model::EventsDocument::new(vec![
-        crate::EventRecord {
-            identity: crate::EventIdentity::default(),
-            seq: 0,
-            source: "capture".into(),
-            kind: "http.request".into(),
-            timestamp: None,
-            session_id: Some("http-session".into()),
-            agent_id: Some("agent".into()),
-            parent_uuid: None,
-            trace_id: None,
-            call_id: Some("call-http".into()),
-            subagent_id: None,
-            parent_agent_id: None,
-            branch: None,
-            parent_call_id: None,
-            payload: json!({"user_content": "hello", "model": "m"}),
-        },
-        crate::EventRecord {
-            identity: crate::EventIdentity::default(),
-            seq: 1,
-            source: "capture".into(),
-            kind: "http.response".into(),
-            timestamp: None,
-            session_id: Some("http-session".into()),
-            agent_id: Some("agent".into()),
-            parent_uuid: None,
-            trace_id: None,
-            call_id: Some("call-http".into()),
-            subagent_id: None,
-            parent_agent_id: None,
-            branch: None,
-            parent_call_id: None,
-            payload: json!({"assistant_content": "world"}),
-        },
-    ]);
-    let story = crate::convert::events_to_storyline(&doc).unwrap();
-    assert_eq!(story.turns.len(), 2);
-    assert_eq!(story.turns[0].message, json!("hello"));
-    assert_eq!(story.turns[1].message, json!("world"));
-}
-
-#[test]
-fn events_string_convert_is_lance_only_error() {
-    use crate::formats::events::events_lance_only_message;
-    let err = into_storyline(TestFormat::CanonicalEvent, "[]").unwrap_err();
-    assert!(
-        err.to_string().contains("Lance-only")
-            || err
-                .to_string()
-                .contains(events_lance_only_message().split(';').next().unwrap())
-    );
-    let story = crate::StorylineDocument::new("s", "a");
-    assert!(from_storyline(TestFormat::CanonicalEvent, &story).is_err());
-    assert!(convert(TestFormat::Atif, TestFormat::CanonicalEvent, "{}").is_err());
-    assert!(TestFormat::CanonicalEvent.is_lance_only());
-}
-
-#[test]
-fn export_events_jsonl_debug_roundtrip_via_test_parser() {
-    use crate::formats::events::{
-        EventRecord, EventsDocument, export_events_jsonl, parse_events_jsonl_for_test,
-    };
-    use serde_json::json;
-    let events = vec![EventRecord {
-        identity: crate::EventIdentity::default(),
-        seq: 0,
-        source: "proxy".into(),
-        kind: "llm.request".into(),
-        timestamp: Some("2026-01-01T00:00:00Z".into()),
-        session_id: Some("s1".into()),
-        agent_id: Some("a1".into()),
-        parent_uuid: None,
-        trace_id: Some("t1".into()),
-        call_id: Some("c1".into()),
-        subagent_id: None,
-        parent_agent_id: None,
-        branch: None,
-        parent_call_id: None,
-        payload: json!({"model":"m","messages":[{"role":"user","content":"hi"}]}),
-    }];
-    let text = export_events_jsonl(&events).unwrap();
-    let doc = parse_events_jsonl_for_test(&text).unwrap();
-    assert_eq!(doc.format, EventsDocument::FORMAT_NAME);
-    assert_eq!(doc.events.len(), 1);
-    assert_eq!(doc.events[0].kind, "llm.request");
-    assert_eq!(doc.session_id.as_deref(), Some("s1"));
-}
-
-#[test]
-fn detect_format_from_content_and_path() {
-    use crate::formats::detect::{detect_format, detect_format_from_path};
-    use std::path::Path;
-    assert_eq!(
-        detect_format_from_path(Path::new("/tmp/x/session_steps.json")),
-        Some(crate::DocumentFormat::OpenaiMsg)
-    );
-    assert_eq!(
-        detect_format_from_path(Path::new("/tmp/x/events.lance")),
-        Some(crate::DocumentFormat::CanonicalEvent)
-    );
-    assert_eq!(
-        detect_format_from_path(Path::new("/tmp/x/sess.md")),
-        Some(crate::DocumentFormat::AgenticMd)
-    );
-    assert_eq!(
-        detect_format_from_path(Path::new("/tmp/x/storyline.json")),
-        None
-    );
-    assert_eq!(
-        detect_format_from_path(Path::new("/tmp/x/task.actf.json")),
-        Some(crate::DocumentFormat::Actf)
-    );
-    let atif = r#"{"schema_version":"ATIF-v1.7","session_id":"s","agent":{"name":"a","version":"1"},"steps":[]}"#;
-    assert_eq!(
-        detect_format(None, Some(atif)).unwrap(),
-        Some(crate::DocumentFormat::Atif)
-    );
-    let atif_with_agenticmd_marker = r#"{"schema_version":"ATIF-v1.7","session_id":"s","agent":{"name":"a","version":"1"},"steps":[{"step_id":1,"source":"user","message":"source contains <!-- persisting:block but remains ATIF"}]}"#;
-    assert_eq!(
-        detect_format(None, Some(atif_with_agenticmd_marker)).unwrap(),
-        Some(crate::DocumentFormat::Atif)
-    );
-    let atif_ndjson = format!("{atif_with_agenticmd_marker}\n{atif}");
-    assert_eq!(
-        detect_format(None, Some(&atif_ndjson)).unwrap(),
-        Some(crate::DocumentFormat::Atif)
-    );
-    let story = r#"{"session":"s","agent":{"id":"a"},"turns":[]}"#;
-    assert_eq!(detect_format(None, Some(story)).unwrap(), None);
-    let actf = r#"{"task_id":"t","category":"test","k":1,"correct":false,"attempts_tried":1,"solved_at":null,"attempts":{"1":{"trajectory":{"schema_version":"ACTF_v1.0","steps":[]}}}}"#;
-    assert_eq!(
-        detect_format(None, Some(actf)).unwrap(),
-        Some(crate::DocumentFormat::Actf)
-    );
-    let response_only =
-        r#"[{"session_id":"s","step_id":1,"response":{"role":"assistant","content":"ok"}}]"#;
-    assert_eq!(
-        detect_format(None, Some(response_only)).unwrap(),
-        Some(crate::DocumentFormat::OpenaiMsg)
-    );
-}
-
-#[test]
 fn storyline_wire_uses_short_keys() {
     let atif = serde_json::to_string(&sample_traj()).unwrap();
     let out = from_storyline(
@@ -425,66 +263,6 @@ fn convert_storyline_agenticmd_preserves_dialogue_and_timing() {
 }
 
 #[test]
-fn events_storyline_roundtrip_preserves_call_id_and_seq() {
-    use crate::convert::{events_to_storyline, storyline_to_events};
-    use crate::formats::events::{EventRecord, EventsDocument};
-    use serde_json::json;
-    let doc = EventsDocument::new(vec![
-        EventRecord {
-            identity: crate::EventIdentity::default(),
-            seq: 10,
-            source: "proxy".into(),
-            kind: "llm.request".into(),
-            timestamp: Some("2026-01-01T00:00:00Z".into()),
-            session_id: Some("s-seq".into()),
-            agent_id: Some("a-seq".into()),
-            parent_uuid: None,
-            trace_id: None,
-            call_id: Some("call-x".into()),
-            subagent_id: None,
-            parent_agent_id: None,
-            branch: None,
-            parent_call_id: None,
-            payload: json!({"messages":[{"role":"user","content":"ping"}]}),
-        },
-        EventRecord {
-            identity: crate::EventIdentity::default(),
-            seq: 11,
-            source: "proxy".into(),
-            kind: "llm.response".into(),
-            timestamp: Some("2026-01-01T00:00:01Z".into()),
-            session_id: Some("s-seq".into()),
-            agent_id: Some("a-seq".into()),
-            parent_uuid: None,
-            trace_id: None,
-            call_id: Some("call-x".into()),
-            subagent_id: None,
-            parent_agent_id: None,
-            branch: None,
-            parent_call_id: None,
-            payload: json!({"content":"pong"}),
-        },
-    ]);
-    let story = events_to_storyline(&doc).unwrap();
-    assert_eq!(
-        story.turns[0].extra.as_ref().unwrap()["call_id"],
-        json!("call-x")
-    );
-    assert_eq!(story.turns[0].extra.as_ref().unwrap()["seq"], json!(10));
-    assert_eq!(
-        story.turns[1].extra.as_ref().unwrap()["call_id"],
-        json!("call-x")
-    );
-    assert_eq!(story.turns[1].extra.as_ref().unwrap()["seq"], json!(11));
-
-    let back = storyline_to_events(&story).unwrap();
-    assert_eq!(back.events[0].call_id.as_deref(), Some("call-x"));
-    assert_eq!(back.events[0].seq, 10);
-    assert_eq!(back.events[1].call_id.as_deref(), Some("call-x"));
-    assert_eq!(back.events[1].seq, 11);
-}
-
-#[test]
 fn convert_openai_msg_storyline_roundtrip_messages() {
     let raw = r#"{
       "session_id": "s-om",
@@ -532,157 +310,6 @@ fn convert_openai_msg_storyline_roundtrip_messages() {
 }
 
 #[test]
-fn events_storyline_roundtrip_preserves_call_dialogue() {
-    use crate::convert::{events_to_storyline, storyline_to_events};
-    use crate::formats::events::{EventRecord, EventsDocument};
-    use serde_json::json;
-    let doc = EventsDocument::new(vec![
-        EventRecord {
-            identity: crate::EventIdentity::default(),
-            seq: 0,
-            source: "proxy".into(),
-            kind: "llm.request".into(),
-            timestamp: Some("2026-01-01T00:00:00Z".into()),
-            session_id: Some("s-ev".into()),
-            agent_id: Some("a-ev".into()),
-            parent_uuid: None,
-            trace_id: Some("t1".into()),
-            call_id: Some("c1".into()),
-            subagent_id: None,
-            parent_agent_id: None,
-            branch: None,
-            parent_call_id: None,
-            payload: json!({"model":"m","messages":[{"role":"user","content":"hi there"}]}),
-        },
-        EventRecord {
-            identity: crate::EventIdentity::default(),
-            seq: 1,
-            source: "proxy".into(),
-            kind: "llm.response".into(),
-            timestamp: Some("2026-01-01T00:00:01Z".into()),
-            session_id: Some("s-ev".into()),
-            agent_id: Some("a-ev".into()),
-            parent_uuid: None,
-            trace_id: Some("t1".into()),
-            call_id: Some("c1".into()),
-            subagent_id: None,
-            parent_agent_id: None,
-            branch: None,
-            parent_call_id: None,
-            payload: json!({"content":"hello back", "latency_ms": 900, "ttft_ms": 50}),
-        },
-    ]);
-    let story = events_to_storyline(&doc).unwrap();
-    assert_eq!(story.session_id, "s-ev");
-    assert_eq!(story.agent.id, "a-ev");
-    assert_eq!(story.turns.len(), 2);
-    assert_eq!(story.turns[0].source, "user");
-    assert_eq!(story.turns[0].message, json!("hi there"));
-    assert_eq!(story.turns[1].source, "agent");
-    assert_eq!(story.turns[1].message, json!("hello back"));
-    assert_eq!(story.turns[1].latency_ms, Some(900));
-    assert_eq!(story.turns[1].ttft_ms, Some(50));
-
-    let back = storyline_to_events(&story).unwrap();
-    assert_eq!(back.session_id.as_deref(), Some("s-ev"));
-    assert!(!back.events.is_empty());
-    let again = events_to_storyline(&back).unwrap();
-    assert_eq!(again.session_id, "s-ev");
-    let user = again.turns.iter().find(|t| t.source == "user").unwrap();
-    let agent = again.turns.iter().find(|t| t.source == "agent").unwrap();
-    assert_eq!(user.message, json!("hi there"));
-    assert_eq!(agent.message, json!("hello back"));
-}
-
-#[test]
-fn storyline_to_events_assigns_call_id_for_paired_turns() {
-    use crate::convert::{events_to_storyline, storyline_to_events};
-    use crate::formats::storyline::{StorylineAgent, StorylineDocument, StorylineTurn};
-    use serde_json::json;
-    let story = StorylineDocument {
-        schema_version: crate::model::STORYLINE_SCHEMA_VERSION.into(),
-        origin: None,
-        run_id: None,
-        trajectory_id: None,
-        attempt_id: None,
-        session_id: "s-pair".into(),
-        agent: StorylineAgent {
-            id: "a1".into(),
-            name: Some("demo".into()),
-            version: None,
-            model_name: None,
-            tool_definitions: None,
-            extra: None,
-        },
-        parent: None,
-        child_session_ids: None,
-        notes: None,
-        final_metrics: None,
-        continued_trajectory_ref: None,
-        extra: None,
-        meta: None,
-        task: None,
-        prompt: None,
-        started_at: None,
-        finished_at: None,
-        unknown_fields: Default::default(),
-        unknown_key_counts: Default::default(),
-        turns: vec![
-            StorylineTurn {
-                id: 1,
-                kind: None,
-                timestamp: None,
-                source: "user".into(),
-                message: json!("hello"),
-                reasoning_content: None,
-                reasoning_effort: None,
-                tool_calls: None,
-                observation: None,
-                metrics: None,
-                model_name: None,
-                llm_call_count: None,
-                is_copied_context: None,
-                latency_ms: None,
-                ttft_ms: None,
-                extra: None,
-                env: None,
-                prompt: None,
-                finished_at: None,
-            },
-            StorylineTurn {
-                id: 2,
-                kind: None,
-                timestamp: None,
-                source: "agent".into(),
-                message: json!("world"),
-                reasoning_content: None,
-                reasoning_effort: None,
-                tool_calls: None,
-                observation: None,
-                metrics: None,
-                model_name: None,
-                llm_call_count: Some(1),
-                is_copied_context: None,
-                latency_ms: Some(10),
-                ttft_ms: None,
-                extra: None,
-                env: None,
-                prompt: None,
-                finished_at: None,
-            },
-        ],
-    };
-    let doc = storyline_to_events(&story).unwrap();
-    assert_eq!(doc.events.len(), 2);
-    assert_eq!(doc.events[0].call_id.as_deref(), Some("turn-1"));
-    assert_eq!(doc.events[1].call_id.as_deref(), Some("turn-1"));
-    let back = events_to_storyline(&doc).unwrap();
-    assert_eq!(back.turns.len(), 2);
-    assert_eq!(back.turns[0].message, json!("hello"));
-    assert_eq!(back.turns[1].message, json!("world"));
-}
-
-#[test]
 fn convert_atif_to_agenticmd_keeps_user_agent_text() {
     let atif = serde_json::to_string(&sample_traj()).unwrap();
     let md = convert(TestFormat::Atif, TestFormat::AgenticMd, &atif).unwrap();
@@ -718,12 +345,5 @@ mod proptests {
             prop_assert_eq!(convert(format, format, &input).unwrap(), input);
         }
 
-        #[test]
-        fn lance_only_conversion_always_returns_the_documented_error(
-            input in proptest::string::string_regex("[A-Za-z0-9 _-]{0,64}").unwrap(),
-        ) {
-            let error = convert(TestFormat::CanonicalEvent, TestFormat::Storyline, &input).unwrap_err();
-            prop_assert!(error.to_string().contains("Lance"));
-        }
     }
 }

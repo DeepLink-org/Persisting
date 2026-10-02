@@ -8,7 +8,6 @@ use crate::formats::registry;
 
 /// Detect format from a file path (extension / basename).
 ///
-/// `events` is detected only as a Lance dataset path (`events.lance`), never as `.json` / `.jsonl`.
 pub fn detect_format_from_path(path: impl AsRef<Path>) -> Option<DocumentFormat> {
     let path = path.as_ref();
     let name = path
@@ -16,9 +15,7 @@ pub fn detect_format_from_path(path: impl AsRef<Path>) -> Option<DocumentFormat>
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if name == "events.lance" || (name.ends_with(".lance") && name.contains("event")) {
-        return Some(DocumentFormat::CanonicalEvent);
-    }
+
     if name == "session_steps.json" {
         return Some(DocumentFormat::OpenaiMsg);
     }
@@ -36,7 +33,6 @@ pub fn detect_format_from_path(path: impl AsRef<Path>) -> Option<DocumentFormat>
 
 /// Detect format from document text when path is unavailable.
 ///
-/// Does **not** classify EventRecord-shaped JSON as `events` (Lance-only).
 pub fn detect_format_from_content(input: &str) -> Result<Option<DocumentFormat>> {
     if let Some(format) = registry::detect(None, input.as_bytes())? {
         return Ok(Some(format));

@@ -3,12 +3,19 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub(super) use super::super::cas_store::unix_now_ms;
 use super::super::opendal_store::{self, Version};
 use super::{
     CURRENT_FILE, StorylineLanceStore, StorylineSnapshotPointer, validate_current_control,
     write_local_current,
 };
+
+pub(super) fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
 
 const CONTROL_CAS_RETRIES: usize = 32;
 /// Brief retries when CURRENT still shows a held lease after a prior release.
@@ -714,6 +721,23 @@ impl StorylineLanceStore {
 mod tests {
     use super::*;
 
+    #[test]
+    fn unix_now_ms_matches_system_clock_and_is_non_decreasing() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        let first = unix_now_ms();
+        let second = unix_now_ms();
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        assert!(first >= before, "got {first} before {before}");
+        assert!(second >= first, "got {second} after {first}");
+        assert!(after >= second, "got {after} after {second}");
+    }
+
     fn pointer(generation: &str) -> StorylineSnapshotPointer {
         StorylineSnapshotPointer {
             schema_version: crate::store::storyline::STORYLINE_LANCE_SCHEMA_VERSION,
@@ -724,7 +748,6 @@ mod tests {
             steps_version: 1,
             tool_calls_version: 1,
             objects_version: 1,
-            projection: None,
         }
     }
 
@@ -822,7 +845,6 @@ mod proptests {
             steps_version: 1,
             tool_calls_version: 1,
             objects_version: 1,
-            projection: None,
         }
     }
 

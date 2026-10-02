@@ -2451,7 +2451,6 @@ mod tests {
             root_session_id: Some("root-a".into()),
             path: format!("agent/root-a/{id}"),
             row_count: 1,
-            duplicate_event_ids: 0,
             status: "ok".into(),
             format: None,
         }
