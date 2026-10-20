@@ -425,11 +425,187 @@ def _split_pandas_by_hash(datas: pd.DataFrame, column: str, partitions: int) -> 
     }
 
 
+_UPSERT_KEY_IN_CHUNK = 200
+
+
+def _sql_literal(value: Any) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "NULL"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    text = str(value).replace("'", "''")
+    return f"'{text}'"
+
+
+def _as_arrow_table(datas: Union[pd.DataFrame, pa.Table]) -> pa.Table:
+    if isinstance(datas, pa.Table):
+        return datas
+    if isinstance(datas, pd.DataFrame):
+        return pa.Table.from_pandas(datas, preserve_index=False)
+    raise TypeError(f"upsert datas must be pandas.DataFrame or pyarrow.Table, got {type(datas)}")
+
+
+def _key_tuples_from_table(table: pa.Table, columns: List[str]) -> List[tuple]:
+    if table.num_rows == 0:
+        return []
+    cols = [table.column(name).to_pylist() for name in columns]
+    return [tuple(row[i] for row in cols) for i in range(table.num_rows)]
+
+
+def _predicate_for_key(columns: List[str], key: tuple) -> str:
+    parts = []
+    for col, value in zip(columns, key):
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            parts.append(f"{col} IS NULL")
+        else:
+            parts.append(f"{col} = {_sql_literal(value)}")
+    return "(" + " AND ".join(parts) + ")"
+
+
+def _where_for_keys(columns: List[str], keys: List[tuple]) -> List[str]:
+    """Split key predicates into chunks so IN/OR clauses stay bounded."""
+    if not keys:
+        return []
+    clauses = [_predicate_for_key(columns, key) for key in keys]
+    return [
+        " OR ".join(clauses[i : i + _UPSERT_KEY_IN_CHUNK])
+        for i in range(0, len(clauses), _UPSERT_KEY_IN_CHUNK)
+    ]
+
+
+def _query_projected(
+    lance_table,
+    where: str,
+    columns: Optional[List[str]],
+) -> pa.Table:
+    query = lance_table.search().where(where)
+    if columns is not None:
+        query = query.select(columns)
+    # Prefer Arrow to avoid pandas dtype surprises on key columns.
+    if hasattr(query, "to_arrow"):
+        return query.to_arrow()
+    return pa.Table.from_pandas(query.to_pandas(), preserve_index=False)
+
+
+def _align_table_to_schema(table: pa.Table, schema: pa.Schema) -> pa.Table:
+    arrays = []
+    for field in schema:
+        if field.name in table.column_names:
+            column = table.column(field.name)
+            if column.type != field.type:
+                try:
+                    column = column.cast(field.type)
+                except Exception:
+                    column = pa.array(column.to_pylist(), type=field.type)
+            arrays.append(column)
+        else:
+            arrays.append(pa.nulls(table.num_rows, type=field.type))
+    return pa.Table.from_arrays(arrays, schema=schema)
+
+
+def _overlay_matched_rows(
+    existing: pa.Table,
+    source: pa.Table,
+    key_columns: List[str],
+) -> pa.Table:
+    """Apply source columns onto existing rows matched by key (partial-update semantics)."""
+    if existing.num_rows == 0:
+        return source
+    existing_df = existing.to_pandas()
+    source_df = source.to_pandas()
+    existing_df = existing_df.set_index(key_columns, drop=False)
+    source_df = source_df.set_index(key_columns, drop=False)
+    # Keep source row order; update only columns present in source.
+    merged = existing_df.loc[source_df.index].copy()
+    for column in source_df.columns:
+        merged[column] = source_df[column]
+    return pa.Table.from_pandas(merged.reset_index(drop=True), preserve_index=False)
+
+
+def _mask_rows_for_keys(table: pa.Table, columns: List[str], keys: set) -> pa.Table:
+    if table.num_rows == 0 or not keys:
+        return table.slice(0, 0)
+    key_list = _key_tuples_from_table(table, columns)
+    indices = [i for i, key in enumerate(key_list) if key in keys]
+    if not indices:
+        return table.slice(0, 0)
+    return table.take(indices)
+
+
 def _execute_merge_insert(lance_table, columns, datas, *, insert_missing: bool) -> None:
-    builder = lance_table.merge_insert(columns).when_matched_update_all()
-    if insert_missing:
-        builder = builder.when_not_matched_insert_all()
-    builder.execute(datas)
+    """Insert-or-replace without Lance merge_insert.
+
+    Avoids Arrow i32 offset overflow when the target fragment has large
+    string/binary columns: only match-key columns are scanned for existence,
+    matched rows are tombstone-deleted, then the source batch is appended.
+
+    Semantics match the previous merge_insert wrapper:
+    - insert_missing=True: update matched keys, insert unmatched keys
+    - insert_missing=False: update matched keys only; unmatched source rows dropped
+    - source may carry a subset of columns; matched rows keep unspecified fields
+    """
+    source = _as_arrow_table(datas)
+    if source.num_rows == 0:
+        return
+    for column in columns:
+        if column not in source.column_names:
+            raise ValueError(f"upsert match column {column!r} missing from source data")
+
+    source_keys = _key_tuples_from_table(source.select(columns), columns)
+    unique_source_keys = list(dict.fromkeys(source_keys))
+    existing_keyset: set = set()
+    for where in _where_for_keys(columns, unique_source_keys):
+        found = _query_projected(lance_table, where, columns)
+        existing_keyset.update(_key_tuples_from_table(found, columns))
+
+    matched_keys = {key for key in unique_source_keys if key in existing_keyset}
+    new_keys = {key for key in unique_source_keys if key not in existing_keyset}
+
+    append_parts: List[pa.Table] = []
+    target_schema = lance_table.schema
+
+    if matched_keys:
+        source_matched = _mask_rows_for_keys(source, columns, matched_keys)
+        # Partial payloads: load only the matched rows (batch-sized), overlay, then replace.
+        needs_overlay = any(name not in source.column_names for name in target_schema.names)
+        if needs_overlay:
+            existing_parts = []
+            for where in _where_for_keys(columns, list(matched_keys)):
+                existing_parts.append(_query_projected(lance_table, where, None))
+            existing_full = (
+                pa.concat_tables(existing_parts, promote_options="default")
+                if existing_parts
+                else source_matched.slice(0, 0)
+            )
+            # De-dupe existing by key in case of historical duplicates; last wins.
+            if existing_full.num_rows:
+                existing_df = existing_full.to_pandas().drop_duplicates(
+                    subset=columns, keep="last"
+                )
+                existing_full = pa.Table.from_pandas(existing_df, preserve_index=False)
+            replaced = _overlay_matched_rows(existing_full, source_matched, columns)
+        else:
+            replaced = source_matched
+        append_parts.append(_align_table_to_schema(replaced, target_schema))
+        for where in _where_for_keys(columns, list(matched_keys)):
+            lance_table.delete(where)
+        if hasattr(lance_table, "checkout_latest"):
+            try:
+                lance_table.checkout_latest()
+            except Exception:
+                pass
+
+    if insert_missing and new_keys:
+        source_new = _mask_rows_for_keys(source, columns, new_keys)
+        append_parts.append(_align_table_to_schema(source_new, target_schema))
+
+    if not append_parts:
+        return
+    to_add = append_parts[0] if len(append_parts) == 1 else pa.concat_tables(append_parts)
+    if to_add.num_rows:
+        lance_table.add(to_add)
 
 
 def _materialized_upsert_partitions(table, wanted):
