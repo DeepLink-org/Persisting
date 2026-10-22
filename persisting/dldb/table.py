@@ -428,6 +428,11 @@ def _split_pandas_by_hash(datas: pd.DataFrame, column: str, partitions: int) -> 
 _UPSERT_KEY_IN_CHUNK = 200
 
 
+def _to_pandas(table: pa.Table) -> pd.DataFrame:
+    """Arrow → pandas with ArrowDtype so extension types (e.g. arrow.json) round-trip."""
+    return table.to_pandas(types_mapper=pd.ArrowDtype)
+
+
 def _sql_literal(value: Any) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return "NULL"
@@ -513,8 +518,8 @@ def _overlay_matched_rows(
     """Apply source columns onto existing rows matched by key (partial-update semantics)."""
     if existing.num_rows == 0:
         return source
-    existing_df = existing.to_pandas()
-    source_df = source.to_pandas()
+    existing_df = _to_pandas(existing)
+    source_df = _to_pandas(source)
     existing_df = existing_df.set_index(key_columns, drop=False)
     source_df = source_df.set_index(key_columns, drop=False)
     # Keep source row order; update only columns present in source.
@@ -534,18 +539,36 @@ def _mask_rows_for_keys(table: pa.Table, columns: List[str], keys: set) -> pa.Ta
     return table.take(indices)
 
 
-def _execute_merge_insert(lance_table, columns, datas, *, insert_missing: bool) -> None:
-    """Insert-or-replace without Lance merge_insert.
+def _execute_merge_insert(
+    lance_table,
+    columns,
+    datas,
+    *,
+    insert_missing: bool,
+    use_native_merge_insert: bool = False,
+) -> None:
+    """Insert-or-replace for upsert.
 
-    Avoids Arrow i32 offset overflow when the target fragment has large
-    string/binary columns: only match-key columns are scanned for existence,
-    matched rows are tombstone-deleted, then the source batch is appended.
+    Default (use_native_merge_insert=False): key-probe → overlay → delete → add.
+    Avoids Lance merge_insert Arrow i32 offset overflow / OOM on large
+    string/binary columns. Partial updates use ArrowDtype-aware to_pandas so
+    extension types such as arrow.json round-trip.
 
-    Semantics match the previous merge_insert wrapper:
+    use_native_merge_insert=True: Lance merge_insert (may overflow/OOM on wide
+    variable-length tables).
+
+    Semantics:
     - insert_missing=True: update matched keys, insert unmatched keys
     - insert_missing=False: update matched keys only; unmatched source rows dropped
     - source may carry a subset of columns; matched rows keep unspecified fields
     """
+    if use_native_merge_insert:
+        builder = lance_table.merge_insert(columns).when_matched_update_all()
+        if insert_missing:
+            builder = builder.when_not_matched_insert_all()
+        builder.execute(datas)
+        return
+
     source = _as_arrow_table(datas)
     if source.num_rows == 0:
         return
@@ -581,7 +604,7 @@ def _execute_merge_insert(lance_table, columns, datas, *, insert_missing: bool) 
             )
             # De-dupe existing by key in case of historical duplicates; last wins.
             if existing_full.num_rows:
-                existing_df = existing_full.to_pandas().drop_duplicates(
+                existing_df = _to_pandas(existing_full).drop_duplicates(
                     subset=columns, keep="last"
                 )
                 existing_full = pa.Table.from_pandas(existing_df, preserve_index=False)
@@ -866,6 +889,7 @@ class BaseTable:
         partition=None,
         *,
         insert_missing: bool = True,
+        use_native_merge_insert: bool = False,
     ):
         raise NotImplementedError
 
@@ -1134,11 +1158,18 @@ class SimpleTable(BaseTable):
         partition=None,
         *,
         insert_missing: bool = True,
+        use_native_merge_insert: bool = False,
     ):
         assert partition is None, "Partitioning not supported for SimpleTable"
         if self.table is None:
             self.open_table()
-        _execute_merge_insert(self.table, columns, datas, insert_missing=insert_missing)
+        _execute_merge_insert(
+            self.table,
+            columns,
+            datas,
+            insert_missing=insert_missing,
+            use_native_merge_insert=use_native_merge_insert,
+        )
 
     def add_columns(self, transforms: Union[Dict[str, str], pa.field, List[pa.field], pa.Schema]):
         if self.table is None:
@@ -1492,7 +1523,13 @@ class ValuePartitionTable(BaseTable):
             self.tables[partition].update(where, values)
 
     def upsert(
-        self, columns: List[str], datas: pd.DataFrame, partition=None, *, insert_missing: bool = True
+        self,
+        columns: List[str],
+        datas: pd.DataFrame,
+        partition=None,
+        *,
+        insert_missing: bool = True,
+        use_native_merge_insert: bool = False,
     ):
         dfs = {
             d: g.reset_index(drop=True) for d, g in datas.groupby(self.partition_column, sort=False)
@@ -1514,6 +1551,7 @@ class ValuePartitionTable(BaseTable):
                 columns,
                 dfs[partition_key],
                 insert_missing=insert_missing,
+                use_native_merge_insert=use_native_merge_insert,
             )
 
     @classmethod
@@ -1997,6 +2035,7 @@ class HashPartitionTable(BaseTable):
         partition=None,
         *,
         insert_missing: bool = True,
+        use_native_merge_insert: bool = False,
     ):
         groups = self._groups_for_write(datas, partition)
         wanted = list(groups.keys())
@@ -2015,6 +2054,7 @@ class HashPartitionTable(BaseTable):
                 columns,
                 groups[partition_idx],
                 insert_missing=insert_missing,
+                use_native_merge_insert=use_native_merge_insert,
             )
 
     @classmethod

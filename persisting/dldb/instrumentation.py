@@ -466,10 +466,11 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
             method="upsert",
             api="upsert",
             datas_arg="datas",
-            meta_fn=lambda self, table_name, columns, datas, partition=None, *, insert_missing=True: {
+            meta_fn=lambda self, table_name, columns, datas, partition=None, *, insert_missing=True, use_native_merge_insert=False: {
                 "table_name": table_name,
                 "partition": partition,
                 "insert_missing": insert_missing,
+                "use_native_merge_insert": use_native_merge_insert,
             },
         ),
         _ApiSpec(

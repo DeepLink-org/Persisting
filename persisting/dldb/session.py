@@ -293,6 +293,7 @@ class SessionBase:
         partition=None,
         *,
         insert_missing: bool = True,
+        use_native_merge_insert: bool = False,
     ):
         """When data not exist in table, insert data, otherwise update data.
 
@@ -306,6 +307,11 @@ class SessionBase:
         insert_missing: bool
         If True (default), unmatched join keys are inserted. If False,
         unmatched keys are ignored and HASH/VALUE buckets are not created.
+
+        use_native_merge_insert: bool
+        If False (default), upsert uses key-probe delete+append (avoids
+        merge_insert 2GiB overflow; ArrowDtype-safe overlay). If True, use
+        Lance merge_insert (may OOM/overflow on large variable-length columns).
 
         Examples
         --------
@@ -813,12 +819,19 @@ class LanceSession(SessionBase):
         partition=None,
         *,
         insert_missing: bool = True,
+        use_native_merge_insert: bool = False,
     ):
         assert table_name, "table_name is required"
         assert columns and len(columns) > 0, "columns is required"
         assert datas is not None and len(datas) > 0, "datas is required"
         table = self._get_table(table_name, partition)
-        return table.upsert(columns, datas, partition, insert_missing=insert_missing)
+        return table.upsert(
+            columns,
+            datas,
+            partition,
+            insert_missing=insert_missing,
+            use_native_merge_insert=use_native_merge_insert,
+        )
 
     def add_columns(
         self,
