@@ -413,6 +413,17 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
             },
         ),
         _ApiSpec(
+            method="cleanup_old_versions",
+            api="cleanup_old_versions",
+            maintain_debug=True,
+            meta_fn=lambda self, table_name, *, partition=None, cleanup_older_than=None, delete_unverified=False: {
+                "table_name": table_name,
+                "partition": partition,
+                "cleanup_older_than": cleanup_older_than,
+                "delete_unverified": delete_unverified,
+            },
+        ),
+        _ApiSpec(
             method="optimize",
             api="optimize",
             maintain_debug=True,

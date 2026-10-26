@@ -239,6 +239,16 @@ class SessionBase:
     ):
         raise NotImplementedError
 
+    def cleanup_old_versions(
+        self,
+        table_name: str,
+        *,
+        partition=None,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        raise NotImplementedError
+
     def optimize(
         self,
         table_name: str,
@@ -705,6 +715,21 @@ class LanceSession(SessionBase):
             batch_size=batch_size,
             max_source_fragments=max_source_fragments,
             **kwargs,
+        )
+
+    def cleanup_old_versions(
+        self,
+        table_name: str,
+        *,
+        partition=None,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        table = self._get_table(table_name, partition)
+        return table.cleanup_old_versions(
+            partition=partition,
+            cleanup_older_than=cleanup_older_than,
+            delete_unverified=delete_unverified,
         )
 
     def optimize(

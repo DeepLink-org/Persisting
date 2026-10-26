@@ -718,13 +718,14 @@ def _cleanup_on_lance_table(
     older_than = cleanup_older_than if cleanup_older_than is not None else OPTIMIZE_CLEANUP_OLDER_THAN
 
     def _run():
-        lance_table.to_lance().cleanup_old_versions(
+        stats = lance_table.to_lance().cleanup_old_versions(
             older_than,
             delete_unverified=delete_unverified,
         )
         lance_table.checkout_latest()
+        return stats
 
-    _run_debug_step("cleanup_old_versions", _run)
+    return _run_debug_step("cleanup_old_versions", _run)
 
 
 def _full_optimize_on_lance_table(
@@ -841,6 +842,15 @@ class BaseTable:
         batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
         max_source_fragments: Optional[int] = None,
         **kwargs,
+    ):
+        raise NotImplementedError
+
+    def cleanup_old_versions(
+        self,
+        *,
+        partition=None,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
     ):
         raise NotImplementedError
 
@@ -1068,6 +1078,22 @@ class SimpleTable(BaseTable):
             batch_size=batch_size,
             max_source_fragments=max_source_fragments,
             **kwargs,
+        )
+
+    def cleanup_old_versions(
+        self,
+        *,
+        partition=None,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        assert partition is None, "Partitioning not supported for SimpleTable"
+        if self.table is None:
+            self.open_table()
+        return _cleanup_on_lance_table(
+            self.table,
+            cleanup_older_than=cleanup_older_than,
+            delete_unverified=delete_unverified,
         )
 
     def optimize(
@@ -1357,6 +1383,28 @@ class ValuePartitionTable(BaseTable):
                 batch_size=batch_size,
                 max_source_fragments=max_source_fragments,
                 **kwargs,
+            )
+        return stats
+
+    def cleanup_old_versions(
+        self,
+        *,
+        partition=None,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        if partition is not None:
+            partitions = [partition]
+        else:
+            partitions = self.list_partitions()
+
+        self.open_table(partitions)
+        stats = None
+        for p in partitions:
+            stats = _cleanup_on_lance_table(
+                self.tables[p],
+                cleanup_older_than=cleanup_older_than,
+                delete_unverified=delete_unverified,
             )
         return stats
 
@@ -1849,6 +1897,28 @@ class HashPartitionTable(BaseTable):
                 batch_size=batch_size,
                 max_source_fragments=max_source_fragments,
                 **kwargs,
+            )
+        return stats
+
+    def cleanup_old_versions(
+        self,
+        *,
+        partition=None,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        if partition is not None:
+            partitions = [partition]
+        else:
+            partitions = self.list_partitions()
+
+        self.open_table(partitions)
+        stats = None
+        for p in partitions:
+            stats = _cleanup_on_lance_table(
+                self.tables[p],
+                cleanup_older_than=cleanup_older_than,
+                delete_unverified=delete_unverified,
             )
         return stats
 
