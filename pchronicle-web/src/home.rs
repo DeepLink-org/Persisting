@@ -26,553 +26,380 @@ pub fn HomeLanding(on_open: EventHandler<String>) -> Element {
         div { class: "pc-home",
             div { class: "shell",
                 main { class: "portal", id: "portalView",
-                    header { class: "topbar",
-                        a {
-                            class: "brand",
-                            href: "#top",
-                            aria_label: "DeepTrace 首页",
-                            onclick: move |event| {
-                                event.prevent_default();
-                            },
-                            span { class: "brand-mark", aria_hidden: "true",
+                    nav { class: "topbar",
+                        div { class: "topbar-inner",
+                            a {
+                                class: "brand",
+                                href: "#top",
+                                aria_label: "DeepTrace 首页",
+                                onclick: move |event| {
+                                    event.prevent_default();
+                                },
                                 img {
                                     class: "brand-mark-img",
-                                    src: "/assets/home/brand-mark-v9.png",
-                                    alt: "",
+                                    src: "/assets/home/brand-mark-v9.png?v=2",
+                                    alt: "DeepTrace",
                                     width: "32",
                                     height: "32",
                                 }
+                                span { class: "brand-text", "DeepTrace" }
                             }
-                            "DeepTrace"
-                        }
-                        button {
-                            class: "header-login",
-                            onclick: move |_| go_litefuse(),
-                            "登录控制台"
-                        }
-                    }
-
-                    div { class: "hero-wrap", id: "top",
-                        section { class: "hero",
-                            div {
-                                div { class: "eyebrow", "Agent observability platform" }
-                                h1 { "为Agent时代提供" em { "可复现经验" } }
-                                p { class: "hero-copy",
-                                    "DeepTrace 为实验室内部 Agent 提供统一轨迹管理：实时掌握运行现场、离线回放关键路径，让每一个动作、判断与结果都清晰可见——把每一次运行沉淀为可检索、可复用的团队经验资产。"
-                                }
-                                div { class: "hero-actions",
-                                    button {
-                                        class: "primary-btn",
-                                        onclick: move |_| go_litefuse(),
-                                        "进入控制台 "
-                                        svg {
-                                            fill: "none",
-                                            view_box: "0 0 16 16",
-                                            path {
-                                                d: "M3 8h9M8.5 4.5 12 8l-3.5 3.5",
-                                                stroke: "currentColor",
-                                                stroke_linecap: "round",
-                                                stroke_linejoin: "round",
-                                                stroke_width: "1.7",
-                                            }
-                                        }
-                                    }
-                                    a {
-                                        class: "ghost-btn",
-                                        href: DOCS,
-                                        target: "_blank",
-                                        rel: "noreferrer",
-                                        "使用文档"
-                                    }
-                                }
+                            button {
+                                class: "header-login",
+                                onclick: move |_| go_litefuse(),
+                                "进入控制台"
                             }
                         }
                     }
 
-                    section {
-                        class: "section",
-                        id: "capability",
-                        style: "padding-top:0",
-                        aria_labelledby: "capability-title",
-                        div { class: "section-head section-head--split",
-                            div {
-                                p { class: "section-kicker", "Capabilities" }
-                                h2 { id: "capability-title",
-                                    "一条运行链，"
-                                    br {}
-                                    "在线与离线两段能力。"
+                    header { class: "hero-wrap", id: "top",
+                        div { class: "hero",
+                            div { class: "eyebrow", "实验室内部 · 数据全程不出内网" }
+                            h1 {
+                                span { class: "grad-text", "Agent 观测与优化 · 轨迹平台" }
+                            }
+                            p { class: "hero-copy",
+                                "面向 Agent 运行轨迹的统一数据底座，将每次运行对话、模型调用、工具调用与输入输出统一沉淀为结构化 Dataset，让运行记录可存储、可查询、可分析，为不同团队提供一套共同的数据基础。"
+                            }
+                            div { class: "hero-actions",
+                                button {
+                                    class: "secondary-btn",
+                                    onclick: move |_| go_litefuse(),
+                                    "进入控制台"
+                                }
+                                a {
+                                    class: "ghost-btn",
+                                    href: DOCS,
+                                    target: "_blank",
+                                    rel: "noreferrer",
+                                    "查看文档 →"
                                 }
                             }
-                            p { class: "section-intro",
-                                "同一份轨迹数据，在线侧负责\"看得见\"，离线侧负责\"用得上\"。两侧共用一套采集规范与数据口径，不需要为分析再做一次对接。"
-                            }
-                        }
-
-                        div { class: "cap-group",
-                            div { class: "cap-group-head",
-                                span { class: "cap-tag online",
-                                    i {}
-                                    "ONLINE"
+                            div { class: "hero-points",
+                                span { class: "hero-point",
+                                    i { class: "dot indigo" }
+                                    "内网部署 · 不经任何外部服务"
                                 }
-                                h3 { "在线：运行过程中的观测与回放" }
-                                p { "面向正在发生的运行，先看见，再定位。" }
-                            }
-                            div { class: "cap-grid",
-                                article { class: "cap-card",
-                                    span { class: "cap-ico",
-                                        svg {
-                                            view_box: "0 0 16 16",
-                                            fill: "none",
-                                            path {
-                                                d: "M2 11l3-4 3 2.5L14 3",
-                                                stroke: "currentColor",
-                                                stroke_width: "1.6",
-                                                stroke_linecap: "round",
-                                                stroke_linejoin: "round",
-                                            }
-                                        }
-                                    }
-                                    h4 { "实时轨迹采集" }
-                                    p { "以事件流捕获模型、检索、工具与外部 API 调用，串起 session、Agent 图、延迟与成本上下文。" }
-                                    span { class: "cap-meta", "streaming · session" }
+                                span { class: "hero-point",
+                                    i { class: "dot violet" }
+                                    "一次采集 · 观测分析导出复用"
                                 }
-                                article { class: "cap-card",
-                                    span { class: "cap-ico",
-                                        svg {
-                                            view_box: "0 0 16 16",
-                                            fill: "none",
-                                            circle { cx: "8", cy: "8", r: "5.6", stroke: "currentColor", stroke_width: "1.6" }
-                                            path {
-                                                d: "M8 5.2V8l2 1.4",
-                                                stroke: "currentColor",
-                                                stroke_width: "1.6",
-                                                stroke_linecap: "round",
-                                            }
-                                        }
-                                    }
-                                    h4 { "轨迹回放" }
-                                    p { "按会话、任务与分支逐步重建执行路径，从输入到输出逐节点查看，随时定位失败与异常发生的位置。" }
-                                    span { class: "cap-meta", "replay · step-through" }
-                                }
-                                article { class: "cap-card",
-                                    span { class: "cap-ico",
-                                        svg {
-                                            view_box: "0 0 16 16",
-                                            fill: "none",
-                                            path {
-                                                d: "M2.5 12.5h3v-4h-3zM6.5 12.5h3v-7h-3zM10.5 12.5h3v-2.5h-3z",
-                                                stroke: "currentColor",
-                                                stroke_width: "1.4",
-                                            }
-                                        }
-                                    }
-                                    h4 { "实时监控视图" }
-                                    p { "会话与任务维度的运行状态汇总，把高频失败、异常耗时和激增的成本集中在一个视图里。" }
-                                    span { class: "cap-meta", "live view" }
-                                }
-                            }
-                        }
-
-                        div { class: "cap-group cap-group--offline",
-                            div { class: "cap-group-head",
-                                span { class: "cap-tag offline",
-                                    i {}
-                                    "OFFLINE"
-                                }
-                                h3 { "离线：数据集上的存储、检索与导出" }
-                                p { "面向已经发生的运行，先沉淀，再用起来。" }
-                            }
-                            div { class: "cap-grid",
-                                article { class: "cap-card",
-                                    span { class: "cap-ico",
-                                        svg {
-                                            view_box: "0 0 16 16",
-                                            fill: "none",
-                                            ellipse { cx: "8", cy: "4", rx: "5", ry: "2.1", stroke: "currentColor", stroke_width: "1.5" }
-                                            path {
-                                                d: "M3 4v8c0 1.16 2.24 2.1 5 2.1s5-.94 5-2.1V4",
-                                                stroke: "currentColor",
-                                                stroke_width: "1.5",
-                                            }
-                                        }
-                                    }
-                                    h4 { "高性能存储" }
-                                    p { "轨迹按列式结构组织并建立索引，支持大规模数据集的长期保存与快速读取，写入不阻塞线上运行。" }
-                                    span { class: "cap-meta", "columnar · indexed" }
-                                }
-                                article { class: "cap-card",
-                                    span { class: "cap-ico",
-                                        svg {
-                                            view_box: "0 0 16 16",
-                                            fill: "none",
-                                            path {
-                                                d: "M8 2v7m0 0l-2.6-2.6M8 9l2.6-2.6",
-                                                stroke: "currentColor",
-                                                stroke_width: "1.6",
-                                                stroke_linecap: "round",
-                                                stroke_linejoin: "round",
-                                            }
-                                            path {
-                                                d: "M2.6 11.4v1.4c0 .55.45 1 1 1h8.8c.55 0 1-.45 1-1v-1.4",
-                                                stroke: "currentColor",
-                                                stroke_width: "1.5",
-                                                stroke_linecap: "round",
-                                            }
-                                        }
-                                    }
-                                    h4 { "数据导入" }
-                                    p { "支持已有历史轨迹与外部数据源批量导入，自动完成字段映射与 schema 校验，历史数据同样可检索。" }
-                                    span { class: "cap-meta", "ingest · schema check" }
-                                }
-                                article { class: "cap-card",
-                                    span { class: "cap-ico",
-                                        svg {
-                                            view_box: "0 0 16 16",
-                                            fill: "none",
-                                            circle { cx: "7", cy: "7", r: "4.4", stroke: "currentColor", stroke_width: "1.6" }
-                                            path {
-                                                d: "M10.4 10.4 14 14",
-                                                stroke: "currentColor",
-                                                stroke_width: "1.6",
-                                                stroke_linecap: "round",
-                                            }
-                                        }
-                                    }
-                                    h4 { "检索与筛选" }
-                                    p { "按任务、会话、时间、状态与标签组合过滤，也可用查询语言与 API 深入定位具体事件与字段。" }
-                                    span { class: "cap-meta", "filter · SQL / API" }
-                                }
-                                article { class: "cap-card",
-                                    span { class: "cap-ico",
-                                        svg {
-                                            view_box: "0 0 16 16",
-                                            fill: "none",
-                                            path {
-                                                d: "M8 13.4V6.6m0 0L5.4 9.2M8 6.6l2.6 2.6",
-                                                stroke: "currentColor",
-                                                stroke_width: "1.6",
-                                                stroke_linecap: "round",
-                                                stroke_linejoin: "round",
-                                            }
-                                            path {
-                                                d: "M2.6 4.6V3.2c0-.55.45-1 1-1h8.8c.55 0 1 .45 1 1v1.4",
-                                                stroke: "currentColor",
-                                                stroke_width: "1.5",
-                                                stroke_linecap: "round",
-                                            }
-                                        }
-                                    }
-                                    h4 { "数据集导出" }
-                                    p { "按筛选条件导出为训练与评测可用的数据集格式，支持字段裁剪与脱敏，导出任务异步执行不占用前台。" }
-                                    span { class: "cap-meta", "export · async job" }
-                                }
-                                article { class: "cap-card",
-                                    span { class: "cap-ico",
-                                        svg {
-                                            view_box: "0 0 16 16",
-                                            fill: "none",
-                                            path {
-                                                d: "M8 2.2 13.6 5v6L8 13.8 2.4 11V5z",
-                                                stroke: "currentColor",
-                                                stroke_width: "1.5",
-                                                stroke_linejoin: "round",
-                                            }
-                                            path {
-                                                d: "M8 8v5.8M8 8 2.4 5m5.6 3 5.6-3",
-                                                stroke: "currentColor",
-                                                stroke_width: "1.3",
-                                            }
-                                        }
-                                    }
-                                    h4 { "只读数据服务" }
-                                    p { "向下游分析、评测与训练任务提供稳定的只读查询接口，统一数据口径，避免各团队重复采集。" }
-                                    span { class: "cap-meta", "read-only · shared" }
-                                }
-                                article { class: "cap-card",
-                                    span { class: "cap-ico",
-                                        svg {
-                                            view_box: "0 0 16 16",
-                                            fill: "none",
-                                            path {
-                                                d: "M2.5 8.2 6 11.6l7.5-7.4",
-                                                stroke: "currentColor",
-                                                stroke_width: "1.8",
-                                                stroke_linecap: "round",
-                                                stroke_linejoin: "round",
-                                            }
-                                        }
-                                    }
-                                    h4 { "数据质量校验" }
-                                    p { "入库前后校验字段完整性与格式一致性，标注异常轨迹，保证下游拿到的是可用、可比的数据。" }
-                                    span { class: "cap-meta", "validation" }
+                                span { class: "hero-point",
+                                    i { class: "dot blue" }
+                                    "角色权限 · 操作留痕可审计"
                                 }
                             }
                         }
                     }
 
-                    section {
-                        class: "section overview-shell",
-                        id: "overview",
-                        aria_labelledby: "overview-title",
-                        p { class: "section-kicker", "Two ways to read a run" }
-                        h2 { id: "overview-title",
-                            "一条运行链，"
-                            br {}
-                            span { style: "color:var(--azure)", "两种工作方式。" }
+                    section { class: "section", id: "capabilities",
+                        div { class: "section-center",
+                            h2 { "平台能力" }
+                            p { class: "section-sub", "四层能力覆盖 Agent 运行的完整生命周期" }
                         }
-                        p { class: "section-intro",
-                            "DeepTrace 把现场观测和历史数据放在同一条路径上：实时轨迹帮助你看见正在发生什么，离线轨迹帮助你回到已经发生过的每一个关键节点。"
-                        }
-                        div { class: "mode-grid",
-                            article { class: "mode-card live",
-                                div { class: "mode-card-head",
-                                    div {
-                                        h3 { "实时轨迹" }
-                                        p { class: "mode-card-copy",
-                                            "以事件流捕获模型、检索、工具与外部 API 调用，串起 session、Agent 图、延迟与成本上下文，让运行现场保持可见。"
-                                        }
-                                    }
-                                    span { class: "mode-badge",
-                                        i {}
-                                        "LIVE VIEW"
-                                    }
-                                }
-                                div { class: "mode-rail", aria_label: "实时轨迹示例",
-                                    span { small { "input" } }
-                                    span { small { "tool" } }
-                                    span { small { "model" } }
-                                    span { small { "output" } }
-                                    span {}
-                                }
-                            }
-                            article { class: "mode-card archive",
-                                div { class: "mode-card-head",
-                                    div {
-                                        h3 { "离线轨迹" }
-                                        p { class: "mode-card-copy",
-                                            "把已采集的运行记录沉淀为可查询的数据集，支持导入、检索、导出与只读服务，为复盘和评估提供稳定事实层。"
-                                        }
-                                    }
-                                    span { class: "mode-badge",
-                                        i {}
-                                        "DATASET"
-                                    }
-                                }
-                                div { class: "dataset-slab",
-                                    span { "trace dataset" }
-                                    b { "run_2048" }
-                                    span { "events indexed" }
-                                    b { "12,482" }
-                                    span { "query surface" }
-                                    b { "SQL / API" }
-                                }
-                            }
-                        }
-                    }
-
-                    section {
-                        class: "section",
-                        id: "capabilities",
-                        aria_labelledby: "capabilities-title",
-                        div { class: "ability-header",
-                            div {
-                                p { class: "section-kicker", "Core capabilities" }
-                                h2 { id: "capabilities-title",
-                                    "对每条轨迹，"
-                                    br {}
-                                    "做两件有用的事。"
-                                }
-                            }
-                            p { class: "section-intro",
-                                "先重建上下文，再用结构化信号找出变化。每一步都对应真实的工程动作。"
-                            }
-                        }
-                        div { class: "ability-grid",
-                            article { class: "ability-card replay",
-                                h3 { "轨迹回放" }
-                                p {
-                                    "将一次 Agent Run 固化为可复查的事件序列，按会话、任务和分支逐步重建输入、输出、中间结果与失败点，并定位到任意节点。"
-                                }
-                                div { class: "ability-timeline", aria_label: "轨迹回放时间线",
-                                    span { small { "start" } }
-                                    span { small { "tool.call" } }
-                                    span { small { "decision" } }
-                                    span { small { "result" } }
-                                    span {}
-                                }
-                            }
-                            article { class: "ability-card analysis",
-                                h3 { "轨迹分析" }
-                                p {
-                                    "在历史轨迹数据集上做过滤、聚合与查询，对比时延、成本、错误、重试和质量信号，定位高频失败与性能瓶颈。"
-                                }
-                                div { class: "analysis-grid",
-                                    div { class: "analysis-list",
-                                        div { class: "analysis-row",
-                                            b { "latency" }
-                                            em { style: "width:82%" }
-                                            span { "1.82s" }
-                                        }
-                                        div { class: "analysis-row",
-                                            b { "tool error" }
-                                            em {}
-                                            span { "3.4%" }
-                                        }
-                                        div { class: "analysis-row",
-                                            b { "retry rate" }
-                                            em {}
-                                            span { "6.1%" }
-                                        }
-                                        div { class: "analysis-row",
-                                            b { "quality" }
-                                            em {}
-                                            span { "0.94" }
-                                        }
-                                    }
+                        div { class: "card-grid card-grid-4",
+                            article { class: "glass-card",
+                                div { class: "card-ico indigo",
                                     svg {
-                                        height: "80",
-                                        width: "90",
-                                        view_box: "0 0 90 80",
+                                        view_box: "0 0 24 24",
+                                        fill: "none",
+                                        stroke: "currentColor",
+                                        stroke_width: "2",
                                         path {
-                                            d: "M2 70 C18 63 22 44 36 50 S48 61 56 42 S70 35 88 12",
-                                            fill: "none",
-                                            stroke: "#2a83eb",
+                                            d: "M13 10V3L4 14h7v7l9-11h-7z",
                                             stroke_linecap: "round",
-                                            stroke_width: "2.5",
+                                            stroke_linejoin: "round",
                                         }
-                                        circle { cx: "88", cy: "12", fill: "#6ddbd0", r: "4" }
                                     }
                                 }
+                                h3 {
+                                    "实时追踪 "
+                                    span { class: "card-en indigo", "Tracing" }
+                                }
+                                p { "以事件流捕获模型、检索、工具与外部 API 调用，串起 Session、Agent 图、延迟与成本上下文，运行现场始终可见。" }
+                                div { class: "card-foot", "会话与任务状态汇总 · 高频失败 / 异常耗时 / 成本激增集中呈现" }
+                            }
+                            article { class: "glass-card",
+                                div { class: "card-ico violet",
+                                    svg {
+                                        view_box: "0 0 24 24",
+                                        fill: "none",
+                                        stroke: "currentColor",
+                                        stroke_width: "2",
+                                        path {
+                                            d: "M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z",
+                                            stroke_linecap: "round",
+                                            stroke_linejoin: "round",
+                                        }
+                                        circle { cx: "12", cy: "12", r: "9" }
+                                    }
+                                }
+                                h3 {
+                                    "轨迹回放 "
+                                    span { class: "card-en violet", "Replay" }
+                                }
+                                p { "按会话、任务与分支逐步重建执行路径，逐节点查看输入、输出与中间结果；失败发生在哪一步，一眼可见。" }
+                                div { class: "card-foot", "任意节点定位 · 时间线对照延迟与 Token 分布" }
+                            }
+                            article { class: "glass-card",
+                                div { class: "card-ico blue",
+                                    svg {
+                                        view_box: "0 0 24 24",
+                                        fill: "none",
+                                        stroke: "currentColor",
+                                        stroke_width: "2",
+                                        ellipse { cx: "12", cy: "6", rx: "8", ry: "3" }
+                                        path {
+                                            d: "M4 6v12c0 1.66 3.58 3 8 3s8-1.34 8-3V6",
+                                            stroke_linecap: "round",
+                                            stroke_linejoin: "round",
+                                        }
+                                        path {
+                                            d: "M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3",
+                                            stroke_linecap: "round",
+                                            stroke_linejoin: "round",
+                                        }
+                                    }
+                                }
+                                h3 {
+                                    "数据集 "
+                                    span { class: "card-en blue", "Datasets" }
+                                }
+                                p { "轨迹按列式结构存储并建立索引，支持批量导入、组合检索与中文全文检索；筛选、脱敏、导出为训练/评测数据集。" }
+                                div { class: "card-foot", "统一只读服务 · 各组不重复采集 · 入库即校验" }
+                            }
+                            article { class: "glass-card",
+                                div { class: "card-ico fuchsia",
+                                    svg {
+                                        view_box: "0 0 24 24",
+                                        fill: "none",
+                                        stroke: "currentColor",
+                                        stroke_width: "2",
+                                        path {
+                                            d: "M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z",
+                                            stroke_linecap: "round",
+                                            stroke_linejoin: "round",
+                                        }
+                                    }
+                                }
+                                h3 {
+                                    "AI 分析 "
+                                    span { class: "card-en fuchsia", "Copilot" }
+                                }
+                                p { "自然语言提问，自动生成分析计划与只读 SQL 并解读结果；内置助手可检查运行，回答「为什么慢 / 错在哪一步」。" }
+                                div { class: "card-foot", "计划 → SQL → 执行 → 解读，全程透明可复查" }
                             }
                         }
                     }
 
-                    section {
-                        class: "section",
-                        id: "security",
-                        style: "padding-top:0",
-                        aria_labelledby: "workflow-title",
-                        div { class: "workflow-panel",
-                            div {
-                                p { class: "section-kicker", "Trace to action" }
-                                h2 { id: "workflow-title",
-                                    "让轨迹进入工作流，"
-                                    br {}
-                                    "而不止停在日志里。"
-                                }
-                                p { "把一次运行转成可解释、可比较、可复用的工程资产。" }
-                            }
-                            div { class: "workflow-steps",
-                                div { class: "workflow-step",
-                                    b { "01" }
-                                    strong { "捕获" }
-                                    span { "保留事件与上下文" }
-                                }
-                                div { class: "workflow-step",
-                                    b { "02" }
-                                    strong { "回放" }
-                                    span { "重建关键执行路径" }
-                                }
-                                div { class: "workflow-step",
-                                    b { "03" }
-                                    strong { "分析" }
-                                    span { "定位趋势与异常" }
-                                }
-                            }
-                        }
-                    }
-
-                    section {
-                        class: "section",
-                        id: "deploy",
-                        style: "padding-top:0",
-                        aria_labelledby: "deploy-title",
-                        div { class: "section-head",
-                            p { class: "section-kicker", "Deployment & Security" }
-                            h2 { id: "deploy-title",
-                                "部署在实验室内部，"
+                    section { class: "section section-tight",
+                        div { class: "section-center",
+                            h2 { "一条运行链，在线与离线两段能力" }
+                            p { class: "section-sub wide",
+                                "同一份轨迹数据，在线侧负责"
+                                b { "看得见" }
+                                "，离线侧负责"
+                                b { "用得上" }
+                                "。"
                                 br {}
-                                "数据不出内网。"
+                                "两侧共用一套采集规范与数据口径，不需要为分析再做一次对接。"
                             }
                         }
-                        div { class: "deploy-grid",
-                            article { class: "deploy-card",
-                                h3 { "内网部署" }
-                                p { "整套平台部署在实验室内部环境，轨迹数据不出内网，满足内部研发数据的管理要求。" }
-                                ul { class: "deploy-list",
+                        div { class: "split-grid",
+                            article { class: "glass-panel",
+                                div { class: "panel-bar indigo" }
+                                span { class: "tag indigo", "Online · 正在发生的运行" }
+                                h3 { "在线：观测与回放" }
+                                p { class: "panel-lead", "先看见，再定位。" }
+                                ul { class: "panel-list indigo",
                                     li {
-                                        svg {
-                                            view_box: "0 0 16 16",
-                                            fill: "none",
-                                            path {
-                                                d: "M2.5 8.2 6 11.6l7.5-7.4",
-                                                stroke: "currentColor",
-                                                stroke_width: "2",
-                                                stroke_linecap: "round",
-                                                stroke_linejoin: "round",
-                                            }
+                                        span { class: "bullet", "·" }
+                                        div {
+                                            b { "实时轨迹采集" }
+                                            span { "事件流捕获模型、检索、工具与外部 API 调用，串起 Session、Agent 图、延迟与成本上下文。" }
                                         }
-                                        span { "数据全程在内网流转，不经过外部服务" }
                                     }
                                     li {
-                                        svg {
-                                            view_box: "0 0 16 16",
-                                            fill: "none",
-                                            path {
-                                                d: "M2.5 8.2 6 11.6l7.5-7.4",
-                                                stroke: "currentColor",
-                                                stroke_width: "2",
-                                                stroke_linecap: "round",
-                                                stroke_linejoin: "round",
-                                            }
+                                        span { class: "bullet", "·" }
+                                        div {
+                                            b { "轨迹回放" }
+                                            span { "按会话、任务与分支逐步重建执行路径，从输入到输出逐节点查看，随时定位失败与异常的位置。" }
                                         }
-                                        span { "支持按团队与项目隔离数据集" }
+                                    }
+                                    li {
+                                        span { class: "bullet", "·" }
+                                        div {
+                                            b { "实时监控视图" }
+                                            span { "会话与任务维度的运行状态汇总，高频失败、异常耗时和激增的成本集中在一个视图里。" }
+                                        }
                                     }
                                 }
                             }
-                            article { class: "deploy-card",
-                                h3 { "权限与审计" }
-                                p { "以账号与角色控制数据可见范围，关键操作留存记录，敏感字段在导出环节统一脱敏处理。" }
-                                ul { class: "deploy-list",
+                            article { class: "glass-panel",
+                                div { class: "panel-bar cyan" }
+                                span { class: "tag blue", "Offline · 已经发生的运行" }
+                                h3 { "离线：存储、检索与导出" }
+                                p { class: "panel-lead", "先沉淀，再用起来。" }
+                                ul { class: "panel-list blue",
                                     li {
+                                        span { class: "bullet", "·" }
+                                        div {
+                                            b { "高性能存储与导入" }
+                                            span { "列式结构 + 索引，大规模数据集长期保存、快速读取；历史轨迹批量导入，自动 schema 校验。" }
+                                        }
+                                    }
+                                    li {
+                                        span { class: "bullet", "·" }
+                                        div {
+                                            b { "检索与筛选" }
+                                            span { "按任务、会话、时间、状态与标签组合过滤，查询语言与 API 深入定位事件与字段。" }
+                                        }
+                                    }
+                                    li {
+                                        span { class: "bullet", "·" }
+                                        div {
+                                            b { "导出与只读服务" }
+                                            span { "筛选导出为训练/评测格式，支持字段裁剪与脱敏；下游经统一只读接口取数，各组不重复采集。" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    section { class: "section section-tight", id: "scenarios",
+                        div { class: "section-center",
+                            h2 { "面向实验室的三类高频场景" }
+                        }
+                        div { class: "card-grid card-grid-3",
+                            article { class: "glass-card",
+                                span { class: "tag indigo", "场景 · 复盘" }
+                                h3 { "Agent调用失败复盘" }
+                                p { "任务报错，不用逐台机器翻日志——打开运行回放，沿分支找到第一个失败节点，直接查看该步的输入输出与工具调用。" }
+                                div { class: "card-foot", "轨迹回放 · 逐节点定位 · 失败步上下文" }
+                            }
+                            article { class: "glass-card",
+                                span { class: "tag violet", "场景 · 对比" }
+                                h3 { "Agent 版本对比" }
+                                p { "两组 Prompt / 模型改动谁更优？在同一数据集上对比延迟、成本、错误率与 Token 归因，用结构化结果代替争论。" }
+                                div { class: "card-foot", "数据集对比 · 延迟 P95 · Token 按来源/模型归因" }
+                            }
+                            article { class: "glass-card",
+                                span { class: "tag blue", "场景 · 沉淀" }
+                                h3 { "训练与评测数据沉淀" }
+                                p { "把不良 Case 按条件筛出、脱敏、导出为训练/评测格式；入库即校验，下游拿到的都是可比、可用的数据。" }
+                                div { class: "card-foot", "组合筛选 · 字段脱敏 · 异步导出" }
+                            }
+                        }
+                    }
+
+                    section { class: "section section-tight", id: "security",
+                        div { class: "security-panel",
+                            div { class: "panel-bar indigo" }
+                            h2 { "部署在实验室内部，数据不出内网" }
+                            p { class: "security-lead",
+                                "数据全程在内网流转，"
+                                b { "不经过任何外部服务" }
+                                "。"
+                            }
+                            div { class: "security-grid",
+                                div {
+                                    div { class: "security-head",
                                         svg {
-                                            view_box: "0 0 16 16",
+                                            view_box: "0 0 24 24",
                                             fill: "none",
+                                            stroke: "currentColor",
+                                            stroke_width: "2",
                                             path {
-                                                d: "M2.5 8.2 6 11.6l7.5-7.4",
-                                                stroke: "currentColor",
-                                                stroke_width: "2",
+                                                d: "M3 12l2 2m0-4l4-4m0 0l6-2m-6 2l-2 4m0 6l-4-4m18-2l-6 6m0 0l-4 2m4-2l2 2",
                                                 stroke_linecap: "round",
                                                 stroke_linejoin: "round",
                                             }
                                         }
-                                        span { "角色化权限，按需授权数据集访问" }
+                                        h3 { "内网部署" }
                                     }
-                                    li {
+                                    ul { class: "panel-list indigo",
+                                        li {
+                                            span { class: "bullet", "·" }
+                                            div { span { "整套平台部署在实验室内部环境，满足内部研发数据管理要求" } }
+                                        }
+                                        li {
+                                            span { class: "bullet", "·" }
+                                            div { span { "支持按团队与项目隔离数据集" } }
+                                        }
+                                    }
+                                }
+                                div {
+                                    div { class: "security-head violet",
                                         svg {
-                                            view_box: "0 0 16 16",
+                                            view_box: "0 0 24 24",
                                             fill: "none",
+                                            stroke: "currentColor",
+                                            stroke_width: "2",
                                             path {
-                                                d: "M2.5 8.2 6 11.6l7.5-7.4",
-                                                stroke: "currentColor",
-                                                stroke_width: "2",
+                                                d: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z",
                                                 stroke_linecap: "round",
                                                 stroke_linejoin: "round",
                                             }
                                         }
-                                        span { "导出字段可裁剪，敏感内容脱敏后离开平台" }
+                                        h3 { "权限与审计" }
                                     }
+                                    ul { class: "panel-list violet",
+                                        li {
+                                            span { class: "bullet", "·" }
+                                            div { span { "以账号与角色控制数据可见范围，关键操作留存记录" } }
+                                        }
+                                        li {
+                                            span { class: "bullet", "·" }
+                                            div { span { "导出字段可裁剪，敏感内容脱敏后才离开平台" } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    section { class: "section", id: "quickstart",
+                        div { class: "section-center",
+                            h2 { "三步接入，轨迹自动开始沉淀" }
+                            p { class: "section-sub", "一次配置，无需改造业务代码；具体命令以使用文档为准" }
+                        }
+                        div { class: "card-grid card-grid-3",
+                            article { class: "glass-card",
+                                div { class: "num-dot", "1" }
+                                h3 { "配置密钥" }
+                                p { "在设置中创建访问密钥；密钥仅保存在本地浏览器，只发送到内网端点。" }
+                            }
+                            article { class: "glass-card",
+                                div { class: "num-dot", "2" }
+                                h3 { "挂载采集" }
+                                p { "在 Agent 运行侧挂载事件流采集，同一套采集规范同时服务在线观测与离线数据集。" }
+                            }
+                            article { class: "glass-card",
+                                div { class: "num-dot", "3" }
+                                h3 { "打开控制台" }
+                                p { "进入控制台查看运行与状态汇总，回放轨迹、检索数据集、向助手发起分析。" }
+                            }
+                        }
+                    }
+
+                    section { class: "section section-cta",
+                        div { class: "cta-banner",
+                            h2 { "把每一次运行，变成实验室的复用资产" }
+                            p { "在线看得见，离线用得上——数据全程不出内网。" }
+                            div { class: "cta-actions",
+                                button {
+                                    class: "cta-secondary",
+                                    onclick: move |_| go_litefuse(),
+                                    "进入控制台"
                                 }
                             }
                         }
                     }
 
                     footer { class: "footer",
-                        span {
-                            strong { "DeepTrace" }
-                            " · Agent 轨迹平台"
-                        }
-                        span { "Internal workspace · 2024—2025" }
+                        span { "DeepTrace · pChronicle × LiteFuse — 实验室统一的 Agent 轨迹平台" }
+                        span { "Internal workspace" }
                     }
                 }
             }
