@@ -637,6 +637,10 @@ def _materialized_upsert_partitions(table, wanted):
     return [partition for partition in wanted if partition in materialized_set], catalog_names
 
 
+def _is_table_not_found(exc: BaseException) -> bool:
+    return isinstance(exc, ValueError) and "not found" in str(exc).lower()
+
+
 def _optimize_indices_on_lance_table(
     lance_table,
     *,
@@ -2113,6 +2117,22 @@ class HashPartitionTable(BaseTable):
             return
         if insert_missing:
             self.open_table(wanted, create_when_missing=True)
+        elif partition is not None:
+            # Explicit partition: open by physical name (no catalog list);
+            # skip unmaterialized buckets without creating them.
+            opened = []
+            for p in wanted:
+                if p not in self.tables:
+                    try:
+                        self.tables[p] = self.db_conn.open_table(self.get_table_name(p))
+                    except ValueError as e:
+                        if not _is_table_not_found(e):
+                            raise
+                        continue
+                opened.append(p)
+            wanted = opened
+            if not wanted:
+                return
         else:
             wanted, catalog_names = _materialized_upsert_partitions(self, wanted)
             if not wanted:
