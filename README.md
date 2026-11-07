@@ -60,24 +60,24 @@ Criterion.rs microbenchmarks and hyperfine lifecycle scenarios are compared
 against `main` in CI; see the [benchmark contract](benchmark/pchronicle/README.md).
 
 <!-- pchronicle-benchmark:start -->
-Latest nightly pChronicle benchmark: `9c3576b1513b` on `linux/x86_64` (2026-11-06T03:06:26.968641+00:00).
+Latest nightly pChronicle benchmark: `a89fc08a8dab` on `linux/x86_64` (2026-11-07T03:05:21.793898+00:00).
 
 | Case | Metric | Value |
 |---|---:|---:|
-| `criterion/atif_conversion/parse_corpus` | `latency_median_ns` | 4.657e+06 ns |
-| `criterion/atif_conversion/roundtrip_corpus` | `latency_median_ns` | 6.429e+06 ns |
-| `system/lance_vs_json/lifecycle` | `cold_query_ms` | 3080.751 ms |
-| `system/lance_vs_json/lifecycle` | `get_storyline_full_ms` | 10.401 ms |
-| `system/lance_vs_json/lifecycle` | `replace_storyline_ms` | 44.061 ms |
-| `system/lance_vs_json/selective` | `lance_qps` | 323.5 ops/s |
-| `system/lance_vs_json/group_by` | `lance_qps` | 423.3 ops/s |
+| `criterion/atif_conversion/parse_corpus` | `latency_median_ns` | 3.194e+06 ns |
+| `criterion/atif_conversion/roundtrip_corpus` | `latency_median_ns` | 4.092e+06 ns |
+| `system/lance_vs_json/lifecycle` | `cold_query_ms` | 1810.583 ms |
+| `system/lance_vs_json/lifecycle` | `get_storyline_full_ms` | 5.648 ms |
+| `system/lance_vs_json/lifecycle` | `replace_storyline_ms` | 27.904 ms |
+| `system/lance_vs_json/selective` | `lance_qps` | 581.1 ops/s |
+| `system/lance_vs_json/group_by` | `lance_qps` | 690.1 ops/s |
 | `system/lance_vs_json/summary` | `lance_over_json` | 0.244 ratio |
-| `system/json_streaming_ndjson/json_streaming` | `p95_ms` | 12.992 ms |
-| `system/json_streaming_ndjson/json_streaming` | `rows_s` | 3.104e+05 ops/s |
-| `system/json_streaming_ndjson/json_streaming` | `process_peak_rss_mib` | 49.07 MiB |
-| `hyperfine/lance_vs_json` | `wall_median_seconds` | 41.958 s |
+| `system/json_streaming_ndjson/json_streaming` | `p95_ms` | 7.862 ms |
+| `system/json_streaming_ndjson/json_streaming` | `rows_s` | 5.337e+05 ops/s |
+| `system/json_streaming_ndjson/json_streaming` | `process_peak_rss_mib` | 48.281 MiB |
+| `hyperfine/lance_vs_json` | `wall_median_seconds` | 24.491 s |
 
-[Open the complete benchmark run](https://github.com/DeepLink-org/Persisting/actions/runs/42154144903).
+[Open the complete benchmark run](https://github.com/DeepLink-org/Persisting/actions/runs/42332178460).
 <!-- pchronicle-benchmark:end -->
 
 ## License
