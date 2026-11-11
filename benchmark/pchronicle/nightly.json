@@ -14,37 +14,37 @@
           "parse_corpus": {
             "latency_mean_ns": {
               "direction": "lower",
-              "lower": 4241964.188188027,
+              "lower": 3326015.0025697835,
               "source": "criterion",
               "unit": "ns",
-              "upper": 4281431.679626492,
-              "value": 4256835.72615255
+              "upper": 3355554.080373227,
+              "value": 3341019.6187345013
             },
             "latency_median_ns": {
               "direction": "lower",
-              "lower": 4240651.564732143,
+              "lower": 3317390.0349364793,
               "source": "criterion",
               "unit": "ns",
-              "upper": 4253154.027173913,
-              "value": 4248133.665
+              "upper": 3368481.908333333,
+              "value": 3338407.9125
             }
           },
           "roundtrip_corpus": {
             "latency_mean_ns": {
               "direction": "lower",
-              "lower": 5719441.645037374,
+              "lower": 4473349.99648937,
               "source": "criterion",
               "unit": "ns",
-              "upper": 5724978.389990934,
-              "value": 5722195.886735165
+              "upper": 4502329.299042792,
+              "value": 4487747.97671247
             },
             "latency_median_ns": {
               "direction": "lower",
-              "lower": 5721150.2625,
+              "lower": 4473967.986842105,
               "source": "criterion",
               "unit": "ns",
-              "upper": 5725004.845108695,
-              "value": 5721968.255991286
+              "upper": 4514015.0625,
+              "value": 4487614.494565217
             }
           }
         }
@@ -55,31 +55,31 @@
             "direction": "neutral",
             "source": "hyperfine",
             "unit": "s",
-            "value": 0.15438660336
+            "value": 0.11343777682
           },
           "wall_mean_seconds": {
             "direction": "lower",
             "source": "hyperfine",
             "unit": "s",
-            "value": 0.15361125221714286
+            "value": 0.11137946210571428
           },
           "wall_median_seconds": {
             "direction": "lower",
             "source": "hyperfine",
             "unit": "s",
-            "value": 0.15342869136
+            "value": 0.11122014882
           },
           "wall_min_seconds": {
             "direction": "neutral",
             "source": "hyperfine",
             "unit": "s",
-            "value": 0.15303457836
+            "value": 0.11004636582
           },
           "wall_stddev_seconds": {
             "direction": "neutral",
             "source": "hyperfine",
             "unit": "s",
-            "value": 0.000531967739791437
+            "value": 0.0010790474695711505
           }
         },
         "json_streaming_ndjson": {
@@ -87,31 +87,31 @@
             "direction": "neutral",
             "source": "hyperfine",
             "unit": "s",
-            "value": 0.13789818796
+            "value": 0.10376535640000001
           },
           "wall_mean_seconds": {
             "direction": "lower",
             "source": "hyperfine",
             "unit": "s",
-            "value": 0.13694848981714286
+            "value": 0.10240834125714285
           },
           "wall_median_seconds": {
             "direction": "lower",
             "source": "hyperfine",
             "unit": "s",
-            "value": 0.13667580896
+            "value": 0.1024395354
           },
           "wall_min_seconds": {
             "direction": "neutral",
             "source": "hyperfine",
             "unit": "s",
-            "value": 0.13642192596
+            "value": 0.1011588114
           },
           "wall_stddev_seconds": {
             "direction": "neutral",
             "source": "hyperfine",
             "unit": "s",
-            "value": 0.000627716958708148
+            "value": 0.000860533735196833
           }
         },
         "lance_vs_json": {
@@ -119,31 +119,31 @@
             "direction": "neutral",
             "source": "hyperfine",
             "unit": "s",
-            "value": 29.923354789700003
+            "value": 24.80725642816
           },
           "wall_mean_seconds": {
             "direction": "lower",
             "source": "hyperfine",
             "unit": "s",
-            "value": 29.721241490128573
+            "value": 24.41460411116
           },
           "wall_median_seconds": {
             "direction": "lower",
             "source": "hyperfine",
             "unit": "s",
-            "value": 29.695391856700002
+            "value": 24.48397746116
           },
           "wall_min_seconds": {
             "direction": "neutral",
             "source": "hyperfine",
             "unit": "s",
-            "value": 29.6378146037
+            "value": 23.92832661416
           },
           "wall_stddev_seconds": {
             "direction": "neutral",
             "source": "hyperfine",
             "unit": "s",
-            "value": 0.09902093949940252
+            "value": 0.32483362661501025
           }
         }
       },
@@ -160,49 +160,49 @@
               "direction": "lower",
               "source": "custom",
               "unit": "bytes",
-              "value": 7528543.0
+              "value": 7528599.0
             },
             "median_allocations": {
               "direction": "lower",
               "source": "custom",
               "unit": "count",
-              "value": 18361.0
+              "value": 18362.0
             },
             "median_ms": {
               "direction": "lower",
               "source": "custom",
               "unit": "ms",
-              "value": 11.431
+              "value": 8.359
             },
             "p95_allocated_bytes": {
               "direction": "lower",
               "source": "custom",
               "unit": "bytes",
-              "value": 7528895.0
+              "value": 7529459.0
             },
             "p95_allocations": {
               "direction": "lower",
               "source": "custom",
               "unit": "count",
-              "value": 18365.0
+              "value": 18370.0
             },
             "p95_ms": {
               "direction": "lower",
               "source": "custom",
               "unit": "ms",
-              "value": 12.236
+              "value": 8.879
             },
             "process_peak_rss_mib": {
               "direction": "lower",
               "source": "custom",
               "unit": "MiB",
-              "value": 48.91
+              "value": 49.148
             },
             "rows_s": {
               "direction": "higher",
               "source": "custom",
               "unit": "ops/s",
-              "value": 330318.0
+              "value": 451732.0
             }
           }
         },
@@ -218,25 +218,25 @@
               "direction": "lower",
               "source": "custom",
               "unit": "bytes",
-              "value": 7528623.0
+              "value": 7528731.0
             },
             "median_allocations": {
               "direction": "lower",
               "source": "custom",
               "unit": "count",
-              "value": 18362.0
+              "value": 18363.0
             },
             "median_ms": {
               "direction": "lower",
               "source": "custom",
               "unit": "ms",
-              "value": 9.936
+              "value": 7.262
             },
             "p95_allocated_bytes": {
               "direction": "lower",
               "source": "custom",
               "unit": "bytes",
-              "value": 7528967.0
+              "value": 7529399.0
             },
             "p95_allocations": {
               "direction": "lower",
@@ -248,19 +248,19 @@
               "direction": "lower",
               "source": "custom",
               "unit": "ms",
-              "value": 10.894
+              "value": 8.169
             },
             "process_peak_rss_mib": {
               "direction": "lower",
               "source": "custom",
               "unit": "MiB",
-              "value": 49.719
+              "value": 48.141
             },
             "rows_s": {
               "direction": "higher",
               "source": "custom",
               "unit": "ops/s",
-              "value": 380048.0
+              "value": 519933.0
             }
           }
         },
@@ -276,7 +276,7 @@
               "direction": "lower",
               "source": "custom",
               "unit": "bytes",
-              "value": 769686.0
+              "value": 769674.0
             }
           },
           "group_by": {
@@ -284,19 +284,19 @@
               "direction": "neutral",
               "source": "custom",
               "unit": "ratio",
-              "value": 6.336
+              "value": 4.99
             },
             "atif_qps": {
               "direction": "higher",
               "source": "custom",
               "unit": "ops/s",
-              "value": 94.3
+              "value": 135.3
             },
             "lance_qps": {
               "direction": "higher",
               "source": "custom",
               "unit": "ops/s",
-              "value": 597.4
+              "value": 675.2
             }
           },
           "lifecycle": {
@@ -304,19 +304,19 @@
               "direction": "lower",
               "source": "custom",
               "unit": "ms",
-              "value": 2176.771
+              "value": 1766.417
             },
             "get_storyline_full_ms": {
               "direction": "lower",
               "source": "custom",
               "unit": "ms",
-              "value": 7.322
+              "value": 5.47
             },
             "replace_storyline_ms": {
               "direction": "lower",
               "source": "custom",
               "unit": "ms",
-              "value": 33.301
+              "value": 28.132
             }
           },
           "selective": {
@@ -324,19 +324,19 @@
               "direction": "neutral",
               "source": "custom",
               "unit": "ratio",
-              "value": 3.008
+              "value": 2.851
             },
             "atif_qps": {
               "direction": "higher",
               "source": "custom",
               "unit": "ops/s",
-              "value": 156.2
+              "value": 202.7
             },
             "lance_qps": {
               "direction": "higher",
               "source": "custom",
               "unit": "ops/s",
-              "value": 469.8
+              "value": 577.8
             }
           },
           "summary": {
@@ -344,13 +344,13 @@
               "direction": "higher",
               "source": "custom",
               "unit": "ratio",
-              "value": 7.8142
+              "value": 6.6995
             },
             "group_memory_over_lance_time": {
               "direction": "neutral",
               "source": "custom",
               "unit": "ratio",
-              "value": 6.3364
+              "value": 4.9896
             },
             "lance_over_json": {
               "direction": "lower",
@@ -362,19 +362,19 @@
               "direction": "higher",
               "source": "custom",
               "unit": "ratio",
-              "value": 0.0004
+              "value": 0.0005
             },
             "selective_disk_speedup": {
               "direction": "higher",
               "source": "custom",
               "unit": "ratio",
-              "value": 6.0732
+              "value": 5.7037
             },
             "selective_memory_over_lance_time": {
               "direction": "neutral",
               "source": "custom",
               "unit": "ratio",
-              "value": 3.0081
+              "value": 2.8509
             }
           }
         }
@@ -383,14 +383,14 @@
     "run": {
       "arch": "x86_64",
       "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
-      "cpu": "AMD EPYC 9V74 80-Core Processor",
-      "git_commit": "989d0b62a2f0e8ce64324e5150409821927e9ff9",
+      "cpu": "AMD EPYC 9V45 96-Core Processor",
+      "git_commit": "bbafbb82df7bab1ab38b20473308e1dcfdccfea4",
       "git_dirty": false,
       "hyperfine": "hyperfine 1.20.0",
       "logical_cpus": 4,
       "os": "linux",
       "os_release": "7.0.0-1019-azure",
-      "recorded_at": "2026-11-10T03:03:45.405562+00:00",
+      "recorded_at": "2026-11-11T03:03:44.401392+00:00",
       "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
       "suite": "nightly"
     },
